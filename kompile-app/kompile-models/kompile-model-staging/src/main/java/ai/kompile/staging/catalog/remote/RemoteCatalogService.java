@@ -60,7 +60,7 @@ public class RemoteCatalogService {
     private List<String> catalogUrls;
 
     @Value("${kompile.archive.catalog.refresh-interval:24h}")
-    private String refreshInterval;
+    String refreshInterval;
 
     // Default catalog URLs
     private static final List<String> DEFAULT_CATALOG_URLS = List.of(

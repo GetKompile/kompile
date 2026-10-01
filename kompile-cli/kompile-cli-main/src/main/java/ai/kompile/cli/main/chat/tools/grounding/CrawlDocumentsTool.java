@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.springframework.web.client.ResourceAccessException;
 
@@ -139,12 +140,22 @@ public final class CrawlDocumentsTool implements CliTool {
         document.put("type", "object");
         ObjectNode documentProps = document.putObject("properties");
         documentProps.putObject("path").put("type", "string")
-                .put("description", "Server-visible file or directory path.");
+                .put("description", "Server-visible file or directory path. Omittable for connector "
+                        + "sourceTypes that resolve identity from a connected account or from "
+                        + "properties (for example properties.fromChannelConnection).");
         documentProps.putObject("url").put("type", "string")
-                .put("description", "HTTP/HTTPS document or crawl seed URL.");
+                .put("description", "HTTP/HTTPS document URL, or the seed URL for WEB_CRAWL. Omittable "
+                        + "for connector sourceTypes that resolve identity from a connected account or "
+                        + "from properties.");
         documentProps.putObject("label").put("type", "string");
+        String connectorSourceTypes = LocalExternalSourceLoaderRegistry.sourceTypes().stream()
+                .sorted()
+                .collect(Collectors.joining(", "));
         documentProps.putObject("sourceType").put("type", "string")
-                .put("description", "Optional source type override such as FILE, DIRECTORY, URL, WEB_CRAWL, or S3.");
+                .put("description", "Optional source type override. Built-in (use path or url): FILE, "
+                        + "DIRECTORY, CODE_PROJECT, URL, WEB_CRAWL, OBSIDIAN. Connector types (path/url "
+                        + "omittable; identity comes from a connected account or properties such as "
+                        + "properties.fromChannelConnection): " + connectorSourceTypes + ".");
         documentProps.putObject("maxDepth").put("type", "integer").put("minimum", 0);
         documentProps.putObject("maxDocuments").put("type", "integer").put("minimum", 0);
         addStringArray(documentProps, "includePatterns", "URL/path patterns to include.");
@@ -165,11 +176,17 @@ public final class CrawlDocumentsTool implements CliTool {
         documentProps.putObject("chunkerName").put("type", "string");
         documentProps.putObject("chunkSize").put("type", "integer").put("minimum", 1);
         documentProps.putObject("chunkOverlap").put("type", "integer").put("minimum", 0);
-        documentProps.putObject("properties").put("type", "object");
+        documentProps.putObject("properties").put("type", "object")
+                .put("description", "Connector configuration. SAP_NETWEAVER/ODATA/DYNAMICS365/NETSUITE/ODOO/SALESFORCE require entitySet and a service-root url "
+                        + "or serviceRoot; use connectionName from 'kompile auth source erp', not pasted secrets. "
+                        + "Optional filter, select, orderBy, keyFields (comma-separated), sapClient (SAP only), "
+                        + "maxRecords (default 100), pageSize, maxPages, timeoutMillis, maxResponseBytes. "
+                        + "Read-only SAP V2, OData V4, Dynamics F&O, NetSuite REST records, Odoo 19 search_read, Salesforce queries. Odoo/Salesforce require select field identifiers; no Camel routes, mutations or RFC.");
         documentProps.putObject("chunkerOptions").put("type", "object");
-        ArrayNode oneOf = document.putArray("oneOf");
-        oneOf.addObject().putArray("required").add("path");
-        oneOf.addObject().putArray("required").add("url");
+        // No oneOf(path, url) here: connector sourceTypes (see the sourceType description above)
+        // resolve identity from a connected account or from properties, so both path and url are
+        // legitimately absent for those; validation enforces the exactly-one-of rule only when the
+        // requested sourceType requires a locator and no identity properties are present.
 
         ObjectNode codeProjects = props.putObject("codeProjects");
         codeProjects.put("type", "array");
@@ -654,7 +671,10 @@ public final class CrawlDocumentsTool implements CliTool {
                 }
                 String path = text(selected, "path");
                 String url = text(selected, "url");
-                if ((path == null) == (url == null)) {
+                String requestedSourceType = firstNonBlank(text(selected, "sourceType"), "FILE");
+                if ((path == null) == (url == null)
+                        && !LocalExternalSourceLoaderRegistry.identityWithoutLocator(requestedSourceType,
+                                LocalProjectCrawlBackend.propertiesMap(selected.path("properties"), mapper))) {
                     return ToolResult.error("documents[" + i + "] must provide exactly one of path or url.");
                 }
                 ObjectNode source = sources.addObject();
@@ -1164,10 +1184,15 @@ public final class CrawlDocumentsTool implements CliTool {
     }
 
     private static boolean requiresProjectLocalSource(JsonNode params) {
-        return containsSourceType(params == null ? null : params.get("documents"), "OBSIDIAN")
-                || containsSourceType(params == null ? null : params.get("sources"), "OBSIDIAN")
-                || containsSourceType(params == null ? null : params.path("config").get("documents"), "OBSIDIAN")
-                || containsSourceType(params == null ? null : params.path("config").get("sources"), "OBSIDIAN");
+        if (params == null) return false;
+        // ERP profiles and named credentials live in the host, not the managed crawl DTO.
+        for (String type : List.of("OBSIDIAN", "SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE")) {
+            if (containsSourceType(params.get("documents"), type)
+                    || containsSourceType(params.get("sources"), type)
+                    || containsSourceType(params.path("config").get("documents"), type)
+                    || containsSourceType(params.path("config").get("sources"), type)) return true;
+        }
+        return false;
     }
 
     private static boolean containsSourceType(JsonNode sources, String requiredType) {

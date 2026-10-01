@@ -56,6 +56,20 @@ public class KompileProjectStore {
     public static final String METADATA_DIR = ".kompile";
     public static final String PROJECT_METADATA_DIR = ".kompile/project";
     public static final String OPEN_STATE_FILE = ".kompile/project/open.json";
+    /**
+     * The files a manifest save writes (see {@code saveManifestLocked}), and the only ones
+     * auto-commit may stage: the manifest can sit at the root of a code repository, where
+     * every other change is the user's work in progress.
+     */
+    static final List<String> PROJECT_STATE_FILES = List.of(
+            MANIFEST_FILE,
+            "data/models/project-models.json",
+            "data/models/registry.json",
+            "data/pipelines/project-pipelines.json",
+            "data/markdown/project-markdown.json",
+            "data/crawls/project-crawls.json",
+            "data/input_documents/project-sources.json",
+            "data/prompt-templates/project-prompts.json");
     private static final Map<Path, ReentrantLock> MANIFEST_LOCKS = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper;
@@ -67,8 +81,14 @@ public class KompileProjectStore {
     public KompileProjectManifest init(Path root, KompileProjectInitRequest request) {
         Path normalizedRoot = normalizeRoot(root);
         KompileProjectInitRequest req = request == null ? new KompileProjectInitRequest() : request;
+        KompileProjectManifest manifest;
         try {
             Files.createDirectories(normalizedRoot);
+            manifest = manifestPath(normalizedRoot).toFile().isFile()
+                    ? load(normalizedRoot)
+                    : new KompileProjectManifest();
+            // Refuse before writing anything, so a refused init leaves no project tree or .gitignore behind.
+            requireRegistrableCodingProjects(normalizedRoot, manifest, req.getCodingProjects());
             ensureStandardDirectories(normalizedRoot);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to create project directories under " + normalizedRoot + ": " + e.getMessage(), e);
@@ -78,9 +98,6 @@ public class KompileProjectStore {
         // ensureGitRepository's later call is a no-op once the file exists.
         writeGitignore(normalizedRoot);
 
-        KompileProjectManifest manifest = manifestPath(normalizedRoot).toFile().isFile()
-                ? load(normalizedRoot)
-                : new KompileProjectManifest();
         Instant now = Instant.now();
         if (manifest.getProjectId() == null || manifest.getProjectId().isBlank()) {
             manifest.setProjectId(UUID.randomUUID().toString());
@@ -128,6 +145,13 @@ public class KompileProjectStore {
             upsertWorkflow(manifest, workflow);
         }
         for (KompileCodingProject cp : req.getCodingProjects()) {
+            if (cp != null && trimToNull(cp.getRootPath()) != null) {
+                Path sourceRoot = codingRoot(normalizedRoot, cp.getRootPath());
+                if (otherActiveOwner(normalizedRoot, manifest, codingProjectId(cp, sourceRoot), sourceRoot).isPresent()) {
+                    // Re-initialising keeps the checkout's existing registration instead of forking it under a second id.
+                    continue;
+                }
+            }
             upsertCodingProject(normalizedRoot, manifest, cp);
         }
 
@@ -343,21 +367,72 @@ public class KompileProjectStore {
     }
 
     /**
-     * If the project has a git repo and autoCommit is enabled, commit all changes.
-     * This runs after every save so that manifest, registry, and catalog changes
-     * are automatically committed without requiring an explicit {@code project commit}.
+     * If the project has a git repo and autoCommit is enabled, commit the manifest, registry,
+     * and catalog files the save just wrote, so they are versioned without an explicit
+     * {@code project commit}. Nothing else in the working tree is staged or committed.
      */
     private void autoCommitIfEnabled(Path root, KompileProjectManifest manifest) {
         KompileProjectRepository repo = manifest.getRepository();
         if (!repo.isAutoCommit()) return;
         if (!Files.isDirectory(root.resolve(".git"))) return;
         try {
-            KompileProjectGitResult status = runProcess(root, true, "git", "status", "--porcelain");
-            if (status.getOutput() == null || status.getOutput().isBlank()) return;
-            gitCommitAll(root, "Auto-commit: update project state");
+            commitProjectState(root, "Auto-commit: update project state");
         } catch (Exception e) {
             // Auto-commit is best-effort — don't fail the save
         }
+    }
+
+    /**
+     * Commits the {@link #PROJECT_STATE_FILES} that changed. The commit names its paths, so
+     * git takes only those (--only): whatever the user has staged stays staged and out of it.
+     */
+    KompileProjectGitResult commitProjectState(Path root, String message) {
+        List<String> present = PROJECT_STATE_FILES.stream()
+                .filter(file -> Files.isRegularFile(root.resolve(file)))
+                .toList();
+        if (present.isEmpty()) {
+            return new KompileProjectGitResult(0, "No changes to commit.");
+        }
+        // -uall lists untracked files one by one; ignored ones are not listed, so a project
+        // that ignores data/ never gets its registries force-added.
+        KompileProjectGitResult status = runProcess(root, false, gitWithPaths(
+                List.of("status", "--porcelain", "-z", "--untracked-files=all", "--"), present));
+        Set<String> listed = porcelainPaths(status.getOutput());
+        List<String> changed = present.stream().filter(listed::contains).toList();
+        if (changed.isEmpty()) {
+            return new KompileProjectGitResult(0, "No changes to commit.");
+        }
+        runProcess(root, false, gitWithPaths(List.of("add", "--"), changed));
+        return runProcess(root, false, gitWithPaths(List.of(
+                "-c", "user.name=Kompile",
+                "-c", "user.email=kompile@local",
+                "commit", "--only", "-m", message, "--"), changed));
+    }
+
+    private static String[] gitWithPaths(List<String> arguments, List<String> paths) {
+        List<String> command = new ArrayList<>();
+        command.add("git");
+        command.addAll(arguments);
+        command.addAll(paths);
+        return command.toArray(String[]::new);
+    }
+
+    /** Paths named by {@code git status --porcelain -z}; a rename's or copy's source is skipped. */
+    static Set<String> porcelainPaths(String output) {
+        Set<String> paths = new LinkedHashSet<>();
+        if (output == null) return paths;
+        String[] entries = output.split("\0");
+        for (int i = 0; i < entries.length; i++) {
+            String entry = entries[i];
+            if (entry.length() < 4) continue;
+            paths.add(entry.substring(3));
+            char staged = entry.charAt(0);
+            char unstaged = entry.charAt(1);
+            if (staged == 'R' || staged == 'C' || unstaged == 'R' || unstaged == 'C') {
+                i++;
+            }
+        }
+        return paths;
     }
 
     private void syncMarkdownCatalogQuietly(Path root) {
@@ -2012,10 +2087,12 @@ public class KompileProjectStore {
             throw new IllegalArgumentException("Coding project rootPath is required");
         }
 
-        Path sourceRoot = Path.of(codingProject.getRootPath()).toAbsolutePath().normalize();
-        String id = firstNonBlank(codingProject.getId(), codingProject.getCodeProjectId(), codingProject.getName(),
-                sourceRoot.getFileName() != null ? sourceRoot.getFileName().toString() : null);
-        id = slug(id);
+        Path sourceRoot = codingRoot(root, codingProject.getRootPath());
+        String id = codingProjectId(codingProject, sourceRoot);
+        Optional<KompileCodingProject> existing = findCodingProject(manifest, id);
+        if (existing.isEmpty() || !sameCodingRoot(root, existing.get().getRootPath(), sourceRoot)) {
+            requireRegistrableCodingRoot(root, manifest, id, sourceRoot);
+        }
         codingProject.setId(id);
         codingProject.setCodeProjectId(firstNonBlank(codingProject.getCodeProjectId(), id));
         codingProject.setName(firstNonBlank(codingProject.getName(), id));
@@ -2035,7 +2112,6 @@ public class KompileProjectStore {
 
         ensureCodingProjectContext(root, codingProject);
 
-        Optional<KompileCodingProject> existing = findCodingProject(manifest, id);
         if (existing.isPresent()) {
             int index = manifest.getCodingProjects().indexOf(existing.get());
             manifest.getCodingProjects().set(index, codingProject);
@@ -2043,6 +2119,104 @@ public class KompileProjectStore {
             manifest.getCodingProjects().add(codingProject);
         }
         manifest.getCodingProjects().sort(Comparator.comparing(KompileCodingProject::getId));
+    }
+
+    private String codingProjectId(KompileCodingProject codingProject, Path sourceRoot) {
+        return slug(firstNonBlank(codingProject.getId(), codingProject.getCodeProjectId(), codingProject.getName(),
+                sourceRoot.getFileName() != null ? sourceRoot.getFileName().toString() : null));
+    }
+
+    /** A relative coding-project root names a directory inside the project, not one under the JVM's cwd. */
+    private static Path codingRoot(Path projectRoot, String configuredRoot) {
+        Path configured = Path.of(configuredRoot.trim());
+        return (configured.isAbsolute() ? configured : projectRoot.resolve(configured)).toAbsolutePath().normalize();
+    }
+
+    private static Path canonicalDirectory(Path path) {
+        try {
+            return path.toRealPath();
+        } catch (IOException | RuntimeException unavailable) {
+            return path.toAbsolutePath().normalize();
+        }
+    }
+
+    private boolean sameCodingRoot(Path projectRoot, String configuredRoot, Path sourceRoot) {
+        if (trimToNull(configuredRoot) == null) return false;
+        try {
+            return canonicalDirectory(codingRoot(projectRoot, configuredRoot)).equals(canonicalDirectory(sourceRoot));
+        } catch (RuntimeException invalidRoot) {
+            return false;
+        }
+    }
+
+    /**
+     * Another ACTIVE registration that already owns {@code sourceRoot}. Two ids over one checkout split it
+     * across two code indexes and knowledge bases, so a root has exactly one owner.
+     */
+    private Optional<KompileCodingProject> otherActiveOwner(Path projectRoot, KompileProjectManifest manifest,
+                                                            String id, Path sourceRoot) {
+        Path wanted = canonicalDirectory(sourceRoot);
+        for (KompileCodingProject other : manifest.getCodingProjects()) {
+            if (other == null || id.equals(other.getId()) || id.equals(other.getCodeProjectId())
+                    || other.getLifecycle() != KompileProjectLifecycleState.ACTIVE
+                    || trimToNull(other.getRootPath()) == null) {
+                continue;
+            }
+            try {
+                if (canonicalDirectory(codingRoot(projectRoot, other.getRootPath())).equals(wanted)) {
+                    return Optional.of(other);
+                }
+            } catch (RuntimeException invalidRoot) {
+                // An unparseable root owns nothing.
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** The refusals init's coding-project loop would hit, checked without writing; owned roots are skipped there too. */
+    private void requireRegistrableCodingProjects(Path projectRoot, KompileProjectManifest manifest,
+                                                  List<KompileCodingProject> codingProjects) {
+        for (KompileCodingProject codingProject : codingProjects) {
+            if (codingProject == null) {
+                continue;
+            }
+            if (trimToNull(codingProject.getRootPath()) == null) {
+                throw new IllegalArgumentException("Coding project rootPath is required");
+            }
+            Path sourceRoot = codingRoot(projectRoot, codingProject.getRootPath());
+            String id = codingProjectId(codingProject, sourceRoot);
+            if (otherActiveOwner(projectRoot, manifest, id, sourceRoot).isPresent()) {
+                continue;
+            }
+            Optional<KompileCodingProject> existing = findCodingProject(manifest, id);
+            if (existing.isEmpty() || !sameCodingRoot(projectRoot, existing.get().getRootPath(), sourceRoot)) {
+                requireRegistrableCodingRoot(projectRoot, manifest, id, sourceRoot);
+            }
+        }
+    }
+
+    /**
+     * A new or moved registration must name an existing directory that is not the user's home (or one of
+     * its parents) and that no other active registration owns. Entries whose root is unchanged stay
+     * updatable even when stale, so they can still be archived or repaired.
+     */
+    private void requireRegistrableCodingRoot(Path projectRoot, KompileProjectManifest manifest,
+                                              String id, Path sourceRoot) {
+        if (!Files.isDirectory(sourceRoot)) {
+            throw new IllegalArgumentException("Coding project root is not an existing directory: " + sourceRoot);
+        }
+        String home = trimToNull(System.getProperty("user.home"));
+        if (home != null && Path.of(home).isAbsolute()
+                && canonicalDirectory(Path.of(home)).startsWith(canonicalDirectory(sourceRoot))) {
+            throw new IllegalArgumentException("Refusing to register the home directory or one of its parents "
+                    + "as a coding project root: " + sourceRoot);
+        }
+        Optional<KompileCodingProject> owner = otherActiveOwner(projectRoot, manifest, id, sourceRoot);
+        if (owner.isPresent()) {
+            throw new IllegalArgumentException("Directory " + sourceRoot + " is already registered as coding project '"
+                    + firstNonBlank(owner.get().getCodeProjectId(), owner.get().getId())
+                    + "'; use that id, or remove that registration first");
+        }
     }
 
     private Optional<KompileCodingProject> findCodingProject(KompileProjectManifest manifest, String codingProjectId) {

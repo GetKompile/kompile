@@ -147,6 +147,7 @@ class AnseriniRagEndToEndIT {
     void testIndexAndRetrieveMostRelevant() {
         List<Document> docs = createCorpus();
         int added = vectorStore.add(docs);
+        vectorStore.awaitPendingEmbeddings();
         assertEquals(8, added, "All 8 documents should be indexed");
         assertEquals(8, vectorStore.getApproxVectorCount());
 
@@ -162,6 +163,7 @@ class AnseriniRagEndToEndIT {
     void testSemanticProximity() {
         List<Document> docs = createCorpus();
         vectorStore.add(docs);
+        vectorStore.awaitPendingEmbeddings();
 
         // Query about mitochondria energy — Krebs cycle (also in mitochondria) should
         // rank higher than unrelated topics like black holes or plate tectonics
@@ -188,6 +190,7 @@ class AnseriniRagEndToEndIT {
     void testThresholdFiltering() {
         List<Document> docs = createCorpus();
         vectorStore.add(docs);
+        vectorStore.awaitPendingEmbeddings();
 
         // Use a very high threshold — only very close matches should pass
         List<ScoredDocument> scored = vectorStore.similaritySearchWithScores(
@@ -224,6 +227,7 @@ class AnseriniRagEndToEndIT {
     void testDeleteAndVerifyAbsence() {
         List<Document> docs = createCorpus();
         vectorStore.add(docs);
+        vectorStore.awaitPendingEmbeddings();
         assertEquals(8, vectorStore.getApproxVectorCount());
 
         // Find the photosynthesis doc ID
@@ -245,6 +249,7 @@ class AnseriniRagEndToEndIT {
         // 1. Index the knowledge corpus
         List<Document> docs = createCorpus();
         vectorStore.add(docs);
+        vectorStore.awaitPendingEmbeddings();
 
         // 2. Set up keyword retriever with overlapping knowledge
         StubDocumentRetriever keywordRetriever = new StubDocumentRetriever();
@@ -333,6 +338,7 @@ class AnseriniRagEndToEndIT {
 
         Document doc = new Document(UUID.randomUUID().toString(), FACT_PHOTOSYNTHESIS, metadata);
         vectorStore.add(List.of(doc));
+        vectorStore.awaitPendingEmbeddings();
 
         List<Document> results = vectorStore.similaritySearch(FACT_PHOTOSYNTHESIS, 1);
         assertFalse(results.isEmpty());
@@ -365,6 +371,7 @@ class AnseriniRagEndToEndIT {
     @DisplayName("Multiple exact-match queries each return their own document as top hit")
     void testMultipleQueriesDistinctResults() {
         vectorStore.add(createCorpus());
+        vectorStore.awaitPendingEmbeddings();
 
         // Use exact document text as queries — each should return itself as top hit
         List<Document> photoResults = vectorStore.similaritySearch(FACT_PHOTOSYNTHESIS, 1);
@@ -397,6 +404,7 @@ class AnseriniRagEndToEndIT {
     @DisplayName("Scored search returns scores in descending order")
     void testScoredSearchOrdering() {
         vectorStore.add(createCorpus());
+        vectorStore.awaitPendingEmbeddings();
 
         INDArray queryEmb = embeddingModel.embed("mitochondria ATP energy production");
         List<ScoredDocument> scored = vectorStore.similaritySearchWithScores(queryEmb, 8, 0.0);
@@ -439,6 +447,7 @@ class AnseriniRagEndToEndIT {
 
             // 3. Index same corpus into vector store
             vectorStore.add(createCorpus());
+            vectorStore.awaitPendingEmbeddings();
 
             // 4. Build RagServiceImpl with BOTH real retrievers
             RagServiceImpl ragService = new RagServiceImpl(
@@ -491,6 +500,7 @@ class AnseriniRagEndToEndIT {
             keywordRetriever.init();
 
             vectorStore.add(createCorpus());
+            vectorStore.awaitPendingEmbeddings();
 
             RagServiceImpl ragService = new RagServiceImpl(
                     List.of(keywordRetriever),
@@ -536,6 +546,7 @@ class AnseriniRagEndToEndIT {
             keywordRetriever.init();
 
             vectorStore.add(createCorpus());
+            vectorStore.awaitPendingEmbeddings();
 
             RagServiceImpl ragService = new RagServiceImpl(
                     List.of(keywordRetriever),
@@ -581,6 +592,7 @@ class AnseriniRagEndToEndIT {
             keywordRetriever.init();
 
             vectorStore.add(createCorpus());
+            vectorStore.awaitPendingEmbeddings();
 
             RagServiceImpl ragService = new RagServiceImpl(
                     List.of(keywordRetriever),
@@ -825,6 +837,7 @@ class AnseriniRagEndToEndIT {
             // Index all synthetic docs with real embeddings
             List<Document> docs = createCorpus();
             int added = realVectorStore.add(docs);
+            realVectorStore.awaitPendingEmbeddings();
             assertEquals(8, added);
 
             // Query about photosynthesis — real BGE encoder should rank it highest
@@ -858,6 +871,7 @@ class AnseriniRagEndToEndIT {
         @DisplayName("Real encoder: biology vs physics queries retrieve correct domains")
         void testDomainRelevanceWithRealEncoder() {
             realVectorStore.add(createCorpus());
+            realVectorStore.awaitPendingEmbeddings();
 
             // Biology query
             List<ScoredDocument> bioResults = realVectorStore.similaritySearchWithScores(
@@ -916,6 +930,7 @@ class AnseriniRagEndToEndIT {
                 kwRetriever.init();
 
                 realVectorStore.add(createCorpus());
+                realVectorStore.awaitPendingEmbeddings();
 
                 ContextCapturingLanguageModel llm = new ContextCapturingLanguageModel();
                 RagServiceImpl ragService = new RagServiceImpl(

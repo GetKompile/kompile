@@ -226,13 +226,12 @@ public class CodeSearchEngine {
         ReplaceResult.IndexResult indexResult = null;
         if (!dryRun && !modifiedFiles.isEmpty()) {
             if (out != null) out.println("Re-indexing " + modifiedFiles.size() + " modified file(s)...");
-            Map<String, Object> stats = indexer.getStats(projectId);
-            String includes = text(stats.get("includePatterns"));
-            String excludes = text(stats.get("excludePatterns"));
-            LocalCodeIndexer.IndexResult ir = indexer.index(rootDir, projectId,
-                    includes, excludes, out != null ? out : nullOut());
+            // The re-index and the projection keep the scope the index records:
+            // a replacement never changes it.
+            LocalCodeIndexer.IndexResult ir = indexer.refreshRecordedScope(rootDir, projectId,
+                    out != null ? out : nullOut());
             try {
-                LocalCodeKGraphPublisher.publish(rootDir, projectId, includes, excludes);
+                LocalCodeKGraphPublisher.publish(rootDir, projectId, null, null);
             } catch (Exception e) {
                 throw new IOException("KGraph publication failed after replacement: " + e.getMessage(), e);
             }
@@ -241,10 +240,6 @@ public class CodeSearchEngine {
 
         return new ReplaceResult(query, replacement, replacements.size(),
                 modifiedFiles.size(), replacements, !dryRun, indexResult);
-    }
-
-    private static String text(Object value) {
-        return value == null || value.toString().isBlank() ? null : value.toString();
     }
 
     // -----------------------------------------------------------------------

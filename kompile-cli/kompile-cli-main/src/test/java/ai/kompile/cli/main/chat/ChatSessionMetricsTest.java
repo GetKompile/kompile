@@ -487,6 +487,19 @@ class ChatSessionMetricsTest {
         }
 
         @Test
+        void cachedInputIsIncludedInArrowSoDisplayedComponentsSumToTotal() {
+            metrics.recordTokenUsage(100, 50, 800, 100);
+            assertEquals("↑1,000 ↓50 Σ1,050", metrics.compactTokenSummary());
+            assertEquals(100, metrics.getInputTokens()); // billing category stays disjoint
+        }
+
+        @Test
+        void cacheOnlyUsageDoesNotDisplayZeroInput() {
+            metrics.recordTokenUsage(0, 0, 800, 100);
+            assertEquals("↑900 ↓0 Σ900", metrics.compactTokenSummary());
+        }
+
+        @Test
         void compactionCount_included() {
             metrics.recordCompaction(5000, 2500);
 

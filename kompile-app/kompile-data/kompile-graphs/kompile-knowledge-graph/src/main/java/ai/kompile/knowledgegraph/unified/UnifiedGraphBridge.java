@@ -16,6 +16,8 @@
 package ai.kompile.knowledgegraph.unified;
 
 import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
+import ai.kompile.graph.reasoning.confidence.Opinion;
+import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
@@ -41,16 +43,19 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.ZoneOffset;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
@@ -86,30 +91,32 @@ public class UnifiedGraphBridge {
             "schema/bound-ontology.json",
             "process/",
             "trace:process:");
+    /** Candidate ids one query name or phrase may contribute to a bounded neighborhood. */
+    private static final int MAX_SEED_CANDIDATES = 5;
 
     private final KnowledgeGraphService knowledgeGraphService;
     private final ConcurrentHashMap<Long, ReentrantLock> importLocks = new ConcurrentHashMap<>();
 
     @Autowired(required = false)
-    private UnifiedGraphAnalysisAssetStore analysisAssets;
+    UnifiedGraphAnalysisAssetStore analysisAssets;
 
     @Autowired(required = false)
-    private GraphToFactStoreProjector factStoreProjector;
+    GraphToFactStoreProjector factStoreProjector;
 
     @Autowired(required = false)
-    private ApplicationEventPublisher eventPublisher;
+    ApplicationEventPublisher eventPublisher;
 
     @Autowired(required = false)
-    private List<UnifiedGraphArtifactContributor> artifactContributors = List.of();
+    List<UnifiedGraphArtifactContributor> artifactContributors = List.of();
 
     @Autowired(required = false)
-    private List<UnifiedGraphArtifactImporter> artifactImporters = List.of();
+    List<UnifiedGraphArtifactImporter> artifactImporters = List.of();
 
     @Autowired(required = false)
-    private List<UnifiedGraphImportTargetValidator> importTargetValidators = List.of();
+    List<UnifiedGraphImportTargetValidator> importTargetValidators = List.of();
 
     @Autowired(required = false)
-    private UnifiedGraphImportJournal importJournal;
+    UnifiedGraphImportJournal importJournal;
 
     @Autowired
     public UnifiedGraphBridge(KnowledgeGraphService knowledgeGraphService) {
@@ -211,8 +218,9 @@ public class UnifiedGraphBridge {
     /**
      * Materialize only a bounded neighborhood for exact-id query operations. This path delegates
      * adjacency reads to the live store and never enumerates the complete fact-sheet graph.
-     * Analysis/model assets are intentionally excluded; global/vector/model operations continue to
-     * use the full export path.
+     * Stored entity/relation opinions for the materialized ids, and the reasoning-stale flag, are
+     * merged by keyed lookup; vector layers, weight maps and model artifacts are excluded, so
+     * global/vector/model operations continue to use the full export path.
      */
     public UnifiedGraph exportNeighborhood(
             Long factSheetId, Collection<String> seedIds, int maxDepth, int maxNodes) {
@@ -265,94 +273,176 @@ public class UnifiedGraphBridge {
                 .meta("direction", traversalDirection.name());
         if (knowledgeGraphService == null || seedIds == null || seedIds.isEmpty()) return graph;
 
-        ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
-        Set<String> visited = new java.util.LinkedHashSet<>();
-        Map<String, GraphEdge> edges = new LinkedHashMap<>();
-        boolean truncated = false;
-        for (String seed : seedIds) {
-            if (seed != null && !seed.isBlank() && visited.size() < nodeLimit && visited.add(seed)) {
-                nodeInScope(seed, factSheetId).ifPresent(node -> addBoundedNode(graph, node));
-            } else if (seed != null && !seed.isBlank() && !visited.contains(seed)) {
-                truncated = true;
-            }
-        }
-        Collection<String> roots = expansionSeedIds == null ? List.of() : expansionSeedIds;
-        for (String root : roots) {
-            if (root == null || root.isBlank()) continue;
-            if (!visited.contains(root)) {
-                if (visited.size() >= nodeLimit) {
-                    truncated = true;
-                    continue;
-                }
-                visited.add(root);
-                nodeInScope(root, factSheetId).ifPresent(node -> addBoundedNode(graph, node));
-            }
-            if (graph.entity(root).isPresent()) queue.addLast(new NodeDepth(root, 0));
-        }
-
-        while (!queue.isEmpty()) {
-            NodeDepth current = queue.removeFirst();
-            Optional<GraphNode> node = nodeInScope(current.nodeId(), factSheetId);
-            if (node.isEmpty()) continue;
-            addBoundedNode(graph, node.get());
-            if (current.depth() >= depth) continue;
-
-            int remainingEdges = edgeLimit - edges.size();
-            if (remainingEdges <= 0) {
-                truncated = true;
-                break;
-            }
-            IncidentBatch incident = incidentEdges(
-                    current.nodeId(), factSheetId, traversalDirection, remainingEdges);
-            truncated |= incident.truncated();
-            for (GraphEdge edge : incident.edges()) {
-                if (edge == null) continue;
-                String source = sourceId(edge);
-                String target = targetId(edge);
-                if (source == null || target == null) continue;
-                String neighbor = current.nodeId().equals(source) ? target
-                        : current.nodeId().equals(target) ? source : null;
-                if (neighbor == null) continue;
-                if (!visited.contains(neighbor) && visited.size() < nodeLimit && visited.add(neighbor)) {
-                    queue.addLast(new NodeDepth(neighbor, current.depth() + 1));
-                } else if (!visited.contains(neighbor)) {
-                    truncated = true;
-                    continue;
-                }
-                String key = edge.getEdgeId() != null ? edge.getEdgeId()
-                        : source + "\n" + target + "\n" + String.valueOf(edge.getRelationType());
-                edges.putIfAbsent(key, edge);
-            }
-        }
-
-        for (GraphEdge edge : edges.values()) addBoundedEdge(graph, edge);
-        graph.meta("truncated", truncated);
+        BoundedKnowledgeGraphReader.Neighborhood neighborhood = boundedReader().getNeighborhood(
+                factSheetId, seedIds, expansionSeedIds, depth, nodeLimit,
+                boundedDirection(traversalDirection), edgeLimit);
+        for (GraphNode node : neighborhood.nodes()) addBoundedNode(graph, node);
+        for (GraphEdge edge : neighborhood.edges()) addBoundedEdge(graph, edge);
+        mergeStoredOpinions(factSheetId, graph);
+        graph.meta("truncated", neighborhood.truncated());
         graph.meta("materializedNodes", graph.entityCount());
         graph.meta("materializedEdges", graph.relationCount());
         return graph;
     }
 
-    private Optional<GraphNode> nodeInScope(String nodeId, Long factSheetId) {
-        if (knowledgeGraphService instanceof BoundedKnowledgeGraphReader bounded) {
-            return bounded.getNodeInScope(nodeId, factSheetId);
+    /**
+     * Read only the named portable artifacts of one fact sheet, without enumerating its nodes or
+     * edges. Stored analysis-asset artifacts are read first. A contributor runs only when it is an
+     * {@link UnifiedGraphArtifactImporter} whose managed prefixes overlap a requested prefix, and
+     * what it contributes overrides the stored copy, the same precedence as {@link #export(Long)}.
+     * Contributors that declare no prefixes are skipped: nothing short of a full export shows
+     * whether they own a requested artifact.
+     *
+     * @param factSheetId fact sheet to read, or {@code null} for the unscoped graph
+     * @param prefixes artifact names or name prefixes to return
+     * @return the matching artifacts keyed by name, in name order
+     */
+    public Map<String, byte[]> exportArtifacts(Long factSheetId, Collection<String> prefixes) {
+        List<String> requested = prefixes == null ? List.of() : prefixes.stream()
+                .filter(prefix -> prefix != null && !prefix.isBlank())
+                .distinct()
+                .toList();
+        if (requested.isEmpty()) return Map.of();
+        Map<String, byte[]> result = new TreeMap<>();
+        if (factSheetId != null && analysisAssets != null) {
+            analysisAssets.get(factSheetId).ifPresent(stored -> stored.artifacts().forEach((name, data) -> {
+                if (startsWithAny(name, requested)) result.put(name, data);
+            }));
         }
-        return knowledgeGraphService.getNode(nodeId)
-                .filter(node -> factSheetId == null || factSheetId.equals(node.getFactSheetId()));
+        for (UnifiedGraphArtifactContributor contributor
+                : artifactContributors == null ? List.<UnifiedGraphArtifactContributor>of() : artifactContributors) {
+            if (!(contributor instanceof UnifiedGraphArtifactImporter importer)
+                    || !managesAnyOf(importer, requested)) continue;
+            UnifiedGraph scratch = new UnifiedGraph()
+                    .graphId(factSheetId == null ? "global" : "factsheet_" + factSheetId)
+                    .factSheetId(factSheetId);
+            try {
+                contributor.contribute(factSheetId, scratch);
+            } catch (RuntimeException e) {
+                throw new IllegalStateException("Unified graph artifact contribution failed for "
+                        + contributor.getClass().getName(), e);
+            }
+            scratch.artifacts().forEach((name, data) -> {
+                if (startsWithAny(name, requested)) result.put(name, data);
+            });
+        }
+        return Collections.unmodifiableMap(result);
     }
 
-    private IncidentBatch incidentEdges(
-            String nodeId,
-            Long factSheetId,
-            GraphQueryEngine.Direction direction,
-            int limit) {
-        if (knowledgeGraphService instanceof BoundedKnowledgeGraphReader bounded) {
-            BoundedKnowledgeGraphReader.IncidentEdges result = bounded.getIncidentEdges(
-                    nodeId, factSheetId, boundedDirection(direction), limit);
-            return new IncidentBatch(result.edges(), result.truncated());
+    private static boolean managesAnyOf(UnifiedGraphArtifactImporter importer, List<String> requested) {
+        Set<String> managed = importer.managedArtifactPrefixes();
+        if (managed == null) return false;
+        for (String prefix : managed) {
+            if (prefix == null || prefix.isBlank()) continue;
+            for (String wanted : requested) {
+                if (wanted.startsWith(prefix) || prefix.startsWith(wanted)) return true;
+            }
         }
-        // Whole-collection compatibility methods offer no memory bound. Returning an explicitly
-        // truncated empty batch is safer than materializing the complete graph behind a bounded API.
-        return new IncidentBatch(List.of(), true);
+        return false;
+    }
+
+    private static boolean startsWithAny(String name, List<String> prefixes) {
+        for (String prefix : prefixes) {
+            if (name.startsWith(prefix)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Resolve one query input to the stable node ids that seed {@link #exportNeighborhood}. An id
+     * that exists in scope is kept as is, without a search. Any other name or phrase costs one
+     * search, in the fact sheet or globally when {@code factSheetId} is null (the same scope as the
+     * exact-id lookup), and contributes at most {@code MAX_SEED_CANDIDATES} candidate ids; the query
+     * engine ranks and traces the final resolution over the materialized neighborhood. Blank input
+     * resolves to nothing.
+     */
+    public List<String> resolveSeedIds(Long factSheetId, String input) {
+        if (knowledgeGraphService == null || input == null || input.isBlank()) return List.of();
+        String text = input.trim();
+        if (nodeInScope(text, factSheetId).isPresent()) return List.of(text);
+        List<GraphNode> hits = factSheetId == null
+                ? knowledgeGraphService.searchNodes(text, null, MAX_SEED_CANDIDATES)
+                : knowledgeGraphService.searchNodesInFactSheet(factSheetId, text, MAX_SEED_CANDIDATES);
+        Set<String> ids = new LinkedHashSet<>();
+        for (GraphNode hit : hits) {
+            if (ids.size() == MAX_SEED_CANDIDATES) break;
+            if (hit != null && hit.getNodeId() != null && !hit.getNodeId().isBlank()) ids.add(hit.getNodeId());
+        }
+        return List.copyOf(ids);
+    }
+
+    /**
+     * Copy the stored opinions for the ids this bounded graph materialized, plus the reasoning-stale
+     * flag that tells the query engine whether to trust them. The stored graph is only read.
+     */
+    private void mergeStoredOpinions(Long factSheetId, UnifiedGraph graph) {
+        if (factSheetId == null || analysisAssets == null) return;
+        Optional<UnifiedGraph> stored = analysisAssets.get(factSheetId);
+        if (stored.isEmpty()) return;
+        UnifiedGraph assets = stored.get();
+        for (GraphEntity entity : graph.entities()) {
+            Opinion opinion = assets.entityOpinion(entity.id());
+            if (opinion != null) graph.putEntityOpinion(entity.id(), opinion);
+        }
+        for (GraphRelation relation : graph.relations()) {
+            Opinion opinion = assets.relationOpinion(relation.id());
+            if (opinion != null) graph.putRelationOpinion(relation.id(), opinion);
+        }
+        Object stale = assets.meta().get(UnifiedGraphReasoningLifecycle.REASONING_STALE_META);
+        if (stale != null) graph.meta(UnifiedGraphReasoningLifecycle.REASONING_STALE_META, stale);
+    }
+
+    /**
+     * Publish the last derivation's MAP posteriors for this fact sheet's edges into the analysis
+     * asset store as relation opinions, keyed by the relation ids every export gives those edges.
+     * Same rule as the reasoning lifecycle: an opinion is overwritten only where derivation produced
+     * a posterior, and every other stored asset (entities, relations, embeddings, opinions, weight
+     * maps, artifacts, metadata) carries over. The stored graph is replaced by a copy rather than
+     * mutated, because readers hold it without locks, and the swap runs under the fact sheet's import
+     * lock so it cannot interleave with an import.
+     *
+     * @return the number of relation opinions published; 0 leaves the store untouched
+     */
+    public int publishLearnedRelationOpinions(long factSheetId) {
+        if (knowledgeGraphService == null || analysisAssets == null || factStoreProjector == null) return 0;
+        List<ReentrantLock> locks = acquireImportLocks(Set.of(factSheetId));
+        try {
+            Map<String, Opinion> learned = new LinkedHashMap<>();
+            for (GraphEdge edge : knowledgeGraphService.getEdgesInFactSheet(factSheetId)) {
+                if (edge == null) continue;
+                String source = sourceId(edge);
+                String target = targetId(edge);
+                if (source == null || target == null) continue;
+                OptionalDouble posterior = factStoreProjector.learnedPosterior(factSheetId, edge);
+                if (posterior.isEmpty() || !Double.isFinite(posterior.getAsDouble())) continue;
+                learned.put(relationId(edge, source, target),
+                        Opinion.fromSoftTruth(Math.max(0.0, Math.min(1.0, posterior.getAsDouble()))));
+            }
+            if (learned.isEmpty()) return 0;
+            UnifiedGraph published = analysisAssets.snapshot(factSheetId)
+                    .map(previous -> {
+                        UnifiedGraph copy = UnifiedGraph.of(previous);
+                        mergeAnalysisAssets(previous, copy);
+                        return copy;
+                    })
+                    .orElseGet(UnifiedGraph::new);
+            published.graphId("factsheet_" + factSheetId).factSheetId(factSheetId);
+            learned.forEach(published::putRelationOpinion);
+            published.meta(UnifiedGraphReasoningLifecycle.REASONING_STALE_META, false);
+            analysisAssets.put(factSheetId, published);
+            return learned.size();
+        } finally {
+            releaseImportLocks(locks);
+        }
+    }
+
+    private Optional<GraphNode> nodeInScope(String nodeId, Long factSheetId) {
+        return boundedReader().getNodeInScope(nodeId, factSheetId);
+    }
+
+    /** The store's bounded reads, or point reads over its compatibility API when it has none. */
+    private BoundedKnowledgeGraphReader boundedReader() {
+        return BoundedKnowledgeGraphReader.of(knowledgeGraphService);
     }
 
     private static BoundedKnowledgeGraphReader.Direction boundedDirection(
@@ -382,6 +472,10 @@ public class UnifiedGraphBridge {
         if (type == null || type.isBlank()) {
             type = node.getNodeType() != null ? node.getNodeType().name() : "ENTITY";
         }
+        // Same type memberships as the full export, so a bounded read loses no structural type.
+        if (node.getNodeType() != null && !node.getNodeType().name().equalsIgnoreCase(type)) {
+            attributes.put("additionalTypes", List.of(node.getNodeType().name()));
+        }
         var builder = GraphEntity.builder(node.getNodeId())
                 .type(type)
                 .label(node.getTitle() != null ? node.getTitle() : node.getNodeId())
@@ -401,14 +495,10 @@ public class UnifiedGraphBridge {
         if (target == null && edge.getTargetNode() != null) target = edge.getTargetNode().getNodeId();
         if (source == null || target == null
                 || graph.entity(source).isEmpty() || graph.entity(target).isEmpty()) return;
-        String type = edge.getRelationType() != null && !edge.getRelationType().isBlank()
-                ? edge.getRelationType()
-                : edge.getEdgeType() != null ? edge.getEdgeType().name() : "";
+        String type = relationType(edge);
         double weight = edge.getWeight() != null ? edge.getWeight()
                 : edge.getConfidence() != null ? edge.getConfidence() : 1.0;
-        var builder = GraphRelation.builder(
-                        edge.getEdgeId() != null ? edge.getEdgeId() : stableEdgeId(source, target, type),
-                        source, target)
+        var builder = GraphRelation.builder(relationId(edge, source, target), source, target)
                 .type(type)
                 .weight(weight)
                 .confidence(edge.getConfidence() != null ? edge.getConfidence() : weight)
@@ -420,10 +510,6 @@ public class UnifiedGraphBridge {
         }
         graph.addRelation(builder.build());
     }
-
-    private record NodeDepth(String nodeId, int depth) { }
-
-    private record IncidentBatch(List<GraphEdge> edges, boolean truncated) { }
 
     private UnifiedGraph projectGraph(Long factSheetId,
                                       String namedGraphId,
@@ -503,18 +589,13 @@ public class UnifiedGraphBridge {
             if (graph.entity(target).isEmpty()) {
                 graph.addEntity(GraphEntity.builder(target).type("MISSING_ENDPOINT").label(target).build());
             }
-            String type = edge.getRelationType() != null && !edge.getRelationType().isBlank()
-                    ? edge.getRelationType()
-                    : (edge.getEdgeType() != null ? edge.getEdgeType().name() : "");
+            String type = relationType(edge);
             double weight = edge.getWeight() != null ? edge.getWeight()
                     : (edge.getConfidence() != null ? edge.getConfidence() : 1.0);
             Map<String, Object> attributes = new LinkedHashMap<>();
             attributes.put("kompile.store", edgeStoreState(edge));
 
-            var relationBuilder = GraphRelation.builder(
-                            edge.getEdgeId() != null ? edge.getEdgeId()
-                                    : stableEdgeId(source, target, type),
-                            source, target)
+            var relationBuilder = GraphRelation.builder(relationId(edge, source, target), source, target)
                     .type(type)
                     .weight(weight)
                     .confidence(edge.getConfidence() != null ? edge.getConfidence() : weight)
@@ -1128,6 +1209,18 @@ public class UnifiedGraphBridge {
 
     private static String temporal(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    /** Semantic relation type when present, else the structural edge type, else empty. */
+    private static String relationType(GraphEdge edge) {
+        return edge.getRelationType() != null && !edge.getRelationType().isBlank()
+                ? edge.getRelationType()
+                : edge.getEdgeType() != null ? edge.getEdgeType().name() : "";
+    }
+
+    /** The relation id every export gives an edge; published opinions are keyed by it too. */
+    private static String relationId(GraphEdge edge, String source, String target) {
+        return edge.getEdgeId() != null ? edge.getEdgeId() : stableEdgeId(source, target, relationType(edge));
     }
 
     private static String stableEdgeId(String source, String target, String type) {

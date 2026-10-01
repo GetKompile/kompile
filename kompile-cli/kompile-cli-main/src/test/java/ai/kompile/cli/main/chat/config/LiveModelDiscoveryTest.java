@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 class LiveModelDiscoveryTest {
 
     @Test
-    void parsesOpenAiGeminiOllamaAndNestedVariantShapesWithoutAnApplicationCatalog() {
+    void parsesOpenAiGeminiNameKeyedAndNestedVariantShapesWithoutAnApplicationCatalog() {
         List<LiveModelDiscovery.Model> models = LiveModelDiscovery.parseHttpModels("""
                 {"data":[
                   {"id":"openai-model",
@@ -25,11 +25,11 @@ class LiveModelDiscoveryTest {
                      {"value":"wire-low","label":"Low","default":true},
                      {"value":"wire-high","label":"High"}]}},
                   {"name":"models/gemini-visible","baseModelId":"gemini-base"},
-                  {"name":"ollama-model","capabilities":{"variants":{"fast":{}}}}
+                  {"name":"name-model","capabilities":{"variants":{"fast":{}}}}
                 ]}
                 """);
 
-        assertEquals(List.of("openai-model", "gemini-base", "ollama-model"),
+        assertEquals(List.of("openai-model", "gemini-base", "name-model"),
                 models.stream().map(LiveModelDiscovery.Model::id).toList());
         assertEquals(List.of("wire-low", "wire-high"), models.get(0).variants());
         assertEquals("wire-low", models.get(0).defaultVariant());

@@ -5,17 +5,28 @@
  */
 package ai.kompile.tool.graph;
 
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.quantitative.ScenarioResult;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.unified.GraphReasoningQueryService;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.util.json.schema.JsonSchemaGenerator;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -155,7 +166,11 @@ class GraphReasoningQueryToolTest {
         graph.addRelation("r2", "email", "file", "HAS_ATTACHMENT", 0.9);
 
         UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
-        when(bridge.export(42L)).thenReturn(graph);
+        when(bridge.resolveSeedIds(42L, "Jordan Lee")).thenReturn(List.of("person"));
+        when(bridge.resolveSeedIds(42L, "regional-close.xlsx")).thenReturn(List.of("file"));
+        when(bridge.exportNeighborhood(eq(42L), eq(List.of("person", "file")), eq(List.of("person")),
+                anyInt(), anyInt(), eq(GraphQueryEngine.Direction.OUTGOING), anyInt()))
+                .thenReturn(graph);
         GraphReasoningQueryTool tool = toolWithBridge(bridge);
 
         GraphQueryEngine.Result result = tool.query(new GraphReasoningQueryTool.QueryInput(
@@ -174,6 +189,7 @@ class GraphReasoningQueryToolTest {
         assertTrue(json.contains("\"trace\":{"));
         assertTrue(json.contains("\"conclusion\""));
         assertTrue(json.contains("\"premises\""));
+        verify(bridge, never()).export(42L);
     }
 
     @Test
@@ -184,7 +200,11 @@ class GraphReasoningQueryToolTest {
         graph.addRelation("r1", "person", "email", "SENT", 0.95);
 
         UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
-        when(bridge.export(42L)).thenReturn(graph);
+        when(bridge.resolveSeedIds(42L, "Jordan Lee")).thenReturn(List.of("person"));
+        when(bridge.resolveSeedIds(42L, "Close package email")).thenReturn(List.of("email"));
+        when(bridge.exportNeighborhood(eq(42L), eq(List.of("person", "email")), eq(List.of("person")),
+                anyInt(), anyInt(), eq(GraphQueryEngine.Direction.OUTGOING), anyInt()))
+                .thenReturn(graph);
         GraphReasoningQueryTool tool = toolWithBridge(bridge);
 
         GraphQueryEngine.Result result = tool.query(new GraphReasoningQueryTool.QueryInput(
@@ -195,6 +215,7 @@ class GraphReasoningQueryToolTest {
         assertEquals("r1", result.relations().get(0).id());
         assertEquals(2, result.resolutions().size());
         assertNotNull(result.trace());
+        verify(bridge, never()).export(42L);
     }
 
     @Test
@@ -222,5 +243,81 @@ class GraphReasoningQueryToolTest {
         assertEquals(GraphQueryEngine.Status.INVALID, result.status());
         assertFalse(result.guidance().isEmpty());
         assertNotNull(result.trace());
+    }
+
+    @Test
+    void quantitativeObjectRunsThroughTheTool() {
+        UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
+        when(bridge.export(42L)).thenReturn(formulaGraph());
+        GraphReasoningQueryTool tool = toolWithBridge(bridge);
+
+        GraphQueryEngine.Result calculated = tool.query(quantitative(
+                "CALCULATE", Map.of("target", Map.of("text", "Total"))));
+        assertEquals(GraphQueryEngine.Status.OK, calculated.status(), calculated.summary());
+        assertEquals("Calculated a3 = 30.0.", calculated.summary());
+
+        GraphQueryEngine.Result scenario = tool.query(quantitative("SCENARIO", Map.of(
+                "target", Map.of("entityId", "a3"),
+                "interventions", List.of(Map.of(
+                        "target", Map.of("entityId", "a1"), "operation", "SCALE", "value", -0.5)))));
+        assertEquals(GraphQueryEngine.Status.OK, scenario.status(), scenario.summary());
+        ScenarioResult values = assertInstanceOf(ScenarioResult.class, scenario.data().get("scenario"));
+        assertEquals(30.0, values.baselineValue(), 1.0e-9);
+        assertEquals(25.0, values.scenarioValue(), 1.0e-9);
+
+        GraphQueryEngine.Result missingTarget = tool.query(quantitative("SOLVE_TARGET", null));
+        assertEquals(GraphQueryEngine.Status.INVALID, missingTarget.status());
+        assertTrue(missingTarget.summary().contains("Example: quantitative="), missingTarget.summary());
+    }
+
+    @Test
+    void toolDescriptionNamesEveryOperationTheServiceRuns() throws Exception {
+        String description = queryMethod().getAnnotation(Tool.class).description();
+        Set<String> words = Arrays.stream(description.split("[^A-Z_]+")).collect(Collectors.toSet());
+        for (String operation : GraphReasoningQueryService.queryRequestOperations()) {
+            assertTrue(words.contains(operation), operation + " is missing from: " + description);
+        }
+    }
+
+    @Test
+    void generatedSchemaExposesQuantitativeAsAnObject() throws Exception {
+        JsonNode schema = new ObjectMapper().readTree(JsonSchemaGenerator.generateForMethodInput(queryMethod()));
+        JsonNode quantitative = schema.findValue("quantitative");
+        assertNotNull(quantitative, schema.toString());
+        assertEquals("object", quantitative.path("type").asText(), quantitative.toString());
+        assertTrue(quantitative.path("description").asText().contains("SOLVE_TARGET"), quantitative.toString());
+    }
+
+    private static Method queryMethod() throws NoSuchMethodException {
+        return GraphReasoningQueryTool.class.getMethod("query", GraphReasoningQueryTool.QueryInput.class);
+    }
+
+    private static GraphReasoningQueryTool.QueryInput quantitative(String operation, Map<String, Object> spec) {
+        return new GraphReasoningQueryTool.QueryInput(
+                42L, operation, null, null, null, null, null, null, null, null, null, null, spec);
+    }
+
+    private static UnifiedGraph formulaGraph() {
+        return new UnifiedGraph()
+                .addEntity(cell("a1", "Sheet1!A1", "Input A", 10.0))
+                .addEntity(cell("a2", "Sheet1!A2", "Input B", 20.0))
+                .addEntity(GraphEntity.builder("a3")
+                        .type("FORMULA_CELL")
+                        .label("Total")
+                        .attribute("cell_reference", "Sheet1!A3")
+                        .attribute("formula", "SUM(Sheet1!A1:Sheet1!A2)")
+                        .attribute("displayValue", "30")
+                        .attribute("validated", true)
+                        .build())
+                .addRelation(GraphRelation.builder("d1", "a3", "a1").type("DEPENDS_ON").build())
+                .addRelation(GraphRelation.builder("d2", "a3", "a2").type("DEPENDS_ON").build());
+    }
+
+    private static GraphEntity cell(String id, String reference, String label, double value) {
+        return GraphEntity.builder(id)
+                .type("CELL").label(label)
+                .attribute("cell_reference", reference)
+                .attribute("value", value)
+                .build();
     }
 }

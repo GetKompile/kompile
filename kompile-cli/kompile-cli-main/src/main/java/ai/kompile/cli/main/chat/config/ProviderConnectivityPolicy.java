@@ -71,7 +71,6 @@ public record ProviderConnectivityPolicy(
             // a token. Keep its TCP failure detection tight without treating compute as a
             // dead connection.
             case "kompile-local" -> local(3, 30, 10, 3);
-            case "ollama" -> local(2, 30, 5, 3);
             case "opencode" -> nativeProcess(2, 10, 3);
             // The claude -p transport is also a per-turn native process; the same
             // local-process budget applies (CLI boot counts toward connect).

@@ -21,6 +21,7 @@ import ai.kompile.graph.reasoning.table.Table;
 import ai.kompile.graph.reasoning.table.TableColumn;
 import ai.kompile.graph.reasoning.table.TableKind;
 import ai.kompile.graph.reasoning.table.TableRow;
+import ai.kompile.loader.excel.ExcelCellDates;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.DateUtil;
@@ -171,7 +172,7 @@ public final class XlsDecisionTableImporter {
                 return cell.getStringCellValue();
             case NUMERIC:
                 if (DateUtil.isCellDateFormatted(cell)) {
-                    return cell.getDateCellValue().toString();
+                    return ExcelCellDates.format(cell);
                 }
                 double v = cell.getNumericCellValue();
                 // Trim ".0" for integers so round-trip comparisons stay clean

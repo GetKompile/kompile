@@ -13,8 +13,6 @@ import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
 import ai.kompile.cli.main.chat.config.ChatConfig;
-import ai.kompile.cli.main.chat.config.ClaudeCodeSignIn;
-import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -54,6 +52,11 @@ public class AuthCommand implements Callable<Integer> {
     @Command(name = "login", mixinStandardHelpOptions = true,
             description = "Store an API key or complete a provider OAuth login.")
     static class LoginCommand implements Callable<Integer> {
+        static final String CLAUDE_CODE_OWNS_ANTHROPIC_OAUTH = "Anthropic OAuth / subscription sign-in belongs "
+                + "to Claude Code, so Kompile stores no credential for it: chats on that route pass straight "
+                + "through to Claude Code. Sign in with `claude auth login`; to add an Anthropic API key, run "
+                + "`kompile auth login anthropic`.";
+
         @Parameters(index = "0", arity = "0..1", paramLabel = "PROVIDER",
                 description = "Provider id, for example openai or anthropic.")
         String providerId;
@@ -152,9 +155,9 @@ public class AuthCommand implements Callable<Integer> {
                 }
             }
 
-            // Anthropic's subscription login belongs to Claude Code, never to a
-            // Kompile-managed token; the chat's Claude Code route runs on it.
-            boolean claudeCode = useOAuth && "anthropic".equalsIgnoreCase(providerId);
+            // Anthropic's subscription login belongs to Claude Code: Kompile has no
+            // OAuth flow for it and never signs in on its behalf.
+            boolean claudeCode = useOAuth && ChatConfig.isClaudeCliNativeProvider(providerId);
             if (useOAuth && !claudeCode) {
                 providerId = oauthCredentialProviderId(registry, providerId);
                 ensureClientRegistration(registry, providerId);
@@ -165,7 +168,8 @@ public class AuthCommand implements Callable<Integer> {
                     return NativeCliAuth.login(providerId);
                 }
                 if (claudeCode) {
-                    return loginClaudeCode(interaction);
+                    System.err.println(CLAUDE_CODE_OWNS_ANTHROPIC_OAUTH);
+                    return 2;
                 }
                 return useOAuth
                         ? loginOAuth(manager, store, interaction, activate)
@@ -299,33 +303,6 @@ public class AuthCommand implements Callable<Integer> {
             private static boolean envSet(String name) {
                 String value = System.getenv(name);
                 return value != null && !value.isBlank();
-            }
-        }
-
-        /**
-         * Run Claude Code's own sign-in (a link that opens on any device, then the
-         * code the page shows) and report the login `claude auth status` verifies.
-         * Kompile stores no credential for this route.
-         */
-        private Integer loginClaudeCode(OAuthProviderFlow.Interaction interaction) {
-            if (credentialName != null || noSwitch || stdin || environmentName != null
-                    || oauthMethod != null || enterpriseDomain != null || gateway != null) {
-                System.err.println("Claude Code owns the Anthropic subscription login, so Kompile credential "
-                        + "options do not apply to it.");
-                return 2;
-            }
-            try {
-                LiveModelDiscovery.ClaudeCodeLogin login = ClaudeCodeSignIn.ensureSignedIn(interaction);
-                if (!login.loggedIn()) {
-                    System.err.println("Claude Code is still not signed in.");
-                    return 1;
-                }
-                System.out.println(login.describe());
-                return 0;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                System.err.println("Claude Code sign-in was interrupted.");
-                return 130;
             }
         }
 

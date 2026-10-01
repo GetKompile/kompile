@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.OptionalDouble;
 import java.util.Set;
 
 /**
@@ -157,22 +158,8 @@ public class GraphToFactStoreProjector {
                         cap, asserted, factSheetId);
                 break;
             }
-            if (edge.getEdgeType() == null
-                    || edge.getSourceNode() == null
-                    || edge.getTargetNode() == null) {
-                continue;
-            }
-            String srcId = sanitizeAtomArg(edge.getSourceNode().getExternalId());
-            String tgtId = sanitizeAtomArg(edge.getTargetNode().getExternalId());
-            if (srcId == null || tgtId == null) continue;
-
-            // Prefer the semantic relationType if present; fall back to structural EdgeType
-            String predicate;
-            if (edge.getRelationType() != null && !edge.getRelationType().isBlank()) {
-                predicate = edge.getRelationType().toLowerCase(Locale.ROOT);
-            } else {
-                predicate = edge.getEdgeType().name().toLowerCase(Locale.ROOT);
-            }
+            String atomKey = atomKeyForEdge(edge);
+            if (atomKey == null) continue;
 
             // Edge soft-truth value: prefer confidence, fall back to weight, default 1.0
             double value = 1.0;
@@ -184,10 +171,9 @@ public class GraphToFactStoreProjector {
 
             if (sampleEdgeDiag.size() < 5) {
                 sampleEdgeDiag.add(String.format(Locale.ROOT, "[%s conf=%s weight=%s -> value=%.4f]",
-                        predicate, edge.getConfidence(), edge.getWeight(), value));
+                        atomKey, edge.getConfidence(), edge.getWeight(), value));
             }
 
-            String atomKey = predicate + "(" + srcId + ", " + tgtId + ")";
             if (value >= 0.99) {
                 projectedFacts.add(Fact.observed(atomKey, SOURCE_ID));
             } else {
@@ -276,6 +262,39 @@ public class GraphToFactStoreProjector {
         }
         return node.getNodeType().name().toLowerCase(Locale.ROOT)
                 + "(" + sanitizeAtomArg(node.getExternalId()) + ")";
+    }
+
+    /**
+     * Build the PSL/FOL atom key for an edge — {@code predicate(sourceExternalId, targetExternalId)},
+     * where the predicate is the lowercased semantic {@code relationType}, else the lowercased
+     * structural {@code EdgeType} — identical to the key used when projecting the graph into the fact
+     * store. Single source of truth for edge→atom-key conversion.
+     *
+     * @return the atom key, or {@code null} if the edge has no type, an endpoint is not hydrated, or
+     *         an endpoint has no external id
+     */
+    public static String atomKeyForEdge(GraphEdge edge) {
+        if (edge == null || edge.getEdgeType() == null
+                || edge.getSourceNode() == null || edge.getTargetNode() == null) {
+            return null;
+        }
+        String srcId = sanitizeAtomArg(edge.getSourceNode().getExternalId());
+        String tgtId = sanitizeAtomArg(edge.getTargetNode().getExternalId());
+        if (srcId == null || tgtId == null) return null;
+        // Prefer the semantic relationType if present; fall back to structural EdgeType
+        String predicate = edge.getRelationType() != null && !edge.getRelationType().isBlank()
+                ? edge.getRelationType().toLowerCase(Locale.ROOT)
+                : edge.getEdgeType().name().toLowerCase(Locale.ROOT);
+        return predicate + "(" + srcId + ", " + tgtId + ")";
+    }
+
+    /**
+     * The MAP posterior the last derivation wrote for {@code edge}'s projected atom, if any. Only
+     * atoms inside the {@code kbDerivationMaxAtoms} cap are projected, so edges past the cap have none.
+     */
+    public OptionalDouble learnedPosterior(long factSheetId, GraphEdge edge) {
+        String atomKey = atomKeyForEdge(edge);
+        return atomKey == null ? OptionalDouble.empty() : kbGroundingService.latestValue(factSheetId, atomKey);
     }
 
     /**

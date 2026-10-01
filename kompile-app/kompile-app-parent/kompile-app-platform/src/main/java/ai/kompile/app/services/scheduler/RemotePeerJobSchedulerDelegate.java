@@ -59,7 +59,7 @@ public class RemotePeerJobSchedulerDelegate implements ExternalJobSchedulerDeleg
 
     /** Optional: pressure-gates failover so peers take scheduler work only when the local host is saturated. */
     @Autowired(required = false)
-    private ResourceGovernor governor;
+    ResourceGovernor governor;
 
     @Value("${server.port:8080}")
     private int serverPort;

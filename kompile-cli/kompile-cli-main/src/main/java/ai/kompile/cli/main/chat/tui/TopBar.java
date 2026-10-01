@@ -196,7 +196,7 @@ public class TopBar {
         String judge = judgeTokenSummary;
         StringBuilder content = new StringBuilder();
         if (!summary.isEmpty()) {
-            content.append(DIM).append("tokens: ").append(RESET)
+            content.append(DIM).append("session tokens: ").append(RESET)
                    .append(CYAN).append(summary).append(RESET);
         }
         if (!judge.isEmpty()) {
@@ -207,8 +207,14 @@ public class TopBar {
         if (content.length() == 0) {
             return " ".repeat(Math.max(1, width - 1));
         }
+        int drawWidth = Math.max(1, width - 1);
         int visible = AnsiConstants.visibleLength(content.toString());
-        int lead = Math.max(1, width - 1 - visible);
+        if (visible > drawWidth) {
+            // Long session/judge totals must not wrap into the transcript.
+            String plain = AnsiConstants.stripAnsi(content.toString());
+            return plain.substring(0, Math.max(0, drawWidth - 1)) + "…";
+        }
+        int lead = drawWidth - visible;
         return " ".repeat(lead) + content;
     }
 

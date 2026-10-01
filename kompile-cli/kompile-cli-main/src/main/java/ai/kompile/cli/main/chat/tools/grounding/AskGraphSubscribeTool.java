@@ -20,8 +20,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import org.springframework.web.client.HttpClientErrorException;
-
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -189,20 +187,11 @@ public class AskGraphSubscribeTool implements CliTool {
             ArrayNode predsArr = body.putArray("predicates");
             for (String pred : predicates) predsArr.add(pred);
 
-            GroundingBackendClient.GroundingResponse resp;
-            try {
-                resp = groundingClient.post("/api/kb-grounding/subscribe",
-                        objectMapper.writeValueAsString(body));
-            } catch (HttpClientErrorException e) {
-                return ToolResult.error("Failed to create subscription (HTTP " + e.getStatusCode().value()
-                        + "): " + e.getResponseBodyAsString());
-            } catch (org.springframework.web.client.HttpServerErrorException e) {
-                return ToolResult.error("Failed to create subscription (HTTP " + e.getStatusCode().value()
-                        + "): " + e.getResponseBodyAsString());
-            }
+            GroundingBackendClient.GroundingResponse resp = groundingClient.post("/api/kb-grounding/subscribe",
+                    objectMapper.writeValueAsString(body));
             if (resp.statusCode() != 200) {
                 return ToolResult.error("Failed to create subscription (HTTP " + resp.statusCode()
-                        + "): " + resp.body());
+                        + "): " + GroundingBackendClient.errorMessage(resp.body()));
             }
             JsonNode subResp = objectMapper.readTree(resp.body());
             createSubscriptionId = subResp.path("subscriptionId").asText(null);
@@ -248,7 +237,8 @@ public class AskGraphSubscribeTool implements CliTool {
 
                 if (resp.statusCode() != 200) {
                     sb.append("predicate: ").append(predicate)
-                            .append(" — query error (HTTP ").append(resp.statusCode()).append(")\n\n");
+                            .append(" — query error (HTTP ").append(resp.statusCode()).append("): ")
+                            .append(GroundingBackendClient.errorMessage(resp.body())).append("\n\n");
                     continue;
                 }
 
@@ -316,22 +306,14 @@ public class AskGraphSubscribeTool implements CliTool {
             String pollPath = "/api/kb-grounding/subscribe/" + subscriptionId
                     + "/poll?cursor=" + cursor + "&waitMs=" + waitMs;
 
-            GroundingBackendClient.GroundingResponse resp;
-            try {
-                resp = groundingClient.get(pollPath);
-            } catch (HttpClientErrorException.NotFound e) {
-                return ToolResult.error("Subscription not found or expired: " + subscriptionId
-                        + ". Create a new subscription by calling without subscriptionId.");
-            } catch (HttpClientErrorException e) {
-                return ToolResult.error("Poll failed (HTTP " + e.getStatusCode().value() + "): " + e.getResponseBodyAsString());
-            }
-
+            GroundingBackendClient.GroundingResponse resp = groundingClient.get(pollPath);
             if (resp.statusCode() == 404) {
                 return ToolResult.error("Subscription not found or expired: " + subscriptionId
                         + ". Create a new subscription by calling without subscriptionId.");
             }
             if (resp.statusCode() != 200) {
-                return ToolResult.error("Poll failed (HTTP " + resp.statusCode() + "): " + resp.body());
+                return ToolResult.error("Poll failed (HTTP " + resp.statusCode() + "): "
+                        + GroundingBackendClient.errorMessage(resp.body()));
             }
 
             JsonNode pollResp = objectMapper.readTree(resp.body());

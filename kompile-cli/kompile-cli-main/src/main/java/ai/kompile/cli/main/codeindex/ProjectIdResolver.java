@@ -25,6 +25,8 @@ import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Resolves the effective {@code project_id} for code-index tool calls.
@@ -40,7 +42,8 @@ import java.nio.file.Path;
  *       coding project whose root contains the working directory;</li>
  *   <li><b>registration</b> — the nearest {@code .kompile/registration.json}
  *       walking up from the working directory, if a local index exists for
- *       that id;</li>
+ *       that id (an index whose metadata a crash left unreadable does not
+ *       count);</li>
  *   <li><b>index-root</b> — the indexed project whose recorded root is the
  *       deepest ancestor of the working directory;</li>
  *   <li><b>registration-unindexed</b> — a registration id with no local index
@@ -63,6 +66,9 @@ public final class ProjectIdResolver {
      * {@code index-root}, {@code registration-unindexed}, {@code cwd-name}.
      */
     public record Resolution(String projectId, String source, boolean autoResolved) {}
+
+    /** A coding project an ACTIVE manifest entry declares: its id and normalized root. */
+    private record DeclaredProject(String id, Path root) {}
 
     private ProjectIdResolver() {}
 
@@ -127,44 +133,120 @@ public final class ProjectIdResolver {
     private static String manifestCodeProjectId(Path start) {
         Path dir = start;
         for (int i = 0; i < MAX_REGISTRATION_WALK && dir != null; i++, dir = dir.getParent()) {
-            Path manifest = dir.resolve("kompile.project.json");
-            if (!Files.isRegularFile(manifest)) continue;
-            try {
-                JsonNode projects = MAPPER.readTree(manifest.toFile()).path("codingProjects");
-                if (!projects.isArray()) continue;
-                String bestId = null;
-                Path bestRoot = null;
-                for (JsonNode project : projects) {
-                    String lifecycle = project.path("lifecycle").asText("").trim();
-                    if (!lifecycle.isEmpty() && !"ACTIVE".equalsIgnoreCase(lifecycle)) continue;
-                    String id = project.path("codeProjectId").asText("").trim();
-                    if (id.isEmpty()) id = project.path("id").asText("").trim();
-                    if (!LocalCodeIndexer.isSafeProjectId(id)) continue;
-                    String configuredRoot = project.path("rootPath").asText("").trim();
-                    Path root = configuredRoot.isEmpty()
-                            ? dir
-                            : Path.of(configuredRoot);
-                    if (!root.isAbsolute()) root = dir.resolve(root);
-                    root = root.toAbsolutePath().normalize();
-                    if (!start.startsWith(root)) continue;
-                    if (bestRoot == null || root.getNameCount() > bestRoot.getNameCount()) {
-                        bestId = id;
-                        bestRoot = root;
-                    }
+            DeclaredProject best = null;
+            for (DeclaredProject project : activeManifestProjects(dir)) {
+                if (!start.startsWith(project.root())) continue;
+                if (best == null || project.root().getNameCount() > best.root().getNameCount()) {
+                    best = project;
                 }
-                if (bestId != null) return bestId;
-            } catch (Exception ignored) {
-                // Unreadable/corrupt manifest — keep walking for a parent manifest.
             }
+            if (best != null) return best.id();
         }
         return null;
+    }
+
+    /**
+     * The directory to index when asked to index {@code requested} as {@code projectId}: the
+     * project's declared root when that strictly contains {@code requested}, else
+     * {@code requested}. One project keeps one index; indexing a sub-directory under the
+     * project's id would re-root the index there and drop every file outside it.
+     */
+    public static Path indexRoot(String projectId, Path requested) {
+        return indexRoot(projectId, requested, LocalCodeIndexer.getBaseIndexDir());
+    }
+
+    /** {@link #indexRoot(String, Path)} with an explicit index base directory (test seam). */
+    static Path indexRoot(String projectId, Path requested, Path baseIndexDir) {
+        Path declared = declaredRoot(projectId, requested, baseIndexDir);
+        return declared != null && strictlyEncloses(declared, requested) ? declared : requested;
+    }
+
+    /** True when {@code root} is an existing directory strictly above {@code dir}. */
+    static boolean strictlyEncloses(Path root, Path dir) {
+        Path canonicalRoot = canonical(root);
+        Path canonicalDir = canonical(dir);
+        return !canonicalDir.equals(canonicalRoot) && canonicalDir.startsWith(canonicalRoot)
+                && Files.isDirectory(canonicalRoot);
+    }
+
+    private static Path canonical(Path path) {
+        Path absolute = path.toAbsolutePath().normalize();
+        try {
+            return absolute.toRealPath();
+        } catch (IOException unavailable) {
+            return absolute;
+        }
+    }
+
+    /**
+     * The directory {@code projectId} is declared at: the root of the ACTIVE manifest coding
+     * project with that id in the nearest manifest walking up from {@code start}, else the root
+     * its local index records. Null when neither names one.
+     */
+    public static Path declaredRoot(String projectId, Path start) {
+        return declaredRoot(projectId, start, LocalCodeIndexer.getBaseIndexDir());
+    }
+
+    /** {@link #declaredRoot(String, Path)} with an explicit index base directory (test seam). */
+    static Path declaredRoot(String projectId, Path start, Path baseIndexDir) {
+        if (projectId == null || !LocalCodeIndexer.isSafeProjectId(projectId)) return null;
+        Path dir = (start != null ? start : Path.of(".")).toAbsolutePath().normalize();
+        for (int i = 0; i < MAX_REGISTRATION_WALK && dir != null; i++, dir = dir.getParent()) {
+            for (DeclaredProject project : activeManifestProjects(dir)) {
+                if (project.id().equals(projectId)) return project.root();
+            }
+        }
+        if (baseIndexDir == null) return null;
+        try {
+            Object rootPath = new IndexFileStore(baseIndexDir.resolve(projectId), MAPPER)
+                    .loadMetadata().get("rootPath");
+            return rootPath instanceof String root && !root.isBlank()
+                    ? Path.of(root).toAbsolutePath().normalize() : null;
+        } catch (IOException | RuntimeException unreadable) {
+            return null;
+        }
+    }
+
+    /** The ACTIVE coding projects {@code dir}'s manifest declares; empty when absent or unreadable. */
+    private static List<DeclaredProject> activeManifestProjects(Path dir) {
+        Path manifest = dir.resolve("kompile.project.json");
+        if (!Files.isRegularFile(manifest)) return List.of();
+        try {
+            JsonNode projects = MAPPER.readTree(manifest.toFile()).path("codingProjects");
+            if (!projects.isArray()) return List.of();
+            List<DeclaredProject> declared = new ArrayList<>();
+            for (JsonNode project : projects) {
+                String lifecycle = project.path("lifecycle").asText("").trim();
+                if (!lifecycle.isEmpty() && !"ACTIVE".equalsIgnoreCase(lifecycle)) continue;
+                String id = project.path("codeProjectId").asText("").trim();
+                if (id.isEmpty()) id = project.path("id").asText("").trim();
+                if (!LocalCodeIndexer.isSafeProjectId(id)) continue;
+                String configuredRoot = project.path("rootPath").asText("").trim();
+                Path root = configuredRoot.isEmpty() ? dir : Path.of(configuredRoot);
+                if (!root.isAbsolute()) root = dir.resolve(root);
+                declared.add(new DeclaredProject(id, root.toAbsolutePath().normalize()));
+            }
+            return declared;
+        } catch (Exception ignored) {
+            // Unreadable/corrupt manifest — callers keep walking for a parent manifest.
+            return List.of();
+        }
     }
 
     private static boolean hasSearchableIndex(Path baseIndexDir, String projectId) {
         if (baseIndexDir == null || !LocalCodeIndexer.isSafeProjectId(projectId)) return false;
         Path projectDir = baseIndexDir.resolve(projectId);
-        return Files.isRegularFile(projectDir.resolve("metadata.json"))
-                && Files.isRegularFile(projectDir.resolve("index.db"));
+        if (!Files.isRegularFile(projectDir.resolve(IndexFileStore.METADATA_FILE))
+                || !Files.isRegularFile(projectDir.resolve("index.db"))) {
+            return false;
+        }
+        try {
+            new IndexFileStore(projectDir, MAPPER).loadMetadata();
+            return true;
+        } catch (IOException unreadable) {
+            // Torn by an interrupted write: report the id as unindexed so callers ask for an index.
+            return false;
+        }
     }
 
     /**

@@ -65,17 +65,17 @@ public class TransEModel implements KGEmbeddingModel {
     private static final Logger log = LoggerFactory.getLogger(TransEModel.class);
 
     // Embeddings
-    private INDArray entityEmbeddings;   // [numEntities, embeddingDim]
-    private INDArray relationEmbeddings; // [numRelations, embeddingDim]
+    INDArray entityEmbeddings;   // [numEntities, embeddingDim]
+    INDArray relationEmbeddings; // [numRelations, embeddingDim]
 
     // Index mappings
-    private Map<String, Integer> entityToIndex;
-    private Map<String, Integer> relationToIndex;
-    private List<String> indexToEntity;
-    private List<String> indexToRelation;
+    Map<String, Integer> entityToIndex;
+    Map<String, Integer> relationToIndex;
+    List<String> indexToEntity;
+    List<String> indexToRelation;
 
     // State
-    private int embeddingDim;
+    int embeddingDim;
     private final AtomicBoolean training = new AtomicBoolean(false);
     private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
     private boolean trained = false;
@@ -405,9 +405,9 @@ public class TransEModel implements KGEmbeddingModel {
      * @param relationMirror float[][] mirror of relationEmbeddings [numRelations][dim]
      * @return totalLoss / positives.size()
      */
-    private double trainBatch(List<Triple> positives, List<Triple> negatives,
-                              double learningRate, double margin,
-                              float[][] entityMirror, float[][] relationMirror) {
+    double trainBatch(List<Triple> positives, List<Triple> negatives,
+                      double learningRate, double margin,
+                      float[][] entityMirror, float[][] relationMirror) {
         double totalLoss = 0.0;
         int negPerPos = negatives.isEmpty() ? 0 : negatives.size() / positives.size();
         if (negPerPos == 0) return 0.0;
@@ -509,7 +509,7 @@ public class TransEModel implements KGEmbeddingModel {
      * <p>Reads all values via the flat DataBuffer (one array-backed call) to avoid creating
      * per-row INDArray view objects.
      */
-    private static void copyFromINDArray(INDArray matrix, float[][] mirror, int rows, int cols) {
+    static void copyFromINDArray(INDArray matrix, float[][] mirror, int rows, int cols) {
         // Read the entire matrix as one flat float array (single DataBuffer access).
         float[] flat = matrix.data().asFloat();
         for (int r = 0; r < rows; r++) {
@@ -524,7 +524,7 @@ public class TransEModel implements KGEmbeddingModel {
      * underlying off-heap buffer — ZERO intermediate {@link INDArray} objects created,
      * ZERO native-object churn tracked by JavaCPP.
      */
-    private static void copyToINDArray(float[][] mirror, INDArray matrix, int rows, int cols) {
+    static void copyToINDArray(float[][] mirror, INDArray matrix, int rows, int cols) {
         DataBuffer buf = matrix.data();
         for (int r = 0; r < rows; r++) {
             int base = r * cols;

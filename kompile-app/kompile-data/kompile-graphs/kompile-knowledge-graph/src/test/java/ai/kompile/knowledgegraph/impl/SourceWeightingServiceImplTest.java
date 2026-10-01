@@ -25,7 +25,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import org.nd4j.linalg.factory.Nd4j;
 
@@ -54,9 +53,9 @@ class SourceWeightingServiceImplTest {
     @BeforeEach
     void setUp() {
         service = new SourceWeightingServiceImpl(weightRepository, knowledgeGraphService);
-        ReflectionTestUtils.setField(service, "defaultWeight", 1.0);
-        ReflectionTestUtils.setField(service, "maxWeight", 3.0);
-        ReflectionTestUtils.setField(service, "topicRelevanceFactor", 0.3);
+        service.defaultWeight = 1.0;
+        service.maxWeight = 3.0;
+        service.topicRelevanceFactor = 0.3;
     }
 
     private GraphNode stubNode(String nodeId, String title) {
@@ -290,7 +289,7 @@ class SourceWeightingServiceImplTest {
         when(knowledgeGraphService.getAllSources()).thenReturn(List.of(aligned, orthogonal));
         when(weightRepository.findEnabledWeightsForSource(anyString())).thenReturn(List.of());
 
-        ReflectionTestUtils.setField(service, "embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
         when(embeddingModel.isInitialized()).thenReturn(true);
         // Query lies on the first axis; source rows: n-1 aligned (cos=1), n-2 orthogonal (cos=0).
         when(embeddingModel.embed(anyString())).thenReturn(Nd4j.create(new float[][]{{1f, 0f}}));
@@ -318,7 +317,7 @@ class SourceWeightingServiceImplTest {
         when(knowledgeGraphService.getAllSources()).thenReturn(List.of(node));
         when(weightRepository.findEnabledWeightsForSource("n-1")).thenReturn(List.of());
 
-        ReflectionTestUtils.setField(service, "embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
         when(embeddingModel.isInitialized()).thenReturn(true);
         when(embeddingModel.embed(anyList())).thenThrow(new RuntimeException("embedding subprocess down"));
 

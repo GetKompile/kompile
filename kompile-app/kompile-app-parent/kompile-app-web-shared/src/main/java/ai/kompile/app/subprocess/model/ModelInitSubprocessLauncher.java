@@ -17,16 +17,23 @@
 package ai.kompile.app.subprocess.model;
 
 import ai.kompile.app.config.DeviceRoutingConfig;
+import ai.kompile.app.config.GpuDevice;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.ModelLifecycleManager;
+import ai.kompile.app.services.ModelLifecycleManager.GpuShortfallException;
+import ai.kompile.app.services.scheduler.JobResourceProfiles;
 import ai.kompile.app.services.subprocess.SubprocessConfigService;
 import ai.kompile.app.subprocess.BackendConfigurable;
+import ai.kompile.app.subprocess.ManagedSubprocessLauncher.BackendPreference;
+import ai.kompile.app.subprocess.SubprocessBackendFlags;
 import ai.kompile.app.subprocess.SubprocessClasspathBuilder;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.subprocess.SubprocessPlacementSupport;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
+import ai.kompile.app.subprocess.SubprocessSignals;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -42,12 +49,15 @@ import org.springframework.stereotype.Service;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -84,6 +94,12 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
     private static final Logger logger = LoggerFactory.getLogger(ModelInitSubprocessLauncher.class);
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
+    /** How long a killed child may take to exit before its GPU row is left to be released on exit */
+    private static final long CHILD_EXIT_WAIT_SECONDS = 30;
+
+    /** How long the output readers may take to pass on what an ended child wrote before the launcher judges it */
+    private static final long OUTPUT_DRAIN_SECONDS = 5;
+
     /** Shared device-agnostic placement (same base infra every subprocess uses). */
     private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
 
@@ -95,13 +111,13 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
 
     // Configuration
     @Value("${kompile.model-init.subprocess.java-path:java}")
-    private String javaPath;
+    String javaPath;
 
     @Value("${kompile.model-init.subprocess.heap-size:4g}")
-    private String heapSize;
+    String heapSize;
 
     @Value("${kompile.model-init.subprocess.timeout-minutes:10}")
-    private int timeoutMinutes;
+    int timeoutMinutes;
 
     @Value("${kompile.model-init.subprocess.heartbeat-timeout-seconds:30}")
     private int heartbeatTimeoutSeconds;
@@ -111,16 +127,25 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
     private SubprocessExecutableConfig subprocessExecutableConfig;
 
     @Autowired(required = false)
-    private SubprocessConfigService subprocessConfigService;
+    SubprocessConfigService subprocessConfigService;
 
     @Autowired(required = false)
     private DeviceRoutingConfigService deviceRoutingConfigService;
 
     @Autowired(required = false)
-    private ModelLifecycleManager modelLifecycleManager;
+    ModelLifecycleManager modelLifecycleManager;
 
     // Active processes
-    private final Map<String, SubprocessHandle> activeProcesses = new ConcurrentHashMap<>();
+    final Map<String, SubprocessHandle> activeProcesses = new ConcurrentHashMap<>();
+
+    /** Orders tracking a started child against {@link #cleanup()}, so no child outlives shutdown */
+    private final Object lifecycleLock = new Object();
+
+    /** Set by {@link #cleanup()}: no init starts after it */
+    private volatile boolean shutDown;
+
+    /** TaskIds whose GPU row this launcher acquired itself; released once, when the child is gone */
+    private final Set<String> launcherGpuHolds = ConcurrentHashMap.newKeySet();
 
     // Current model init status
     private volatile ModelInitStatus currentStatus = ModelInitStatus.idle();
@@ -169,14 +194,24 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 return executeModelInit(finalArgs, progressListener, completionListener, failureListener);
+            } catch (ReportedFailure e) {
+                // The status and the failure listener already carry this failure's verdict
+                logger.warn("[model-init-{}] Failed: {}", finalTaskId, e.getMessage());
+                throw new RuntimeException("Model init subprocess failed", e);
             } catch (Exception e) {
-                logger.error("Failed to launch model init subprocess", e);
+                // No GPU room right now: the init never started and can be retried later
+                boolean retriable = e instanceof GpuShortfallException;
+                if (retriable) {
+                    logger.warn("[model-init-{}] Not started, no GPU room: {}", finalTaskId, e.getMessage());
+                } else {
+                    logger.error("Failed to launch model init subprocess", e);
+                }
                 currentStatus = ModelInitStatus.failed(finalTaskId, finalArgs.modelIdentifier(),
-                        ModelInitMessage.Phase.STARTING, e.getMessage(), false);
+                        ModelInitMessage.Phase.STARTING, e.getMessage(), retriable);
 
                 if (failureListener != null) {
                     failureListener.accept(ModelInitMessage.failed(finalTaskId, finalArgs.modelIdentifier(),
-                            ModelInitMessage.Phase.STARTING, e, false));
+                            ModelInitMessage.Phase.STARTING, e, retriable));
                 }
                 throw new RuntimeException("Model init subprocess failed", e);
             }
@@ -228,57 +263,115 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
 
         logger.info("Launching model init subprocess for model: {} (task: {})", modelId, taskId);
 
-        // Write args to temp file
-        Path argsFile = args.writeToTempFile();
-        logger.debug("Args file created: {}", argsFile);
+        // After shutdown nothing starts: no GPU row is acquired and no child spawned
+        if (shutDown) {
+            throw new IllegalStateException("Model init launcher is shut down");
+        }
 
-        // Build command
-        List<String> command = buildCommand(argsFile);
-        logger.info("Command: {}", String.join(" ", command));
+        // Settle the task's GPU row before any command is built, so the child is pinned to its device
+        SubprocessPlacement taskPlacement = resolveTaskPlacement(taskId, placement.placement());
 
-        // Start process
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectErrorStream(false); // Keep stderr separate for logging
+        // Until the child is running, a failure deletes the args file and releases the row here
+        Path argsFile = null;
+        List<String> command;
+        ProcessBuilder pb;
+        Process process;
+        boolean wrapped;
+        boolean started = false;
+        try {
+            // Write args to temp file
+            argsFile = args.writeToTempFile();
+            logger.debug("Args file created: {}", argsFile);
 
-        // Propagate all ND4J/CUDA/threading/Triton env vars via central propagator
-        SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
-        // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
-        placement.applyEnv(pb.environment());
+            // Build command
+            command = buildCommand(argsFile, taskPlacement);
+            logger.info("Command: {}", String.join(" ", command));
 
-        // === GPU LIFECYCLE: Acquire GPU resources for this model init job ===
-        boolean gpuAcquired = false;
-        if (modelLifecycleManager != null) {
-            try {
-                modelLifecycleManager.acquireGpuForModelInit(taskId);
-                gpuAcquired = true;
-                logger.info("[model-init-{}] GPU resources acquired for model init", taskId);
-            } catch (IllegalStateException e) {
-                logger.warn("[model-init-{}] Could not acquire GPU for model init (may use CPU fallback): {}",
-                        taskId, e.getMessage());
+            // Start process
+            pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(false); // Keep stderr separate for logging
+
+            // Propagate all ND4J/CUDA/threading/Triton env vars via central propagator
+            SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
+            // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
+            SubprocessBackendFlags.applyEnv(pb.environment(), taskPlacement);
+            // Protocol messages get a pipe of their own, which native output written to fd 1 can't reach
+            wrapped = SubprocessProtocolChannel.apply(pb);
+
+            process = pb.start();
+            started = true;
+        } finally {
+            if (!started) {
+                deleteArgsFile(argsFile);
+                releaseModelInitGpu(taskId);
             }
         }
 
-        Process process = pb.start();
-
         // Create handle
         SubprocessHandle handle = new SubprocessHandle(taskId, modelId, process, argsFile);
-        activeProcesses.put(taskId, handle);
+        try {
+            // A child the shutdown can no longer find is killed below instead of tracked
+            track(handle);
+            SubprocessLogWriter logWriter = openLog(handle, pb, command);
+            return awaitModelInit(handle, logWriter, wrapped, progressListener, completionListener, failureListener);
+        } finally {
+            // However the init ended, its child is killed and its GPU row released once the child is gone
+            if (process.isAlive()) {
+                SubprocessSignals.kill(process);
+            }
+            activeProcesses.remove(taskId, handle);
+            deleteArgsFile(argsFile);
+            releaseWhenExited(taskId, process);
+        }
+    }
 
-        // --- Subprocess log aggregation ---
-        SubprocessLogWriter logWriter = null;
+    /** Tracks a started child where cancel and shutdown find it; once shut down, refuses it instead. */
+    private void track(SubprocessHandle handle) {
+        synchronized (lifecycleLock) {
+            if (shutDown) {
+                throw new IllegalStateException(
+                        "Model init launcher shut down while " + handle.taskId + " was starting");
+            }
+            activeProcesses.put(handle.taskId, handle);
+        }
+    }
+
+    /** Opens the child's subprocess log. Optional: without it the init runs unlogged. */
+    private SubprocessLogWriter openLog(SubprocessHandle handle, ProcessBuilder pb, List<String> command) {
         try {
             String workingDir = pb.directory() != null
                     ? pb.directory().getAbsolutePath()
                     : System.getProperty("user.dir");
-            logWriter = new SubprocessLogWriter("model-init", taskId, workingDir);
+            SubprocessLogWriter logWriter = new SubprocessLogWriter("model-init", handle.taskId, workingDir);
             handle.logWriter = logWriter;
             logWriter.writeStart(new SubprocessLogWriter.SubprocessRunContext(
-                    taskId, command, workingDir, process.pid(), heapSize));
+                    handle.taskId, command, workingDir, handle.process.pid(), heapSize));
+            return logWriter;
         } catch (Exception _logEx) {
             logger.debug("SubprocessLogWriter init failed (non-fatal): {}", _logEx.getMessage());
-            logWriter = null;
+            return null;
         }
-        final SubprocessLogWriter finalLogWriter = logWriter;
+    }
+
+    /**
+     * Stream the child's protocol messages and logs, wait for it to exit, and turn its exit into a result.
+     * The first verdict settles the init and is reported once: the child's own COMPLETED or FAILED, else the
+     * launcher's, from the timeout or the exit code.
+     *
+     * @param wrapped whether the child was started with a protocol channel of its own
+     *                ({@link SubprocessProtocolChannel#apply})
+     */
+    private ModelInitResult awaitModelInit(
+            SubprocessHandle handle,
+            SubprocessLogWriter logWriter,
+            boolean wrapped,
+            Consumer<ModelInitMessage.Progress> progressListener,
+            Consumer<ModelInitMessage.Completed> completionListener,
+            Consumer<ModelInitMessage.Failed> failureListener) throws Exception {
+
+        String taskId = handle.taskId;
+        String modelId = handle.modelId;
+        Process process = handle.process;
 
         // Result holder
         CompletableFuture<ModelInitResult> resultFuture = new CompletableFuture<>();
@@ -290,9 +383,9 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
                 while ((line = reader.readLine()) != null) {
                     processStdoutLine(line, taskId, modelId, progressListener, completionListener,
                             failureListener, resultFuture);
-                    if (finalLogWriter != null) {
+                    if (logWriter != null) {
                         try {
-                            finalLogWriter.writeLine(AgentLogRecord.Stream.STDOUT, line);
+                            logWriter.writeLine(AgentLogRecord.Stream.STDOUT, line);
                         } catch (Exception _logEx) {
                             logger.debug("SubprocessLogWriter stdout write failed: {}", _logEx.getMessage());
                         }
@@ -307,15 +400,27 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
         stdoutThread.setDaemon(true);
         stdoutThread.start();
 
-        // Start stderr reader thread (for logging)
+        // Start stderr reader thread (for logging). A wrapped child's fd 1 is this pipe too, so it carries the
+        // native output that reaches fd 1, and the protocol messages of a child that writes them there.
+        SubprocessProtocolChannel.StderrProtocol stderrProtocol = SubprocessProtocolChannel.stderrProtocol(
+                wrapped, ModelInitMessage.MESSAGE_PREFIX, "model-init-" + taskId);
         Thread stderrThread = new Thread(() -> {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    logger.info("[subprocess:{}] {}", modelId, line);
-                    if (finalLogWriter != null) {
+                    int prefixAt = stderrProtocol.prefixIndex(line);
+                    if (prefixAt > 0) {
+                        logger.info("[subprocess:{}] {}", modelId, line.substring(0, prefixAt));
+                    }
+                    if (prefixAt >= 0) {
+                        handleMessage(line.substring(prefixAt + ModelInitMessage.MESSAGE_PREFIX.length()), line,
+                                taskId, modelId, progressListener, completionListener, failureListener, resultFuture);
+                    } else {
+                        logger.info("[subprocess:{}] {}", modelId, line);
+                    }
+                    if (logWriter != null) {
                         try {
-                            finalLogWriter.writeLine(AgentLogRecord.Stream.STDERR, line);
+                            logWriter.writeLine(AgentLogRecord.Stream.STDERR, line);
                         } catch (Exception _logEx) {
                             logger.debug("SubprocessLogWriter stderr write failed: {}", _logEx.getMessage());
                         }
@@ -331,88 +436,138 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
         stderrThread.start();
 
         // Wait for process with timeout
-        boolean completed = process.waitFor(timeoutMinutes, TimeUnit.MINUTES);
-
-        if (!completed) {
+        boolean exited = process.waitFor(timeoutMinutes, TimeUnit.MINUTES);
+        if (!exited) {
             logger.error("Model init subprocess timed out after {} minutes", timeoutMinutes);
-            process.destroyForcibly();
-            currentStatus = ModelInitStatus.failed(taskId, modelId, ModelInitMessage.Phase.CREATING_ENCODER,
-                    "Timeout after " + timeoutMinutes + " minutes", true);
-
-            // Release GPU on timeout
-            releaseModelInitGpu(taskId, gpuAcquired);
-
-            if (finalLogWriter != null) {
-                try {
-                    finalLogWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
-                            "TIMEOUT", null, "Timeout after " + timeoutMinutes + " minutes", false, false));
-                } catch (Exception _logEx) {
-                    logger.debug("SubprocessLogWriter writeEnd (timeout) failed: {}", _logEx.getMessage());
-                } finally {
-                    finalLogWriter.close();
-                }
-            }
-
-            if (failureListener != null) {
-                failureListener.accept(ModelInitMessage.failed(taskId, modelId, ModelInitMessage.Phase.CREATING_ENCODER,
-                        "Timeout", "TimeoutException", null, true));
-            }
-
-            throw new RuntimeException("Model init subprocess timed out");
+            SubprocessSignals.kill(process);
         }
+        // A COMPLETED or FAILED the child wrote before it ended is its own verdict: let the readers pass it on
+        awaitOutputReaders(taskId, stdoutThread, stderrThread);
 
-        int exitCode = process.exitValue();
-        logger.info("Subprocess exited with code: {}", exitCode);
-
-        // Cleanup
-        activeProcesses.remove(taskId);
-        try {
-            java.nio.file.Files.deleteIfExists(argsFile);
-        } catch (IOException e) {
-            logger.debug("Could not delete args file: {}", argsFile);
-        }
-
-        // === GPU LIFECYCLE: Release GPU resources after model init completes ===
-        releaseModelInitGpu(taskId, gpuAcquired);
-
-        // Wait for result from parsed messages
-        if (exitCode == 0) {
-            // Success - result should be set by stdout parser
-            ModelInitResult successResult;
-            try {
-                successResult = resultFuture.get(5, TimeUnit.SECONDS);
-            } catch (Exception e) {
-                // If we didn't get a result message but exit was 0, consider it success
-                successResult = new ModelInitResult(taskId, modelId, true, null);
-            }
-            if (finalLogWriter != null) {
-                try {
-                    finalLogWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
-                            "SUCCESS", exitCode, null, false, false));
-                } catch (Exception _logEx) {
-                    logger.debug("SubprocessLogWriter writeEnd (success) failed: {}", _logEx.getMessage());
-                } finally {
-                    finalLogWriter.close();
-                }
-            }
-            return successResult;
+        if (!exited) {
+            String timeout = "Timeout after " + timeoutMinutes + " minutes";
+            settleFailed(resultFuture, taskId, modelId, ModelInitMessage.Phase.CREATING_ENCODER, timeout,
+                    "TimeoutException", true, failureListener);
+            endLog(logWriter, "TIMEOUT", null, timeout);
         } else {
-            // Failure
-            boolean retriable = exitCode == 2 || exitCode == 137; // Retriable errors
-            currentStatus = ModelInitStatus.failed(taskId, modelId, null,
-                    "Subprocess exited with code " + exitCode, retriable);
-            if (finalLogWriter != null) {
-                try {
-                    finalLogWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
-                            "FAILED", exitCode, "Subprocess exited with code " + exitCode, false, false));
-                } catch (Exception _logEx) {
-                    logger.debug("SubprocessLogWriter writeEnd (failure) failed: {}", _logEx.getMessage());
-                } finally {
-                    finalLogWriter.close();
+            int exitCode = process.exitValue();
+            logger.info("Subprocess exited with code: {}", exitCode);
+            if (exitCode == 0) {
+                endLog(logWriter, "SUCCESS", exitCode, null);
+                if (!resultFuture.isDone()) {
+                    // Exit 0 without a COMPLETED message still counts as success; one read late still reports
+                    return new ModelInitResult(taskId, modelId, true, null);
                 }
+            } else {
+                String exit = "Subprocess exited with code " + exitCode;
+                // Exit 2 (retriable error) and 137 (killed) may succeed on retry; a cancelled init is not retried
+                boolean retriable = !handle.isCancelled() && (exitCode == 2 || exitCode == 137);
+                settleFailed(resultFuture, taskId, modelId, ModelInitMessage.Phase.FAILED, exit,
+                        "SubprocessExit", retriable, failureListener);
+                endLog(logWriter, "FAILED", exitCode, exit);
             }
-            throw new RuntimeException("Subprocess failed with exit code: " + exitCode);
         }
+
+        try {
+            return resultFuture.join();
+        } catch (CompletionException e) {
+            throw new ReportedFailure(e.getCause().getMessage());
+        }
+    }
+
+    /**
+     * Wait for the output readers to reach the end of the child's pipes. Bounded: a grandchild that
+     * inherited the pipes keeps them open after the child exits.
+     */
+    private static void awaitOutputReaders(String taskId, Thread... outputReaders) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(OUTPUT_DRAIN_SECONDS);
+        for (Thread reader : outputReaders) {
+            long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+            if (remainingMs > 0) {
+                reader.join(remainingMs);
+            }
+            if (reader.isAlive()) {
+                logger.warn("[model-init-{}] {} still reading {}s after the child ended; judging the init",
+                        taskId, reader.getName(), OUTPUT_DRAIN_SECONDS);
+            }
+        }
+    }
+
+    /**
+     * Settles the init as failed with the launcher's own verdict and reports it — unless a verdict already
+     * settled it, which then stands and was reported instead.
+     */
+    private void settleFailed(CompletableFuture<ModelInitResult> resultFuture, String taskId, String modelId,
+                              ModelInitMessage.Phase phase, String errorMessage, String errorType,
+                              boolean retriable, Consumer<ModelInitMessage.Failed> failureListener) {
+        if (!resultFuture.completeExceptionally(new RuntimeException(errorMessage))) {
+            return;
+        }
+        currentStatus = ModelInitStatus.failed(taskId, modelId, phase, errorMessage, retriable);
+        if (failureListener != null) {
+            failureListener.accept(ModelInitMessage.failed(taskId, modelId, phase, errorMessage, errorType,
+                    null, retriable));
+        }
+    }
+
+    /** Writes the run's end record to the child's subprocess log, if it has one, and closes it. */
+    private static void endLog(SubprocessLogWriter logWriter, String status, Integer exitCode, String error) {
+        if (logWriter == null) {
+            return;
+        }
+        try {
+            logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(status, exitCode, error, false, false));
+        } catch (Exception _logEx) {
+            logger.debug("SubprocessLogWriter writeEnd ({}) failed: {}", status, _logEx.getMessage());
+        } finally {
+            logWriter.close();
+        }
+    }
+
+    /**
+     * The placement a model init runs on. A CPU placement, or a GPU placement for a task whose row is
+     * already held (the scheduler acquired it), is used as given. Otherwise the launcher acquires the
+     * task's own row and places the child on that device. With no GPU to acquire (none present, or the
+     * lifecycle manager not running) the init runs on CPU — a child is never pinned to a GPU without a
+     * row. A GPU that has no room right now fails the init instead: the optimization cache it writes is
+     * fingerprinted with the backend, so a CPU run could never satisfy a GPU parent, and the encoder
+     * optimizes itself when it is first loaded.
+     *
+     * @throws GpuShortfallException if a GPU exists but has no room for the init right now
+     */
+    private SubprocessPlacement resolveTaskPlacement(String taskId, SubprocessPlacement requested) {
+        if (modelLifecycleManager == null
+                || (requested != null && requested.backend() == BackendPreference.CPU)) {
+            return requested;
+        }
+        long capBytes = JobResourceProfiles.MODEL_INIT.peakGpuMemoryBytes();
+        ModelLifecycleManager.JobGpuHold held = modelLifecycleManager.getActiveJobHolds().get(taskId);
+        if (held != null) {
+            return requested != null && requested.isGpu() ? requested : placementOn(held.device(), capBytes);
+        }
+        if (requested != null) {
+            logger.warn("[model-init-{}] GPU placement {} has no GPU row; acquiring one for the task", taskId, requested);
+        }
+        try {
+            GpuDevice device = modelLifecycleManager.acquireGpuForJob(taskId,
+                    JobResourceProfiles.MODEL_INIT.serviceType(), "Model init: " + taskId,
+                    ModelLifecycleManager.HoldLifetime.BOUNDED, capBytes, null);
+            launcherGpuHolds.add(taskId);
+            logger.info("[model-init-{}] GPU row acquired for model init on {}", taskId, device.name());
+            return placementOn(device, capBytes);
+        } catch (GpuShortfallException e) {
+            throw e;
+        } catch (IllegalStateException e) {
+            logger.warn("[model-init-{}] No GPU to acquire for model init, running on CPU: {}",
+                    taskId, e.getMessage());
+            return SubprocessPlacement.cpu();
+        }
+    }
+
+    /** The child's placement on a reserved device — derived the same way the scheduler derives it. */
+    private static SubprocessPlacement placementOn(GpuDevice device, long capBytes) {
+        return SubprocessPlacement.gpu(device.cudaRuntimeIndex(),
+                ModelLifecycleManager.clampToDevice(capBytes, device));
     }
 
     /**
@@ -425,15 +580,30 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
             Consumer<ModelInitMessage.Failed> failureListener,
             CompletableFuture<ModelInitResult> resultFuture) {
 
-        // Check for protocol message prefix
-        if (!line.startsWith(ModelInitMessage.MESSAGE_PREFIX)) {
+        // Check for protocol message prefix. A child started without the protocol channel shares this pipe with
+        // libnd4j, which logs with printf straight to fd 1, beneath the child's System.setOut redirect, so a
+        // native message without a newline can precede one on the same line (the run log keeps the whole line).
+        int prefixAt = line.indexOf(ModelInitMessage.MESSAGE_PREFIX);
+        if (prefixAt < 0) {
             // Not a protocol message - just log it
             logger.trace("[subprocess:{}] {}", modelId, line);
             return;
         }
 
-        String json = line.substring(ModelInitMessage.MESSAGE_PREFIX.length());
+        handleMessage(line.substring(prefixAt + ModelInitMessage.MESSAGE_PREFIX.length()), line, taskId, modelId,
+                progressListener, completionListener, failureListener, resultFuture);
+    }
 
+    /**
+     * Dispatch one protocol message: {@code json}, the text after the prefix on {@code line}. A message that
+     * does not parse is logged and skipped.
+     */
+    private void handleMessage(
+            String json, String line, String taskId, String modelId,
+            Consumer<ModelInitMessage.Progress> progressListener,
+            Consumer<ModelInitMessage.Completed> completionListener,
+            Consumer<ModelInitMessage.Failed> failureListener,
+            CompletableFuture<ModelInitResult> resultFuture) {
         try {
             ModelInitMessage message = OBJECT_MAPPER.readValue(json, ModelInitMessage.class);
 
@@ -468,25 +638,31 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
                     logger.info("[{}] COMPLETED: dims={}, type={}, time={}ms",
                             modelId, completed.embeddingDimensions(),
                             completed.encoderType(), completed.totalDurationMs());
+                    // Reported only as the init's verdict: one that already settled it stands
+                    if (!resultFuture.complete(new ModelInitResult(taskId, modelId, true, completed))) {
+                        return;
+                    }
                     currentStatus = ModelInitStatus.completed(taskId, modelId,
                             completed.embeddingDimensions(), completed.encoderType());
                     if (completionListener != null) {
                         completionListener.accept(completed);
                     }
-                    resultFuture.complete(new ModelInitResult(taskId, modelId, true, completed));
                 }
 
                 @Override
                 public void onFailed(ModelInitMessage.Failed failed) {
                     logger.error("[{}] FAILED in phase {}: {} (retriable={})",
                             modelId, failed.phase(), failed.errorMessage(), failed.retriable());
+                    // Reported only as the init's verdict: one that already settled it stands
+                    if (!resultFuture.completeExceptionally(
+                            new RuntimeException("Model init failed: " + failed.errorMessage()))) {
+                        return;
+                    }
                     currentStatus = ModelInitStatus.failed(taskId, modelId,
                             failed.phase(), failed.errorMessage(), failed.retriable());
                     if (failureListener != null) {
                         failureListener.accept(failed);
                     }
-                    resultFuture.completeExceptionally(
-                            new RuntimeException("Model init failed: " + failed.errorMessage()));
                 }
 
                 @Override
@@ -511,14 +687,14 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
     /**
      * Build the command to launch the subprocess.
      */
-    private List<String> buildCommand(Path argsFile) {
+    private List<String> buildCommand(Path argsFile, SubprocessPlacement taskPlacement) {
         // Check if we should use native executable mode
         if (shouldUseNativeExecutableMode()) {
-            return buildNativeCommand(argsFile);
+            return buildNativeCommand(argsFile, taskPlacement);
         }
 
         // JVM classpath mode
-        return buildJvmCommand(argsFile);
+        return buildJvmCommand(argsFile, taskPlacement);
     }
 
     /**
@@ -543,7 +719,7 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
      * Build command for native executable mode.
      * Uses SubprocessConfigService (UI-configured) for executable paths.
      */
-    private List<String> buildNativeCommand(Path argsFile) {
+    private List<String> buildNativeCommand(Path argsFile, SubprocessPlacement taskPlacement) {
         if (subprocessConfigService == null) {
             throw new IllegalStateException(
                 "Native executable mode required but SubprocessConfigService not available.");
@@ -558,6 +734,9 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
 
         List<String> command = new ArrayList<>();
         command.add(executablePath);
+
+        // Device-agnostic backend/device selection, before the dispatch token (as in the JVM command)
+        command.addAll(SubprocessBackendFlags.jvmFlags(taskPlacement, BackendPreference.INHERIT));
 
         // Add subprocess type flag if using unified executable
         if (subprocessConfigService.useUnifiedExecutable("model-init")) {
@@ -574,7 +753,7 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
     /**
      * Build command for JVM classpath mode.
      */
-    private List<String> buildJvmCommand(Path argsFile) {
+    private List<String> buildJvmCommand(Path argsFile, SubprocessPlacement taskPlacement) {
         List<String> command = new ArrayList<>();
         command.add(javaPath);
 
@@ -591,7 +770,7 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
         command.add("-Dorg.bytedeco.javacpp.logger.debug=false");
 
         // Device-agnostic backend/device selection from the shared base infra — no CUDA_VISIBLE_DEVICES.
-        command.addAll(placement.jvmFlags());
+        command.addAll(SubprocessBackendFlags.jvmFlags(taskPlacement, BackendPreference.INHERIT));
 
         // Classpath - expand Spring Boot BOOT-INF entries when running from an exec jar.
         String classpath = SubprocessClasspathBuilder.buildClasspath();
@@ -651,7 +830,7 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
 
         logger.info("Cancelling model init subprocess: {}", taskId);
         handle.cancel();
-        activeProcesses.remove(taskId);
+        activeProcesses.remove(taskId, handle);
         currentStatus = ModelInitStatus.idle();
         return true;
     }
@@ -660,38 +839,79 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
     public void cleanup() {
         logger.info("Shutting down model init subprocess launcher");
 
-        // Cancel all active processes and release GPU holds
-        for (SubprocessHandle handle : activeProcesses.values()) {
+        // Cancel all active processes; a launch still starting its child kills it rather than track it
+        List<SubprocessHandle> handles;
+        synchronized (lifecycleLock) {
+            shutDown = true;
+            handles = List.copyOf(activeProcesses.values());
+            activeProcesses.clear();
+        }
+        for (SubprocessHandle handle : handles) {
             try {
                 handle.cancel();
-                // Release GPU hold for this job if held
-                if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.taskId)) {
-                    logger.info("[model-init-{}] Releasing GPU resources during shutdown", handle.taskId);
-                    try {
-                        modelLifecycleManager.releaseGpuForModelInit(handle.taskId);
-                    } catch (Exception e) {
-                        logger.warn("[model-init-{}] Error releasing GPU during shutdown: {}",
-                                handle.taskId, e.getMessage());
-                    }
-                }
             } catch (Exception e) {
                 logger.warn("Error cancelling subprocess: {}", e.getMessage());
             }
+            // Release only the GPU rows this launcher acquired — the scheduler releases its own — once
+            // each child is gone
+            handle.process.onExit().thenRun(() -> releaseModelInitGpu(handle.taskId));
         }
-        activeProcesses.clear();
     }
 
     /**
-     * Release GPU resources for a model init job.
+     * Release the task's GPU row once its killed or exited child is gone: now if it exits within
+     * {@link #CHILD_EXIT_WAIT_SECONDS}, otherwise when it does.
      */
-    private void releaseModelInitGpu(String taskId, boolean gpuAcquired) {
-        if (gpuAcquired && modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(taskId)) {
-            logger.info("[model-init-{}] Releasing GPU resources for completed/failed model init", taskId);
+    private void releaseWhenExited(String taskId, Process process) {
+        if (awaitExit(process)) {
+            releaseModelInitGpu(taskId);
+        } else {
+            logger.warn("[model-init-{}] Child still running {}s after being killed; its GPU row is released when it exits",
+                    taskId, CHILD_EXIT_WAIT_SECONDS);
+            process.onExit().thenRun(() -> releaseModelInitGpu(taskId));
+        }
+    }
+
+    private static boolean awaitExit(Process process) {
+        try {
+            return process.waitFor(CHILD_EXIT_WAIT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return !process.isAlive();
+        }
+    }
+
+    /** Args files carry credentials (the staging API key), so every path deletes them. */
+    private static void deleteArgsFile(Path argsFile) {
+        if (argsFile == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(argsFile);
+        } catch (IOException e) {
+            logger.warn("Could not delete model init args file {}: {}", argsFile, e.getMessage());
+        }
+    }
+
+    /**
+     * Release the task's GPU row if this launcher acquired it — a row the scheduler holds is the
+     * scheduler's to release. Idempotent: the launcher's row is released exactly once.
+     */
+    private void releaseModelInitGpu(String taskId) {
+        if (launcherGpuHolds.remove(taskId) && modelLifecycleManager != null) {
+            logger.info("[model-init-{}] Releasing GPU resources for finished model init", taskId);
             try {
                 modelLifecycleManager.releaseGpuForModelInit(taskId);
             } catch (Exception e) {
                 logger.warn("[model-init-{}] Error releasing GPU resources: {}", taskId, e.getMessage());
             }
+        }
+    }
+
+    /** A failed init whose status and failure listener already carry its verdict: nothing reports it again. */
+    private static final class ReportedFailure extends RuntimeException {
+        ReportedFailure(String message) {
+            super(message);
         }
     }
 
@@ -716,13 +936,9 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
         void cancel() {
             cancelled.set(true);
             if (process.isAlive()) {
-                process.destroyForcibly();
+                SubprocessSignals.kill(process);
             }
-            try {
-                java.nio.file.Files.deleteIfExists(argsFile);
-            } catch (IOException e) {
-                logger.warn("Failed to delete args file {} on cancel: {}", argsFile, e.getMessage());
-            }
+            deleteArgsFile(argsFile);
             SubprocessLogWriter lw = logWriter;
             if (lw != null) {
                 try {

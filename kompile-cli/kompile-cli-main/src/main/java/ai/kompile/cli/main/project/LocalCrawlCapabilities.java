@@ -48,6 +48,11 @@ public final class LocalCrawlCapabilities {
     public static final String CHAT_MODEL_PIPELINE = "chat-model-document";
     public static final String CODE_PIPELINE = "code";
     public static final String VLM_PIPELINE = "vlm-document";
+    /**
+     * Conventional project-registered VLM pipeline id for scanned/image-heavy PDFs, as emitted by
+     * {@code ProjectCommand}'s VLM OCR preset. See {@link #scannedPdfPipelineId(JsonNode)}.
+     */
+    public static final String SCANNED_PDF_PIPELINE = "vlm-ocr-pdf";
     /** Composed image preprocessing -> vision models -> text composition template. */
     public static final String VISION_PIPELINE = "vision-multimodel";
     public static final String VISION_COMPOSED_PIPELINE = VISION_PIPELINE;
@@ -66,6 +71,40 @@ public final class LocalCrawlCapabilities {
             "GRAPH_EXTRACTION", "VECTOR_INDEXING", "ENTITY_RESOLUTION", "ENRICHMENT", "LEARNING");
     private static final Map<String, String> LOADER_ALIASES = loaderAliases();
     private static final Map<String, String> CHUNKER_ALIASES = chunkerAliases();
+    /** Raster/photo formats: never valid UTF-8 text, and never routed to a text-family loader. */
+    private static final Set<String> IMAGE_EXTENSIONS = Set.of(
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff");
+    private static final Set<String> ARCHIVE_EXTENSIONS = Set.of(
+            ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".jar", ".war", ".ear");
+    private static final Set<String> EXECUTABLE_EXTENSIONS = Set.of(
+            ".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".wasm", ".msi", ".deb", ".rpm", ".apk");
+    private static final Set<String> AUDIO_VIDEO_EXTENSIONS = Set.of(
+            ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac",
+            ".mp4", ".avi", ".mov", ".mkv", ".webm", ".wmv", ".flv");
+    /** Formats with their own dedicated loader; never read raw through a text-family loader. */
+    private static final Set<String> DEDICATED_LOADER_EXTENSIONS = Set.of(
+            ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".xlsm",
+            ".eml", ".mbox", ".msg", ".rtf");
+    /**
+     * Sentinel {@code automaticLoader} result for a recognized binary format with no text-family
+     * loader (archive/executable/audio/video - see {@link #IMAGE_LOADER} for images specifically).
+     * Never registered as a selectable catalog loader or a {@link #LOADER_ALIASES} entry -
+     * {@link #loaderSupports} always rejects it, so a folder crawl fails the file with an
+     * actionable reason instead of reading raw bytes as text.
+     */
+    private static final String UNSUPPORTED_BINARY_LOADER = "unsupported-binary";
+    /**
+     * Sentinel {@code automaticLoader} result for an image. Deliberately distinct from
+     * {@link #UNSUPPORTED_BINARY_LOADER}: {@code ProjectCrawlCommand.writeLocalCrawlMarkdown} has
+     * its own, more precise image gate ({@code isImageKnowledgeSource} plus
+     * {@link #usesModelPipeline}) that skips images with an actionable "needs a vision pipeline"
+     * reason when no model pipeline is resolved, and otherwise lets a real VLM/CHAT_MODEL pipeline
+     * read the file directly - never through this registry's loader mapping. That upstream gate
+     * only runs for images, so {@link #loaderSupports} must defer to it here rather than reject
+     * unconditionally the way it does for {@link #UNSUPPORTED_BINARY_LOADER}; otherwise a resolved
+     * model pipeline would be rejected before ever reaching that image/model-aware branch.
+     */
+    private static final String IMAGE_LOADER = "image";
 
     private LocalCrawlCapabilities() {
     }
@@ -186,7 +225,8 @@ public final class LocalCrawlCapabilities {
                         "application/vnd.oasis.opendocument.spreadsheet"),
                 "Apache POI Excel loader with sheet tables and formula dependency graph extraction.");
         loader(loaders, "pdf", List.of("pdfbox"), List.of("application/pdf"),
-                "PDFBox loader with pdftotext fallback in native mode.");
+                "PDFBox loader (JVM); uses pdftotext directly under native image, "
+                        + "and as a fallback if PDFBox fails on the JVM.");
         loader(loaders, "code", List.of("source-code"), List.of("text/x-source"),
                 "UTF-8 source-code loader restricted to known code and build formats.");
         loader(loaders, "table", List.of("table-aware"),
@@ -194,6 +234,16 @@ public final class LocalCrawlCapabilities {
                 "Table-preserving CSV/TSV/HTML loader with layout-preserving PDF text fallback.");
         loader(loaders, "external-materialized", List.of("external-source"), List.of("text/markdown"),
                 "Reads sanitized source metadata and content materialized by a local external connector.");
+        loader(loaders, "mail", List.of("email"),
+                List.of("message/rfc822", "application/mbox", "application/vnd.ms-outlook"),
+                "Mail message loader (.eml, .mbox, .msg) with per-message output; mbox archives yield one output per message.");
+        loader(loaders, "office", List.of("microsoft-office", "office-document"),
+                List.of("application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "application/vnd.ms-powerpoint",
+                        "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+                "Apache POI Word/PowerPoint loader (.doc, .docx, .ppt, .pptx) with per-table and per-slide output.");
+        loader(loaders, "rtf", List.of("rich-text"), List.of("application/rtf", "text/rtf"),
+                "Native-image-safe RTF-to-text loader; no AWT/Swing.");
 
         ArrayNode chunkers = catalog.putArray("chunkers");
         chunker(chunkers, "recursive-character", List.of("fixed", "local-fixed", "markdown-fixed"),
@@ -207,11 +257,14 @@ public final class LocalCrawlCapabilities {
         for (String step : SUPPORTED_STEPS) {
             steps.addObject().put("id", step).put("available", true);
         }
-        catalog.putObject("routing")
-                .put("precedence", "document.pipelineId > routeRules > defaultPipelineId > automatic")
-                .putArray("supportedFields")
+        ObjectNode routing = catalog.putObject("routing");
+        routing.put("precedence", "document.pipelineId > routeRules > defaultPipelineId > automatic");
+        routing.putArray("supportedFields")
                 .add("contentTypes").add("fileExtensions").add("sourceTypes")
                 .add("minSizeBytes").add("maxSizeBytes").add("contentPatterns");
+        routing.put("sourceTypes", "routeRules sourceTypes matches the document's effective source type: "
+                + "properties.externalSourceType when present, else URL when properties.sourceUrl is set, "
+                + "else FILE.");
         catalog.put("executionMode", executionMode);
         catalog.put("distributed", false);
         catalog.putObject("asyncLifecycle")
@@ -258,7 +311,7 @@ public final class LocalCrawlCapabilities {
         minimumRequest.putObject("modelRuntime").put("autoBootstrap", true);
         wiring.putObject("scannedPdf")
                 .put("canonicalPipelineType", "VLM")
-                .put("preferredProjectPipelineId", "vlm-ocr-pdf")
+                .put("preferredProjectPipelineId", SCANNED_PDF_PIPELINE)
                 .put("fallbackTemplate", VLM_PIPELINE)
                 .put("inputContract", "application/pdf")
                 .put("guidance", "Use the project-registered VLM OCR pipeline for scanned or image-heavy PDFs; ocr-document is only for an explicitly configured OCR executor.");
@@ -425,7 +478,7 @@ public final class LocalCrawlCapabilities {
         JsonNode document = matchingDocument(request, sourceRoot, file);
         String pipelineId = text(document, "pipelineId");
         boolean explicitlySelectedPipeline = pipelineId != null;
-        if (pipelineId == null) pipelineId = routedPipeline(request, file);
+        if (pipelineId == null) pipelineId = routedPipeline(request, document, file);
         explicitlySelectedPipeline |= pipelineId != null;
         if (pipelineId == null) pipelineId = text(request, "defaultPipelineId");
         explicitlySelectedPipeline |= pipelineId != null;
@@ -467,6 +520,14 @@ public final class LocalCrawlCapabilities {
                     + firstNonBlank(text(document, "chunkerName"), profileChunker, pipeline.chunkerName()));
         }
         if ("auto".equals(loader)) loader = automaticLoader(file);
+        // "external-materialized" only understands the message Markdown a connector writes at
+        // <connector-dir>/<messageKey>.md; a single document entry spans the whole connector
+        // directory (see LocalProjectCrawlBackend), so original attachment files nested under
+        // <connector-dir>/attachments/<messageKey>/<fileName> inherit that loaderName too. Route
+        // those by their real extension instead of failing them as unsupported Markdown.
+        if ("external-materialized".equals(loader) && !".md".equals(extension(file))) {
+            loader = automaticLoader(file);
+        }
 
         int chunkSize = positiveInt(document, "chunkSize", pipeline.chunkSize());
         int chunkOverlap = nonNegativeInt(document, "chunkOverlap", pipeline.chunkOverlap());
@@ -500,6 +561,38 @@ public final class LocalCrawlCapabilities {
                 chunkSize, chunkOverlap, Map.copyOf(options), Map.copyOf(processor));
     }
 
+    /**
+     * Picks the effective scanned-PDF VLM pipeline id for {@code request}: the conventional
+     * {@link #SCANNED_PDF_PIPELINE} when the request defines one anywhere - including via
+     * {@code pipelineRegistry.defaults}, which is how {@code project init}'s VLM OCR preset
+     * registers it (see {@code LocalProjectCrawlBackend.registerProjectPipelines}) - else the
+     * first non-builtin pipeline definition whose {@code pipelineType} is {@code VLM}, else the
+     * built-in {@link #VLM_PIPELINE} fallback.
+     *
+     * <p>Uses the exact same {@link #pipelineDefinitions(JsonNode)} merge that {@link #resolve}
+     * does (builtins + {@code pipelineRegistry.defaults} + {@code registeredPipelines} +
+     * {@code pipelines}), so a project pipeline registered only under
+     * {@code pipelineRegistry.defaults} - never appearing in {@code request.pipelines[]} - is
+     * still found here.</p>
+     *
+     * @throws IllegalArgumentException propagated unchanged from
+     *         {@link #pipelineDefinitions(JsonNode)} when {@code request} references an unknown
+     *         {@code registeredPipelineId}
+     */
+    public static String scannedPdfPipelineId(JsonNode request) {
+        Map<String, PipelineDefinition> pipelines = pipelineDefinitions(request);
+        if (pipelines.containsKey(SCANNED_PDF_PIPELINE)) {
+            return SCANNED_PDF_PIPELINE;
+        }
+        Set<String> builtinIds = pipelineDefinitions(null).keySet();
+        for (Map.Entry<String, PipelineDefinition> entry : pipelines.entrySet()) {
+            if (!builtinIds.contains(entry.getKey()) && "VLM".equalsIgnoreCase(entry.getValue().pipelineType())) {
+                return entry.getKey();
+            }
+        }
+        return VLM_PIPELINE;
+    }
+
     /** Execute one of the registered TextChunker implementations. */
     public static List<String> chunk(String documentId, String text, ResolvedPipeline pipeline) {
         if (text == null || text.isBlank()) return List.of();
@@ -530,10 +623,21 @@ public final class LocalCrawlCapabilities {
             case "markdown" -> name.endsWith(".md") || name.endsWith(".markdown");
             case "code" -> isCodeFile(file);
             case "excel" -> isExcelFile(file);
-            case "external-materialized" -> name.endsWith(".md");
+            case "mail" -> isMailFile(file);
+            case "office" -> isOfficeFile(file);
+            case "rtf" -> isRtfFile(file);
+            // A materialized connector directory is one document entry spanning both message
+            // Markdown and attachments/<messageKey>/<fileName> originals (see resolve()); a
+            // non-Markdown attachment is supported exactly when its real extension is.
+            case "external-materialized" -> name.endsWith(".md") || loaderSupports(automaticLoader(file), file);
             case "table" -> name.endsWith(".csv") || name.endsWith(".tsv")
                     || name.endsWith(".html") || name.endsWith(".htm") || name.endsWith(".pdf");
-            case "text" -> !name.endsWith(".pdf");
+            case "text" -> !isKnownBinaryExtension(file) && !DEDICATED_LOADER_EXTENSIONS.contains(extension(file));
+            // Falls through to `default -> true` regardless, but named explicitly (see the
+            // IMAGE_LOADER javadoc) so a real VLM/CHAT_MODEL pipeline is never rejected here -
+            // ProjectCrawlCommand's image-aware gate runs before this and is the real authority.
+            case IMAGE_LOADER -> true;
+            case UNSUPPORTED_BINARY_LOADER -> false;
             default -> true;
         };
     }
@@ -1148,24 +1252,24 @@ public final class LocalCrawlCapabilities {
         return best;
     }
 
-    private static String routedPipeline(JsonNode request, Path file) throws IOException {
+    private static String routedPipeline(JsonNode request, JsonNode document, Path file) throws IOException {
         JsonNode rules = request == null ? null : request.get("routeRules");
         if (rules == null || !rules.isArray()) return null;
         List<JsonNode> ordered = new ArrayList<>();
         rules.forEach(ordered::add);
         ordered.sort(Comparator.comparingInt(rule -> rule.path("priority").asInt(100)));
         for (JsonNode rule : ordered) {
-            if (matchesRoute(rule, file)) return text(rule, "pipelineId");
+            if (matchesRoute(rule, document, file)) return text(rule, "pipelineId");
         }
         return null;
     }
 
-    private static boolean matchesRoute(JsonNode rule, Path file) throws IOException {
+    private static boolean matchesRoute(JsonNode rule, JsonNode document, Path file) throws IOException {
         String extension = extension(file);
         String contentType = Files.probeContentType(file);
         if (!matchesAny(rule.get("fileExtensions"), extension, false)) return false;
         if (!matchesAny(rule.get("contentTypes"), contentType, true)) return false;
-        if (!matchesAny(rule.get("sourceTypes"), "FILE", false)) return false;
+        if (!matchesAny(rule.get("sourceTypes"), effectiveSourceType(document), false)) return false;
         long size = Files.size(file);
         if (rule.hasNonNull("minSizeBytes") && size < rule.path("minSizeBytes").asLong()) return false;
         if (rule.hasNonNull("maxSizeBytes") && size > rule.path("maxSizeBytes").asLong()) return false;
@@ -1194,6 +1298,21 @@ public final class LocalCrawlCapabilities {
             if (!matched) return false;
         }
         return true;
+    }
+
+    /**
+     * The document's effective source type for {@code routeRules[].sourceTypes} matching:
+     * {@code properties.externalSourceType} when a connector set one (e.g. "SLACK", "DISCORD",
+     * "OBSIDIAN"), else {@code "URL"} when {@code properties.sourceUrl} is present, else
+     * {@code "FILE"} for an ordinary filesystem document.
+     */
+    private static String effectiveSourceType(JsonNode document) {
+        if (document == null || !document.isObject()) return "FILE";
+        JsonNode properties = document.get("properties");
+        String external = text(properties, "externalSourceType");
+        if (external != null) return external;
+        if (text(properties, "sourceUrl") != null) return "URL";
+        return "FILE";
     }
 
     private static boolean matchesAny(JsonNode values, String actual, boolean wildcard) {
@@ -1226,7 +1345,18 @@ public final class LocalCrawlCapabilities {
         if (name.endsWith(".html") || name.endsWith(".htm")) return "html";
         if (name.endsWith(".md") || name.endsWith(".markdown")) return "markdown";
         if (isExcelFile(file)) return "excel";
+        if (isMailFile(file)) return "mail";
+        if (isOfficeFile(file)) return "office";
+        if (isRtfFile(file)) return "rtf";
         if (isCodeFile(file)) return "code";
+        // Images get their own sentinel, checked ahead of the general binary check below: a real
+        // VLM/CHAT_MODEL pipeline reads image bytes directly (see the IMAGE_LOADER javadoc), so
+        // loaderSupports must not reject them the way it does for archives/executables/audio-video.
+        if (IMAGE_EXTENSIONS.contains(extension(file))) return IMAGE_LOADER;
+        // Never fall through to the UTF-8 text loader for a known binary format: an archive,
+        // executable, or audio/video file is not text at all, and misreading its raw
+        // bytes as UTF-8 either throws deep inside chunking or silently indexes garbage.
+        if (isKnownBinaryExtension(file)) return UNSUPPORTED_BINARY_LOADER;
         return "text";
     }
 
@@ -1234,6 +1364,27 @@ public final class LocalCrawlCapabilities {
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
         return name.endsWith(".xls") || name.endsWith(".xlsx")
                 || name.endsWith(".xlsm") || name.endsWith(".ods");
+    }
+
+    private static boolean isMailFile(Path file) {
+        String ext = extension(file);
+        return ".eml".equals(ext) || ".mbox".equals(ext) || ".msg".equals(ext);
+    }
+
+    private static boolean isOfficeFile(Path file) {
+        String ext = extension(file);
+        return ".doc".equals(ext) || ".docx".equals(ext) || ".ppt".equals(ext) || ".pptx".equals(ext);
+    }
+
+    private static boolean isRtfFile(Path file) {
+        return ".rtf".equals(extension(file));
+    }
+
+    /** Images, archives, executables, and audio/video: never valid as any text-family loader. */
+    private static boolean isKnownBinaryExtension(Path file) {
+        String ext = extension(file);
+        return IMAGE_EXTENSIONS.contains(ext) || ARCHIVE_EXTENSIONS.contains(ext)
+                || EXECUTABLE_EXTENSIONS.contains(ext) || AUDIO_VIDEO_EXTENSIONS.contains(ext);
     }
 
     private static boolean isCodeFile(Path file) {
@@ -1282,6 +1433,9 @@ public final class LocalCrawlCapabilities {
         aliases(aliases, "code", "code", "source-code");
         aliases(aliases, "table", "table", "table-aware");
         aliases(aliases, "external-materialized", "external-materialized", "external-source");
+        aliases(aliases, "mail", "mail", "email");
+        aliases(aliases, "office", "office", "microsoft-office", "office-document");
+        aliases(aliases, "rtf", "rtf", "rich-text");
         return Map.copyOf(aliases);
     }
 

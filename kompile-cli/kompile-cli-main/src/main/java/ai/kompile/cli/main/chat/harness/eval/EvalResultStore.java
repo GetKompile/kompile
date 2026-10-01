@@ -35,9 +35,6 @@ import java.util.List;
  */
 public class EvalResultStore {
 
-    private static final Path DEFAULT_STORE_FILE = Path.of(System.getProperty("user.home"),
-            ".kompile", "eval-results.json");
-
     private static final int MAX_RUNS = 500;
     private static final int MAX_AGE_DAYS = 90;
 
@@ -46,7 +43,12 @@ public class EvalResultStore {
     private List<EvalRunResult> runs;
 
     public EvalResultStore() {
-        this(DEFAULT_STORE_FILE);
+        this(defaultStoreFile());
+    }
+
+    /** {@code ~/.kompile/eval-results.json} under the {@code user.home} current when a store is made. */
+    static Path defaultStoreFile() {
+        return Path.of(System.getProperty("user.home"), ".kompile", "eval-results.json");
     }
 
     /** Constructor with custom store file path (for testing). */

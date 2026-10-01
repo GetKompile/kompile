@@ -69,11 +69,21 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
         this.runtimeInfo = RuntimeInfo.from(runtime);
         this.crawlJobId = crawlJobId;
         this.knowledgeBaseId = knowledgeBaseId;
-        this.requestTimeout = Duration.ofSeconds(Math.max(30, requestTimeoutSeconds));
+        // The transport deadline must cover cold DSP/Triton warmup on the first
+        // call, which runs INSIDE the serving child before the first response
+        // byte. The crawl dispatcher adds its own one-time warmup extra on top of
+        // its inference budget; mirroring the same extra here keeps the outer
+        // HTTP deadline from truncating a call the dispatcher still expects to
+        // run. Warmup extra mirrors CrawlLlmDispatcher.DEFAULT_WARMUP_EXTRA.
+        this.requestTimeout = Duration.ofSeconds(
+                Math.max(30, requestTimeoutSeconds) + WARMUP_EXTRA_SECONDS);
         this.client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
     }
+
+    /** Matches CrawlLlmDispatcher.DEFAULT_WARMUP_EXTRA_TIMEOUT_SECONDS. */
+    static final int WARMUP_EXTRA_SECONDS = 600;
 
     public static LocalCrawlServingSession start(String modelId, int timeoutSeconds)
             throws KompileLocalServingBootstrap.BootstrapException {

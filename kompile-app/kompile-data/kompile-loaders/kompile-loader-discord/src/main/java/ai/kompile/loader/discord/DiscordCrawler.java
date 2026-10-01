@@ -27,9 +27,12 @@ import ai.kompile.loader.discord.DiscordModels.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 /**
@@ -113,6 +116,13 @@ public class DiscordCrawler extends AbstractCrawler {
         boolean includeArchivedThreads = boolVal(props.get("includeArchivedThreads"), true);
         int maxMessages = config.getMaxDocuments();
         Duration rateLimitDelay = Duration.ofMillis(MapUtils.toInt(props.get("rateLimitDelayMs"), 500));
+        Path attachmentDirectory = resolveAttachmentDirectory(props);
+        long maxAttachmentBytes = MapUtils.toLong(props.get("maxAttachmentBytes"), DiscordAttachmentStorage.DEFAULT_MAX_ATTACHMENT_BYTES);
+
+        // C3 SINCE: folded into each channel/thread's own incremental checkpoint below, using
+        // whichever bound is later.
+        Instant sinceInstant = parseInstant(str(props.get("since")));
+        String sinceSnowflake = snowflakeForInstant(sinceInstant);
 
         DiscordApiService api = new DiscordApiService(botToken, rateLimitDelay);
 
@@ -125,15 +135,52 @@ public class DiscordCrawler extends AbstractCrawler {
         List<Channel> textChannels = filterTargetChannels(allChannels, props);
         log.info("Found {} text channels to crawl", textChannels.size());
 
+        Set<String> targetChannelIds = new HashSet<>();
+        for (Channel ch : textChannels) targetChannelIds.add(ch.id());
+
         // Collect threads
         List<Channel> threads = new ArrayList<>();
         if (includeThreads) {
-            threads.addAll(api.getActiveThreads(guildId));
+            // B3: the guild-wide active-threads endpoint returns threads from every channel in
+            // the guild, not just the ones targeted by channelIds — keep only threads parented
+            // under a targeted channel. B2: a guild-wide failure here must only drop active
+            // threads, not abort the whole crawl.
+            try {
+                for (Channel candidate : api.getActiveThreads(guildId)) {
+                    if (candidate.parentId() != null && targetChannelIds.contains(candidate.parentId())) {
+                        threads.add(candidate);
+                    }
+                }
+            } catch (DiscordForbiddenException e) {
+                log.debug("Skipping active-thread discovery for guild {} (no access): {}", guildId, e.getMessage());
+            } catch (Exception e) {
+                job.recordError("threads:active", e);
+                log.warn("Failed to list active threads for guild {}: {}", guildId, e.getMessage());
+            }
             if (includeArchivedThreads) {
                 for (Channel ch : textChannels) {
                     if (job.shouldStop()) break;
-                    threads.addAll(api.getArchivedPublicThreads(ch.id()));
-                    threads.addAll(api.getArchivedPrivateThreads(ch.id()));
+                    // B2: archived-thread discovery is per-channel. Discord 403s
+                    // /threads/archived/public for a channel missing READ_MESSAGE_HISTORY or
+                    // VIEW_CHANNEL, and the guild channel list can include such channels — one
+                    // inaccessible channel must only drop that channel's threads, never abort
+                    // the whole crawl.
+                    try {
+                        threads.addAll(api.getArchivedPublicThreads(ch.id(), sinceInstant));
+                    } catch (DiscordForbiddenException e) {
+                        log.debug("Skipping archived public threads for #{} (no access): {}", ch.name(), e.getMessage());
+                    } catch (Exception e) {
+                        job.recordError("threads:" + ch.id(), e);
+                        log.warn("Failed to list archived public threads for #{}: {}", ch.name(), e.getMessage());
+                    }
+                    try {
+                        threads.addAll(api.getArchivedPrivateThreads(ch.id(), sinceInstant));
+                    } catch (DiscordForbiddenException e) {
+                        log.debug("Skipping archived private threads for #{} (no access): {}", ch.name(), e.getMessage());
+                    } catch (Exception e) {
+                        job.recordError("threads:" + ch.id(), e);
+                        log.warn("Failed to list archived private threads for #{}: {}", ch.name(), e.getMessage());
+                    }
                 }
             }
             log.info("Found {} threads", threads.size());
@@ -164,28 +211,53 @@ public class DiscordCrawler extends AbstractCrawler {
         }
 
         int totalEmitted = 0;
+        // B6: maxMessages is a TOTAL cap across channels and threads, not a per-channel cap.
+        // <= 0 means unlimited (existing API contract), in which case remainingBudget is never
+        // consulted and 0 keeps being passed through as "unlimited" to each fetch.
+        boolean unlimited = maxMessages <= 0;
+        int remainingBudget = maxMessages;
+
+        // B2: isolate failures per channel (403 is a skip, not a failure); only abort the whole
+        // crawl if every targeted channel that wasn't access-skipped also failed.
+        int channelAttempts = 0;
+        int channelFailures = 0;
+        Exception firstChannelFailure = null;
 
         // Crawl each channel
         for (Channel channel : textChannels) {
             if (job.shouldStop()) break;
             if (!job.checkPauseAndContinue()) break;
+            if (!unlimited && remainingBudget <= 0) break;
 
             job.setCurrentItem("#" + channel.name());
             job.setCurrentDepth(0);
 
-            // For incremental crawls, use the last seen message ID as "after"
-            String afterId = job.getIncrementalAfterForChannel(channel.id());
+            // For incremental crawls, use the last seen message ID as "after" and page forward
+            // from it, so a backlog larger than maxMessages never loses the oldest new messages.
+            // B7: fold in "since", using whichever bound (checkpoint or since) is later.
+            String afterId = laterSnowflake(sinceSnowflake, job.getIncrementalAfterForChannel(channel.id()));
+            int fetchLimit = unlimited ? 0 : remainingBudget;
 
             List<Message> messages;
             try {
-                messages = api.getChannelMessages(channel.id(), maxMessages, afterId, null);
+                messages = afterId != null
+                        ? api.getChannelMessagesAfter(channel.id(), fetchLimit, afterId)
+                        : api.getChannelMessages(channel.id(), fetchLimit, null, null);
+            } catch (DiscordForbiddenException e) {
+                log.warn("Skipping #{} (no access): {}", channel.name(), e.getMessage());
+                continue;
             } catch (Exception e) {
+                channelAttempts++;
+                channelFailures++;
+                if (firstChannelFailure == null) firstChannelFailure = e;
                 job.recordError("channel:" + channel.id(), e);
                 log.warn("Failed to fetch messages from #{}: {}", channel.name(), e.getMessage());
                 continue;
             }
+            channelAttempts++;
 
             log.info("Fetched {} messages from #{}", messages.size(), channel.name());
+            if (!unlimited) remainingBudget -= messages.size();
 
             // Track the newest message for incremental state
             if (!messages.isEmpty()) {
@@ -196,14 +268,23 @@ public class DiscordCrawler extends AbstractCrawler {
                 if (job.shouldStop()) break;
 
                 CrawlItem item = buildMessageCrawlItem(msg, channel, guild, config, roleMap, memberMap);
+
+                // C4/B5: save attachments to attachmentDirectory (if configured) before the item
+                // is handed to the listener, so the "attachments" metadata is present on emission.
+                if (includeAttachments && attachmentDirectory != null
+                        && msg.attachments() != null && !msg.attachments().isEmpty()) {
+                    applyAttachmentStorage(api, item, msg, attachmentDirectory, maxAttachmentBytes);
+                }
+
                 job.incrementDiscovered();
                 job.getListener().onDocumentDiscovered(item);
                 job.incrementProcessed();
                 job.getListener().onDocumentProcessed(item);
                 totalEmitted++;
 
-                // Emit attachments as separate crawl items
-                if (includeAttachments && msg.attachments() != null) {
+                // Legacy behavior: without attachmentDirectory, emit attachments as separate
+                // crawl items (downloaded to temp files) instead of saving them under it.
+                if (includeAttachments && attachmentDirectory == null && msg.attachments() != null) {
                     for (Attachment att : msg.attachments()) {
                         if (job.shouldStop()) break;
                         try {
@@ -224,24 +305,38 @@ public class DiscordCrawler extends AbstractCrawler {
             job.visitedChannels.add(channel.id());
         }
 
+        if (channelAttempts > 0 && channelFailures == channelAttempts) {
+            throw new IOException("All " + channelAttempts + " targeted Discord channel(s) failed",
+                    firstChannelFailure);
+        }
+
         // Crawl threads (depth=1)
         for (Channel thread : threads) {
             if (job.shouldStop()) break;
             if (!job.checkPauseAndContinue()) break;
+            if (!unlimited && remainingBudget <= 0) break;
 
             job.setCurrentItem("thread:" + thread.name());
             job.setCurrentDepth(1);
 
-            String afterId = job.getIncrementalAfterForChannel(thread.id());
+            String afterId = laterSnowflake(sinceSnowflake, job.getIncrementalAfterForChannel(thread.id()));
+            int fetchLimit = unlimited ? 0 : remainingBudget;
 
             List<Message> messages;
             try {
-                messages = api.getChannelMessages(thread.id(), maxMessages, afterId, null);
+                messages = afterId != null
+                        ? api.getChannelMessagesAfter(thread.id(), fetchLimit, afterId)
+                        : api.getChannelMessages(thread.id(), fetchLimit, null, null);
+            } catch (DiscordForbiddenException e) {
+                log.warn("Skipping thread '{}' (no access): {}", thread.name(), e.getMessage());
+                continue;
             } catch (Exception e) {
                 job.recordError("thread:" + thread.id(), e);
                 log.warn("Failed to fetch messages from thread '{}': {}", thread.name(), e.getMessage());
                 continue;
             }
+
+            if (!unlimited) remainingBudget -= messages.size();
 
             if (!messages.isEmpty()) {
                 job.recordNewestMessage(thread.id(), messages.get(0).id());
@@ -251,13 +346,19 @@ public class DiscordCrawler extends AbstractCrawler {
                 if (job.shouldStop()) break;
 
                 CrawlItem item = buildMessageCrawlItem(msg, thread, guild, config, roleMap, memberMap);
+
+                if (includeAttachments && attachmentDirectory != null
+                        && msg.attachments() != null && !msg.attachments().isEmpty()) {
+                    applyAttachmentStorage(api, item, msg, attachmentDirectory, maxAttachmentBytes);
+                }
+
                 job.incrementDiscovered();
                 job.getListener().onDocumentDiscovered(item);
                 job.incrementProcessed();
                 job.getListener().onDocumentProcessed(item);
                 totalEmitted++;
 
-                if (includeAttachments && msg.attachments() != null) {
+                if (includeAttachments && attachmentDirectory == null && msg.attachments() != null) {
                     for (Attachment att : msg.attachments()) {
                         if (job.shouldStop()) break;
                         try {
@@ -278,6 +379,25 @@ public class DiscordCrawler extends AbstractCrawler {
         }
 
         log.info("Discord crawl complete: {} items emitted from server '{}'", totalEmitted, guild.name());
+    }
+
+    /**
+     * C4/B5: when an attachmentDirectory is configured, downloads and saves each attachment's
+     * original bytes under it (content-addressed by the message's source_path) and records an
+     * {@code "attachments"} metadata entry describing what was saved or skipped. No separate
+     * attachment CrawlItem is produced and no text is extracted in this mode.
+     */
+    private void applyAttachmentStorage(DiscordApiService api, CrawlItem item, Message msg,
+                                         Path attachmentDirectory, long maxAttachmentBytes) {
+        String sourcePath = (String) item.getMetadata().get(GraphConstants.META_SOURCE_PATH);
+        String messageKey = DiscordAttachmentStorage.messageKey(sourcePath);
+        Set<String> usedFileNames = new HashSet<>();
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (Attachment att : msg.attachments()) {
+            entries.add(DiscordAttachmentStorage.save(
+                    api, att, attachmentDirectory, messageKey, maxAttachmentBytes, usedFileNames));
+        }
+        item.getMetadata().put("attachments", entries);
     }
 
     private CrawlItem buildMessageCrawlItem(Message msg, Channel channel, Guild guild, CrawlConfig config,
@@ -600,6 +720,41 @@ public class DiscordCrawler extends AbstractCrawler {
         return allChannels.stream()
                 .filter(Channel::isTextBased)
                 .toList();
+    }
+
+    private static Path resolveAttachmentDirectory(Map<String, Object> props) {
+        String dir = str(props.get("attachmentDirectory"));
+        return dir != null && !dir.isEmpty() ? Path.of(dir) : null;
+    }
+
+    /** Parses the C3 SINCE metadata value; accepts a plain instant or an offset form. */
+    private static Instant parseInstant(String value) {
+        if (value == null || value.isEmpty()) return null;
+        try {
+            return Instant.parse(value);
+        } catch (DateTimeParseException e1) {
+            try {
+                return OffsetDateTime.parse(value).toInstant();
+            } catch (DateTimeParseException e2) {
+                log.warn("Unable to parse 'since' timestamp '{}', ignoring", value);
+                return null;
+            }
+        }
+    }
+
+    private static String snowflakeForInstant(Instant instant) {
+        if (instant == null) return null;
+        long epochMillis = instant.toEpochMilli();
+        if (epochMillis <= DiscordModels.DISCORD_EPOCH) return null;
+        long snowflake = (epochMillis - DiscordModels.DISCORD_EPOCH) << 22;
+        return Long.toUnsignedString(snowflake);
+    }
+
+    /** The later (numerically greater, compared unsigned) of two possibly-null snowflake IDs. */
+    private static String laterSnowflake(String a, String b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        return Long.compareUnsigned(Long.parseUnsignedLong(a), Long.parseUnsignedLong(b)) >= 0 ? a : b;
     }
 
     private String resolveGuildId(CrawlConfig config) {

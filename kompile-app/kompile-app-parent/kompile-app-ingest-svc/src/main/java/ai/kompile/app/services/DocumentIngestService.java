@@ -80,7 +80,7 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     // Subprocess mode configuration - now managed via SubprocessConfigService for
     // dynamic updates
     @Autowired(required = false)
-    private SubprocessConfigService subprocessConfigService;
+    SubprocessConfigService subprocessConfigService;
 
     @Autowired(required = false)
     private SimpMessagingTemplate messagingTemplate;
@@ -108,9 +108,9 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     @Autowired(required = false)
     private LargeDocumentPreprocessor largeDocumentPreprocessor;
     @Autowired(required = false)
-    private SubprocessIngestLauncher subprocessIngestLauncher;
+    SubprocessIngestLauncher subprocessIngestLauncher;
     @Autowired(required = false)
-    private ResourceAwareJobScheduler resourceScheduler;
+    ResourceAwareJobScheduler resourceScheduler;
 
     /** May be null in lightweight/native contexts; guarded at every call site. */
     @Autowired(required = false)
@@ -124,14 +124,14 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     // leaks
     // Maximum 1000 entries, oldest entries removed when limit reached
     private static final int MAX_ACTIVE_TASKS = 1000;
-    private final Map<String, IngestProgressUpdate> activeTasksStatus = new ConcurrentHashMap<>();
+    final Map<String, IngestProgressUpdate> activeTasksStatus = new ConcurrentHashMap<>();
 
     // Track cancelled tasks - tasks in this set should stop processing as soon as
     // possible
     private final Set<String> cancelledTasks = ConcurrentHashMap.newKeySet();
 
     // Track active pipelines for cancellation
-    private final Map<String, ParallelIngestPipeline> activePipelines = new ConcurrentHashMap<>();
+    final Map<String, ParallelIngestPipeline> activePipelines = new ConcurrentHashMap<>();
 
     // Single scheduled executor for cleanup tasks instead of spawning threads per
     // task
@@ -531,29 +531,8 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                             .jobType("ingest")
                             .description("Ingest: " + fileName)
                             .resourceProfile(JobResourceProfiles.INGEST)
-                            .executor(ctx -> {
-                                // Deliver the scheduler's device-agnostic placement before the spawn.
-                                if (subprocessIngestLauncher != null && ctx.placement() != null) {
-                                    subprocessIngestLauncher.applyPlacement(ctx.placement());
-                                }
-                                try {
-                                    var resultFuture = subprocessIngestLauncher.launchIngest(
-                                            taskId, filePath, fLoaderName, fChunkerName, subprocessOptions);
-                                    var result = resultFuture.get();
-                                    if (result != null && !result.success()) {
-                                        throw new RuntimeException("Ingest failed: " + result.errorMessage());
-                                    }
-                                    if (result != null) {
-                                        logger.info("[Task {}] Subprocess ingest completed via scheduler: {} docs loaded, {} indexed",
-                                                taskId, result.documentsLoaded(), result.documentsIndexed());
-                                    }
-                                } catch (InterruptedException e) {
-                                    Thread.currentThread().interrupt();
-                                    throw new RuntimeException("Ingest interrupted", e);
-                                } catch (ExecutionException e) {
-                                    throw new RuntimeException("Ingest failed: " + e.getCause().getMessage(), e.getCause());
-                                }
-                            })
+                            .executor(ctx -> runScheduledSubprocessIngest(
+                                    ctx, taskId, filePath, fLoaderName, fChunkerName, subprocessOptions))
                             .priority(50)
                             .build();
                     // Broadcast QUEUED state so the UI shows the task immediately
@@ -569,7 +548,10 @@ public class DocumentIngestService implements org.springframework.beans.factory.
             }
 
             try {
-                subprocessIngestLauncher.launchIngest(taskId, filePath, loaderName, chunkerName, subprocessOptions)
+                // No scheduler row: the launcher reserves the job's own GPU row (CPU if it can't),
+                // never reusing another job's placement
+                subprocessIngestLauncher.launchIngest(taskId, filePath, loaderName, chunkerName, subprocessOptions,
+                                null)
                         .whenComplete((result, error) -> {
                             if (error != null) {
                                 logger.error("[Task {}] Subprocess ingest failed: {}", taskId, error.getMessage());
@@ -1485,12 +1467,67 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                         "loaderName", loaderName != null ? loaderName : "",
                         "chunkerName", chunkerName != null ? chunkerName : ""
                 ))
-                .executor(ctx -> processDocumentAsync(
-                        taskId, filePath, loaderName, chunkerName, ProcessingMode.AUTO, options))
+                .executor(ctx -> {
+                    if (subprocessIngestLauncher != null && determineUseSubprocess(ProcessingMode.AUTO, taskId)) {
+                        // Run it as this job: processDocumentAsync would queue a second scheduler job
+                        // under the same id and return before the ingest ran, completing this one early
+                        runScheduledSubprocessIngest(ctx, taskId, filePath, loaderName, chunkerName, options);
+                        return;
+                    }
+                    processDocumentAsync(taskId, filePath, loaderName, chunkerName, ProcessingMode.INPROCESS, options);
+                    throwIfIngestStopped(ctx, taskId);
+                })
                 .build();
 
         logger.info("[Task {}] Submitting ingest job to scheduler for '{}'", taskId, fileName);
         return resourceScheduler.submit(job);
+    }
+
+    /**
+     * A scheduler job's subprocess ingest. The launch goes on the job's own placement (the GPU row the
+     * scheduler holds for it), which every retry reuses, and the job ends when the ingest does.
+     */
+    private void runScheduledSubprocessIngest(ScheduledJob.JobExecutionContext ctx, String taskId, Path filePath,
+            String loaderName, String chunkerName, Map<String, Object> subprocessOptions) {
+        try {
+            var result = subprocessIngestLauncher.launchIngest(
+                    taskId, filePath, loaderName, chunkerName, subprocessOptions, ctx.placement()).get();
+            if (result != null && !result.success()) {
+                throw new RuntimeException("Ingest failed: " + result.errorMessage());
+            }
+            if (result != null) {
+                logger.info("[Task {}] Subprocess ingest completed via scheduler: {} docs loaded, {} indexed",
+                        taskId, result.documentsLoaded(), result.documentsIndexed());
+            }
+        } catch (InterruptedException e) {
+            // A scheduler cancel interrupts this wait; stop the child as well
+            // rather than leave it running after its job has ended.
+            subprocessIngestLauncher.cancelIngest(ctx.jobId());
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Ingest interrupted", e);
+        } catch (ExecutionException e) {
+            throw new RuntimeException("Ingest failed: " + e.getCause().getMessage(), e.getCause());
+        }
+    }
+
+    /**
+     * {@link #processDocumentAsync} records a cancelled, interrupted or failed ingest in the task
+     * status and returns normally; a scheduler executor that returned then would have its job
+     * recorded as completed.
+     */
+    private void throwIfIngestStopped(ScheduledJob.JobExecutionContext ctx, String taskId)
+            throws InterruptedException {
+        ctx.throwIfCancellationRequested();
+        IngestProgressUpdate outcome = activeTasksStatus.get(taskId);
+        if (outcome == null) {
+            return;
+        }
+        if (outcome.status() == IngestProgressUpdate.IngestStatus.CANCELLED) {
+            throw new CancellationException("Ingest " + taskId + " cancelled: " + outcome.errorMessage());
+        }
+        if (outcome.status() == IngestProgressUpdate.IngestStatus.FAILED) {
+            throw new IllegalStateException("Ingest " + taskId + " failed: " + outcome.errorMessage());
+        }
     }
 
     /**
@@ -1499,10 +1536,16 @@ public class DocumentIngestService implements org.springframework.beans.factory.
      * otherwise.
      */
     public boolean cancelTask(String taskId) {
+        // A scheduled ingest is cancelled as a job too: a queued one then never starts, and a running
+        // subprocess one is interrupted, which stops its child. A running in-process pipeline stops
+        // cooperatively below instead, since an interrupt can close its index writer's file channels.
+        boolean jobCancelled = resourceScheduler != null && activePipelines.get(taskId) == null
+                && resourceScheduler.cancel(taskId);
         IngestProgressUpdate currentStatus = activeTasksStatus.get(taskId);
         if (currentStatus == null) {
             // Task may be running in subprocess mode (tracked by
-            // SubprocessIngestLauncher/IngestProgressTracker)
+            // SubprocessIngestLauncher/IngestProgressTracker). The taskId is the scheduler jobId,
+            // so this reaches whichever attempt of the job is running, or its pending retry.
             if (subprocessIngestLauncher != null && subprocessIngestLauncher.cancelIngest(taskId)) {
                 logger.info("[Task {}] Subprocess task marked for cancellation", taskId);
                 return true;
@@ -1518,6 +1561,11 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                 return true;
             }
 
+            if (jobCancelled) {
+                logger.info("[Task {}] Scheduled ingest cancelled before it started", taskId);
+                return true;
+            }
+
             logger.warn("[Task {}] Cannot cancel - task not found", taskId);
             return false;
         }
@@ -1529,6 +1577,12 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                 status == IngestProgressUpdate.IngestStatus.CANCELLED) {
             logger.info("[Task {}] Cannot cancel - task already in terminal state: {}", taskId, status);
             return false;
+        }
+
+        // A subprocess ingest queued by processDocumentAsync keeps its queued status here while its
+        // child runs, so its child is stopped here as well
+        if (subprocessIngestLauncher != null) {
+            subprocessIngestLauncher.cancelIngest(taskId);
         }
 
         // Mark task for cancellation

@@ -21,8 +21,6 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.ops.transforms.Transforms;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -114,24 +112,12 @@ class TransEVectorizationEquivalenceTest {
     }
 
     // -----------------------------------------------------------------------
-    // Reflection helpers: set the model's private embedding matrices and maps
-    // directly so we can control the exact starting state.
+    // The model's embedding matrices and maps are package-private: the tests set
+    // them directly so they control the exact starting state.
     // -----------------------------------------------------------------------
-    private static void setField(Object obj, String name, Object value) throws Exception {
-        Field f = obj.getClass().getDeclaredField(name);
-        f.setAccessible(true);
-        f.set(obj, value);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T> T getField(Object obj, String name) throws Exception {
-        Field f = obj.getClass().getDeclaredField(name);
-        f.setAccessible(true);
-        return (T) f.get(obj);
-    }
 
     /**
-     * Calls TransEModel#trainBatch via reflection.
+     * Calls TransEModel#trainBatch.
      *
      * <p>The current production signature is:
      * {@code trainBatch(List, List, double, double, float[][], float[][])}
@@ -148,40 +134,28 @@ class TransEVectorizationEquivalenceTest {
     private static double callTrainBatch(TransEModel model,
                                          List<Triple> positives,
                                          List<Triple> negatives,
-                                         double lr, double margin) throws Exception {
-        int dim = (int) getField(model, "embeddingDim");
+                                         double lr, double margin) {
+        int dim = model.embeddingDim;
 
-        INDArray entityEmb   = getField(model, "entityEmbeddings");
-        INDArray relationEmb = getField(model, "relationEmbeddings");
+        INDArray entityEmb   = model.entityEmbeddings;
+        INDArray relationEmb = model.relationEmbeddings;
 
         int numEntities  = (int) entityEmb.rows();
         int numRelations = (int) relationEmb.rows();
 
-        // Build float[][] mirrors from the current INDArray matrices (same logic as
-        // TransEModel.copyFromINDArray — replicated here to avoid calling a private method)
+        // Build float[][] mirrors from the current INDArray matrices, as the training loop does.
         float[][] entityMirror   = new float[numEntities][dim];
         float[][] relationMirror = new float[numRelations][dim];
-        float[] eFlat = entityEmb.data().asFloat();
-        float[] rFlat = relationEmb.data().asFloat();
-        for (int r = 0; r < numEntities;  r++) System.arraycopy(eFlat, r * dim, entityMirror[r],   0, dim);
-        for (int r = 0; r < numRelations; r++) System.arraycopy(rFlat, r * dim, relationMirror[r], 0, dim);
+        TransEModel.copyFromINDArray(entityEmb,   entityMirror,   numEntities,  dim);
+        TransEModel.copyFromINDArray(relationEmb, relationMirror, numRelations, dim);
 
         // Invoke the 6-arg trainBatch
-        Method m = TransEModel.class.getDeclaredMethod("trainBatch",
-                List.class, List.class, double.class, double.class,
-                float[][].class, float[][].class);
-        m.setAccessible(true);
-        double loss = (Double) m.invoke(model, positives, negatives, lr, margin,
+        double loss = model.trainBatch(positives, negatives, lr, margin,
                 entityMirror, relationMirror);
 
         // Sync mirrors → INDArray buffers so assertions on the injected INDArray fields are correct.
-        // (Mirrors the production copyToINDArray logic: scalar DataBuffer.put, no ND4J ops.)
-        for (int r = 0; r < numEntities; r++)
-            for (int c = 0; c < dim; c++)
-                entityEmb.data().put((long) r * dim + c, entityMirror[r][c]);
-        for (int r = 0; r < numRelations; r++)
-            for (int c = 0; c < dim; c++)
-                relationEmb.data().put((long) r * dim + c, relationMirror[r][c]);
+        TransEModel.copyToINDArray(entityMirror,   entityEmb,   numEntities,  dim);
+        TransEModel.copyToINDArray(relationMirror, relationEmb, numRelations, dim);
 
         return loss;
     }
@@ -233,7 +207,7 @@ class TransEVectorizationEquivalenceTest {
         double scalarLoss = scalarTrainBatch(scalarEntityEmb, scalarRelationEmb,
                 entityMap, relMap, positives, negatives, LR, MARGIN);
 
-        // ---- VECTORIZED: via TransEModel with reflection ----
+        // ---- VECTORIZED: via TransEModel ----
         TransEModel model = new TransEModel();
 
         // Inject vocabulary maps
@@ -247,24 +221,24 @@ class TransEVectorizationEquivalenceTest {
             while (indexToRelation.size() <= e.getValue()) indexToRelation.add(null);
             indexToRelation.set(e.getValue(), e.getKey());
         }
-        setField(model, "entityToIndex",    entityMap);
-        setField(model, "relationToIndex",  relMap);
-        setField(model, "indexToEntity",    indexToEntity);
-        setField(model, "indexToRelation",  indexToRelation);
-        setField(model, "embeddingDim",     DIM);
+        model.entityToIndex   = entityMap;
+        model.relationToIndex = relMap;
+        model.indexToEntity   = indexToEntity;
+        model.indexToRelation = indexToRelation;
+        model.embeddingDim    = DIM;
 
         // Inject SAME initial embeddings (dup so oracle's copies are independent)
         INDArray vectorEntityEmb   = entityEmbSeed.dup();
         INDArray vectorRelationEmb = relationEmbSeed.dup();
-        setField(model, "entityEmbeddings",   vectorEntityEmb);
-        setField(model, "relationEmbeddings", vectorRelationEmb);
+        model.entityEmbeddings   = vectorEntityEmb;
+        model.relationEmbeddings = vectorRelationEmb;
 
         // Call the new vectorized trainBatch
         double vectorLoss = callTrainBatch(model, positives, negatives, LR, MARGIN);
 
         // Read back the mutated embedding matrices
-        INDArray actualEntityEmb   = getField(model, "entityEmbeddings");
-        INDArray actualRelationEmb = getField(model, "relationEmbeddings");
+        INDArray actualEntityEmb   = model.entityEmbeddings;
+        INDArray actualRelationEmb = model.relationEmbeddings;
 
         // ---- Assertions ----
         assertEquals(scalarLoss, vectorLoss, TOLERANCE,
@@ -322,15 +296,15 @@ class TransEVectorizationEquivalenceTest {
 
         // Vectorized
         TransEModel model = new TransEModel();
-        setField(model, "entityToIndex",    entityMap);
-        setField(model, "relationToIndex",  relMap);
-        setField(model, "indexToEntity",    indexToEntity);
-        setField(model, "indexToRelation",  indexToRelation);
-        setField(model, "embeddingDim",     DIM);
+        model.entityToIndex   = entityMap;
+        model.relationToIndex = relMap;
+        model.indexToEntity   = indexToEntity;
+        model.indexToRelation = indexToRelation;
+        model.embeddingDim    = DIM;
         INDArray vE = entityEmb.dup();
         INDArray vR = relationEmb.dup();
-        setField(model, "entityEmbeddings",   vE);
-        setField(model, "relationEmbeddings", vR);
+        model.entityEmbeddings   = vE;
+        model.relationEmbeddings = vR;
         double vLoss = callTrainBatch(model, positives, negatives, LR, MARGIN);
 
         assertEquals(sLoss, vLoss, TOLERANCE, "Loss should be 0 when no active pairs");
@@ -339,10 +313,7 @@ class TransEVectorizationEquivalenceTest {
         // Embeddings unchanged
         for (int r = 0; r < 3; r++)
             for (int c = 0; c < DIM; c++)
-                assertEquals(entityEmb.getDouble(r, c),
-                        getField(model, "entityEmbeddings") instanceof INDArray
-                                ? ((INDArray) getField(model, "entityEmbeddings")).getDouble(r, c)
-                                : Double.NaN,
+                assertEquals(entityEmb.getDouble(r, c), model.entityEmbeddings.getDouble(r, c),
                         TOLERANCE, "Entity emb should not change");
     }
 
@@ -379,19 +350,19 @@ class TransEVectorizationEquivalenceTest {
         double sLoss = scalarTrainBatch(sE, sR, entityMap, relMap, positives, negatives, LR, MARGIN);
 
         TransEModel model = new TransEModel();
-        setField(model, "entityToIndex",    entityMap);
-        setField(model, "relationToIndex",  relMap);
-        setField(model, "indexToEntity",    indexToEntity);
-        setField(model, "indexToRelation",  indexToRelation);
-        setField(model, "embeddingDim",     DIM);
+        model.entityToIndex   = entityMap;
+        model.relationToIndex = relMap;
+        model.indexToEntity   = indexToEntity;
+        model.indexToRelation = indexToRelation;
+        model.embeddingDim    = DIM;
         INDArray vE = entityEmbSeed.dup();
         INDArray vR = relationEmbSeed.dup();
-        setField(model, "entityEmbeddings",   vE);
-        setField(model, "relationEmbeddings", vR);
+        model.entityEmbeddings   = vE;
+        model.relationEmbeddings = vR;
         double vLoss = callTrainBatch(model, positives, negatives, LR, MARGIN);
 
-        INDArray actualE = getField(model, "entityEmbeddings");
-        INDArray actualR = getField(model, "relationEmbeddings");
+        INDArray actualE = model.entityEmbeddings;
+        INDArray actualR = model.relationEmbeddings;
 
         assertEquals(sLoss, vLoss, TOLERANCE,
                 String.format("Loss: scalar=%.8f vector=%.8f", sLoss, vLoss));

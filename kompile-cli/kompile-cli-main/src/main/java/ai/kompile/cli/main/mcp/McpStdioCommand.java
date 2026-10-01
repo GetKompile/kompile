@@ -130,6 +130,7 @@ import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
 import ai.kompile.cli.main.graph.GraphServiceRouting;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
+import ai.kompile.cli.main.codeindex.CodeIndexSessionBrief;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.coordination.FileWatcherService;
 import ai.kompile.cli.main.serve.DaemonClient;
@@ -295,6 +296,12 @@ public class McpStdioCommand implements Callable<Integer> {
 
     /** External custom MCP servers loaded behind the search/call gateway. */
     private volatile McpBundleToolLoader customMcpTools;
+
+    /** System prompt handed to delegated agents; its temp prompt file is removed on shutdown. */
+    volatile SystemPromptManager subagentSystemPrompt;
+
+    /** Code-index guidance and project status for initialize, resolved off the event loop at startup. */
+    volatile CodeIndexSessionBrief sessionBrief;
 
     /** Fatal asynchronous initialization failure surfaced to tools/list and tools/call. */
     private volatile String toolInitializationFailure;
@@ -513,6 +520,9 @@ public class McpStdioCommand implements Callable<Integer> {
             System.setOut(System.err);
 
             om = JsonUtils.standardMapper();
+            // Resolves the project and asks for a background refresh on its own thread;
+            // initialize waits for it only within the brief's budget.
+            sessionBrief = CodeIndexSessionBrief.start(wd);
 
             sessionTracker = new McpSessionTracker(om, transcriptId, wd);
             resultReferenceCache = new ToolResultReferenceCache();
@@ -556,20 +566,8 @@ public class McpStdioCommand implements Callable<Integer> {
             // connection.
 
             // Persist performance data and coordination state on shutdown
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                if (sessionTracker != null) sessionTracker.shutdown();
-                if (coordinator != null) coordinator.shutdown();
-                if (semanticMemoryEngine != null) semanticMemoryEngine.shutdown();
-                if (fileWatcherService != null) fileWatcherService.stop();
-                if (ambientGardener != null) ambientGardener.stop();
-                if (asyncExecutor != null) asyncExecutor.shutdown();
-                // Release the enforcer guard's judge lease so a lazily-created judge
-                // process never outlives this MCP server.
-                if (enforcerGuard != null) enforcerGuard.close();
-                if (customMcpTools != null) customMcpTools.close();
-                // Close cached IndexDatabase connections
-                LocalCodeIndexTool.closeAll();
-            }, "mcp-harness-shutdown"));
+            Runtime.getRuntime().addShutdownHook(
+                    new Thread(this::releaseOnShutdown, "mcp-harness-shutdown"));
 
             dynamicToolManager = new DynamicToolManager();
             dynamicToolManager.setDynamicMode(false);
@@ -722,7 +720,25 @@ public class McpStdioCommand implements Callable<Integer> {
         return 0;
     }
 
-    private JsonNode handleMessage(JsonNode msg, Map<String, ToolDef> tools, ObjectMapper om) {
+    /** The shutdown hook's work: persists session state and releases what this server holds. */
+    void releaseOnShutdown() {
+        if (sessionTracker != null) sessionTracker.shutdown();
+        if (coordinator != null) coordinator.shutdown();
+        if (semanticMemoryEngine != null) semanticMemoryEngine.shutdown();
+        if (fileWatcherService != null) fileWatcherService.stop();
+        if (ambientGardener != null) ambientGardener.stop();
+        if (asyncExecutor != null) asyncExecutor.shutdown();
+        // Release the enforcer guard's judge lease so a lazily-created judge
+        // process never outlives this MCP server.
+        if (enforcerGuard != null) enforcerGuard.close();
+        if (customMcpTools != null) customMcpTools.close();
+        // Delete the temp prompt file written for delegated Claude/Gemini runs.
+        if (subagentSystemPrompt != null) subagentSystemPrompt.cleanup();
+        // Close cached IndexDatabase connections
+        LocalCodeIndexTool.closeAll();
+    }
+
+    JsonNode handleMessage(JsonNode msg, Map<String, ToolDef> tools, ObjectMapper om) {
         JsonNode idNode = msg.get("id");
         JsonNode methodNode = msg.get("method");
         if (methodNode == null) return null;
@@ -756,6 +772,9 @@ public class McpStdioCommand implements Callable<Integer> {
                     ObjectNode hints = serverInfo.putObject("x-hints");
                     populateInitializationHints(hints, toolsReady.get(), tools.size(),
                             profile != null ? profile : "full");
+                    CodeIndexSessionBrief brief = sessionBrief;
+                    initResult.put("instructions",
+                            brief != null ? brief.instructions() : CodeIndexSessionBrief.GUIDANCE);
                     result.set("result", initResult);
                 }
 
@@ -1618,6 +1637,7 @@ public class McpStdioCommand implements Callable<Integer> {
         try {
             var spm = SystemPromptManager.resolve(null, null, null);
             if (spm != null) {
+                subagentSystemPrompt = spm;
                 subagentRunner.setSystemPromptManager(spm);
                 System.err.println("[MCP] System prompt injection configured");
             }

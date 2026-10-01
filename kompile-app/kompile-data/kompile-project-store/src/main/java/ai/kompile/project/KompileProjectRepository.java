@@ -22,7 +22,9 @@ public class KompileProjectRepository {
     private KompileProjectStorageBackend backend = KompileProjectStorageBackend.LOCAL;
     private String remoteUrl;
     private String branch = "main";
-    private boolean autoCommit = true;
+    // Off unless asked for: a manifest can sit at the root of a code repository, whose
+    // commits belong to the user.
+    private boolean autoCommit;
     private boolean remoteSyncEnabled = true;
     private boolean gitXetEnabled;
     private Map<String, String> metadata = new LinkedHashMap<>();

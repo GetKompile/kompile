@@ -33,6 +33,7 @@ import java.io.InputStreamReader;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
@@ -101,6 +102,32 @@ public class GpuResourceManager {
     /** Default priorities per service type. Higher = more important. */
     private final Map<String, Integer> servicePriorities = new ConcurrentHashMap<>();
 
+    private static final long ONE_GB = 1024L * 1024 * 1024;
+
+    /**
+     * Built-in priorities, shared by {@link #init()} and {@link #initForTesting()}. The GPU job types
+     * (llm, llmServing, training) rank with vlm. {@code unifiedCrawl} ranks BELOW embedding: its
+     * VECTOR_INDEXING phase needs the embedding service, so a crawl must never evict it.
+     */
+    private static final Map<String, Integer> DEFAULT_PRIORITIES = Map.of(
+            "embedding", 10,
+            "ingest", 50,
+            "vectorPopulation", 30,
+            "modelInit", 20,
+            "vlm", 100,
+            "llm", 100,
+            "llmServing", 100,
+            "training", 100,
+            "unifiedCrawl", 5);
+
+    /** Built-in memory budgets (conservative estimates), shared by {@link #init()} and {@link #initForTesting()}. */
+    private static final Map<String, Long> DEFAULT_BUDGETS = Map.of(
+            "embedding", 5L * ONE_GB,
+            "vlm", 18L * ONE_GB,
+            "ingest", 2L * ONE_GB,
+            "vectorPopulation", 1L * ONE_GB,
+            "modelInit", 2L * ONE_GB);
+
     /** Source of {@code gpuBudgetFractions} for auto-calibrating budgets to the actual device VRAM. */
     @Autowired(required = false)
     private ResourceSchedulerConfigService schedulerConfigService;
@@ -108,20 +135,7 @@ public class GpuResourceManager {
     @PostConstruct
     public void init() {
         discoverLocalGpus();
-
-        // Set default priorities
-        servicePriorities.put("embedding", 10);
-        servicePriorities.put("ingest", 50);
-        servicePriorities.put("vectorPopulation", 30);
-        servicePriorities.put("modelInit", 20);
-        servicePriorities.put("vlm", 100);
-
-        // Set default memory budgets (conservative estimates)
-        defaultBudgets.put("embedding", 5L * 1024 * 1024 * 1024);      // 5 GB
-        defaultBudgets.put("vlm", 18L * 1024 * 1024 * 1024);           // 18 GB
-        defaultBudgets.put("ingest", 2L * 1024 * 1024 * 1024);         // 2 GB
-        defaultBudgets.put("vectorPopulation", 1L * 1024 * 1024 * 1024);// 1 GB
-        defaultBudgets.put("modelInit", 2L * 1024 * 1024 * 1024);      // 2 GB
+        applyDefaults();
 
         // Calibrate the hardcoded defaults to the actual device VRAM so small GPUs aren't
         // over-committed (false OOM) and large GPUs aren't under-utilized (slow).
@@ -138,19 +152,12 @@ public class GpuResourceManager {
      * Sets up default budgets and priorities only.
      */
     public void initForTesting() {
-        // Set default priorities
-        servicePriorities.put("embedding", 10);
-        servicePriorities.put("ingest", 50);
-        servicePriorities.put("vectorPopulation", 30);
-        servicePriorities.put("modelInit", 20);
-        servicePriorities.put("vlm", 100);
+        applyDefaults();
+    }
 
-        // Set default memory budgets
-        defaultBudgets.put("embedding", 5L * 1024 * 1024 * 1024);
-        defaultBudgets.put("vlm", 18L * 1024 * 1024 * 1024);
-        defaultBudgets.put("ingest", 2L * 1024 * 1024 * 1024);
-        defaultBudgets.put("vectorPopulation", 1L * 1024 * 1024 * 1024);
-        defaultBudgets.put("modelInit", 2L * 1024 * 1024 * 1024);
+    private void applyDefaults() {
+        servicePriorities.putAll(DEFAULT_PRIORITIES);
+        defaultBudgets.putAll(DEFAULT_BUDGETS);
     }
 
     // ==================== Device Management ====================
@@ -251,6 +258,38 @@ public class GpuResourceManager {
                     memoryBytes / (1024 * 1024), device.name(), serviceType, reservationId,
                     priority, getAvailableMemory(device) / (1024 * 1024));
             return true;
+        } finally {
+            reservationLock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Record a reservation WITHOUT the availability check, for GPU memory that is really in use even
+     * though the ledger says it doesn't fit (a service resumed anyway, a GPU phase that must run).
+     * The device's available memory may go negative; every consumer tolerates that. Logs a WARN when
+     * the row over-commits the device.
+     */
+    public void reserveOverCommit(String reservationId, String serviceType,
+                                  GpuDevice device, long memoryBytes) {
+        reservationLock.writeLock().lock();
+        try {
+            int priority = servicePriorities.getOrDefault(serviceType, 0);
+            activeReservations.put(reservationId, new GpuReservation(
+                    reservationId, serviceType, device, memoryBytes, priority,
+                    System.currentTimeMillis()));
+
+            long available = getAvailableMemory(device);
+            if (available < 0) {
+                log.warn("GPU over-commit: recorded {}MB for '{}' (id='{}') on {} — {}MB over " +
+                                "(total {}MB, reserved {}MB)",
+                        memoryBytes / (1024 * 1024), serviceType, reservationId, device.name(),
+                        -available / (1024 * 1024), device.totalMemoryBytes() / (1024 * 1024),
+                        getReservedMemory(device) / (1024 * 1024));
+            } else {
+                log.info("Reserved {}MB on {} for '{}' (id='{}', priority={}, available after: {}MB)",
+                        memoryBytes / (1024 * 1024), device.name(), serviceType, reservationId,
+                        priority, available / (1024 * 1024));
+            }
         } finally {
             reservationLock.writeLock().unlock();
         }
@@ -367,10 +406,42 @@ public class GpuResourceManager {
     }
 
     /**
-     * Get the available (unreserved) memory on a device.
+     * Get the available (unreserved) memory on a device. Negative when the device is over-committed
+     * (see {@link #reserveOverCommit}).
      */
     public long getAvailableMemory(GpuDevice device) {
         return device.totalMemoryBytes() - getReservedMemory(device);
+    }
+
+    /**
+     * True for a singleton service's row ({@code reservationId == serviceType}) — the only kind of
+     * row eviction can free, because suspending the service releases exactly that row. A job's row
+     * belongs to a running child that nothing suspends.
+     */
+    public static boolean isSingletonRow(GpuReservation reservation) {
+        return reservation.reservationId().equals(reservation.serviceType());
+    }
+
+    /**
+     * Memory on {@code device} that evicting rows could free for {@code serviceType}: singleton rows
+     * with strictly lower priority that {@code evictable} also accepts.
+     */
+    public long getEvictableMemory(String serviceType, GpuDevice device,
+                                   Predicate<GpuReservation> evictable) {
+        int requesterPriority = servicePriorities.getOrDefault(serviceType, 0);
+        return activeReservations.values().stream()
+                .filter(r -> isEvictionCandidate(r, device, requesterPriority, evictable))
+                .mapToLong(GpuReservation::reservedBytes)
+                .sum();
+    }
+
+    private static boolean isEvictionCandidate(GpuReservation r, GpuDevice device, int requesterPriority,
+                                               Predicate<GpuReservation> evictable) {
+        return r.device().nvidiaSmiIndex() == device.nvidiaSmiIndex()
+                && r.device().nodeId().equals(device.nodeId())
+                && r.priority() < requesterPriority
+                && isSingletonRow(r)
+                && evictable.test(r);
     }
 
     /**
@@ -386,8 +457,9 @@ public class GpuResourceManager {
      * for the requesting service. Returns distinct service types sorted by
      * priority (lowest first).
      *
-     * <p>Only returns services with strictly lower priority than the requester.
-     * If evicting all lower-priority services still doesn't free enough memory,
+     * <p>Only returns services with strictly lower priority than the requester, and only a
+     * service's singleton row counts as freeable (see {@link #isSingletonRow}) — job rows are
+     * never evictable. If evicting all of those still doesn't free enough memory,
      * returns an empty list (eviction is not possible).</p>
      *
      * @param serviceType the service requesting space
@@ -395,7 +467,16 @@ public class GpuResourceManager {
      * @return list of service types to evict (lowest priority first), or empty if not possible
      */
     public List<String> findEvictionCandidates(String serviceType, GpuDevice device) {
-        long needed = getMemoryBudget(serviceType);
+        return findEvictionCandidates(serviceType, device, getMemoryBudget(serviceType), r -> true);
+    }
+
+    /**
+     * {@link #findEvictionCandidates(String, GpuDevice)} for an explicit size, where
+     * {@code evictable} further restricts which singleton rows may be evicted (the lifecycle
+     * manager passes "a registered service that is running"). Tolerates a negative available.
+     */
+    public List<String> findEvictionCandidates(String serviceType, GpuDevice device, long needed,
+                                               Predicate<GpuReservation> evictable) {
         long available = getAvailableMemory(device);
 
         if (needed <= available) {
@@ -405,12 +486,9 @@ public class GpuResourceManager {
         int requesterPriority = servicePriorities.getOrDefault(serviceType, 0);
         long deficit = needed - available;
 
-        // Get all reservations on this device with strictly lower priority,
-        // grouped by service type to avoid double-counting
+        // Get the evictable reservations on this device with strictly lower priority
         List<GpuReservation> candidates = activeReservations.values().stream()
-                .filter(r -> r.device().nvidiaSmiIndex() == device.nvidiaSmiIndex()
-                        && r.device().nodeId().equals(device.nodeId())
-                        && r.priority() < requesterPriority)
+                .filter(r -> isEvictionCandidate(r, device, requesterPriority, evictable))
                 .sorted(Comparator.comparingInt(GpuReservation::priority))
                 .toList();
 
@@ -449,6 +527,14 @@ public class GpuResourceManager {
      * @return the best device, or empty if no device can accommodate the service
      */
     public Optional<GpuDevice> findBestDevice(String serviceType) {
+        return findBestDevice(serviceType, r -> true);
+    }
+
+    /**
+     * {@link #findBestDevice(String)} where {@code evictable} restricts which rows eviction may
+     * free (see {@link #findEvictionCandidates(String, GpuDevice, long, Predicate)}).
+     */
+    public Optional<GpuDevice> findBestDevice(String serviceType, Predicate<GpuReservation> evictable) {
         long budget = getMemoryBudget(serviceType);
 
         // First: find devices where the service fits without eviction
@@ -462,8 +548,8 @@ public class GpuResourceManager {
 
         // Second: find devices where eviction can make room
         return devices.stream()
-                .filter(d -> !findEvictionCandidates(serviceType, d).isEmpty())
-                .min(Comparator.comparingInt(d -> findEvictionCandidates(serviceType, d).size()));
+                .filter(d -> !findEvictionCandidates(serviceType, d, budget, evictable).isEmpty())
+                .min(Comparator.comparingInt(d -> findEvictionCandidates(serviceType, d, budget, evictable).size()));
     }
 
     // ==================== Budget Configuration ====================
@@ -566,7 +652,10 @@ public class GpuResourceManager {
             ds.put("cudaRuntimeIndex", device.cudaRuntimeIndex());
             ds.put("totalMemoryMb", device.totalMemoryMb());
             ds.put("reservedMemoryMb", getReservedMemory(device) / (1024 * 1024));
-            ds.put("availableMemoryMb", getAvailableMemory(device) / (1024 * 1024));
+            // An over-committed device reports 0 available plus how far over it is, never a negative.
+            long available = getAvailableMemory(device);
+            ds.put("availableMemoryMb", Math.max(0L, available) / (1024 * 1024));
+            ds.put("overCommittedMb", Math.max(0L, -available) / (1024 * 1024));
             ds.put("nodeId", device.nodeId());
 
             List<Map<String, Object>> reservations = new ArrayList<>();
@@ -675,27 +764,5 @@ public class GpuResourceManager {
             out.add(GpuDevice.local(s.index(), s.index(), s.name(), s.totalMemoryBytes()));
         }
         return out;
-    }
-
-    /**
-     * Override the CUDA runtime index for a device (for systems where nvidia-smi
-     * index differs from CUDA runtime index).
-     *
-     * @param nvidiaSmiIndex the nvidia-smi device index
-     * @param cudaRuntimeIndex the correct CUDA runtime index
-     */
-    public void setCudaRuntimeIndex(int nvidiaSmiIndex, int cudaRuntimeIndex) {
-        for (int i = 0; i < devices.size(); i++) {
-            GpuDevice d = devices.get(i);
-            if (d.nvidiaSmiIndex() == nvidiaSmiIndex) {
-                devices.set(i, new GpuDevice(
-                        d.nvidiaSmiIndex(), cudaRuntimeIndex, d.name(),
-                        d.totalMemoryBytes(), d.nodeId()));
-                log.info("Updated CUDA runtime index for GPU {}: smi={} -> cuda={}",
-                        d.name(), nvidiaSmiIndex, cudaRuntimeIndex);
-                return;
-            }
-        }
-        log.warn("No GPU device with nvidia-smi index {} found", nvidiaSmiIndex);
     }
 }

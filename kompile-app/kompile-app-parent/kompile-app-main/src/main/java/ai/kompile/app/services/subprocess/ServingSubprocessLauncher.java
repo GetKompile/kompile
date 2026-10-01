@@ -125,6 +125,12 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     /** Interval between HTTP readiness polls. */
     private static final long READY_POLL_INTERVAL_MS = 500L;
 
+    /** How long an exit report waits for the output readers to reach the end of the child's output. */
+    private static final long OUTPUT_DRAIN_TIMEOUT_MS = 5_000L;
+
+    /** How long {@link #stop()} waits for a killed child to exit before it releases the GPU row anyway. */
+    private static final long KILL_EXIT_WAIT_SECONDS = 30L;
+
     /** System-property prefixes forwarded to the subprocess. */
     private static final String[] FORWARDED_PROPERTY_PREFIXES = {
         "org.nd4j.",
@@ -272,10 +278,10 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     private ObjectMapper objectMapper;
 
     @Autowired(required = false)
-    private SubprocessRegistry subprocessRegistry;
+    SubprocessRegistry subprocessRegistry;
 
     @Autowired(required = false)
-    private ai.kompile.app.services.scheduler.ResourceAwareJobScheduler resourceScheduler;
+    ai.kompile.app.services.scheduler.ResourceAwareJobScheduler resourceScheduler;
 
     /** Scheduler job ID for the current serving session (null if not tracked). */
     private volatile String schedulerJobId;
@@ -287,23 +293,29 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     /** Model path of the most recently loaded model. */
     private volatile String lastModelPath;
     /** Model identity confirmed by the live serving status endpoint; null unless ready. */
-    private volatile String activeModelId;
+    volatile String activeModelId;
 
     // ── Runtime state ─────────────────────────────────────────────────────────
 
     /** The serving subprocess process handle — set on {@link #start()}, cleared on {@link #stop()}. */
-    private volatile Process process;
+    volatile Process process;
 
     /** True while the subprocess is considered running and reachable. */
-    private final AtomicBoolean running = new AtomicBoolean(false);
+    final AtomicBoolean running = new AtomicBoolean(false);
 
     /** Prevents double-start / double-stop races. */
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
 
-    /** Temp directory used for JavaCPP native lib extraction in the subprocess JVM. */
-    private volatile Path subprocessTempDir;
+    /** Set by {@link #shutdown()} when the bean is destroyed: no child starts after it. */
+    private volatile boolean shutDown;
 
-    /** Args JSON file passed to the subprocess — must be cleaned up in {@link #stop()}. */
+    /** How long {@link #stop()} waits for the child to unload its model before terminating it. */
+    Duration unloadTimeout = Duration.ofSeconds(30);
+
+    /** Temp directory used for JavaCPP native lib extraction in the subprocess JVM. */
+    volatile Path subprocessTempDir;
+
+    /** Args JSON file passed to the subprocess — deleted once its child is stopped, has exited, or failed to start. */
     private volatile Path argsFile;
 
     /** Central log writer: {@code ~/.kompile/logs/subprocesses/serving/<runId>.log}. */
@@ -332,10 +344,10 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     // ── Model-loaded TTL cache (for isModelLoaded()) ──────────────────────────
 
     /** Cached result of the last /api/llm/status poll for model-loaded state. */
-    private volatile boolean cachedModelLoaded = false;
+    volatile boolean cachedModelLoaded = false;
 
     /** Timestamp (nanoTime) of the last successful /api/llm/status poll. */
-    private volatile long modelLoadedCacheTimeNs = 0L;
+    volatile long modelLoadedCacheTimeNs = 0L;
 
     /** TTL for the model-loaded cache: 3 seconds in nanoseconds. */
     private static final long MODEL_LOADED_CACHE_TTL_NS = 3_000_000_000L;
@@ -395,6 +407,9 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
      */
     public synchronized void start(String modelId, String modelPath, String tokenizerPath)
             throws IOException, InterruptedException, TimeoutException {
+        if (shutDown) {
+            throw new IllegalStateException("ServingSubprocessLauncher is shut down");
+        }
         if (running.get()) {
             logger.info("Serving subprocess already running on port {} — stop it first to load a different model", servingPort);
             return;
@@ -466,57 +481,67 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
             throw new IOException("Failed to write serving subprocess args to " + argsFileTmp, e);
         }
 
-        // 4. Build the launch command
-        List<String> command = buildCommand(argsFileTmp, nd4jConfig);
-        logger.info("Serving subprocess command: {}", String.join(" ", command));
+        // Until a child exists stop() has nothing to stop, so a launch that fails here deletes
+        // its launch files itself.
+        List<String> command;
+        ProcessBuilder pb;
+        try {
+            // 4. Build the launch command
+            command = buildCommand(argsFileTmp, nd4jConfig);
+            logger.info("Serving subprocess command: {}", String.join(" ", command));
 
-        // 5. Start the process
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectErrorStream(false);
-        propagateNd4jEnvironment(pb.environment(), nd4jConfig);
-        // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
-        placement.applyEnv(pb.environment());
+            // 5. Start the process
+            pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(false);
+            propagateNd4jEnvironment(pb.environment(), nd4jConfig);
+            // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
+            placement.applyEnv(pb.environment());
 
-        process = pb.start();
+            process = startProcess(pb);
+        } catch (Throwable e) {
+            deleteLaunchFiles();
+            throw e;
+        }
         running.set(true);
-        Process startedProcess = process;
-        startedProcess.onExit().thenAccept(this::handleProcessExit);
 
-        // Register with subprocess registry for lifecycle tracking and watchdog restart
-        if (subprocessRegistry != null) {
-            subprocessRegistry.register("serving", process, "serving");
-            subprocessRegistry.registerRestartHandler(getSubprocessId(), this);
-        }
-
-        // 6. Init log writer (non-fatal)
-        synchronized (recentOutputTail) {
-            recentOutputTail.clear();
-        }
-        String runId = UUID.randomUUID().toString();
+        // From here a child is running, so a launch that fails before the child is ready stops it.
+        // The run log comes first: every child that started has one.
         try {
-            String workingDir = pb.directory() != null
-                    ? pb.directory().getAbsolutePath()
-                    : System.getProperty("user.dir");
-            SubprocessLogWriter slw = new SubprocessLogWriter("serving", runId, workingDir);
-            slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
-                    modelId, command, workingDir, process.pid(), DEFAULT_HEAP_SIZE));
-            subprocessLogWriter = slw;
-        } catch (Exception e) {
-            logger.debug("SubprocessLogWriter init failed (non-fatal): {}", e.getMessage());
-        }
+            // 6. Init log writer (non-fatal)
+            String runId = UUID.randomUUID().toString();
+            try {
+                String workingDir = pb.directory() != null
+                        ? pb.directory().getAbsolutePath()
+                        : System.getProperty("user.dir");
+                SubprocessLogWriter slw = new SubprocessLogWriter("serving", runId, workingDir);
+                slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                        modelId, command, workingDir, process.pid(), DEFAULT_HEAP_SIZE));
+                subprocessLogWriter = slw;
+            } catch (Exception e) {
+                logger.debug("SubprocessLogWriter init failed (non-fatal): {}", e.getMessage());
+            }
 
-        // 7. Start output reader threads
-        stdoutReaderThread = new Thread(() -> readStdout(process), "serving-subprocess-stdout");
-        stdoutReaderThread.setDaemon(true);
-        stdoutReaderThread.start();
+            // Register with subprocess registry for lifecycle tracking and watchdog restart
+            if (subprocessRegistry != null) {
+                subprocessRegistry.register("serving", process, "serving");
+                subprocessRegistry.registerRestartHandler(getSubprocessId(), this);
+            }
 
-        stderrReaderThread = new Thread(() -> readStderr(process), "serving-subprocess-stderr");
-        stderrReaderThread.setDaemon(true);
-        stderrReaderThread.start();
+            // 7. Start output reader threads. They read this child even if process changes first.
+            synchronized (recentOutputTail) {
+                recentOutputTail.clear();
+            }
+            Process child = process;
+            stdoutReaderThread = new Thread(() -> readStdout(child), "serving-subprocess-stdout");
+            stdoutReaderThread.setDaemon(true);
+            stdoutReaderThread.start();
 
-        // 8. Poll until the subprocess HTTP server is ready, then verify that the live process
-        //    actually loaded the exact requested model before publishing it as active.
-        try {
+            stderrReaderThread = new Thread(() -> readStderr(child), "serving-subprocess-stderr");
+            stderrReaderThread.setDaemon(true);
+            stderrReaderThread.start();
+
+            // 8. Poll until the subprocess HTTP server is ready, then verify that the live process
+            //    actually loaded the exact requested model before publishing it as active.
             waitForReady();
             String statusJson = getJson("/api/llm/status");
             JsonNode status = resolvedMapper().readTree(statusJson);
@@ -527,7 +552,11 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                         + "' (loaded=" + loaded + ") after requesting '" + modelId + "'");
             }
             activeModelId = modelId;
-        } catch (IOException | InterruptedException | TimeoutException | RuntimeException e) {
+        } catch (Throwable e) {
+            // The launch failed: its run log ends FAILED, not as a stop
+            Process failed = process;
+            Integer exitCode = failed != null && !failed.isAlive() ? failed.exitValue() : null;
+            closeLogWriter("FAILED", exitCode, e.getMessage());
             stop();
             throw e;
         }
@@ -560,6 +589,16 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                 logger.warn("Failed to submit serving job to scheduler: {}", e.getMessage());
             }
         }
+
+        // Watch for an unexpected exit only now. Until the child was ready the readiness poll
+        // judged its exit, and an exit judged there must not be reported a second time.
+        Process readyProcess = process;
+        readyProcess.onExit().thenAccept(this::handleProcessExit);
+    }
+
+    /** Start the child from its command. Tests override it to observe the child. */
+    Process startProcess(ProcessBuilder pb) throws IOException {
+        return pb.start();
     }
 
     static void awaitServingProcess(
@@ -575,6 +614,12 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         }
     }
 
+    /**
+     * Report the exit of a ready child that nothing stopped. {@link #stop()} clears
+     * {@link #process} while it holds the monitor, so an exit it caused never gets past the first
+     * check. The process handle stays set until the next stop or load; the scheduler job ends on
+     * its own once the process is gone.
+     */
     synchronized void handleProcessExit(Process exitedProcess) {
         if (exitedProcess == null || process != exitedProcess) {
             return;
@@ -588,12 +633,11 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         running.set(false);
         activeModelId = null;
         invalidateModelLoadedCache();
-        if (shuttingDown.get()) {
-            logger.info("Serving subprocess exited during shutdown with code {}", exitCode);
-        } else {
-            logger.error("Serving subprocess exited unexpectedly with code {}{}",
-                    exitCode, prematureExitDetail());
-        }
+        String message = "Serving subprocess exited unexpectedly with code " + exitCode + prematureExitDetail();
+        logger.error("{}", message);
+        // After the detail, which names the run log
+        closeLogWriter("FAILED", exitCode, message);
+        deleteLaunchFiles();
     }
 
     /**
@@ -616,7 +660,6 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         if (process != null) {
             logger.info("Stopping existing serving subprocess to load new model '{}'...", modelId);
             stop();
-            shuttingDown.set(false); // reset so we can start again
         }
         try {
             start(modelId, modelPath, null);
@@ -731,9 +774,20 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     }
 
     /**
-     * Stop the serving subprocess: unload the model gracefully, then terminate the process.
+     * Destroy hook: stop the child and refuse every later start. A watchdog restart thread or a
+     * bridge poll can still reach {@link #loadModel} while the context closes, and a child started
+     * then would outlive the application. Not synchronized: the flag is set before this thread
+     * waits for the lifecycle monitor, and {@link #start} checks it under that monitor.
      */
     @PreDestroy
+    public void shutdown() {
+        shutDown = true;
+        stop();
+    }
+
+    /**
+     * Stop the serving subprocess: unload the model gracefully, then terminate the process.
+     */
     public synchronized void stop() {
         activeModelId = null;
         boolean wasRunning = running.getAndSet(false);
@@ -743,77 +797,67 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
             return;
         }
         shuttingDown.set(true);
-        logger.info("Stopping LLM serving subprocess...");
+        try {
+            logger.info("Stopping LLM serving subprocess...");
 
-        // Attempt a graceful unload only while the child is reachable.
-        if (wasRunning && existingProcess != null && existingProcess.isAlive()) {
-            try {
-                postJson("/api/llm/unload", Map.of());
-                logger.info("Sent unload request to serving subprocess");
-            } catch (Exception e) {
-                logger.debug("Unload request failed (subprocess may already be down): {}", e.getMessage());
-            }
-        }
-
-        // Terminate the process
-        Process p = existingProcess;
-        if (p != null && p.isAlive()) {
-            p.destroy();
-            try {
-                boolean exited = p.waitFor(10, TimeUnit.SECONDS);
-                if (!exited) {
-                    logger.warn("Serving subprocess did not stop gracefully — forcibly terminating");
-                    p.destroyForcibly();
+            // Attempt a graceful unload only while the child is reachable.
+            if (wasRunning && existingProcess != null && existingProcess.isAlive()) {
+                try {
+                    postJson("/api/llm/unload", Map.of(), unloadTimeout);
+                    logger.info("Sent unload request to serving subprocess");
+                } catch (Exception e) {
+                    if (e instanceof InterruptedException) {
+                        // The child is still terminated below; the caller keeps its interrupt
+                        Thread.currentThread().interrupt();
+                    }
+                    logger.debug("Unload request failed (subprocess may already be down): {}", e.getMessage());
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                p.destroyForcibly();
             }
-        }
-        this.process = null;
 
-        // Deregister from subprocess registry
-        if (subprocessRegistry != null) {
-            subprocessRegistry.deregister("serving");
-        }
-
-        // Clean up log writer
-        closeLogWriter("STOPPED", 0, null);
-
-        // Clean up args file
-        Path af = argsFile;
-        if (af != null) {
-            try {
-                Files.deleteIfExists(af);
-            } catch (Exception e) {
-                logger.debug("Failed to clean up subprocess args file {}: {}", af, e.getMessage());
+            // Terminate the process
+            Process p = existingProcess;
+            if (p != null && p.isAlive()) {
+                p.destroy();
+                try {
+                    boolean exited = p.waitFor(10, TimeUnit.SECONDS);
+                    if (!exited) {
+                        logger.warn("Serving subprocess did not stop gracefully — forcibly terminating");
+                        p.destroyForcibly();
+                        awaitKilledExit(p);
+                    }
+                } catch (InterruptedException e) {
+                    p.destroyForcibly();
+                    awaitKilledExit(p);
+                    Thread.currentThread().interrupt();
+                }
             }
-            argsFile = null;
-        }
+            this.process = null;
 
-        // Clean up temp dir
-        Path tmpDir = subprocessTempDir;
-        if (tmpDir != null) {
-            try {
-                deleteRecursively(tmpDir);
-            } catch (Exception e) {
-                logger.debug("Failed to clean up subprocess temp dir {}: {}", tmpDir, e.getMessage());
+            // Deregister from subprocess registry
+            if (subprocessRegistry != null) {
+                subprocessRegistry.deregister("serving");
             }
-            subprocessTempDir = null;
-        }
 
-        // Cancel scheduler job if tracked
-        if (resourceScheduler != null && schedulerJobId != null) {
-            try {
-                resourceScheduler.cancel(schedulerJobId);
-                logger.info("Cancelled scheduler job '{}' for serving", schedulerJobId);
-            } catch (Exception e) {
-                logger.debug("Failed to cancel scheduler job '{}': {}", schedulerJobId, e.getMessage());
+            // Clean up log writer
+            closeLogWriter("STOPPED", 0, null);
+
+            deleteLaunchFiles();
+
+            // Cancel scheduler job if tracked
+            if (resourceScheduler != null && schedulerJobId != null) {
+                try {
+                    resourceScheduler.cancel(schedulerJobId);
+                    logger.info("Cancelled scheduler job '{}' for serving", schedulerJobId);
+                } catch (Exception e) {
+                    logger.debug("Failed to cancel scheduler job '{}': {}", schedulerJobId, e.getMessage());
+                }
+                schedulerJobId = null;
             }
-            schedulerJobId = null;
+        } finally {
+            // Once process is cleared no later stop gets this far, so a stop that failed part-way
+            // would otherwise refuse every later start
+            shuttingDown.set(false);
         }
-
-        shuttingDown.set(false);
         invalidateModelLoadedCache(); // subprocess stopped — next poll will reflect not-loaded
         logger.info("LLM serving subprocess stopped");
     }
@@ -930,6 +974,10 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         Thread t = new Thread(() -> {
             try {
                 synchronized (ServingSubprocessLauncher.this) {
+                    if (shutDown) {
+                        logger.info("Skipping watchdog restart of serving subprocess: the launcher is shut down");
+                        return;
+                    }
                     if (!Objects.equals(mid, lastModelId) || !Objects.equals(mpath, lastModelPath)) {
                         logger.info("Skipping stale watchdog restart for model '{}'; lifecycle moved to '{}'",
                                 mid, lastModelId);
@@ -1513,6 +1561,12 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
      * Returns the response body.
      */
     private String postJson(String path, Object body) throws IOException, InterruptedException {
+        return postJson(path, body, Duration.ofMinutes(10)); // generation may be long-running
+    }
+
+    /** Package-private transport boundary for no-HTTP lifecycle tests; uses its own response timeout. */
+    String postJson(String path, Object body, Duration timeout)
+            throws IOException, InterruptedException {
         String bodyJson;
         try {
             bodyJson = resolvedMapper().writeValueAsString(body);
@@ -1522,7 +1576,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + servingPort + path))
-                .timeout(Duration.ofMinutes(10)) // generation may be long-running
+                .timeout(timeout)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(bodyJson))
@@ -1600,7 +1654,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         }
     }
 
-    private void recordRecentOutput(String line) {
+    void recordRecentOutput(String line) {
         if (line == null || line.isBlank()) {
             return;
         }
@@ -1615,15 +1669,11 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     /**
      * Failure context appended to the premature-exit exception: the error-bearing lines from the
      * subprocess's recent output (falling back to the plain tail when nothing matches), plus the
-     * per-run log path. The reader threads may still be draining the pipes when the exit is
-     * observed, so give them a brief moment to flush the crash stack first.
+     * per-run log path. The exit is usually seen before the reader threads have read the crash
+     * stack from the pipes, so they get to read to the end first.
      */
     private String prematureExitDetail() {
-        try {
-            Thread.sleep(300);
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-        }
+        awaitOutputReaders();
         List<String> snapshot;
         synchronized (recentOutputTail) {
             snapshot = new ArrayList<>(recentOutputTail);
@@ -1648,6 +1698,35 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
             sb.append("\n    (full log: ").append(slw.getLogFile().getAbsolutePath()).append(')');
         }
         return sb.toString();
+    }
+
+    /**
+     * Wait for the output readers of an exited child to read to the end of its output, so its last
+     * lines are in the recent-output tail and the run log. Bounded by
+     * {@link #OUTPUT_DRAIN_TIMEOUT_MS}: a grandchild that inherited the pipes can hold them open
+     * after the child is gone.
+     */
+    private void awaitOutputReaders() {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(OUTPUT_DRAIN_TIMEOUT_MS);
+        for (Thread reader : new Thread[] {stdoutReaderThread, stderrReaderThread}) {
+            if (reader == null) {
+                continue;
+            }
+            long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+            try {
+                if (remainingMs > 0) {
+                    reader.join(remainingMs);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (reader.isAlive()) {
+                logger.warn("Output of serving subprocess still open {} ms after its exit; reporting without the rest",
+                        OUTPUT_DRAIN_TIMEOUT_MS);
+                return;
+            }
+        }
     }
 
     /**
@@ -1712,6 +1791,55 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                 logger.debug("SubprocessLogWriter close failed: {}", e.getMessage());
             }
             subprocessLogWriter = null;
+        }
+    }
+
+    /** Delete the args file and the JavaCPP temp dir made for the current child, if any. */
+    private void deleteLaunchFiles() {
+        Path af = argsFile;
+        if (af != null) {
+            try {
+                Files.deleteIfExists(af);
+            } catch (Exception e) {
+                logger.debug("Failed to clean up subprocess args file {}: {}", af, e.getMessage());
+            }
+            argsFile = null;
+        }
+        Path tmpDir = subprocessTempDir;
+        if (tmpDir != null) {
+            try {
+                deleteRecursively(tmpDir);
+            } catch (Exception e) {
+                logger.debug("Failed to clean up subprocess temp dir {}: {}", tmpDir, e.getMessage());
+            }
+            subprocessTempDir = null;
+        }
+    }
+
+    /**
+     * Wait for a child that was just killed to exit. Interrupts do not cut the wait short: the
+     * caller releases the child's GPU row next, which must not happen while the child still holds
+     * its device memory. Bounded by {@link #KILL_EXIT_WAIT_SECONDS}.
+     */
+    private static void awaitKilledExit(Process p) {
+        boolean interrupted = Thread.interrupted();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(KILL_EXIT_WAIT_SECONDS);
+        try {
+            while (true) {
+                try {
+                    if (!p.waitFor(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)) {
+                        logger.warn("Serving subprocess (PID {}) is still alive {}s after it was killed",
+                                p.pid(), KILL_EXIT_WAIT_SECONDS);
+                    }
+                    return;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 

@@ -247,7 +247,7 @@ public class ProcessGraphWritebackService implements ProcessGraphCallback {
      * @param context      log label
      * @param attemptNumber 1-based attempt index (1 = first inline attempt)
      */
-    private void executeWithRetry(
+    void executeWithRetry(
             Runnable action,
             java.util.function.Supplier<ProcessWritebackDeadLetterStore.DeadLetterEntry> deadLetterFn,
             String context,
@@ -295,7 +295,7 @@ public class ProcessGraphWritebackService implements ProcessGraphCallback {
 
     // ── Actual write logic (extracted so replay can call them too) ───────────────
 
-    private void performStepWrite(WorkflowRun run, StepExecution step) {
+    void performStepWrite(WorkflowRun run, StepExecution step) {
         String stepExtId = "step-exec:" + run.getId() + "/" + step.getStepId();
 
         Map<String, Object> meta = new LinkedHashMap<>();
@@ -422,7 +422,7 @@ public class ProcessGraphWritebackService implements ProcessGraphCallback {
                 stepExtId, step.getGraphNodeIds().size());
     }
 
-    private void performRunWrite(WorkflowRun run) {
+    void performRunWrite(WorkflowRun run) {
         String runExtId = "process-run:" + run.getId();
 
         Map<String, Object> meta = new LinkedHashMap<>();
@@ -573,7 +573,7 @@ public class ProcessGraphWritebackService implements ProcessGraphCallback {
 
     // ── Dead-letter entry builders ────────────────────────────────────────────────
 
-    private ProcessWritebackDeadLetterStore.DeadLetterEntry buildStepDeadLetter(
+    ProcessWritebackDeadLetterStore.DeadLetterEntry buildStepDeadLetter(
             WorkflowRun run, StepExecution step) {
         String outputKeys = null;
         String outputSummary = null;
@@ -590,7 +590,7 @@ public class ProcessGraphWritebackService implements ProcessGraphCallback {
                 null, 0); // failureSummary/attemptNumber filled in by deadLetter()
     }
 
-    private ProcessWritebackDeadLetterStore.DeadLetterEntry buildRunDeadLetter(WorkflowRun run) {
+    ProcessWritebackDeadLetterStore.DeadLetterEntry buildRunDeadLetter(WorkflowRun run) {
         Set<String> allNodes = new LinkedHashSet<>();
         if (run.getGraphNodeIds() != null) allNodes.addAll(run.getGraphNodeIds());
         if (run.getStepExecutions() != null) {

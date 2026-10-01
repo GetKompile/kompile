@@ -52,8 +52,8 @@ public class AskGraphClaimTool implements CliTool {
 
     @Override
     public String description() {
-        return "Assess a factual claim (subject, predicate, object) against the knowledge base. " +
-                "Locally uses ask_graph_verify semantics (SUPPORTED/REFUTED/UNKNOWN), without fusion; " +
+        return "Assess a (subject, predicate, object) claim against the knowledge base. " +
+                "Locally this is ask_graph_verify (SUPPORTED/REFUTED/UNKNOWN) without fusion; " +
                 "heuristic code calls are not verified facts. Managed backends fuse five evidence lines of attack — direct connections in the graph, verified " +
                 "facts from logical inference, connecting path scores, link plausibility from " +
                 "embeddings, and learned rules — into a single fused confidence score and a " +
@@ -72,7 +72,8 @@ public class AskGraphClaimTool implements CliTool {
                 .put("description", "Entity id of the claim subject (e.g. 'alice' or an internal node id).");
         props.putObject("predicate")
                 .put("type", "string")
-                .put("description", "Relation type to check (e.g. 'worksFor', 'isLocatedIn'). Locally case-sensitive, matching ask_graph_verify.");
+                .put("description", "Relation type to check (e.g. 'worksFor', 'isLocatedIn'). Locally matched in any case or "
+                        + "word style, as ask_graph_verify does; the remote backend needs the exact name.");
         props.putObject("object")
                 .put("type", "string")
                 .put("description", "Entity id of the claim object (e.g. 'acme_corp').");
@@ -95,12 +96,8 @@ public class AskGraphClaimTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Assess a claim: POST /api/kb-grounding/claim {subject, predicate, object, factSheetId?}. " +
-               "Locally returns verification evidence and a null fusedScore, not five-channel fusion. " +
-               "Managed backends return verdict (SUPPORTED/REFUTED/UNCERTAIN), fusedScore [0,1], and which evidence " +
-               "lines of attack support or attack it: direct connection (graph edge), verified facts " +
-               "(logical inference), connecting paths, link plausibility (embeddings), learned rules. " +
-               "Use this when you need BOTH a verdict and a per-signal breakdown explaining WHY.";
+        return "Assess one subject/predicate/object claim. Locally: a verify-style verdict with evidence; "
+                + "fusedScore is null. Managed backends fuse graph, inference, path, embedding and learned-rule signals.";
     }
 
     @Override

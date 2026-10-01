@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.*;
 
 import java.io.ByteArrayOutputStream;
@@ -24,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * and method signatures, indexes it, then exercises each analyzer against
  * the live index database.</p>
  */
+@TemporaryUserHome
 class IndexedCodebaseTest {
 
     private static Path tempDir;

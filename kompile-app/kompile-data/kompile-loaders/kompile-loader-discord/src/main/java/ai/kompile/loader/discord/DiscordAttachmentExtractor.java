@@ -21,6 +21,8 @@ import ai.kompile.loader.discord.DiscordModels.Attachment;
 import ai.kompile.loader.discord.DiscordModels.Message;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 
@@ -64,8 +66,9 @@ public class DiscordAttachmentExtractor {
         List<ExtractedAttachment> results = new ArrayList<>();
 
         for (Attachment att : message.attachments()) {
+            Path tempFile = null;
             try {
-                Path tempFile = api.downloadAttachment(att);
+                tempFile = api.downloadAttachment(att);
 
                 Map<String, Object> metadata = new LinkedHashMap<>();
                 metadata.put("discord.attachmentId", att.id());
@@ -109,6 +112,16 @@ public class DiscordAttachmentExtractor {
             } catch (Exception e) {
                 log.warn("Failed to download Discord attachment '{}' from message {}: {}",
                         att.filename(), message.id(), e.getMessage());
+                // The download itself may have succeeded even though a later step in this block
+                // failed (e.g. building the descriptor); if so, the temp file was never handed
+                // back to a caller and must not be left behind relying solely on deleteOnExit.
+                if (tempFile != null) {
+                    try {
+                        Files.deleteIfExists(tempFile);
+                    } catch (IOException ignored) {
+                        // best effort
+                    }
+                }
             }
         }
 

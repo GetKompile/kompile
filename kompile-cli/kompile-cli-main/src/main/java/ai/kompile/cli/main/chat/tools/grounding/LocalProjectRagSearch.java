@@ -231,7 +231,8 @@ final class LocalProjectRagSearch {
                             chunks.add(new Chunk(directory, knowledgeBase,
                                     sources.getOrDefault(documentId, documentId), documentId,
                                     chunkId, documentId + "\u0000" + chunkId,
-                                    content, sha256(content), pages(chunk.path("pages"))));
+                                    content, sha256(content), pages(chunk.path("pages")),
+                                    sourceMetadata(chunk.path("sourceMetadata"))));
                         } catch (Exception ignored) {
                             // Keep healthy chunks searchable when one JSONL row is malformed.
                         }
@@ -324,7 +325,8 @@ final class LocalProjectRagSearch {
                     document != null ? document.label() : null, documentId, "Unknown");
             chunks.add(new Chunk(directory, knowledgeBase, source, documentId, chunkId,
                     documentId + "\u0000" + chunkId, content, sha256(content),
-                    pages(mapper.valueToTree(entity.attributes().get("pages")))));
+                    pages(mapper.valueToTree(entity.attributes().get("pages"))),
+                    asMetadataMap(entity.attributes().get("sourceMetadata"))));
         }
     }
 
@@ -525,13 +527,19 @@ final class LocalProjectRagSearch {
         }
         Map<String, Object> metadata = metadata(query, topic, knowledgeBases, hits.size(), mode,
                 modelId, degradedReason);
-        metadata.put("evidence", hits.stream().map(hit -> Map.of(
-                "knowledgeBase", hit.chunk().knowledgeBase(),
-                "source", hit.chunk().source(),
-                "documentId", hit.chunk().documentId(),
-                "chunkId", hit.chunk().chunkId(),
-                "pages", hit.chunk().pages(),
-                "score", hit.score())).toList());
+        metadata.put("evidence", hits.stream().map(hit -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("knowledgeBase", hit.chunk().knowledgeBase());
+            item.put("source", hit.chunk().source());
+            item.put("documentId", hit.chunk().documentId());
+            item.put("chunkId", hit.chunk().chunkId());
+            item.put("pages", hit.chunk().pages());
+            item.put("score", hit.score());
+            if (hit.chunk().sourceMetadata() != null) {
+                item.put("sourceMetadata", hit.chunk().sourceMetadata());
+            }
+            return item;
+        }).toList());
         return ToolResult.success("knowledge_search: " + query, output.toString().strip(), metadata);
     }
 
@@ -713,8 +721,38 @@ final class LocalProjectRagSearch {
         return List.copyOf(result);
     }
 
+    /**
+     * Converts a {@code sourceMetadata} JSON object (as written on a chunks.jsonl row by the
+     * connector-aware crawl pipeline) into a plain map. Returns null when the field is absent,
+     * null, or not an object, so callers can treat "no metadata" and "empty metadata" the same
+     * way older knowledge bases (crawled before this field existed) already are.
+     */
+    private Map<String, Object> sourceMetadata(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull() || !node.isObject()) return null;
+        Map<String, Object> result = new LinkedHashMap<>();
+        node.fields().forEachRemaining(entry -> {
+            if (!entry.getValue().isNull()) {
+                result.put(entry.getKey(), mapper.convertValue(entry.getValue(), Object.class));
+            }
+        });
+        return result.isEmpty() ? null : result;
+    }
+
+    /**
+     * Recovers a {@code sourceMetadata} map from a portable graph's CHUNK/SNIPPET entity
+     * attributes (see {@link #loadGraphChunks}). Attribute values round-trip as {@code Map} once
+     * read back from a {@code .kgraph} archive, so no JSON parsing is needed here.
+     */
+    private Map<String, Object> asMetadataMap(Object raw) {
+        if (!(raw instanceof Map<?, ?> map) || map.isEmpty()) return null;
+        Map<String, Object> result = new LinkedHashMap<>();
+        map.forEach((key, value) -> result.put(String.valueOf(key), value));
+        return result;
+    }
+
     private record Chunk(Path directory, String knowledgeBase, String source, String documentId,
-                         String chunkId, String key, String content, String contentHash, List<Integer> pages) {
+                         String chunkId, String key, String content, String contentHash, List<Integer> pages,
+                         Map<String, Object> sourceMetadata) {
     }
 
     private record VectorEntry(String key, String contentHash, float[] vector) {

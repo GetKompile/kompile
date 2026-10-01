@@ -18,7 +18,6 @@ package ai.kompile.app.services.diffindex;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -28,8 +27,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Unit tests for the {@code since}/{@code until} time filtering added to
  * {@link DiffIndexService#search}. The service's constructor does not touch disk
- * (loading happens in a {@code @PostConstruct}), so entries are injected directly
- * into the in-memory map via reflection.
+ * (loading happens in a {@code @PostConstruct}), so entries are put straight into
+ * its in-memory map.
  */
 class DiffIndexServiceTimeFilterTest {
 
@@ -37,10 +36,9 @@ class DiffIndexServiceTimeFilterTest {
     private Map<String, DiffIndexEntry> entries;
 
     @BeforeEach
-    @SuppressWarnings("unchecked")
     void setUp() {
         service = new DiffIndexService();
-        entries = (Map<String, DiffIndexEntry>) ReflectionTestUtils.getField(service, "entries");
+        entries = service.entries;
         entries.clear();
         put("e1", "claude-code", "/proj/A/src/Foo.java", "2026-01-01T00:00:00Z");
         put("e2", "codex", "/proj/A/src/Foo.java", "2026-02-01T00:00:00Z");

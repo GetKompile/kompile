@@ -6,6 +6,7 @@ import ai.kompile.app.services.crawl.DistributedCrawlCoordinator;
 import ai.kompile.app.services.crawl.DistributedCrawlSession;
 import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
 import ai.kompile.app.services.subprocess.GraphMatrixSubprocessLauncher;
+import ai.kompile.app.subprocess.GraphMatrixSubprocessMain;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
@@ -19,6 +20,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -26,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -153,6 +156,41 @@ class DistributedGraphAuthorityControllerTest {
     }
 
     @Test
+    void boundedReadsDoNotClaimTheWriterLease() throws Exception {
+        config.setExternalAuthToken("secret");
+        when(coordinator.validateWriterLease(anyString(), anyString(), anyInt(), anyString(), anyBoolean()))
+                .thenReturn(DistributedCrawlCoordinator.WriterLeaseVerdict.VALID);
+
+        for (String method : List.of("getNodeInScope", "getIncidentEdges", "getNeighborhood")) {
+            mvc.perform(invoke(method)).andExpect(status().isOk());
+        }
+        mvc.perform(invoke("createEdgesBatch")).andExpect(status().isOk());
+
+        verify(coordinator, times(3)).validateWriterLease("s1", "p1", 1, "lease", false);
+        verify(coordinator).validateWriterLease("s1", "p1", 1, "lease", true);
+    }
+
+    @Test
+    void theGatewayEnforcesTheSharedRpcLimits() throws Exception {
+        config.setExternalAuthToken("secret");
+        when(coordinator.validateWriterLease(anyString(), anyString(), anyInt(), anyString(), anyBoolean()))
+                .thenReturn(DistributedCrawlCoordinator.WriterLeaseVerdict.VALID);
+
+        withProperty(GraphMatrixSubprocessMain.MAX_REQUEST_BYTES_PROPERTY, "64", () ->
+                mvc.perform(invoke("getNode"))
+                        .andExpect(status().isPayloadTooLarge())
+                        .andExpect(jsonPath("$.code").value("REQUEST_TOO_LARGE")));
+        // The child's reply is 36 bytes
+        withProperty(GraphMatrixSubprocessMain.MAX_RESPONSE_BYTES_PROPERTY, "16", () ->
+                mvc.perform(invoke("getNode"))
+                        .andExpect(status().isServiceUnavailable())
+                        .andExpect(jsonPath("$.code").value("AUTHORITY_UNAVAILABLE")));
+        mvc.perform(invoke("getNode"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.nodeId").value("n1"));
+    }
+
+    @Test
     void leaseCannotBeUsedWithoutItsExactGenerationEnvelope() throws Exception {
         config.setExternalAuthToken("secret");
         mvc.perform(post("/api/internal/distributed-graph/invoke")
@@ -176,6 +214,24 @@ class DistributedGraphAuthorityControllerTest {
                 .header(DistributedGraphAuthorityController.LEASE_HEADER, "lease")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(requestBody(method));
+    }
+
+    private interface Call {
+        void run() throws Exception;
+    }
+
+    private static void withProperty(String key, String value, Call call) throws Exception {
+        String previous = System.getProperty(key);
+        System.setProperty(key, value);
+        try {
+            call.run();
+        } finally {
+            if (previous == null) {
+                System.clearProperty(key);
+            } else {
+                System.setProperty(key, previous);
+            }
+        }
     }
 
     private static String requestBody(String method) {

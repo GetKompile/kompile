@@ -93,7 +93,7 @@ class ChatCommandRoutingTest {
 
     @Test
     void modelOverrideDoesNotRetainAnotherModelsProfileThinking() {
-        ChatConfig config = new ChatConfig("ollama", null, "profile-model", null);
+        ChatConfig config = new ChatConfig("custom", null, "profile-model", "http://127.0.0.1:9000/v1");
         config.setThinking("high");
         parse("--model", "different-model").applyCommandLineOverrides(config);
         assertEquals("different-model", config.getModel());
@@ -441,7 +441,7 @@ class ChatCommandRoutingTest {
         ChatCommand command = parse();
 
         assertTrue(command.shouldRunSetupWizard(null, false));
-        ChatConfig savedDirectConfig = new ChatConfig("ollama", null, "llama3.3", null);
+        ChatConfig savedDirectConfig = new ChatConfig("custom", null, "local-model", "http://127.0.0.1:9000/v1");
         assertTrue(command.shouldRunSetupWizard(savedDirectConfig, false));
     }
 
@@ -453,7 +453,7 @@ class ChatCommandRoutingTest {
         assertFalse(action.isValid());
         assertTrue(ChatCommand.isWizardActionMode(action));
         assertFalse(ChatCommand.isWizardActionMode(
-                new ChatConfig("ollama", null, "llama3.3", null)));
+                new ChatConfig("custom", null, "local-model", "http://127.0.0.1:9000/v1")));
     }
 
     @Test
@@ -492,7 +492,7 @@ class ChatCommandRoutingTest {
     @Test
     void directProviderAndMissingConfigNeverStartInstalledSubprocess() {
         ChatCommand command = parse();
-        ChatConfig direct = new ChatConfig("ollama", null, "llama3.3", null);
+        ChatConfig direct = new ChatConfig("custom", null, "local-model", "http://127.0.0.1:9000/v1");
         ChatConfig firstPartyLocal =
                 new ChatConfig("kompile-local", null, "Qwen2.5-0.5B-Instruct", null);
 
@@ -655,7 +655,7 @@ class ChatCommandRoutingTest {
     @Test
     void providerOverrideDropsPreviousProviderBoundSettings() {
         ChatConfig config = new ChatConfig(
-                "ollama", "old-secret", "old-model", "http://old-endpoint");
+                "openai", "old-secret", "old-model", "http://old-endpoint");
         config.setThinking("old-effort");
         config.setContextWindowTokens(32_000);
         config.setMaxOutputTokens(4_000);

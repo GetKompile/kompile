@@ -291,10 +291,8 @@ public class LocalCodeIndexTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Index+search code locally. action=index runs as a background job (waits ~10s, " +
-                "then returns a job id — poll action=index_status); indexes auto-refresh in the " +
-                "background per project. blended_search auto-picks strategy; debug_trace bundles " +
-                "search+callers+trace+impact.";
+        return "Code index - use BEFORE grep: action=blended_search|callers|implementors query=<name>; " +
+                "impact file_paths=<f>. action=index runs in background. project_id auto-resolves from cwd.";
     }
 
     @Override
@@ -312,10 +310,10 @@ public class LocalCodeIndexTool implements CliTool {
             CodeSearchEngine engine =
                     new CodeSearchEngine(indexer);
 
-            // Resolve project_id once for project-bound actions (explicit param →
-            // registration.json → deepest indexed root → cwd dir name) and stash it
-            // back into the params so the per-action fallbacks below see an explicit
-            // value. 'index'/'list'/'modules' keep their directory-based defaults.
+            // Resolve project_id once for project-bound actions (order: see
+            // ProjectIdResolver) and stash it back into the params so the per-action
+            // fallbacks below see an explicit value. 'index' resolves from its
+            // 'directory'; 'index_status'/'list'/'modules' keep their own defaults.
             ProjectIdResolver.Resolution resolution = null;
             if (params instanceof ObjectNode mutableParams
                     && !PROJECT_RESOLUTION_EXEMPT.contains(action)) {
@@ -336,7 +334,7 @@ public class LocalCodeIndexTool implements CliTool {
             if (resolution != null && REFRESHABLE_ACTIONS.contains(action)
                     && params.path("auto_refresh").asBoolean(true)) {
                 refreshNote = BackgroundIndexService.getInstance()
-                        .prepareForRead(indexer, resolution.projectId());
+                        .prepareForRead(indexer, resolution.projectId(), context.getWorkingDirectory());
             }
 
             ToolResult result = switch (action) {
@@ -409,6 +407,15 @@ public class LocalCodeIndexTool implements CliTool {
         String projectId = params.path("project_id").asText("");
         if (projectId.isEmpty()) projectId = dirPath.getFileName().toString();
 
+        String redirectLine = "";
+        Path indexRoot = ProjectIdResolver.indexRoot(projectId, dirPath);
+        if (!indexRoot.equals(dirPath)) {
+            redirectLine = "- **Indexed the project root**: " + dirPath + " is part of project '"
+                    + projectId + "', whose index covers " + indexRoot + "\n";
+            dirPath = indexRoot;
+            dir = indexRoot.toString();
+        }
+
         String includes = params.path("include_patterns").asText(null);
         String excludes = params.path("exclude_patterns").asText(null);
         boolean forceReindex = params.path("force_reindex").asBoolean(false);
@@ -428,10 +435,11 @@ public class LocalCodeIndexTool implements CliTool {
                     includes, excludes, forceReindex, progress);
             LocalCodeKGraphPublisher.ProjectionResult projection =
                     LocalCodeKGraphPublisher.publish(dirPath, projectId, includes, excludes);
-            CodeGraphLearningRunner.ConfiguredResult learning =
-                    new CodeGraphLearningRunner().runConfigured(
-                            dirPath, projection.graphPath(), CodeGraphReasoningConfig.TRIGGER_BUILD);
-            return renderIndexResult(dir, result, projection, null, learning);
+            CodeGraphLearningRunner.ConfiguredResult learning = projection.published()
+                    ? new CodeGraphLearningRunner().runConfigured(
+                            dirPath, projection.graphPath(), CodeGraphReasoningConfig.TRIGGER_BUILD)
+                    : null;
+            return renderIndexResult(dir, result, projection, redirectLine, learning);
         }
 
         // Background job with a bounded sync grace window: small/incremental
@@ -449,7 +457,7 @@ public class LocalCodeIndexTool implements CliTool {
                     : "";
             return renderIndexResult(dir, job.result(), job.projection(),
                     "- **Mode**: background index job " + job.id() + " (completed in "
-                            + job.runtimeMillis() + " ms)\n" + projectionLine,
+                            + job.runtimeMillis() + " ms)\n" + redirectLine + projectionLine,
                     job.learning());
         }
 
@@ -458,6 +466,7 @@ public class LocalCodeIndexTool implements CliTool {
         sb.append("- **Job**: ").append(job.id()).append(" (").append(job.status().name().toLowerCase()).append(")\n");
         sb.append("- **Project**: ").append(projectId).append("\n");
         sb.append("- **Root**: ").append(dirPath).append("\n");
+        sb.append(redirectLine);
         if (!job.progressLine().isEmpty()) {
             sb.append("- **Progress**: ").append(job.progressLine()).append("\n");
         }
@@ -483,7 +492,11 @@ public class LocalCodeIndexTool implements CliTool {
         sb.append("- **Files (skipped)**: ").append(result.filesSkipped()).append("\n");
         sb.append("- **Files (deleted)**: ").append(result.filesDeleted()).append("\n");
         sb.append("- **Entities found**: ").append(result.entitiesFound()).append("\n");
-        if (projection != null) {
+        boolean published = projection != null && projection.published();
+        if (projection != null && !published) {
+            sb.append("- **KGraph**: not published — ").append(projection.skippedReason()).append("\n");
+        }
+        if (published) {
             sb.append("- **Knowledge base**: ").append(projection.knowledgeBaseId()).append("\n");
             sb.append("- **KGraph**: ").append(projection.graphPath()).append("\n");
             sb.append("- **Graph entities**: ").append(projection.graphEntities()).append("\n");
@@ -508,7 +521,7 @@ public class LocalCodeIndexTool implements CliTool {
         }
         sb.append("\nSearch with: local_code_index action='search' query='...' project_id='")
                 .append(result.projectId()).append("'");
-        if (projection != null) {
+        if (published) {
             sb.append("\nGraph search with: graph_search query='...' knowledgeBase='")
                     .append(projection.knowledgeBaseId()).append("' code_project_id='")
                     .append(result.projectId()).append("'");
@@ -521,7 +534,10 @@ public class LocalCodeIndexTool implements CliTool {
         metadata.put("filesProcessed", result.filesProcessed());
         metadata.put("entitiesFound", result.entitiesFound());
         metadata.put("filesSkipped", result.filesSkipped());
-        if (projection != null) {
+        if (projection != null && !published) {
+            metadata.put("kgraphSkipped", projection.skippedReason());
+        }
+        if (published) {
             metadata.put("knowledgeBase", projection.knowledgeBaseId());
             metadata.put("graphPath", projection.graphPath().toString());
             metadata.put("graphEntities", projection.graphEntities());
@@ -581,7 +597,9 @@ public class LocalCodeIndexTool implements CliTool {
             if (result != null) {
                 sb.append(" (").append(result.filesProcessed()).append(" files, ")
                         .append(result.entitiesFound()).append(" entities)");
-                if (job.projection() != null) {
+                if (job.projection() != null && !job.projection().published()) {
+                    sb.append(" — KGraph not published (").append(job.projection().skippedReason()).append(')');
+                } else if (job.projection() != null) {
                     sb.append(" — KGraph ").append(job.projection().graphPath());
                     if (job.learning() != null) {
                         sb.append(" — learning ").append(job.learning().status().toLowerCase());

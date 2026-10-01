@@ -4,7 +4,6 @@ package ai.kompile.knowledgegraph.unified;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -59,7 +58,7 @@ class UnifiedGraphImportJournalTest {
 
     private UnifiedGraphImportJournal journal() {
         UnifiedGraphImportJournal journal = new UnifiedGraphImportJournal();
-        ReflectionTestUtils.setField(journal, "dataDir", dataDir.toString());
+        journal.dataDir = dataDir.toString();
         return journal;
     }
 

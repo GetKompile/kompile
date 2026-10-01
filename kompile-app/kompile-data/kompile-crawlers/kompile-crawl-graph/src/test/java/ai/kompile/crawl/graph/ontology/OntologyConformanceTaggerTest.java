@@ -29,7 +29,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -46,8 +45,8 @@ import static org.mockito.Mockito.when;
 /**
  * Unit tests for {@link OntologyConformanceTagger}.
  *
- * <p>No Spring context: all collaborators are Mockito mocks injected via
- * {@link ReflectionTestUtils#setField}.  Tests cover:
+ * <p>No Spring context: all collaborators are Mockito mocks assigned to the
+ * tagger's package-private fields.  Tests cover:
  * <ol>
  *   <li>Bound ontology + non-conforming node → tagged {@code ontology.conformant=false} with reason</li>
  *   <li>Bound ontology + conforming node → tagged {@code ontology.conformant=true}, no violation key</li>
@@ -77,8 +76,8 @@ class OntologyConformanceTaggerTest {
     @BeforeEach
     void setUp() {
         tagger = new OntologyConformanceTagger();
-        ReflectionTestUtils.setField(tagger, "ontologyProvider", ontologyProvider);
-        ReflectionTestUtils.setField(tagger, "knowledgeGraphService", knowledgeGraphService);
+        tagger.ontologyProvider = ontologyProvider;
+        tagger.knowledgeGraphService = knowledgeGraphService;
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -182,7 +181,7 @@ class OntologyConformanceTaggerTest {
     void nullProvider_noOp_zeroMetadataWrites() {
         OntologyConformanceTagger bare = new OntologyConformanceTagger();
         // ontologyProvider intentionally NOT injected (stays null)
-        ReflectionTestUtils.setField(bare, "knowledgeGraphService", knowledgeGraphService);
+        bare.knowledgeGraphService = knowledgeGraphService;
 
         OntologyConformanceTagger.TagResult result = bare.tag(FS_ID, true);
 
@@ -230,7 +229,7 @@ class OntologyConformanceTaggerTest {
     @Test
     void nullKnowledgeGraphService_noOp_zeroMetadataWrites() {
         OntologyConformanceTagger bare = new OntologyConformanceTagger();
-        ReflectionTestUtils.setField(bare, "ontologyProvider", ontologyProvider);
+        bare.ontologyProvider = ontologyProvider;
         // knowledgeGraphService intentionally NOT injected (stays null)
 
         OntologyConformanceTagger.TagResult result = bare.tag(FS_ID, true);

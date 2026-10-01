@@ -84,6 +84,35 @@ class CrawlLlmDispatcherStructuredChatTest {
                 .contains("submit_graph_delta"));
     }
 
+    @Test
+    void servingFailureCannotBeReplacedByEmptyRetrySuccess() throws Exception {
+        ai.kompile.core.crawl.graph.LocalServingBackend serving =
+                org.mockito.Mockito.mock(ai.kompile.core.crawl.graph.LocalServingBackend.class);
+        org.mockito.Mockito.when(serving.isAvailable()).thenReturn(true);
+        org.mockito.Mockito.when(serving.supportsStructuredChat()).thenReturn(true);
+        RuntimeException original = new IllegalStateException("Triton alias scratch allocation failed");
+        org.mockito.Mockito.when(serving.generateChat(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.anyInt()))
+                .thenThrow(original)
+                .thenReturn(new StructuredChatLanguageModel.Response(
+                        "{\"entities\":[],\"relations\":[]}", "", List.of(), List.of()));
+        dispatcher = new CrawlLlmDispatcher(null, serving);
+        UnifiedCrawlJob job = job();
+        RuntimeException first = assertThrows(CrawlLlmDispatcher.ServingExecutionFailure.class,
+                () -> dispatcher.promptStructuredWithCapacityFallback(request(), "llm", job, null));
+        org.junit.jupiter.api.Assertions.assertSame(original, first.getCause());
+        org.junit.jupiter.api.Assertions.assertSame(first,
+                assertThrows(CrawlLlmDispatcher.ServingExecutionFailure.class,
+                        () -> dispatcher.promptStructuredWithCapacityFallback(request(), "llm", job, null)));
+        assertThrows(CrawlLlmDispatcher.ServingExecutionFailure.class,
+                () -> dispatcher.promptWithCapacityFallback("retry", "llm", job));
+        assertThrows(CrawlLlmDispatcher.ServingExecutionFailure.class, dispatcher::throwIfServingFailed);
+        assertEquals(1, job.getErrorCount().get());
+        assertTrue(job.getErrors().get(0).contains(original.getMessage()));
+        org.mockito.Mockito.verify(serving, org.mockito.Mockito.times(1))
+                .generateChat(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
     private static StructuredChatLanguageModel.Request request() {
         return new StructuredChatLanguageModel.Request(
                 List.of(

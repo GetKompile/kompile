@@ -96,8 +96,13 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
     }
 
     // Subprocess launcher - ALL embedding work goes through this
-    private volatile EmbeddingSubprocessLauncher subprocessLauncher;
+    // visible for testing (DeviceErrorFailoverTest)
+    volatile EmbeddingSubprocessLauncher subprocessLauncher;
     private final Object launcherLock = new Object();
+    // Keep governor decisions atomic with preemption, without holding launcherLock while readers drain.
+    private final Object restartGovernorLock = new Object();
+    // Guarded by restartGovernorLock; teardown invalidates callbacks before draining the old child.
+    private long restartPolicyEpoch;
 
     @Autowired(required = false)
     private SubprocessRegistry subprocessRegistry;
@@ -112,20 +117,24 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
 
     // Restart-governor configuration (manual toggle + native-crash threshold), read live.
     @Autowired(required = false)
-    private EmbeddingRestartConfigService restartConfigService;
+    EmbeddingRestartConfigService restartConfigService;
 
     // Model state (mirrors subprocess state)
     private volatile String modelIdentifier;
-    private volatile int embeddingDimensions = -1;
+    // visible for testing (DeviceErrorFailoverTest)
+    volatile int embeddingDimensions = -1;
     private volatile String encoderType = "UNKNOWN";
-    private volatile ModelSource modelSource = ModelSource.NOT_INITIALIZED;
-    private volatile boolean initialized = false;
+    // visible for testing (DeviceErrorFailoverTest)
+    volatile ModelSource modelSource = ModelSource.NOT_INITIALIZED;
+    // visible for testing (DeviceErrorFailoverTest)
+    volatile boolean initialized = false;
     private volatile String initializationError = null;
     private volatile boolean initializationErrorRetriable = false;
 
     // Loading progress tracking
     private volatile boolean loading = false;
-    private volatile LoadingPhase loadingPhase = LoadingPhase.IDLE;
+    // visible for testing (DeviceErrorFailoverTest)
+    volatile LoadingPhase loadingPhase = LoadingPhase.IDLE;
     private volatile long loadingStartTime = 0;
     private volatile String loadingMessage = null;
 
@@ -182,7 +191,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
             new AtomicInteger(0);
     // Hard cross-session ceiling on ALL restartable embedding failures (stall / native crash / exit-crash).
     // Lives on the @Service so resume()/poll spawning fresh launchers can't reset it and loop forever.
-    private final AtomicInteger consecutiveFailures =
+    final AtomicInteger consecutiveFailures =
             new AtomicInteger(0);
     // Tracks whether the subprocess has ever produced a valid embedding result since the @Service started.
     // Sticky: set on the first successful embedBatch() result; never reset.
@@ -369,6 +378,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                         return;
                     }
                     // Tear down state exactly as reloadModel() does (we already hold launcherLock).
+                    invalidateRestartPolicy();
                     if (subprocessLauncher != null) {
                         try { subprocessLauncher.stop(); } catch (Exception ignored) {}
                         publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, modelIdentifier));
@@ -383,7 +393,11 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
         }
 
         if (initialized) {
-            return;
+            if (!laneGaveUp()) {
+                return;
+            }
+            // Otherwise the model stays "initialized" over a dead lane and every embed returns nothing
+            releaseDeadLane();
         }
         if (modelSource == ModelSource.FAILED) {
             return;
@@ -426,6 +440,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                 // but the launcher object still exists with stale state.
                 if (subprocessLauncher != null && !subprocessLauncher.isRunning()) {
                     log.info("Cleaning up stale subprocess launcher from previous failed attempt");
+                    invalidateRestartPolicy();
                     try {
                         subprocessLauncher.stop();
                     } catch (Exception ignored) {
@@ -564,6 +579,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                 if (subprocessLauncher != null) {
                     // Only stop subprocess on non-retriable errors
                     if (!initializationErrorRetriable) {
+                        invalidateRestartPolicy();
                         try {
                             subprocessLauncher.stop();
                         } catch (Exception stopEx) {
@@ -593,6 +609,35 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
     public boolean initializeIfNeeded() {
         ensureInitialized();
         return isInitialized();
+    }
+
+    /** True when the current launcher's child died and the launcher will not restart it. */
+    private boolean laneGaveUp() {
+        EmbeddingSubprocessLauncher launcher = subprocessLauncher;
+        return launcher != null && launcher.isLaneUnavailable();
+    }
+
+    /**
+     * Drop the loaded state of a model whose launcher gave up on its child: the restart policy
+     * declined, or the restart could not start a new child. The next ensureInitialized() then
+     * starts a new launcher, and with it a new CUDA context; while restarts are paused the model
+     * stays down until they are resumed.
+     */
+    private void releaseDeadLane() {
+        synchronized (launcherLock) {
+            EmbeddingSubprocessLauncher launcher = subprocessLauncher;
+            if (!initialized || launcher == null || !launcher.isLaneUnavailable()) {
+                return;
+            }
+            String lastCrash = launcher.getLastCrashReason();
+            String crash = lastCrash == null ? "unknown" : lastCrash.lines().findFirst().orElse(lastCrash);
+            log.warn("Embedding subprocess for {} died and was not restarted ({}); releasing the model",
+                    modelIdentifier, crash);
+            initialized = false;
+            modelSource = ModelSource.NOT_INITIALIZED;
+            loadingPhase = LoadingPhase.IDLE;
+            loadingMessage = "Embedding subprocess died and was not restarted: " + crash;
+        }
     }
 
     private boolean isRetriableError(Exception e) {
@@ -708,25 +753,58 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
         }
     }
 
+    /** Invalidate callbacks before teardown, without holding the governor lock while draining the child. */
+    private void invalidateRestartPolicy() {
+        synchronized (restartGovernorLock) {
+            restartPolicyEpoch++;
+        }
+    }
+
     /**
      * Create a RestartPolicyCallback implementation that publishes events and uses default restart logic.
      */
     private EmbeddingSubprocessLauncher.RestartPolicyCallback createRestartPolicyCallback() {
+        final EmbeddingSubprocessLauncher owner;
+        final long ownerEpoch;
+        synchronized (restartGovernorLock) {
+            owner = subprocessLauncher;
+            ownerEpoch = ++restartPolicyEpoch;
+        }
         return new EmbeddingSubprocessLauncher.RestartPolicyCallback() {
+
+            // Call only under restartGovernorLock. Never take launcherLock from a child callback:
+            // teardown holds that lock while waiting for the child's readers to drain.
+            private boolean ownsGovernor() {
+                return !preempted && restartPolicyEpoch == ownerEpoch && subprocessLauncher == owner;
+            }
 
             @Override
             public EmbeddingSubprocessLauncher.RestartConfiguration shouldRestart(
                     String taskId, int exitCode, String crashReason, int attemptNumber) {
-                // CRITICAL: If preempted by lifecycle manager, do NOT restart.
-                // The lifecycle manager will call resumeFromPreemption() when ready.
-                if (preempted) {
-                    log.info("Restart suppressed — service is preempted by lifecycle manager: {}", preemptionReason);
+                synchronized (restartGovernorLock) {
+                    if (!ownsGovernor()) {
+                        return null;
+                    }
+                }
+                // Configuration may block; read it without the lock, then re-check ownership below.
+                EmbeddingRestartConfig config = restartConfigService == null
+                        ? EmbeddingRestartConfig.defaults() : restartConfigService.getConfig();
+                synchronized (restartGovernorLock) {
+                    return decideRestart(taskId, exitCode, crashReason, attemptNumber, config);
+                }
+            }
+
+            private EmbeddingSubprocessLauncher.RestartConfiguration decideRestart(
+                    String taskId, int exitCode, String crashReason, int attemptNumber,
+                    EmbeddingRestartConfig config) {
+                // A blocked configuration lookup may outlive cleanup, replacement or preemption.
+                if (!ownsGovernor()) {
                     return null;
                 }
 
                 // Restart governor: manual master switch. When disabled, never auto-restart; pause so
                 // the on-demand and polling paths also stay down until the user re-enables/resumes.
-                if (!isAutoRestartEnabled()) {
+                if (!config.isAutoRestartEnabledOrDefault()) {
                     pauseRestarts("Auto-restart disabled by configuration");
                     return null;
                 }
@@ -737,7 +815,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                 }
 
                 // Default restart policy: allow restarts for memory-related failures
-                int maxAttempts = subprocessLauncher != null ? subprocessLauncher.getMaxRestartAttempts() : 3;
+                int maxAttempts = owner != null ? owner.getMaxRestartAttempts() : 3;
 
                 if (attemptNumber > maxAttempts) {
                     log.warn("Restart attempt {} exceeds max {} for task {}", attemptNumber, maxAttempts, taskId);
@@ -798,7 +876,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                 // native crashes nor stalls) counts toward a hard cap across launcher respawns, so
                 // resume()/poll spawning fresh launchers can't loop forever on a box where the model never
                 // settles. Defer once exceeded.
-                if (consecutiveFailures.incrementAndGet() >= Math.max(2, nativeCrashThreshold())) {
+                if (consecutiveFailures.incrementAndGet() >= Math.max(2, config.nativeCrashThresholdOrDefault())) {
                     pauseRestarts("Circuit breaker: " + consecutiveFailures.get() + " consecutive embedding "
                             + "restart failures (" + reason + ") — deferred. Resume via the UI / "
                             + "POST /api/embedding-restart/resume, or run on GPU.");
@@ -811,7 +889,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                 // ensureInitialized()/reloadModel() — otherwise it would reset every respawn and loop forever.
                 if (isNativeCrash(exitCode)) {
                     int crashes = consecutiveNativeCrashes.incrementAndGet();
-                    int threshold = nativeCrashThreshold();
+                    int threshold = config.nativeCrashThresholdOrDefault();
                     if (crashes >= threshold) {
                         pauseRestarts("Circuit breaker: " + crashes
                                 + " consecutive native crashes (exit " + exitCode + ", " + reason + ")");
@@ -833,6 +911,11 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
             @Override
             public void onRestartAttempt(String taskId, String fileName, int attemptNumber, int maxAttempts,
                                           String reason, EmbeddingSubprocessLauncher.RestartConfiguration config) {
+                synchronized (restartGovernorLock) {
+                    if (!ownsGovernor()) {
+                        return;
+                    }
+                }
                 log.info("Publishing restart attempt event: attempt {}/{} for model {} (reason: {})",
                         attemptNumber, maxAttempts, modelIdentifier, reason);
 
@@ -849,6 +932,11 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
 
             @Override
             public void onRestartSuccess(String taskId, int attemptNumber) {
+                synchronized (restartGovernorLock) {
+                    if (!ownsGovernor()) {
+                        return;
+                    }
+                }
                 log.info("Publishing restart success event: attempt {} for model {}", attemptNumber, modelIdentifier);
                 publishEvent(EmbeddingSubprocessEvent.subprocessRestartSuccess(
                         AnseriniEmbeddingModelImpl.this, modelIdentifier, attemptNumber));
@@ -856,14 +944,16 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
 
             @Override
             public void onRestartExhausted(String taskId, int totalAttempts, String lastReason) {
+                synchronized (restartGovernorLock) {
+                    if (!ownsGovernor()) {
+                        // An obsolete lane (including one preempted then resumed) cannot pause its successor.
+                        return;
+                    }
+                    // Keep exhaustion sticky across on-demand/polling launcher respawns.
+                    pauseRestarts("Restarts exhausted after " + totalAttempts + " attempt(s): " + lastReason);
+                }
                 log.warn("Publishing restart exhausted event: {} attempts for model {} (last reason: {})",
                         totalAttempts, modelIdentifier, lastReason);
-                // Make the give-up STICKY at the @Service level. Stalls / heartbeat-timeouts are not
-                // native crashes, so they never hit the consecutive-native-crash breaker above and would
-                // otherwise be respawned forever by the auto-init poll / reloadModel(). Tripping the
-                // restart governor here defers the model (visible in the UI) instead of crash-looping and
-                // wedging the shared DB. Resume is explicit (UI / POST /api/embedding-restart/resume / a job).
-                pauseRestarts("Restarts exhausted after " + totalAttempts + " attempt(s): " + lastReason);
                 publishEvent(EmbeddingSubprocessEvent.subprocessRestartExhausted(
                         AnseriniEmbeddingModelImpl.this, modelIdentifier, totalAttempts, lastReason));
             }
@@ -873,6 +963,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                 return switch (exitCode) {
                     case 137 -> true;  // OOM killed
                     case 134, 136, 139 -> true;  // Native crashes
+                    case EmbeddingSubprocessLauncher.DEVICE_ERROR_EXIT_CODE -> true;  // Device error: a new process gets a new CUDA context
                     case -1 -> true;  // Unknown (might be heartbeat timeout)
                     case 130, 143 -> false;  // User cancelled (SIGINT, SIGTERM)
                     case 0 -> false;  // Normal exit
@@ -888,6 +979,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                 return switch (exitCode) {
                     case 137 -> "OOM_KILLED";
                     case 134, 136, 139 -> "NATIVE_CRASH";
+                    case EmbeddingSubprocessLauncher.DEVICE_ERROR_EXIT_CODE -> "DEVICE_ERROR";
                     case 130, 143 -> "CANCELLED";
                     case -1 -> crashReason != null && crashReason.contains("heartbeat") ?
                             "STALLED_NO_HEARTBEAT" : "UNKNOWN";
@@ -1271,18 +1363,21 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
 
     @PreDestroy
     public void cleanup() {
-        log.info("Cleaning up embedding model subprocess for: {}", modelIdentifier);
-        if (subprocessLauncher != null) {
-            try {
-                subprocessLauncher.stop();
-                // Publish SUBPROCESS_STOPPED event for job history tracking
-                publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, modelIdentifier));
-            } catch (Exception e) {
-                log.warn("Error stopping subprocess", e);
+        synchronized (launcherLock) {
+            invalidateRestartPolicy();
+            log.info("Cleaning up embedding model subprocess for: {}", modelIdentifier);
+            if (subprocessLauncher != null) {
+                try {
+                    subprocessLauncher.stop();
+                    // Publish SUBPROCESS_STOPPED event for job history tracking
+                    publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, modelIdentifier));
+                } catch (Exception e) {
+                    log.warn("Error stopping subprocess", e);
+                }
+                subprocessLauncher = null;
             }
-            subprocessLauncher = null;
+            initialized = false;
         }
-        initialized = false;
     }
 
     // ========== Preemption support (used by ModelLifecycleManager) ==========
@@ -1298,8 +1393,11 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
      */
     public boolean suspendForPreemption(String reason) {
         synchronized (launcherLock) {
-            this.preempted = true;
-            this.preemptionReason = reason;
+            synchronized (restartGovernorLock) {
+                restartPolicyEpoch++;
+                this.preempted = true;
+                this.preemptionReason = reason;
+            }
             log.info("PREEMPTION: Suspending embedding subprocess — {}", reason);
 
             if (subprocessLauncher != null) {
@@ -1336,8 +1434,10 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
             }
 
             log.info("PREEMPTION: Resuming embedding subprocess (was preempted: {})", preemptionReason);
-            this.preempted = false;
-            this.preemptionReason = null;
+            synchronized (restartGovernorLock) {
+                this.preempted = false;
+                this.preemptionReason = null;
+            }
             this.initializationError = null;
             this.modelSource = ModelSource.NOT_INITIALIZED;
 
@@ -1588,8 +1688,8 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
      * Checks both the local state and the subprocess launcher state.
      */
     public boolean isInitialized() {
-        // Check local state first (volatile read)
-        if (initialized) {
+        // Check local state first (volatile read); a lane the launcher gave up on is not ready
+        if (initialized && !laneGaveUp()) {
             return true;
         }
         // Also check subprocess launcher - it may have loaded the model
@@ -1659,7 +1759,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
         if (restartsPaused || !isAutoRestartEnabled()) {
             return false;
         }
-        if (initialized) {
+        if (initialized && !laneGaveUp()) {
             return false; // Model is ready, no need to poll
         }
         if (initializationError == null) {
@@ -1728,7 +1828,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
             throw new IllegalArgumentException("Model identifier cannot be null or empty");
         }
 
-        if (newModelIdentifier.equals(this.modelIdentifier) && initialized) {
+        if (newModelIdentifier.equals(this.modelIdentifier) && initialized && !laneGaveUp()) {
             return true;
         }
 
@@ -1804,6 +1904,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
         }
 
         synchronized (launcherLock) {
+            invalidateRestartPolicy();
             // Stop existing subprocess
             if (subprocessLauncher != null) {
                 String oldModelId = this.modelIdentifier;
@@ -1826,9 +1927,12 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
     }
 
     public void initiateShutdown() {
-        log.info("Initiating shutdown for model: {}", modelIdentifier);
-        if (subprocessLauncher != null) {
-            subprocessLauncher.stop();
+        synchronized (launcherLock) {
+            invalidateRestartPolicy();
+            log.info("Initiating shutdown for model: {}", modelIdentifier);
+            if (subprocessLauncher != null) {
+                subprocessLauncher.stop();
+            }
         }
     }
 
@@ -1852,6 +1956,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
      */
     public boolean restartWithUpdatedEnvironment() {
         synchronized (launcherLock) {
+            invalidateRestartPolicy();
             log.info("Restarting embedding subprocess with updated environment for model: {}", modelIdentifier);
 
             // Publish event for restart initiation
@@ -1891,7 +1996,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
     public Map<String, Object> getSubprocessStatus() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("modelId", modelIdentifier);
-        status.put("initialized", initialized);
+        status.put("initialized", initialized && !laneGaveUp());
         status.put("modelSource", modelSource.name());
         status.put("loadingPhase", loadingPhase.name());
         status.put("loadingMessage", loadingMessage);
@@ -2097,7 +2202,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
     public Map<String, Object> getModelInfo() {
         Map<String, Object> info = new LinkedHashMap<>();
         info.put("modelId", modelIdentifier);
-        info.put("initialized", initialized);
+        info.put("initialized", initialized && !laneGaveUp());
         info.put("source", modelSource.name());
         // Use getter methods to include subprocess launcher data if available
         info.put("encoderType", getEncoderType());

@@ -42,6 +42,19 @@ class ChatWebHandoffTest {
         assertNull(command.opened);
     }
 
+    @Test void workspaceRequiresWebAndOpensTheWorkspaceRoute() {
+        Stub invalid = new Stub();
+        assertEquals(2, new CommandLine(invalid).execute("--workspace"));
+        assertFalse(invalid.selected);
+        assertNull(invalid.started);
+        Stub command = new Stub();
+        command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
+        String output = successfulOutput(command, "--web", "--workspace", "--open-browser",
+                "--working-dir", directory.toString());
+        assertTrue(output.contains("http://127.0.0.1:1234/#/workspace"), output);
+        assertEquals("http://127.0.0.1:1234/#/workspace", command.opened);
+    }
+
     @Test void webDefaultsToPrintedUrlWithoutBrowser() {
         Stub command = new Stub();
         command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");

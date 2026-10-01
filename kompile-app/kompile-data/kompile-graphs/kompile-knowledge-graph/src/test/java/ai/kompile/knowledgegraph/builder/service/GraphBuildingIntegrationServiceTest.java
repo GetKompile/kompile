@@ -340,7 +340,7 @@ class GraphBuildingIntegrationServiceTest {
                 return removed;
             }
         };
-        org.springframework.test.util.ReflectionTestUtils.setField(service, "runningJobs", trackedWorkers);
+        service.runningJobs = trackedWorkers;
         when(mockBuilder.buildFromChunks(anyList(), any(), any(), any())).thenAnswer(invocation -> {
             entered.countDown();
             if (!finishBuild.await(5, TimeUnit.SECONDS)) throw new AssertionError("Builder was not released");

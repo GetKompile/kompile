@@ -152,7 +152,7 @@ Call `kgr_tools(thread)` to get the full catalog.  Key tools:
 
 | Tool | Description |
 |---|---|
-| `graph_reasoning_query` | 17 operations: OVERVIEW, SEARCH, DESCRIBE, NEIGHBORS, PATH, FACTS, VERIFY, WHY, WHY_NOT, RANK, SCHEMA, TIMELINE, SIMILAR, RELATIONS, CAPABILITIES, ASSETS, ARTIFACT |
+| `graph_reasoning_query` | 21 operations: OVERVIEW, SEARCH, DESCRIBE, NEIGHBORS, PATH, FACTS, VERIFY, WHY, WHY_NOT, RANK, SCHEMA, TIMELINE, SIMILAR, RELATIONS, CAPABILITIES, ASSETS, ARTIFACT, plus the formula operations MODELS, CALCULATE, SCENARIO, SOLVE_TARGET, which take a `quantitative` object, e.g. `{"operation":"CALCULATE","quantitative":{"target":{"text":"Gross Margin"}}}`. Scenarios and goal seeks never change the graph |
 | `ask_graph_verify` | Check if an atom is SUPPORTED / REFUTED / UNKNOWN |
 | `ask_graph_query` | Conjunctive pattern query |
 | `ask_graph_explain` | Derivation trace for a verdict |

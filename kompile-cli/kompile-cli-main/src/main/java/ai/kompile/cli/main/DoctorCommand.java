@@ -38,11 +38,8 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.ServerSocket;
-import java.net.URI;
-import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -53,6 +50,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -164,7 +162,7 @@ public class DoctorCommand implements Callable<Integer> {
         // 5. Disk space
         results.addAll(checkDisk(projectRoot));
 
-        // 6. Agent CLIs + Ollama
+        // 6. Agent CLIs
         results.addAll(checkAgents());
 
         // 7. Ports
@@ -448,7 +446,7 @@ public class DoctorCommand implements Callable<Integer> {
         }
     }
 
-    /** Check 6: known agent CLIs on PATH + Ollama probe. */
+    /** Check 6: known agent CLIs on PATH. */
     List<CheckResult> checkAgents() {
         List<CheckResult> out = new ArrayList<>();
         try {
@@ -467,7 +465,7 @@ public class DoctorCommand implements Callable<Integer> {
             } else if (found.isEmpty()) {
                 out.add(CheckResult.warn("Agent CLIs",
                         "none found (checked: " + String.join(", ", missing) + ")",
-                        "Install one of: claude, codex, gemini, opencode — or use Ollama as fallback"));
+                        "Install one of: claude, codex, gemini, opencode"));
             } else {
                 String foundStr = String.join(", ", found);
                 String missingStr = missing.isEmpty() ? "" : "  [missing: " + String.join(", ", missing) + "]";
@@ -477,31 +475,7 @@ public class DoctorCommand implements Callable<Integer> {
             out.add(CheckResult.warn("Agent CLIs", "detection failed: " + e.getMessage(), null));
         }
 
-        // Probe Ollama
-        out.add(probeOllama());
-
         return out;
-    }
-
-    private CheckResult probeOllama() {
-        try {
-            URL url = URI.create("http://localhost:11434/api/tags").toURL();
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(1500);
-            conn.setReadTimeout(1500);
-            conn.setRequestMethod("GET");
-            int code = conn.getResponseCode();
-            if (code == 200) {
-                return CheckResult.ok("Ollama", "running at localhost:11434");
-            } else {
-                return CheckResult.warn("Ollama", "responded with HTTP " + code,
-                        "Check Ollama logs or restart it");
-            }
-        } catch (Exception e) {
-            return CheckResult.warn("Ollama",
-                    "not reachable at localhost:11434 (OK if using a different agent)",
-                    "Start Ollama with: ollama serve");
-        }
     }
 
     /**
@@ -1029,21 +1003,38 @@ public class DoctorCommand implements Callable<Integer> {
     /**
      * Run a command, capture the first line of stderr+stdout combined, with a
      * wall-clock timeout in milliseconds. Returns null on timeout or error.
+     * {@code readLine()} blocks until the child prints a line or exits, so the
+     * read runs on a daemon thread and only the wait for it is bounded; a
+     * silent, hung child cannot stall the doctor.
      */
     String runWithTimeout(String[] cmd, long timeoutMs) {
+        Process proc;
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.redirectErrorStream(true);
-            Process proc = pb.start();
-            String line = null;
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
-                line = br.readLine();
-            }
-            proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
-            proc.destroyForcibly();
-            return line;
+            proc = pb.start();
         } catch (Exception e) {
             return null;
+        }
+        CompletableFuture<String> firstLine = new CompletableFuture<>();
+        Thread reader = new Thread(() -> {
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+                firstLine.complete(br.readLine());
+            } catch (Exception e) {
+                firstLine.complete(null);
+            }
+        }, "doctor-runWithTimeout");
+        reader.setDaemon(true);
+        reader.start();
+        try {
+            return firstLine.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception e) {
+            return null;
+        } finally {
+            proc.destroyForcibly();
         }
     }
 

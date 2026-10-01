@@ -467,7 +467,7 @@ public class ExcelLoaderImpl implements DocumentLoader {
                 return cell.getStringCellValue();
             case NUMERIC:
                 if (DateUtil.isCellDateFormatted(cell)) {
-                    return cell.getDateCellValue().toString();
+                    return ExcelCellDates.format(cell);
                 }
                 double val = cell.getNumericCellValue();
                 if (val == Math.floor(val) && !Double.isInfinite(val)) {

@@ -45,7 +45,7 @@ class GraphPslProgramBuilderTest {
                 relation("r4", "d", "a", "NOT_SAME_AS", 0.90, 1.0, true),
                 relation("r4b", "a", "b", "NOT_SAME", 0.99, 1.0, true),
                 relation("r4c", "b", "c", "DIFFERENT_FROM", 0.99, 1.0, true),
-                relation("r5", "a", "c", "CAUSES", 0.10, 0.40, true),
+                relation("r5", "a", "c", "CAUSES", 0.40, 0.04, true),
                 relation("r6", "missing", "b", "CAUSES", 0.90, 1.0, true),
                 relation("r7", "missing", "d", "RELATED", 0.90, 1.0, false),
                 relation("r8", "a", "a", "RELATED", 0.90, 1.0, false),
@@ -88,7 +88,8 @@ class GraphPslProgramBuilderTest {
                 "symmetric typed relations still add the reverse link");
         assertEquals(0.90, program.value("Link(" + a + ", " + a + ")"), 1e-12,
                 "self-loops remain a single observed atom");
-        assertEquals(0.40, program.value("Conflict(" + b + ", " + d + ")"), 1e-12);
+        assertEquals(0.50, program.value("Conflict(" + b + ", " + d + ")"), 1e-12,
+                "the lower of weight and confidence caps the strength");
         assertFalse(program.contains("Link(" + d + ", " + a + ")"),
                 "NOT_SAME_AS relations remain excluded");
         assertEquals(0.90, program.value("Link(" + a + ", " + b + ")"), 1e-12,
@@ -100,6 +101,33 @@ class GraphPslProgramBuilderTest {
         assertFalse(program.contains("Link(" + a + ", " + d + ")"),
                 "NaN edge strength clamps to zero and remains below the threshold");
         assertTrue(program.contains("Prior(" + a + ")"));
+    }
+
+    @Test
+    @DisplayName("a score written into both weight and confidence is read once, not squared")
+    void copiedScoreIsReadOnce() {
+        List<GraphEntity> entities = List.of(
+                entity("a", 1.0), entity("b", 1.0), entity("c", 1.0), entity("d", 1.0));
+        List<GraphRelation> relations = List.of(
+                // extraction producers copy one score into both fields
+                relation("copied", "a", "b", "CAUSES", 0.60, 0.60, true),
+                // stores that set only a confidence leave the builder's unit weight
+                relation("confidenceOnly", "b", "c", "CAUSES", 1.0, 0.70, true),
+                // the KG adapter folds weight x confidence into weight and keeps the confidence
+                relation("folded", "c", "d", "CAUSES", 0.42, 0.70, true),
+                // 0.22 * 0.22 fell under the 0.05 edge threshold and dropped the link entirely
+                relation("weak", "d", "a", "CAUSES", 0.22, 0.22, true));
+        GraphPslProgramBuilder builder = new GraphPslProgramBuilder().includeDefaultRules(false);
+        PslProgram program = builder.build(new CountingGraph(entities, relations));
+
+        String a = builder.entityIdToConstant().get("a");
+        String b = builder.entityIdToConstant().get("b");
+        String c = builder.entityIdToConstant().get("c");
+        String d = builder.entityIdToConstant().get("d");
+        assertEquals(0.60, program.value("Link(" + a + ", " + b + ")"), 1e-12);
+        assertEquals(0.70, program.value("Link(" + b + ", " + c + ")"), 1e-12);
+        assertEquals(0.42, program.value("Link(" + c + ", " + d + ")"), 1e-12);
+        assertEquals(0.22, program.value("Link(" + d + ", " + a + ")"), 1e-12);
     }
 
     private static int legacyEffectiveOutDegree(Collection<GraphRelation> relations,
@@ -119,7 +147,7 @@ class GraphPslProgramBuilderTest {
                     || relation.type().trim().equalsIgnoreCase("SAME_ENTITY"))
                     && entityId.equals(relation.targetId()));
             double strength = Math.max(0.0, Math.min(1.0,
-                    relation.weight() * relation.confidence()));
+                    Math.min(relation.weight(), relation.confidence())));
             if (incident && strength >= minEdgeWeight) {
                 degree++;
             }

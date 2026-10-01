@@ -16,12 +16,13 @@ import static org.junit.jupiter.api.Assertions.*;
 class CodeGraphSelectionTest {
     @TempDir Path root;
 
-    private KompileCodingProject registration(String id, String graphPath) {
+    private KompileCodingProject registration(String id, String graphPath) throws Exception {
         KompileCodingProject project = new KompileCodingProject();
         project.setId(id);
         project.setCodeProjectId(id + "-code");
         project.setName(id);
-        project.setRootPath(root.resolve(id).toString());
+        // The store only registers coding projects whose root is an existing directory.
+        project.setRootPath(Files.createDirectories(root.resolve(id)).toString());
         project.setMetadata(Map.of("graphPath", graphPath));
         return project;
     }

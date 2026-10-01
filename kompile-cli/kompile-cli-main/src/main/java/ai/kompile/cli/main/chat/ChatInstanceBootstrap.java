@@ -73,13 +73,19 @@ final class ChatInstanceBootstrap {
     /** {@code workflow} is the team new web sessions start with, or {@code null} for none. */
     static StartupResult startWeb(Path workingDirectory, boolean globalConfig, String workflow, int timeout)
             throws BootstrapException, IOException {
+        return startWeb(workingDirectory, globalConfig, workflow, timeout, false);
+    }
+
+    static StartupResult startWeb(Path workingDirectory, boolean globalConfig, String workflow, int timeout,
+                                  boolean workspace) throws BootstrapException, IOException {
+        if (workspace) new ai.kompile.cli.common.ChatWorkspaceStore().register(workingDirectory);
         // A fresh port/instance avoids reusing an admin persona or another project's harness.
         int port;
         try (ServerSocket socket = new ServerSocket(0)) {
             port = socket.getLocalPort();
         }
         return ensureReady("http://127.0.0.1:" + port, timeout, new ComponentRegistry(),
-                new ServiceManager(), workingDirectory.toRealPath().toFile(), true, globalConfig, workflow);
+                new ServiceManager(), workingDirectory.toRealPath().toFile(), true, globalConfig, workflow, workspace);
     }
 
     static StartupResult ensureReady(String requestedChatUrl, int startupTimeoutSeconds,
@@ -95,6 +101,14 @@ final class ChatInstanceBootstrap {
                                      File dataDirectory, boolean webHandoff, boolean globalConfig,
                                      String workflow)
             throws BootstrapException {
+        return ensureReady(requestedChatUrl, startupTimeoutSeconds, registry, serviceManager,
+                dataDirectory, webHandoff, globalConfig, workflow, false);
+    }
+
+    static StartupResult ensureReady(String requestedChatUrl, int startupTimeoutSeconds,
+                                     ComponentRegistry registry, ServiceManager serviceManager,
+                                     File dataDirectory, boolean webHandoff, boolean globalConfig,
+                                     String workflow, boolean workspace) throws BootstrapException {
         List<String> missing = missingDistributionComponents(registry);
         if (!missing.isEmpty()) {
             // A corrupt installed jar (truncated/empty zip — the disk-full install
@@ -150,7 +164,7 @@ final class ChatInstanceBootstrap {
                     chatArtifact,
                     chatPort,
                     workDirectory,
-                    webHandoff ? WebChatContext.jvmArguments(workDirectory.toPath(), globalConfig, workflow) : List.of(),
+                    webHandoff ? WebChatContext.jvmArguments(workDirectory.toPath(), globalConfig, workflow, workspace) : List.of(),
                     // Use the CHAT distribution's all-interface default and honor operator
                     // overrides (KOMPILE_CHAT_ADDRESS / SERVER_ADDRESS), rather than forcing loopback.
                     List.of(),

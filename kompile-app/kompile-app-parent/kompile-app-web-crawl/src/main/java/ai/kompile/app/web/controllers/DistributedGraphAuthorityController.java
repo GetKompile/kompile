@@ -6,6 +6,7 @@ import ai.kompile.app.services.crawl.DistributedCrawlCoordinator;
 import ai.kompile.app.services.crawl.DistributedCrawlSession;
 import ai.kompile.app.services.subprocess.GraphMatrixSubprocessLauncher;
 import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
+import ai.kompile.app.subprocess.GraphMatrixSubprocessMain;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,8 +46,6 @@ public class DistributedGraphAuthorityController {
     public static final String SESSION_HEADER = "X-Kompile-Session-Id";
     public static final String PARTITION_HEADER = "X-Kompile-Partition-Id";
     public static final String ATTEMPT_HEADER = "X-Kompile-Attempt";
-    private static final int MAX_REQUEST_BYTES = 8 * 1024 * 1024;
-    private static final int MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
     private static final Set<String> LIFECYCLE_METHODS = Set.of(
             "supportsGraphGenerations", "beginFactSheetGeneration",
             "validateFactSheetGeneration", "activateFactSheetGeneration",
@@ -56,6 +55,7 @@ public class DistributedGraphAuthorityController {
             "getNode", "getNodeByExternalId", "getNodesByIds", "getNodesByType",
             "getNodesByTypeInFactSheet", "getNodesInFactSheet", "getAllNodes", "getAllSources",
             "getChildren", "getNeighbors", "getEdges", "getEdgesInFactSheet", "edgeExists",
+            "getNodeInScope", "getIncidentEdges", "getNeighborhood",
             "countEntityNodesInFactSheet", "countNodesByTypeInFactSheet", "searchNodes",
             "getGraphStatistics", "loadGraph", "listGraphs", "listGraphsByFactSheet",
             "answerQuery", "queryMebnFromKg", "queryAllPosteriors", "queryPosterior");
@@ -111,7 +111,8 @@ public class DistributedGraphAuthorityController {
             @RequestHeader(value = ATTEMPT_HEADER, required = false) String attemptHeader) {
         ResponseEntity<?> rejection = authenticate(authorization);
         if (rejection != null) return rejection;
-        if (body == null || body.length > MAX_REQUEST_BYTES) {
+        // The caps the app's own client and the graph child read, so one setting governs every hop
+        if (body == null || body.length > GraphMatrixSubprocessMain.maxRequestBytes()) {
             return error(HttpStatus.PAYLOAD_TOO_LARGE, "REQUEST_TOO_LARGE", "graph request exceeds byte limit");
         }
         int attempt;
@@ -162,7 +163,7 @@ public class DistributedGraphAuthorityController {
                     childRequest, HttpResponse.BodyHandlers.ofInputStream());
             byte[] response;
             try (InputStream input = child.body()) {
-                response = readBounded(input, MAX_RESPONSE_BYTES);
+                response = readBounded(input, GraphMatrixSubprocessMain.maxResponseBytes());
             }
             return ResponseEntity.status(child.statusCode())
                     .contentType(MediaType.APPLICATION_JSON)
@@ -205,10 +206,10 @@ public class DistributedGraphAuthorityController {
                 "error", message == null ? code : message));
     }
 
-    private static byte[] readBounded(InputStream input, int limit) throws IOException {
-        ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(limit, 8192));
+    private static byte[] readBounded(InputStream input, long limit) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream((int) Math.min(limit, 8192));
         byte[] buffer = new byte[8192];
-        int total = 0;
+        long total = 0;
         int count;
         while ((count = input.read(buffer)) >= 0) {
             total += count;

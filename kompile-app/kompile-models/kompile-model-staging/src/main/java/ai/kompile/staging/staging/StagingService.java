@@ -80,7 +80,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     private final Path modelsDir;
 
     // Track active staging operations
-    private final Map<String, StagingModelInfo> stagingModels = new ConcurrentHashMap<>();
+    final Map<String, StagingModelInfo> stagingModels = new ConcurrentHashMap<>();
     private final Map<String, List<SseEmitter>> stagingEmitters = new ConcurrentHashMap<>();
     private final Map<String, StagingOperation> activeOperations = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newFixedThreadPool(2);

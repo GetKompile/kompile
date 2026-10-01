@@ -7,8 +7,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 class PipelineServingSubprocessMainTest {
 
@@ -44,5 +47,33 @@ class PipelineServingSubprocessMainTest {
                 data.getData("resolvedModels").getData("generator").getString("modelPath"));
         assertEquals("page one",
                 data.<Data>getList("pages", ValueType.DATA).get(0).getString("text"));
+    }
+
+    @Test
+    void resetOrLoadAfterUnloadInstallsTheNewExecutor() throws Exception {
+        // UNLOAD leaves no executor; RESET and LOAD_PIPELINE install one through install().
+        AtomicReference<AutoCloseable> current = new AtomicReference<>();
+        AtomicInteger closed = new AtomicInteger();
+        AutoCloseable replacement = closed::incrementAndGet;
+
+        PipelineServingSubprocessMain.install(current, replacement);
+
+        assertSame(replacement, current.get());
+        assertEquals(0, closed.get());
+    }
+
+    @Test
+    void installClosesTheExecutorItReplaces() throws Exception {
+        AtomicInteger previousClosed = new AtomicInteger();
+        AtomicInteger replacementClosed = new AtomicInteger();
+        AutoCloseable previous = previousClosed::incrementAndGet;
+        AutoCloseable replacement = replacementClosed::incrementAndGet;
+        AtomicReference<AutoCloseable> current = new AtomicReference<>(previous);
+
+        PipelineServingSubprocessMain.install(current, replacement);
+
+        assertSame(replacement, current.get());
+        assertEquals(1, previousClosed.get());
+        assertEquals(0, replacementClosed.get());
     }
 }

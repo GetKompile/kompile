@@ -11,7 +11,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,8 +39,8 @@ class GraphSnapshotServiceTest {
     @BeforeEach
     void setUp() {
         service = new GraphSnapshotService(bridge);
-        ReflectionTestUtils.setField(service, "dataDir", tempDir.toString());
-        ReflectionTestUtils.setField(service, "maxPerSheet", 20);
+        service.dataDir = tempDir.toString();
+        service.maxPerSheet = 20;
     }
 
     @Test
@@ -60,7 +59,7 @@ class GraphSnapshotServiceTest {
     void restoreKeepsSourceUntilImportEvenAtRetentionLimit() throws Exception {
         stubExport();
         GraphSnapshotService.SnapshotMetadata source = service.createSnapshot(42L, "source");
-        ReflectionTestUtils.setField(service, "maxPerSheet", 1);
+        service.maxPerSheet = 1;
         UnifiedGraphBridge.ImportSummary summary =
                 new UnifiedGraphBridge.ImportSummary(3, 2, 1, 4, true);
         when(bridge.importFromFile(any(Path.class), eq(42L))).thenAnswer(invocation -> {

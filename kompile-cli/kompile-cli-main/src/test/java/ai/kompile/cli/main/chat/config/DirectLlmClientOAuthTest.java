@@ -1199,6 +1199,60 @@ class DirectLlmClientOAuthTest {
     }
 
     @Test
+    void radiusSendsImagesAsPiImageContentUnlessTheCatalogSaysTextOnly() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requestBodies = new ArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/config", exchange -> {
+            try {
+                respond(exchange, 200,
+                        "{\"baseUrl\":\"" + baseUrl(server) + "/pi\",\"models\":["
+                                + "{\"id\":\"radius-vision\",\"input\":[\"text\",\"image\"]},"
+                                + "{\"id\":\"radius-text\",\"input\":[\"text\"]}]}");
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/pi/messages", exchange -> {
+            try {
+                requestBodies.add(mapper.readTree(exchange.getRequestBody()));
+                respondSse(exchange,
+                        "data: {\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"a page\"}\n\n"
+                                + "data: {\"type\":\"done\",\"reason\":\"stop\","
+                                + "\"usage\":{\"input\":2,\"output\":1,\"cacheRead\":0,"
+                                + "\"cacheWrite\":0,\"totalTokens\":3,\"cost\":{}}}\n\n");
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            DirectLlmClient client = new DirectLlmClient(
+                    new ChatConfig("radius", "radius-key", "radius-vision", baseUrl(server)), mapper);
+            client.setOutputConsumer(ignored -> {});
+            List<DirectLlmClient.AttachmentInput> image = List.of(new DirectLlmClient.AttachmentInput(
+                    "/tmp/page.png", "image/png", true, "cGFnZQ==", null));
+
+            assertEquals("a page", client.streamChat("look", "system", null, null, null, image).text);
+            JsonNode content = requestBodies.get(0).path("context").path("messages").path(0).path("content");
+            assertEquals(2, content.size(), content.toString());
+            assertEquals("image", content.get(0).path("type").asText());
+            assertEquals("cGFnZQ==", content.get(0).path("data").asText());
+            assertEquals("image/png", content.get(0).path("mimeType").asText());
+            assertEquals("text", content.get(1).path("type").asText());
+            assertEquals("look", content.get(1).path("text").asText());
+
+            DirectLlmClient.StreamResult refused =
+                    client.streamChat("look again", "system", null, null, "radius-text", image);
+            assertTrue(refused.failed, refused.text);
+            assertTrue(refused.text.contains("accepts text only"), refused.text);
+            assertEquals(1, requestBodies.size(), "a model the catalog lists as text-only is never sent the image");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void radiusRetriesPendingToolResultWithoutDuplicatingIt() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         List<JsonNode> requests = new ArrayList<>();

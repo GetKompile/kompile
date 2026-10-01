@@ -58,7 +58,7 @@ public final class DirectSubagentSupervision {
             Set<String> ids = new HashSet<>();
             Set<String> keys = new HashSet<>(Set.of("read", "edit", "write", "patch",
                     "bash", "bash.readonly", "bash.write", "bash.destructive", "external_directory",
-                    "channel.login", "channel.send"));
+                    "channel.login", "channel.send", CodeSearchTool.INDEX_PERMISSION_KEY));
             for (CliTool tool : parent.getToolRegistry().getToolsForAgent(parent.getAgent())) {
                 ids.add(tool.id());
                 if (tool.permissionKey() != null) keys.add(tool.permissionKey());

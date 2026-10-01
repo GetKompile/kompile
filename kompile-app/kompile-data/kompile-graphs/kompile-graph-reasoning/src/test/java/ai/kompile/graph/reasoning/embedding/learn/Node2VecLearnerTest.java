@@ -55,7 +55,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   Bridge:    C-D
  * </pre>
  */
-class Node2VecLearnerTest {
+public class Node2VecLearnerTest {
 
     // ── Node ids ──────────────────────────────────────────────────────────────
     private static final List<String> CLUSTER1 = List.of("A", "B", "C");
@@ -160,7 +160,7 @@ class Node2VecLearnerTest {
      * learned geometry is equivalent even if the exact floating-point values differ.</p>
      */
     @Test
-    void sameGraphAndConfigProduceIdenticalVectors() {
+    public void sameGraphAndConfigProduceIdenticalVectors() {
         MutableReasoningGraph graph = buildClusterGraph();
         Node2VecLearner learner = new Node2VecLearner();
 
@@ -221,7 +221,7 @@ class Node2VecLearnerTest {
      * The margin expected empirically with the CLUSTER_CONFIG above is ~0.10 or more.
      */
     @Test
-    void intraClusterCosineExceedsInterClusterCosine() {
+    public void intraClusterCosineExceedsInterClusterCosine() {
         MutableReasoningGraph graph = buildClusterGraph();
         Node2VecLearner learner = new Node2VecLearner();
         EmbeddingTable table = learner.learn(graph, CLUSTER_CONFIG);
@@ -264,7 +264,7 @@ class Node2VecLearnerTest {
      * count.
      */
     @Test
-    void everyEntityGetsCorrectDimensionVector() {
+    public void everyEntityGetsCorrectDimensionVector() {
         int n = 8;
         MutableReasoningGraph graph = buildSimpleGraph(n);
         EmbeddingConfig cfg = new EmbeddingConfig(16, 5, 3, 2, 3, 1.0, 1.0, 1, 0.025, 99L);
@@ -289,7 +289,7 @@ class Node2VecLearnerTest {
      * Test 4 — DeepWalk path: p=q=1.0 runs and produces valid finite vectors.
      */
     @Test
-    void deepWalkPathProducesFiniteVectors() {
+    public void deepWalkPathProducesFiniteVectors() {
         MutableReasoningGraph graph = buildClusterGraph();
         EmbeddingConfig cfg = new EmbeddingConfig(
                 16, 8, 5, 2, 3,
@@ -311,7 +311,7 @@ class Node2VecLearnerTest {
      * graph carries its learned embedding and {@link Embeddings#cosine} can compare them.
      */
     @Test
-    void learnIntoWritesEmbeddingsBackIntoGraph() {
+    public void learnIntoWritesEmbeddingsBackIntoGraph() {
         MutableReasoningGraph graph = buildClusterGraph();
         EmbeddingConfig cfg = new EmbeddingConfig(8, 5, 3, 2, 2, 1.0, 1.0, 1, 0.025, 55L);
 
@@ -338,7 +338,7 @@ class Node2VecLearnerTest {
     }
 
     @Test
-    void learnIntoLayerPreservesPrimaryEmbeddingsAndProvidesReasoningView() {
+    public void learnIntoLayerPreservesPrimaryEmbeddingsAndProvidesReasoningView() {
         UnifiedGraph graph = UnifiedGraph.of(buildClusterGraph());
         graph.addEntity(GraphEntity.builder("A")
                 .type("NODE")
@@ -366,7 +366,7 @@ class Node2VecLearnerTest {
      * (exercises the biased walk path through {@link Node2VecWalk}).
      */
     @Test
-    void nonUniformPqProducesFiniteVectors() {
+    public void nonUniformPqProducesFiniteVectors() {
         MutableReasoningGraph graph = buildClusterGraph();
         EmbeddingConfig cfg = new EmbeddingConfig(
                 16, 8, 5, 2, 3,
@@ -393,7 +393,7 @@ class Node2VecLearnerTest {
      * If the graph is mis-wired (gradients are NaN or zero), the loss will not decrease.</p>
      */
     @Test
-    void sameDiffTrainerLossDecreasesOverEpochs() {
+    public void sameDiffTrainerLossDecreasesOverEpochs() {
         List<String> entityIds = List.of("A", "B", "C", "D", "E", "F");
         int dim = 16;
         int negSamples = 3;
@@ -477,7 +477,7 @@ class Node2VecLearnerTest {
     }
 
     @Test
-    void sameDiffTrainerCloseIsIdempotentAndRejectsUseAfterClose() {
+    public void sameDiffTrainerCloseIsIdempotentAndRejectsUseAfterClose() {
         SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
                 List.of("A", "B", "C"), 8, 2, 0.025, 12L);
         double[][] snapshot;
@@ -497,7 +497,7 @@ class Node2VecLearnerTest {
     }
 
     @Test
-    void tryWithResourcesClosesTrainerWhenTrainingFails() {
+    public void tryWithResourcesClosesTrainerWhenTrainingFails() {
         SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
                 List.of("A", "B", "C"), 8, 2, 0.025, 13L);
 
@@ -589,7 +589,7 @@ class Node2VecLearnerTest {
     }
 
     @Test
-    void node2VecReturnsJavaEmbeddingCopyAfterTrainerClose() {
+    public void node2VecReturnsJavaEmbeddingCopyAfterTrainerClose() {
         EmbeddingConfig cfg = new EmbeddingConfig(8, 5, 3, 2, 2,
                 1.0, 1.0, 1, 0.025, 23L);
         EmbeddingTable table = new Node2VecLearner().learn(buildSimpleGraph(4), cfg);

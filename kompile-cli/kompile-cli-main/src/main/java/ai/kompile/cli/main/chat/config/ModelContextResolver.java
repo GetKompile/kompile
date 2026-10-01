@@ -33,36 +33,48 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 /**
- * Resolves the real context window for whatever model the chat is talking to.
+ * Resolves the real context window, and whether images are accepted, for whatever model
+ * the chat is talking to.
  *
  * <p>Resolution order:</p>
  * <ol>
+ *   <li>Explicit overrides from the chat config.</li>
+ *   <li>For a model served on a loopback endpoint — Kompile's own serving child
+ *       ({@code kompile-local}) always, any other local server only when the catalogs
+ *       don't know the model — the serving origin's {@code /api/llm/status} (the kompile
+ *       staging/serving convention): {@code maxContextLength}, {@code maxOutputTokens},
+ *       {@code supportsImageInput}. A staged 4K model must NOT inherit the 128K default,
+ *       and a staged model whose name matches a catalog entry is still the model the
+ *       child serves.</li>
  *   <li>{@link ModelContextWindows} — dynamic per-model metadata from the CLI agents'
  *       on-disk catalogs first, then the static fallback table. Covers every hosted
  *       provider model (Claude, GPT, Gemini, DeepSeek…).</li>
- *   <li>For models the catalogs don't know — typically a kompile-staged local GGUF
- *       served on a loopback OpenAI endpoint — probe the serving origin's
- *       {@code /api/llm/status} (the kompile staging/serving convention) and use its
- *       {@code maxContextLength}. A staged 4K model must NOT inherit the 128K default.</li>
- *   <li>Otherwise fall back to {@link ModelContextWindows#getContextWindow(String)}'s
- *       default.</li>
+ *   <li>Otherwise the {@link ModelContextWindows} defaults.</li>
  * </ol>
  *
- * <p>Probe results are cached per (baseUrl, model) for a short TTL so the REPL does not
- * hit the status endpoint on every agentic step.</p>
+ * <p>A kompile-local status only counts when it names the chat's model: the port may
+ * belong to another serving child by now. Probe results are cached per (baseUrl, model)
+ * for a short TTL so the REPL does not hit the status endpoint on every agentic step.</p>
  */
 public class ModelContextResolver {
 
     private static final Duration PROBE_TIMEOUT = Duration.ofSeconds(2);
     private static final long CACHE_TTL_MS = 30_000L;
+    private static final String KOMPILE_LOCAL = "kompile-local";
 
     private final Function<URI, Optional<JsonNode>> statusFetcher;
-    private final Map<String, CachedLimits> cache = new ConcurrentHashMap<>();
+    private final Map<String, CachedStatus> cache = new ConcurrentHashMap<>();
+    // The last status each model's server answered with. An idle-evicted kompile-local
+    // child restarts on a new port, so a failed probe does not mean the model changed.
+    private final Map<String, ServedModel> lastServed = new ConcurrentHashMap<>();
 
     /** Effective input/output limits for one provider/model pair. */
     public record ModelLimits(int contextWindow, int maxOutputTokens) {}
 
-    private record CachedLimits(ModelLimits limits, long expiresAtMs) {}
+    /** What a serving status reported for its loaded model; imageInput is null when it didn't say. */
+    private record ServedModel(ModelLimits limits, Boolean imageInput) {}
+
+    private record CachedStatus(ServedModel served, long expiresAtMs) {}
 
     public ModelContextResolver() {
         this.statusFetcher = defaultStatusFetcher();
@@ -85,12 +97,9 @@ public class ModelContextResolver {
 
     /** Resolve both limits using explicit overrides, provider-qualified metadata, and local status. */
     public ModelLimits resolveLimits(ChatConfig config, String modelOverride) {
-        String model = modelOverride != null && !modelOverride.isBlank()
-                ? modelOverride
-                : (config != null ? config.getModel() : null);
         return resolveLimits(
                 config != null ? config.getProvider() : null,
-                model,
+                effectiveModel(config, modelOverride),
                 config != null ? config.resolveBaseUrl() : null,
                 config != null ? config.getContextWindowTokens() : 0,
                 config != null ? config.getMaxOutputTokens() : 0);
@@ -122,27 +131,55 @@ public class ModelContextResolver {
      */
     public ModelLimits resolveLimits(String provider, String model, String baseUrl,
                                      int contextOverride, int outputOverride) {
-        // Pass provider and literal model id separately: flattening them loses provenance when
-        // an aggregator publishes ids such as "openai/gpt-6-astra" in its own namespace.
-        boolean known = ModelContextWindows.isKnown(provider, model);
-
         int context = contextOverride > 0 ? contextOverride : 0;
         int output = outputOverride > 0 ? outputOverride : 0;
 
-        if (known) {
-            if (context == 0) context = ModelContextWindows.getContextWindow(provider, model);
-            if (output == 0) output = ModelContextWindows.getMaxOutputTokens(provider, model);
-        } else if ((context == 0 || output == 0) && isLocalEndpoint(baseUrl)) {
-            Optional<ModelLimits> probed = probeLocalLimits(baseUrl, qualify(provider, model));
+        if ((context == 0 || output == 0) && servedStatusDecides(provider, model, baseUrl)) {
+            Optional<ModelLimits> probed = probeLocal(baseUrl, provider, model)
+                    .map(ServedModel::limits)
+                    .filter(limits -> limits.contextWindow() > 0);
             if (probed.isPresent()) {
                 if (context == 0) context = probed.get().contextWindow();
                 if (output == 0) output = probed.get().maxOutputTokens();
             }
         }
 
+        // Pass provider and literal model id separately: flattening them loses provenance when
+        // an aggregator publishes ids such as "openai/gpt-6-astra" in its own namespace.
         if (context <= 0) context = ModelContextWindows.getContextWindow(provider, model);
         if (output <= 0) output = ModelContextWindows.getMaxOutputTokens(provider, model);
         return new ModelLimits(context, output);
+    }
+
+    /**
+     * Whether the effective model accepts image input: the serving status for a model a
+     * loopback server answers for (the same rule as the limits), else the catalogs.
+     * Empty when nothing knows; callers must not read that as "no".
+     */
+    public Optional<Boolean> resolveImageInput(ChatConfig config, String modelOverride) {
+        if (config == null) return Optional.empty();
+        String provider = config.getProvider();
+        String model = effectiveModel(config, modelOverride);
+        String baseUrl = config.resolveBaseUrl();
+        if (servedStatusDecides(provider, model, baseUrl)) {
+            Optional<Boolean> served = probeLocal(baseUrl, provider, model).map(ServedModel::imageInput);
+            if (served.isPresent()) return served;
+        }
+        return ModelContextWindows.supportsVision(provider, model);
+    }
+
+    private static String effectiveModel(ChatConfig config, String modelOverride) {
+        if (modelOverride != null && !modelOverride.isBlank()) return modelOverride;
+        return config != null ? config.getModel() : null;
+    }
+
+    /**
+     * Kompile's serving child always answers for its model, even when the name matches a
+     * catalog entry; any other loopback server only for models the catalogs don't know.
+     */
+    private static boolean servedStatusDecides(String provider, String model, String baseUrl) {
+        return isLocalEndpoint(baseUrl)
+                && (KOMPILE_LOCAL.equals(provider) || !ModelContextWindows.isKnown(provider, model));
     }
 
     private static String qualify(String provider, String model) {
@@ -153,32 +190,44 @@ public class ModelContextResolver {
         return provider.trim() + "/" + model.trim();
     }
 
-    private Optional<ModelLimits> probeLocalLimits(String baseUrl, String model) {
-        String key = baseUrl + "|" + (model == null ? "" : model);
+    private Optional<ServedModel> probeLocal(String baseUrl, String provider, String model) {
+        String qualified = qualify(provider, model);
+        String modelKey = qualified == null ? "" : qualified;
+        String key = baseUrl + "|" + modelKey;
         long now = System.currentTimeMillis();
-        CachedLimits cached = cache.get(key);
+        CachedStatus cached = cache.get(key);
+        ServedModel served;
         if (cached != null && now < cached.expiresAtMs()) {
-            return cached.limits().contextWindow() > 0
-                    ? Optional.of(cached.limits()) : Optional.empty();
+            served = cached.served();
+        } else {
+            // Negative results are cached too, so a dead port is not re-probed every step.
+            served = fetchServedModel(baseUrl, provider, model);
+            cache.put(key, new CachedStatus(served, now + CACHE_TTL_MS));
+            if (served != null) lastServed.put(modelKey, served);
         }
+        return Optional.ofNullable(served != null ? served : lastServed.get(modelKey));
+    }
 
-        int window = 0;
-        int output = 0;
+    /** The loaded model's status at the serving origin, or null when it can't answer for this model. */
+    private ServedModel fetchServedModel(String baseUrl, String provider, String model) {
         try {
             URI statusUri = URI.create(originOf(baseUrl) + "/api/llm/status");
             JsonNode status = statusFetcher.apply(statusUri).orElse(null);
-            if (status != null && status.path("loaded").asBoolean(false)) {
-                window = status.path("maxContextLength").asInt(0);
-                output = status.path("maxOutputTokens").asInt(0);
-                if (output <= 0) output = status.path("maxOutputLength").asInt(0);
+            if (status == null || !status.path("loaded").asBoolean(false)) return null;
+            if (KOMPILE_LOCAL.equals(provider) && model != null && !model.isBlank()
+                    && !model.trim().equals(status.path("modelId").asText("").trim())) {
+                return null;
             }
+            int output = status.path("maxOutputTokens").asInt(0);
+            if (output <= 0) output = status.path("maxOutputLength").asInt(0);
+            JsonNode imageInput = status.path("supportsImageInput");
+            return new ServedModel(
+                    new ModelLimits(status.path("maxContextLength").asInt(0), output),
+                    imageInput.isBoolean() ? imageInput.booleanValue() : null);
         } catch (Exception ignored) {
-            // Unreachable/foreign local server — negative result is cached below.
+            // Unreachable/foreign local server.
+            return null;
         }
-
-        ModelLimits limits = new ModelLimits(window, output);
-        cache.put(key, new CachedLimits(limits, now + CACHE_TTL_MS));
-        return window > 0 ? Optional.of(limits) : Optional.empty();
     }
 
     /**

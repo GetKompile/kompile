@@ -84,25 +84,14 @@ class MultiAgentGraphControllerTest {
     @BeforeEach
     void setUp() {
         controller = new MultiAgentGraphController(extractionService, htmlChunker);
-        // Inject optional fields via reflection-free setter approach
-        // (fields are @Autowired(required = false) so we set them directly)
-        setField(controller, "llmServiceRegistry", llmServiceRegistry);
+        // The optional collaborators are @Autowired(required = false) fields, set directly.
+        controller.llmServiceRegistry = llmServiceRegistry;
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
         objectMapper = new ObjectMapper();
     }
 
     // ─── Helper ──────────────────────────────────────────────────────────────
-
-    private static void setField(Object target, String fieldName, Object value) {
-        try {
-            var field = target.getClass().getDeclaredField(fieldName);
-            field.setAccessible(true);
-            field.set(target, value);
-        } catch (Exception e) {
-            throw new RuntimeException("Could not inject field " + fieldName, e);
-        }
-    }
 
     private static MergedGraphResult emptyResult(GraphMergeStrategy strategy) {
         Graph g = new Graph();
@@ -199,7 +188,7 @@ class MultiAgentGraphControllerTest {
     @Test
     void listProviders_noRegistry_returnsEmptyList() throws Exception {
         // Remove the registry
-        setField(controller, "llmServiceRegistry", null);
+        controller.llmServiceRegistry = null;
 
         mockMvc.perform(get("/api/graph/multi-agent/providers"))
                 .andExpect(status().isOk())
@@ -325,7 +314,7 @@ class MultiAgentGraphControllerTest {
     @Test
     void prepareHostResolvesFullTextAndRejectsCrossSheetOrPreviewOnlySources() throws Exception {
         KnowledgeGraphService store = mock(KnowledgeGraphService.class);
-        setField(controller, "knowledgeGraphService", store);
+        controller.knowledgeGraphService = store;
         // Matrix-backed graph nodes have no database row id; preserve the public graph id.
         GraphNode source = GraphNode.builder().nodeId("c1").factSheetId(1L)
                 .contentPreview("Not the full source")
@@ -357,7 +346,7 @@ class MultiAgentGraphControllerTest {
     @Test
     void completeHostPersistsValidatedGraphWithoutRerunningTheRemoteModel() throws Exception {
         KnowledgeGraphService store = mock(KnowledgeGraphService.class);
-        setField(controller, "knowledgeGraphService", store);
+        controller.knowledgeGraphService = store;
         Graph graph = hostGraph();
         MergedGraphResult merged = new MergedGraphResult(graph, Map.of(), 2, 1, 10L, GraphMergeStrategy.UNION);
         when(extractionService.mergeHostGraph(any(), anyList(), any(), any(), any())).thenReturn(merged);
@@ -433,8 +422,8 @@ class MultiAgentGraphControllerTest {
     }
 
     private ExtractionJob configureHostJob(ExtractionJobService jobs) {
-        setField(controller, "knowledgeGraphService", mock(KnowledgeGraphService.class));
-        setField(controller, "jobService", jobs);
+        controller.knowledgeGraphService = mock(KnowledgeGraphService.class);
+        controller.jobService = jobs;
         ExtractionJob job = ExtractionJob.builder().jobId("host-job").factSheetId(1L)
                 .builderType("native-chat").status(ExtractionJob.JobStatus.RUNNING).build();
         when(jobs.createJob(any(), any(), any())).thenReturn(job);

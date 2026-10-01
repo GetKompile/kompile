@@ -28,6 +28,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -41,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Document loader for ingesting files from Microsoft OneDrive via the Graph API.
@@ -108,6 +110,19 @@ public class OneDriveLoaderImpl implements DocumentLoader, ai.kompile.core.loade
      */
     public List<Path> downloadTo(DocumentSourceDescriptor sourceDescriptor, Path destination)
             throws Exception {
+        return downloadTo(sourceDescriptor, destination, message -> logger.warn("{}", message));
+    }
+
+    /**
+     * Same download, but each per-file failure is reported to {@code warnings} instead of only
+     * logged, so a caller materializing a snapshot can surface partial failures. If every
+     * attempted item fails, throws using the first failure instead of returning an empty list
+     * silently.
+     */
+    @Override
+    public List<Path> downloadTo(
+            DocumentSourceDescriptor sourceDescriptor, Path destination, Consumer<String> warnings)
+            throws Exception {
         String accessToken = resolveAccessToken(sourceDescriptor);
         if (accessToken == null || accessToken.isEmpty()) {
             throw new IllegalStateException(
@@ -129,6 +144,8 @@ public class OneDriveLoaderImpl implements DocumentLoader, ai.kompile.core.loade
         }
         Files.createDirectories(destination);
         List<Path> written = new ArrayList<>();
+        Exception firstFailure = null;
+        String firstFailureId = null;
         for (String itemId : itemIds) {
             try {
                 Path file = downloadOriginal(itemId, driveId, accessToken, destination);
@@ -136,8 +153,19 @@ public class OneDriveLoaderImpl implements DocumentLoader, ai.kompile.core.loade
                     written.add(file);
                 }
             } catch (Exception e) {
-                logger.warn("Failed to download OneDrive item {}: {}", itemId, e.getMessage());
+                String message = "Failed to download OneDrive item " + itemId + ": " + e.getMessage();
+                logger.warn(message);
+                warnings.accept(message);
+                if (firstFailure == null) {
+                    firstFailure = e;
+                    firstFailureId = itemId;
+                }
             }
+        }
+        if (written.isEmpty() && firstFailure != null) {
+            throw new IOException("All " + itemIds.size()
+                    + " OneDrive item(s) failed to download; first failure (item " + firstFailureId
+                    + "): " + firstFailure.getMessage(), firstFailure);
         }
         return written;
     }

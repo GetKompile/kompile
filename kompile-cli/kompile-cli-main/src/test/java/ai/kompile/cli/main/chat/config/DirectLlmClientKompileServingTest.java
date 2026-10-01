@@ -183,6 +183,40 @@ class DirectLlmClientKompileServingTest {
         }
     }
 
+    @Test
+    void servingWireNeverRaisesAConfiguredSmallOutputCeiling() throws Exception {
+        AtomicReference<JsonNode> captured = new AtomicReference<>();
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/api/llm/chat", exchange -> {
+            try {
+                captured.set(mapper.readTree(exchange.getRequestBody()));
+                byte[] body = "{\"content\":\"ok\",\"toolCalls\":[],\"finishReason\":\"completed\"}"
+                        .getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            for (int ceiling : new int[]{1, 128, 256, 512, 1_024}) {
+                try (DirectLlmClient client = new DirectLlmClient(preparedConfig(server), mapper)) {
+                    client.setContextWindowTokens(8_192);
+                    client.setWireMaxOutputTokens(ceiling);
+                    client.setOutputConsumer(ignored -> { });
+                    assertEquals("ok", client.streamChat("describe the image", "system", null, null).text);
+                    assertEquals(ceiling, captured.get().path("maxTokens").asInt());
+                }
+                assertEquals(ceiling, DirectLlmClient.wireMaxTokens(ceiling, 8_192, 8_192));
+                assertEquals(ceiling, DirectLlmClient.wireMaxTokens(ceiling, 0, 100));
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private int countRole(JsonNode request, String role) {
         int count = 0;
         for (JsonNode message : request.path("request").path("messages")) {

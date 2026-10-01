@@ -22,23 +22,30 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
-import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests for {@link InitAgentProvisioner}.
  *
- * <p>Uses package-private seams to avoid real network calls and JVM-global env side-effects:
+ * <p>Uses a package-private seam to avoid JVM-global env side-effects:
  * <ul>
  *   <li>{@link InitAgentProvisioner#launcherPathOverride} — injects a fake binary path without
  *       touching {@code KOMPILE_CLI_BINARY} (which is JVM-global and taints parallel tests)</li>
- *   <li>{@link InitAgentProvisioner#ollamaProbeSupplier} — replaces the real HTTP probe</li>
+ *   <li>{@link InitAgentProvisioner#agentSearchPathOverride} — agent detection searches a
+ *       directory of the test's own, so no test starts the agent CLIs installed on the machine</li>
+ *   <li>{@link InitAgentProvisioner#versionProbeTimeout} — shortens the {@code --version} probe
+ *       limit so the hung-probe test stays fast</li>
  * </ul>
  */
 class InitAgentProvisionerTest {
@@ -53,20 +60,26 @@ class InitAgentProvisionerTest {
     @TempDir
     Path fakeHome;
 
+    private Path agentBin;
     private String savedUserHome;
     private String savedLauncherOverride;
+    private String savedAgentSearchPath;
+    private Duration savedVersionProbeTimeout;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws IOException {
         savedUserHome = System.getProperty("user.home");
         savedLauncherOverride = InitAgentProvisioner.launcherPathOverride;
+        savedAgentSearchPath = InitAgentProvisioner.agentSearchPathOverride;
+        savedVersionProbeTimeout = InitAgentProvisioner.versionProbeTimeout;
 
-        // Redirect user.home so api-agents.json is written under our temp dir
+        // Redirect user.home so nothing provisioning touches lands in the real ~/.kompile
         System.setProperty("user.home", fakeHome.toString());
         // Use a fake binary path so findCliLauncher() doesn't grope around the classpath
         InitAgentProvisioner.launcherPathOverride = "/usr/local/bin/kompile";
-        // Replace Ollama probe — default to "down" so tests that don't care don't block
-        InitAgentProvisioner.ollamaProbeSupplier = InitAgentProvisioner.OllamaProbeResult::down;
+        // Detect agents in a directory of our own; the real PATH would start every installed agent CLI
+        agentBin = Files.createDirectories(fakeHome.resolve("agent-bin"));
+        InitAgentProvisioner.agentSearchPathOverride = agentBin.toString();
     }
 
     @AfterEach
@@ -77,7 +90,8 @@ class InitAgentProvisionerTest {
             System.setProperty("user.home", savedUserHome);
         }
         InitAgentProvisioner.launcherPathOverride = savedLauncherOverride;
-        InitAgentProvisioner.ollamaProbeSupplier  = InitAgentProvisioner::probeOllama;
+        InitAgentProvisioner.agentSearchPathOverride = savedAgentSearchPath;
+        InitAgentProvisioner.versionProbeTimeout = savedVersionProbeTimeout;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -187,11 +201,11 @@ class InitAgentProvisionerTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // AGENTS.md — untouched when already present
+    // AGENTS.md — an existing file keeps its content and gains the code-navigation section
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    void agentsMdUntouchedWhenPresent() throws Exception {
+    void existingAgentsMdKeepsItsContentAndGainsTheCodeNavigationSection() throws Exception {
         Path agentsMd = projectRoot.resolve("AGENTS.md");
         String original = "# My existing AGENTS.md\n\nDo not overwrite me.\n";
         Files.writeString(agentsMd, original);
@@ -199,114 +213,92 @@ class InitAgentProvisionerTest {
         InitAgentProvisioner.AgentProvisionResult result =
                 InitAgentProvisioner.provision(projectRoot, APP_PORT, STAGING_PORT);
 
-        assertEquals(original, Files.readString(agentsMd),
-                "AGENTS.md content must not be modified");
+        String merged = Files.readString(agentsMd);
+        assertEquals(original + "\n" + InitAgentProvisioner.codeNavigationSection() + "\n", merged,
+                "the existing content must be kept byte for byte, with the section appended");
+        boolean sectionLine = result.summaryLines().stream()
+                .anyMatch(l -> l.contains("AGENTS.md") && l.contains("code-navigation section"));
+        assertTrue(sectionLine, "Summary must report the section was written. Summary: " + result.summaryLines());
 
-        boolean untouchedLine = result.summaryLines().stream()
-                .anyMatch(l -> l.contains("AGENTS.md") && l.contains("untouched"));
-        assertTrue(untouchedLine, "Summary must report AGENTS.md was left untouched. Summary: " + result.summaryLines());
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // api-agents.json — Ollama fallback merge logic
-    // ─────────────────────────────────────────────────────────────────────────
-
-    @Test
-    void ollamaFallbackRegisteredWhenNoCliAgentFound() throws Exception {
-        // Simulate: no CLI agents on PATH (provision() will find none since we're in a tempDir)
-        // Simulate: Ollama is up with model "llama3.1:8b"
-        InitAgentProvisioner.ollamaProbeSupplier =
-                () -> new InitAgentProvisioner.OllamaProbeResult(true, "llama3.1:8b");
-
-        InitAgentProvisioner.AgentProvisionResult result =
+        InitAgentProvisioner.AgentProvisionResult again =
                 InitAgentProvisioner.provision(projectRoot, APP_PORT, STAGING_PORT);
 
-        Path apiAgents = fakeHome.resolve(".kompile/config/api-agents.json");
-        // May or may not have been written depending on whether a CLI was found on PATH.
-        // Only assert if the result says "ollama-local" was registered.
-        boolean ollamaRegistered = result.summaryLines().stream()
-                .anyMatch(l -> l.contains("ollama-local"));
-        if (ollamaRegistered) {
-            assertTrue(Files.exists(apiAgents), "api-agents.json must be created");
-            List<Map<String, Object>> entries = OM.readValue(apiAgents.toFile(),
-                    new TypeReference<>() {});
-            boolean hasOllama = entries.stream()
-                    .anyMatch(e -> "ollama-local".equals(e.get("name")));
-            assertTrue(hasOllama, "api-agents.json must contain 'ollama-local' entry");
-            // Verify model was set
-            Map<String, Object> ollamaEntry = entries.stream()
-                    .filter(e -> "ollama-local".equals(e.get("name")))
-                    .findFirst().orElseThrow();
-            assertEquals("llama3.1:8b", ollamaEntry.get("modelName"));
-            assertEquals("http://localhost:11434/v1", ollamaEntry.get("endpointUrl"));
-        }
-        // Result must have no thrown exceptions
-        assertNotNull(result);
+        assertEquals(merged, Files.readString(agentsMd), "re-running init must not change AGENTS.md");
+        boolean untouchedLine = again.summaryLines().stream()
+                .anyMatch(l -> l.contains("AGENTS.md") && l.contains("left untouched")
+                        && !l.contains("code-navigation"));
+        assertTrue(untouchedLine, "Summary must report AGENTS.md was left untouched. Summary: " + again.summaryLines());
     }
 
     @Test
-    void ollamaFallbackNotDuplicatedWhenEntryAlreadyExists() throws Exception {
-        // Pre-populate api-agents.json with an existing ollama-local entry
-        Path configDir = fakeHome.resolve(".kompile/config");
-        Files.createDirectories(configDir);
-        Path apiAgents = configDir.resolve("api-agents.json");
-        String preExisting = """
-                [
-                  {
-                    "name": "ollama-local",
-                    "displayName": "Ollama (local)",
-                    "endpointUrl": "http://localhost:11434/v1",
-                    "apiKey": "",
-                    "modelName": "mistral:7b",
-                    "temperature": 0.7,
-                    "maxTokens": 4096,
-                    "description": "pre-existing",
-                    "isDefault": false
-                  }
-                ]
-                """;
-        Files.writeString(apiAgents, preExisting);
-
-        InitAgentProvisioner.ollamaProbeSupplier =
-                () -> new InitAgentProvisioner.OllamaProbeResult(true, "llama3.1:8b");
-
+    void aFreshlyWrittenAgentsMdAlreadyCarriesTheCurrentSection() throws Exception {
         InitAgentProvisioner.provision(projectRoot, APP_PORT, STAGING_PORT);
 
-        List<Map<String, Object>> entries = OM.readValue(apiAgents.toFile(),
-                new TypeReference<>() {});
-        long ollamaCount = entries.stream()
-                .filter(e -> "ollama-local".equals(e.get("name")))
-                .count();
-        assertEquals(1, ollamaCount, "ollama-local must not be duplicated");
-        // Original model name must be preserved (no overwrite)
-        Map<String, Object> entry = entries.stream()
-                .filter(e -> "ollama-local".equals(e.get("name")))
-                .findFirst().orElseThrow();
-        assertEquals("mistral:7b", entry.get("modelName"),
-                "pre-existing model name must not be overwritten");
+        Path agentsMd = projectRoot.resolve("AGENTS.md");
+        String written = Files.readString(agentsMd);
+        String section = InitAgentProvisioner.codeNavigationSection();
+        assertTrue(written.contains(section), "the template must carry the marked section verbatim");
+        assertEquals(written.indexOf(section), written.lastIndexOf(section), "the section must appear once");
+        assertFalse(InitAgentProvisioner.mergeCodeNavigation(agentsMd),
+                "re-running init must find the template's section current");
+        assertEquals(written, Files.readString(agentsMd));
     }
 
     @Test
-    void ollamaFallbackWritesNewFileWhenConfigDirMissing() throws Exception {
-        // fakeHome has no .kompile/config directory yet
-        InitAgentProvisioner.ollamaProbeSupplier =
-                () -> new InitAgentProvisioner.OllamaProbeResult(true, "phi3:mini");
+    void aStaleSectionIsRefreshedInPlace() throws Exception {
+        Path agentsMd = projectRoot.resolve("AGENTS.md");
+        String before = "# Mine\n\nbefore\n\n";
+        String after = "\n\nafter\n";
+        Files.writeString(agentsMd, before + InitAgentProvisioner.CODE_NAVIGATION_BEGIN
+                + "\n## CODE NAVIGATION\n\nUse grep for everything.\n"
+                + InitAgentProvisioner.CODE_NAVIGATION_END + after);
 
-        // Force "no CLI found" scenario via a path that doesn't have any agents
+        assertTrue(InitAgentProvisioner.mergeCodeNavigation(agentsMd));
+        assertEquals(before + InitAgentProvisioner.codeNavigationSection() + after,
+                Files.readString(agentsMd), "only the text between the markers may change");
+        assertFalse(InitAgentProvisioner.mergeCodeNavigation(agentsMd), "a current section must be left alone");
+    }
+
+    @Test
+    void aBeginMarkerWithoutItsEndNeverSwallowsUserText() throws Exception {
+        Path agentsMd = projectRoot.resolve("AGENTS.md");
+        String original = "# Mine\n\n" + InitAgentProvisioner.CODE_NAVIGATION_BEGIN + "\nkeep this\n";
+        Files.writeString(agentsMd, original);
+
+        assertTrue(InitAgentProvisioner.mergeCodeNavigation(agentsMd));
+        String merged = Files.readString(agentsMd);
+        assertEquals(original + "\n" + InitAgentProvisioner.codeNavigationSection() + "\n", merged);
+
+        assertFalse(InitAgentProvisioner.mergeCodeNavigation(agentsMd));
+        assertEquals(merged, Files.readString(agentsMd), "a second merge must not reach back to the stray marker");
+    }
+
+    @Test
+    void theAppendedSectionFollowsOneBlankLine() throws Exception {
+        Path agentsMd = projectRoot.resolve("AGENTS.md");
+        String section = InitAgentProvisioner.codeNavigationSection();
+        for (String original : List.of("no newline", "one newline\n", "blank line\n\n")) {
+            Files.writeString(agentsMd, original);
+            assertTrue(InitAgentProvisioner.mergeCodeNavigation(agentsMd));
+            assertEquals(original.stripTrailing() + "\n\n" + section + "\n", Files.readString(agentsMd), original);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // provision() — no external model server is registered
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void provisionRegistersNoExternalModelServer() {
         InitAgentProvisioner.AgentProvisionResult result =
                 InitAgentProvisioner.provision(projectRoot, APP_PORT, STAGING_PORT);
 
-        // Only verify file was created if result indicates Ollama path was taken
-        boolean ollamaRegistered = result.summaryLines().stream()
-                .anyMatch(l -> l.contains("ollama-local"));
-        if (ollamaRegistered) {
-            Path apiAgents = fakeHome.resolve(".kompile/config/api-agents.json");
-            assertTrue(Files.exists(apiAgents), "api-agents.json must be created even when config dir was missing");
-            assertTrue(Files.size(apiAgents) > 0, "api-agents.json must not be empty");
-        }
-        assertNotNull(result);
-        // No exceptions — any errors go into warnings
-        result.warnings().forEach(System.err::println);
+        assertFalse(Files.exists(fakeHome.resolve(".kompile/config/api-agents.json")),
+                "init must not register an API agent");
+        assertTrue(result.summaryLines().stream().noneMatch(l -> l.toLowerCase().contains("ollama")),
+                "Summary must not mention Ollama. Summary: " + result.summaryLines());
+        assertTrue(result.warnings().stream().noneMatch(w -> w.toLowerCase().contains("ollama")),
+                "Warnings must not mention Ollama. Warnings: " + result.warnings());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -328,6 +320,53 @@ class InitAgentProvisionerTest {
         assertNotNull(result.warnings());
         // summaryLines must be non-empty (at minimum the detection header)
         assertFalse(result.summaryLines().isEmpty(), "summaryLines must not be empty");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // provision() — agent detection and the bounded --version probe
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void anAgentOnTheSearchPathIsReportedWithItsVersion() throws Exception {
+        fakeAgent("codex", "echo 'codex-cli 9.9.9'");
+
+        InitAgentProvisioner.AgentProvisionResult result =
+                InitAgentProvisioner.provision(projectRoot, APP_PORT, STAGING_PORT);
+
+        assertTrue(result.anyAgentAvailable());
+        assertTrue(result.summaryLines().contains("  ✓ codex (codex-cli 9.9.9)"),
+                "Summary: " + result.summaryLines());
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void aVersionProbeThatNeverAnswersIsKilled() throws Exception {
+        // Prints nothing and outlives the probe: the read used to wait for it to exit
+        Path pidFile = agentBin.resolve("codex.pid");
+        fakeAgent("codex", "echo $$ > '" + pidFile + "'\nexec sleep 60");
+        InitAgentProvisioner.versionProbeTimeout = Duration.ofSeconds(1);
+
+        long start = System.nanoTime();
+        InitAgentProvisioner.AgentProvisionResult result =
+                InitAgentProvisioner.provision(projectRoot, APP_PORT, STAGING_PORT);
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+        assertTrue(elapsedMs < 10_000, "provision must not wait out the probe; took " + elapsedMs + " ms");
+        assertTrue(result.summaryLines().contains("  ✓ codex"),
+                "the agent is found, without a version. Summary: " + result.summaryLines());
+        long pid = Long.parseLong(Files.readString(pidFile).trim());
+        ProcessHandle probe = ProcessHandle.of(pid).orElse(null);
+        if (probe != null) {
+            assertDoesNotThrow(() -> probe.onExit().get(5, TimeUnit.SECONDS),
+                    "the timed-out probe must be killed, pid " + pid);
+        }
+    }
+
+    private void fakeAgent(String command, String body) throws IOException {
+        Path script = agentBin.resolve(command);
+        Files.writeString(script, "#!/bin/sh\n" + body + "\n");
+        assertTrue(script.toFile().setExecutable(true), "could not mark " + script + " executable");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

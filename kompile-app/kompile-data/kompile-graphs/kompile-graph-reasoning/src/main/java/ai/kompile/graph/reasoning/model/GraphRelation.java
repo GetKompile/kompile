@@ -27,7 +27,8 @@ import java.util.Set;
  * <p>Like {@link GraphEntity}, this is intentionally free of any persistence or framework coupling.
  * The {@link #type()} is a free-form relation label; the originating store's typed edge (e.g. a
  * knowledge-graph {@code EdgeType} or a directly-follows arc) is mapped onto it by an adapter.
- * Probabilistic reasoning reads {@link #weight()} (relation strength) and {@link #confidence()};
+ * Probabilistic reasoning reads {@link #strength()}, which combines {@link #weight()} and
+ * {@link #confidence()};
  * semantic/hybrid reasoning may read {@link #embedding()}; temporal reasoning reads
  * {@link #timestamp()}; {@link #tags()} support filtering and typed traversal.</p>
  */
@@ -56,6 +57,22 @@ public interface GraphRelation {
 
     /** Confidence in the relation's existence, in {@code [0, 1]}; defaults to {@code 1.0}. */
     double confidence();
+
+    /**
+     * The strength reasoning, ranking and traversal read: {@code min(weight, confidence)} in
+     * {@code [0, 1]}. Producers often write one extraction score into both fields, and their
+     * product would square it; the minimum reads a copied score once while either field still
+     * caps the other.
+     */
+    default double strength() {
+        return strength(weight(), confidence());
+    }
+
+    /** {@link #strength()} over raw field values; NaN and non-positive values read as {@code 0}. */
+    static double strength(double weight, double confidence) {
+        double strength = Math.min(weight, confidence);
+        return strength > 0.0 ? Math.min(1.0, strength) : 0.0;
+    }
 
     /** Whether this relation is directed ({@code source -> target}) or symmetric. */
     boolean directed();

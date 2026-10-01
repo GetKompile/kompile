@@ -16,7 +16,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -37,11 +36,9 @@ class SnapshotManagerTest {
     Path tempDir;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         manager = new SnapshotManager(bridge);
-        Field dataDir = SnapshotManager.class.getDeclaredField("dataDir");
-        dataDir.setAccessible(true);
-        dataDir.set(manager, tempDir.toString());
+        manager.dataDir = tempDir.toString();
     }
 
     private UnifiedGraph graph() {
@@ -108,8 +105,8 @@ class SnapshotManagerTest {
     void legacyTripletRemainsDiscoverableAndMigratesAlongsideOriginals() throws Exception {
         GraphIOService graphIOService = mock(GraphIOService.class);
         KnowledgeGraphService graphService = mock(KnowledgeGraphService.class);
-        setField("graphIOService", graphIOService);
-        setField("knowledgeGraphService", graphService);
+        manager.graphIOService = graphIOService;
+        manager.knowledgeGraphService = graphService;
         when(bridge.export(42L)).thenReturn(graph());
         when(graphIOService.importGraph(eq("json"), any(byte[].class), isNull(), eq(42L)))
                 .thenReturn(new ImportResult("json", 2, 0, 1, 0, List.of()));
@@ -136,11 +133,5 @@ class SnapshotManagerTest {
         assertTrue(Files.isRegularFile(directory.resolve(snapshotId + ".kgraph")));
         verify(graphService).deleteByFactSheetId(42L);
         verify(graphIOService).importGraph(eq("json"), any(byte[].class), isNull(), eq(42L));
-    }
-
-    private void setField(String name, Object value) throws Exception {
-        Field field = SnapshotManager.class.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(manager, value);
     }
 }

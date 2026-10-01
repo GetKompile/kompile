@@ -29,6 +29,12 @@ Waiting is monitor-only. NEVER block on `sleep`/`usleep`/`at` in `bash`/`process
 
 Managed memory is hard-routed. NEVER target `.kompile/memory/**` or provider memory directories with generic `write`, `edit`, `edit_batch`, `edit_patch`, or `patch`; use `memory` for Kompile memory (`todowrite` for task state). Provider memory is read-only through the `memory` scan/read actions.
 
+<!-- BEGIN KOMPILE CODE NAVIGATION -->
+## CODE NAVIGATION
+
+Code navigation: for definitions, symbols, callers/implementors and change impact, query the kompile code index first - local_code_index (find, blended_search, callers, implementors, impact), code_search, code_graph, and file_context (what a file declares and what depends on it). project_id auto-resolves from the working directory. Use grep for literal text, strings, config and non-code files, and to confirm index results. If the index reports missing or stale, run local_code_index action=index (background) or action=repair from the repository root - never create a separate index for a subdirectory.
+<!-- END KOMPILE CODE NAVIGATION -->
+
 ## MANDATORY WORKFLOW
 
 1. ALWAYS `read` a file before calling `edit` or `write` on it. No exceptions.

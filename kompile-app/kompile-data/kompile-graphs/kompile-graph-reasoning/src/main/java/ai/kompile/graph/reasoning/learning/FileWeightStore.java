@@ -40,7 +40,11 @@ import java.util.stream.Collectors;
  * characters that are not alphanumeric, dash, or dot with underscores.</p>
  *
  * <p>On construction the directory is scanned and the in-memory version index is rebuilt
- * from existing files, so the store survives restarts over the same directory.</p>
+ * from existing files, so the store survives restarts over the same directory. A file name
+ * records only the sanitized programId, so the index is keyed by that form and every lookup
+ * sanitizes its programId first: {@code "7:cascade"} and {@code "7_cascade"} name the same
+ * files and therefore share one version history, and {@link #programIds()} returns sanitized
+ * ids.</p>
  *
  * <p>JSON serialization is hand-rolled (no external library dependency). Reading delegates
  * to {@link PslWeightLearningService#parseWeights(String)} which is already battle-tested;
@@ -78,7 +82,7 @@ public class FileWeightStore implements WeightStore {
     private final int maxBackups;
 
     /**
-     * In-memory index: programId → sorted list of version numbers (ascending).
+     * In-memory index: sanitized programId → sorted list of version numbers (ascending).
      * This is rebuilt from disk at construction and kept up-to-date on each save.
      */
     private final Map<String, List<Integer>> versionIndex = new LinkedHashMap<>();
@@ -134,7 +138,7 @@ public class FileWeightStore implements WeightStore {
         if (programId == null) throw new IllegalArgumentException("programId must not be null");
         if (weights == null) throw new IllegalArgumentException("weights must not be null");
 
-        List<Integer> vers = versionIndex.computeIfAbsent(programId, k -> new ArrayList<>());
+        List<Integer> vers = versionIndex.computeIfAbsent(sanitize(programId), k -> new ArrayList<>());
         int nextVersion = vers.isEmpty() ? 1 : vers.get(vers.size() - 1) + 1;
 
         Path file = fileFor(programId, nextVersion);
@@ -151,20 +155,20 @@ public class FileWeightStore implements WeightStore {
 
     @Override
     public Optional<Map<String, Double>> latest(String programId) {
-        List<Integer> vers = versionIndex.get(programId);
+        List<Integer> vers = versionIndex.get(sanitize(programId));
         if (vers == null || vers.isEmpty()) return Optional.empty();
         return get(programId, vers.get(vers.size() - 1));
     }
 
     @Override
     public int latestVersion(String programId) {
-        List<Integer> vers = versionIndex.get(programId);
+        List<Integer> vers = versionIndex.get(sanitize(programId));
         return (vers == null || vers.isEmpty()) ? 0 : vers.get(vers.size() - 1);
     }
 
     @Override
     public Optional<Map<String, Double>> get(String programId, int version) {
-        List<Integer> vers = versionIndex.get(programId);
+        List<Integer> vers = versionIndex.get(sanitize(programId));
         if (vers == null || !vers.contains(version)) return Optional.empty();
         Path file = fileFor(programId, version);
         if (!Files.exists(file)) return Optional.empty();
@@ -178,7 +182,7 @@ public class FileWeightStore implements WeightStore {
 
     @Override
     public List<Integer> versions(String programId) {
-        List<Integer> vers = versionIndex.get(programId);
+        List<Integer> vers = versionIndex.get(sanitize(programId));
         if (vers == null || vers.isEmpty()) return List.of();
         return Collections.unmodifiableList(new ArrayList<>(vers));
     }
@@ -331,16 +335,10 @@ public class FileWeightStore implements WeightStore {
      */
     private void rebuildIndex() throws IOException {
         versionIndex.clear();
-        // Temporary map: sanitized-name → programId is not invertible in general.
-        // We read the actual programIds by reverse-matching: for each file that matches
-        // the pattern, we store (sanitized → sorted versions). But we cannot recover the
-        // ORIGINAL programId from the sanitized filename — so we key the index by the
-        // sanitized form. To map back to the caller's programId, save() and get() always
-        // go through sanitize(), so the index is consistently keyed by the ORIGINAL
-        // programId passed to save(). On a fresh construction from existing files, the only
-        // available key is the sanitized filename. We therefore key the index by the
-        // sanitized filename here (and accept that programIds() will return the sanitized
-        // forms for entries loaded from disk without a prior save() in this JVM session).
+        // Sanitizing is not invertible, so a file name gives back only the sanitized programId.
+        // The index is keyed by that form here and every lookup sanitizes first, which is what
+        // lets a fresh instance (a restart, or the learning subprocess) continue the versions a
+        // programId like "7:cascade" already has on disk instead of overwriting v1.
         Map<String, TreeMap<Integer, Void>> found = new LinkedHashMap<>();
         try (var stream = Files.list(baseDir)) {
             stream.filter(Files::isRegularFile).forEach(p -> {
@@ -362,7 +360,7 @@ public class FileWeightStore implements WeightStore {
      * Used by {@link #reset} to start a new session from v1.
      */
     private void clearVersionFiles(String programId) {
-        List<Integer> vers = versionIndex.remove(programId);
+        List<Integer> vers = versionIndex.remove(sanitize(programId));
         if (vers == null) return;
         for (int v : vers) {
             Path f = fileFor(programId, v);

@@ -28,6 +28,8 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Manages system prompt injection into external CLI agents.
@@ -54,9 +56,12 @@ import java.util.*;
  */
 public class SystemPromptManager {
 
-    private static final Path KOMPILE_HOME = KompileHome.homeDirectory().toPath();
-    private static final Path DEFAULT_PROMPT_FILE = KOMPILE_HOME.resolve("system-prompt.md");
-    private static final Path PER_AGENT_DIR = KOMPILE_HOME.resolve("system-prompts");
+    /**
+     * A temp prompt file, {@code system-prompt-<pid>-<n>.md} (or the older
+     * {@code system-prompt-<pid>.md}), named for the process that wrote it.
+     */
+    private static final Pattern TEMP_PROMPT_FILE =
+            Pattern.compile("system-prompt-([0-9]{1,18})(?:-[0-9A-Za-z]+)?\\.md");
     public static final String MANAGED_PROMPT_BEGIN = "<!-- BEGIN KOMPILE MANAGED SYSTEM PROMPT -->";
     public static final String MANAGED_PROMPT_END = "<!-- END KOMPILE MANAGED SYSTEM PROMPT -->";
     /** Tags a managed block's BEGIN line with the PID of the process that must remove it. */
@@ -67,11 +72,20 @@ public class SystemPromptManager {
 
     // Cleanup state: backed-up files to restore on cleanup
     private final List<BackupEntry> backups = new ArrayList<>();
-    private Path tempPromptFile;
+    /** Temp prompt files this manager wrote, one per distinct prompt. */
+    private final Map<String, Path> tempPromptFiles = new HashMap<>();
 
     private SystemPromptManager(String centralPrompt, Map<String, String> perAgentPrompts) {
         this.centralPrompt = centralPrompt;
         this.perAgentPrompts = perAgentPrompts;
+    }
+
+    /**
+     * {@code ~/.kompile}, resolved on each call so a {@code user.home} changed after
+     * class load is honoured.
+     */
+    private static Path kompileHome() {
+        return KompileHome.homeDirectory().toPath();
     }
 
     /**
@@ -110,9 +124,10 @@ public class SystemPromptManager {
         }
 
         // 4. Default file at ~/.kompile/system-prompt.md
-        if (central == null && Files.isReadable(DEFAULT_PROMPT_FILE)) {
+        Path defaultPromptFile = kompileHome().resolve("system-prompt.md");
+        if (central == null && Files.isReadable(defaultPromptFile)) {
             try {
-                String content = Files.readString(DEFAULT_PROMPT_FILE).strip();
+                String content = Files.readString(defaultPromptFile).strip();
                 if (!content.isEmpty()) {
                     central = content;
                 }
@@ -299,14 +314,16 @@ public class SystemPromptManager {
         }
         backups.clear();
 
-        // Remove temp prompt file
-        if (tempPromptFile != null) {
-            try {
-                Files.deleteIfExists(tempPromptFile);
-            } catch (IOException e) {
-                // Ignore
+        // Remove temp prompt files
+        synchronized (this) {
+            for (Path file : tempPromptFiles.values()) {
+                try {
+                    Files.deleteIfExists(file);
+                } catch (IOException e) {
+                    // Ignore
+                }
             }
-            tempPromptFile = null;
+            tempPromptFiles.clear();
         }
     }
 
@@ -354,28 +371,45 @@ public class SystemPromptManager {
     }
 
     /**
-     * Write the prompt to a temporary file (reused across calls for the same session).
+     * Write the prompt to a temporary file (reused across calls for the same prompt).
+     * Each manager writes a file of its own per distinct prompt and never rewrites it,
+     * so Claude and Gemini runs launched together from one process each read their
+     * own agent's prompt.
      */
-    private Path ensureTempPromptFile(String prompt) {
-        if (tempPromptFile != null && Files.exists(tempPromptFile)) {
-            // Check if content matches; if not, rewrite
-            try {
-                String existing = Files.readString(tempPromptFile);
-                if (existing.equals(prompt)) return tempPromptFile;
-            } catch (IOException e) {
-                // Rewrite
-            }
-        }
+    private synchronized Path ensureTempPromptFile(String prompt) {
+        Path existing = tempPromptFiles.get(prompt);
+        if (existing != null && Files.exists(existing)) return existing;
 
         try {
-            Path tmpDir = KOMPILE_HOME.resolve("tmp");
+            Path tmpDir = kompileHome().resolve("tmp");
             Files.createDirectories(tmpDir);
-            tempPromptFile = tmpDir.resolve("system-prompt-" + ProcessHandle.current().pid() + ".md");
-            Files.writeString(tempPromptFile, prompt);
-            return tempPromptFile;
+            reclaimOrphanedPromptFiles(tmpDir);
+            Path file = Files.createTempFile(tmpDir, "system-prompt-" + ProcessHandle.current().pid() + "-", ".md");
+            Files.writeString(file, prompt);
+            tempPromptFiles.put(prompt, file);
+            return file;
         } catch (IOException e) {
             System.err.println("Warning: Could not write temp system prompt file: " + e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Delete the temp prompt files of processes that have exited. A process that ends
+     * without {@link #cleanup()} (killed, or one that never cleans up) leaves its
+     * {@code system-prompt-<pid>-*.md} files behind; files of running processes are kept.
+     */
+    private static void reclaimOrphanedPromptFiles(Path tmpDir) {
+        try (var files = Files.newDirectoryStream(tmpDir, "system-prompt-*.md")) {
+            for (Path file : files) {
+                Matcher owner = TEMP_PROMPT_FILE.matcher(file.getFileName().toString());
+                if (owner.matches() && !ProcessHandle.of(Long.parseLong(owner.group(1)))
+                        .map(ProcessHandle::isAlive).orElse(false)) {
+                    Files.deleteIfExists(file);
+                }
+            }
+        } catch (IOException | RuntimeException e) {
+            // Best effort: a leftover prompt file is harmless, a failed launch is not.
         }
     }
 
@@ -384,9 +418,10 @@ public class SystemPromptManager {
      */
     private static Map<String, String> loadPerAgentPrompts() {
         Map<String, String> result = new HashMap<>();
-        if (!Files.isDirectory(PER_AGENT_DIR)) return result;
+        Path perAgentDir = kompileHome().resolve("system-prompts");
+        if (!Files.isDirectory(perAgentDir)) return result;
 
-        try (var stream = Files.list(PER_AGENT_DIR)) {
+        try (var stream = Files.list(perAgentDir)) {
             stream.filter(p -> p.toString().endsWith(".md"))
                     .forEach(p -> {
                         try {

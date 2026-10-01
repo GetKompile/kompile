@@ -1407,7 +1407,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
      * Detects explicit provider error patterns while ignoring ordinary text that contains
      * quota-related vocabulary (e.g. entity labels like "QUOTA_POLICY").
      */
-    private boolean isAgentErrorResponse(String response) {
+    boolean isAgentErrorResponse(String response) {
         if (response == null || response.isBlank()) return false;
         String lower = response.toLowerCase();
         // Explicit quota/capacity exhaustion errors from LLM API providers

@@ -457,6 +457,27 @@ class AgentSubprocessClientTest {
                 opencode.commandFor("hello"));
     }
 
+    /** The agent CLI takes plain text, so a turn with an attachment fails instead of running without it. */
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void attachmentsAreRefusedRatherThanDroppedFromThePlainTextTurn() throws Exception {
+        TestableSubprocessClient client = new TestableSubprocessClient(
+                "test-agent", System.getProperty("user.dir"), new ObjectMapper(), "/bin/cat");
+        try {
+            assertFalse(client.supportsAttachments(null));
+            DirectLlmClient.StreamResult result = client.streamChat("describe it", null, null, null, null,
+                    List.of(new DirectLlmClient.AttachmentInput(
+                            "/tmp/page.png", "image/png", true, "cGFnZQ==", null)));
+
+            assertTrue(result.failed, result.text);
+            assertTrue(result.text.contains("plain text"), result.text);
+            assertFalse(result.text.contains("describe it"),
+                    "the turn must not reach the agent without its attachment: " + result.text);
+        } finally {
+            client.close();
+        }
+    }
+
     /**
      * Testable subclass that overrides binary resolution and command building
      * for deterministic unit tests.

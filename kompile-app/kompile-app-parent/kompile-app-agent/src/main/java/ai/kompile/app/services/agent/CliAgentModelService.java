@@ -81,10 +81,10 @@ public class CliAgentModelService {
     private ExtractionLlmServiceRegistry extractionRegistry;
 
     @Autowired(required = false)
-    private LocalStagingLlmService localStagingLlmService;
+    LocalStagingLlmService localStagingLlmService;
 
     // Cache: agentName -> list of discovered model IDs
-    private final Map<String, List<String>> modelCache = new ConcurrentHashMap<>();
+    final Map<String, List<String>> modelCache = new ConcurrentHashMap<>();
 
     // ── Model health tracking ──────────────────────────────────────────────
     /** Map of model id → epoch millis until which it is considered unhealthy (de-escalated). */

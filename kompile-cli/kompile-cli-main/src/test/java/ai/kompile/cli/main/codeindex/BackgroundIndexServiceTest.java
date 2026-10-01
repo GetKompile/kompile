@@ -18,6 +18,7 @@ package ai.kompile.cli.main.codeindex;
 
 import ai.kompile.cli.main.chat.tools.grounding.CodeGraphLearningRunner;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
+import ai.kompile.project.KompileProjectStore;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
@@ -29,6 +30,8 @@ import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
@@ -307,20 +310,10 @@ class BackgroundIndexServiceTest {
     void duplicateRootUsesManifestCanonicalProjectForWriteNotifications() throws Exception {
         BackgroundIndexService.resetForTests();
         Path manifest = projectDir.resolve("kompile.project.json");
-        String root = projectDir.toAbsolutePath().normalize().toString().replace("\\", "\\\\");
-        Files.writeString(manifest, """
-                {
-                  "codingProjects": [ {
-                    "id": "%s",
-                    "codeProjectId": "%s",
-                    "rootPath": "%s",
-                    "lifecycle": "ACTIVE"
-                  } ]
-                }
-                """.formatted(PROJECT_ID, PROJECT_ID, root));
+        writeManifest(manifest, PROJECT_ID, projectDir);
         try {
             new LocalCodeIndexer().index(projectDir, ALIAS_PROJECT_ID, null, null,
-                    new java.io.PrintStream(java.io.OutputStream.nullOutputStream()));
+                    new PrintStream(OutputStream.nullOutputStream()));
 
             BackgroundIndexService service = BackgroundIndexService.getInstance();
             assertEquals(PROJECT_ID, service.projectForPath(
@@ -754,6 +747,253 @@ class BackgroundIndexServiceTest {
             System.clearProperty("KOMPILE_CODE_INDEX_LEARNING_DEBOUNCE_MS");
             System.clearProperty("KOMPILE_CODE_INDEX_LEARNING_MAX_WAIT_MS");
         }
+    }
+
+    @Test
+    @Order(19)
+    void readRebuildsTornMetadataFromTheManifestDeclaredRoot() throws Exception {
+        BackgroundIndexService.resetForTests();
+        String tornProjectId = PROJECT_ID + "-torn";
+        Path tornRoot = Files.createTempDirectory("background-index-torn").toAbsolutePath().normalize();
+        Path workingDirectory = Files.createDirectories(tornRoot.resolve("src/main"));
+        Path homeWorkingDirectory = Files.createDirectories(testHome.resolve("work"));
+        Path homeManifest = testHome.resolve("kompile.project.json");
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        AtomicReference<Path> projectedRoot = new AtomicReference<>();
+        service.setProjectionPublisherForTests((root, projectId, includes, excludes) -> {
+            if (tornProjectId.equals(projectId)) projectedRoot.set(root);
+            return LocalCodeKGraphPublisher.ProjectionResult.skipped("test publisher");
+        });
+        try {
+            Files.writeString(tornRoot.resolve("Kite.java"), "final class Kite {}\n");
+            indexer.index(tornRoot, tornProjectId, null, null,
+                    new PrintStream(OutputStream.nullOutputStream()));
+            // What a crash between the write and its fsync leaves behind.
+            Path metadata = LocalCodeIndexer.getIndexDir(tornProjectId).resolve("metadata.json");
+            Files.write(metadata, new byte[0]);
+
+            assertNull(service.prepareForRead(indexer, tornProjectId, workingDirectory),
+                    "nothing names the root of a torn index without a manifest");
+            writeManifest(homeManifest, tornProjectId, testHome);
+            assertNull(service.prepareForRead(indexer, tornProjectId, homeWorkingDirectory),
+                    "a manifest that declares the home directory must never root a rebuild");
+            assertEquals(0L, Files.size(metadata));
+
+            writeManifest(tornRoot.resolve("kompile.project.json"), tornProjectId, tornRoot);
+            service.prepareForRead(indexer, tornProjectId, workingDirectory);
+            awaitTrue(() -> {
+                try {
+                    return tornRoot.toString().equals(indexer.getStats(tornProjectId).get("rootPath"));
+                } catch (IOException unreadable) {
+                    return false;
+                }
+            }, 30_000, "background rebuild of the torn index metadata");
+            assertFalse(indexer.search(tornProjectId, "Kite", null, 10).isEmpty());
+            awaitTrue(() -> tornRoot.equals(projectedRoot.get()), 30_000,
+                    "graph projection of the rebuilt index");
+        } finally {
+            service.setProjectionPublisherForTests(null);
+            BackgroundIndexService.resetForTests();
+            Files.deleteIfExists(homeManifest);
+            deleteRecursively(homeWorkingDirectory);
+            deleteRecursively(LocalCodeIndexer.getIndexDir(tornProjectId));
+            deleteRecursively(tornRoot);
+        }
+    }
+
+    @Test
+    @Order(20)
+    void backgroundRefreshKeepsAScopeWidenedByAnotherProcess() throws Exception {
+        BackgroundIndexService.resetForTests();
+        String projectId = PROJECT_ID + "-widened-refresh";
+        Path root = Files.createTempDirectory("background-index-widened").toAbsolutePath().normalize();
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        service.setProjectionPublisherForTests((projectRoot, id, includes, excludes) ->
+                LocalCodeKGraphPublisher.ProjectionResult.skipped("test publisher"));
+        try {
+            Files.writeString(root.resolve("Alpha.java"), "final class Alpha {}\n");
+            Files.writeString(root.resolve("kestrel.py"), "class Kestrel:\n    pass\n");
+            BackgroundIndexService.IndexJob narrow =
+                    service.submitIndexJob(root, projectId, "*.java", null, false);
+            assertTrue(service.awaitJob(narrow, 30_000));
+            assertTrue(indexer.search(projectId, "Kestrel", null, 10).isEmpty());
+
+            // Another process (`kompile code-index <root> --force`) widens the scope.
+            new LocalCodeIndexer().index(root, projectId, null, null, true, silentStream());
+            assertNull(indexer.getStats(projectId).get("includePatterns"));
+            assertFalse(indexer.search(projectId, "Kestrel", null, 10).isEmpty());
+
+            Files.writeString(root.resolve("Alpha.java"), "final class Alpha {}\nfinal class Swift {}\n");
+            service.noteFileWritten(root.resolve("Alpha.java"));
+            service.prepareForRead(indexer, projectId);
+
+            assertFalse(indexer.search(projectId, "Swift", null, 10).isEmpty(),
+                    "the read should join the refresh of its own write");
+            assertNull(indexer.getStats(projectId).get("includePatterns"),
+                    "a refresh must keep the scope the index records, not the scope this process first saw");
+            assertFalse(indexer.search(projectId, "Kestrel", null, 10).isEmpty(),
+                    "files inside the widened scope must stay indexed");
+        } finally {
+            service.setProjectionPublisherForTests(null);
+            BackgroundIndexService.resetForTests();
+            deleteRecursively(LocalCodeIndexer.getIndexDir(projectId));
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    @Order(21)
+    void watcherPassKeepsAScopeWidenedByAnotherProcess() throws Exception {
+        BackgroundIndexService.resetForTests();
+        System.setProperty("KOMPILE_CODE_INDEX_WATCH", "true");
+        String projectId = PROJECT_ID + "-widened-watcher";
+        Path root = Files.createTempDirectory("background-index-widened-watcher").toAbsolutePath().normalize();
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        service.setProjectionPublisherForTests((projectRoot, id, includes, excludes) ->
+                LocalCodeKGraphPublisher.ProjectionResult.skipped("test publisher"));
+        try {
+            Files.writeString(root.resolve("Alpha.java"), "final class Alpha {}\n");
+            Files.writeString(root.resolve("kestrel.py"), "class Kestrel:\n    pass\n");
+            BackgroundIndexService.IndexJob narrow =
+                    service.submitIndexJob(root, projectId, "*.java", null, false);
+            assertTrue(service.awaitJob(narrow, 30_000));
+            awaitTrue(() -> service.isWatching(projectId), 15_000,
+                    "watcher to start after the index job");
+
+            new LocalCodeIndexer().index(root, projectId, null, null, true, silentStream());
+            assertFalse(indexer.search(projectId, "Kestrel", null, 10).isEmpty());
+
+            // An external edit (no write notification) lands through the watcher.
+            Files.writeString(root.resolve("Falcon.java"), "final class Falcon {}\n");
+            awaitTrue(() -> {
+                try {
+                    return !indexer.search(projectId, "Falcon", null, 10).isEmpty();
+                } catch (IOException e) {
+                    return false;
+                }
+            }, 30_000, "watcher pass over the external edit");
+
+            assertNull(indexer.getStats(projectId).get("includePatterns"),
+                    "a watcher pass must keep the scope the index records");
+            assertFalse(indexer.search(projectId, "Kestrel", null, 10).isEmpty(),
+                    "files inside the widened scope must stay indexed");
+        } finally {
+            System.setProperty("KOMPILE_CODE_INDEX_WATCH", "false");
+            service.setProjectionPublisherForTests(null);
+            BackgroundIndexService.resetForTests();
+            deleteRecursively(LocalCodeIndexer.getIndexDir(projectId));
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    @Order(22)
+    void projectionPublishesTheScopeTheIndexRecordsAfterAnotherProcessWidenedIt() throws Exception {
+        BackgroundIndexService.resetForTests();
+        String projectId = PROJECT_ID + "-widened-projection";
+        Path root = Files.createTempDirectory("background-index-widened-projection").toAbsolutePath().normalize();
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        AtomicInteger publications = new AtomicInteger();
+        service.setProjectionPublisherForTests((projectRoot, id, includes, excludes) -> {
+            LocalCodeKGraphPublisher.ProjectionResult result =
+                    LocalCodeKGraphPublisher.publish(projectRoot, id, includes, excludes);
+            publications.incrementAndGet();
+            return result;
+        });
+        try {
+            Files.writeString(root.resolve("Alpha.java"), "final class Alpha {}\n");
+            Files.writeString(root.resolve("kestrel.py"), "class Kestrel:\n    pass\n");
+            BackgroundIndexService.IndexJob narrow =
+                    service.submitIndexJob(root, projectId, "*.java", null, false);
+            assertTrue(service.awaitJob(narrow, 30_000));
+            awaitTrue(() -> narrow.projection() != null, 30_000, "projection of the narrow index");
+            assertEquals("*.java", projectionIncludes(root));
+            // Opens the refresh throttle window: the next backstop pass re-checks
+            // the projection without re-indexing, isolating the projection's scope.
+            IndexAutoRefresher.maybeRefresh(indexer, projectId, 0);
+
+            new LocalCodeIndexer().index(root, projectId, null, null, true, silentStream());
+
+            int before = publications.get();
+            service.prepareForRead(indexer, projectId);
+            awaitTrue(() -> publications.get() > before, 30_000, "backstop projection check");
+
+            assertEquals("", projectionIncludes(root),
+                    "the projection must publish the scope the index now records");
+            assertNull(indexer.getStats(projectId).get("includePatterns"));
+        } finally {
+            service.setProjectionPublisherForTests(null);
+            BackgroundIndexService.resetForTests();
+            deleteRecursively(LocalCodeIndexer.getIndexDir(projectId));
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    @Order(23)
+    void backgroundRefreshKeepsAScopeNarrowedByAnotherProcess() throws Exception {
+        BackgroundIndexService.resetForTests();
+        String projectId = PROJECT_ID + "-narrowed-refresh";
+        Path root = Files.createTempDirectory("background-index-narrowed").toAbsolutePath().normalize();
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        service.setProjectionPublisherForTests((projectRoot, id, includes, excludes) ->
+                LocalCodeKGraphPublisher.ProjectionResult.skipped("test publisher"));
+        try {
+            Files.writeString(root.resolve("Alpha.java"), "final class Alpha {}\n");
+            Files.writeString(root.resolve("kestrel.py"), "class Kestrel:\n    pass\n");
+            BackgroundIndexService.IndexJob wide =
+                    service.submitIndexJob(root, projectId, null, null, false);
+            assertTrue(service.awaitJob(wide, 30_000));
+            assertFalse(indexer.search(projectId, "Kestrel", null, 10).isEmpty());
+
+            new LocalCodeIndexer().index(root, projectId, "*.java", null, silentStream());
+            assertTrue(indexer.search(projectId, "Kestrel", null, 10).isEmpty());
+
+            Files.writeString(root.resolve("heron.py"), "class Heron:\n    pass\n");
+            Files.writeString(root.resolve("Alpha.java"), "final class Alpha {}\nfinal class Swift {}\n");
+            service.noteFileWritten(root.resolve("Alpha.java"));
+            service.prepareForRead(indexer, projectId);
+
+            assertFalse(indexer.search(projectId, "Swift", null, 10).isEmpty(),
+                    "the read should join the refresh of its own write");
+            assertEquals("*.java", indexer.getStats(projectId).get("includePatterns"));
+            assertTrue(indexer.search(projectId, "Heron", null, 10).isEmpty(),
+                    "a refresh must not add files outside the recorded scope");
+            assertTrue(indexer.search(projectId, "Kestrel", null, 10).isEmpty());
+        } finally {
+            service.setProjectionPublisherForTests(null);
+            BackgroundIndexService.resetForTests();
+            deleteRecursively(LocalCodeIndexer.getIndexDir(projectId));
+            deleteRecursively(root);
+        }
+    }
+
+    private static PrintStream silentStream() {
+        return new PrintStream(OutputStream.nullOutputStream());
+    }
+
+    private static String projectionIncludes(Path root) {
+        return new KompileProjectStore().load(root).getCodingProjects().get(0)
+                .getMetadata().get("codeProjectionIncludes");
+    }
+
+    private static void writeManifest(Path manifest, String codeProjectId, Path root) throws IOException {
+        Files.writeString(manifest, """
+                {
+                  "codingProjects": [ {
+                    "id": "%s",
+                    "codeProjectId": "%s",
+                    "rootPath": "%s",
+                    "lifecycle": "ACTIVE"
+                  } ]
+                }
+                """.formatted(codeProjectId, codeProjectId,
+                root.toAbsolutePath().normalize().toString().replace("\\", "\\\\")));
     }
 
     private static CodeGraphLearningRunner.ConfiguredResult supersededLearning() {

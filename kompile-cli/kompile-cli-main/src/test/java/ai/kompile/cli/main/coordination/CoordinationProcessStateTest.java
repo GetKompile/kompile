@@ -22,10 +22,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -112,6 +114,44 @@ class CoordinationProcessStateTest {
             process.waitFor(5, TimeUnit.SECONDS);
             manager.shutdown();
         }
+    }
+
+    @Test
+    void updateAfterShutdownDoesNotResurrectProcFileOrWarn(@TempDir Path tempDir) throws Exception {
+        CoordinationStateManager manager = manager(tempDir, "owner-shutdown");
+        List<String> warnings = new CopyOnWriteArrayList<>();
+        manager.installWarningSink(warnings::add);
+        manager.publishProcess("proc-004", "sleep 30", "killed by shutdown",
+                ProcessHandle.current().pid(), "RUNNING",
+                tempDir.resolve("shutdown.log").toString(), "codex");
+        Path file = processFile(tempDir, "owner-shutdown", "proc-004");
+        assertTrue(Files.exists(file));
+
+        manager.shutdown();
+        assertFalse(Files.exists(file), "shutdown() must delete the proc file");
+
+        manager.updateProcessState("proc-004", "KILLED", Instant.now(), -1);
+
+        assertFalse(Files.exists(file), "a late update must not resurrect a deleted proc file");
+        assertTrue(warnings.isEmpty(), "a late update after shutdown must skip quietly: " + warnings);
+
+        // The outer Files.exists() fast path above already covers the "file is gone" case on
+        // its own. Republish through the public API (publishProcess never checks the shutdown
+        // flag) so the file exists again, then isolate the in-lock "shutdown ||" re-check in
+        // updateProcessState: a shutdown manager must still refuse to mutate the entry even
+        // though the file is present and the fast path would let it through.
+        manager.publishProcess("proc-004", "sleep 30", "republished after shutdown",
+                ProcessHandle.current().pid(), "RUNNING",
+                tempDir.resolve("shutdown.log").toString(), "codex");
+        assertTrue(Files.exists(file), "republish via the public API must recreate the proc file");
+
+        manager.updateProcessState("proc-004", "KILLED", Instant.now(), -1);
+
+        ProcessCoordEntry stillRunning = mapper.readValue(file.toFile(), ProcessCoordEntry.class);
+        assertEquals("RUNNING", stillRunning.getState(),
+                "a shutdown manager must not mutate an entry even when the file exists");
+        assertTrue(warnings.isEmpty(),
+                "a late update after shutdown must skip quietly even with the file present: " + warnings);
     }
 
     private CoordinationStateManager manager(Path workDir, String sessionId) {

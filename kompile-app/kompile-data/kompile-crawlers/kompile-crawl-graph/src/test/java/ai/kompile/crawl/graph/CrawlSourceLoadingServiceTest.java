@@ -35,7 +35,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ai.kompile.crawler.CrawlerService;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -253,7 +252,7 @@ class CrawlSourceLoadingServiceTest {
                 new CrawlDocumentTracker(), new PipelineStepTracker());
         DocumentLoader generic = loader("generic", true);
         DocumentLoader code = loader("source-code", true);
-        ReflectionTestUtils.setField(service, "documentLoaders", List.of(generic, code));
+        service.documentLoaders = List.of(generic, code);
         DocumentSourceDescriptor descriptor = DocumentSourceDescriptor.builder()
                 .type(DocumentSourceDescriptor.SourceType.FILE).pathOrUrl("Example.java").build();
 
@@ -266,8 +265,8 @@ class CrawlSourceLoadingServiceTest {
         CrawlSourceLoadingService service = new CrawlSourceLoadingService(
                 new CrawlDocumentTracker(), new PipelineStepTracker());
         CrawlerService crawler = mock(CrawlerService.class);
-        ReflectionTestUtils.setField(service, "crawlerService", crawler);
-        ReflectionTestUtils.setField(service, "documentLoaders", List.of(loader("source-code", true)));
+        service.crawlerService = crawler;
+        service.documentLoaders = List.of(loader("source-code", true));
         AtomicReference<ai.kompile.core.crawler.CrawlConfig> captured = new AtomicReference<>();
         when(crawler.startCrawl(any(), any())).thenAnswer(invocation -> {
             ai.kompile.core.crawler.CrawlConfig config = invocation.getArgument(0);

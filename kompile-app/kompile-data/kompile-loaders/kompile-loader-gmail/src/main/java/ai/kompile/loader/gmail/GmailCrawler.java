@@ -228,17 +228,23 @@ public class GmailCrawler extends AbstractCrawler {
                                   CrawlConfig config) {
         JsonNode payload = messageJson.get("payload");
         List<Map<String, Object>> attachments = messageParser.extractAttachmentMetadata(payload);
+        String parentSourcePath = "gmail://messages/" + messageId;
 
+        int index = 0;
         for (Map<String, Object> att : attachments) {
             if (job.shouldStop()) break;
 
+            index++;
             String filename = (String) att.get("filename");
             String mimeType = (String) att.get("mimeType");
             String attachmentId = (String) att.get("attachmentId");
 
             if (attachmentId == null) continue;
 
-            String attUrl = "gmail://messages/" + messageId + "/attachments/" + attachmentId;
+            // Shared identity contract (C1/C4): attachment children are addressed relative to
+            // their parent message's source_path, not by an independent "/attachments/<id>" path,
+            // so every consumer can walk from an attachment back to its parent message.
+            String attUrl = parentSourcePath + "#attachment/" + index;
 
             // For text-based attachments, download content and emit as a document
             if (mimeType != null && isTextMimeType(mimeType)) {
@@ -250,6 +256,7 @@ public class GmailCrawler extends AbstractCrawler {
                     Map<String, Object> attMeta = new HashMap<>();
                     attMeta.put(GraphConstants.META_SOURCE, attUrl);
                     attMeta.put(GraphConstants.META_SOURCE_PATH, attUrl);
+                    attMeta.put("parent_source_path", parentSourcePath);
                     attMeta.put(GraphConstants.META_SOURCE_TYPE, "gmail_attachment");
                     attMeta.put(GraphConstants.META_DOCUMENT_TYPE, "email_attachment");
                     attMeta.put(GraphConstants.META_FILE_NAME, filename != null ? filename : "Attachment " + attachmentId);

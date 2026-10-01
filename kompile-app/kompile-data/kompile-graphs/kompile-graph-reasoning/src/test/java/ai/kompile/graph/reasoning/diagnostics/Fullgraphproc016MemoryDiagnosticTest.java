@@ -10,6 +10,9 @@
  */
 package ai.kompile.graph.reasoning.diagnostics;
 
+import ai.kompile.graph.reasoning.e2e.MebnFolTypeE2ETest;
+import ai.kompile.graph.reasoning.embedding.learn.LinkPredictorTest;
+import ai.kompile.graph.reasoning.embedding.learn.Node2VecLearnerTest;
 import com.sun.jna.Library;
 import com.sun.jna.Native;
 import com.sun.jna.Platform;
@@ -26,9 +29,6 @@ import org.nd4j.nativeblas.NativeOpsHolder;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -43,44 +43,6 @@ import java.util.Locale;
 @EnabledIfSystemProperty(named = "kompile.fullgraphproc016.diag", matches = "true")
 class Fullgraphproc016MemoryDiagnosticTest {
 
-    private static final String MEBN = "ai.kompile.graph.reasoning.e2e.MebnFolTypeE2ETest";
-    private static final String LINK = "ai.kompile.graph.reasoning.embedding.learn.LinkPredictorTest";
-    private static final String NODE2VEC = "ai.kompile.graph.reasoning.embedding.learn.Node2VecLearnerTest";
-
-    private static final List<String> MEBN_METHODS = List.of(
-            "typeHierarchyMembershipFromUnifiedGraph",
-            "typeRegistryIsATransitiveAndAsymmetric",
-            "typeHierarchySubtypeEntityInclusion",
-            "relationalMTheoryBuilderFragmentStructure",
-            "ssbNGroundingWithRelationalMTheoryYieldsBnNodes",
-            "inferredFactMaterializationBinaryAndUnary",
-            "recursiveQueryEngineTransitiveClosureThreeHop",
-            "derivationTreeConstructionAndAccessors",
-            "mebnWeightLearnerReducesSSE",
-            "modelPersistenceRoundTripPreservesReasoningFidelity");
-
-    private static final List<String> LINK_METHODS = List.of(
-            "trueTailRanksAboveWrongTypeEntityInPredictTails",
-            "trueHeadRanksAboveWrongTypeEntityInPredictHeads",
-            "scoreTripleMatchesTrainedModel",
-            "predictTailsTruncatesToTopK",
-            "unknownEntityThrowsIllegalArgumentException",
-            "unknownRelationThrowsIllegalArgumentException",
-            "nullModelThrowsAtConstruction");
-
-    private static final List<String> NODE2VEC_METHODS = List.of(
-            "sameGraphAndConfigProduceIdenticalVectors",
-            "intraClusterCosineExceedsInterClusterCosine",
-            "everyEntityGetsCorrectDimensionVector",
-            "deepWalkPathProducesFiniteVectors",
-            "learnIntoWritesEmbeddingsBackIntoGraph",
-            "learnIntoLayerPreservesPrimaryEmbeddingsAndProvidesReasoningView",
-            "nonUniformPqProducesFiniteVectors",
-            "sameDiffTrainerLossDecreasesOverEpochs",
-            "sameDiffTrainerCloseIsIdempotentAndRejectsUseAfterClose",
-            "tryWithResourcesClosesTrainerWhenTrainingFails",
-            "node2VecReturnsJavaEmbeddingCopyAfterTrainerClose");
-
     private static final long IDLE_SETTLE_MILLIS = 5_000L;
     private static final String TRIM_PROBE_PROPERTY = "kompile.fullgraphproc016.trimProbe";
     private static final Path SMAPS_ROLLUP = Path.of("/proc/self/smaps_rollup");
@@ -91,9 +53,44 @@ class Fullgraphproc016MemoryDiagnosticTest {
                 trimProbeEnabled());
         sample("baseline");
 
-        runGroup("MebnFolTypeE2ETest", MEBN, MEBN_METHODS, null);
-        runGroup("LinkPredictorTest", LINK, LINK_METHODS, "trainModel");
-        runGroup("Node2VecLearnerTest", NODE2VEC, NODE2VEC_METHODS, null);
+        MebnFolTypeE2ETest mebn = new MebnFolTypeE2ETest();
+        runGroup("MebnFolTypeE2ETest", List.of(
+                new DiagnosticCase("typeHierarchyMembershipFromUnifiedGraph", mebn::typeHierarchyMembershipFromUnifiedGraph),
+                new DiagnosticCase("typeRegistryIsATransitiveAndAsymmetric", mebn::typeRegistryIsATransitiveAndAsymmetric),
+                new DiagnosticCase("typeHierarchySubtypeEntityInclusion", mebn::typeHierarchySubtypeEntityInclusion),
+                new DiagnosticCase("relationalMTheoryBuilderFragmentStructure", mebn::relationalMTheoryBuilderFragmentStructure),
+                new DiagnosticCase("ssbNGroundingWithRelationalMTheoryYieldsBnNodes", mebn::ssbNGroundingWithRelationalMTheoryYieldsBnNodes),
+                new DiagnosticCase("inferredFactMaterializationBinaryAndUnary", mebn::inferredFactMaterializationBinaryAndUnary),
+                new DiagnosticCase("recursiveQueryEngineTransitiveClosureThreeHop", mebn::recursiveQueryEngineTransitiveClosureThreeHop),
+                new DiagnosticCase("derivationTreeConstructionAndAccessors", mebn::derivationTreeConstructionAndAccessors),
+                new DiagnosticCase("mebnWeightLearnerReducesSSE", mebn::mebnWeightLearnerReducesSSE),
+                new DiagnosticCase("modelPersistenceRoundTripPreservesReasoningFidelity", mebn::modelPersistenceRoundTripPreservesReasoningFidelity)));
+
+        LinkPredictorTest link = new LinkPredictorTest();
+        LinkPredictorTest.trainModel();
+        sample("LinkPredictorTest.@BeforeAll.trainModel");
+        runGroup("LinkPredictorTest", List.of(
+                new DiagnosticCase("trueTailRanksAboveWrongTypeEntityInPredictTails", link::trueTailRanksAboveWrongTypeEntityInPredictTails),
+                new DiagnosticCase("trueHeadRanksAboveWrongTypeEntityInPredictHeads", link::trueHeadRanksAboveWrongTypeEntityInPredictHeads),
+                new DiagnosticCase("scoreTripleMatchesTrainedModel", link::scoreTripleMatchesTrainedModel),
+                new DiagnosticCase("predictTailsTruncatesToTopK", link::predictTailsTruncatesToTopK),
+                new DiagnosticCase("unknownEntityThrowsIllegalArgumentException", link::unknownEntityThrowsIllegalArgumentException),
+                new DiagnosticCase("unknownRelationThrowsIllegalArgumentException", link::unknownRelationThrowsIllegalArgumentException),
+                new DiagnosticCase("nullModelThrowsAtConstruction", link::nullModelThrowsAtConstruction)));
+
+        Node2VecLearnerTest node2Vec = new Node2VecLearnerTest();
+        runGroup("Node2VecLearnerTest", List.of(
+                new DiagnosticCase("sameGraphAndConfigProduceIdenticalVectors", node2Vec::sameGraphAndConfigProduceIdenticalVectors),
+                new DiagnosticCase("intraClusterCosineExceedsInterClusterCosine", node2Vec::intraClusterCosineExceedsInterClusterCosine),
+                new DiagnosticCase("everyEntityGetsCorrectDimensionVector", node2Vec::everyEntityGetsCorrectDimensionVector),
+                new DiagnosticCase("deepWalkPathProducesFiniteVectors", node2Vec::deepWalkPathProducesFiniteVectors),
+                new DiagnosticCase("learnIntoWritesEmbeddingsBackIntoGraph", node2Vec::learnIntoWritesEmbeddingsBackIntoGraph),
+                new DiagnosticCase("learnIntoLayerPreservesPrimaryEmbeddingsAndProvidesReasoningView", node2Vec::learnIntoLayerPreservesPrimaryEmbeddingsAndProvidesReasoningView),
+                new DiagnosticCase("nonUniformPqProducesFiniteVectors", node2Vec::nonUniformPqProducesFiniteVectors),
+                new DiagnosticCase("sameDiffTrainerLossDecreasesOverEpochs", node2Vec::sameDiffTrainerLossDecreasesOverEpochs),
+                new DiagnosticCase("sameDiffTrainerCloseIsIdempotentAndRejectsUseAfterClose", node2Vec::sameDiffTrainerCloseIsIdempotentAndRejectsUseAfterClose),
+                new DiagnosticCase("tryWithResourcesClosesTrainerWhenTrainingFails", node2Vec::tryWithResourcesClosesTrainerWhenTrainingFails),
+                new DiagnosticCase("node2VecReturnsJavaEmbeddingCopyAfterTrainerClose", node2Vec::node2VecReturnsJavaEmbeddingCopyAfterTrainerClose)));
 
         sample("complete");
         System.out.println("[FULLGRAPH-DIAG] end");
@@ -133,18 +130,12 @@ class Fullgraphproc016MemoryDiagnosticTest {
         }
     }
 
-    private static void runGroup(String label, String className, List<String> methods,
-                                 String beforeAll) throws Exception {
-        Class<?> type = Class.forName(className);
-        Object instance = newInstance(type);
-        if (beforeAll != null) {
-            invoke(type, null, beforeAll);
-            sample(label + ".@BeforeAll." + beforeAll);
-        }
-        for (String methodName : methods) {
+    private static void runGroup(String label, List<DiagnosticCase> methods) throws Exception {
+        for (DiagnosticCase diagnostic : methods) {
+            String methodName = diagnostic.name();
             String phase = label + "." + methodName;
             Snapshot before = sample(phase + ".before");
-            invoke(type, instance, methodName);
+            diagnostic.action().run();
             Snapshot after = sample(phase + ".after");
             printDelta(phase, before, after);
 
@@ -159,24 +150,12 @@ class Fullgraphproc016MemoryDiagnosticTest {
         }
     }
 
-    private static Object newInstance(Class<?> type) throws Exception {
-        Constructor<?> constructor = type.getDeclaredConstructor();
-        constructor.setAccessible(true);
-        return constructor.newInstance();
+    @FunctionalInterface
+    private interface CheckedAction {
+        void run() throws Exception;
     }
 
-    private static void invoke(Class<?> type, Object instance, String methodName) throws Exception {
-        Method method = type.getDeclaredMethod(methodName);
-        method.setAccessible(true);
-        try {
-            method.invoke(instance);
-        } catch (InvocationTargetException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof Error error) throw error;
-            if (cause instanceof Exception exception) throw exception;
-            throw new RuntimeException(cause);
-        }
-    }
+    private record DiagnosticCase(String name, CheckedAction action) {}
 
     private static Snapshot sample(String phase) {
         long poolUsed = 0L;

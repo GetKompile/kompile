@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 
@@ -19,22 +20,23 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+// Keyless discovery resolves stored credentials; a temporary home keeps the real store out of it.
+@TemporaryUserHome
 class ModelDiscoveryHttpTest {
 
     @Test
     void routesAreProviderSpecific() {
         List<String> openAi = ModelDiscoveryHttp.candidateUrls(
                 "openai", "https://api.openai.com/v1");
-        List<String> ollama = ModelDiscoveryHttp.candidateUrls(
-                "ollama", "http://localhost:11434/v1");
+        List<String> custom = ModelDiscoveryHttp.candidateUrls(
+                "custom", "http://127.0.0.1:9000/v1");
         List<String> gemini = ModelDiscoveryHttp.candidateUrls(
                 "gemini", "https://generativelanguage.googleapis.com/v1beta/openai");
         List<String> zai = ModelDiscoveryHttp.candidateUrls(
                 "zai", "https://api.z.ai/api/coding/paas/v4");
 
         assertEquals(List.of("https://api.openai.com/v1/models"), openAi);
-        assertTrue(ollama.contains("http://localhost:11434/api/tags"));
-        assertFalse(ollama.stream().anyMatch(url -> url.endsWith("/v1/models")));
+        assertEquals(List.of("http://127.0.0.1:9000/v1/models"), custom);
         assertTrue(gemini.contains(
                 "https://generativelanguage.googleapis.com/v1beta/models"));
         assertEquals(List.of("https://api.z.ai/api/coding/paas/v4/models"), zai);
@@ -137,7 +139,7 @@ class ModelDiscoveryHttpTest {
         assertEquals("https://example.test/models?after_id=cursor",
                 ModelDiscoveryHttp.nextPageEndpoint("anthropic",
                         "https://example.test/models", "cursor"));
-        assertNull(ModelDiscoveryHttp.nextPageEndpoint("ollama",
+        assertNull(ModelDiscoveryHttp.nextPageEndpoint("openai",
                 "https://example.test/models", "cursor"));
     }
 
@@ -179,7 +181,7 @@ class ModelDiscoveryHttpTest {
     void catalogDescriptorsCoverEveryRemoteProviderWithoutModelIds() {
         assertEquals(List.of(
                         "anthropic", "deepseek", "gemini", "github-copilot", "groq",
-                        "ollama", "openai", "openrouter", "radius", "xai", "zai"),
+                        "openai", "openrouter", "radius", "xai", "zai"),
                 ProviderModelCatalogs.all().keySet().stream().sorted().toList());
     }
 
@@ -189,7 +191,6 @@ class ModelDiscoveryHttpTest {
                 Map.entry("openai", "OPENAI_API_KEY"),
                 Map.entry("anthropic", "ANTHROPIC_API_KEY"),
                 Map.entry("gemini", "GOOGLE_API_KEY"),
-                Map.entry("ollama", ""),
                 Map.entry("openrouter", "OPENROUTER_API_KEY"),
                 Map.entry("xai", "XAI_API_KEY"),
                 Map.entry("zai", "ZAI_API_KEY"),
@@ -201,7 +202,6 @@ class ModelDiscoveryHttpTest {
                 Map.entry("openai", "/v1/models"),
                 Map.entry("anthropic", "/v1/models"),
                 Map.entry("gemini", "/models"),
-                Map.entry("ollama", "/api/tags"),
                 Map.entry("openrouter", "/v1/models"),
                 Map.entry("xai", "/v1/models"),
                 Map.entry("zai", "/models"),
@@ -230,7 +230,6 @@ class ModelDiscoveryHttpTest {
                 case "anthropic" -> "{\"data\":[{\"id\":\"fixture-model\"}],\"has_more\":false}";
                 case "gemini" -> "{\"models\":[{\"baseModelId\":\"fixture-model\"}]}";
                 case "github-copilot" -> "{\"data\":[{\"id\":\"fixture-model\",\"model_picker_enabled\":true,\"capabilities\":{\"type\":\"chat\"}}]}";
-                case "ollama" -> "{\"models\":[{\"model\":\"fixture-model\"}]}";
                 default -> "{\"data\":[{\"id\":\"fixture-model\"}]}";
             };
             byte[] response = responseBody.getBytes(StandardCharsets.UTF_8);
@@ -246,25 +245,20 @@ class ModelDiscoveryHttpTest {
                 activeProvider.set(providerId);
                 ChatProvider provider = ChatProviderRegistry.find(providerId);
                 assertTrue(provider != null, "missing provider descriptor: " + providerId);
-                String expectedEnvironment = providerId.equals("ollama")
-                        ? null : environmentVariables.get(providerId);
-                assertEquals(expectedEnvironment, provider.environmentVariable(), providerId);
-                boolean expectedSupportsApiKey = !providerId.equals("ollama")
-                        && !providerId.equals("github-copilot");
-                assertEquals(expectedSupportsApiKey, provider.supportsApiKey(), providerId);
+                assertEquals(environmentVariables.get(providerId),
+                        provider.environmentVariable(), providerId);
+                assertEquals(!providerId.equals("github-copilot"),
+                        provider.supportsApiKey(), providerId);
 
                 ModelDiscovery.Result result = provider.modelDiscoveryStrategy().discover(
-                        new ModelDiscovery.Context(providerId, base,
-                                environmentVariables.get(providerId).isBlank() ? null : "fixture-key",
+                        new ModelDiscovery.Context(providerId, base, "fixture-key",
                                 null, HttpClient.newHttpClient(), Duration.ofSeconds(2)));
                 assertTrue(result.isUsable(), providerId + ": " + result.message());
                 assertEquals(routes.get(providerId), requests.remove(0), providerId);
-                String expectedAuth = environmentVariables.get(providerId).isBlank()
-                        ? null
-                        : switch (providerId) {
-                            case "anthropic", "gemini" -> "fixture-key";
-                            default -> "Bearer fixture-key";
-                        };
+                String expectedAuth = switch (providerId) {
+                    case "anthropic", "gemini" -> "fixture-key";
+                    default -> "Bearer fixture-key";
+                };
                 assertEquals(expectedAuth, requestAuth.remove(0), providerId);
                 assertNull(requestQueries.remove(0), providerId);
             }
@@ -328,14 +322,14 @@ class ModelDiscoveryHttpTest {
         AtomicReference<Boolean> unavailable = new AtomicReference<>(false);
         AtomicInteger requests = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/api/tags", exchange -> {
+        server.createContext("/v1/models", exchange -> {
             requests.incrementAndGet();
             if (unavailable.get()) {
                 exchange.sendResponseHeaders(503, -1);
                 exchange.close();
                 return;
             }
-            byte[] response = "{\"models\":[{\"model\":\"cached-model\"}]}"
+            byte[] response = "{\"data\":[{\"id\":\"cached-model\"}]}"
                     .getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, response.length);
             try (var output = exchange.getResponseBody()) {
@@ -346,19 +340,19 @@ class ModelDiscoveryHttpTest {
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
             ModelDiscovery.Result live = ModelDiscoveryHttp.discoverResult(
-                    "ollama", null, base);
+                    "custom", null, base);
             assertTrue(live.isUsable(), live.message());
             assertEquals(1, requests.get());
 
             unavailable.set(true);
             ModelDiscovery.Result cached = ModelDiscoveryHttp.discoverResult(
-                    "ollama", null, base);
+                    "custom", null, base);
             assertTrue(cached.isUsable(), cached.message());
             assertTrue(cached.message().contains("cache"));
             assertEquals(1, requests.get(), "a normal read may use the fresh cache");
 
             ModelDiscovery.Result outage = ModelDiscoveryHttp.refreshResult(
-                    "ollama", null, base);
+                    "custom", null, base);
             assertEquals(ModelDiscovery.Status.UNAVAILABLE, outage.status());
             assertTrue(outage.models().isEmpty());
             assertFalse(outage.message().isBlank());
@@ -375,7 +369,7 @@ class ModelDiscoveryHttpTest {
         AtomicInteger mode = new AtomicInteger();
         AtomicInteger requests = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/api/tags", exchange -> {
+        server.createContext("/v1/models", exchange -> {
             requests.incrementAndGet();
             if (mode.get() == 2) {
                 exchange.sendResponseHeaders(503, -1);
@@ -383,8 +377,8 @@ class ModelDiscoveryHttpTest {
                 return;
             }
             String body = mode.get() == 0
-                    ? "{\"models\":[{\"model\":\"retired-model\"}]}"
-                    : "{\"models\":[]}";
+                    ? "{\"data\":[{\"id\":\"retired-model\"}]}"
+                    : "{\"data\":[]}";
             byte[] response = body.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, response.length);
             try (var output = exchange.getResponseBody()) {
@@ -395,16 +389,16 @@ class ModelDiscoveryHttpTest {
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
             assertEquals(ModelDiscovery.Status.SUCCESS,
-                    ModelDiscoveryHttp.discoverResult("ollama", null, base).status());
+                    ModelDiscoveryHttp.discoverResult("custom", null, base).status());
 
             mode.set(1);
             ModelDiscovery.Result empty = ModelDiscoveryHttp.refreshResult(
-                    "ollama", null, base);
+                    "custom", null, base);
             assertEquals(ModelDiscovery.Status.SUCCESS_EMPTY, empty.status());
 
             mode.set(2);
             ModelDiscovery.Result afterEviction = ModelDiscoveryHttp.discoverResult(
-                    "ollama", null, base);
+                    "custom", null, base);
             assertEquals(ModelDiscovery.Status.UNAVAILABLE, afterEviction.status());
             assertTrue(afterEviction.models().isEmpty());
             assertEquals(3, requests.get(),
@@ -426,10 +420,10 @@ class ModelDiscoveryHttpTest {
     }
 
     @Test
-    void credentialFreeOllamaMayUseConfiguredRemoteRuntime() throws Exception {
+    void credentialFreeCustomEndpointUsesTheConfiguredBase() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/api/tags", exchange -> {
-            byte[] response = "{\"models\":[{\"model\":\"remote-ollama-model\"}]}"
+        server.createContext("/v1/models", exchange -> {
+            byte[] response = "{\"data\":[{\"id\":\"remote-model\"}]}"
                     .getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, response.length);
             try (var output = exchange.getResponseBody()) {
@@ -440,9 +434,9 @@ class ModelDiscoveryHttpTest {
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1";
             ModelDiscovery.Result result =
-                    ModelDiscoveryHttp.discoverResult("ollama", null, base);
+                    ModelDiscoveryHttp.discoverResult("custom", null, base);
             assertTrue(result.isUsable(), result.message());
-            assertEquals(List.of("remote-ollama-model"), result.models().stream()
+            assertEquals(List.of("remote-model"), result.models().stream()
                     .map(LiveModelDiscovery.Model::id).toList());
         } finally {
             server.stop(0);

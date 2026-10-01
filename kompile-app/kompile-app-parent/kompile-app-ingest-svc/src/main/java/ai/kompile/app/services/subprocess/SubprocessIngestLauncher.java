@@ -23,22 +23,30 @@ import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.utils.NativeImageInfo;
 import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
+import ai.kompile.app.ingest.domain.IndexingJobHistory;
 import ai.kompile.app.ingest.domain.IngestEvent;
 import ai.kompile.app.ingest.service.IndexingJobHistoryService;
 import ai.kompile.app.ingest.service.IngestEventService;
 import ai.kompile.app.services.AppIndexConfigService;
 import ai.kompile.app.config.DeviceRoutingConfig;
+import ai.kompile.app.config.GpuDevice;
 import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.IngestProgressTracker;
 import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
+import ai.kompile.app.services.scheduler.JobResourceProfiles;
+import ai.kompile.app.subprocess.AdaptiveRecoverySettings;
 import ai.kompile.app.subprocess.BackendConfigurable;
+import ai.kompile.app.subprocess.ManagedSubprocessLauncher.BackendPreference;
 import ai.kompile.app.subprocess.SubprocessArgs;
+import ai.kompile.app.subprocess.SubprocessBackendFlags;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessMessage;
 import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.subprocess.SubprocessPlacementSupport;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
+import ai.kompile.app.subprocess.SubprocessSignals;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
@@ -65,9 +73,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 // import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -92,10 +105,13 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessIngestLauncher.class);
 
-    /** Shared device-agnostic placement (same base infra every subprocess uses). */
+    /**
+     * Placement assigned through {@link BackendConfigurable}. Only the legacy five-argument
+     * {@code launchIngest} reads it, once per job; the scheduler passes each job's placement instead.
+     */
     private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
 
-    /** {@link BackendConfigurable} — the scheduler assigns backend/device/memory before spawn. */
+    /** {@link BackendConfigurable} — the placement for the next launch that doesn't carry its own. */
     @Override
     public void applyPlacement(SubprocessPlacement p) {
         this.placement.applyPlacement(p);
@@ -103,6 +119,21 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
 
     // Scheduling intervals
     private static final long STALE_CHECK_INTERVAL_MS = 30_000L; // 30 seconds
+
+    /** How long an exited child's COMPLETED message may still be in flight on its stdout reader. */
+    private static final long COMPLETION_MESSAGE_GRACE_SECONDS = 5;
+
+    /** How long an exited child's output readers may take to drain its pipes before its exit is judged. */
+    private static final long OUTPUT_DRAIN_TIMEOUT_MS = 5_000;
+
+    /** How long a job's result waits for the attempt that gave its verdict to exit. */
+    private static final long VERDICT_EXIT_WAIT_SECONDS = 30;
+
+    /**
+     * Error types the child's memory watchdog reports when it stops its own run before an OOM
+     * ({@code checkWatchdogOrExit} in IngestSubprocessMain) — retried with adaptive settings like one.
+     */
+    private static final Set<String> MEMORY_GUARD_ERROR_TYPES = Set.of("MemoryThreshold", "MemoryKillThreshold");
 
     private static final String SUBPROCESS_MAIN_CLASS = "ai.kompile.app.subprocess.IngestSubprocessMain";
 
@@ -133,7 +164,7 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
 
     @Autowired(required = false)
     @org.springframework.context.annotation.Lazy
-    private ModelLifecycleManager modelLifecycleManager;
+    ModelLifecycleManager modelLifecycleManager;
 
     /**
      * Optional task-completion sink. Implemented in app-main by {@code MonitorService}
@@ -180,6 +211,12 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
     /** Map from taskId to jobId (for looking up job context on completion) */
     private final Map<String, String> taskToJobId = new ConcurrentHashMap<>();
 
+    /** JobIds whose GPU row this launcher acquired itself; released once, when the job ends */
+    private final Set<String> launcherGpuHolds = ConcurrentHashMap.newKeySet();
+
+    /** Set once shutdown begins; no attempt starts after it */
+    private volatile boolean shuttingDown;
+
     /** Phase-2 log aggregation: JSON-lines writers keyed by taskId */
     private final Map<String, SubprocessLogWriter> logWriters = new ConcurrentHashMap<>();
 
@@ -194,14 +231,20 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             ai.kompile.app.subprocess.IngestCheckpoint checkpoint
     ) {}
 
-    /** Record to store original launch context for retry */
+    /**
+     * Record to store original launch context for retry. Every attempt of the job runs on the same
+     * placement; cancel reaches the current attempt and blocks any attempt not yet started.
+     */
     private record LaunchContext(
             String jobId,
             Path filePath,
             String loaderName,
             String chunkerName,
             Map<String, Object> originalOptions,
-            CompletableFuture<SubprocessHandle.SubprocessResult> resultFuture
+            CompletableFuture<SubprocessHandle.SubprocessResult> resultFuture,
+            SubprocessPlacement placement,
+            AtomicReference<SubprocessHandle> currentAttempt,
+            AtomicBoolean cancelled
     ) {}
 
     @Autowired
@@ -272,7 +315,7 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
     }
 
     /**
-     * Launch a subprocess to ingest a document.
+     * Launch a subprocess to ingest a document on the placement assigned via {@link #applyPlacement}.
      *
      * @param taskId      Unique task identifier
      * @param filePath    Path to the file to ingest
@@ -287,43 +330,130 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             String loaderName,
             String chunkerName,
             Map<String, Object> options) {
-        // Generate a unique jobId that persists across retries
-        String jobId = taskId; // Use taskId as jobId for the initial attempt
-        return launchIngestInternal(taskId, jobId, filePath, loaderName, chunkerName, options, null);
+        return launchIngest(taskId, filePath, loaderName, chunkerName, options, placement.placement());
     }
 
     /**
-     * Internal method to launch ingest with full control over settings.
-     * Used for both initial launch and retry with adaptive settings.
+     * Launch a subprocess to ingest a document on an explicit placement. The taskId is the job's id
+     * for its whole life: every retry reuses this placement, and cancelling it reaches any attempt.
+     *
+     * @param placement the child's backend/device/memory cap — the scheduler's placement for the job
+     *                  it holds a GPU row for; null lets the launcher reserve the job's own row
+     * @return Future that completes when the job finishes (after any retries)
      */
-    private CompletableFuture<SubprocessHandle.SubprocessResult> launchIngestInternal(
+    public CompletableFuture<SubprocessHandle.SubprocessResult> launchIngest(
             String taskId,
-            String jobId,
             Path filePath,
             String loaderName,
             String chunkerName,
             Map<String, Object> options,
-            ai.kompile.app.subprocess.AdaptiveRecoverySettings recoverySettings) {
-        logger.info("Launching ingest subprocess for task: {} (jobId: {}) file: {}", taskId, jobId, filePath);
-
-        // For initial launch, create a new future; for retry, we reuse the original
-        CompletableFuture<SubprocessHandle.SubprocessResult> resultFuture;
-        LaunchContext existingContext = jobLaunchContexts.get(jobId);
-        if (existingContext != null) {
-            resultFuture = existingContext.resultFuture();
-        } else {
-            resultFuture = new CompletableFuture<>();
-            // Store launch context for potential retry
-            jobLaunchContexts.put(jobId, new LaunchContext(jobId, filePath, loaderName, chunkerName,
-                    options != null ? new HashMap<>(options) : new HashMap<>(), resultFuture));
-            // Fire any chat monitors registered for this task when it completes.
-            // Attach exactly once — on the original future only, not on retries.
-            resultFuture.whenComplete((result, error) -> notifyMonitorService(taskId, result, error));
+            SubprocessPlacement placement) {
+        // The first attempt's taskId is the jobId that persists across retries
+        String jobId = taskId;
+        LaunchContext existing = jobLaunchContexts.get(jobId);
+        if (existing != null) {
+            logger.warn("Ingest job {} is already running; not launching it again", jobId);
+            return afterAttemptExits(existing);
         }
+
+        // Settle the job's GPU row before any command is built, so the child is pinned to its device
+        SubprocessPlacement jobPlacement = resolveJobPlacement(jobId, filePath.getFileName().toString(), placement);
+        CompletableFuture<SubprocessHandle.SubprocessResult> resultFuture = new CompletableFuture<>();
+        LaunchContext context = new LaunchContext(jobId, filePath, loaderName, chunkerName,
+                options != null ? new HashMap<>(options) : new HashMap<>(), resultFuture,
+                jobPlacement, new AtomicReference<>(), new AtomicBoolean());
+        jobLaunchContexts.put(jobId, context);
+        // Fire any chat monitors registered for this task when it completes.
+        // Attach exactly once — on the original future only, not on retries.
+        resultFuture.whenComplete((result, error) -> notifyMonitorService(taskId, result, error));
+        launchIngestInternal(taskId, context, null);
+        return afterAttemptExits(context);
+    }
+
+    /**
+     * The job's result, once the attempt that gave it has exited. The verdict can come while the child
+     * is still running — its COMPLETED or FAILED message, a timeout, a stall — and a caller holding the
+     * job's GPU row releases it when this completes, so the device is not handed on while the child
+     * still has it. Waits at most {@link #VERDICT_EXIT_WAIT_SECONDS}.
+     */
+    private CompletableFuture<SubprocessHandle.SubprocessResult> afterAttemptExits(LaunchContext context) {
+        return context.resultFuture().thenCompose(result -> {
+            SubprocessHandle attempt = context.currentAttempt().get();
+            if (attempt == null || !attempt.isAlive()) {
+                return CompletableFuture.completedFuture(result);
+            }
+            return attempt.getProcess().onExit()
+                    .completeOnTimeout(null, VERDICT_EXIT_WAIT_SECONDS, TimeUnit.SECONDS)
+                    .handle((exited, error) -> {
+                        if (exited == null) {
+                            logger.warn("Ingest job {} has ended, but its subprocess {} is still running after {}s",
+                                    context.jobId(), attempt.getTaskId(), VERDICT_EXIT_WAIT_SECONDS);
+                        }
+                        return result;
+                    });
+        });
+    }
+
+    /**
+     * The placement every attempt of a new job runs on. A CPU placement, or a GPU placement for a job
+     * whose row is already held (the scheduler acquired it), is used as given. Otherwise the launcher
+     * acquires the job's own row and places the child on that device; if it can't, the job runs on
+     * CPU — a child is never pinned to a GPU without a row.
+     */
+    private SubprocessPlacement resolveJobPlacement(String jobId, String fileName, SubprocessPlacement requested) {
+        if (modelLifecycleManager == null
+                || (requested != null && requested.backend() == BackendPreference.CPU)) {
+            return requested;
+        }
+        long capBytes = JobResourceProfiles.INGEST.peakGpuMemoryBytes();
+        ModelLifecycleManager.JobGpuHold held = modelLifecycleManager.getActiveJobHolds().get(jobId);
+        if (held != null) {
+            return requested != null && requested.isGpu() ? requested : placementOn(held.device(), capBytes);
+        }
+        if (requested != null) {
+            logger.warn("[ingest-{}] GPU placement {} has no GPU row; acquiring one for the job", jobId, requested);
+        }
+        try {
+            GpuDevice device = modelLifecycleManager.acquireGpuForJob(jobId,
+                    JobResourceProfiles.INGEST.serviceType(), "Ingest: " + fileName,
+                    ModelLifecycleManager.HoldLifetime.BOUNDED, capBytes, null);
+            launcherGpuHolds.add(jobId);
+            logger.info("[ingest-{}] GPU row acquired for ingest job on {}", jobId, device.name());
+            return placementOn(device, capBytes);
+        } catch (IllegalStateException e) {
+            logger.warn("[ingest-{}] Could not acquire GPU for ingest, running on CPU: {}", jobId, e.getMessage());
+            return SubprocessPlacement.cpu();
+        }
+    }
+
+    /** The child's placement on a reserved device — derived the same way the scheduler derives it. */
+    private static SubprocessPlacement placementOn(GpuDevice device, long capBytes) {
+        return SubprocessPlacement.gpu(device.cudaRuntimeIndex(),
+                ModelLifecycleManager.clampToDevice(capBytes, device));
+    }
+
+    /**
+     * Internal method to launch one attempt of a job with full control over settings.
+     * Used for both initial launch and retry with adaptive settings.
+     */
+    private CompletableFuture<SubprocessHandle.SubprocessResult> launchIngestInternal(
+            String taskId,
+            LaunchContext context,
+            AdaptiveRecoverySettings recoverySettings) {
+        String jobId = context.jobId();
+        Path filePath = context.filePath();
+        String loaderName = context.loaderName();
+        String chunkerName = context.chunkerName();
+        Map<String, Object> options = context.originalOptions();
+        CompletableFuture<SubprocessHandle.SubprocessResult> resultFuture = context.resultFuture();
+        logger.info("Launching ingest subprocess for task: {} (jobId: {}) file: {}", taskId, jobId, filePath);
 
         // Store file path for fact creation on completion
         taskFilePaths.put(taskId, filePath);
 
+        Path argsFile = null;
+        Process process = null;
+        boolean monitored = false;
         try {
             String fileName = filePath.getFileName().toString();
 
@@ -484,11 +614,11 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             }
 
             // Write args to temp file
-            Path argsFile = args.writeToTempFile();
+            argsFile = args.writeToTempFile();
             logger.debug("Wrote subprocess args to: {}", argsFile);
 
-            // Build command with effective options (includes adaptive settings)
-            List<String> command = buildCommand(argsFile, effectiveOptions);
+            // Build command with effective options (includes adaptive settings) on the job's placement
+            List<String> command = buildCommand(argsFile, effectiveOptions, context.placement());
             logger.info("Subprocess command: {}", String.join(" ", command));
             if (shouldResume) {
                 logger.info("ADAPTIVE RETRY: Resuming from checkpoint at {}", checkpointPath);
@@ -499,7 +629,7 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             processBuilder.redirectErrorStream(false);
 
             // Propagate ND4J environment variables from parent process
-            propagateNd4jEnvironment(processBuilder.environment());
+            propagateNd4jEnvironment(processBuilder.environment(), context.placement());
 
             // Apply thread settings from recovery if specified
             if (recoverySettings != null) {
@@ -509,21 +639,31 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
                 logger.info("Applied adaptive thread settings: OMP_NUM_THREADS={}", recoverySettings.getOmpThreads());
             }
 
-            // === GPU LIFECYCLE: Acquire GPU resources for this ingest job ===
-            if (modelLifecycleManager != null && !modelLifecycleManager.hasJobGpuHold(taskId)) {
-                try {
-                    modelLifecycleManager.acquireGpuForIngest(taskId, fileName);
-                    logger.info("[ingest-{}] GPU resources acquired for ingest job", taskId);
-                } catch (IllegalStateException e) {
-                    logger.warn("[ingest-{}] Could not acquire GPU for ingest (may use CPU fallback): {}",
-                            taskId, e.getMessage());
-                    // Don't fail the ingest — it may be able to run on CPU or with reduced GPU
-                }
-            } else if (modelLifecycleManager != null) {
-                logger.info("[ingest-{}] GPU already held by scheduler, skipping launcher acquire", taskId);
-            }
+            // Protocol messages get a pipe of their own, which native output written to fd 1 can't reach
+            boolean wrapped = SubprocessProtocolChannel.apply(processBuilder);
 
-            Process process = processBuilder.start();
+            // The job's GPU row was settled when it was first launched; attempts never acquire one.
+            // Starting under the context's lock orders this attempt against cancel: a cancel either
+            // blocks the start or finds the started attempt.
+            SubprocessHandle handle = null;
+            synchronized (context) {
+                if (!context.cancelled().get() && !resultFuture.isDone() && !shuttingDown) {
+                    process = processBuilder.start();
+                    handle = createHandle(taskId, fileName, process, resultFuture, argsFile);
+                    context.currentAttempt().set(handle);
+                }
+            }
+            if (handle == null) {
+                logger.info("Ingest job {} was cancelled or has ended; not starting attempt {}", jobId, taskId);
+                // The args file carries the staging API key
+                deleteArgsFile(argsFile);
+                taskFilePaths.remove(taskId);
+                // The cancel may have found no attempt to end the job (a shutdown while a retry was
+                // pending), so the job ends here
+                endJobBetweenAttempts(context, SubprocessHandle.SubprocessResult.failure(
+                        taskId, -1, "Cancelled before start", null, true, false));
+                return resultFuture;
+            }
             logger.info("Started subprocess with PID: {}", process.pid());
 
             // Register with centralized subprocess registry for orphan protection
@@ -550,13 +690,12 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             // Track taskId -> jobId mapping for retry handling
             taskToJobId.put(taskId, jobId);
 
-            // Create handle
-            SubprocessHandle handle = createHandle(taskId, fileName,
-                    process, resultFuture, argsFile);
             activeProcesses.put(taskId, handle);
 
             // Start monitoring
-            startMonitoring(handle);
+            startMonitoring(handle, getEffectiveTimeoutMinutes(effectiveOptions),
+                    SubprocessProtocolChannel.stderrProtocol(wrapped, SubprocessMessage.MESSAGE_PREFIX, "ingest-" + taskId));
+            monitored = true;
 
             // Update progress tracker with active fact sheet association
             if (progressTracker != null) {
@@ -576,10 +715,45 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
 
         } catch (Exception e) {
             logger.error("Failed to launch subprocess for task: {}", taskId, e);
-            resultFuture.completeExceptionally(e);
+            if (!monitored) {
+                // Nothing watches this attempt, so its failure ends the job here
+                if (process != null) {
+                    process.destroyForcibly();
+                    activeProcesses.remove(taskId);
+                    taskToJobId.remove(taskId);
+                    if (subprocessRegistry != null) {
+                        subprocessRegistry.deregister("ingest-" + taskId);
+                    }
+                    closeSubprocessLog(taskId, "FAILED", null, e.getMessage(), false, false);
+                }
+                // The args file carries the staging API key
+                deleteArgsFile(argsFile);
+                taskFilePaths.remove(taskId);
+                boolean first = resultFuture.completeExceptionally(e);
+                finishJob(jobId);
+                if (first) {
+                    reportLaunchFailure(taskId, filePath, e);
+                }
+            }
         }
 
         return resultFuture;
+    }
+
+    /** Report an attempt that failed to launch: nothing watches it, so nothing else reports its failure. */
+    private void reportLaunchFailure(String taskId, Path filePath, Exception cause) {
+        String message = "Failed to launch ingest subprocess: " + cause.getMessage();
+        try {
+            if (progressTracker != null) {
+                progressTracker.failTask(taskId, filePath.getFileName().toString(), toProgressPhase(null), message);
+            }
+            if (jobHistoryService != null) {
+                jobHistoryService.markJobFailed(taskId, toEventPhase(null), message, cause,
+                        IndexingJobHistory.FailureReason.SUBPROCESS_ERROR);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to report the launch failure of task {}: {}", taskId, e.getMessage());
+        }
     }
 
     private void createJobHistoryAndLogQueued(String taskId, String fileName, Path filePath, String nd4jConfigJson) {
@@ -609,27 +783,74 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
     }
 
     /**
-     * Cancel a running subprocess.
+     * Cancel an ingest job: its running attempt, and any retry that has not started yet.
      *
-     * @param taskId Task identifier
+     * @param taskId the job's id (the taskId it was launched with, which the scheduler uses as its
+     *               jobId) or the taskId of any of its attempts
      * @return true if cancelled, false if not found or already finished
      */
     public boolean cancelIngest(String taskId) {
-        SubprocessHandle handle = activeProcesses.get(taskId);
-        if (handle == null || !handle.isAlive()) {
+        String jobId = jobLaunchContexts.containsKey(taskId) ? taskId : taskToJobId.get(taskId);
+        LaunchContext context = jobId != null ? jobLaunchContexts.get(jobId) : null;
+        if (context == null || context.resultFuture().isDone()) {
             return false;
         }
 
-        logger.info("Cancelling subprocess for task: {}", taskId);
-        handle.cancel();
-
-        // Update progress tracker
-        if (progressTracker != null) {
-            progressTracker.cancelTask(taskId, handle.getFileName(), toProgressPhase(handle.getCurrentPhase()),
-                    "Cancelled by user", null);
+        SubprocessHandle attempt;
+        synchronized (context) {
+            context.cancelled().set(true);
+            attempt = context.currentAttempt().get();
         }
 
+        logger.info("Cancelling ingest job {} (attempt: {})", jobId, attempt != null ? attempt.getTaskId() : "none");
+        if (attempt != null && (attempt.isAlive() || activeProcesses.containsKey(attempt.getTaskId()))) {
+            // The attempt's completion watcher gives the job's verdict once the process has exited:
+            // cancelled, unless the child reported its own outcome first
+            attempt.cancel();
+        } else {
+            // No attempt is running (a retry is pending) and none will start, so the job ends here
+            endJobBetweenAttempts(context, SubprocessHandle.SubprocessResult.failure(
+                    attempt != null ? attempt.getTaskId() : jobId, -1, "Cancelled by user",
+                    attempt != null ? attempt.getCurrentPhase() : null, true, false));
+        }
         return true;
+    }
+
+    /**
+     * End a job that has no running attempt to judge it — cancelled, or failed between attempts — with
+     * the given result, reported only as the job's first verdict.
+     */
+    private void endJobBetweenAttempts(LaunchContext context, SubprocessHandle.SubprocessResult result) {
+        boolean first = context.resultFuture().complete(result);
+        finishJob(context.jobId());
+        if (!first) {
+            return;
+        }
+        String taskId = result.taskId();
+        try {
+            String fileName = context.filePath().getFileName().toString();
+            if (progressTracker != null) {
+                IngestProgressUpdate.IngestPhase phase = toProgressPhase(result.errorPhase());
+                if (result.cancelled()) {
+                    progressTracker.cancelTask(taskId, fileName, phase, result.errorMessage(), null);
+                } else if (result.oomKilled()) {
+                    progressTracker.failTaskOutOfMemory(taskId, fileName, phase, result.errorMessage());
+                } else {
+                    progressTracker.failTask(taskId, fileName, phase, result.errorMessage());
+                }
+            }
+            if (jobHistoryService != null) {
+                IndexingJobHistory.FailureReason reason = result.cancelled()
+                        ? IndexingJobHistory.FailureReason.USER_CANCELLED
+                        : result.oomKilled()
+                                ? IndexingJobHistory.FailureReason.OUT_OF_MEMORY
+                                : IndexingJobHistory.FailureReason.SUBPROCESS_ERROR;
+                jobHistoryService.markJobFailed(taskId, toEventPhase(result.errorPhase()), result.errorMessage(),
+                        null, reason);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to report the end of ingest job {}: {}", context.jobId(), e.getMessage());
+        }
     }
 
     /**
@@ -660,17 +881,18 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
     /**
      * Build the subprocess command.
      *
-     * @param argsFile Path to the args file
-     * @param options  Per-request options (heapSize, timeoutMinutes, etc.)
+     * @param argsFile     Path to the args file
+     * @param options      Per-request options (heapSize, timeoutMinutes, etc.)
+     * @param jobPlacement The job's backend/device/memory placement (null = inherit)
      */
-    private List<String> buildCommand(Path argsFile, Map<String, Object> options) {
+    private List<String> buildCommand(Path argsFile, Map<String, Object> options, SubprocessPlacement jobPlacement) {
         // Check if we should use native executable mode
         if (shouldUseNativeExecutableMode()) {
-            return buildNativeCommand(argsFile);
+            return buildNativeCommand(argsFile, jobPlacement);
         }
 
         // JVM classpath mode
-        return buildJvmCommand(argsFile, options);
+        return buildJvmCommand(argsFile, options, jobPlacement);
     }
 
     /**
@@ -695,7 +917,7 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
      * Build command for native executable mode.
      * Uses SubprocessConfigService (UI-configured) for executable paths.
      */
-    private List<String> buildNativeCommand(Path argsFile) {
+    private List<String> buildNativeCommand(Path argsFile, SubprocessPlacement jobPlacement) {
         if (subprocessConfigService == null) {
             throw new IllegalStateException(
                 "Native executable mode required but SubprocessConfigService not available.");
@@ -710,6 +932,10 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
 
         List<String> command = new ArrayList<>();
         command.add(executablePath);
+
+        // Device-agnostic backend/device/memory -D flags go before the dispatch token, as in
+        // ManagedSubprocessLauncher's native self-exec — a native image reads them at startup.
+        command.addAll(SubprocessBackendFlags.jvmFlags(jobPlacement, BackendPreference.INHERIT));
 
         // Add subprocess type flag if using unified executable
         if (subprocessConfigService.useUnifiedExecutable("ingest")) {
@@ -726,7 +952,7 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
     /**
      * Build command for JVM classpath mode.
      */
-    private List<String> buildJvmCommand(Path argsFile, Map<String, Object> options) {
+    private List<String> buildJvmCommand(Path argsFile, Map<String, Object> options, SubprocessPlacement jobPlacement) {
         List<String> command = new ArrayList<>();
 
         // Java executable
@@ -764,7 +990,7 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
         }
 
         // Device-agnostic backend/device selection from the shared base infra — no CUDA_VISIBLE_DEVICES.
-        command.addAll(placement.jvmFlags());
+        command.addAll(SubprocessBackendFlags.jvmFlags(jobPlacement, BackendPreference.INHERIT));
         command.add("-cp");
         command.add(classpath);
 
@@ -814,6 +1040,28 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             return subprocessConfigService.getStaleThresholdSeconds();
         }
         return staleThresholdSeconds;
+    }
+
+    /**
+     * How long one attempt may run before it is killed: the request's {@code timeoutMinutes}, else the
+     * configured subprocess timeout, else the launcher default.
+     */
+    private int getEffectiveTimeoutMinutes(Map<String, Object> options) {
+        Object requested = options != null ? options.get("timeoutMinutes") : null;
+        if (requested != null) {
+            try {
+                int minutes = requested instanceof Number n ? n.intValue() : Integer.parseInt(requested.toString().trim());
+                if (minutes > 0) {
+                    return minutes;
+                }
+            } catch (NumberFormatException e) {
+                logger.warn("Ignoring invalid timeoutMinutes option: {}", requested);
+            }
+        }
+        if (subprocessConfigService != null && subprocessConfigService.getTimeoutMinutes() > 0) {
+            return subprocessConfigService.getTimeoutMinutes();
+        }
+        return timeoutMinutes;
     }
 
     private Long getEffectiveOffHeapMaxBytes() {
@@ -1054,54 +1302,36 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
     }
 
     /**
-     * Create a subprocess handle with stdout/stderr readers.
+     * Create a subprocess handle. Its output readers are started by {@link #startMonitoring}.
      */
     private SubprocessHandle createHandle(String taskId, String fileName, Process process,
             CompletableFuture<SubprocessHandle.SubprocessResult> resultFuture,
             Path argsFile) {
-
-        // Create reader threads (will be started after handle creation)
-        Thread[] readers = new Thread[2];
-
-        SubprocessHandle handle = new SubprocessHandle(
-                taskId, fileName, process,
-                null, null, // Will set readers after creating them
-                resultFuture, argsFile);
-
-        // Create stdout reader
-        readers[0] = new Thread(() -> readStdout(handle), "subprocess-stdout-" + taskId);
-        readers[0].setDaemon(true);
-
-        // Create stderr reader
-        readers[1] = new Thread(() -> readStderr(handle), "subprocess-stderr-" + taskId);
-        readers[1].setDaemon(true);
-
-        // Update handle with readers (using reflection to set final fields - not ideal
-        // but works)
-        // Alternatively, make fields non-final in SubprocessHandle
-
-        return new SubprocessHandle(
-                taskId, fileName, process,
-                readers[0], readers[1],
-                resultFuture, argsFile);
+        return new SubprocessHandle(taskId, fileName, process, null, null, resultFuture, argsFile);
     }
 
     /**
      * Start monitoring threads for a subprocess.
+     *
+     * @param timeoutMinutes how long the attempt may run before it is killed
+     * @param stderrProtocol finds the protocol messages of a wrapped child that writes them to fd 1
      */
-    private void startMonitoring(SubprocessHandle handle) {
+    private void startMonitoring(SubprocessHandle handle, int timeoutMinutes,
+                                 SubprocessProtocolChannel.StderrProtocol stderrProtocol) {
         // Start stdout reader
         Thread stdoutReader = new Thread(() -> readStdout(handle), "subprocess-stdout-" + handle.getTaskId());
         stdoutReader.setDaemon(true);
         stdoutReader.start();
 
         // Start stderr reader
-        Thread stderrReader = new Thread(() -> readStderr(handle), "subprocess-stderr-" + handle.getTaskId());
+        Thread stderrReader = new Thread(() -> readStderr(handle, stderrProtocol),
+                "subprocess-stderr-" + handle.getTaskId());
         stderrReader.setDaemon(true);
         stderrReader.start();
 
         // Start process completion watcher
-        Thread completionWatcher = new Thread(() -> watchCompletion(handle),
+        Thread completionWatcher = new Thread(
+                () -> watchCompletion(handle, timeoutMinutes, stdoutReader, stderrReader),
                 "subprocess-watcher-" + handle.getTaskId());
         completionWatcher.setDaemon(true);
         completionWatcher.start();
@@ -1131,18 +1361,18 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
                 } catch (Exception _logEx) {
                     logger.debug("[ingest-{}] stdout log write failed: {}", handle.getTaskId(), _logEx.getMessage());
                 }
-                // Check for protocol messages
-                if (line.startsWith(SubprocessMessage.MESSAGE_PREFIX)) {
-                    String json = line.substring(SubprocessMessage.MESSAGE_PREFIX.length());
+                // Check for protocol messages. A child started without the protocol channel shares this pipe
+                // with native code, which writes to fd 1 beneath its System.setOut redirect, so a native
+                // message without a newline can precede one on the same line.
+                int prefixAt = line.indexOf(SubprocessMessage.MESSAGE_PREFIX);
+                if (prefixAt > 0) {
+                    forwardOutput(handle, line.substring(0, prefixAt));
+                }
+                if (prefixAt >= 0) {
+                    String json = line.substring(prefixAt + SubprocessMessage.MESSAGE_PREFIX.length());
                     handleMessage(handle, json);
-                } else if (!line.isBlank()) {
-                    // Regular log output - log locally and forward to WebSocket
-                    logger.debug("[subprocess-{}] {}", handle.getTaskId(), line);
-
-                    // Forward to WebSocket for UI display
-                    if (progressTracker != null) {
-                        progressTracker.sendLog(handle.getTaskId(), "STDOUT", line);
-                    }
+                } else {
+                    forwardOutput(handle, line);
                 }
             }
         } catch (IOException e) {
@@ -1152,11 +1382,26 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
         }
     }
 
+    /** Stdout that is not a protocol message: regular log output, logged locally and forwarded to WebSocket. */
+    private void forwardOutput(SubprocessHandle handle, String line) {
+        if (line.isBlank()) {
+            return;
+        }
+        logger.debug("[subprocess-{}] {}", handle.getTaskId(), line);
+
+        // Forward to WebSocket for UI display
+        if (progressTracker != null) {
+            progressTracker.sendLog(handle.getTaskId(), "STDOUT", line);
+        }
+    }
+
     /**
      * Read stderr from subprocess.
-     * All stderr output is forwarded to WebSocket for UI display.
+     * All stderr output is forwarded to WebSocket for UI display. A wrapped child's fd 1 is this pipe
+     * too, so it carries the native output that reaches fd 1, and the protocol messages of a child
+     * that writes them there ({@link SubprocessProtocolChannel.StderrProtocol}).
      */
-    private void readStderr(SubprocessHandle handle) {
+    private void readStderr(SubprocessHandle handle, SubprocessProtocolChannel.StderrProtocol stderrProtocol) {
         Process process = getProcessForHandle(handle);
         if (process == null) {
             logger.debug("Process not found for task {}, cannot read stderr", handle.getTaskId());
@@ -1170,44 +1415,16 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
                 if (line.isBlank())
                     continue;
 
-                // Determine log level based on content
-                String level = "INFO";
-                
-                // Check for GPU OOM patterns first (more specific)
-                if (isGpuOomLine(line)) {
-                    logger.error("[subprocess-{}] GPU OOM detected: {}", handle.getTaskId(), line);
-                    handle.setGpuOomDetected(true);
-                    handle.setOomDetected(true); // Also set general OOM flag
-                    level = "ERROR";
+                // A child that writes its protocol messages to fd 1 has them here, behind whatever else
+                // reached fd 1
+                int prefixAt = stderrProtocol.prefixIndex(line);
+                if (prefixAt > 0) {
+                    forwardStderr(handle, line.substring(0, prefixAt));
                 }
-                // Check for Java heap OOM
-                else if (line.contains("OutOfMemoryError") || line.contains("Java heap space")) {
-                    logger.error("[subprocess-{}] OOM detected: {}", handle.getTaskId(), line);
-                    handle.setOomDetected(true);
-                    level = "ERROR";
-                } else if (line.contains("ERROR") || line.contains("Exception") || line.contains("FATAL")) {
-                    logger.info("[subprocess-{}] {}", handle.getTaskId(), line);
-                    level = "ERROR";
-                } else if (line.contains("WARN")) {
-                    logger.info("[subprocess-{}] {}", handle.getTaskId(), line);
-                    level = "WARN";
-                } else if (line.contains("EMBEDDING:") || line.contains("INDEXING:") ||
-                        line.contains("INFO") || line.contains("Starting") || line.contains("Complete")) {
-                    // Log important progress messages at INFO level
-                    logger.info("[subprocess-{}] {}", handle.getTaskId(), line);
-                    level = "INFO";
-                } else if (line.contains("DEBUG") || line.contains("TRACE")) {
-                    logger.debug("[subprocess-{}] {}", handle.getTaskId(), line);
-                    level = "DEBUG";
+                if (prefixAt >= 0) {
+                    handleMessage(handle, line.substring(prefixAt + SubprocessMessage.MESSAGE_PREFIX.length()));
                 } else {
-                    // Default to INFO for general log lines
-                    logger.debug("[subprocess-{}] {}", handle.getTaskId(), line);
-                    level = "INFO";
-                }
-
-                // Forward ALL stderr to WebSocket for UI display (with detected level)
-                if (progressTracker != null) {
-                    progressTracker.sendLog(handle.getTaskId(), "STDERR", level, line);
+                    forwardStderr(handle, line);
                 }
                 // Write to central log store
                 try {
@@ -1223,6 +1440,52 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             if (!handle.isCancelled()) {
                 logger.debug("Stderr reader terminated for task: {}", handle.getTaskId());
             }
+        }
+    }
+
+    /** Stderr that is not a protocol message: scanned for OOMs, logged locally and forwarded to WebSocket. */
+    private void forwardStderr(SubprocessHandle handle, String line) {
+        if (line.isBlank()) {
+            return;
+        }
+        // Determine log level based on content
+        String level = "INFO";
+
+        // Check for GPU OOM patterns first (more specific)
+        if (isGpuOomLine(line)) {
+            logger.error("[subprocess-{}] GPU OOM detected: {}", handle.getTaskId(), line);
+            handle.setGpuOomDetected(true);
+            handle.setOomDetected(true); // Also set general OOM flag
+            level = "ERROR";
+        }
+        // Check for Java heap OOM
+        else if (line.contains("OutOfMemoryError") || line.contains("Java heap space")) {
+            logger.error("[subprocess-{}] OOM detected: {}", handle.getTaskId(), line);
+            handle.setOomDetected(true);
+            level = "ERROR";
+        } else if (line.contains("ERROR") || line.contains("Exception") || line.contains("FATAL")) {
+            logger.info("[subprocess-{}] {}", handle.getTaskId(), line);
+            level = "ERROR";
+        } else if (line.contains("WARN")) {
+            logger.info("[subprocess-{}] {}", handle.getTaskId(), line);
+            level = "WARN";
+        } else if (line.contains("EMBEDDING:") || line.contains("INDEXING:") ||
+                line.contains("INFO") || line.contains("Starting") || line.contains("Complete")) {
+            // Log important progress messages at INFO level
+            logger.info("[subprocess-{}] {}", handle.getTaskId(), line);
+            level = "INFO";
+        } else if (line.contains("DEBUG") || line.contains("TRACE")) {
+            logger.debug("[subprocess-{}] {}", handle.getTaskId(), line);
+            level = "DEBUG";
+        } else {
+            // Default to INFO for general log lines
+            logger.debug("[subprocess-{}] {}", handle.getTaskId(), line);
+            level = "INFO";
+        }
+
+        // Forward ALL stderr to WebSocket for UI display (with detected level)
+        if (progressTracker != null) {
+            progressTracker.sendLog(handle.getTaskId(), "STDERR", level, line);
         }
     }
 
@@ -1248,9 +1511,13 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
     }
 
     /**
-     * Watch for process completion.
+     * Watch for process completion. The exit is judged once the output readers have drained the child's
+     * pipes: its FAILED report, or the OOM line the JVM prints right before exiting, is often still
+     * unread when the process exits.
+     *
+     * @param timeoutMinutes how long the attempt may run before it is killed
      */
-    private void watchCompletion(SubprocessHandle handle) {
+    private void watchCompletion(SubprocessHandle handle, int timeoutMinutes, Thread... outputReaders) {
         try {
             Process process = getProcessForHandle(handle);
             if (process == null)
@@ -1258,22 +1525,23 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
 
             boolean finished = process.waitFor(timeoutMinutes, TimeUnit.MINUTES);
             if (!finished) {
-                process.destroyForcibly();
-                process.waitFor(30, TimeUnit.SECONDS);
-                logger.error("Subprocess {} timed out after {} minutes, force-killed",
+                logger.error("Subprocess {} timed out after {} minutes, force-killing it",
                         handle.getTaskId(), timeoutMinutes);
+                // The timeout is the verdict, given before the kill so the kill is not taken for an OOM
+                // and retried
+                endAttemptBeforeKill(handle, "Timed out after " + timeoutMinutes + " minutes", "TIMEOUT",
+                        IngestProgressUpdate.FailureReason.UNKNOWN, IndexingJobHistory.FailureReason.TIMEOUT);
+                SubprocessSignals.kill(process);
+                if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                    logger.error("Subprocess {} (PID {}) is still running 30s after it was force-killed",
+                            handle.getTaskId(), process.pid());
+                }
             }
-            int exitCode = finished ? process.exitValue() : 137;
+            int exitCode = process.isAlive() ? 137 : process.exitValue();
             logger.info("Subprocess {} exited with code: {}", handle.getTaskId(), exitCode);
 
-            // Give stderr/stdout readers time to finish processing output
-            // This is important for OOM detection - the JVM prints the OOM message to stderr
-            // right before exiting, and we need to read it before calling handleCompletion
-            try {
-                Thread.sleep(500);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            }
+            // Read the child's last output before judging its exit
+            awaitOutputReaders(handle, outputReaders);
 
             // Handle completion
             handleCompletion(handle, exitCode);
@@ -1284,6 +1552,58 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
         } finally {
             // Cleanup
             cleanup(handle);
+        }
+    }
+
+    /**
+     * Wait for the output readers to reach the end of the child's pipes. Bounded: a grandchild that
+     * inherited the pipes keeps them open after the child exits.
+     */
+    private void awaitOutputReaders(SubprocessHandle handle, Thread... outputReaders) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(OUTPUT_DRAIN_TIMEOUT_MS);
+        try {
+            for (Thread reader : outputReaders) {
+                long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                if (remainingMs > 0) {
+                    reader.join(remainingMs);
+                }
+                if (reader.isAlive()) {
+                    logger.warn("[ingest-{}] {} still reading {} ms after the process exited; handling the exit",
+                            handle.getTaskId(), reader.getName(), OUTPUT_DRAIN_TIMEOUT_MS);
+                }
+            }
+        } catch (InterruptedException e) {
+            // The process has exited, so its exit is still handled
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Give the job's verdict for an attempt the launcher is about to kill, so the kill's exit code is
+     * not judged in its place — a SIGKILL reads as an OOM and would be retried. Reported only as the
+     * job's first verdict.
+     */
+    private void endAttemptBeforeKill(SubprocessHandle handle, String message, String logState,
+                                      IngestProgressUpdate.FailureReason progressReason,
+                                      IndexingJobHistory.FailureReason historyReason) {
+        String taskId = handle.getTaskId();
+        if (!handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
+                taskId, -1, message, handle.getCurrentPhase(), false, false))) {
+            return;
+        }
+        closeSubprocessLog(taskId, logState, null, message, handle.isOomDetected(), handle.isGpuOomDetected());
+        taskWorkerStatuses.remove(taskId);
+        try {
+            if (progressTracker != null) {
+                progressTracker.failTask(taskId, handle.getFileName(), toProgressPhase(handle.getCurrentPhase()),
+                        message, progressReason);
+            }
+            if (jobHistoryService != null) {
+                jobHistoryService.markJobFailed(taskId, toEventPhase(handle.getCurrentPhase()), message, null,
+                        historyReason);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to report the verdict for task {}: {}", taskId, e.getMessage());
         }
     }
 
@@ -1316,12 +1636,14 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
                         heartbeatBroadcaster.broadcastPhaseTransition(handle.getTaskId(), "ingest",
                                 transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
                     }
-                    // Forward phase transition to scheduler for GPU yield/reacquire
+                    // Forward phase transition to scheduler for GPU yield/reacquire (keyed by the
+                    // job, so a retry attempt's phases reach the scheduler's job too)
                     if (resourceScheduler != null) {
-                        var profile = ai.kompile.app.services.scheduler.JobResourceProfiles.INGEST;
+                        var profile = JobResourceProfiles.INGEST;
                         boolean requiresGpu = profile.phaseRequiresGpu(transition.toPhase());
                         long gpuMem = profile.gpuMemoryForPhase(transition.toPhase());
-                        resourceScheduler.reportPhaseTransition(handle.getTaskId(), transition.toPhase(), requiresGpu, gpuMem);
+                        String jobId = taskToJobId.getOrDefault(handle.getTaskId(), handle.getTaskId());
+                        resourceScheduler.reportPhaseTransition(jobId, transition.toPhase(), requiresGpu, gpuMem);
                     }
                 }
 
@@ -1343,8 +1665,12 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
                 public void onCompleted(SubprocessMessage.Completed completed) {
                     logger.info("Task {} completed: {} docs, {} chunks indexed",
                             handle.getTaskId(), completed.documentsLoaded(), completed.documentsIndexed());
-                    handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.success(
-                            handle.getTaskId(), completed));
+                    if (!handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.success(
+                            handle.getTaskId(), completed))) {
+                        logger.warn("Task {} reported completion after its job had already ended; not reporting it again",
+                                handle.getTaskId());
+                        return;
+                    }
                     // Forward completion to UI
                     forwardCompletion(handle, completed);
                     taskWorkerStatuses.remove(handle.getTaskId());
@@ -1364,11 +1690,20 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
                         handle.setOomDetected(true);
                         // Store the failure info on the handle for later use
                         handle.setCurrentPhase(failed.phase());
+                        handle.setReportedError(failed.errorMessage());
                         // DON'T complete the future - let handleCompletion do it after retry attempt
+                    } else if (handle.isCancelled()) {
+                        // A child being stopped may report the stop as a failure; its exit ends the job as cancelled
+                        logger.info("Task {} reported a failure while being cancelled; its exit ends the job",
+                                handle.getTaskId());
                     } else {
-                        // Non-OOM failure - complete immediately
-                        handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
-                                handle.getTaskId(), 1, failed.errorMessage(), failed.phase(), false, false));
+                        // Non-OOM failure - complete immediately, reported only as the job's first verdict
+                        if (!handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
+                                handle.getTaskId(), 1, failed.errorMessage(), failed.phase(), false, false))) {
+                            logger.warn("Task {} reported a failure after its job had already ended; not reporting it again",
+                                    handle.getTaskId());
+                            return;
+                        }
                         // Forward failure to UI
                         forwardFailure(handle, failed);
                         taskWorkerStatuses.remove(handle.getTaskId());
@@ -2212,10 +2547,14 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
     }
 
     /**
-     * Detect if an error is an OutOfMemoryError based on message and type.
+     * Detect if an error is an OutOfMemoryError based on message and type, or the child's memory
+     * watchdog stopping the run before one.
      */
     private boolean isOutOfMemoryError(String errorMessage, String errorType) {
         if (errorType != null) {
+            if (MEMORY_GUARD_ERROR_TYPES.contains(errorType)) {
+                return true;
+            }
             String typeUpper = errorType.toUpperCase();
             if (typeUpper.contains("OUTOFMEMORY") || typeUpper.equals("OUTOFMEMORYERROR")) {
                 return true;
@@ -2276,10 +2615,9 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             return;
         }
 
-        if (exitCode == 0) {
-            // Success but no explicit COMPLETED message - unusual
-            logger.warn("Subprocess {} exited successfully but no completion message received",
-                    handle.getTaskId());
+        if (exitCode == 0 && completionMessageArrives(handle)) {
+            // The COMPLETED message was still being read when the process exited
+            return;
         } else {
             // Failure - determine cause from exit code
             String errorMessage;
@@ -2292,10 +2630,13 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
                 failureReason = "USER_CANCELLED";
             } else if (handle.isOomDetected() || exitCode == 137) {
                 // OOM detected via stderr parsing or exit code 137 (SIGKILL from OOM killer)
-                // Exit code 1 with isOomDetected=true means -XX:+ExitOnOutOfMemoryError triggered
-                if (exitCode == 137) {
+                // Exit code 3 with isOomDetected=true means -XX:+ExitOnOutOfMemoryError triggered
+                if (handle.getReportedError() != null) {
+                    // The child reported the memory failure itself: an OOM, or its watchdog stopping the run
+                    errorMessage = handle.getReportedError();
+                } else if (exitCode == 137) {
                     errorMessage = "Process killed (SIGKILL) - OOM killer";
-                } else if (exitCode == 1 && handle.isOomDetected()) {
+                } else if (exitCode == 3 && handle.isOomDetected()) {
                     errorMessage = "Out of memory - JVM exited via -XX:+ExitOnOutOfMemoryError";
                 } else {
                     errorMessage = "Out of memory";
@@ -2304,6 +2645,10 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
                 isOomFailure = true;
                 logger.info("OOM failure confirmed for task {}: exitCode={}, oomDetected={}",
                         handle.getTaskId(), exitCode, handle.isOomDetected());
+            } else if (exitCode == 0) {
+                // Success but no explicit COMPLETED message - unusual; the job still has to end
+                errorMessage = "Process exited without reporting completion";
+                failureReason = "UNKNOWN";
             } else if (exitCode == 130) {
                 errorMessage = "Process interrupted (SIGINT)";
                 failureReason = "USER_CANCELLED";
@@ -2355,15 +2700,21 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             if (isOomFailure && !handle.isCancelled()) {
                 boolean retryInitiated = attemptAdaptiveRetry(handle, exitCode, errorMessage);
                 if (retryInitiated) {
-                    // Retry was started - don't complete the future yet
+                    // Retry was started - don't complete the future yet; this attempt's log ends here
+                    closeSubprocessLog(handle.getTaskId(), failureReason, exitCode, errorMessage + " (retrying)",
+                            handle.isOomDetected(), handle.isGpuOomDetected());
                     return;
                 }
             }
 
-            // No retry (or retry exhausted) - complete with failure
-            handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
+            // No retry (or retry exhausted) - complete with failure, reported only as the job's first verdict
+            if (!handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
                     handle.getTaskId(), exitCode, errorMessage, handle.getCurrentPhase(),
-                    handle.isCancelled(), handle.isOomDetected(), handle.isGpuOomDetected()));
+                    handle.isCancelled(), handle.isOomDetected(), handle.isGpuOomDetected()))) {
+                logger.info("Subprocess {} exited after its job had already ended; not reporting it again",
+                        handle.getTaskId());
+                return;
+            }
 
             // Phase-2 log aggregation: record terminal state
             closeSubprocessLog(handle.getTaskId(), failureReason, exitCode, errorMessage,
@@ -2394,16 +2745,27 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             if (jobHistoryService != null) {
                 jobHistoryService.markJobFailed(handle.getTaskId(), toEventPhase(handle.getCurrentPhase()),
                         errorMessage, null,
-                        ai.kompile.app.ingest.domain.IndexingJobHistory.FailureReason.valueOf(failureReason));
+                        IndexingJobHistory.FailureReason.valueOf(failureReason));
             }
+            // Job tracking ends in cleanup(), which runs next (the checkpoint is kept for debugging)
+        }
+    }
 
-            // Cleanup job tracking on final failure
-            String jobId = taskToJobId.remove(handle.getTaskId());
-            if (jobId != null) {
-                jobLaunchContexts.remove(jobId);
-                jobRetryState.remove(jobId);
-                // Keep checkpoint for debugging, but could delete here if desired
-            }
+    /**
+     * Whether a child that exited 0 reports completion within the grace period — its stdout reader
+     * may still be draining output when the watcher sees the exit.
+     */
+    private boolean completionMessageArrives(SubprocessHandle handle) {
+        try {
+            handle.getResultFuture().get(COMPLETION_MESSAGE_GRACE_SECONDS, TimeUnit.SECONDS);
+            return true;
+        } catch (ExecutionException | CancellationException e) {
+            return true;
+        } catch (TimeoutException e) {
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return handle.getResultFuture().isDone();
         }
     }
 
@@ -2424,6 +2786,10 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
         LaunchContext context = jobLaunchContexts.get(jobId);
         if (context == null) {
             logger.warn("Cannot retry task {}: no launch context found for job {}", taskId, jobId);
+            return false;
+        }
+        if (context.cancelled().get()) {
+            logger.info("Not retrying task {}: job {} was cancelled", taskId, jobId);
             return false;
         }
 
@@ -2497,31 +2863,33 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
         // Generate new taskId for retry (keeps jobId the same)
         String newTaskId = taskId + "-retry" + newSettings.getRetryAttempt();
 
-        // Launch new subprocess asynchronously
+        // Launch new subprocess asynchronously — same job, same placement, same GPU row
         CompletableFuture.runAsync(() -> {
             try {
                 // Small delay to allow cleanup
                 Thread.sleep(1000);
 
-                launchIngestInternal(
-                        newTaskId,
-                        jobId,
-                        context.filePath(),
-                        context.loaderName(),
-                        context.chunkerName(),
-                        context.originalOptions(),
-                        newSettings
-                );
+                if (context.cancelled().get() || context.resultFuture().isDone()) {
+                    logger.info("Ingest job {} ended while its retry was pending; not relaunching", jobId);
+                    // A cancel that raced this retry's scheduling left the job to end here, with the verdict
+                    // the cancel would have given
+                    endJobBetweenAttempts(context, SubprocessHandle.SubprocessResult.failure(
+                            taskId, exitCode,
+                            shuttingDown ? "Ingest stopped: the application is shutting down" : "Cancelled by user",
+                            handle.getCurrentPhase(), true, false));
+                    return;
+                }
+                launchIngestInternal(newTaskId, context, newSettings);
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 logger.warn("Retry subprocess launch interrupted for job {}", jobId);
-                context.resultFuture().complete(SubprocessHandle.SubprocessResult.failure(
+                endJobBetweenAttempts(context, SubprocessHandle.SubprocessResult.failure(
                         taskId, exitCode, "Retry interrupted", handle.getCurrentPhase(),
                         false, true));
             } catch (Exception e) {
                 logger.error("Failed to launch retry subprocess for job {}: {}", jobId, e.getMessage(), e);
                 // Complete the original future with failure
-                context.resultFuture().complete(SubprocessHandle.SubprocessResult.failure(
+                endJobBetweenAttempts(context, SubprocessHandle.SubprocessResult.failure(
                         taskId, exitCode, "Retry failed: " + e.getMessage(), handle.getCurrentPhase(),
                         false, true));
             }
@@ -2558,25 +2926,24 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
         // Remove worker status tracking for this task
         taskWorkerStatuses.remove(handle.getTaskId());
 
-        // === GPU LIFECYCLE: Release GPU resources for this ingest job ===
-        if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.getTaskId())) {
-            logger.info("[ingest-{}] Releasing GPU resources for completed/failed ingest job", handle.getTaskId());
-            try {
-                modelLifecycleManager.releaseGpuForIngest(handle.getTaskId());
-            } catch (Exception e) {
-                logger.warn("[ingest-{}] Error releasing GPU resources: {}", handle.getTaskId(), e.getMessage());
+        // === GPU LIFECYCLE: the job ends once its result is final ===
+        // An attempt ending with a retry pending keeps the job (and its GPU row) alive.
+        String jobId = taskToJobId.remove(handle.getTaskId());
+        if (jobId != null) {
+            LaunchContext context = jobLaunchContexts.get(jobId);
+            if (context == null || context.resultFuture().isDone()) {
+                finishJob(jobId);
             }
         }
 
         // Phase-2 log aggregation: safety-close writer if not already closed
         // (covers protocol-completed paths where handleCompletion returned early)
+        SubprocessHandle.SubprocessResult verdict = verdictOf(handle);
         SubprocessLogWriter slw = logWriters.remove(handle.getTaskId());
         if (slw != null) {
             try {
                 // Only write a terminal record if the writer is still open (writeEnd is idempotent)
-                slw.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
-                        "COMPLETED", null, null,
-                        handle.isOomDetected(), handle.isGpuOomDetected()));
+                slw.writeEnd(logEndFor(handle, verdict));
             } catch (Exception _logEx) {
                 logger.debug("[ingest-{}] SubprocessLogWriter safety writeEnd failed: {}", handle.getTaskId(), _logEx.getMessage());
             } finally {
@@ -2584,14 +2951,73 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
             }
         }
 
-        // Delete args file
-        Path argsFile = handle.getArgsFile();
-        if (argsFile != null && Files.exists(argsFile)) {
-            try {
-                Files.delete(argsFile);
+        // A completed attempt's path is removed by forwardCompletion, which may still be using it
+        if (verdict == null || !verdict.success()) {
+            taskFilePaths.remove(handle.getTaskId());
+        }
+
+        deleteArgsFile(handle.getArgsFile());
+    }
+
+    /** The job's verdict, or null if it has none yet. */
+    private static SubprocessHandle.SubprocessResult verdictOf(SubprocessHandle handle) {
+        CompletableFuture<SubprocessHandle.SubprocessResult> future = handle.getResultFuture();
+        return future.isDone() && !future.isCompletedExceptionally() ? future.join() : null;
+    }
+
+    /**
+     * The terminal log record for an attempt whose log is still open at cleanup: its job's verdict was given
+     * elsewhere (its own COMPLETED or FAILED message, or a cancel between attempts), or it has none.
+     */
+    private static SubprocessLogWriter.SubprocessRunResult logEndFor(SubprocessHandle handle,
+                                                                     SubprocessHandle.SubprocessResult verdict) {
+        Process process = handle.getProcess();
+        Integer exitCode = process.isAlive() ? null : process.exitValue();
+        String state;
+        if (verdict == null) {
+            state = "FAILED";
+        } else if (verdict.success()) {
+            state = "COMPLETED";
+        } else if (verdict.cancelled()) {
+            state = "USER_CANCELLED";
+        } else if (verdict.oomKilled()) {
+            state = "OUT_OF_MEMORY";
+        } else {
+            state = "FAILED";
+        }
+        String errorMessage = verdict != null ? verdict.errorMessage() : "Subprocess ended without a verdict";
+        return new SubprocessLogWriter.SubprocessRunResult(state, exitCode, errorMessage,
+                handle.isOomDetected(), handle.isGpuOomDetected());
+    }
+
+    /** Idempotent: shutdown and the attempt's watcher may both delete it. */
+    private void deleteArgsFile(Path argsFile) {
+        if (argsFile == null) {
+            return;
+        }
+        try {
+            if (Files.deleteIfExists(argsFile)) {
                 logger.debug("Deleted args file: {}", argsFile);
-            } catch (IOException e) {
-                logger.warn("Failed to delete args file: {}", argsFile);
+            }
+        } catch (IOException e) {
+            logger.warn("Failed to delete args file: {}", argsFile);
+        }
+    }
+
+    /**
+     * End a job's tracking once its result is final (or it never started), releasing its GPU row if
+     * this launcher acquired it — a row the scheduler holds is the scheduler's to release. Idempotent:
+     * the launcher's row is released exactly once.
+     */
+    private void finishJob(String jobId) {
+        jobLaunchContexts.remove(jobId);
+        jobRetryState.remove(jobId);
+        if (launcherGpuHolds.remove(jobId) && modelLifecycleManager != null) {
+            logger.info("[ingest-{}] Releasing GPU resources for finished ingest job", jobId);
+            try {
+                modelLifecycleManager.releaseGpuForJob(jobId);
+            } catch (Exception e) {
+                logger.warn("[ingest-{}] Error releasing GPU resources: {}", jobId, e.getMessage());
             }
         }
     }
@@ -2714,12 +3140,13 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
      * This ensures the subprocess uses the same backend, thread settings, and GPU
      * configuration.
      *
-     * @param env The subprocess environment map to populate
+     * @param env          The subprocess environment map to populate
+     * @param jobPlacement The job's placement, whose per-device memory bound the child gets
      */
-    private void propagateNd4jEnvironment(Map<String, String> env) {
+    private void propagateNd4jEnvironment(Map<String, String> env, SubprocessPlacement jobPlacement) {
         SubprocessEnvironmentPropagator.propagateToEnvironment(env);
         // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
-        placement.applyEnv(env);
+        SubprocessBackendFlags.applyEnv(env, jobPlacement);
     }
 
     /**
@@ -2731,18 +3158,15 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
         Duration staleThreshold = Duration.ofSeconds(staleSeconds);
 
         for (SubprocessHandle handle : activeProcesses.values()) {
-            if (handle.isAlive() && handle.isStale(staleThreshold)) {
+            // A cancelled attempt is already being stopped
+            if (handle.isAlive() && !handle.isCancelled() && handle.isStale(staleThreshold)) {
                 logger.warn("Subprocess {} appears stuck (no heartbeat for {} seconds), force killing",
                         handle.getTaskId(), staleSeconds);
 
+                // The stall is the verdict, given before the kill so the kill is not judged a cancel
+                endAttemptBeforeKill(handle, "Process became unresponsive (no heartbeat)", "PROCESS_STUCK",
+                        IngestProgressUpdate.FailureReason.PROCESS_STUCK, IndexingJobHistory.FailureReason.TIMEOUT);
                 handle.cancel();
-
-                // Update status with specific failure reason for stuck processes
-                if (progressTracker != null) {
-                    progressTracker.failTask(handle.getTaskId(), handle.getFileName(),
-                            toProgressPhase(handle.getCurrentPhase()), "Process became unresponsive (no heartbeat)",
-                            IngestProgressUpdate.FailureReason.PROCESS_STUCK);
-                }
             }
         }
     }
@@ -2753,27 +3177,41 @@ public class SubprocessIngestLauncher implements BackendConfigurable {
     @PreDestroy
     public void shutdownAll() {
         logger.info("Shutting down all active ingest subprocesses...");
+        shuttingDown = true;
+
+        // No pending retry may start once shutdown begins; each job's started attempt is cancelled
+        for (LaunchContext context : jobLaunchContexts.values()) {
+            SubprocessHandle attempt;
+            synchronized (context) {
+                context.cancelled().set(true);
+                attempt = context.currentAttempt().get();
+            }
+            if (attempt != null && attempt.isAlive()) {
+                logger.info("Cancelling subprocess: {}", attempt.getTaskId());
+                attempt.cancel();
+            }
+        }
 
         for (SubprocessHandle handle : activeProcesses.values()) {
-            if (handle.isAlive()) {
+            if (handle.isAlive() && !handle.isCancelled()) {
                 logger.info("Cancelling subprocess: {}", handle.getTaskId());
                 handle.cancel();
-            }
-
-            // Release GPU hold for this job if held
-            if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.getTaskId())) {
-                logger.info("[ingest-{}] Releasing GPU resources during shutdown", handle.getTaskId());
-                try {
-                    modelLifecycleManager.releaseGpuForIngest(handle.getTaskId());
-                } catch (Exception e) {
-                    logger.warn("[ingest-{}] Error releasing GPU during shutdown: {}", handle.getTaskId(), e.getMessage());
-                }
             }
         }
 
         // Wait for all to terminate
         for (SubprocessHandle handle : activeProcesses.values()) {
             handle.waitFor(Duration.ofSeconds(5));
+            // Its watcher deletes the args file too, but the JVM may exit before the watcher gets there. The
+            // file carries the staging API key
+            deleteArgsFile(handle.getArgsFile());
+        }
+
+        // Release only the GPU rows this launcher acquired, once their children are gone; the
+        // scheduler releases its own
+        for (String jobId : List.copyOf(launcherGpuHolds)) {
+            logger.info("[ingest-{}] Releasing GPU resources during shutdown", jobId);
+            finishJob(jobId);
         }
 
         activeProcesses.clear();

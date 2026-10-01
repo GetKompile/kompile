@@ -234,11 +234,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private LineReader lineReader;
 
     // Injected settings file path (for cleanup)
-    private Path injectedSettingsFile;
+    private volatile Path injectedSettingsFile;
     // Skills are installed after instruction injection and must be cleaned up first.
     private SkillsInjection skillsInjection;
     // Provider-global arguments (Pi's -e adapter path) for the child process.
     private volatile List<String> mcpCommandPrefixArguments = List.of();
+    // Guards injectedSettingsFile and mcpCommandPrefixArguments while one injection replaces another.
+    private final Object mcpInjectionLock = new Object();
 
     // Set during agent processing for SIGINT handling
     private volatile boolean agentBusy = false;
@@ -4255,7 +4257,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private String sendToAgent(String message, ChatHistory history, ChatSessionMetrics metrics) {
         SubprocessAgentRunner isolated = isolatedConversationRunner;
         if (isolated != null) {
-            return isolated.runMessage(message, history, metrics);
+            return withCurrentLaunchConfig(isolated).runMessage(message, history, metrics);
         }
         return sendToTuiAgent(message, history, metrics);
     }
@@ -4320,6 +4322,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         try {
             // Launch the persistent TUI process on first message
             if (tuiProcess == null || !tuiProcess.isAlive()) {
+                reinjectMissingLaunchConfig();
                 List<String> agentCmd = buildCommand(agentBinary, message);
 
                 // Size the subprocess PTY to fit kompile's scroll region —
@@ -4337,9 +4340,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 AgentLaunchSpec.Builder specBuilder =
                         AgentLaunchSpec.builder(agentCmd, workingDir)
                                 .dims(PtyDims.of(ptyRows, ptyCols));
+                Map<String, String> launchEnv = new HashMap<>();
                 if (enforcerExtraEnv != null) {
-                    specBuilder.env(enforcerExtraEnv);
+                    launchEnv.putAll(enforcerExtraEnv);
                 }
+                McpToolInjection.applyLaunchEnvironment(launchEnv, injectedSettingsFile);
+                specBuilder.env(launchEnv);
                 AgentProcess agentProcess = new ScriptAgentProcess();
                 final Process process;
                 synchronized (dispatchAdmissionLock) {
@@ -7208,27 +7214,59 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private void injectMcpTools() {
-        mcpCommandPrefixArguments = List.of();
-        if (!injectTools) return;
-        try {
-            String sseUrl = mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
-            injectedSettingsFile = McpToolInjection.injectTools(
-                    Path.of(workingDir), agent, sseUrl);
-            if (injectedSettingsFile != null) {
-                mcpCommandPrefixArguments = McpToolInjection.commandLineOverrides(
-                        Path.of(workingDir), agent, injectedSettingsFile);
-                String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
-                McpDiagnostics.log(GREEN + "  Kompile tools injected (" + mode + ")" + RESET
-                        + DIM + " (" + injectedSettingsFile + ")" + RESET);
+        synchronized (mcpInjectionLock) {
+            // A new injection replaces the last one.
+            McpToolInjection.removeTools(injectedSettingsFile);
+            injectedSettingsFile = null;
+            mcpCommandPrefixArguments = List.of();
+            if (!injectTools) return;
+            try {
+                String sseUrl = mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
+                injectedSettingsFile = McpToolInjection.injectTools(
+                        Path.of(workingDir), agent, sseUrl);
+                if (injectedSettingsFile != null) {
+                    mcpCommandPrefixArguments = McpToolInjection.commandLineOverrides(
+                            Path.of(workingDir), agent, injectedSettingsFile);
+                    String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
+                    McpDiagnostics.log(GREEN + "  Kompile tools injected (" + mode + ")" + RESET
+                            + DIM + " (" + injectedSettingsFile + ")" + RESET);
+                }
+            } catch (IOException e) {
+                McpDiagnostics.log(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
             }
-        } catch (IOException e) {
-            McpDiagnostics.log(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
         }
     }
 
+    /**
+     * Inject again when this session's launch config is gone, for example deleted by a
+     * cleaner during a long session: Claude Code refuses to start on a missing
+     * {@code --mcp-config} file.
+     */
+    private void reinjectMissingLaunchConfig() {
+        synchronized (mcpInjectionLock) {
+            Path injected = injectedSettingsFile;
+            if (injected != null && McpToolInjection.isLaunchConfig(injected) && !Files.exists(injected)) {
+                McpDiagnostics.log("[MCP] " + injected + " is gone; injecting Kompile tools again");
+                injectMcpTools();
+            }
+        }
+    }
+
+    /** Hand the isolated runner this session's current launch config before it starts a turn. */
+    private SubprocessAgentRunner withCurrentLaunchConfig(SubprocessAgentRunner runner) {
+        synchronized (mcpInjectionLock) {
+            reinjectMissingLaunchConfig();
+            runner.setManagedLaunchConfig(injectedSettingsFile, mcpCommandPrefixArguments);
+        }
+        return runner;
+    }
+
     private void removeMcpTools() {
-        McpToolInjection.removeTools(injectedSettingsFile);
-        mcpCommandPrefixArguments = List.of();
+        synchronized (mcpInjectionLock) {
+            McpToolInjection.removeTools(injectedSettingsFile);
+            injectedSettingsFile = null;
+            mcpCommandPrefixArguments = List.of();
+        }
     }
 
     // ── Key bindings ───────────────────────────────────────────────────────
@@ -7662,7 +7700,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 SubprocessAgentRunner turnRunner = isolatedConversationRunner;
                 EnforcerService.AgentTurnExecutor executor = turnRunner == null
                         ? prompt -> sendToTuiAgent(prompt, history, metrics)
-                        : prompt -> turnRunner.runMessage(prompt, history, metrics);
+                        : prompt -> withCurrentLaunchConfig(turnRunner).runMessage(prompt, history, metrics);
                 dispatchEnforced(message, history, metrics, executor);
                 completeDeferredDetachedTask();
             } else {
@@ -7830,7 +7868,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     history.logSessionTitle(sessionTitle.get());
                     renderer.setReadyTerminalTitle(sessionTitle.get());
                 }
-                runner.runMessage(message, history, metrics);
+                withCurrentLaunchConfig(runner).runMessage(message, history, metrics);
             } catch (Exception e) {
                 safePrintln(renderer.red("  Agent error: " + e.getMessage()));
             } finally {
@@ -7865,7 +7903,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 systemPromptManager, isolatedRenderer, new AsciiRenderer(isolatedRenderer, 100));
         runner.setLaunchOverrides(model, thinking);
         runner.setExactResumeRequired(true);
-        runner.setManagedCommandPrefixArguments(mcpCommandPrefixArguments);
+        runner.setManagedLaunchConfig(injectedSettingsFile, mcpCommandPrefixArguments);
         if (enforcerExtraEnv != null) runner.setExtraEnvironment(enforcerExtraEnv);
         runner.setOutputConsumer(this::safePrintln);
         runner.setReminderManager(reminderManager());

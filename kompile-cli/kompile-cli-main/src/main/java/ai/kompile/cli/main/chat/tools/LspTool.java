@@ -765,16 +765,17 @@ public class LspTool implements CliTool {
         return wsl != null ? rel(uriToPath(wsl.getUri()), context) : "?";
     }
 
-    private void reindex(Path root, String projectId) {
+    void reindex(Path workingDirectory, String projectId) {
         try (PrintStream sink = new PrintStream(OutputStream.nullOutputStream())) {
             LocalCodeIndexer indexer = new LocalCodeIndexer();
+            // Refresh only an existing index, within the root and scope it records:
+            // a rename never re-roots or re-scopes the index.
             Map<String, Object> stats = indexer.getStats(projectId);
-            String includes = stats.get("includePatterns") == null
-                    ? null : stats.get("includePatterns").toString();
-            String excludes = stats.get("excludePatterns") == null
-                    ? null : stats.get("excludePatterns").toString();
-            indexer.index(root, projectId, includes, excludes, sink);
-            LocalCodeKGraphPublisher.publish(root, projectId, includes, excludes);
+            Object rootPath = stats.get("rootPath");
+            Path root = rootPath == null || rootPath.toString().isBlank()
+                    ? workingDirectory : Path.of(rootPath.toString());
+            indexer.refreshRecordedScope(root, projectId, sink);
+            LocalCodeKGraphPublisher.publish(root, projectId, null, null);
         } catch (Exception e) {
             CodeIndexDiagnostics.alert(
                     "[LSP] incremental reindex after rename failed: " + e.getMessage());

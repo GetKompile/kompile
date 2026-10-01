@@ -57,6 +57,7 @@ import ai.kompile.cli.main.sdk.SdkMain;
 import ai.kompile.cli.main.serve.DaemonCommand;
 import ai.kompile.cli.main.serve.ServeCommand;
 import ai.kompile.cli.main.status.StatusCommand;
+import ai.kompile.cli.main.sync.SyncCommand;
 import ai.kompile.cli.main.telemetry.TelemetryCommand;
 import ai.kompile.cli.main.uninstall.UnInstallMain;
 import ai.kompile.cli.main.cloud.CloudCommand;
@@ -123,6 +124,7 @@ import java.util.concurrent.Callable;
                 RunCommand.class,
                 CloudCommand.class,
                 StatusCommand.class,
+                SyncCommand.class,
                 TelemetryCommand.class,
                 DoctorCommand.class
         },
@@ -153,6 +155,11 @@ public class MainCommand implements Callable<Integer> {
 
 
     public static void main(String...args) {
+        // Must run before any org.jline.utils.AttributedString use anywhere in the
+        // process (JLine reads this property once, in a static initializer) —
+        // see configureJLineRendering() for why.
+        configureJLineRendering();
+
         String[] effectiveArgs;
         try {
             // A /restart replacement is a real process, but it must not initialize
@@ -224,6 +231,22 @@ public class MainCommand implements Callable<Integer> {
 
     static boolean isEmbeddingSubprocessRequest(String[] args) {
         return args != null && args.length > 0 && "--subprocess=embedding".equals(args[0]);
+    }
+
+    /**
+     * JLine's {@code AttributedString.toAnsi(Terminal)} substitutes real Unicode
+     * box-drawing characters (e.g. {@code ─}, {@code │}, {@code ╭}) with legacy VT100
+     * "alternate character set" mnemonic bytes (e.g. {@code q}, {@code x}) wrapped in
+     * smacs/rmacs — or, for a "screen"-family TERM, Shift-Out/Shift-In — framing,
+     * whenever a live terminal is attached. Under tmux that framing does not always
+     * survive redraws intact, so the mnemonic bytes render as literal letters instead
+     * of line-drawing glyphs (seen in the /stats panel, /judge status, and the judge
+     * chat activity-view header). Every terminal this CLI targets renders UTF-8
+     * box-drawing directly, so the legacy substitution buys nothing and only risks
+     * this corruption. Disable it via JLine's own opt-out property.
+     */
+    private static void configureJLineRendering() {
+        System.setProperty("org.jline.utils.disableAlternateCharset", "true");
     }
 
     /**

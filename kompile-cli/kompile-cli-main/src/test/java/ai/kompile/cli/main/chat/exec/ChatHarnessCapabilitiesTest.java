@@ -90,8 +90,8 @@ class ChatHarnessCapabilitiesTest {
                 ChatHarnessCapabilities.inspect(tempDir, local);
 
         assertTrue(report.available(), report.status());
-        assertFalse(report.attachmentsSupported(),
-                "Kompile serving rejects structured attachments and must not advertise them");
+        assertTrue(report.attachmentsSupported(),
+                "Kompile serving carries per-message images; the served model decides whether it can read them");
     }
 
     @Test

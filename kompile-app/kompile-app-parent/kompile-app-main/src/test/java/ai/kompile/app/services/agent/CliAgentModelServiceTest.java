@@ -20,9 +20,7 @@ import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentModelDiscovery;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -56,7 +54,7 @@ class CliAgentModelServiceTest {
         AgentSubprocessExecutor executor = mock(AgentSubprocessExecutor.class);
         LocalStagingLlmService localStaging = mock(LocalStagingLlmService.class);
         CliAgentModelService service = new CliAgentModelService(registry, executor);
-        setField(service, "localStagingLlmService", localStaging);
+        service.localStagingLlmService = localStaging;
         AgentProvider opencodeProvider = AgentProvider.builder()
                 .name("opencode-cli")
                 .displayName("OpenCode")
@@ -134,17 +132,7 @@ class CliAgentModelServiceTest {
                 "a clearly more-correct model must out-rank a faster but worse one");
     }
 
-    @SuppressWarnings("unchecked")
-    private static void seedModelCache(CliAgentModelService service, String agentName, List<String> models)
-            throws Exception {
-        Field f = CliAgentModelService.class.getDeclaredField("modelCache");
-        f.setAccessible(true);
-        ((Map<String, List<String>>) f.get(service)).put(agentName, models);
-    }
-
-    private static void setField(Object target, String fieldName, Object value) throws Exception {
-        Field f = target.getClass().getDeclaredField(fieldName);
-        f.setAccessible(true);
-        f.set(target, value);
+    private static void seedModelCache(CliAgentModelService service, String agentName, List<String> models) {
+        service.modelCache.put(agentName, models);
     }
 }

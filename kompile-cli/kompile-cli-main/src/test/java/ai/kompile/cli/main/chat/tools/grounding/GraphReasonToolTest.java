@@ -11,21 +11,27 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -44,10 +50,13 @@ import static org.junit.jupiter.api.Assertions.*;
  * </ul>
  */
 @DisplayName("GraphReasonTool — unified algorithm-agnostic reasoning")
+@TemporaryUserHome
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class GraphReasonToolTest {
 
     private ObjectMapper om;
     private ToolContext ctx;
+    private String previousAdmissionMode;
 
     @TempDir
     Path tempDir;
@@ -59,6 +68,8 @@ class GraphReasonToolTest {
 
     @BeforeEach
     void setUp() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
         om = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("coder")
                 .enabledTools(Set.of("*"))
@@ -69,6 +80,15 @@ class GraphReasonToolTest {
         perms.setUserOverride("ask_graph_explain", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
         ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────────
@@ -113,6 +133,27 @@ class GraphReasonToolTest {
             for (String jargon : JARGON_STRINGS) {
                 assertFalse(desc.contains(jargon),
                         "description must not contain '" + jargon + "' but was: " + desc);
+            }
+        }
+
+        @Test
+        @DisplayName("description says the local path is a lookup that infers nothing")
+        void descriptionSaysLocalIsALookup() {
+            String desc = tool.description();
+            assertTrue(desc.contains("lookup"), desc);
+            assertTrue(desc.contains("runs no new inference"), desc);
+            assertTrue(desc.contains("never changes confidences"), desc);
+        }
+
+        @Test
+        @DisplayName("compact hint fits the MCP cap, says no inference runs, and has no jargon")
+        void compactHintIsHonestAndFits() {
+            String hint = tool.compactHint();
+            assertNotNull(hint, "without a hint, MCP listings cut the description to 60 chars");
+            assertTrue(hint.length() <= 200, "MCP listings cap hints at 200 chars; was " + hint.length());
+            assertTrue(hint.contains("no new inference"), hint);
+            for (String jargon : JARGON_STRINGS) {
+                assertFalse(hint.contains(jargon), "hint must not contain '" + jargon + "': " + hint);
             }
         }
     }
@@ -413,7 +454,7 @@ class GraphReasonToolTest {
             metaX.put("nodeRole", "RESIDENT");
             meta.set("var_x", metaX);
 
-            String output = mebn.formatMebnResult("node_1", posteriors, priors, titles, meta, 1, 10L);
+            String output = mebn.formatMebnResult("node_1", posteriors, priors, titles, meta, Map.of(), 1, 10L);
 
             assertFalse(output.contains("MEBN"),
                     "formatted output must not contain 'MEBN' — found: " + output);

@@ -14,21 +14,19 @@ import ai.kompile.graph.reasoning.tms.ContradictionDetector;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
  * Fast paraconsistent marking of a fact collection using Belnap's 4-valued logic.
  *
  * <h3>Algorithm</h3>
- * <p>Each ground atom (identified by its <em>canonical</em> key — predicate + args,
- * without negation decoration) receives one of four marks:</p>
+ * <p>Each ground atom (identified by its {@linkplain ParsedAtom#canonicalKey() canonical key} —
+ * predicate key + args, without negation decoration) receives one of four marks:</p>
  * <ul>
  *   <li>{@link Mark#T} — supported: only strong positive evidence (value ≥ {@value #EVIDENCE_THRESHOLD}) found.</li>
  *   <li>{@link Mark#F} — refuted: only strong negated evidence (value ≥ threshold) found.</li>
@@ -45,20 +43,18 @@ import java.util.Map;
  *       value ≥ threshold and another has the same ground atom but with a negation marker
  *       ({@code NOT_}, {@code NO_}, {@code NON_}, {@code NEGATED_}, {@code DENIES_},
  *       {@code DENY_}, {@code REFUTES_}, {@code REFUTE_}, {@code DISPROVES_}, {@code IS_NOT_},
- *       or the {@code !} / {@code "not "} / {@code "not(...)"} syntactic forms).</li>
+ *       or the {@code !} / {@code ~} / {@code "not "} / {@code "not(...)"} syntactic forms).</li>
  *   <li><b>Functional-predicate conflict</b> — two non-negated facts share the same functional
  *       predicate (per {@link ContradictionDetector#isFunctionalPredicate(String)}) and the same
  *       first argument, but different full argument lists — the classic single-valued-relation
  *       violation (e.g. {@code CEO(acme,alice)} vs {@code CEO(acme,bob)}).</li>
  * </ol>
  *
- * <h3>Negation parsing mirrors ContradictionDetector</h3>
- * <p>{@code ContradictionDetector.ParsedAtom} is a private inner record; this class re-derives an
- * equivalent public {@link ParsedAtom} using <em>identical logic</em>. The shared normalisation
- * function ({@link #normalizePredicate}) and the same ordered prefix list are duplicated here to
- * avoid importing private types. <b>Drift risk</b>: if the prefix list in
- * {@code ContradictionDetector} changes (new prefix added/removed), this class must be updated in
- * sync. The prefix list is documented in both classes.</p>
+ * <h3>Negation parsing is ContradictionDetector's</h3>
+ * <p>Atoms are parsed by {@link ContradictionDetector.ParsedAtom#parse}, so this marking and the
+ * contradiction checks agree on which facts negate which, and predicates are compared by
+ * {@link ai.kompile.graph.reasoning.query.PredicateNames#key}: {@code headquarteredIn},
+ * {@code HEADQUARTERED_IN}, and {@code HEADQUARTEREDIN} mark one atom.</p>
  *
  * <h3>Evidence threshold</h3>
  * <p>Only facts with {@code value ≥ 0.70} ({@value #EVIDENCE_THRESHOLD}) count as strong evidence.
@@ -81,14 +77,6 @@ public final class BelnapMarking {
 
     /** Default evidence-strength threshold (inclusive). Facts below this are not "strong". */
     public static final double EVIDENCE_THRESHOLD = 0.70;
-
-    /**
-     * Ordered negation prefix list — must stay in sync with
-     * {@code ContradictionDetector.NEGATION_PREFIXES}. The list is checked in order;
-     * prefixes are stripped iteratively (loop) to handle stacking like {@code NOT_NO_P}.
-     */
-    private static final List<String> NEGATION_PREFIXES = List.of(
-            "NOT_", "NO_", "NON_", "NEGATED_", "DENIES_", "DENY_", "REFUTES_", "REFUTE_", "DISPROVES_");
 
     private BelnapMarking() {}
 
@@ -163,7 +151,7 @@ public final class BelnapMarking {
         }
 
         // Per canonical atom: accumulate whether we saw positive or negative strong evidence.
-        // canonicalKey = predicate + "|" + args (without negation decoration)
+        // canonicalKey = predicate key + "|" + args (without negation decoration)
         Map<String, boolean[]> evidenceMap = new LinkedHashMap<>(); // [0]=positive, [1]=negative
 
         for (int i = 0; i < n; i++) {
@@ -180,7 +168,7 @@ public final class BelnapMarking {
         }
 
         // ── Functional-predicate conflicts ────────────────────────────────────────────────
-        // Group non-negated strong-evidence facts by (predicate, firstArg).
+        // Group non-negated strong-evidence facts by (predicate key, firstArg).
         // Any bucket with 2+ DISTINCT canonical keys ↦ functional clash → all atoms in bucket B.
         // We use a LinkedHashSet per bucket to deduplicate (same fact asserted twice = same key).
         Map<String, LinkedHashSet<String>> byFuncSubject = new HashMap<>();
@@ -191,7 +179,7 @@ public final class BelnapMarking {
             if (pa.negated()) continue;
             if (pa.args().isEmpty()) continue;
             if (!ContradictionDetector.isFunctionalPredicate(pa.predicate())) continue;
-            String bucketKey = pa.predicate() + "|" + pa.args().get(0);
+            String bucketKey = pa.predicateKey() + "|" + pa.args().get(0);
             byFuncSubject.computeIfAbsent(bucketKey, k -> new LinkedHashSet<>())
                     .add(pa.canonicalKey());
         }
@@ -234,143 +222,56 @@ public final class BelnapMarking {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────
-    // Atom parsing (mirrors ContradictionDetector.ParsedAtom — see class javadoc for drift risk)
+    // Atom parsing (ContradictionDetector's parser)
     // ─────────────────────────────────────────────────────────────────────────────────────
 
     /**
-     * Public minimal parsed atom — exposes the fields needed by inconsistency classes without
-     * importing {@code ContradictionDetector}'s private inner record.
-     *
-     * <p>Parsing logic mirrors {@code ContradictionDetector.ParsedAtom.parse} exactly:
-     * same syntactic negation forms ({@code !}, {@code "not "}, {@code "not(...)"}) and same
-     * prefix-stripping loop. Normalisation uses the same {@link #normalizePredicate} rules
-     * (trim, dash/space → underscore, strip non-alphanumeric-underscore, collapse runs,
-     * upper-case). Arguments are split on {@code ","} and trimmed.</p>
+     * An atom key as {@link ContradictionDetector.ParsedAtom#parse} reads it, plus the
+     * {@link #canonicalKey} this package marks atoms by.
      */
     public static final class ParsedAtom {
-        private final String predicate;
-        private final List<String> args;
-        private final boolean negated;
+        private final ContradictionDetector.ParsedAtom atom;
 
-        private ParsedAtom(String predicate, List<String> args, boolean negated) {
-            this.predicate = predicate;
-            this.args = args;
-            this.negated = negated;
+        private ParsedAtom(ContradictionDetector.ParsedAtom atom) {
+            this.atom = atom;
         }
 
-        /** Normalized upper-case predicate name (negation prefix stripped). */
-        public String predicate() { return predicate; }
+        /** Canonical predicate name ({@code WORKS_FOR}), negation prefix stripped. */
+        public String predicate() { return atom.predicate(); }
+
+        /** Comparison form of the predicate ({@code WORKSFOR}), shared by all of its spellings. */
+        public String predicateKey() { return atom.predicateKey(); }
 
         /** Argument list (trimmed strings, may be empty for 0-ary atoms). */
-        public List<String> args() { return args; }
+        public List<String> args() { return atom.args(); }
 
         /** True if this atom was negated in any supported form. */
-        public boolean negated() { return negated; }
+        public boolean negated() { return atom.negated(); }
 
         /**
          * The canonical key used as the map key in {@link MarkingResult#byCanonicalAtom()}:
-         * {@code predicate} + {@code "|"} + {@code args.toString()}. This is the same for
-         * both a positive and its negated form, allowing them to be merged into a single mark.
+         * {@link #predicateKey()} + {@code "|"} + {@code args.toString()}, as
+         * {@code HASCEO|[acme, alice]}. A positive atom, its negated form, and every spelling of
+         * the predicate share it, so they merge into a single mark.
          */
         public String canonicalKey() {
-            return predicate + "|" + args;
+            return atom.predicateKey() + "|" + atom.args();
         }
 
         /**
-         * Parse an atom key string into a {@link ParsedAtom}.
-         *
-         * <p>Mirrors {@code ContradictionDetector.ParsedAtom.parse} exactly, including:
-         * <ul>
-         *   <li>{@code "!"} prefix → negated.</li>
-         *   <li>{@code "not "} (case-insensitive space) prefix → negated.</li>
-         *   <li>{@code "not(...)"} (case-insensitive parenthesized) → negated.</li>
-         *   <li>After normalisation, NEGATION_PREFIXES loop + {@code IS_NOT_} → negated, prefix stripped.</li>
-         * </ul>
-         * Arguments are everything between the outermost {@code (} and {@code )}, split by comma.</p>
+         * Parse an atom key string with {@link ContradictionDetector.ParsedAtom#parse}.
          *
          * @param atomKey the raw atom key string; may be null (returns empty atom)
          * @return the parsed atom, never null
          */
         public static ParsedAtom parse(String atomKey) {
-            String text = atomKey == null ? "" : atomKey.trim();
-            boolean negated = false;
-
-            // Syntactic "!" prefix
-            if (text.startsWith("!")) {
-                negated = true;
-                text = text.substring(1).trim();
-            }
-
-            String lower = text.toLowerCase(Locale.ROOT);
-            if (lower.startsWith("not ")) {
-                negated = true;
-                text = text.substring(4).trim();
-            } else if (lower.startsWith("not(") && text.endsWith(")")) {
-                negated = true;
-                text = text.substring(4, text.length() - 1).trim();
-            }
-
-            int lp = text.indexOf('(');
-            int rp = text.lastIndexOf(')');
-            String rawPredicate = lp < 0 ? text : text.substring(0, lp);
-            String predicate = normalizePredicate(rawPredicate);
-
-            // Prefix-based negation detection (same loop as ContradictionDetector)
-            boolean changed = true;
-            while (changed) {
-                changed = false;
-                for (String prefix : NEGATION_PREFIXES) {
-                    if (predicate.startsWith(prefix)) {
-                        predicate = predicate.substring(prefix.length());
-                        negated = true;
-                        changed = true;
-                    }
-                }
-                if (predicate.startsWith("IS_NOT_")) {
-                    predicate = predicate.substring("IS_NOT_".length());
-                    negated = true;
-                    changed = true;
-                }
-            }
-
-            List<String> args = List.of();
-            if (lp >= 0 && rp > lp) {
-                String inside = text.substring(lp + 1, rp).trim();
-                if (!inside.isBlank()) {
-                    args = Arrays.stream(inside.split(","))
-                            .map(String::trim)
-                            .filter(s -> !s.isBlank())
-                            .toList();
-                }
-            }
-
-            return new ParsedAtom(predicate, args, negated);
+            return new ParsedAtom(ContradictionDetector.ParsedAtom.parse(atomKey));
         }
 
         @Override
         public String toString() {
-            return "ParsedAtom{predicate='" + predicate + "', args=" + args + ", negated=" + negated + '}';
+            return "ParsedAtom{predicate='" + atom.predicate() + "', args=" + atom.args()
+                    + ", negated=" + atom.negated() + '}';
         }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────────────
-    // Shared normalisation — must stay bit-for-bit identical to ContradictionDetector.normalizePredicate
-    // ─────────────────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Normalise a raw predicate string to the canonical upper-case form used by both this class
-     * and {@link ContradictionDetector}.
-     *
-     * <p>Steps: trim → replace dashes and spaces with underscores → strip non-alphanumeric-underscore
-     * characters → collapse repeated underscores → upper-case (ROOT locale).</p>
-     */
-    static String normalizePredicate(String raw) {
-        if (raw == null) return "";
-        return raw.trim()
-                .replace('-', '_')
-                .replace(' ', '_')
-                .replaceAll("[^A-Za-z0-9_]", "")
-                .replaceAll("_+", "_")
-                .toUpperCase(Locale.ROOT);
     }
 }

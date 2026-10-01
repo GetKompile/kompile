@@ -417,7 +417,7 @@ class LlmKnowledgeGraphBuilderTest {
     void boundOntology_promptIncludesOntologyTypesAndConstraintInstruction() {
         // Wire ontology provider into builder via field injection simulation
         builder.setLlmChat(llmChat);
-        injectOntologyProvider(builder, ontologyProvider);
+        builder.ontologyProvider = ontologyProvider;
 
         Long fsId = 42L;
         when(ontologyProvider.hasBoundOntology(fsId)).thenReturn(true);
@@ -449,7 +449,7 @@ class LlmKnowledgeGraphBuilderTest {
     @Test
     void boundOntology_promptIncludesRelationshipTypesWhenPresent() {
         builder.setLlmChat(llmChat);
-        injectOntologyProvider(builder, ontologyProvider);
+        builder.ontologyProvider = ontologyProvider;
 
         Long fsId = 43L;
         when(ontologyProvider.hasBoundOntology(fsId)).thenReturn(true);
@@ -503,7 +503,7 @@ class LlmKnowledgeGraphBuilderTest {
     @Test
     void unboundOntology_promptUsesFreeFormEntityTypes() {
         builder.setLlmChat(llmChat);
-        injectOntologyProvider(builder, ontologyProvider);
+        builder.ontologyProvider = ontologyProvider;
 
         Long fsId = 55L;
         when(ontologyProvider.hasBoundOntology(fsId)).thenReturn(false);
@@ -528,7 +528,7 @@ class LlmKnowledgeGraphBuilderTest {
     @Test
     void emptyOntologyTypes_promptRemainsPermissive() {
         builder.setLlmChat(llmChat);
-        injectOntologyProvider(builder, ontologyProvider);
+        builder.ontologyProvider = ontologyProvider;
 
         Long fsId = 66L;
         when(ontologyProvider.hasBoundOntology(fsId)).thenReturn(true);
@@ -556,20 +556,5 @@ class LlmKnowledgeGraphBuilderTest {
         when(promptSpec.options(any())).thenReturn(promptSpec);
         when(promptSpec.call()).thenReturn(callResponseSpec);
         when(callResponseSpec.content()).thenReturn(responseText);
-    }
-
-    /**
-     * Injects the OntologyProjectionProvider into the builder via reflection
-     * (simulating Spring's @Autowired(required=false) field injection in unit tests).
-     */
-    private static void injectOntologyProvider(LlmKnowledgeGraphBuilder builder,
-                                                OntologyProjectionProvider provider) {
-        try {
-            var field = LlmKnowledgeGraphBuilder.class.getDeclaredField("ontologyProvider");
-            field.setAccessible(true);
-            field.set(builder, provider);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            throw new RuntimeException("Could not inject OntologyProjectionProvider for test", e);
-        }
     }
 }

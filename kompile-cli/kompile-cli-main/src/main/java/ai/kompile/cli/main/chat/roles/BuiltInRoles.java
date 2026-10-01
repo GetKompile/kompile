@@ -16,7 +16,9 @@
 
 package ai.kompile.cli.main.chat.roles;
 
+import ai.kompile.cli.main.chat.agent.CodeNavigationGuidance;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.tools.CodeSearchTool;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -37,7 +39,7 @@ public class BuiltInRoles {
 
                     Guidelines:
                     - Read files before modifying them to understand existing code
-                    - Use grep and glob to search the codebase efficiently
+                    - %s
                     - Use the edit tool for targeted changes, write tool for new files
                     - Use bash for running builds, tests, and system commands
                     - Delegate research and analysis to subagents via the task tool
@@ -47,7 +49,7 @@ public class BuiltInRoles {
 
                     You work iteratively: understand the problem, plan your approach,
                     implement the solution, and verify it works.
-                    """)
+                    """.formatted(CodeNavigationGuidance.RULE))
             .enabledTools(Set.of("*"))
             .canSpawnSubagents(true)
             .isBuiltIn(true)
@@ -64,13 +66,14 @@ public class BuiltInRoles {
 
                     Approach:
                     - Map the relevant modules, dependencies, data flow, and conventions
+                    - %s
                     - Identify a coherent design and concrete file locations
                     - Evaluate compatibility, performance, security, and operational trade-offs
                     - Use the available tools to inspect, edit, build, test, and delegate as needed
 
                     Return a clear result with the design rationale, exact changes, validation,
                     and any remaining risks or assumptions.
-                    """)
+                    """.formatted(CodeNavigationGuidance.RULE))
             .enabledTools(Set.of("*"))
             .permissionOverrides(Map.of())
             .canSpawnSubagents(true)
@@ -96,7 +99,9 @@ public class BuiltInRoles {
                     - API design: backwards compatibility, proper error codes, documentation
 
                     Use bash with `git diff`, `git log`, and `git show` to examine changes.
-                    Use grep to check for patterns (e.g. find all callers of a changed method).
+                    %s
+                    For each changed file, file_context shows what depends on it; use grep to confirm
+                    the call sites of a changed method and to check other patterns.
                     Read related test files to verify coverage.
 
                     Format your review as:
@@ -104,13 +109,16 @@ public class BuiltInRoles {
                     - **Important** (should fix): performance, error handling, design issues
                     - **Minor** (nice to fix): style, naming, documentation
                     - **Positive**: good patterns, well-written code worth highlighting
-                    """)
+                    """.formatted(CodeNavigationGuidance.READ_ONLY_RULE))
+            // Code-index tools as for the read-only agents (AgentRegistry.READ_ONLY_EXPLORE_TOOLS):
+            // code_search and file_context, with code_search's index action denied below.
             .enabledTools(Set.of("read", "grep", "glob", "list", "bash", "webfetch", "websearch",
-                    "transcript_search", "rag_search", "graph_search"))
+                    "transcript_search", "rag_search", "graph_search", "code_search", "file_context"))
             .permissionOverrides(Map.of(
                     "edit", PermissionService.PermissionLevel.DENY,
                     "write", PermissionService.PermissionLevel.DENY,
-                    "patch", PermissionService.PermissionLevel.DENY
+                    "patch", PermissionService.PermissionLevel.DENY,
+                    CodeSearchTool.INDEX_PERMISSION_KEY, PermissionService.PermissionLevel.DENY
             ))
             .canSpawnSubagents(false)
             .isBuiltIn(true)

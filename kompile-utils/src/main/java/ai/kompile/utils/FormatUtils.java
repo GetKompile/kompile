@@ -80,4 +80,17 @@ public final class FormatUtils {
         if (n < 1000 && n > -1000) return String.valueOf(n);
         return String.format("%,d", n);
     }
+
+    /**
+     * Format a number compactly for tight UI surfaces: plain below 1000,
+     * then K/M with one decimal. Examples: 42 -> "42", 1240 -> "1.2K",
+     * 1200000 -> "1.2M".
+     */
+    public static String formatCompactNumber(long n) {
+        if (n < 1000 && n > -1000) return String.valueOf(n);
+        if (n < 1000_000 && n > -1000_000) {
+            return String.format("%.1fK", n / 1000.0);
+        }
+        return String.format("%.1fM", n / 1000_000.0);
+    }
 }

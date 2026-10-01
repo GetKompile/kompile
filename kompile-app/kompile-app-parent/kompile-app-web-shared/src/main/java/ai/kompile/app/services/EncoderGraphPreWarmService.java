@@ -75,7 +75,7 @@ public class EncoderGraphPreWarmService {
 
     /**
      * Base directory where the registry stores encoder model bundles.
-     * Non-final so tests can override via {@code ReflectionTestUtils.setField}.
+     * Non-final so tests can point it at a temp directory.
      */
     static Path REGISTRY_BASE = Paths.get(System.getProperty("user.home"), ".kompile", "models");
 
@@ -94,7 +94,7 @@ public class EncoderGraphPreWarmService {
     Function<String, Map<String, Object>> modelInfoSource = AnseriniEncoderFactory::getModelInfoMap;
 
     @Autowired(required = false)
-    private ModelInitSubprocessLauncher launcher;
+    ModelInitSubprocessLauncher launcher;
 
     // ── Spring lifecycle ──────────────────────────────────────────────────────
 

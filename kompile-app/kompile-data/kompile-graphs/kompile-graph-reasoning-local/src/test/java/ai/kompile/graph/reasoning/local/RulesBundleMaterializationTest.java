@@ -112,8 +112,9 @@ class RulesBundleMaterializationTest {
         assertNotNull(r, "explain must not return null");
         assertNotEquals("ERROR", r.get("verdict"), "explain must not error: " + json);
 
-        // The derivation tree JSON must mention "ancestor"
-        String derivJson = String.valueOf(r.getOrDefault("derivationTreeJson", ""));
+        // The derivation tree must mention "ancestor"
+        assertTrue(r.get("derivationTree") instanceof Map<?, ?>, "derivation tree must be an object: " + json);
+        String derivJson = MiniJson.write(r.get("derivationTree"));
         assertTrue(derivJson.contains("ancestor"),
                 "derivation tree must reference 'ancestor': " + derivJson);
     }

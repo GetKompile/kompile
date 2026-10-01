@@ -46,7 +46,7 @@ class ForegroundRequestProgressTest {
     }
 
     @Test
-    void exactUsageOvertakesEstimateAndClearsTilde() {
+    void exactUsageReplacesEstimateAndNextCallAddsItsOwnEstimate() {
         ForegroundRequestProgress progress = new ForegroundRequestProgress();
         progress.begin();
 
@@ -55,18 +55,24 @@ class ForegroundRequestProgressTest {
         assertEquals(100, estimated.tokens());
         assertTrue(estimated.estimate());
 
-        // Exact delta of 80 is below the running estimate: estimate still leads.
+        // Provider counts are authoritative even when chars/4 overestimated.
         progress.recordExactOutput(80);
-        assertTrue(progress.snapshot().estimate());
+        assertEquals(80, progress.snapshot().tokens());
+        assertFalse(progress.snapshot().estimate());
 
-        // Exact delta of 40 more (total 120) overtakes: exact now shown.
+        // A second call's text adds to the completed first call, not max(...).
+        progress.recordTextDelta("y".repeat(40));
+        assertEquals(90, progress.snapshot().tokens());
+        assertTrue(progress.snapshot().estimate());
         progress.recordExactOutput(40);
         ForegroundRequestProgress.Snapshot exact = progress.snapshot();
         assertEquals(120, exact.tokens());
         assertFalse(exact.estimate());
 
-        // Further text does not drag the shown count backwards.
-        progress.recordTextDelta("y".repeat(40)); // +10 estimated = 110 < 120
+        progress.recordTextDelta("z".repeat(40));
+        assertEquals(130, progress.snapshot().tokens());
+        assertTrue(progress.snapshot().estimate());
+        progress.recordExactOutput(0);
         assertEquals(120, progress.snapshot().tokens());
         assertFalse(progress.snapshot().estimate());
     }
@@ -87,11 +93,30 @@ class ForegroundRequestProgressTest {
 
         // Next request starts clean and stale-seq finish is a no-op.
         long seq2 = progress.begin();
+        progress.recordTextDelta(seq1, "stale text".repeat(100));
+        progress.recordExactOutput(seq1, 500);
         assertEquals(0, progress.snapshot().tokens());
         progress.finish(seq2 + 1);
         assertTrue(progress.snapshot().active());
         progress.finish(seq2);
         assertFalse(progress.snapshot().active());
+    }
+
+    @Test
+    void incompleteUsagePreservesEstimateAcrossLaterCompletedCalls() {
+        var progress = guard();
+        long seq = progress.begin();
+        progress.recordTextDelta("x".repeat(400));
+        progress.recordIncompleteOutput(seq, 1);
+        assertEquals(100, progress.snapshot().tokens());
+        assertTrue(progress.snapshot().estimate());
+        progress.recordTextDelta("next");
+        progress.recordExactOutput(seq, 2);
+        assertEquals(102, progress.snapshot().tokens());
+        assertTrue(progress.snapshot().estimate());
+        progress.begin();
+        progress.recordIncompleteOutput(seq, 999);
+        assertEquals(0, progress.snapshot().tokens());
     }
 
     @Test

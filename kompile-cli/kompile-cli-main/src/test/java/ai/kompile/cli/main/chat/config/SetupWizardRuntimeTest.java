@@ -5,12 +5,17 @@ import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.core.llm.CliModelCatalog;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayDeque;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -96,14 +101,14 @@ class SetupWizardRuntimeTest {
         assertTrue(options.get(SetupWizard.StandardRuntime.KOMPILE_LOCAL.ordinal())
                 .contains("first-party serving subprocess"));
         assertTrue(options.get(SetupWizard.StandardRuntime.EXTERNAL_LOCAL.ordinal())
-                .contains("Ollama"));
+                .contains("OpenAI-compatible"));
         assertTrue(options.get(SetupWizard.StandardRuntime.DIRECT.ordinal()).contains("no Kompile instance"));
         assertTrue(options.get(SetupWizard.StandardRuntime.KOMPILE.ordinal()).contains("Kompile instance"));
     }
 
     @Test
-    void externalLocalRouteOffersOllamaAndOpenAiCompatibleSeparately() {
-        assertEquals(List.of("Ollama", "OpenAI-compatible endpoint"),
+    void externalLocalRouteOffersTheOpenAiCompatibleEndpoint() {
+        assertEquals(List.of("OpenAI-compatible endpoint"),
                 SetupWizard.externalLocalOptions());
     }
 
@@ -199,10 +204,40 @@ class SetupWizardRuntimeTest {
         assertEquals(SetupWizard.AuthMethod.API_KEY,
                 SetupWizard.authMethodForProvider("anthropic", apiKey));
 
-        assertEquals("Claude Code login (the claude CLI's own sign-in)",
+        // One Anthropic menu, labelled like every other vendor's: its OAuth entry
+        // is the route that passes the chat through to Claude Code.
+        assertEquals(List.of("OAuth / subscription sign-in", "API key"), SetupWizard.authOptions("anthropic"));
+        assertEquals("OAuth / subscription sign-in",
                 SetupWizard.authMethodLabel("anthropic", SetupWizard.AuthMethod.OAUTH));
         assertEquals("OAuth / subscription sign-in",
                 SetupWizard.authMethodLabel("openai", SetupWizard.AuthMethod.OAUTH));
+    }
+
+    @Test
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void anthropicOauthPassesTheChatThroughToClaudeCodeWithoutAuthenticating(@TempDir Path home) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", home.toString());
+        AtomicInteger loginChecks = new AtomicInteger();
+        LiveModelDiscovery.useClaudeCodeLoginProbe(() -> {
+            loginChecks.incrementAndGet();
+            return new LiveModelDiscovery.ClaudeCodeLogin(false, null, null, false);
+        });
+        try {
+            for (SetupWizard.AuthMethod method : List.of(SetupWizard.AuthMethod.OAUTH, SetupWizard.AuthMethod.NATIVE)) {
+                SetupWizard.AuthenticationSelection passThrough =
+                        new SetupWizard.AuthenticationSelection("anthropic", method, null);
+                // A reader without answers fails any prompt: no credential menu, no sign-in.
+                assertEquals(passThrough, SetupWizard.authenticateSession(reader(), "anthropic", method));
+                assertEquals(passThrough, SetupWizard.authenticate(reader(), "anthropic", method));
+            }
+            // Claude Code's login shows up when its models are listed; choosing the route never checks or drives it.
+            assertEquals(0, loginChecks.get());
+            assertTrue(CredentialStore.create().list().isEmpty());
+        } finally {
+            LiveModelDiscovery.useClaudeCodeLoginProbe(null);
+            System.setProperty("user.home", previousHome);
+        }
     }
 
     @Test
@@ -215,7 +250,7 @@ class SetupWizardRuntimeTest {
         assertEquals(SetupWizard.AuthMethod.OAUTH,
                 SetupWizard.authMethodForProvider("openai-codex"));
         assertEquals(List.of(SetupWizard.AuthMethod.NONE),
-                SetupWizard.authMethodsForPicker("ollama"));
+                SetupWizard.authMethodsForPicker("kompile-local"));
         assertTrue(pickerProviders.contains("opencode"));
         assertEquals(List.of(SetupWizard.AuthMethod.NATIVE),
                 SetupWizard.authMethodsForPicker("opencode"));
@@ -381,8 +416,8 @@ class SetupWizardRuntimeTest {
 
     @Test
     void blankRuntimeUrlAcceptsItsLocalDefault() {
-        assertEquals("http://localhost:11434/v1",
-                SetupWizard.valueOrDefault("", "http://localhost:11434/v1"));
+        assertEquals("http://localhost:9000/v1",
+                SetupWizard.valueOrDefault("", "http://localhost:9000/v1"));
         assertEquals("http://localhost:8000/v1",
                 SetupWizard.valueOrDefault("  http://localhost:8000/v1  ", "unused"));
     }

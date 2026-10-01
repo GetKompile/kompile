@@ -1250,13 +1250,13 @@ public class AsciiRenderer {
             StringBuilder line = new StringBuilder();
             for (String word : effective.split("\\s+")) {
                 if (line.length() == 0) {
-                    line.append(word);
+                    startLine(result, line, word, maxWidth);
                 } else if (line.length() + 1 + word.length() <= maxWidth) {
                     line.append(" ").append(word);
                 } else {
                     result.add(line.toString());
                     line.setLength(0);
-                    line.append(word);
+                    startLine(result, line, word, maxWidth);
                 }
             }
             if (line.length() > 0) {
@@ -1265,6 +1265,27 @@ public class AsciiRenderer {
         }
 
         return result;
+    }
+
+    /**
+     * Start a new wrapped line with {@code word}. A single unbreakable token (a file path,
+     * URL, or long identifier with no internal whitespace) longer than {@code maxWidth} would
+     * otherwise be appended whole, leaving {@code line} wider than the panel's content budget —
+     * {@code panel()} cannot pad a too-wide line back down, so its row (and right border) ends
+     * up wider than the terminal instead. Hard-break the token into maxWidth-sized chunks and
+     * emit all but the last directly, leaving only the short remainder in {@code line} so normal
+     * word-wrapping continues from there.
+     */
+    private static void startLine(List<String> result, StringBuilder line, String word, int maxWidth) {
+        if (maxWidth <= 0) {
+            line.append(word);
+            return;
+        }
+        while (word.length() > maxWidth) {
+            result.add(word.substring(0, maxWidth));
+            word = word.substring(maxWidth);
+        }
+        line.append(word);
     }
 
     private static String repeat(char c, int count) {

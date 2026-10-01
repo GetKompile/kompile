@@ -77,10 +77,10 @@ class CrawlSourceLoadingService {
     // ── Optional dependencies ───────────────────────────────────────────────
 
     @Autowired(required = false)
-    private CrawlerService crawlerService;
+    CrawlerService crawlerService;
 
     @Autowired(required = false)
-    private List<DocumentLoader> documentLoaders;
+    List<DocumentLoader> documentLoaders;
 
     @Autowired(required = false)
     private CrawlFactRegistrationCallback crawlFactRegistrationCallback;

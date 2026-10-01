@@ -93,11 +93,11 @@ public class OntologyConformanceTagger {
 
     @Autowired(required = false)
     @Nullable
-    private OntologyProjectionProvider ontologyProvider;
+    OntologyProjectionProvider ontologyProvider;
 
     @Autowired(required = false)
     @Nullable
-    private KnowledgeGraphService knowledgeGraphService;
+    KnowledgeGraphService knowledgeGraphService;
 
     /**
      * Result counters from a single {@link #tag} invocation.

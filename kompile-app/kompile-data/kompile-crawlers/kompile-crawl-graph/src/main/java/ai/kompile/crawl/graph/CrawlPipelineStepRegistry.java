@@ -25,9 +25,10 @@ import java.util.Set;
  * Static, immutable catalog of unified-crawl pipeline steps and their dependency edges.
  *
  * <p>Pure (no Spring) so it is trivially unit-testable. Step IDs match the IDs tracked by
- * {@link PipelineStepTracker}. This drives two things: the step catalog surfaced to the UI/CLI (so a
- * caller can pick which steps to run / archive / skip), and the dependency validation performed by
- * {@link CrawlStepPlan}.</p>
+ * {@link PipelineStepTracker}. This drives three things: the step catalog surfaced to the UI/CLI (so a
+ * caller can pick which steps to run / archive / skip), the dependency validation performed by
+ * {@link CrawlStepPlan}, and the resolution of the phase a running crawl reports to the step it is
+ * working on ({@link #workPhase}).</p>
  */
 public final class CrawlPipelineStepRegistry {
 
@@ -89,6 +90,29 @@ public final class CrawlPipelineStepRegistry {
                     Set.of("ENTITY_RESOLUTION", "EDGE_COMPUTATION"), false, false, false, false)
     );
 
+    /**
+     * Phases a crawl reports that are crawl work but not pipeline steps: QUEUED (waiting for a crawl
+     * slot) and LEARNING (KGE training on the finished graph).
+     */
+    public static final Set<String> NON_STEP_WORK_PHASES = Set.of("QUEUED", "LEARNING");
+
+    /**
+     * Phases that mean no crawl work is running: the end markers COMPLETED, FAILED, CANCELLED and
+     * PARTITION_COMPLETE; PENDING_EMBEDDING, set when a crawl finishes with its embedding deferred (the
+     * deferred embedding runs later, outside the crawl's run); SCHEMA_UNIFICATION_FAILED, set just before
+     * that error fails the crawl; and GRAPH_EXTRACTION_PREVIEW, the phase of the single-source preview's
+     * throwaway job, which never runs as a crawl.
+     */
+    public static final Set<String> NON_WORK_PHASES = Set.of(
+            "COMPLETED", "FAILED", "CANCELLED", "PARTITION_COMPLETE", "PENDING_EMBEDDING",
+            "SCHEMA_UNIFICATION_FAILED", "GRAPH_EXTRACTION_PREVIEW");
+
+    /** Vector indexing reports its embedding and its index commit as these two phases. */
+    private static final Set<String> VECTOR_INDEXING_ALIASES = Set.of("EMBEDDING", "INDEXING");
+
+    /** A decomposed extraction pass reports its step's ID with the pass appended. */
+    private static final List<String> PASS_SUFFIXES = List.of("_ENTITIES", "_RELATIONS");
+
     private static final Map<String, StepDescriptor> BY_ID = index();
 
     private static Map<String, StepDescriptor> index() {
@@ -112,5 +136,40 @@ public final class CrawlPipelineStepRegistry {
 
     public static boolean isKnown(String stepId) {
         return stepId != null && BY_ID.containsKey(stepId);
+    }
+
+    /**
+     * Step ID for a reported phase that is another name for a step: EMBEDDING and INDEXING are
+     * VECTOR_INDEXING. Any other phase, and null, is returned unchanged.
+     */
+    public static String canonicalStepId(String phase) {
+        return phase != null && VECTOR_INDEXING_ALIASES.contains(phase) ? "VECTOR_INDEXING" : phase;
+    }
+
+    /** True for every phase {@link #workPhase} resolves to: a pipeline step or a non-step work phase. */
+    public static boolean isWorkPhase(String phase) {
+        return isKnown(phase) || (phase != null && NON_STEP_WORK_PHASES.contains(phase));
+    }
+
+    /**
+     * The work phase behind the phase a crawl reports — the one place a reported phase is mapped to what
+     * the crawl is doing, so the scheduler's per-phase resource lookup sees only declared names. Step
+     * aliases and decomposed passes resolve to their step (EMBEDDING to VECTOR_INDEXING,
+     * GRAPH_EXTRACTION_RELATIONS to GRAPH_EXTRACTION); null and the {@link #NON_WORK_PHASES} resolve to
+     * null; any other phase is returned unchanged.
+     */
+    public static String workPhase(String phase) {
+        if (phase == null || NON_WORK_PHASES.contains(phase)) {
+            return null;
+        }
+        for (String suffix : PASS_SUFFIXES) {
+            if (phase.endsWith(suffix)) {
+                String step = phase.substring(0, phase.length() - suffix.length());
+                if (isKnown(step)) {
+                    return step;
+                }
+            }
+        }
+        return canonicalStepId(phase);
     }
 }

@@ -51,7 +51,7 @@ public class CatalogService {
     private final ObjectMapper yamlMapper;
 
     @Autowired
-    private RegistryService registryService;
+    RegistryService registryService;
 
     public CatalogService() {
         this.yamlMapper = new ObjectMapper(new YAMLFactory());

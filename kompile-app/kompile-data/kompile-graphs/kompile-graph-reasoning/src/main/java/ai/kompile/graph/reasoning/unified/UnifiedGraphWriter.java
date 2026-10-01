@@ -74,35 +74,30 @@ final class UnifiedGraphWriter {
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        Path temporary = Files.createTempFile(parent, "." + target.getFileName() + "-", ".tmp");
-        boolean published = false;
-        try {
+        try (KGraphScratch scratch = KGraphScratch.forRebuild(target)) {
+            Path temporary = scratch.createFile(target.getFileName() + "-", ".tmp");
             try (OutputStream out = Files.newOutputStream(
                     temporary, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-                write(graph, out, primaryVectorDtype, compactTopology);
+                write(graph, out, primaryVectorDtype, compactTopology, scratch.directory());
             }
             moveAtomically(temporary, target);
             UnifiedGraphMutationJournal.clear(target);
-            published = true;
-        } finally {
-            if (!published) {
-                Files.deleteIfExists(temporary);
-            }
         }
     }
 
     static void write(UnifiedGraph graph, OutputStream out, Dtype primaryVectorDtype) throws IOException {
-        write(graph, out, primaryVectorDtype, false);
+        write(graph, out, primaryVectorDtype, false, null);
     }
 
     static void writeCompact(UnifiedGraph graph, OutputStream out, Dtype primaryVectorDtype)
             throws IOException {
-        write(graph, out, primaryVectorDtype, true);
+        write(graph, out, primaryVectorDtype, true, null);
     }
 
+    /** Staging files go to {@code scratchDirectory}, or to {@code java.io.tmpdir} when it is null. */
     private static void write(
-            UnifiedGraph graph, OutputStream out, Dtype primaryVectorDtype, boolean compactTopology)
-            throws IOException {
+            UnifiedGraph graph, OutputStream out, Dtype primaryVectorDtype, boolean compactTopology,
+            Path scratchDirectory) throws IOException {
         // Assemble the full ordered set of vector layers: primary embeddings synthesized from the
         // graph, then any additional layers.
         List<VectorLayer> layers = new ArrayList<>();
@@ -134,8 +129,8 @@ final class UnifiedGraphWriter {
             if (topology == null) {
                 writeRelations(zip, graph);
             } else {
-                writeCompactLinks(zip, graph, topology);
-                writeCompactAdjacency(zip, graph, topology, adjacency);
+                writeCompactLinks(zip, graph, topology, scratchDirectory);
+                writeCompactAdjacency(zip, graph, topology, adjacency, scratchDirectory);
                 if (topology.hasProperties()) {
                     putNextEntry(zip, UnifiedGraphFormat.ENTRY_RELATION_PROPERTIES);
                     CompactTopologyCodec.writeProperties(graph, zip);
@@ -212,9 +207,9 @@ final class UnifiedGraphWriter {
     }
 
     private static void writeCompactLinks(
-            ZipOutputStream zip, UnifiedGraph graph, CompactTopologyCodec.Plan topology)
+            ZipOutputStream zip, UnifiedGraph graph, CompactTopologyCodec.Plan topology, Path scratchDirectory)
             throws IOException {
-        Path staged = Files.createTempFile("kompile-kgraph-links-", ".bin");
+        Path staged = KGraphScratch.temporaryFile(scratchDirectory, "kompile-kgraph-links-", ".bin");
         try {
             try (OutputStream out = Files.newOutputStream(
                     staged, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
@@ -243,13 +238,14 @@ final class UnifiedGraphWriter {
             ZipOutputStream zip,
             UnifiedGraph graph,
             CompactTopologyCodec.Plan topology,
-            CompactAdjacencyCodec.Plan adjacency) throws IOException {
-        Path staged = Files.createTempFile("kompile-kgraph-adjacency-", ".bin");
+            CompactAdjacencyCodec.Plan adjacency,
+            Path scratchDirectory) throws IOException {
+        Path staged = KGraphScratch.temporaryFile(scratchDirectory, "kompile-kgraph-adjacency-", ".bin");
         try {
             try (OutputStream out = Files.newOutputStream(
                     staged, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
                 CompactAdjacencyCodec.write(
-                        adjacency, CompactAdjacencyCodec.graphPass(graph, topology), out);
+                        adjacency, CompactAdjacencyCodec.graphPass(graph, topology), out, scratchDirectory);
             }
             putStoredFile(zip, UnifiedGraphFormat.ENTRY_COMPACT_ADJACENCY, staged);
         } finally {

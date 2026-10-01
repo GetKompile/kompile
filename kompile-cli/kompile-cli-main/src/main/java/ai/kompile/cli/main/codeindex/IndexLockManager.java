@@ -38,7 +38,7 @@ public class IndexLockManager {
     private static final ConcurrentHashMap<String, ReentrantReadWriteLock> LOCKS =
             new ConcurrentHashMap<>();
 
-    private static ReentrantReadWriteLock lockFor(String projectId) {
+    static ReentrantReadWriteLock lockFor(String projectId) {
         return LOCKS.computeIfAbsent(projectId, k -> new ReentrantReadWriteLock());
     }
 

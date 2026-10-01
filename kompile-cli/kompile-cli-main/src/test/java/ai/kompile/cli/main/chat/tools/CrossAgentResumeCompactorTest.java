@@ -16,10 +16,16 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.core.llm.CliModelCatalog;
 import ai.kompile.core.llm.ModelContextWindows;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -29,10 +35,50 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * Model-catalog lookups here must not depend on the live, ever-refreshing opencode
+ * cache ({@code ~/.cache/opencode/models.json}): a bare-id entry an aggregator lists
+ * first there can silently change the numbers this test expects. Every test runs
+ * against a redirected (by default absent) catalog path, the same isolation
+ * {@link ai.kompile.cli.main.chat.config.ModelContextResolverTest} uses.
+ */
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class CrossAgentResumeCompactorTest {
+
+    private static final String CATALOG_PATHS_PROPERTY = "kompile.cli.modelCatalogPaths";
 
     @TempDir
     Path tempDir;
+
+    private String previousCatalogPaths;
+
+    @BeforeEach
+    void isolateModelCatalog() throws Exception {
+        previousCatalogPaths = System.getProperty(CATALOG_PATHS_PROPERTY);
+        System.setProperty(CATALOG_PATHS_PROPERTY, tempDir.resolve("absent.json").toString());
+        invalidateCatalogCache();
+    }
+
+    @AfterEach
+    void restoreModelCatalog() throws Exception {
+        if (previousCatalogPaths == null) System.clearProperty(CATALOG_PATHS_PROPERTY);
+        else System.setProperty(CATALOG_PATHS_PROPERTY, previousCatalogPaths);
+        invalidateCatalogCache();
+    }
+
+    private static void invalidateCatalogCache() throws Exception {
+        Method method = CliModelCatalog.class.getDeclaredMethod("invalidateCacheForTest");
+        method.setAccessible(true);
+        method.invoke(null);
+    }
+
+    /** Points the catalog property at a fixture file and forces a re-read. */
+    private void useCatalog(String modelsDevJson) throws Exception {
+        Path file = tempDir.resolve("models.json");
+        Files.writeString(file, modelsDevJson);
+        System.setProperty(CATALOG_PATHS_PROPERTY, file.toString());
+        invalidateCatalogCache();
+    }
 
     @Test
     void leavesTranscriptUnchangedWhenItAlreadyFitsTargetBudget() {
@@ -94,7 +140,17 @@ class CrossAgentResumeCompactorTest {
     }
 
     @Test
-    void targetBudgetUsesConfiguredClaudeModelWhenProvided() {
+    void targetBudgetUsesConfiguredClaudeModelWhenProvided() throws Exception {
+        // Local fixture standing in for anthropic's real claude-opus-4-7 limits (ctx=1_000_000,
+        // out=128_000, also reported by 302ai/auriko) so the assertion does not ride on the
+        // live, ever-refreshing opencode catalog.
+        useCatalog("""
+                {
+                  "anthropic": {"models": {
+                    "claude-opus-4-7": {"limit": {"context": 1000000, "output": 128000}}
+                  }}
+                }
+                """);
         String previous = System.getProperty("kompile.claude.model");
         try {
             System.setProperty("kompile.claude.model", "claude-opus-4-7");
@@ -103,8 +159,6 @@ class CrossAgentResumeCompactorTest {
                     CrossAgentResumeCompactor.targetBudget("claude", "opencode", tempDir);
 
             assertEquals("claude-opus-4-7", budget.modelId());
-            // claude-opus-4-7 is a 1M-context model per the live CLI catalog
-            // (providers: anthropic/302ai/auriko report ctx=1_000_000, out=128_000)
             assertEquals(1_000_000, budget.contextWindow());
             assertEquals(128_000, budget.maxOutputTokens());
         } finally {
@@ -149,6 +203,47 @@ class CrossAgentResumeCompactorTest {
             assertEquals("gpt-5.5", budget.modelId());
             assertEquals(1_050_000, budget.contextWindow());
             assertEquals(128_000, budget.maxOutputTokens());
+        } finally {
+            restoreProperty("kompile.codex.config", previousConfig);
+            restoreProperty("kompile.codex.model", previousModel);
+        }
+    }
+
+    @Test
+    void targetBudgetUsesProviderScopedLimitsNotFirstCatalogAggregator() throws Exception {
+        // "abacus" is listed first in the catalog file and would win a bare-id lookup; the codex
+        // target must resolve through its real "openai" provider scope instead. This is the exact
+        // ambiguity that made targetBudgetUsesCodexConfigModelWhenPresent depend on load order in
+        // the live opencode catalog (whichever aggregator loaded first there decided the budget).
+        useCatalog("""
+                {
+                  "abacus": {"models": {
+                    "gpt-5.5": {"limit": {"context": 1000000, "output": 1000000}}
+                  }},
+                  "openai": {"models": {
+                    "gpt-5.5": {"limit": {"context": 1050000, "output": 128000}}
+                  }}
+                }
+                """);
+        Path config = tempDir.resolve("codex-config.toml");
+        Files.writeString(config, """
+                model = "gpt-5.5"
+                """);
+
+        String previousConfig = System.getProperty("kompile.codex.config");
+        String previousModel = System.getProperty("kompile.codex.model");
+        try {
+            System.setProperty("kompile.codex.config", config.toString());
+            System.clearProperty("kompile.codex.model");
+
+            CrossAgentResumeCompactor.TargetBudget budget =
+                    CrossAgentResumeCompactor.targetBudget("codex", "claude", tempDir);
+
+            assertEquals("gpt-5.5", budget.modelId());
+            assertEquals(1_050_000, budget.contextWindow(),
+                    "must use the openai scope, not abacus's bare-id entry");
+            assertEquals(128_000, budget.maxOutputTokens(),
+                    "must use the openai scope, not abacus's bare-id entry");
         } finally {
             restoreProperty("kompile.codex.config", previousConfig);
             restoreProperty("kompile.codex.model", previousModel);

@@ -37,7 +37,7 @@ public final class GpuProbe {
     /**
      * Immutable description of one GPU device as reported by nvidia-smi.
      *
-     * @param index              nvidia-smi index (matches cudaIndexMappings.nvidiaSmiIndex in gpu-device-config.json)
+     * @param index              nvidia-smi index (PCI order; not ND4J's device index)
      * @param name               device name (e.g. "NVIDIA GeForce RTX 4090")
      * @param vramMb             total VRAM in MiB as reported by nvidia-smi
      * @param computeCapability  CUDA compute capability as a double (e.g. 8.9 for Ada Lovelace);

@@ -21,7 +21,6 @@ import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
 import ai.kompile.crawl.graph.ClusterBackendHealth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Set;
 
@@ -81,7 +80,7 @@ class ClusterBackendHealthAdapterTest {
     void workerReadsCachedOpenSet() {
         ClusterBackendHealthAdapter a = adapter(true, false, 3, 60); // worker role
         // A worker's isOpen reads the open-set cached from orchestrator report responses (no local breaker).
-        ReflectionTestUtils.setField(a, "cachedOpen", Set.of("openai"));
+        a.cachedOpen = Set.of("openai");
         assertTrue(a.isOpen("openai"));
         assertFalse(a.isOpen("anthropic"));
     }
@@ -100,7 +99,7 @@ class ClusterBackendHealthAdapterTest {
         ClusterBackendHealthAdapter.ClusterBreaker b = new ClusterBackendHealthAdapter.ClusterBreaker(1, 1);
         b.recordFailure();
         assertTrue(b.isOpen());
-        ReflectionTestUtils.setField(b, "openedAtMs", System.currentTimeMillis() - 2_000L); // simulate elapsed cooldown
+        b.openedAtMs = System.currentTimeMillis() - 2_000L; // simulate elapsed cooldown
         assertFalse(b.isOpen(), "breaker half-opens (resets) after the cooldown window");
     }
 }

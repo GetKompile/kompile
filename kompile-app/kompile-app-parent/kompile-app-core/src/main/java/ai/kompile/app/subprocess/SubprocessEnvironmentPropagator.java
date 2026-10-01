@@ -43,11 +43,15 @@ public final class SubprocessEnvironmentPropagator {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessEnvironmentPropagator.class);
 
-    /** Default Triton kernel cache directory when none is configured. */
-    private static final String DEFAULT_TRITON_CACHE_DIR =
-            System.getProperty("user.home") + "/.kompile/cache/triton/triton_cache";
-
     private SubprocessEnvironmentPropagator() {}
+
+    /**
+     * Default Triton kernel cache directory when none is configured. Resolved on each call,
+     * so a {@code user.home} changed after class load is honoured.
+     */
+    private static String defaultTritonCacheDir() {
+        return System.getProperty("user.home") + "/.kompile/cache/triton/triton_cache";
+    }
 
     /**
      * All known ND4J/CUDA/threading/JavaCPP environment variables that should be
@@ -175,7 +179,7 @@ public final class SubprocessEnvironmentPropagator {
         // ND4J_TRITON_CACHE_DIR directly — without it, kernels recompile every launch.
         if (!env.containsKey("ND4J_TRITON_CACHE_DIR")) {
             String fromProp = System.getProperty("nd4j.triton.cacheDir");
-            String effectiveDir = fromProp != null ? fromProp : DEFAULT_TRITON_CACHE_DIR;
+            String effectiveDir = fromProp != null ? fromProp : defaultTritonCacheDir();
             try {
                 Files.createDirectories(Path.of(effectiveDir));
             } catch (Exception ex) {

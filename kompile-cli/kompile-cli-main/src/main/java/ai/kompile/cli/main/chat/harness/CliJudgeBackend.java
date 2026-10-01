@@ -162,6 +162,15 @@ public class CliJudgeBackend implements JudgeBackend {
         return agentName != null && agentName.toLowerCase().contains("claude");
     }
 
+    /**
+     * A single-shot agent starts its CLI for every verdict; the persistent one answers from a
+     * process the shared pool keeps warm.
+     */
+    @Override
+    public boolean startsProviderProcess() {
+        return agentBinary != null && !supportsPersistentMode();
+    }
+
     private String generatePersistent(String userPrompt, String systemPrompt) throws Exception {
         try {
             ensurePersistentProcess(systemPrompt);

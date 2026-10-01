@@ -68,7 +68,21 @@ public class SubprocessRegistry {
      * @param type    human-readable type label (e.g. "embedding", "vector-population", "ingest")
      */
     public void register(String id, Process process, String type) {
-        TrackedProcess tracked = new TrackedProcess(id, process, type, Instant.now());
+        register(id, process, type, null);
+    }
+
+    /**
+     * Register a subprocess together with the handler that restarts it, so
+     * {@link #getRestartHandler} finds that handler under this same {@code id} for as long as
+     * the entry exists. A launcher that registers each run under its own id
+     * ({@code graph-matrix-<runId>}) needs this: the watchdog looks handlers up by the ids
+     * {@link #listAll()} reports, and a handler registered under the bare subprocess id is
+     * never found there.
+     *
+     * @param restartHandler restarts this subprocess; may be {@code null}
+     */
+    public void register(String id, Process process, String type, RestartableSubprocess restartHandler) {
+        TrackedProcess tracked = new TrackedProcess(id, process, type, Instant.now(), restartHandler);
         TrackedProcess previous = processes.put(id, tracked);
         if (previous != null && previous.process.isAlive()) {
             logger.warn("Replacing already-registered subprocess id={} (PID={}, type={}) — destroying old process",
@@ -229,13 +243,20 @@ public class SubprocessRegistry {
     }
 
     /**
-     * Look up the restart handler for the given subprocess id.
+     * Look up the restart handler for the given subprocess id: the one registered under that id
+     * with {@link #registerRestartHandler}, else the one bound to the subprocess registered
+     * under it.
      *
      * @param id subprocess id
      * @return the handler, or empty if none was registered
      */
     public Optional<RestartableSubprocess> getRestartHandler(String id) {
-        return Optional.ofNullable(restartHandlers.get(id));
+        RestartableSubprocess handler = restartHandlers.get(id);
+        if (handler == null) {
+            TrackedProcess tracked = processes.get(id);
+            handler = tracked != null ? tracked.restartHandler : null;
+        }
+        return Optional.ofNullable(handler);
     }
 
     /**
@@ -348,13 +369,16 @@ public class SubprocessRegistry {
         final Process process;
         final String type;
         final Instant registeredAt;
+        final RestartableSubprocess restartHandler;
         volatile Instant readyAt;
 
-        TrackedProcess(String id, Process process, String type, Instant registeredAt) {
+        TrackedProcess(String id, Process process, String type, Instant registeredAt,
+                       RestartableSubprocess restartHandler) {
             this.id = id;
             this.process = process;
             this.type = type;
             this.registeredAt = registeredAt;
+            this.restartHandler = restartHandler;
         }
     }
 

@@ -16,17 +16,16 @@ import ai.kompile.cli.main.chat.config.ProviderStructuredOutputCapabilities;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import javax.imageio.ImageIO;
-import java.awt.Color;
-import java.awt.Graphics2D;
-import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -41,6 +40,8 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.zip.CRC32;
+import java.util.zip.DeflaterOutputStream;
 
 /** Native chat boundary shared by MCP pipelines and graph extraction. No CLI or artifact fallback. */
 public final class NativeChatModels {
@@ -306,6 +307,8 @@ public final class NativeChatModels {
                     min(defaults.connectTimeout(), timeout), timeout, min(defaults.streamIdleTimeout(), timeout),
                     timeout, 1, defaults.initialBackoff(), defaults.maxBackoff());
             try (DirectLlmClient client = DirectLlmClient.withConnectivityPolicy(selection.config, MAPPER, policy, root)) {
+                // A pipeline stage answers from its prompt: on a CLI route, no tools or MCP servers.
+                client.runToolFree(true, "");
                 Thread worker = Thread.currentThread();
                 client.setCancellationCheck(() -> cancelled.get() || owner.isInterrupted() || worker.isInterrupted()
                         || streamedChars.get() > maxResponseChars);
@@ -410,24 +413,21 @@ public final class NativeChatModels {
             int[] colors = {0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0x000000, 0xFFFFFF};
             SecureRandom random = new SecureRandom();
             List<String> expectedColors = new ArrayList<>();
-            BufferedImage image = new BufferedImage(432, 96, BufferedImage.TYPE_INT_RGB);
-            Graphics2D graphics = image.createGraphics();
-            try (ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
-                graphics.setColor(Color.GRAY);
-                graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
-                for (int tile = 0; tile < 6; tile++) {
-                    int index = random.nextInt(colors.length);
-                    expectedColors.add(names[index]);
-                    graphics.setColor(new Color(colors[index]));
-                    graphics.fillRect(tile * 72 + 4, 8, 64, 80);
+            // Painted and encoded without AWT: under GraalVM native image any BufferedImage/ImageIO use
+            // loads libawt, whose JNI_OnLoad aborts the whole process (see LocalDocumentLoaderRegistry#load).
+            int width = 432;
+            int height = 96;
+            int[] pixels = new int[width * height];
+            Arrays.fill(pixels, 0x808080);
+            for (int tile = 0; tile < 6; tile++) {
+                int index = random.nextInt(colors.length);
+                expectedColors.add(names[index]);
+                for (int y = 8; y < 88; y++) {
+                    Arrays.fill(pixels, y * width + tile * 72 + 4, y * width + tile * 72 + 68, colors[index]);
                 }
-                ImageIO.write(image, "png", bytes);
-                attachments = List.of(new DirectLlmClient.AttachmentInput("probe.png", "image/png", true,
-                        Base64.getEncoder().encodeToString(bytes.toByteArray()), null));
-            } finally {
-                graphics.dispose();
-                image.flush();
             }
+            attachments = List.of(new DirectLlmClient.AttachmentInput("probe.png", "image/png", true,
+                    Base64.getEncoder().encodeToString(rgbPng(width, height, pixels)), null));
             prompt = "Identify the colors of the six squares from left to right, ignoring the gray background. "
                     + "Use RED, GREEN, BLUE, YELLOW, BLACK or WHITE. Colors may repeat. "
                     + "Return only six uppercase color names separated by commas, without spaces.";
@@ -481,6 +481,40 @@ public final class NativeChatModels {
                 + "readiness applies only to this operation. No guarantee for other models, operations or future requests. "
                 + "PDF probes test rendered-page image understanding, not native PDF parsing.");
         return Map.copyOf(result);
+    }
+
+    /** Minimal 8-bit RGB PNG (IHDR, one zlib IDAT, IEND) that needs neither AWT nor ImageIO. */
+    private static byte[] rgbPng(int width, int height, int[] pixels) throws IOException {
+        ByteArrayOutputStream scanlines = new ByteArrayOutputStream();
+        try (DeflaterOutputStream zlib = new DeflaterOutputStream(scanlines)) {
+            byte[] row = new byte[1 + width * 3]; // row[0] stays 0: filter type None
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int pixel = pixels[y * width + x];
+                    row[1 + x * 3] = (byte) (pixel >> 16);
+                    row[2 + x * 3] = (byte) (pixel >> 8);
+                    row[3 + x * 3] = (byte) pixel;
+                }
+                zlib.write(row);
+            }
+        }
+        ByteArrayOutputStream png = new ByteArrayOutputStream();
+        png.writeBytes(new byte[]{(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'});
+        // Bit depth 8, color type 2 (RGB), deflate compression, adaptive filtering, no interlace.
+        writePngChunk(png, "IHDR", ByteBuffer.allocate(13).putInt(width).putInt(height)
+                .put((byte) 8).put((byte) 2).put((byte) 0).put((byte) 0).put((byte) 0).array());
+        writePngChunk(png, "IDAT", scanlines.toByteArray());
+        writePngChunk(png, "IEND", new byte[0]);
+        return png.toByteArray();
+    }
+
+    private static void writePngChunk(ByteArrayOutputStream png, String type, byte[] data) {
+        byte[] name = type.getBytes(StandardCharsets.US_ASCII);
+        CRC32 crc = new CRC32();
+        crc.update(name);
+        crc.update(data);
+        png.writeBytes(ByteBuffer.allocate(12 + data.length).putInt(data.length).put(name).put(data)
+                .putInt((int) crc.getValue()).array());
     }
 
     /** Native credentials are host-owned, including on the document-crawl entry point. */

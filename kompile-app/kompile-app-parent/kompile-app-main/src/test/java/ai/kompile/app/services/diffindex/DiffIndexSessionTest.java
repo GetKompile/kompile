@@ -18,7 +18,6 @@ package ai.kompile.app.services.diffindex;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -38,10 +37,9 @@ class DiffIndexSessionTest {
     private Map<String, DiffIndexEntry> entries;
 
     @BeforeEach
-    @SuppressWarnings("unchecked")
     void setUp() {
         service = new DiffIndexService();
-        entries = (Map<String, DiffIndexEntry>) ReflectionTestUtils.getField(service, "entries");
+        entries = service.entries;
         entries.clear();
 
         // Session A: claude-code edits Foo.java twice + Bar.java, then aider touches Foo.java.

@@ -19,7 +19,6 @@ package ai.kompile.app.services.git;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -62,7 +61,7 @@ class GitDiffServiceTest {
     @BeforeEach
     void setUp() throws Exception {
         service = new GitDiffService();
-        ReflectionTestUtils.setField(service, "configuredRoot", repo.toString());
+        service.configuredRoot = repo.toString();
 
         runGit(null, "init");
         // Deterministic, version-independent default branch.
@@ -103,7 +102,7 @@ class GitDiffServiceTest {
     @Test
     void nonRepoDirectoryIsNotAGitRepo() {
         GitDiffService other = new GitDiffService();
-        ReflectionTestUtils.setField(other, "configuredRoot", notARepo.toString());
+        other.configuredRoot = notARepo.toString();
         assertThat(other.isGitRepo()).isFalse();
     }
 

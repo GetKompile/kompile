@@ -69,7 +69,7 @@ public class EnforcerAttachCommand implements Callable<Integer> {
                 : EnforcerJudgementsCommand.shortTime(records.get(records.size() - 1).getTimestamp());
 
         System.out.println();
-        System.out.println("\033[1m\033[36m  🔌 Attaching to enforced session " + sid + "\033[0m");
+        System.out.println("\033[1m\033[36m  ▸ Attaching to enforced session " + sid + "\033[0m");
         System.out.println("     judge:    " + (llm ? "LLM-based" : "keyword (no live LLM judge)"));
         System.out.println("     backend:  " + backend);
         System.out.println("     records:  " + records.size() + "   last activity: " + lastWhen);

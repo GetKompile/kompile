@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.codeindex;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -40,6 +41,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>The watcher debounces file change events: after detecting a change,
  * it waits for a quiet period (default 500ms) before triggering re-index.
  * This avoids re-indexing on every keystroke during active editing.</p>
+ *
+ * <p>Each pass re-indexes within the scope the index records at that moment
+ * ({@link LocalCodeIndexer#refreshRecordedScope}), so an explicit scope change
+ * from another process holds for the watcher's lifetime.</p>
  */
 public class IndexFileWatcher {
 
@@ -57,8 +62,6 @@ public class IndexFileWatcher {
     private final Path rootDir;
     private final String projectId;
     private final LocalCodeIndexer indexer;
-    private final String includePatterns;
-    private final String excludePatterns;
     private final PrintStream out;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Object changeLock = new Object();
@@ -87,16 +90,9 @@ public class IndexFileWatcher {
 
     public IndexFileWatcher(Path rootDir, String projectId,
                             LocalCodeIndexer indexer, PrintStream out) {
-        this(rootDir, projectId, indexer, null, null, out);
-    }
-
-    public IndexFileWatcher(Path rootDir, String projectId, LocalCodeIndexer indexer,
-                            String includePatterns, String excludePatterns, PrintStream out) {
         this.rootDir = rootDir.toAbsolutePath().normalize();
         this.projectId = projectId;
         this.indexer = indexer;
-        this.includePatterns = includePatterns;
-        this.excludePatterns = excludePatterns;
         this.out = out;
     }
 
@@ -262,9 +258,8 @@ public class IndexFileWatcher {
         if (l != null) l.onFilesChanged(pending);
 
         try {
-            LocalCodeIndexer.IndexResult result = indexer.index(
-                    rootDir, projectId, includePatterns, excludePatterns,
-                    new PrintStream(java.io.OutputStream.nullOutputStream()));
+            LocalCodeIndexer.IndexResult result = indexer.refreshRecordedScope(
+                    rootDir, projectId, new PrintStream(OutputStream.nullOutputStream()));
             if (l != null) l.onIndexUpdated(result);
             out.println("[watch] Re-indexed " + pending.size() + " changed file(s), " +
                     result.entitiesFound() + " entities total");

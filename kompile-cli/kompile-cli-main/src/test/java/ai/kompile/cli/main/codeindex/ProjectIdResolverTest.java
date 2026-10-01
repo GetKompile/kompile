@@ -24,6 +24,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -154,6 +155,35 @@ class ProjectIdResolverTest {
     }
 
     @Test
+    void manifestIndexWithEmptiedMetadataIsReportedAsUnindexed() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("torn-manifest-repo");
+        Files.createDirectories(project);
+        writeManifest(project, "torn-canonical", project);
+        writeIndexedProject(base, "torn-canonical", project, "2026-01-01T00:00:00Z");
+        Files.write(base.resolve("torn-canonical").resolve("metadata.json"), new byte[0]);
+
+        ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", project, base);
+        assertEquals("torn-canonical", r.projectId());
+        assertEquals("project-manifest-unindexed", r.source());
+    }
+
+    @Test
+    void registrationIndexWithEmptiedMetadataDoesNotHideValidRootIndex() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("torn-registration-repo");
+        Files.createDirectories(project);
+        writeRegistration(project, "torn-id");
+        writeIndexedProject(base, "torn-id", project, "2026-08-27T00:00:00Z");
+        Files.write(base.resolve("torn-id").resolve("metadata.json"), new byte[0]);
+        writeIndexedProject(base, "valid-id", project, "2026-01-01T00:00:00Z");
+
+        ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", project, base);
+        assertEquals("valid-id", r.projectId());
+        assertEquals("index-root", r.source());
+    }
+
+    @Test
     void unsafeManifestProjectIdCannotEscapeIndexRoot() throws Exception {
         Path base = baseIndexDir();
         Path project = tempDir.resolve("unsafe-manifest-repo");
@@ -262,5 +292,92 @@ class ProjectIdResolverTest {
 
         ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", cwd, base);
         assertEquals("good-project", r.projectId());
+    }
+
+    @Test
+    void indexingASubdirectoryUnderTheProjectIdIndexesTheManifestDeclaredRoot() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("redirect-repo");
+        Path nested = project.resolve("src/main/java");
+        Files.createDirectories(nested);
+        writeManifest(project, "redirect-id", project);
+
+        Path declared = project.toAbsolutePath().normalize();
+        assertEquals(declared, ProjectIdResolver.indexRoot("redirect-id", nested, base));
+        assertEquals(project, ProjectIdResolver.indexRoot("redirect-id", project, base));
+        assertEquals(nested, ProjectIdResolver.indexRoot("another-id", nested, base),
+                "another project's id indexes the directory it was given");
+    }
+
+    @Test
+    void indexingASubdirectoryUnderTheProjectIdIndexesTheRootItsIndexRecords() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("recorded-repo");
+        Path nested = project.resolve("module");
+        Path unrelated = tempDir.resolve("unrelated-repo");
+        Files.createDirectories(nested);
+        Files.createDirectories(unrelated);
+        writeIndexedProject(base, "recorded-id", project, "2026-01-01T00:00:00Z");
+
+        assertEquals(project.toAbsolutePath().normalize(),
+                ProjectIdResolver.indexRoot("recorded-id", nested, base));
+        assertEquals(unrelated, ProjectIdResolver.indexRoot("recorded-id", unrelated, base),
+                "a directory outside the recorded root is indexed as given");
+    }
+
+    @Test
+    void inactiveManifestEntryDoesNotRedirectIndexing() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("paused-redirect-repo");
+        Path nested = project.resolve("src");
+        Files.createDirectories(nested);
+        Files.writeString(project.resolve("kompile.project.json"), """
+                {"codingProjects":[{"codeProjectId":"paused-id","rootPath":"%s","lifecycle":"PAUSED"}]}
+                """.formatted(project.toAbsolutePath()));
+
+        assertNull(ProjectIdResolver.declaredRoot("paused-id", nested, base));
+        assertEquals(nested, ProjectIdResolver.indexRoot("paused-id", nested, base));
+    }
+
+    @Test
+    void manifestDeclarationWinsOverTheRootTheIndexRecords() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("declared-repo");
+        Path nested = project.resolve("src");
+        Path staleRoot = tempDir.resolve("stale-root");
+        Files.createDirectories(nested);
+        Files.createDirectories(staleRoot);
+        writeManifest(project, "declared-id", project);
+        writeIndexedProject(base, "declared-id", staleRoot, "2026-01-01T00:00:00Z");
+
+        assertEquals(project.toAbsolutePath().normalize(),
+                ProjectIdResolver.declaredRoot("declared-id", nested, base));
+    }
+
+    @Test
+    void relativeManifestRootResolvesAgainstTheManifestDirectory() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("relative-repo");
+        Path module = project.resolve("service");
+        Path nested = module.resolve("src");
+        Files.createDirectories(nested);
+        Files.writeString(project.resolve("kompile.project.json"), """
+                {"codingProjects":[{"codeProjectId":"relative-id","rootPath":"service","lifecycle":"ACTIVE"}]}
+                """);
+
+        assertEquals(module.toAbsolutePath().normalize(),
+                ProjectIdResolver.declaredRoot("relative-id", nested, base));
+    }
+
+    @Test
+    void tornIndexWithoutManifestDeclaresNoRoot() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("torn-undeclared-repo");
+        Files.createDirectories(project);
+        writeIndexedProject(base, "torn-undeclared", project, "2026-01-01T00:00:00Z");
+        Files.write(base.resolve("torn-undeclared").resolve("metadata.json"), new byte[0]);
+
+        assertNull(ProjectIdResolver.declaredRoot("torn-undeclared", project, base));
+        assertEquals(project, ProjectIdResolver.indexRoot("torn-undeclared", project, base));
     }
 }

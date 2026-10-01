@@ -75,7 +75,7 @@ public class RotatEModel implements KGEmbeddingModel {
      * {@code relationPhaseAngles}) live outside the workspace; in-place {@code .subi}/{@code .addi}
      * calls write through {@code .getRow()} views, which is safe across the workspace boundary.</p>
      */
-    private static final WorkspaceConfiguration ROTATE_BATCH_WS_CONFIG =
+    static final WorkspaceConfiguration ROTATE_BATCH_WS_CONFIG =
             WorkspaceConfiguration.builder()
                     .initialSize(512 * 1024 * 1024L)  // 512 MB: a full batch's per-triple allocs must FIT (RotatE ~2× TransE); spill isn't reclaimed by BLOCK_LEFT → climbs to OOM
                     .policyAllocation(AllocationPolicy.OVERALLOCATE)
@@ -86,24 +86,24 @@ public class RotatEModel implements KGEmbeddingModel {
                     .build();
 
     // Complex embeddings: stored as real and imaginary parts
-    private INDArray entityRealEmbeddings;   // [numEntities, embeddingDim]
-    private INDArray entityImagEmbeddings;   // [numEntities, embeddingDim]
-    private INDArray relationPhaseAngles;     // [numRelations, embeddingDim] - θ values
+    INDArray entityRealEmbeddings;   // [numEntities, embeddingDim]
+    INDArray entityImagEmbeddings;   // [numEntities, embeddingDim]
+    INDArray relationPhaseAngles;     // [numRelations, embeddingDim] - θ values
 
     // Index mappings
-    private Map<String, Integer> entityToIndex;
-    private Map<String, Integer> relationToIndex;
-    private List<String> indexToEntity;
-    private List<String> indexToRelation;
+    Map<String, Integer> entityToIndex;
+    Map<String, Integer> relationToIndex;
+    List<String> indexToEntity;
+    List<String> indexToRelation;
 
     // State
-    private int embeddingDim;
+    int embeddingDim;
     private final AtomicBoolean training = new AtomicBoolean(false);
     private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
     private boolean trained = false;
 
     // Embedding range parameter (γ/dim from paper)
-    private double embeddingRange;
+    double embeddingRange;
 
     /**
      * Creates an empty RotatE model.
@@ -435,8 +435,8 @@ public class RotatEModel implements KGEmbeddingModel {
      *
      * @return totalLoss / positives.size()
      */
-    private double trainBatch(List<Triple> positives, List<Triple> negatives,
-                              double learningRate, double margin) {
+    double trainBatch(List<Triple> positives, List<Triple> negatives,
+                      double learningRate, double margin) {
         double totalLoss = 0.0;
         int negPerPos = negatives.isEmpty() ? 0 : negatives.size() / positives.size();
         if (negPerPos == 0) return 0.0;

@@ -171,9 +171,10 @@ public class LlmGenerateController {
                 body.put("correlation", request.get("correlation"));
             }
             return ResponseEntity.ok(body);
-        } catch (UnsupportedOperationException imageUnsupported) {
+        } catch (StructuredChatLanguageModel.ImageInputUnsupportedException imageUnsupported) {
             // Structured capability error so CLI/web clients react to a real vision
-            // boundary instead of a generic parse failure.
+            // boundary instead of a generic parse failure. Only the dedicated type maps
+            // here: any other UnsupportedOperationException is a backend failure.
             Map<String, Object> body = structuredErrorResponse(imageUnsupported.getMessage());
             body.put("errorKind", "IMAGE_INPUT_UNSUPPORTED");
             if (request.get("correlation") != null) {

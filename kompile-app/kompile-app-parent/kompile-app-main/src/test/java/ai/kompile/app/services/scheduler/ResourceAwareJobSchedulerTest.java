@@ -4,6 +4,8 @@ import ai.kompile.app.config.GpuDevice;
 import ai.kompile.app.config.ResourceSchedulerConfig;
 import ai.kompile.app.services.GpuResourceManager;
 import ai.kompile.app.services.ModelLifecycleManager;
+import ai.kompile.app.subprocess.ManagedSubprocessLauncher.BackendPreference;
+import ai.kompile.app.subprocess.SubprocessPlacement;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -19,7 +21,6 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -53,10 +54,11 @@ class ResourceAwareJobSchedulerTest {
         configService = mock(ResourceSchedulerConfigService.class);
         when(configService.getConfiguration()).thenReturn(config);
 
-        when(gpuResourceManager.findBestDevice(anyString())).thenReturn(Optional.of(TEST_GPU));
-        when(gpuResourceManager.canFit(anyString(), any())).thenReturn(true);
+        when(modelLifecycleManager.admitJob(anyString(), anyLong(), any()))
+                .thenReturn(new ModelLifecycleManager.GpuAdmission(TEST_GPU, 2 * GB, List.of(), null));
         when(modelLifecycleManager.acquireGpuForJob(
-                anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class)))
+                anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class),
+                anyLong(), any()))
                 .thenReturn(TEST_GPU);
 
         scheduler = new ResourceAwareJobScheduler(
@@ -146,9 +148,33 @@ class ResourceAwareJobSchedulerTest {
             assertTrue(latch.await(5, TimeUnit.SECONDS));
             future.get(5, TimeUnit.SECONDS);
 
+            // Reserves the job's cap (its profile peak) on whichever device the manager picks
             verify(modelLifecycleManager).acquireGpuForJob(
-                    eq("j1"), anyString(), anyString(), eq(ModelLifecycleManager.HoldLifetime.BOUNDED));
+                    eq("j1"), anyString(), anyString(), eq(ModelLifecycleManager.HoldLifetime.BOUNDED),
+                    eq(2 * GB), isNull());
             verify(modelLifecycleManager).releaseGpuForJob("j1");
+        }
+
+        @Test
+        void gpuJobIsPlacedOnTheDeviceItAcquired() throws Exception {
+            // Every other test acquires device 0, so a placement that dropped the acquired device
+            // and fell back to the default would still pass them.
+            GpuDevice secondGpu = new GpuDevice(1, 1, "Second GPU", 8 * GB, "local");
+            when(modelLifecycleManager.acquireGpuForJob(
+                    anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class),
+                    anyLong(), any()))
+                    .thenReturn(secondGpu);
+            AtomicReference<SubprocessPlacement> received = new AtomicReference<>();
+            ScheduledJob job = buildGpuJob("j1", "ingest", ctx -> received.set(ctx.placement()));
+
+            scheduler.submit(job).get(5, TimeUnit.SECONDS);
+
+            SubprocessPlacement placement = received.get();
+            assertNotNull(placement, "Executor should receive the scheduler's placement");
+            assertEquals(BackendPreference.GPU, placement.backend());
+            assertEquals(1, placement.deviceId());
+            assertEquals(2 * GB, placement.maxDeviceMemoryBytes());
+            assertEquals(placement, job.getAssignedPlacement());
         }
 
         @Test
@@ -459,7 +485,8 @@ class ResourceAwareJobSchedulerTest {
 
             // acquireGpuForJob called twice: initial + re-acquire, both with explicit lifetime
             verify(modelLifecycleManager, atLeast(2)).acquireGpuForJob(
-                    eq("j1"), anyString(), anyString(), eq(ModelLifecycleManager.HoldLifetime.BOUNDED));
+                    eq("j1"), anyString(), anyString(), eq(ModelLifecycleManager.HoldLifetime.BOUNDED),
+                    anyLong(), any());
 
             doneLatch.countDown();
         }
@@ -565,7 +592,8 @@ class ResourceAwareJobSchedulerTest {
         @Test
         void gpuAcquisitionFailureFailsJob() throws Exception {
             when(modelLifecycleManager.acquireGpuForJob(
-                    anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class)))
+                    anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class),
+                    anyLong(), any()))
                     .thenThrow(new IllegalStateException("No GPU available"));
 
             ScheduledJob job = buildGpuJob("j1", "ingest", ctx -> fail("Should not execute"));

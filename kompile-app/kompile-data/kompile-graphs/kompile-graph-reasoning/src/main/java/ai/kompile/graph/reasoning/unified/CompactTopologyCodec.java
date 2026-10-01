@@ -233,9 +233,9 @@ final class CompactTopologyCodec {
     }
 
     static Cursor openCursor(
-            InputStream input, int expectedNodes, int expectedTypes, int expectedLinks, int maxStringBytes)
-            throws IOException {
-        return new Cursor(input, expectedNodes, expectedTypes, expectedLinks, maxStringBytes);
+            InputStream input, int expectedNodes, int expectedTypes, int expectedLinks, int maxStringBytes,
+            Path scratchDirectory) throws IOException {
+        return new Cursor(input, expectedNodes, expectedTypes, expectedLinks, maxStringBytes, scratchDirectory);
     }
 
     static RecordCursor openRecordCursor(
@@ -245,8 +245,10 @@ final class CompactTopologyCodec {
             int expectedTypes,
             int expectedLinks,
             int maxStringBytes,
-            int maxPropertyRowChars) throws IOException {
-        Cursor cursor = openCursor(links, expectedNodes, expectedTypes, expectedLinks, maxStringBytes);
+            int maxPropertyRowChars,
+            Path scratchDirectory) throws IOException {
+        Cursor cursor = openCursor(
+                links, expectedNodes, expectedTypes, expectedLinks, maxStringBytes, scratchDirectory);
         try {
             return new RecordCursor(cursor, new PropertyCursor(properties, maxPropertyRowChars));
         } catch (RuntimeException failure) {
@@ -263,10 +265,11 @@ final class CompactTopologyCodec {
             int expectedLinks,
             int maxStringBytes,
             int maxPropertyRowChars,
+            Path scratchDirectory,
             LinkConsumer consumer) throws IOException {
         try (RecordCursor cursor = openRecordCursor(
                 links, properties, expectedNodes, expectedTypes, expectedLinks,
-                maxStringBytes, maxPropertyRowChars)) {
+                maxStringBytes, maxPropertyRowChars, scratchDirectory)) {
             LinkRecord link;
             while ((link = cursor.next()) != null) consumer.accept(link);
         }
@@ -341,8 +344,8 @@ final class CompactTopologyCodec {
         private int position;
         private boolean endValidated;
 
-        Cursor(InputStream input, int expectedNodes, int expectedTypes, int expectedLinks, int maxStringBytes)
-                throws IOException {
+        Cursor(InputStream input, int expectedNodes, int expectedTypes, int expectedLinks, int maxStringBytes,
+                Path scratchDirectory) throws IOException {
             this.in = new DataInputStream(input);
             this.maxStringBytes = Math.max(1, maxStringBytes);
             int magic = in.readInt();
@@ -361,7 +364,7 @@ final class CompactTopologyCodec {
             }
             this.nodes = readDictionary(in, nodeCount, this.maxStringBytes, false, "node");
             this.types = readDictionary(in, typeCount, this.maxStringBytes, true, "relation type");
-            this.relationIds = new DiskStringSet(linkCount);
+            this.relationIds = new DiskStringSet(linkCount, scratchDirectory);
         }
 
         CoreLink next() throws IOException {
@@ -612,7 +615,7 @@ final class CompactTopologyCodec {
         private final RandomAccessFile values;
         private final int slotMask;
 
-        DiskStringSet(int expectedSize) throws IOException {
+        DiskStringSet(int expectedSize, Path scratchDirectory) throws IOException {
             int desired = Math.max(2, expectedSize <= Integer.MAX_VALUE / 2
                     ? expectedSize * 2 : Integer.MAX_VALUE);
             int slots = 1;
@@ -623,8 +626,8 @@ final class CompactTopologyCodec {
             Path createdIndex = null;
             Path createdValues = null;
             try {
-                createdIndex = Files.createTempFile("kompile-kgraph-link-ids-", ".idx");
-                createdValues = Files.createTempFile("kompile-kgraph-link-ids-", ".dat");
+                createdIndex = KGraphScratch.temporaryFile(scratchDirectory, "kompile-kgraph-link-ids-", ".idx");
+                createdValues = KGraphScratch.temporaryFile(scratchDirectory, "kompile-kgraph-link-ids-", ".dat");
             } catch (IOException failure) {
                 if (createdIndex != null) Files.deleteIfExists(createdIndex);
                 if (createdValues != null) Files.deleteIfExists(createdValues);

@@ -17,6 +17,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -61,6 +62,28 @@ class GraphReasoningQueryControllerTest {
         verify(queryService).execute(request.capture());
         assertEquals("capabilities", request.getValue().operation());
         assertEquals(42L, request.getValue().factSheetId());
+    }
+
+    @Test
+    void quantitativeObjectReachesTheServiceAsParsedJson() throws Exception {
+        when(queryService.execute(any())).thenReturn(new GraphQueryEngine.Result(
+                GraphQueryEngine.Status.OK,
+                GraphQueryEngine.Intent.CALCULATE,
+                "Calculated a3 = 30.0.",
+                List.of(), List.of(), List.of(), List.of(), List.of()));
+
+        mockMvc.perform(post(GraphReasoningQueryController.BASE_PATH + "/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"operation\":\"CALCULATE\","
+                                + "\"quantitative\":{\"target\":{\"entityId\":\"a3\"},\"topK\":3}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.summary").value("Calculated a3 = 30.0."));
+
+        ArgumentCaptor<GraphReasoningQueryService.QueryRequest> request =
+                ArgumentCaptor.forClass(GraphReasoningQueryService.QueryRequest.class);
+        verify(queryService).execute(request.capture());
+        assertEquals(Map.of("target", Map.of("entityId", "a3"), "topK", 3),
+                request.getValue().quantitative());
     }
 
     @Test

@@ -495,7 +495,9 @@ public class ChatSessionMetrics {
     public String compactTokenSummary() {
         StringBuilder sb = new StringBuilder();
         if (hasActualTokenCounts()) {
-            sb.append('\u2191').append(formatNumber(getInputTokens()))
+            // The input arrow includes cached input, just like the total. The
+            // disjoint billing categories remain available through the getters/JSON.
+            sb.append('\u2191').append(formatNumber(getTotalInputTokens()))
               .append(" \u2193").append(formatNumber(getOutputTokens()))
               .append(" \u03a3").append(formatNumber(getTotalTokens()));
         } else {

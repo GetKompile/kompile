@@ -130,6 +130,39 @@ class UnifiedGraphArchiveQueryEngineTest {
     }
 
     @Test
+    void relationTypeFiltersFollowTheMaterializedEngineSpellingRule() throws Exception {
+        Path path = directory.resolve("spelling.kgraph");
+        graph().addRelation(new SimpleGraphRelation("leads", "alpha", "gamma", "leadsProject",
+                0.7, 0.7, true, Set.of(), null, null, Map.of())).saveCompact(path);
+        GraphQueryEngine.Query relationsQuery = new GraphQueryEngine.Query(
+                GraphQueryEngine.Intent.RELATIONS, null, null, null, List.of("worksAt"), null, 10,
+                null, null, null);
+        GraphQueryEngine.Query factsQuery = new GraphQueryEngine.Query(
+                GraphQueryEngine.Intent.FACTS, null, null, null, List.of("works-at", "LEADS_PROJECT"), null, 10,
+                null, null, null);
+        GraphQueryEngine.Query factsByText = new GraphQueryEngine.Query(
+                GraphQueryEngine.Intent.FACTS, null, null, null, List.of(), null, 10,
+                null, null, "leads_project");
+
+        try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(path)) {
+            UnifiedGraphArchiveQueryEngine engine = new UnifiedGraphArchiveQueryEngine();
+            UnifiedGraph materialized = UnifiedGraph.load(path);
+            GraphQueryEngine.Result relations = engine.query(archive, relationsQuery);
+            GraphQueryEngine.Result facts = engine.query(archive, factsQuery);
+            GraphQueryEngine.Result materializedFacts = new GraphQueryEngine().query(materialized, factsQuery);
+
+            assertEquals(List.of("works"), relations.relations().stream()
+                    .map(GraphQueryEngine.RelationView::id).toList());
+            // Canonical names decide what matches; atoms keep the spelling the graph stores.
+            assertEquals(List.of("WORKS_AT(beta,gamma)", "leadsProject(alpha,gamma)"), relationAtoms(facts));
+            assertEquals(relationAtoms(materializedFacts), relationAtoms(facts));
+            assertEquals(List.of("leadsProject(alpha,gamma)"), relationAtoms(engine.query(archive, factsByText)));
+            assertEquals(List.of("leadsProject(alpha,gamma)"),
+                    relationAtoms(new GraphQueryEngine().query(materialized, factsByText)));
+        }
+    }
+
+    @Test
     void exposesBoundedEntityAndVectorCursors() throws Exception {
         Path path = directory.resolve("cursor.kgraph");
         graph().saveCompact(path);
@@ -149,6 +182,14 @@ class UnifiedGraphArchiveQueryEngineTest {
             assertEquals(3, vectorRows);
             assertEquals(VectorLayer.Target.ENTITY, vectors.target());
         }
+    }
+
+    private static List<?> relationAtoms(GraphQueryEngine.Result result) {
+        return ((List<?>) result.data().get("facts")).stream()
+                .map(row -> (Map<?, ?>) row)
+                .filter(row -> "relation".equals(row.get("kind")))
+                .map(row -> row.get("atom"))
+                .toList();
     }
 
     private static GraphQueryEngine.Query query(GraphQueryEngine.Intent intent, String text) {

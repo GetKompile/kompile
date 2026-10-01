@@ -550,6 +550,7 @@ final class ProjectLocalLearningSubprocessExecutor {
         command.add(JavaRuntimeLocator.javaExecutable());
         command.add("-Xmx" + heapMb + "m");
         command.addAll(SubprocessEnvironmentPropagator.buildSystemPropertyFlags(childClasspath));
+        command.addAll(userHomeFlags());
         command.add("-XX:+UseG1GC");
         command.add("-XX:MaxGCPauseMillis=200");
         command.add("-XX:+ExitOnOutOfMemoryError");
@@ -632,6 +633,7 @@ final class ProjectLocalLearningSubprocessExecutor {
         command.add("-Xmx" + heapMb + "m");
         command.addAll(SubprocessEnvironmentPropagator.buildSystemPropertyFlags(
                 childClasspath));
+        command.addAll(userHomeFlags());
         if (!nativeExecutable) {
             command.add("-XX:+UseG1GC");
             command.add("-XX:MaxGCPauseMillis=200");
@@ -660,6 +662,16 @@ final class ProjectLocalLearningSubprocessExecutor {
         File distHome = ComponentRegistry.inferDistributionHome(artifact);
         if (distHome != null) environment.put("KOMPILE_DIST_HOME", distHome.getAbsolutePath());
         return new LaunchSpec(command, environment, artifact.toString());
+    }
+
+    /**
+     * The parent's {@code user.home} for the child. Its ND4J caches and config live under
+     * {@code ~/.kompile}; without the flag the child uses the account home even when the parent
+     * runs with another one (a relocated home, or a test's temporary one).
+     */
+    private static List<String> userHomeFlags() {
+        String home = System.getProperty("user.home");
+        return home == null || home.isBlank() ? List.of() : List.of("-Duser.home=" + home);
     }
 
     private static BackendPreference learningBackendPreference(String childClasspath) {
@@ -1055,10 +1067,22 @@ final class ProjectLocalLearningSubprocessExecutor {
                         + entry.getKey());
             }
         }
-        if (!before.relationOpinions().equals(after.relationOpinions())) {
-            throw new IOException("Learning subprocess changed relation opinions");
+        // Relation opinions follow the same rule. Learning projects its consensus posterior onto
+        // every relation whose target it trained, so those are learning-owned; any other relation
+        // opinion, including one the child adds, must match the input.
+        Set<String> learningProjectedRelationIds = plan.reasoning().enabled()
+                ? learningProjectedRelationIds(after) : Set.of();
+        Set<String> opinionRelationIds = new LinkedHashSet<>(before.relationOpinions().keySet());
+        opinionRelationIds.addAll(after.relationOpinions().keySet());
+        for (String relationId : opinionRelationIds) {
+            if (!learningProjectedRelationIds.contains(relationId)
+                    && !Objects.equals(before.relationOpinion(relationId),
+                    after.relationOpinion(relationId))) {
+                throw new IOException("Learning subprocess changed non-learning relation opinion "
+                        + relationId);
+            }
         }
-        if (!before.weightMaps().equals(after.weightMaps())) {
+        if (!nonLearningWeightMaps(before, plan).equals(nonLearningWeightMaps(after, plan))) {
             throw new IOException("Learning subprocess changed unrelated weight maps");
         }
 
@@ -1128,12 +1152,49 @@ final class ProjectLocalLearningSubprocessExecutor {
         return Set.copyOf(ids);
     }
 
+    /**
+     * Relation ids whose opinions the learning lifecycle owns: every relation whose consensus
+     * target the returned graph stores. Derived from the graph rather than a meta id list, which
+     * would grow with the relation count. An unreadable targets model owns nothing, so the guard
+     * stays strict.
+     */
+    static Set<String> learningProjectedRelationIds(UnifiedGraph graph) {
+        Objects.requireNonNull(graph, "graph");
+        Object model;
+        try {
+            model = graph.model(UnifiedGraphReasoningLifecycle.CONSENSUS_TARGETS_ARTIFACT);
+        } catch (RuntimeException e) {
+            return Set.of();
+        }
+        if (!(model instanceof Map<?, ?> targets) || targets.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> ids = new LinkedHashSet<>();
+        for (GraphRelation relation : graph.relations()) {
+            if (targets.containsKey(UnifiedGraphReasoningLifecycle.relationTargetKey(
+                    relation.type(), relation.sourceId(), relation.targetId()))) {
+                ids.add(relation.id());
+            }
+        }
+        return ids;
+    }
+
+    private Map<String, Map<String, Double>> nonLearningWeightMaps(UnifiedGraph graph, Plan plan) {
+        Map<String, Map<String, Double>> maps = new LinkedHashMap<>(graph.weightMaps());
+        if (plan.reasoning().enabled()) {
+            maps.keySet().removeIf(UnifiedGraphReasoningLifecycle::isLearnedWeightMap);
+        }
+        return maps;
+    }
+
     private Set<String> nonLearningArtifacts(UnifiedGraph graph, Plan plan) {
         Set<String> names = new LinkedHashSet<>();
         graph.artifacts().keySet().stream()
                 .filter(name -> !(plan.embedding().enabled()
                         && UnifiedGraphKgeLifecycle.MODEL_ARTIFACT.equals(name)))
-                .filter(name -> !(plan.reasoning().enabled() && name.startsWith("reasoning/")))
+                // Recorded traces are not learned: the guard below requires them unchanged.
+                .filter(name -> !(plan.reasoning().enabled()
+                        && UnifiedGraphReasoningLifecycle.isLearnedArtifact(name)))
                 .forEach(names::add);
         return names;
     }

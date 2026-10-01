@@ -100,7 +100,7 @@ class ChatConfigTest {
         String originalHome = System.getProperty("user.home");
         System.setProperty("user.home", tempDir.toString());
         try {
-            new ChatConfig("ollama", null, "global-model", null).saveGlobal();
+            new ChatConfig("custom", null, "global-model", "http://localhost:9000/v1").saveGlobal();
             // A Kompile-managed OAuth vendor: anthropic oauth is now the claude
             // CLI route (credential owned by Claude Code), so the managed-store
             // guarantee is exercised on openai-codex instead.
@@ -163,7 +163,7 @@ class ChatConfigTest {
     @Test
     void standardChatThinkingEffortPersistsWithTheSelectedModel() throws Exception {
         Path project = tempDir.resolve("thinking-project");
-        ChatConfig config = new ChatConfig("ollama", null, "reasoning-model", null);
+        ChatConfig config = new ChatConfig("custom", null, "reasoning-model", "http://localhost:9000/v1");
         config.setThinking("high");
 
         config.saveProject(project);
@@ -323,7 +323,7 @@ class ChatConfigTest {
 
     @Test
     void providerSwitchCarriesLiveLlmSettingsWithoutAUserModelOverlay() {
-        ChatConfig active = new ChatConfig("ollama", null, null, null);
+        ChatConfig active = new ChatConfig("openai", null, null, null);
         ChatConfig selected = new ChatConfig("custom", null, "selected-model", "http://localhost:9000/v1");
 
         active.applyLlmSettingsFrom(selected);
@@ -471,7 +471,6 @@ class ChatConfigTest {
                         DirectLlmClient.WireProtocol.OPENCODE, false},
                 {"kompile-local", "local-model",
                         DirectLlmClient.WireProtocol.KOMPILE_LOCAL, false},
-                {"ollama", "llama3.3", DirectLlmClient.WireProtocol.OPENAI_CHAT, false},
                 {"zai", "fixture-model", DirectLlmClient.WireProtocol.OPENAI_CHAT, false},
                 {"custom", "custom-model", DirectLlmClient.WireProtocol.OPENAI_CHAT, false}
         };

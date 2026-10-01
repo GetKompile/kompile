@@ -11,14 +11,19 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.graph.GraphServiceRouting;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -39,18 +44,23 @@ import static org.junit.jupiter.api.Assertions.*;
  * with a running kompile-app, tests are limited to metadata, validation, and
  * error-guard paths. No running server is required.
  */
+@TemporaryUserHome
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class KnowledgeGraphToolTest {
 
     private KnowledgeGraphTool tool;
     private KnowledgeGraphTool noUrlTool;
     private ToolContext context;
     private ObjectMapper om;
+    private String previousAdmissionMode;
 
     @TempDir
     Path tempDir;
 
     @BeforeEach
     void setUp() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
         om = new ObjectMapper();
         tool = new KnowledgeGraphTool("http://localhost:8080", om);
         noUrlTool = new KnowledgeGraphTool("", om);
@@ -62,6 +72,15 @@ class KnowledgeGraphToolTest {
         perms.setUserOverride("knowledge_graph", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
         context = new ToolContext("test-session", agent, perms, tempDir, registry);
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -613,20 +632,21 @@ class KnowledgeGraphToolTest {
         server.createContext("/v1/chat/completions", exchange -> {
             JsonNode request = om.readTree(exchange.getRequestBody());
             captured.set(request);
-            // Protocol-faithful stub: a strict json_schema request is the corpus
-            // schema pre-pass and must be answered with the requested tool's
-            // argument shape; the required property names in the wire schema
-            // (nodeTypes vs relationshipTypes) identify the pass. Plain text
-            // requests get the extraction graph.
+            // Protocol-faithful stub: a strict json_schema request is a corpus
+            // schema pass and must be answered with the requested tool's
+            // argument shape. Each pass names its one array field as the wire
+            // schema's required property (nodeTypes, relationshipTypes,
+            // classifications, witnesses), and an empty array is that pass's
+            // valid abstention. Plain text requests get the extraction graph.
             JsonNode required = request.path("response_format").path("json_schema")
                     .path("schema").path("required");
             String payload;
             if (!required.isArray() || required.isEmpty()) {
                 payload = "{\"entities\":[{\"id\":\"acme\",\"name\":\"Acme\",\"type\":\"ORGANIZATION\"}],\"relations\":[]}";
-            } else if ("relationshipTypes".equals(required.get(0).asText())) {
-                payload = "{\"relationshipTypes\":[]}";
             } else {
-                payload = "{\"nodeTypes\":[]}";
+                ObjectNode abstention = om.createObjectNode();
+                abstention.putArray(required.get(0).asText());
+                payload = abstention.toString();
             }
             ObjectNode event = om.createObjectNode();
             event.putArray("choices").addObject().putObject("delta").put("content", payload);

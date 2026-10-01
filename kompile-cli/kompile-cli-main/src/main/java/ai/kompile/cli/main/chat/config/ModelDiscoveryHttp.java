@@ -409,9 +409,7 @@ public final class ModelDiscoveryHttp {
         String value = base.trim().replaceAll("/+$", "");
         String vendor = normalize(provider);
         Set<String> routes = new LinkedHashSet<>();
-        if ("ollama".equals(vendor)) {
-            routes.add(endpointWithoutSuffix(value, "/v1", "/api/tags"));
-        } else if ("gemini".equals(vendor)) {
+        if ("gemini".equals(vendor)) {
             routes.add(endpointWithoutSuffix(value, "/openai", "/models"));
             routes.add(endpoint(rootUrl(value), "/v1beta/models"));
         } else if ("radius".equals(vendor)) {

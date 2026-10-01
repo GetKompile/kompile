@@ -9,9 +9,16 @@
  */
 package ai.kompile.graph.reasoning.learning;
 
+import ai.kompile.graph.reasoning.bayesian.BayesianNetwork;
+import ai.kompile.graph.reasoning.bayesian.BayesianNode;
 import ai.kompile.graph.reasoning.fol.MebnInferenceService;
+import ai.kompile.graph.reasoning.fol.ReasoningGraphKnowledgeBase;
+import ai.kompile.graph.reasoning.mebn.EntityType;
 import ai.kompile.graph.reasoning.mebn.MFrag;
 import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.RandomVariable;
+import ai.kompile.graph.reasoning.mebn.RelationalMTheoryBuilder;
+import ai.kompile.graph.reasoning.mebn.SSBNGenerator;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
@@ -21,11 +28,14 @@ import org.junit.jupiter.api.Test;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -324,6 +334,176 @@ class SameDiffMebnStrengthLearnerTest {
 
         assertEquals(Set.of("cause(alice)"), keys,
                 "learning should request only parent posteriors needed by matching child targets");
+    }
+
+    // ─── Child-RV matching: a longer RV name sharing the child's prefix is not a grounding ───
+
+    @Test
+    void edge_groundsOnlyItsOwnChildRv() {
+        MebnWeightLearner.Edge edge = causalEdge("cause", "effect");
+
+        assertEquals(Optional.of("cause(alice)"), edge.parentKeyFor("effect(alice)"));
+        assertEquals(Optional.empty(), edge.parentKeyFor("effective(alice)"));
+        assertEquals(Optional.empty(), edge.parentKeyFor("effects"));
+        // effect takes one Person: neither a bare name nor two ids is one of its groundings.
+        assertEquals(Optional.empty(), edge.parentKeyFor("effect"));
+        assertEquals(Optional.empty(), edge.parentKeyFor("effect(alice,bob)"));
+        assertEquals(Optional.empty(), edge.parentKeyFor("effect()"), "an empty id names no entity");
+        assertEquals(Optional.empty(), edge.parentKeyFor("effect(alice"));
+    }
+
+    @Test
+    void edge_parentKeyFor_bindsParentArgVarsByNameLikeTheSsbn() {
+        MFrag frag = employmentFrag();
+
+        assertEquals(Optional.of("hiring(acme)"),
+                new MebnWeightLearner.Edge(frag, "hiring", "worksFor").parentKeyFor("worksFor(alice,acme)"),
+                "hiring's only argument is the child's second one, Org_1");
+        assertEquals(Optional.of("employed(alice)"),
+                new MebnWeightLearner.Edge(frag, "employed", "worksFor").parentKeyFor("worksFor(alice,acme)"));
+        assertEquals(Optional.empty(),
+                new MebnWeightLearner.Edge(frag, "funded", "worksFor").parentKeyFor("worksFor(alice,acme)"),
+                "the child binds no Org_0, so the SSBN grounds funded once per Org");
+        assertEquals(Optional.empty(),
+                new MebnWeightLearner.Edge(frag, "missing", "worksFor").parentKeyFor("worksFor(alice,acme)"),
+                "a parent the MFrag does not declare has no grounding");
+    }
+
+    @Test
+    void buildMatrixBatch_skipsGroundingsNoEdgeCanRead() {
+        MFrag frag = employmentFrag();
+        List<MebnWeightLearner.Edge> edges = List.of(
+                new MebnWeightLearner.Edge(frag, "funded", "worksFor"),
+                new MebnWeightLearner.Edge(frag, "missing", "worksFor"));
+        Map<String, Double> observations = Map.of("worksFor(alice,acme)", 1.0);
+
+        assertEquals(Set.of(), SameDiffMebnStrengthLearner.requiredPosteriorKeys(edges, observations));
+        assertEquals(0, SameDiffMebnStrengthLearner.buildMatrixBatch(edges, Map.of(), observations).rowCount(),
+                "a grounding with no single parent on any edge adds only zeros to the mean loss");
+    }
+
+    /**
+     * {@code worksFor(Person_0, Org_1)} with three inputs: {@code hiring} over the child's Org_1,
+     * {@code employed} over its Person_0, and {@code funded} over an Org_0 the child does not bind.
+     */
+    private static MFrag employmentFrag() {
+        EntityType person = new EntityType("Person");
+        EntityType org = new EntityType("Org");
+        return new MFrag("Employment")
+                .addResidentNode(RandomVariable.binary("worksFor", person, org, RandomVariable.NodeRole.RESIDENT))
+                .addInputNode(RandomVariable.unary("hiring", "Org_1", org, RandomVariable.NodeRole.INPUT))
+                .addInputNode(RandomVariable.unary("employed", person, RandomVariable.NodeRole.INPUT))
+                .addInputNode(RandomVariable.unary("funded", org, RandomVariable.NodeRole.INPUT))
+                .addParentEdge("hiring", "worksFor", 0.5)
+                .addParentEdge("employed", "worksFor", 0.5)
+                .addParentEdge("funded", "worksFor", 0.5);
+    }
+
+    @Test
+    void edge_parentKeyFor_namesTheParentTheSsbnWires() {
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        graph.addEntity(GraphEntity.builder("alice").type("Person").label("Alice").build());
+        graph.addEntity(GraphEntity.builder("bob").type("Person").label("Bob").build());
+        graph.addEntity(GraphEntity.builder("acme").type("Org").label("Acme").build());
+        graph.addRelation("r1", "alice", "acme", "worksFor", 1.0);
+        graph.addRelation("r2", "bob", "acme", "worksFor", 1.0);
+        MTheory theory = employmentTheory();
+        MebnWeightLearner.Edge edge = SameDiffMebnStrengthLearner.collectEdges(theory).get(0);
+
+        BayesianNetwork ssbn = new SSBNGenerator(theory, new ReasoningGraphKnowledgeBase(graph)).generate();
+
+        for (String child : List.of("worksFor(alice,acme)", "worksFor(bob,acme)")) {
+            BayesianNode node = ssbn.getNode(child);
+            assertNotNull(node, child + " must be grounded");
+            List<String> parents = node.getParents().stream().map(BayesianNode::getVariableName).toList();
+            assertEquals(List.of(edge.parentKeyFor(child).orElseThrow()), parents);
+        }
+    }
+
+    @Test
+    void requiredPosteriorKeys_skipsLongerRvNamesSharingTheChildPrefix() {
+        Set<String> keys = SameDiffMebnStrengthLearner.requiredPosteriorKeys(List.of(causalEdge("cause", "effect")), Map.of(
+                "effect(alice)", 1.0,
+                "effective(bob)", 1.0));
+
+        assertEquals(Set.of("cause(alice)"), keys, "effective(bob) must not ask for causeive(bob)");
+    }
+
+    @Test
+    void buildMatrixBatch_keepsChildRvsSharingAPrefixApart() {
+        // Two edges whose child RV names share a prefix, as KG predicates often do.
+        List<MebnWeightLearner.Edge> edges = List.of(
+                causalEdge("cause", "effect"), causalEdge("trigger", "effective"));
+        Map<String, Double> observations = new LinkedHashMap<>();
+        observations.put("effective(alice)", 0.0);
+        observations.put("effect(bob)", 1.0);
+        observations.put("effects(carol)", 1.0);
+
+        SameDiffMebnStrengthLearner.MatrixBatch batch = SameDiffMebnStrengthLearner.buildMatrixBatch(
+                edges, Map.of("cause(bob)", 0.8, "trigger(alice)", 0.6), observations);
+
+        assertEquals(2, batch.rowCount(), "effects(carol) grounds neither child");
+        assertArrayEquals(new double[]{0.0, 0.6}, batch.pParent()[0], "effective(alice) feeds only its own edge");
+        assertArrayEquals(new double[]{0.0, 0.0}, batch.target()[0]);
+        assertArrayEquals(new double[]{0.8, 0.0}, batch.pParent()[1], "effect(bob) feeds only its own edge");
+        assertArrayEquals(new double[]{1.0, 0.0}, batch.target()[1]);
+    }
+
+    @Test
+    void analyticGradient_skipsLongerRvNamesSharingTheChildPrefix() {
+        MebnWeightLearner.Edge edge = causalEdge("cause", "effect");
+        Map<String, Double> posteriors = Map.of(
+                "effect(alice)", 0.4, "cause(alice)", 0.7, "effective(bob)", 0.1);
+        MebnWeightLearner learner = new MebnWeightLearner();
+
+        double childOnly = learner.analyticGradient(edge, 0.3, posteriors, Map.of("effect(alice)", 1.0));
+        double withLongerName = learner.analyticGradient(edge, 0.3, posteriors,
+                Map.of("effect(alice)", 1.0, "effective(bob)", 0.0));
+
+        assertTrue(childOnly < 0, "fitting effect(alice)=1 must pull s up, got " + childOnly);
+        assertEquals(childOnly, withLongerName, 1e-12, "effective(bob) must not enter the effect gradient");
+    }
+
+    // ─── Relation MFrags: a binary child over a unary relevance parent ───
+
+    @Test
+    void buildMatrixBatch_readsTheRelevanceOfEachRelationSource() {
+        List<MebnWeightLearner.Edge> edges = SameDiffMebnStrengthLearner.collectEdges(employmentTheory());
+        assertEquals(1, edges.size(), "the relation MFrag has one learnable edge, isRelevant -> worksFor");
+        MebnWeightLearner.Edge edge = edges.get(0);
+
+        assertEquals(Optional.of("isRelevant(alice)"), edge.parentKeyFor("worksFor(alice,acme)"));
+        assertEquals(Optional.empty(), edge.parentKeyFor("worksFor(alice)"));
+        assertEquals(Optional.empty(), edge.parentKeyFor("worksFor(alice,acme,bob)"));
+
+        Map<String, Double> observations = new LinkedHashMap<>();
+        observations.put("worksFor(alice,acme)", 1.0);
+        observations.put("worksFor(bob,acme)", 0.0);
+        assertEquals(Set.of("isRelevant(alice)", "isRelevant(bob)"),
+                SameDiffMebnStrengthLearner.requiredPosteriorKeys(edges, observations));
+
+        SameDiffMebnStrengthLearner.MatrixBatch batch = SameDiffMebnStrengthLearner.buildMatrixBatch(
+                edges, Map.of("isRelevant(alice)", 0.8, "isRelevant(bob)", 0.3), observations);
+
+        assertEquals(2, batch.rowCount());
+        assertArrayEquals(new double[]{0.8}, batch.pParent()[0], "worksFor(alice,acme) reads alice's relevance");
+        assertArrayEquals(new double[]{1.0}, batch.target()[0]);
+        assertArrayEquals(new double[]{0.3}, batch.pParent()[1], "worksFor(bob,acme) reads bob's relevance");
+        assertArrayEquals(new double[]{0.0}, batch.target()[1]);
+    }
+
+    /** {@code worksFor(Person, Org)} over alice and bob working for acme, as the KG registers relation types. */
+    private static MTheory employmentTheory() {
+        return RelationalMTheoryBuilder.build("Employment", List.of(new RelationalMTheoryBuilder.RelationDescriptor(
+                "worksFor", "Person", "Org", 0.4, List.of("alice", "bob"), List.of("acme"))));
+    }
+
+    /** The one learnable edge of a {@code parent(X) → child(X)} causal theory over the people fixture. */
+    private static MebnWeightLearner.Edge causalEdge(String parent, String child) {
+        MTheory theory = MebnInferenceService.buildCausalTheory(people(), "Person", parent, child, 0.3);
+        List<MebnWeightLearner.Edge> edges = SameDiffMebnStrengthLearner.collectEdges(theory);
+        assertEquals(1, edges.size(), "a causal theory has exactly one learnable edge");
+        return edges.get(0);
     }
 
     // ─── Test 5: Adam convergence + [0,1] projection ──────────────────────────

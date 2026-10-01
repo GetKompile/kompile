@@ -7,6 +7,7 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphClaimTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool;
@@ -25,11 +26,15 @@ import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -37,6 +42,8 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
+@TemporaryUserHome
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class OfflineMcpToolContractTest {
 
     @TempDir
@@ -44,9 +51,12 @@ class OfflineMcpToolContractTest {
 
     private ObjectMapper mapper;
     private ToolContext context;
+    private String previousAdmissionMode;
 
     @BeforeEach
     void setUp() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
         mapper = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("offline-test")
                 .enabledTools(Set.of("*"))
@@ -54,6 +64,15 @@ class OfflineMcpToolContractTest {
         PermissionService permissions = new PermissionService();
         permissions.setAutoApproveAll(true);
         context = new ToolContext("stdio-only", agent, permissions, projectDir, new ToolRegistry(mapper));
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
     }
 
     @Test

@@ -36,13 +36,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -291,13 +289,10 @@ class WeightLearningLoopTest {
             assertTrue(content.startsWith("{"), "MEBN weight file must be valid JSON object");
         }
 
-        // Verify the cascade counter advances (accessible via reflection for test)
         // Counter must be MEBN_LEARNING_INTERVAL (10) after 10 cascades
-        ConcurrentHashMap<?, ?> counters = (ConcurrentHashMap<?, ?>)
-                getField(orchestrator, "cascadeCounters");
-        Object counter = counters.get(FS_ID);
+        var counter = orchestrator.cascadeCounters.get(FS_ID);
         if (counter != null) {
-            long countValue = ((java.util.concurrent.atomic.AtomicLong) counter).get();
+            long countValue = counter.get();
             assertEquals(IncrementalReasoningOrchestrator.MEBN_LEARNING_INTERVAL, countValue,
                     "Cascade counter must equal MEBN_LEARNING_INTERVAL after 10 cascades");
         }
@@ -354,34 +349,9 @@ class WeightLearningLoopTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────────
 
-    private MebnWeightPersistenceAdapter mebnAdapterFor(String dataDirPath) throws Exception {
-        MebnWeightPersistenceAdapter adapter = new MebnWeightPersistenceAdapter();
-        Field f = MebnWeightPersistenceAdapter.class.getDeclaredField("dataDir");
-        f.setAccessible(true);
-        f.set(adapter, dataDirPath);
-        return adapter;
-    }
-
-    private void setField(Object target, String name, Object value) throws Exception {
-        Field f = findField(target.getClass(), name);
-        f.setAccessible(true);
-        f.set(target, value);
-    }
-
-    private Object getField(Object target, String name) throws Exception {
-        Field f = findField(target.getClass(), name);
-        f.setAccessible(true);
-        return f.get(target);
-    }
-
-    private Field findField(Class<?> clazz, String name) throws NoSuchFieldException {
-        while (clazz != null) {
-            try {
-                return clazz.getDeclaredField(name);
-            } catch (NoSuchFieldException e) {
-                clazz = clazz.getSuperclass();
-            }
-        }
-        throw new NoSuchFieldException(name);
+    private MebnWeightPersistenceAdapter mebnAdapterFor(String dataDirPath) {
+        return new MebnWeightPersistenceAdapter() {{
+            dataDir = dataDirPath;
+        }};
     }
 }

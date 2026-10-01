@@ -35,14 +35,12 @@ import org.mockito.quality.Strictness;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 
-import java.lang.reflect.Field;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -52,7 +50,7 @@ import static org.mockito.Mockito.*;
  * Unit tests for {@link GraphEdgeComputationServiceImpl}.
  *
  * The impl uses no-arg constructor + @Autowired field injection.
- * knowledgeGraphService and embeddingModel are injected via reflection in setUp / per-test.
+ * knowledgeGraphService and embeddingModel are package-private, so setUp and the tests assign them directly.
  * entityMentionRepository no longer exists in the impl — all shared-entity detection
  * goes through knowledgeGraphService.findNodePairsWithSharedEntities.
  */
@@ -69,24 +67,15 @@ class GraphEdgeComputationServiceImplTest {
     private GraphEdgeComputationServiceImpl service;
 
     @BeforeEach
-    void setUp() throws Exception {
-        // No-arg constructor — @Autowired fields injected below via reflection
+    void setUp() {
+        // No-arg constructor — the package-private @Autowired fields are assigned directly
         service = new GraphEdgeComputationServiceImpl();
-        injectField("knowledgeGraphService", knowledgeGraphService);
+        service.knowledgeGraphService = knowledgeGraphService;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Inject a value into a private field of the service under test.
-     */
-    private void injectField(String fieldName, Object value) throws Exception {
-        Field field = GraphEdgeComputationServiceImpl.class.getDeclaredField(fieldName);
-        field.setAccessible(true);
-        field.set(service, value);
-    }
 
     private GraphNode documentNode(String nodeId, String title) {
         return GraphNode.builder()
@@ -147,7 +136,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void embeddingSimilarity_returnsEarlyWhenFewerThan2DocumentNodes() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         // impl calls knowledgeGraphService.getNodesByType(DOCUMENT) — not nodeRepository
         when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT))
@@ -161,7 +150,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void embeddingSimilarity_createsEdgeWhenSimilarityAboveThreshold() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
@@ -185,7 +174,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void embeddingSimilarity_doesNotCreateEdgeWhenSimilarityBelowThreshold() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
@@ -204,7 +193,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void embeddingSimilarity_doesNotCreateDuplicateEdge() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
@@ -225,7 +214,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void embeddingSimilarity_respectsMaxEdgesPerNodeLimit() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         // Three nodes, maxEdgesPerNode=1. The outer loop captures nodeEdges once per
         // outer iteration, before the inner loop runs. This means n1 can still create
@@ -258,7 +247,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void embeddingSimilarity_setsRunningStatusDuringComputation() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT))
                 .thenReturn(Collections.emptyList());
@@ -272,7 +261,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void embeddingSimilarity_resetsRunningFlagEvenAfterException() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
@@ -288,7 +277,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void backfillDocumentNodeEmbeddingsUsesInjectedModelAndActiveStore() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
         when(embeddingModel.canEmbed()).thenReturn(true);
         when(embeddingModel.getOptimalBatchSize()).thenReturn(8);
         when(embeddingModel.getMaxBatchSize()).thenReturn(16);
@@ -315,7 +304,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void backfillDocumentNodeEmbeddingsSkipsVectorsAlreadyInStore() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
         when(embeddingModel.canEmbed()).thenReturn(true);
         when(embeddingModel.getOptimalBatchSize()).thenReturn(8);
         when(embeddingModel.getMaxBatchSize()).thenReturn(16);
@@ -611,7 +600,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void getComputationStatus_embeddingModelAvailableWhenInjected() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         Map<String, Object> status = service.getComputationStatus();
 
@@ -626,12 +615,7 @@ class GraphEdgeComputationServiceImplTest {
     void cancelComputation_setsCancelledFlag() throws Exception {
         service.cancelComputation();
 
-        Field cancelledField = GraphEdgeComputationServiceImpl.class.getDeclaredField("cancelled");
-        cancelledField.setAccessible(true);
-        AtomicBoolean cancelled =
-                (AtomicBoolean) cancelledField.get(service);
-
-        assertTrue(cancelled.get(), "cancelled flag should be true after cancelComputation()");
+        assertTrue(service.cancelled.get(), "cancelled flag should be true after cancelComputation()");
     }
 
     @Test
@@ -675,7 +659,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void isComputationRunning_returnsFalseAfterCompletedRun() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         when(knowledgeGraphService.getNodesByType(NodeLevel.DOCUMENT))
                 .thenReturn(Collections.emptyList());
@@ -701,7 +685,7 @@ class GraphEdgeComputationServiceImplTest {
 
     @Test
     void embeddingSimilarity_skipsNodeWhenEmbedReturnsNull() throws Exception {
-        injectField("embeddingModel", embeddingModel);
+        service.embeddingModel = embeddingModel;
 
         GraphNode n1 = documentNode("n1", "Doc1");
         GraphNode n2 = documentNode("n2", "Doc2");
@@ -849,7 +833,7 @@ class GraphEdgeComputationServiceImplTest {
         clique.setCrossDocStarTopology(false);
         KbConfigManager mgr = mock(KbConfigManager.class);
         when(mgr.current()).thenReturn(clique);
-        injectField("kbConfigManager", mgr);
+        service.kbConfigManager = mgr;
 
         service.computeNameBasedCrossDocEdges(1L);
 

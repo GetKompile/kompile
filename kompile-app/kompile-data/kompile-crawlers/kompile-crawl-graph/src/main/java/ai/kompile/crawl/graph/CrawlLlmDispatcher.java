@@ -99,6 +99,36 @@ class CrawlLlmDispatcher {
     }
     private final ThreadLocal<Throwable> lastCallFailure =
             new ThreadLocal<>();
+    private final java.util.concurrent.atomic.AtomicReference<ServingExecutionFailure> servingFailure =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    static final class ServingExecutionFailure extends IllegalStateException {
+        ServingExecutionFailure(String message, Throwable cause) { super(message, cause); }
+    }
+
+    void throwIfServingFailed() {
+        ServingExecutionFailure failure = servingFailure.get();
+        if (failure != null) throw failure;
+    }
+
+    private ServingExecutionFailure failServing(UnifiedCrawlJob job, String message, Throwable cause) {
+        ServingExecutionFailure failure = new ServingExecutionFailure(message, cause);
+        if (servingFailure.compareAndSet(null, failure)) {
+            // Preserve native/transport failures even if a higher-level parser retry
+            // catches the exception. A later empty response must never erase this.
+            if (job != null) {
+                if (job.getErrors() != null) job.getErrors().add(message);
+                if (job.getErrorCount() != null) job.getErrorCount().incrementAndGet();
+            }
+        }
+        return servingFailure.get();
+    }
+
+    static void rethrowServingFailure(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof ServingExecutionFailure fatal) throw fatal;
+        }
+    }
 
     // Shared single-thread executor for wrapping blocking LLM calls with timeouts.
     // Using a cached pool so threads are created on demand and reclaimed after idle.
@@ -290,7 +320,19 @@ class CrawlLlmDispatcher {
 
     static final int DEFAULT_LLM_CALL_TIMEOUT_SECONDS = resolveDefaultTimeoutSeconds();
 
+    /**
+     * Extra budget granted to the FIRST local-model structured call after a
+     * serving restart. Cold DSP/Triton compilation (plan serialize→Triton
+     * JIT→CUDA-graph capture) happens lazily on that call and can take minutes
+     * on a multi-GPU box; the per-call inference timeout must not cover it.
+     * Disable with warmupTimeoutSeconds=0. Synced alongside llmCallTimeoutSeconds.
+     */
+    static final int DEFAULT_WARMUP_EXTRA_TIMEOUT_SECONDS = 600;
+
     volatile int llmCallTimeoutSeconds = DEFAULT_LLM_CALL_TIMEOUT_SECONDS;
+    volatile int warmupExtraTimeoutSeconds = DEFAULT_WARMUP_EXTRA_TIMEOUT_SECONDS;
+    /** Monotonic per-process generation attempt counter; 0 = the next call is a cold first call. */
+    volatile boolean localFirstCallServed = false;
     volatile int circuitBreakerFailureThreshold = 5;
     volatile int circuitBreakerCooldownSeconds = 60;
 
@@ -327,6 +369,20 @@ class CrawlLlmDispatcher {
 
     void setLlmCallTimeoutSeconds(int seconds) {
         this.llmCallTimeoutSeconds = Math.max(10, Math.min(1800, seconds));
+    }
+
+    void setWarmupExtraTimeoutSeconds(int seconds) {
+        this.warmupExtraTimeoutSeconds = Math.max(0, Math.min(1800, seconds));
+    }
+
+    /**
+     * Effective timeout for this local call: inference budget plus the one-time
+     * warmup extra on the first cold call. Deliberately consumed by BOTH serving
+     * paths (structured and text) so neither pays warmup out of inference time.
+     */
+    int effectiveLocalTimeoutSeconds(boolean firstCall) {
+        int base = llmCallTimeoutSeconds;
+        return firstCall ? base + Math.max(0, warmupExtraTimeoutSeconds) : base;
     }
 
     void setCircuitBreakerFailureThreshold(int threshold) {
@@ -421,6 +477,7 @@ class CrawlLlmDispatcher {
             String taskType,
             UnifiedCrawlJob job,
             LlmCallScope scope) {
+        throwIfServingFailed();
         lastCallFailure.remove();
         LlmCallScope previous = activeCallScope.get();
         if (scope == null) {
@@ -459,6 +516,7 @@ class CrawlLlmDispatcher {
         boolean explicitServing = "serving".equalsIgnoreCase(requestedProvider);
         boolean useServing = !useNative && (explicitServing || structuredChatLanguageModel == null);
         if (!useNative && useServing) {
+            throwIfServingFailed();
             if (localServingBackend == null || !localServingBackend.supportsStructuredChat()) {
                 throw new IllegalStateException("Structured chat was requested, but the serving backend "
                         + "does not expose the model-owned chat/tool protocol");
@@ -482,6 +540,9 @@ class CrawlLlmDispatcher {
         String backendId = useNative ? nativeChatBackendId(nativeBackend, requestedProvider, requestedModel)
                 : useServing ? servingBackendId(requestedModel) : "structured-local";
         long startNanos = System.nanoTime();
+        boolean firstColdCall = !localFirstCallServed;
+        int effectiveTimeout = useServing ? effectiveLocalTimeoutSeconds(firstColdCall)
+                : llmCallTimeoutSeconds;
         if (!localGenerationPermit.tryAcquire()) {
             throw new IllegalStateException("Structured generation is still unwinding after a previous timeout");
         }
@@ -531,10 +592,11 @@ class CrawlLlmDispatcher {
         }
         try {
             StructuredChatLanguageModel.Response response = future.get(
-                    llmCallTimeoutSeconds, TimeUnit.SECONDS);
+                    effectiveTimeout, TimeUnit.SECONDS);
             if (response == null) {
                 throw new IllegalStateException("Structured model returned no response");
             }
+            if (useServing) localFirstCallServed = true;
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
             recordTokenUsage(job, backendId, renderedRequest, response.rawText());
             boolean usable = !response.toolCalls().isEmpty() || !response.content().isBlank()
@@ -553,9 +615,14 @@ class CrawlLlmDispatcher {
             recordStructuredLlmCall(job, backendId, taskType,
                     (System.nanoTime() - startNanos) / 1_000_000L, request, null,
                     false, true, "TIMEOUT",
-                    "Structured model timed out after " + llmCallTimeoutSeconds + "s");
+                    "Structured model timed out after " + effectiveTimeout + "s"
+                            + (firstColdCall && useServing
+                                    ? " (cold-start budget incl. " + warmupExtraTimeoutSeconds + "s warmup extra)"
+                                    : ""));
+            if (useServing) throw failServing(job,
+                    "Structured serving model timed out after " + effectiveTimeout + "s", e);
             throw new IllegalStateException("Structured model timed out after "
-                    + llmCallTimeoutSeconds + "s", e);
+                    + effectiveTimeout + "s", e);
         } catch (InterruptedException e) {
             future.cancel(true);
             Thread.currentThread().interrupt();
@@ -563,6 +630,7 @@ class CrawlLlmDispatcher {
             recordStructuredLlmCall(job, backendId, taskType,
                     (System.nanoTime() - startNanos) / 1_000_000L, request, null,
                     false, false, "INTERRUPTED", "Structured model call interrupted");
+            if (useServing) throw failServing(job, "Structured serving model call interrupted", e);
             throw new IllegalStateException("Structured model call interrupted", e);
         } catch (ExecutionException e) {
             Throwable cause = e.getCause() instanceof CompletionException
@@ -572,6 +640,8 @@ class CrawlLlmDispatcher {
             recordStructuredLlmCall(job, backendId, taskType,
                     (System.nanoTime() - startNanos) / 1_000_000L, request, null,
                     false, false, categorizeError(message), message);
+            if (useServing) throw failServing(job, "Structured serving model call failed: "
+                    + message, cause == null ? e : cause);
             throw new IllegalStateException("Structured model call failed: "
                     + message,
                     cause == null ? e : cause);
@@ -591,6 +661,7 @@ class CrawlLlmDispatcher {
      */
     String promptWithCapacityFallback(String prompt, String taskType, UnifiedCrawlJob job,
                                       LlmCallScope scope) {
+        throwIfServingFailed();
         lastCallFailure.remove();
         LlmCallScope previous = activeCallScope.get();
         if (scope == null) {
@@ -610,6 +681,7 @@ class CrawlLlmDispatcher {
     }
 
     String promptWithCapacityFallback(String prompt, String taskType, UnifiedCrawlJob job) {
+        throwIfServingFailed();
         lastCallFailure.remove();
         ProcessingRouteConfig routeConfig = job.getRequest().getProcessingRoute();
         String requestedModel = requestedGraphModel(job);
@@ -983,6 +1055,8 @@ class CrawlLlmDispatcher {
         long startNanos = System.nanoTime();
         String backendId = servingBackendId(requiredModelId);
         int maxNewTokens = requestedGraphMaxTokens(job);
+        boolean firstColdCall = !localFirstCallServed;
+        int effectiveTimeout = effectiveLocalTimeoutSeconds(firstColdCall);
         if (!localGenerationPermit.tryAcquire()) {
             String message = "Local serving generation is still unwinding after a previous timeout";
             log.warn("[Job {}] {}", job.getJobId(), message);
@@ -1009,7 +1083,8 @@ class CrawlLlmDispatcher {
         }
 
         try {
-            String response = future.get(llmCallTimeoutSeconds, TimeUnit.SECONDS);
+            String response = future.get(effectiveTimeout, TimeUnit.SECONDS);
+            localFirstCallServed = true;
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
             boolean success = isUsableLlmResponse(response);
             recordTokenUsage(job, backendId, prompt, response);
@@ -1028,7 +1103,8 @@ class CrawlLlmDispatcher {
             future.cancel(true);
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
             String message = "Local serving model '" + modelLabel + "' timed out after "
-                    + llmCallTimeoutSeconds + "s";
+                    + effectiveTimeout + "s"
+                    + (firstColdCall ? " (cold-start budget incl. " + warmupExtraTimeoutSeconds + "s warmup extra)" : "");
             log.warn("[Job {}] {}{}", job.getJobId(), message,
                     allowFallback ? "; falling back to configured route" : "; refusing provider fallback");
             recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,

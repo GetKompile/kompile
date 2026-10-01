@@ -21,13 +21,11 @@ import org.mockito.quality.Strictness;
 import org.nd4j.ggml.format.GGUFReader;
 
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -64,15 +62,11 @@ class StagingServicePromoteTest {
     }
 
     /**
-     * Inject a StagingModelInfo into the private stagingModels map via reflection,
+     * Put a StagingModelInfo into the service's stagingModels map,
      * simulating what stageLocalModel() would do.
      */
-    private void injectStagingModel(String modelId, StagingModelInfo info) throws Exception {
-        Field field = StagingService.class.getDeclaredField("stagingModels");
-        field.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        Map<String, StagingModelInfo> map = (Map<String, StagingModelInfo>) field.get(stagingService);
-        map.put(modelId, info);
+    private void injectStagingModel(String modelId, StagingModelInfo info) {
+        stagingService.stagingModels.put(modelId, info);
     }
 
     private Path writeTrainingArtifactManifest(Path outputDir, String modelId, String taskId) throws IOException {

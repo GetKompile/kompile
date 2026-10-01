@@ -33,9 +33,9 @@ import java.util.Set;
  * <p>
  * Delegates text generation to a {@link JudgeBackend}, which can be:
  * <ul>
- *   <li><b>remote</b> — HTTP call to Anthropic, OpenAI, ollama, etc.</li>
+ *   <li><b>remote</b> — HTTP call to Anthropic, OpenAI, Gemini, etc.</li>
  *   <li><b>local</b> — in-process SameDiff model (GGUF via TextGenerator)</li>
- *   <li><b>auto-server</b> — dynamically start ollama/kompile-app, then HTTP</li>
+ *   <li><b>auto-server</b> — HTTP to a running kompile-model-staging server</li>
  * </ul>
  * <p>
  * This class owns the judge prompt construction and response parsing;
@@ -456,7 +456,15 @@ public class JudgeLlmEvaluator {
         prompt.append("Agent: ").append(agentName).append("\n");
         prompt.append("Steps taken: ").append(metrics.getAgenticSteps()).append("\n");
         prompt.append("Tool calls: ").append(metrics.getToolCallsTotal())
-                .append(" (").append(metrics.getToolCallErrors()).append(" errors)\n\n");
+                .append(" (").append(metrics.getToolCallErrors()).append(" errors)\n");
+        Map<String, Integer> toolsUsed = metrics.getToolCallBreakdown();
+        if (!toolsUsed.isEmpty()) {
+            StringBuilder tools = new StringBuilder();
+            toolsUsed.forEach((tool, calls) -> tools.append(tools.isEmpty() ? "" : ", ")
+                    .append(tool).append(' ').append(calls));
+            prompt.append("Tools used: ").append(tools).append("\n");
+        }
+        prompt.append("\n");
 
         // Instructions based on what dimensions apply
         prompt.append("Evaluate the above. ");

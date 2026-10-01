@@ -31,7 +31,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -70,18 +69,21 @@ class FactPromotionTest {
     private final List<Object> publishedEvents = new ArrayList<>();
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         groundingService = new KbGroundingService();
         fileBackedWeightStore = new FileBackedWeightStore(tempDir.toString());
         pinGuard = new PinGuard();
 
+        // dataDir is protected and this test sits in another package, so it is set from
+        // an anonymous subclass's initializer.
         correctionService = new KbCorrectionService(
-                groundingService, pinGuard, null, fileBackedWeightStore);
-        setField(correctionService, "dataDir", tempDir.toString());
+                groundingService, pinGuard, null, fileBackedWeightStore) {{
+            dataDir = tempDir.toString();
+        }};
 
         promotionTracker = new FactPromotionTracker(publishedEvents::add);
         // Wire dataDir so the audit log goes to tempDir
-        setField(promotionTracker, "dataDir", tempDir.toString());
+        promotionTracker.dataDir = tempDir.toString();
 
         orchestrator = new IncrementalReasoningOrchestrator(
                 groundingService,
@@ -91,7 +93,7 @@ class FactPromotionTest {
                 correctionService,
                 fileBackedWeightStore,
                 null);          // no MEBN adapter
-        setField(orchestrator, "dataDir", tempDir.toString());
+        orchestrator.dataDir = tempDir.toString();
 
         // Wire the promotion tracker via field injection (mirrors Spring @Autowired field)
         orchestrator.promotionTracker = promotionTracker;
@@ -283,24 +285,5 @@ class FactPromotionTest {
         FactAuditEvent c2 = FactAuditEvent.fromJson(cr.toJson());
         assertEquals("CONTRADICTION_RESOLVED", c2.eventType());
         assertEquals("conflict(a,b)", c2.atomKey());
-    }
-
-    // ── Helpers ───────────────────────────────────────────────────────────────────
-
-    private void setField(Object target, String name, Object value) throws Exception {
-        Field f = findField(target.getClass(), name);
-        f.setAccessible(true);
-        f.set(target, value);
-    }
-
-    private Field findField(Class<?> clazz, String name) throws NoSuchFieldException {
-        while (clazz != null) {
-            try {
-                return clazz.getDeclaredField(name);
-            } catch (NoSuchFieldException e) {
-                clazz = clazz.getSuperclass();
-            }
-        }
-        throw new NoSuchFieldException(name);
     }
 }

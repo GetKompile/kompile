@@ -22,6 +22,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -41,6 +43,9 @@ public class PassthroughStreamParser {
 
     /** Tracks last streamed text per Codex agent_message item ID for delta computation. */
     private final Map<String, String> codexAgentMessages = new HashMap<>();
+
+    /** Final OpenCode parts have stable IDs; the same part can be published again. */
+    private final Set<String> openCodeUsageParts = new HashSet<>();
 
     /**
      * Parsed event from agent output.
@@ -220,11 +225,11 @@ public class PassthroughStreamParser {
                 }
                 case "result" -> {
                     long duration = node.has("duration_ms") ? node.get("duration_ms").asLong() : 0;
-                    double cost = node.has("cost_usd") ? node.get("cost_usd").asDouble() : 0.0;
+                    double cost = node.path("total_cost_usd").asDouble(node.path("cost_usd").asDouble(0.0));
                     int turns = node.has("num_turns") ? node.get("num_turns").asInt() : 0;
-                    // Final result events carry the turn's cumulative usage. Cache
-                    // tokens arrive inclusive of plain input — normalize to disjoint
-                    // so totals can safely add ordinary + cached input.
+                    // Final result events carry the turn's cumulative usage. The API
+                    // reports input_tokens without the cache reads and writes, so the
+                    // three counts are already disjoint and add up to the input.
                     long inputTokens = 0;
                     long outputTokens = 0;
                     long cacheRead = 0;
@@ -234,8 +239,7 @@ public class PassthroughStreamParser {
                         outputTokens = usage.path("output_tokens").asLong(0);
                         cacheRead = usage.path("cache_read_input_tokens").asLong(0);
                         cacheCreation = usage.path("cache_creation_input_tokens").asLong(0);
-                        long inclusiveInput = usage.path("input_tokens").asLong(0);
-                        inputTokens = Math.max(0, inclusiveInput - cacheRead - cacheCreation);
+                        inputTokens = Math.max(0, usage.path("input_tokens").asLong(0));
                     }
                     return List.of(new TurnComplete(duration, cost, turns,
                             inputTokens, outputTokens, cacheRead, cacheCreation));
@@ -326,7 +330,10 @@ public class PassthroughStreamParser {
                 }
                 case "step_finish" -> {
                     JsonNode part = node.get("part");
-                    if (part != null && part.has("tokens")) {
+                    if (part != null && part.path("tokens").isObject()) {
+                        String id = part.path("id").asText("");
+                        String session = part.path("sessionID").asText(node.path("sessionID").asText(""));
+                        if (!id.isBlank() && !openCodeUsageParts.add(session + ":" + id)) return null;
                         JsonNode tokens = part.get("tokens");
                         long input = tokens.has("input") ? tokens.get("input").asLong() : 0;
                         long output = tokens.has("output") ? tokens.get("output").asLong() : 0;
@@ -359,7 +366,8 @@ public class PassthroughStreamParser {
     /**
      * Parse a line of Gemini/Qwen stream-json output ({@code -o stream-json}).
      * <p>
-     * These agents share the same output format:
+     * Gemini and older Qwen versions share these events. Current Qwen result
+     * envelopes use top-level usage instead of stats; their counts are also inclusive.
      * <ul>
      *   <li>{@code init} — session start with {@code session_id}, {@code model}</li>
      *   <li>{@code message} with {@code role: "assistant"} and {@code delta: true} — text chunk</li>
@@ -408,7 +416,7 @@ public class PassthroughStreamParser {
                     return null;
                 }
                 case "result" -> {
-                    long durationMs = 0;
+                    long durationMs = node.path("duration_ms").asLong(0);
                     double cost = 0.0;
                     int toolCallCount = 0;
                     if (node.has("stats")) {
@@ -416,9 +424,10 @@ public class PassthroughStreamParser {
                         if (stats.has("duration_ms")) durationMs = stats.get("duration_ms").asLong();
                         if (stats.has("tool_calls")) toolCallCount = stats.get("tool_calls").asInt();
                     }
-                    // Gemini/Qwen result events may carry usage with Google-style
-                    // field names. cached_content_token_count is a subset of
-                    // prompt_tokens — normalize to disjoint like the other lanes.
+                    // Gemini emits flat result.stats; Qwen emits result.usage with
+                    // Anthropic-shaped names but INCLUSIVE input (computed from
+                    // telemetry prompt tokens). Count the final aggregate only,
+                    // never the per-model breakdown or assistant-message copies.
                     long inputTokens = 0;
                     long outputTokens = 0;
                     long cacheReadTokens = 0;
@@ -427,18 +436,20 @@ public class PassthroughStreamParser {
                     if (usage.isMissingNode() || !usage.isObject()) {
                         usage = node.path("stats").path("usage");
                     }
-                    if (!usage.isMissingNode() && usage.isObject()) {
+                    if (!usage.isObject()) usage = node.path("stats");
+                    if (usage.isObject()) {
                         long promptTokens = usage.has("prompt_tokens")
                                 ? usage.get("prompt_tokens").asLong()
                                 : usage.path("input_tokens").asLong(0);
-                        cacheReadTokens = usage.path("prompt_tokens_details")
-                                .path("cached_content_token_count").asLong(0);
+                        cacheReadTokens = Math.max(0, usage.path("cache_read_input_tokens").asLong(
+                                usage.path("cached").asLong(usage.path("prompt_tokens_details")
+                                        .path("cached_content_token_count").asLong(0))));
                         outputTokens = usage.has("candidates_tokens")
                                 ? usage.get("candidates_tokens").asLong()
                                 : usage.path("output_tokens").asLong(0);
                         inputTokens = Math.max(0, promptTokens - cacheReadTokens);
                     }
-                    return new TurnComplete(durationMs, cost, toolCallCount > 0 ? 1 : 0,
+                    return new TurnComplete(durationMs, cost, node.path("num_turns").asInt(toolCallCount > 0 ? 1 : 0),
                             inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens);
                 }
                 default -> {
@@ -994,7 +1005,7 @@ public class PassthroughStreamParser {
      * <ul>
      *   <li>{@code session} — session start with {@code id}</li>
      *   <li>{@code message_update} — text delta via {@code assistantMessageEvent.delta}</li>
-     *   <li>{@code message_end} — message completed (suppressed to avoid duplicating deltas)</li>
+     *   <li>{@code message_end} — final assistant usage (text suppressed to avoid duplicating deltas)</li>
      *   <li>{@code tool_execution_start} — tool invocation with {@code toolName}, {@code args}</li>
      *   <li>{@code tool_execution_update} — partial tool output</li>
      *   <li>{@code tool_execution_end} — tool completion with {@code result}, {@code exitCode}</li>
@@ -1026,8 +1037,19 @@ public class PassthroughStreamParser {
                     return null;
                 }
                 case "message_end" -> {
-                    // Suppress — text was already emitted as text_delta events
-                    return null;
+                    // Text was emitted as deltas. Usage is final here; turn_end
+                    // and agent_end repeat these messages and must not add it again.
+                    JsonNode message = node.path("message");
+                    JsonNode usage = message.path("usage");
+                    if (!"assistant".equals(message.path("role").asText()) || !usage.isObject()) {
+                        return null;
+                    }
+                    // Pi already normalizes input/cache buckets across its providers;
+                    // output includes reasoning, so reasoning/totalTokens are not additive.
+                    return new TokenUsage(Math.max(0, usage.path("input").asLong(0)),
+                            Math.max(0, usage.path("output").asLong(0)),
+                            Math.max(0, usage.path("cacheRead").asLong(0)),
+                            Math.max(0, usage.path("cacheWrite").asLong(0)));
                 }
                 case "tool_execution_start" -> {
                     String toolName = node.has("toolName") ? node.get("toolName").asText() : "unknown";

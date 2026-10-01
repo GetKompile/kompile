@@ -9,6 +9,7 @@
  */
 package ai.kompile.graph.reasoning.bayesian;
 
+import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.prior.DefaultPriorProvider;
 import ai.kompile.graph.reasoning.prior.PriorContext;
 import ai.kompile.graph.reasoning.prior.PriorProvider;
@@ -37,7 +38,7 @@ import java.util.*;
  * <p>For the kompile knowledge graph, causal strengths are derived from:</p>
  * <ul>
  *   <li>Edge weight (0.0–1.0): base causal strength</li>
- *   <li>Edge confidence (0.0–1.0): modulates the strength</li>
+ *   <li>Edge confidence (0.0–1.0): caps the strength</li>
  *   <li>Causal edge type multiplier: from CausalTraversal.computeHopStrength()</li>
  * </ul>
  */
@@ -130,8 +131,9 @@ public class NoisyOrCpt {
     /**
      * Compute causal strength λ_i from a knowledge graph edge.
      *
-     * <p>Combines edge weight, confidence, and a type multiplier that
-     * reflects the semantic strength of different edge types:</p>
+     * <p>Scales {@link GraphRelation#strength(double, double) min(weight, confidence)} by a type
+     * multiplier that reflects the semantic strength of different edge types. Stored edges often
+     * carry one extraction score in both fields, so a product would square it:</p>
      * <ul>
      *   <li>CAUSES: 1.0 (direct causation)</li>
      *   <li>TRIGGERS: 0.95</li>
@@ -177,7 +179,7 @@ public class NoisyOrCpt {
                                                     : priorProvider.priorFor(
                                                             parentRv != null ? parentRv + "->" + childRv + "/confidence"
                                                                              : "edge/confidence", ctx);
-        return clamp(weight * confidence * typeMultiplier, 0.0, 1.0);
+        return clamp(GraphRelation.strength(weight, confidence) * typeMultiplier, 0.0, 1.0);
     }
 
     /**

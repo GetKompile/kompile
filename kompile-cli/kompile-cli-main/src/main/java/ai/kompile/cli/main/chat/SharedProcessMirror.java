@@ -53,7 +53,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>A process that another session launched on this session's behalf (its owner
  * registered this session as its parent) and holds a completion monitor on wakes
  * the {@linkplain #setMonitorListener monitor listener} once when it ends, as a
- * local monitor would.</p>
+ * local monitor would. While such a process runs, {@link #owesWake()} is true, so
+ * a host that closes when idle can stay open for the wake-up.</p>
  */
 public final class SharedProcessMirror implements AutoCloseable {
 
@@ -68,8 +69,8 @@ public final class SharedProcessMirror implements AutoCloseable {
     private final AtomicBoolean refreshQueued = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    /** Poll sequencing: a slow poll must not overlap the next scheduled one. */
-    private final AtomicBoolean pollInFlight = new AtomicBoolean(false);
+    /** Poll sequencing: passes run one at a time, a scheduled one and {@link #pollOnce()} included. */
+    private final Object pollLock = new Object();
     private volatile String pollFailure = "";
 
     private volatile BackgroundProcessManager.MonitorCallback monitorListener;
@@ -77,6 +78,8 @@ public final class SharedProcessMirror implements AutoCloseable {
     private final Map<String, WakeState> wakes = new HashMap<>();
     /** False until the first poll, so a process already over when the chat starts never wakes it. */
     private boolean seeded;
+    /** Monitored processes launched for this session that were running at the last pass. */
+    private volatile int owedWakes;
 
     /**
      * @param processes       the session-local manager that backs the activity panel
@@ -113,24 +116,27 @@ public final class SharedProcessMirror implements AutoCloseable {
         scheduler.scheduleWithFixedDelay(this::pollGuarded, millis, millis, TimeUnit.MILLISECONDS);
     }
 
-    /** Run one mirror pass immediately (also used by tests). */
+    /**
+     * Run one mirror pass now, after any pass already under way, so it reads
+     * coordination state as it stands at the call (also used by tests).
+     */
     public void pollOnce() {
         pollGuarded();
     }
 
     private void pollGuarded() {
-        if (closed.get() || !pollInFlight.compareAndSet(false, true)) return;
-        try {
-            refreshQueued.set(false);
-            poll();
-            pollFailure = "";
-        } catch (RuntimeException failure) {
-            // Mirroring is best-effort observability; never break the host session,
-            // but record why so a silent mirror is still diagnosable.
-            pollFailure = failure.getClass().getSimpleName()
-                    + (failure.getMessage() != null ? ": " + failure.getMessage() : "");
-        } finally {
-            pollInFlight.set(false);
+        synchronized (pollLock) {
+            if (closed.get()) return;
+            try {
+                refreshQueued.set(false);
+                poll();
+                pollFailure = "";
+            } catch (RuntimeException failure) {
+                // Mirroring is best-effort observability; never break the host session,
+                // but record why so a silent mirror is still diagnosable.
+                pollFailure = failure.getClass().getSimpleName()
+                        + (failure.getMessage() != null ? ": " + failure.getMessage() : "");
+            }
         }
     }
 
@@ -158,6 +164,7 @@ public final class SharedProcessMirror implements AutoCloseable {
         }
         Map<String, String> kept = new HashMap<>();
         List<Wake> due = new ArrayList<>();
+        int owed = 0;
         for (ProcessCoordEntry entry : entries) {
             if (entry == null || entry.getProcessId() == null || entry.getProcessId().isBlank()) {
                 continue;
@@ -183,20 +190,36 @@ public final class SharedProcessMirror implements AutoCloseable {
             if (mirrored != null && dueForWake(key, entry)) {
                 due.add(new Wake(mirrored, new BackgroundProcessManager.ProcessMonitor(
                         entry.getProcessId(), entry.getMonitorMessage(), Instant.now())));
+            } else if (mirrored != null && awaitsWake(key, entry)) {
+                owed++;
             }
         }
         processes.pruneShared(kept.keySet());
         wakes.keySet().retainAll(kept.keySet());
         seeded = true;
         BackgroundProcessManager.MonitorCallback listener = monitorListener;
-        if (listener == null) return;
-        for (Wake wake : due) {
-            try {
-                listener.onMonitoredProcessExit(wake.entry(), wake.monitor());
-            } catch (RuntimeException ignored) {
-                // As for local monitors: a failed wake-up must not stop mirroring.
+        if (listener != null) {
+            for (Wake wake : due) {
+                try {
+                    listener.onMonitoredProcessExit(wake.entry(), wake.monitor());
+                } catch (RuntimeException ignored) {
+                    // As for local monitors: a failed wake-up must not stop mirroring.
+                }
             }
         }
+        // Updated only after the wake-ups went out, so a host that sees nothing owed
+        // has already been handed every wake-up this pass found.
+        owedWakes = owed;
+    }
+
+    /**
+     * Whether a monitored process launched on this session's behalf was still
+     * running at the last pass, so its end will wake this session. A pass
+     * delivers the wake-ups it finds due before it updates this. A closed mirror
+     * owes nothing: it will not wake anyone.
+     */
+    public boolean owesWake() {
+        return !closed.get() && owedWakes > 0;
     }
 
     /**
@@ -213,6 +236,13 @@ public final class SharedProcessMirror implements AutoCloseable {
         }
         state.woken = true;
         return true;
+    }
+
+    /** True while a process this session is the parent of runs under its owner's monitor. */
+    private boolean awaitsWake(String key, ProcessCoordEntry entry) {
+        WakeState state = wakes.get(key);
+        return state != null && !state.woken && entry.isRunningState() && entry.isMonitored()
+                && localSessionId != null && localSessionId.equals(entry.getParentSessionId());
     }
 
     private static final class WakeState {

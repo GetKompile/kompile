@@ -143,15 +143,10 @@ public final class ScopedMcpCapabilityService implements AutoCloseable {
         }
     }
 
-    public boolean isNotificationMessage(String message) {
-        try {
-            JsonNode root = mapper.readTree(message);
-            return root != null && root.hasNonNull("method") && !root.hasNonNull("id");
-        } catch (JsonProcessingException invalid) {
-            throw new IllegalArgumentException("Invalid scoped MCP JSON-RPC message", invalid);
-        }
-    }
-
+    /**
+     * @return the request's response stream, or null for a notification or a response, which the
+     *         caller answers with 202 Accepted
+     */
     public SseEmitter handleStreamableMessage(
             String token,
             String sessionId,
@@ -159,6 +154,7 @@ public final class ScopedMcpCapabilityService implements AutoCloseable {
         return require(token).transport.handleStreamableHttpMessage(sessionId, message);
     }
 
+    /** Session and message validation fail synchronously; the returned Mono does the handling. */
     public Mono<Void> handleMessage(String token, String sessionId, String message) {
         return require(token).transport.handleMessage(sessionId, message);
     }

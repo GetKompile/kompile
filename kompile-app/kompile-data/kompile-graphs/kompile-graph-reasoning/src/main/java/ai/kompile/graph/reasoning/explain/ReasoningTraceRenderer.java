@@ -483,6 +483,11 @@ public final class ReasoningTraceRenderer {
                 .append(" u=").append(confidence(op.uncertainty()))
                 .append(']');
         }
+        // A learned PSL/MEBN score is labelled in meta so it is never read as the step's evidence.
+        String learnedScore = step.meta().get("learnedScore");
+        if (!isBlank(learnedScore)) {
+            line.append(" learnedScore=").append(clean(learnedScore));
+        }
         line.append("] ").append(clean(step.conclusion()));
         if (!isBlank(step.operation())) {
             line.append(" via ").append(clean(step.operation()));

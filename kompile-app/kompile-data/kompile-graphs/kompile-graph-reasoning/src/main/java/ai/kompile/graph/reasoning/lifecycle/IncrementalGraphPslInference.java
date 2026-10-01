@@ -341,7 +341,7 @@ public final class IncrementalGraphPslInference {
 
     private static boolean eligible(GraphRelation relation) {
         if (GraphPslProgramBuilder.isIdentitySeparationType(relation.type())) return false;
-        return clamp01(relation.weight() * relation.confidence()) >= DEFAULT_MIN_EDGE_WEIGHT;
+        return relation.strength() >= DEFAULT_MIN_EDGE_WEIGHT;
     }
 
     private static String componentKey(List<GraphEntity> entities) {
@@ -498,11 +498,6 @@ public final class IncrementalGraphPslInference {
                 || normalized.equals("SIMILAR_TO")
                 || normalized.equals("COREFERS_TO")
                 || normalized.equals("SAME_ENTITY");
-    }
-
-    private static double clamp01(double value) {
-        if (Double.isNaN(value)) return 0.0;
-        return Math.max(0.0, Math.min(1.0, value));
     }
 
     private static final Comparator<GraphRelation> RELATION_ORDER = Comparator

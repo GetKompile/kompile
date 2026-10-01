@@ -26,7 +26,6 @@ import ai.kompile.core.retrievers.RetrievedDoc;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.document.Document;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -59,10 +58,10 @@ class CrawlDocumentChunkingServiceTest {
         when(sentence.getDefaultOptions()).thenReturn(Map.of("chunkSize", 800, "overlap", 100));
         when(codeAware.getName()).thenReturn("code-aware");
         when(codeAware.getDefaultOptions()).thenReturn(Map.of("chunkSize", 1800, "overlap", 0));
-        ReflectionTestUtils.setField(service, "textChunkers", List.of(codeAware, recursive, sentence));
-        ReflectionTestUtils.setField(service, "projectChunkerName", "recursive");
-        ReflectionTestUtils.setField(service, "projectChunkSize", 400);
-        ReflectionTestUtils.setField(service, "projectChunkOverlap", 40);
+        service.textChunkers = List.of(codeAware, recursive, sentence);
+        service.projectChunkerName = "recursive";
+        service.projectChunkSize = 400;
+        service.projectChunkOverlap = 40;
     }
 
     @Test
@@ -123,7 +122,7 @@ class CrawlDocumentChunkingServiceTest {
 
     @Test
     void projectInitRecursiveAliasAndZeroOverlapAreHonored() {
-        ReflectionTestUtils.setField(service, "projectChunkOverlap", 0);
+        service.projectChunkOverlap = 0;
 
         CrawlDocumentChunkingService.ChunkingPlan plan = service.resolvePlan(
                 new Document("Text", Map.of()),
@@ -137,7 +136,7 @@ class CrawlDocumentChunkingServiceTest {
 
     @Test
     void codeAwareChunkerIsSelectedOnlyForCodeContent() {
-        ReflectionTestUtils.setField(service, "projectChunkerName", null);
+        service.projectChunkerName = null;
         CrawlDocumentChunkingService.ChunkingPlan codePlan = service.resolvePlan(
                 new Document("class Example {}", Map.of(GraphConstants.META_CONTENT_TYPE, "code")),
                 UnifiedCrawlJob.builder().request(UnifiedCrawlRequest.builder().build()).build());

@@ -15,6 +15,7 @@ import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
 import ai.kompile.graph.reasoning.embedding.GraphEmbeddingResolver;
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
+import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
@@ -46,6 +47,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.CancellationException;
+import java.util.stream.Collectors;
 
 /**
  * A compact, deterministic query facade over the graph reasoning library.
@@ -397,7 +399,8 @@ public final class GraphQueryEngine {
                 "Supports complete read access plus ranked executable-model retrieval, deterministic "
                         + "calculation, immutable scenarios, and bounded goal seeking.",
                 List.of(), List.of(), List.of(), capabilityContract(),
-                List.of("Entity fields accept either exact ids or names/phrases; resolutions are ranked and traced."));
+                List.of("Entity fields accept either exact ids or names/phrases; resolutions are ranked and traced.",
+                        QuantitativeRequestParser.guidance()));
     }
 
     private Result overview(ReasoningGraph graph) {
@@ -461,15 +464,14 @@ public final class GraphQueryEngine {
                 : graph.relationsOf(query.entityId()).stream();
         Set<String> types = query.relationTypes().stream()
                 .filter(type -> !blank(type))
-                .map(GraphQueryEngine::normalizePredicate)
-                .collect(java.util.stream.Collectors.toSet());
+                .map(PredicateNames::key)
+                .collect(Collectors.toSet());
         String text = blank(query.queryText()) ? null : query.queryText().toLowerCase(Locale.ROOT);
         List<GraphRelation> matches = stream
                 .filter(relation -> types.isEmpty()
-                        || types.contains(normalizePredicate(relation.type())))
+                        || types.contains(PredicateNames.key(relation.type())))
                 .filter(relation -> text == null || relationSearchText(graph, relation).contains(text))
-                .sorted(Comparator.comparingDouble(
-                                (GraphRelation relation) -> relation.weight() * relation.confidence()).reversed()
+                .sorted(Comparator.<GraphRelation>comparingDouble(GraphRelation::strength).reversed()
                         .thenComparing(GraphRelation::id))
                 .limit(bounded(query.topK(), 20, 200))
                 .toList();
@@ -485,12 +487,12 @@ public final class GraphQueryEngine {
                 : graph.relationsOf(query.entityId()).stream();
         Set<String> types = query.relationTypes().stream()
                 .filter(type -> !blank(type))
-                .map(GraphQueryEngine::normalizePredicate)
-                .collect(java.util.stream.Collectors.toSet());
+                .map(PredicateNames::key)
+                .collect(Collectors.toSet());
         List<GraphRelation> events = stream
                 .filter(relation -> relation.timestamp() != null)
                 .filter(relation -> types.isEmpty()
-                        || types.contains(normalizePredicate(relation.type())))
+                        || types.contains(PredicateNames.key(relation.type())))
                 .sorted(Comparator.comparing(GraphRelation::timestamp)
                         .thenComparing(GraphRelation::id))
                 .limit(bounded(query.topK(), 50, 500))
@@ -507,8 +509,8 @@ public final class GraphQueryEngine {
         String entityScope = blank(query.entityId()) ? null : query.entityId();
         Set<String> relationTypes = query.relationTypes().stream()
                 .filter(type -> !blank(type))
-                .map(GraphQueryEngine::normalizePredicate)
-                .collect(java.util.stream.Collectors.toSet());
+                .map(PredicateNames::key)
+                .collect(Collectors.toSet());
         List<Map<String, Object>> facts = new ArrayList<>();
         for (GraphEntity entity : graph.entities()) {
             if (entityScope != null && !entity.id().equals(entityScope)) {
@@ -528,10 +530,10 @@ public final class GraphQueryEngine {
                 continue;
             }
             if (!relationTypes.isEmpty()
-                    && !relationTypes.contains(normalizePredicate(relation.type()))) {
+                    && !relationTypes.contains(PredicateNames.key(relation.type()))) {
                 continue;
             }
-            String atom = normalizePredicate(relation.type()) + "("
+            String atom = storedPredicate(relation.type()) + "("
                     + relation.sourceId() + "," + relation.targetId() + ")";
             if (filter == null || atom.toLowerCase(Locale.ROOT).contains(filter)
                     || relationSearchText(graph, relation).contains(filter)) {
@@ -700,7 +702,7 @@ public final class GraphQueryEngine {
                 selected.put("dtype", selectedLayer.dtype().name());
                 selected.put("rowCount", selectedLayer.size());
                 selected.put("rows", selectedLayer.rows().entrySet().stream().limit(limit)
-                        .collect(java.util.stream.Collectors.toMap(
+                        .collect(Collectors.toMap(
                                 Map.Entry::getKey, Map.Entry::getValue,
                                 (left, right) -> left, LinkedHashMap::new)));
                 selected.put("truncated", selectedLayer.size() > limit);
@@ -709,7 +711,7 @@ public final class GraphQueryEngine {
             }
             if (selectedWeights != null) {
                 Map<String, Double> values = selectedWeights.entrySet().stream().limit(limit)
-                        .collect(java.util.stream.Collectors.toMap(
+                        .collect(Collectors.toMap(
                                 Map.Entry::getKey, Map.Entry::getValue,
                                 (left, right) -> left, LinkedHashMap::new));
                 data.put("selectedWeightMap", Map.of(
@@ -784,7 +786,7 @@ public final class GraphQueryEngine {
         List<EntityView> matches = rankResolutionCandidates(graph, query.queryText(), limit);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("scoreBasis", "lexical + stored entity prior");
-        data.put("storedPrior", "clamp01(weight * confidence)");
+        data.put("storedPrior", "clamp01(min(weight, confidence))");
         data.put("inferenceInvoked", false);
         return new Result(Status.OK, Intent.SEARCH,
                 "Found " + matches.size() + " matching entity(s) for '" + query.queryText()
@@ -792,9 +794,9 @@ public final class GraphQueryEngine {
                 matches, List.of(), List.of(), List.of(),
                 matches.isEmpty()
                         ? List.of("Try fewer or broader terms, then use the returned id with DESCRIBE.",
-                        "SEARCH scores use lexical matching plus stored entity weight*confidence; no PSL/Bayesian inference is invoked.")
+                        "SEARCH scores use lexical matching plus the stored entity prior min(weight, confidence); no PSL/Bayesian inference is invoked.")
                         : List.of("Use a returned id with DESCRIBE, NEIGHBORS, or PATH.",
-                        "SEARCH scores use lexical matching plus stored entity weight*confidence; no PSL/Bayesian inference is invoked."),
+                        "SEARCH scores use lexical matching plus the stored entity prior min(weight, confidence); no PSL/Bayesian inference is invoked."),
                 data, List.of(), null);
     }
 
@@ -923,45 +925,47 @@ public final class GraphQueryEngine {
         // Claim verification needs facts whose subject is the claimed source only. Restricting the
         // adapter to outgoing adjacency avoids scanning/materializing a million-edge graph and lets
         // storage-backed ReasoningGraph implementations answer VERIFY/WHY with one indexed lookup.
-        VerificationStores stores = graphFacts(graph.outgoing(query.entityId()));
+        List<GraphRelation> outgoing = graph.outgoing(query.entityId());
+        VerificationStores stores = graphFacts(outgoing, relationType);
         VerifyResult verdict = new DefaultKbVerifier(
                 stores.inferred(), stores.observed()).verify(atom);
 
-        List<GraphRelation> direct = claimRelations(
-                graph, query.entityId(), query.targetId(), relationType);
-        List<GraphRelation> counter = claimRelations(
-                graph, query.entityId(), query.targetId(), "NOT_" + relationType);
+        List<GraphRelation> direct = claimRelations(outgoing, query.targetId(), relationType);
+        List<GraphRelation> counter = claimRelations(outgoing, query.targetId(), "NOT_" + relationType);
         List<GraphRelation> evidence = new ArrayList<>(direct);
         evidence.addAll(counter);
 
-        Status status = switch (verdict.status()) {
-            case SUPPORTED -> Status.SUPPORTED;
-            case REFUTED -> Status.REFUTED;
-            case UNKNOWN -> Status.UNKNOWN;
-        };
+        ClaimDecision decision = decideClaim(graph, relationType, direct, counter, verdict);
+        Status status = decision.status();
         String readableClaim = graph.entity(query.entityId()).map(GraphEntity::label).orElse(query.entityId())
                 + " --" + relationType + "--> "
                 + graph.entity(query.targetId()).map(GraphEntity::label).orElse(query.targetId());
         String summary = switch (query.intent()) {
-            case VERIFY -> readableClaim + " is " + verdict.status()
-                    + " at confidence " + String.format(Locale.ROOT, "%.3f", verdict.confidence()) + ".";
-            case WHY -> verdict.status() == VerifyResult.Status.UNKNOWN
+            case VERIFY -> readableClaim + " is " + status
+                    + " at confidence " + String.format(Locale.ROOT, "%.3f", decision.confidence())
+                    + ". " + decision.explanation();
+            case WHY -> status == Status.UNKNOWN && evidence.isEmpty()
                     ? "No graph fact supports or refutes " + readableClaim + "."
-                    : readableClaim + " is " + verdict.status() + " because of "
-                            + evidence.size() + " matching graph relation(s).";
-            case WHY_NOT -> verdict.status() == VerifyResult.Status.SUPPORTED
-                    ? readableClaim + " is already supported."
-                    : readableClaim + " is not supported because no matching positive relation is present."
-                            + (counter.isEmpty() ? "" : " Explicit counter-evidence is present.");
+                    : readableClaim + " is " + status + " given " + evidence.size()
+                            + " matching graph relation(s). " + decision.explanation();
+            case WHY_NOT -> status == Status.SUPPORTED
+                    ? readableClaim + " is already supported. " + decision.explanation()
+                    : direct.isEmpty()
+                            ? readableClaim + " is not supported because no matching positive relation is present."
+                                    + (counter.isEmpty() ? "" : " Explicit counter-evidence is present.")
+                            : readableClaim + " is not supported. " + decision.explanation();
             default -> throw new IllegalStateException("Unexpected claim intent: " + query.intent());
         };
 
         List<String> guidance = new ArrayList<>();
         guidance.addAll(verdict.nearMissSuggestions());
+        if (verdict.status() == VerifyResult.Status.UNKNOWN) {
+            guidance.addAll(claimVocabularyHints(graph, query, relationType, outgoing));
+        }
         List<RelationView> evidenceViews = new ArrayList<>(
                 evidence.stream().map(r -> relationView(graph, r)).toList());
         List<PathStep> alternativePath = List.of();
-        if (query.intent() == Intent.WHY_NOT && verdict.status() == VerifyResult.Status.UNKNOWN) {
+        if (query.intent() == Intent.WHY_NOT && status == Status.UNKNOWN && direct.isEmpty()) {
             guidance.add("Missing graph fact: " + atom);
             Result alternative = path(graph, new Query(
                     Intent.PATH, query.entityId(), query.targetId(), Direction.BOTH,
@@ -969,7 +973,7 @@ public final class GraphQueryEngine {
             if (alternative.status() == Status.OK) {
                 alternativePath = alternative.path();
                 Set<String> present = evidenceViews.stream()
-                        .map(RelationView::id).collect(java.util.stream.Collectors.toSet());
+                        .map(RelationView::id).collect(Collectors.toSet());
                 for (RelationView relation : alternative.relations()) {
                     if (present.add(relation.id())) {
                         evidenceViews.add(relation);
@@ -982,8 +986,131 @@ public final class GraphQueryEngine {
                 guidance.add("Inspect NEIGHBORS for both entities; no short alternative path was found.");
             }
         }
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("confidence", decision.confidence());
+        data.put("verdictBasis", decision.basis());
+        if (decision.learnedOpinion() != null) {
+            data.put("learnedScore", clamp01(decision.learnedOpinion().expectation()));
+            data.put("relationOpinion", opinionMap(decision.learnedOpinion()));
+        }
+        if (decision.opinionsStale()) {
+            data.put("opinionsStale", true);
+        }
+        Map<String, String> traceMeta = new LinkedHashMap<>();
+        traceMeta.put("verdictBasis", decision.basis());
+        traceMeta.put("matchingRelations", String.valueOf(direct.size()));
+        traceMeta.put("counterRelations", String.valueOf(counter.size()));
+        if (decision.learnedOpinion() != null) {
+            traceMeta.put("learnedScore", String.format(Locale.ROOT, "%.3f",
+                    clamp01(decision.learnedOpinion().expectation())));
+        }
+        if (decision.opinionsStale()) {
+            traceMeta.put("opinionsStale", "true");
+        }
+        // The verdict step carries no opinion: recorded evidence decided it, and the learned score
+        // is only reported beside it.
+        ReasoningTrace trace = ReasoningTrace.of(ReasoningTrace.Step.derived(
+                ReasoningTrace.StepKind.INFERENCE,
+                "verdict " + status + " for " + atom + ": " + decision.explanation(),
+                "claim_verdict", decision.confidence(), null, traceMeta, List.of()));
         return new Result(status, query.intent(), summary, List.of(),
-                evidenceViews, alternativePath, List.of(), guidance);
+                evidenceViews, alternativePath, List.of(), guidance, data, List.of(), trace);
+    }
+
+    /**
+     * A claim's verdict and the one confidence reported for it: confidence that the stated verdict
+     * holds, as {@link DefaultKbVerifier} reports it — the recorded confidence when SUPPORTED, its
+     * complement when REFUTED, zero when UNKNOWN. {@code learnedOpinion} is the stored opinion on
+     * the matching relation, reported as its learned score; it takes no part in the verdict.
+     */
+    private record ClaimDecision(Status status,
+                                 double confidence,
+                                 String basis,
+                                 Opinion learnedOpinion,
+                                 boolean opinionsStale,
+                                 String explanation) {
+    }
+
+    /**
+     * Decide a claim from recorded evidence: the matching relation's confidence, an explicit
+     * {@code NOT_} relation, or a functional conflict. The stored opinion on the matching relation
+     * is reported as a learned score and never decides. The reasoning lifecycle stores the PSL/MEBN
+     * consensus training target there, which blends the recorded confidence with how central the
+     * endpoints are, so a well-evidenced relation between peripheral entities scores low; a crawl
+     * stores its derivation's posterior. No learned score is reported while the graph is marked
+     * stale, since it describes a topology that has since changed.
+     */
+    private static ClaimDecision decideClaim(ReasoningGraph graph,
+                                             String relationType,
+                                             List<GraphRelation> direct,
+                                             List<GraphRelation> counter,
+                                             VerifyResult verdict) {
+        boolean stale = learnedScoresStale(graph);
+        Opinion learned = stale ? null : relationOpinion(graph, direct);
+        String learnedNote = learned != null
+                ? String.format(Locale.ROOT, " The matching relation's learned score is %.3f"
+                                + " (uncertainty %.3f); it is reported for reference and does not decide the verdict.",
+                        clamp01(learned.expectation()), learned.uncertainty())
+                : stale
+                        ? " No learned score is reported: the graph changed after the last learning pass."
+                        : "";
+        String refutation = verdict.status() == VerifyResult.Status.REFUTED
+                ? verdict.refutationBasis() : null;
+        return switch (verdict.status()) {
+            case SUPPORTED -> new ClaimDecision(Status.SUPPORTED, clamp01(verdict.confidence()),
+                    "direct-evidence", learned, stale,
+                    "Decided by the matching relation's recorded confidence." + learnedNote);
+            case REFUTED -> new ClaimDecision(Status.REFUTED, clamp01(verdict.confidence()),
+                    refutation == null || refutation.isBlank() ? "direct-evidence" : refutation,
+                    learned, stale,
+                    refutationExplanation(refutation, relationType, verdict.confidence()) + learnedNote);
+            case UNKNOWN -> new ClaimDecision(Status.UNKNOWN, 0.0,
+                    direct.isEmpty() ? "no-evidence" : "direct-evidence", learned, stale,
+                    (!direct.isEmpty()
+                            ? "The matching relation's recorded confidence is too weak to decide the claim."
+                            : counter.isEmpty()
+                                    ? "No matching relation or counter-evidence is present."
+                                    : "No matching relation is present, and the counter-evidence is too weak to refute it.")
+                            + learnedNote);
+        };
+    }
+
+    /** Whether the graph changed after its last learning pass, so its stored opinions are outdated. */
+    private static boolean learnedScoresStale(ReasoningGraph graph) {
+        return graph instanceof UnifiedGraph unified && Boolean.TRUE.equals(
+                unified.meta().get(UnifiedGraphReasoningLifecycle.REASONING_STALE_META));
+    }
+
+    /** The strongest stored opinion among the relations that match a claim, or {@code null}. */
+    private static Opinion relationOpinion(ReasoningGraph graph, List<GraphRelation> matching) {
+        if (!(graph instanceof UnifiedGraph unified)) {
+            return null;
+        }
+        Opinion strongest = null;
+        for (GraphRelation relation : matching) {
+            Opinion opinion = unified.relationOpinion(relation.id());
+            if (opinion != null && (strongest == null || opinion.expectation() > strongest.expectation())) {
+                strongest = opinion;
+            }
+        }
+        return strongest;
+    }
+
+    private static String refutationExplanation(String basis, String relationType, double confidence) {
+        if ("negated-atom".equals(basis)) {
+            return "Refuted by an explicit NOT_" + relationType + " relation.";
+        }
+        if ("hard-false-fact".equals(basis)) {
+            return String.format(Locale.ROOT, "Decided by the matching relation's recorded confidence"
+                    + " (%.3f), which is below the 0.5 support threshold.", clamp01(1.0 - confidence));
+        }
+        if (basis != null && basis.startsWith("functional-conflict")) {
+            int detail = basis.indexOf(':');
+            return "Refuted by a functional conflict"
+                    + (detail < 0 ? "." : " with " + basis.substring(detail + 1).trim() + ".");
+        }
+        return "Refuted by direct graph evidence.";
     }
 
     private Result quantitative(ReasoningGraph graph, Query query) {
@@ -1007,6 +1134,18 @@ public final class GraphQueryEngine {
         if (mode == QuantitativeQuery.Mode.SOLVE_TARGET && effective.goal() == null) {
             return invalid(query.intent(), "quantitative.goal is required for SOLVE_TARGET",
                     "Provide a bounded control selector, target value, minimum, and maximum.");
+        }
+        // Execution would apply these, so reject rather than report an intervened value as
+        // "Calculated" or silently drop a goal.
+        if (mode == QuantitativeQuery.Mode.CALCULATE && !effective.interventions().isEmpty()) {
+            return invalid(query.intent(),
+                    "CALCULATE evaluates recorded inputs and takes no quantitative.interventions",
+                    "Use SCENARIO to compare interventions against the baseline.");
+        }
+        if (effective.goal() != null && (mode == QuantitativeQuery.Mode.CALCULATE
+                || mode == QuantitativeQuery.Mode.SCENARIO)) {
+            return invalid(query.intent(), "quantitative.goal only applies to SOLVE_TARGET and MODELS",
+                    "Use SOLVE_TARGET to goal-seek a bounded control.");
         }
 
         ModelRetrieval retrieval = modelRetriever.retrieve(graph, effective);
@@ -1276,7 +1415,7 @@ public final class GraphQueryEngine {
             meta.put("input", resolution.input());
             meta.put("resolvedId", String.valueOf(resolution.resolvedId()));
             meta.put("candidateIds", resolution.candidates().stream()
-                    .map(EntityView::id).collect(java.util.stream.Collectors.joining(",")));
+                    .map(EntityView::id).collect(Collectors.joining(",")));
             meta.put("scoreBasis", "lexical + stored entity prior; exact id/name priority");
             meta.put("inferenceInvoked", "false");
             premises.add(new ReasoningTrace.Step(
@@ -1288,24 +1427,28 @@ public final class GraphQueryEngine {
                     List.of(), null, meta));
         }
 
+        boolean learnedStale = learnedScoresStale(graph);
         Set<String> tracedEntities = new HashSet<>();
         for (EntityView entity : raw.entities()) {
-            premises.add(entityTraceStep(graph, entity, raw.intent()));
+            premises.add(entityTraceStep(graph, entity, raw.intent(), learnedStale));
             tracedEntities.add(entity.id());
         }
         for (PathStep step : raw.path()) {
             if (step.entity() != null && tracedEntities.add(step.entity().id())) {
-                premises.add(entityTraceStep(graph, step.entity(), Intent.PATH));
+                premises.add(entityTraceStep(graph, step.entity(), Intent.PATH, learnedStale));
             }
         }
         for (RelationView relation : raw.relations()) {
-            Opinion opinion = graph instanceof UnifiedGraph unified
+            Opinion learned = graph instanceof UnifiedGraph unified && !learnedStale
                     ? unified.relationOpinion(relation.id()) : null;
-            String atom = normalizePredicate(relation.type()) + "("
+            String atom = storedPredicate(relation.type()) + "("
                     + relation.sourceId() + "," + relation.targetId() + ")";
-            premises.add(ReasoningTrace.Step.fact(atom,
-                    clamp01(Math.min(relation.weight(), relation.confidence())),
-                    relation.id(), opinion));
+            ReasoningTrace.Step fact = ReasoningTrace.Step.fact(atom,
+                    clamp01(Math.min(relation.weight(), relation.confidence())), relation.id());
+            // A relation's stored opinion is a learned score, not its recorded evidence, so it is
+            // labelled in meta rather than attached as the fact's opinion.
+            premises.add(learned == null ? fact : ReasoningTrace.Step.withMeta(fact, Map.of("learnedScore",
+                    String.format(Locale.ROOT, "%.3f", clamp01(learned.expectation())))));
         }
 
         Object factRows = raw.data().get("facts");
@@ -1319,7 +1462,7 @@ public final class GraphQueryEngine {
                 premises.add(ReasoningTrace.Step.fact(String.valueOf(row.get("atom")),
                         clamp01(score), String.valueOf(row.get("source"))));
             }
-        } else if (!raw.data().isEmpty()) {
+        } else if (!raw.data().isEmpty() && raw.trace() == null) {
             premises.add(ReasoningTrace.Step.fact(
                     "Returned data fields: " + String.join(",", raw.data().keySet()),
                     raw.status() == Status.OK ? 1.0 : 0.0, "graph-query-data"));
@@ -1370,9 +1513,9 @@ public final class GraphQueryEngine {
     }
 
     private static ReasoningTrace.Step entityTraceStep(
-            ReasoningGraph graph, EntityView entity, Intent intent) {
+            ReasoningGraph graph, EntityView entity, Intent intent, boolean learnedStale) {
         boolean inferred = intent == Intent.RANK || intent == Intent.SIMILAR;
-        Opinion opinion = graph instanceof UnifiedGraph unified
+        Opinion learned = graph instanceof UnifiedGraph unified && !learnedStale
                 ? unified.entityOpinion(entity.id()) : null;
         double confidence = entity.score() > 0.0 ? entity.score() : entity.confidence();
         String source = inferred ? "hybrid_rank"
@@ -1383,10 +1526,15 @@ public final class GraphQueryEngine {
             metadata.put("scoreBasis", "lexical + stored entity prior");
             metadata.put("inferenceInvoked", "false");
         }
+        // As for relations: the stored opinion is a learned score, labelled in meta rather than
+        // attached as the step's opinion, and withheld once the graph changed after learning.
+        if (learned != null) {
+            metadata.put("learnedScore", String.format(Locale.ROOT, "%.3f", clamp01(learned.expectation())));
+        }
         return new ReasoningTrace.Step(
                 inferred ? ReasoningTrace.StepKind.INFERENCE : ReasoningTrace.StepKind.QUERY,
                 "entity " + entity.id() + " (" + entity.label() + ")",
-                source, clamp01(confidence), entity.id(), List.of(), opinion, metadata);
+                source, clamp01(confidence), entity.id(), List.of(), null, metadata);
     }
 
     private static double resultConfidence(Result result) {
@@ -1490,11 +1638,11 @@ public final class GraphQueryEngine {
         Set<String> types = new HashSet<>();
         for (String type : relationTypes) {
             if (!blank(type)) {
-                types.add(normalizePredicate(type));
+                types.add(PredicateNames.key(type));
             }
         }
         return candidates.stream()
-                .filter(r -> types.isEmpty() || types.contains(normalizePredicate(r.type())))
+                .filter(r -> types.isEmpty() || types.contains(PredicateNames.key(r.type())))
                 .sorted(Comparator.comparingDouble(GraphRelation::weight).reversed()
                         .thenComparing(GraphRelation::id))
                 .toList();
@@ -1526,13 +1674,18 @@ public final class GraphQueryEngine {
         return null;
     }
 
-    private static VerificationStores graphFacts(Iterable<GraphRelation> relations) {
+    private static VerificationStores graphFacts(Iterable<GraphRelation> relations, String claimedType) {
+        String claimedKey = PredicateNames.key(claimedType);
         FactStore facts = new FactStore();
         InMemoryInferredFactStore inferred = new InMemoryInferredFactStore();
         for (GraphRelation relation : relations) {
             String type = normalizePredicate(relation.type());
             boolean negated = type.startsWith("NOT_") && type.length() > 4;
             String predicate = negated ? type.substring(4) : type;
+            // Every spelling of the claimed relation states the claim itself, so it shares its atom.
+            if (PredicateNames.key(predicate).equals(claimedKey)) {
+                predicate = claimedType;
+            }
             String atom = claimAtom(predicate, relation.sourceId(), relation.targetId());
             double value = Math.max(0.0, Math.min(1.0,
                     Math.min(relation.weight(), relation.confidence())));
@@ -1549,12 +1702,52 @@ public final class GraphQueryEngine {
     }
 
     private static List<GraphRelation> claimRelations(
-            ReasoningGraph graph, String sourceId, String targetId, String relationType) {
-        return graph.outgoing(sourceId).stream()
+            List<GraphRelation> outgoing, String targetId, String relationType) {
+        String key = PredicateNames.key(relationType);
+        return outgoing.stream()
                 .filter(relation -> relation.targetId().equals(targetId))
-                .filter(relation -> normalizePredicate(relation.type()).equals(relationType))
+                .filter(relation -> PredicateNames.key(relation.type()).equals(key))
                 .sorted(Comparator.comparingDouble(GraphRelation::confidence).reversed())
                 .toList();
+    }
+
+    /**
+     * Why an UNKNOWN claim found nothing, from indexed adjacency only: relations that already link
+     * the two entities under another type or direction, and the source's closest relation types
+     * when it never uses the claimed one.
+     */
+    private static List<String> claimVocabularyHints(
+            ReasoningGraph graph, Query query, String relationType, List<GraphRelation> outgoing) {
+        Set<String> links = new TreeSet<>();
+        Set<String> sourceTypes = new TreeSet<>();
+        for (GraphRelation relation : outgoing) {
+            String type = normalizePredicate(relation.type());
+            sourceTypes.add(type.startsWith("NOT_") && type.length() > 4 ? type.substring(4) : type);
+            if (relation.targetId().equals(query.targetId())
+                    && !PredicateNames.same(type, relationType)
+                    && !PredicateNames.same(type, "NOT_" + relationType)) {
+                links.add(claimAtom(type, relation.sourceId(), relation.targetId()));
+            }
+        }
+        for (GraphRelation relation : graph.outgoing(query.targetId())) {
+            if (relation.targetId().equals(query.entityId())) {
+                links.add(claimAtom(normalizePredicate(relation.type()),
+                        relation.sourceId(), relation.targetId()));
+            }
+        }
+        List<String> hints = new ArrayList<>();
+        if (!links.isEmpty()) {
+            hints.add("The graph links these entities as " + String.join(", ", links)
+                    + "; if one of those states the claim, verify that relation type and direction instead.");
+        }
+        if (sourceTypes.stream().noneMatch(type -> PredicateNames.same(type, relationType))) {
+            List<String> similar = PredicateNames.suggestions(relationType, sourceTypes, 3);
+            hints.add("No " + relationType + " relation leaves " + query.entityId() + "; "
+                    + (similar.isEmpty()
+                            ? "use SCHEMA to list the relation types this graph uses."
+                            : "its closest relation types are " + String.join(", ", similar) + "."));
+        }
+        return hints;
     }
 
     private static String claimAtom(String relationType, String sourceId, String targetId) {
@@ -1562,8 +1755,15 @@ public final class GraphQueryEngine {
     }
 
     private static String normalizePredicate(String value) {
-        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT)
-                .replaceAll("[^A-Z0-9_]", "_");
+        return PredicateNames.canonical(value);
+    }
+
+    /**
+     * A stored relation type as fact atoms show it. Predicate keys only decide what matches; the
+     * stored spelling keeps an atom copied from a result usable where predicates match exactly.
+     */
+    private static String storedPredicate(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private static double lexicalScore(GraphEntity entity, String queryText) {
@@ -1671,7 +1871,7 @@ public final class GraphQueryEngine {
     }
 
     private static double storedEntityPrior(GraphEntity entity) {
-        return clamp01(entity.weight() * entity.confidence());
+        return clamp01(Math.min(entity.weight(), entity.confidence()));
     }
 
     private static void checkInterrupted() {

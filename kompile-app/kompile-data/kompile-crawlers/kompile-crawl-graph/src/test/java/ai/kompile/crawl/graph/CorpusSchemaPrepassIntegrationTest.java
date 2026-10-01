@@ -310,6 +310,45 @@ class CorpusSchemaPrepassIntegrationTest {
     }
 
     @Test
+    void classificationModelFailuresStopBeforeNodeTypeDiscovery() {
+        List<RuntimeException> failures = List.of(
+                new IllegalStateException("Structured model timed out after 600s",
+                        new java.util.concurrent.TimeoutException("inference deadline")),
+                new IllegalStateException("Serving subprocess failed: invalid resource handle"),
+                new IllegalStateException("Structured generation is still unwinding"));
+        for (RuntimeException original : failures) {
+            GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
+            orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();
+            orchestrator.llmDispatcher = mock(CrawlLlmDispatcher.class);
+            when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
+            UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+            when(job.getJobId()).thenReturn("classification-failure");
+            when(orchestrator.llmDispatcher.promptStructuredWithCapacityFallback(
+                    any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                    any(CrawlLlmDispatcher.LlmCallScope.class))).thenThrow(original);
+            CrawlCorpusSnapshot corpus = new CrawlCorpusSnapshot("classification-snapshot",
+                    List.of(new CrawlCorpusPassage("chunk-1", 0,
+                            "Jordan Lee founded Helios Dynamics.", "hash-1", Map.of(), true)));
+
+            IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                    () -> orchestrator.deriveCorpusSchema(job, corpus,
+                            GraphExtractionConfig.builder()
+                                    .schemaMode(SchemaEnforcementMode.LENIENT).build(),
+                            Graph.builder().build()));
+            assertTrue(thrown.getMessage().contains(original.getMessage()));
+            Throwable root = thrown;
+            while (root != original && root.getCause() != null) root = root.getCause();
+            assertSame(original, root, "Keep the actual model failure, not a later prepass timeout");
+            ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scope =
+                    ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
+            verify(orchestrator.llmDispatcher, times(1)).promptStructuredWithCapacityFallback(
+                    any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                    scope.capture());
+            assertEquals("entity-classifications-1", scope.getValue().passId());
+        }
+    }
+
+    @Test
     void conceptCandidateExtractionFailureStopsTheOntologyPrepass() {
         GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
         orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();

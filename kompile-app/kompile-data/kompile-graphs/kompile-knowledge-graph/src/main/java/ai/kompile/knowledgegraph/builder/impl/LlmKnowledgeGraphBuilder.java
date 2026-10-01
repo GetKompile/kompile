@@ -80,7 +80,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
      * When null or when the fact sheet has no bound ontology, extraction is free-form (unchanged).
      */
     @Autowired(required = false)
-    private OntologyProjectionProvider ontologyProvider;
+    OntologyProjectionProvider ontologyProvider;
 
     /**
      * Optional SourceTrustResolver — when available (Spring context), resolves the

@@ -75,19 +75,27 @@ class OAuthProviderFlowsTest {
     }
 
     @Test
-    void anthropicBrowserPkceProducesClaudeOauthHeaders() throws Exception {
-        QueueTransport transport = new QueueTransport(json(200, """
-                {"access_token":"sk-ant-oat-test","refresh_token":"refresh","expires_in":3600}
-                """));
-        TestInteraction interaction = new TestInteraction("anthropic-code");
-        AnthropicOAuthFlow flow = new AnthropicOAuthFlow(transport);
+    void anthropicOauthBelongsToClaudeCodeWhileItsApiKeyStaysManaged() {
+        // Claude Code owns Anthropic's subscription login: no Kompile OAuth flow
+        // exists for it, so no managed-OAuth path can pick up the anthropic id.
+        OAuthProviderRegistry registry = new OAuthProviderRegistry();
+        assertTrue(registry.find("anthropic").isEmpty());
+        assertTrue(registry.oauthProviderForVendor("anthropic").isEmpty());
+        assertFalse(registry.isOAuthOnly("anthropic"));
+        // The API-key route is unchanged.
+        assertTrue(registry.supportsApiKey("anthropic"));
+        // Every other flow keeps its managed OAuth.
+        assertEquals("openai-codex", registry.oauthProviderForVendor("openai").orElseThrow());
 
-        ManagedCredential credential = flow.login(MANUAL_BROWSER, interaction);
-        OAuthProviderFlow.RequestAuth auth = flow.toRequestAuth(credential);
-
-        assertEquals("Bearer sk-ant-oat-test", auth.headers().get("Authorization"));
-        assertTrue(auth.headers().get("anthropic-beta").contains("oauth-2025-04-20"));
-        assertTrue(transport.requests.get(0).body().contains("anthropic-code"));
+        try (var in = OAuthProviderFlow.class.getClassLoader().getResourceAsStream(
+                "META-INF/services/" + OAuthProviderFlow.class.getName())) {
+            assertNotNull(in, "missing OAuthProviderFlow service registration");
+            String registration = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            assertFalse(registration.contains("AnthropicOAuthFlow"),
+                    "stale AnthropicOAuthFlow registration would break ServiceLoader");
+        } catch (IOException e) {
+            throw new AssertionError("unreadable OAuthProviderFlow service registration", e);
+        }
     }
 
     @Test
@@ -158,16 +166,6 @@ class OAuthProviderFlowsTest {
                 1L,
                 Map.of("accountId", "old-account")));
         assertEquals("old-openai-refresh", openAiRefreshed.getRefresh());
-
-        QueueTransport anthropicTransport = new QueueTransport(json(200, """
-                {"access_token":"new-anthropic-access","expires_in":3600}
-                """));
-        AnthropicOAuthFlow anthropic = new AnthropicOAuthFlow(anthropicTransport);
-        ManagedCredential anthropicRefreshed = anthropic.refresh(ManagedCredential.oauth(
-                "old-anthropic-access",
-                "old-anthropic-refresh",
-                1L));
-        assertEquals("old-anthropic-refresh", anthropicRefreshed.getRefresh());
 
         QueueTransport radiusTransport = new QueueTransport(json(200, """
                 {"access_token":"new-radius-access","expires_in":3600}
@@ -473,27 +471,6 @@ class OAuthProviderFlowsTest {
         } finally {
             System.setProperty("user.home", originalHome);
         }
-    }
-
-    @Test
-    void claudeIdentitySurvivesOpaqueTokenRotationAndDeduplicatesRelogin() throws Exception {
-        QueueTransport transport = new QueueTransport(
-                json(200, """
-                        {"access_token":"claude-old","refresh_token":"r1","expires_in":3600,
-                         "account":{"uuid":"user-123","email_address":"user@example.test"},
-                         "organization":{"uuid":"org-123"}}
-                        """),
-                json(200, """
-                        {"access_token":"claude-new","refresh_token":"r2","expires_in":3600}
-                        """));
-        AnthropicOAuthFlow flow = new AnthropicOAuthFlow(transport);
-        ManagedCredential login = flow.login(MANUAL_BROWSER, new TestInteraction("code"));
-        ManagedCredential refreshed = flow.refresh(login);
-        assertEquals("user-123", refreshed.getMetadata("accountId"));
-        assertEquals("org-123", refreshed.getMetadata("organizationId"));
-        assertEquals("user@example.test", refreshed.getMetadata("email"));
-        assertEquals("r2", refreshed.getRefresh());
-        assertTrue(ai.kompile.cli.main.auth.OAuthCredentialIdentity.sameAccount("anthropic", login, refreshed));
     }
 
     @Test

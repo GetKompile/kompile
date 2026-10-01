@@ -370,7 +370,7 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
      * connected by their inter-entity edges (so transitive object properties produce real closure).
      * Returns an empty graph when no {@link KnowledgeGraphService} is wired.
      */
-    private ReasoningGraph buildAbox(long factSheetId) {
+    ReasoningGraph buildAbox(long factSheetId) {
         MutableReasoningGraph abox = new MutableReasoningGraph();
         if (knowledgeGraphService == null) {
             return abox;
@@ -479,7 +479,7 @@ public class OwlReasoningService implements OwlDerivedRuleProvider {
     private record InferredTypeCandidate(String localName, String classIri) {}
 
     /** Record inferred is-a class memberships in entity nodes' {@code owlInferredTypes} metadata. */
-    private int materializeInferredTypes(long factSheetId, Map<String, ?> inferredTypes) {
+    int materializeInferredTypes(long factSheetId, Map<String, ?> inferredTypes) {
         return materializeInferredTypes(factSheetId, inferredTypes, Map.of());
     }
 

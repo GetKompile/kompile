@@ -84,6 +84,31 @@ class ContradictionDetectorTest {
     }
 
     @Test
+    void labelSpellingsOfOneRelationAreNotAConflict() {
+        when(knowledgeGraphService.getEdgesInFactSheet(FS)).thenReturn(List.of(
+                labelled("e1", "worksFor"),
+                labelled("e2", "WORKS_FOR"),
+                labelled("e3", "works for")));
+
+        assertTrue(detector.detect(FS).isEmpty(),
+                "worksFor, WORKS_FOR, and 'works for' are one relation");
+    }
+
+    @Test
+    void differentLabelsConflictButTheirSpellingsDoNot() {
+        when(knowledgeGraphService.getEdgesInFactSheet(FS)).thenReturn(List.of(
+                labelled("e1", "worksFor"),
+                labelled("e2", "WORKS_FOR"),
+                labelled("e3", "leftCompany")));
+
+        List<Contradiction> found = detector.detect(FS);
+
+        assertEquals(1, found.size(), "only the WORKS_FOR / leftCompany pair conflicts");
+        assertEquals("USER_DEFINED (WORKS_FOR)", found.get(0).existingFact());
+        assertEquals("USER_DEFINED (leftCompany)", found.get(0).newFact());
+    }
+
+    @Test
     void ignoresStaleEdgesSoNoFalseConflict() {
         when(knowledgeGraphService.getEdgesInFactSheet(FS)).thenReturn(List.of(
                 edge("e1", "A", "B", EdgeType.CITATION, null, null, null),
@@ -129,6 +154,12 @@ class ContradictionDetectorTest {
         detector.resolve(FS, ContradictionResolutionStrategy.FLAG_FOR_REVIEW, false);
 
         verify(knowledgeGraphService, never()).pruneEdges(any(), anyBoolean(), anyBoolean());
+    }
+
+    private GraphEdge labelled(String edgeId, String label) {
+        GraphEdge edge = edge(edgeId, "A", "B", EdgeType.USER_DEFINED, null, null, null);
+        edge.setLabel(label);
+        return edge;
     }
 
     private GraphEdge edge(String edgeId, String src, String tgt, EdgeType type,

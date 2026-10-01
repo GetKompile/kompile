@@ -74,7 +74,7 @@ public class FactPromotionTracker {
      * Fields are set by {@link #checkPromotion} and optionally hydrated from the DB
      * by {@link #ensureHydrated(long)} on first access per fact sheet.
      */
-    private static final class PromotionState {
+    static final class PromotionState {
         volatile StrengthBand lastBand = StrengthBand.SPECULATIVE;
         volatile String promotionStatus = "NONE";
         final AtomicInteger corroborationCount = new AtomicInteger(0);
@@ -88,7 +88,7 @@ public class FactPromotionTracker {
      * Two-level map: factSheetId → (atomKey → PromotionState).
      * ConcurrentHashMap at both levels for lock-free reads.
      */
-    private final ConcurrentHashMap<Long, ConcurrentHashMap<String, PromotionState>> stateMap =
+    final ConcurrentHashMap<Long, ConcurrentHashMap<String, PromotionState>> stateMap =
             new ConcurrentHashMap<>();
 
     // ── Spring collaborators ─────────────────────────────────────────────────────
@@ -124,7 +124,7 @@ public class FactPromotionTracker {
 
     @Nullable
     @Value("${kompile.data.dir:#{null}}")
-    private String dataDir;
+    String dataDir;
 
     /**
      * Kompile-managed KB config — supplies the Beta prior strength W ({@code evidencePriorStrength}).

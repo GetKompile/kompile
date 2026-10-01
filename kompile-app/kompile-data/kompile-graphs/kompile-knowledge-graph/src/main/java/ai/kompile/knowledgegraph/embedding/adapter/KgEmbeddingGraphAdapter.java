@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.embedding.adapter;
 
+import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import ai.kompile.core.kgembedding.KGEmbeddingModel;
 import ai.kompile.core.kgembedding.Triple;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -58,6 +59,22 @@ public interface KgEmbeddingGraphAdapter {
      * @return number of graph elements updated
      */
     int storeEmbeddings(KGEmbeddingModel model, Long factSheetId, Long version);
+
+    /**
+     * Persists trained vectors that arrive as plain arrays instead of a model, such as those read from
+     * the file an out-of-process training run writes. Keys are the entity keys {@link #extractTriples}
+     * produced.
+     *
+     * @param entityVectors   entity key to vector
+     * @param relationVectors relation type to vector; stores that cannot hold relation vectors ignore it
+     * @param algorithm       algorithm that trained the vectors
+     * @return number of graph elements updated
+     */
+    int storeEmbeddings(Map<String, float[]> entityVectors,
+                        Map<String, float[]> relationVectors,
+                        KGEmbeddingAlgorithm algorithm,
+                        Long factSheetId,
+                        Long version);
 
     /**
      * Reads back previously persisted KGE entity embeddings for the fact sheet.

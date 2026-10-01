@@ -18,6 +18,7 @@ import { NgModule } from '@angular/core';
 import { RouterModule, Routes } from '@angular/router';
 
 import { UnifiedChatComponent } from './components/unified-chat/unified-chat.component';
+import { ChatWorkspaceComponent } from './components/chat-workspace/chat-workspace.component';
 import { ProjectPageComponent } from './components/project-page/project-page.component';
 import { GraphPageComponent } from './components/graph-page/graph-page.component';
 import { ChatSettingsComponent } from './components/settings/chat-settings.component';
@@ -38,6 +39,7 @@ export const routes: Routes = [
 
   // ── Primary nav tabs ────────────────────────────────────────────────────
   { path: 'chat',        component: UnifiedChatComponent,  title: 'Kompile Chat' },
+  { path: 'workspace',   component: ChatWorkspaceComponent, title: 'Kompile Chat — Workspace' },
   { path: 'project',     component: ProjectPageComponent,  title: 'Kompile Chat — Project' },
   { path: 'fact-sheets', component: FactSheetPageComponent, title: 'Kompile Chat — Fact Sheets' },
   { path: 'graph',       component: GraphPageComponent,    title: 'Kompile Chat — Graph' },

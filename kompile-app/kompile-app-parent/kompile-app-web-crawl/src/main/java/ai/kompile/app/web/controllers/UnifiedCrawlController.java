@@ -28,7 +28,9 @@ import ai.kompile.app.ontology.OntologySchemaEnrichmentService;
 import ai.kompile.app.web.dto.ontology.OwlClassificationResponse;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.services.GraphSchemaPresetService;
+import ai.kompile.app.services.scheduler.JobResourceProfiles;
 import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
+import ai.kompile.app.services.scheduler.ScheduledJob;
 import ai.kompile.core.crawl.graph.*;
 import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
 import ai.kompile.cli.common.logs.CrawlLogWriter;
@@ -68,7 +70,10 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
@@ -96,6 +101,8 @@ public class UnifiedCrawlController {
     // Scheduling intervals
     private static final long CRAWL_SYNC_INTERVAL_MS = 15_000L; // 15 seconds
     private static final long CRAWL_LOG_PUBLISH_INTERVAL_MS = 2_000L; // 2 seconds
+    // How long a scheduled crawl may run before it is cancelled and its scheduler job fails
+    private static final long SCHEDULED_CRAWL_TIMEOUT_MS = TimeUnit.HOURS.toMillis(24);
 
     private final UnifiedCrawlService unifiedCrawlService;
 
@@ -118,16 +125,16 @@ public class UnifiedCrawlController {
     private SimpMessagingTemplate messagingTemplate;
 
     @Autowired(required = false)
-    private FactSheetService factSheetService;
+    FactSheetService factSheetService;
 
     @Autowired(required = false)
     private AppDocumentSourceProperties appDocumentSourceProperties;
 
     @Autowired
-    private ObjectMapper objectMapper;
+    ObjectMapper objectMapper;
 
     @Autowired(required = false)
-    private ResourceAwareJobScheduler resourceScheduler;
+    ResourceAwareJobScheduler resourceScheduler;
 
     @Autowired(required = false)
     private CrawlStepArchiveService crawlStepArchiveService;
@@ -139,16 +146,16 @@ public class UnifiedCrawlController {
     private GraphHydrationOrchestrator hydrationOrchestrator;
 
     @Autowired(required = false)
-    private OntologySchemaEnrichmentService schemaEnrichmentService;
+    OntologySchemaEnrichmentService schemaEnrichmentService;
 
     @Autowired(required = false)
-    private SingleSourceCrawlStarter singleSourceCrawlStarter;
+    SingleSourceCrawlStarter singleSourceCrawlStarter;
 
     @Autowired(required = false)
-    private SingleSourceCrawlPreviewService singleSourceCrawlPreviewService;
+    SingleSourceCrawlPreviewService singleSourceCrawlPreviewService;
 
     /** Resolved uploads directory for file-based crawl jobs */
-    private Path uploadsPath;
+    Path uploadsPath;
 
     @PostConstruct
     private void initUploadsPath() {
@@ -223,67 +230,14 @@ public class UnifiedCrawlController {
             if (resourceScheduler != null) {
                 String schedulerJobId = "crawl-" + UUID.randomUUID().toString().substring(0, 8);
                 try {
-                    ai.kompile.app.services.scheduler.ScheduledJob scheduledJob =
-                            ai.kompile.app.services.scheduler.ScheduledJob.builder()
+                    ScheduledJob scheduledJob =
+                            ScheduledJob.builder()
                                     .jobId(schedulerJobId)
                                     .jobType("unifiedCrawl")
                                     .description("[CRAWL] " + jobName)
-                                    .resourceProfile(ai.kompile.app.services.scheduler.JobResourceProfiles.UNIFIED_CRAWL)
-                                    .executor(ctx -> {
-                                        // Start crawl INSIDE the executor so the scheduler gates it
-                                        UnifiedCrawlJob crawlJob = unifiedCrawlService.startJob(request);
-                                        String internalJobId = crawlJob.getJobId();
-
-                                        // Store mapping so both IDs resolve to the same job
-                                        schedulerIdToJobId.put(ctx.jobId(), internalJobId);
-                                        // Also register in the service so SSE controller can resolve
-                                        unifiedCrawlService.registerJobIdAlias(ctx.jobId(), internalJobId);
-
-                                        // Publish to job history using the INTERNAL job ID
-                                        // so syncCrawlJobsToHistory() can find it consistently
-                                        String historyTaskId = "crawl-" + internalJobId;
-                                        if (jobHistoryService != null) {
-                                            try {
-                                                jobHistoryService.createJob(historyTaskId, "[CRAWL] " + jobName);
-                                                jobHistoryService.markJobRunning(historyTaskId);
-                                                publishedJobIds.add(internalJobId);
-                                            } catch (Exception e) {
-                                                log.warn("Failed to publish crawl job to history: {}", e.getMessage());
-                                            }
-                                        }
-
-                                        // Poll until terminal, forwarding phase transitions
-                                        String lastPhase = null;
-                                        long crawlDeadline = System.currentTimeMillis() + java.util.concurrent.TimeUnit.HOURS.toMillis(24);
-                                        while (System.currentTimeMillis() < crawlDeadline) {
-                                            UnifiedCrawlJob.Status status = crawlJob.getStatus().get();
-                                            if (status == UnifiedCrawlJob.Status.COMPLETED
-                                                    || status == UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING
-                                                    || status == UnifiedCrawlJob.Status.FAILED
-                                                    || status == UnifiedCrawlJob.Status.CANCELLED) {
-                                                if (status == UnifiedCrawlJob.Status.FAILED) {
-                                                    throw new RuntimeException("Crawl failed");
-                                                }
-                                                break;
-                                            }
-                                            // Forward phase transitions for GPU yield
-                                            String currentPhase = crawlJob.getCurrentPhase().get();
-                                            if (currentPhase != null && !currentPhase.equals(lastPhase)) {
-                                                var profile = ai.kompile.app.services.scheduler.JobResourceProfiles.UNIFIED_CRAWL;
-                                                boolean gpuPhase = profile.phaseRequiresGpu(currentPhase);
-                                                long gpuMem = profile.gpuMemoryForPhase(currentPhase);
-                                                ctx.phaseCallback().onPhaseTransition(
-                                                        ctx.jobId(), currentPhase, gpuPhase, gpuMem);
-                                                lastPhase = currentPhase;
-                                            }
-                                            try {
-                                                Thread.sleep(1000);
-                                            } catch (InterruptedException ie) {
-                                                Thread.currentThread().interrupt();
-                                                break;
-                                            }
-                                        }
-                                    })
+                                    .resourceProfile(JobResourceProfiles.UNIFIED_CRAWL)
+                                    // Start crawl INSIDE the executor so the scheduler gates it
+                                    .executor(ctx -> runScheduledCrawl(ctx, request, jobName, SCHEDULED_CRAWL_TIMEOUT_MS))
                                     .metadata(Map.of(
                                             "sourceCount", request.getSources().size(),
                                             "graphExtractionEnabled", true,
@@ -347,6 +301,99 @@ public class UnifiedCrawlController {
             log.error("Failed to start unified crawl job", e);
             return ResponseEntity.internalServerError()
                     .body(Map.of("error", "Failed to start job: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Body of a scheduled crawl job: starts the crawl and polls it to a terminal state, forwarding phase
+     * transitions for GPU yield. Returns normally only when the crawl completed. A scheduler cancel, an
+     * interrupt or running out of time cancels the crawl and throws, as does a crawl that failed or was
+     * cancelled on its own — the scheduler never records a crawl that didn't finish as a success.
+     */
+    void runScheduledCrawl(ScheduledJob.JobExecutionContext ctx, UnifiedCrawlRequest request, String jobName,
+                           long timeoutMs) throws Exception {
+        UnifiedCrawlJob crawlJob = unifiedCrawlService.startJob(request);
+        String internalJobId = crawlJob.getJobId();
+
+        // Store mapping so both IDs resolve to the same job
+        schedulerIdToJobId.put(ctx.jobId(), internalJobId);
+        // Also register in the service so SSE controller can resolve
+        unifiedCrawlService.registerJobIdAlias(ctx.jobId(), internalJobId);
+
+        // Publish to job history using the INTERNAL job ID
+        // so syncCrawlJobsToHistory() can find it consistently
+        String historyTaskId = "crawl-" + internalJobId;
+        if (jobHistoryService != null) {
+            try {
+                jobHistoryService.createJob(historyTaskId, "[CRAWL] " + jobName);
+                jobHistoryService.markJobRunning(historyTaskId);
+                publishedJobIds.add(internalJobId);
+            } catch (Exception e) {
+                log.warn("Failed to publish crawl job to history: {}", e.getMessage());
+            }
+        }
+
+        // Poll until terminal, forwarding phase transitions
+        String lastPhase = null;
+        long crawlDeadline = System.currentTimeMillis() + timeoutMs;
+        while (true) {
+            if (ctx.isCancellationRequested()) {
+                cancelScheduledCrawl(internalJobId, "scheduler job " + ctx.jobId() + " was cancelled");
+                throw new CancellationException("Scheduler job " + ctx.jobId() + " was cancelled");
+            }
+            UnifiedCrawlJob.Status status = crawlJob.getStatus().get();
+            if (status == UnifiedCrawlJob.Status.COMPLETED
+                    || status == UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING
+                    || status == UnifiedCrawlJob.Status.COMPLETED_PENDING_GRAPH) {
+                return;
+            }
+            if (status == UnifiedCrawlJob.Status.FAILED) {
+                throw new RuntimeException("Crawl failed");
+            }
+            if (status == UnifiedCrawlJob.Status.CANCELLED) {
+                // Cancelled outside the scheduler (e.g. through the crawl's own cancel endpoint) — not a success
+                throw new CancellationException("Crawl " + internalJobId + " was cancelled");
+            }
+            if (System.currentTimeMillis() >= crawlDeadline) {
+                String reason = "did not finish within " + TimeUnit.MILLISECONDS.toMinutes(timeoutMs) + " minutes";
+                cancelScheduledCrawl(internalJobId, reason);
+                throw new TimeoutException("Crawl " + internalJobId + " " + reason);
+            }
+            // Forward phase transitions for GPU yield. The reported phase resolves to the declared phase it
+            // stands for (EMBEDDING -> VECTOR_INDEXING, a decomposed extraction pass -> its step); an end
+            // marker such as COMPLETED resolves to null and is never forwarded.
+            String currentPhase = CrawlPipelineStepRegistry.workPhase(crawlJob.getCurrentPhase().get());
+            if (currentPhase != null && !currentPhase.equals(lastPhase)) {
+                var profile = JobResourceProfiles.UNIFIED_CRAWL;
+                boolean gpuPhase = profile.phaseRequiresGpu(currentPhase);
+                long gpuMem = profile.gpuMemoryForPhase(currentPhase);
+                ctx.phaseCallback().onPhaseTransition(
+                        ctx.jobId(), currentPhase, gpuPhase, gpuMem);
+                lastPhase = currentPhase;
+            }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException ie) {
+                // The scheduler's cancel (or its shutdown) interrupts this thread: stop the crawl too
+                cancelScheduledCrawl(internalJobId, "scheduler job " + ctx.jobId() + " was interrupted");
+                throw ie;
+            }
+        }
+    }
+
+    /** Stops the crawl behind a scheduled job that is being cancelled or ran out of time. */
+    private void cancelScheduledCrawl(String internalJobId, String reason) {
+        // Clear a pending interrupt so it can't abort the cancel's own I/O — the caller throws right after
+        Thread.interrupted();
+        try {
+            if (unifiedCrawlService.cancelJob(internalJobId)) {
+                log.info("Cancelled crawl {}: {}", internalJobId, reason);
+            } else {
+                // Already finished or cancelling, or activating its graph (a commit point that can't be cancelled)
+                log.info("Crawl {} was not cancelled ({}): it is already finishing", internalJobId, reason);
+            }
+        } catch (RuntimeException e) {
+            log.warn("Failed to cancel crawl {} ({}): {}", internalJobId, reason, e.getMessage());
         }
     }
 
@@ -1457,7 +1504,7 @@ public class UnifiedCrawlController {
      * History re-runs of ENRICHMENT should match the normal crawl enrichment pass: update schema
      * richness, materialize inferred types/relations, then run graph hydration.
      */
-    private OwlClassificationResponse runSchemaEnrichmentForHistoryRerun(String normalizedStep, Long factSheetId) {
+    OwlClassificationResponse runSchemaEnrichmentForHistoryRerun(String normalizedStep, Long factSheetId) {
         if (!"ENRICHMENT".equals(normalizedStep)) {
             return null;
         }

@@ -57,6 +57,7 @@ private val KEY_USE_MEMORY_MAPPING = ModelPreparationOptions.Companion.WireKeys.
 private val KEY_DIAGNOSTIC_MODE = ModelPreparationOptions.Companion.WireKeys.DIAGNOSTIC_MODE
 private const val KEY_OPERATION_ATTEMPT_ID = "operation_attempt_id"
 private const val KEY_OPERATION_TERMINAL = "operation_terminal"
+private const val KEY_REQUEST_REJECTED = "request_rejected"
 private const val KEY_SUCCESS = "success"
 private const val KEY_FAILURE_CLASS = "failure_class"
 private const val KEY_FAILURE_MESSAGE = "failure_message"
@@ -224,9 +225,31 @@ internal data class PreparedModelPayload(
  * state; after the result is durably cached, the importer is terminated and observed dead before
  * the caller initializes accelerator code.
  */
-internal object SdxModelPreparationClient {
+internal class SdxImporterLifecycle {
+    private val owned = AtomicBoolean(false)
 
-    fun retireForStorageMutation(context: Context) {
+    fun <T> withOwnership(action: () -> T): T {
+        if (!owned.compareAndSet(false, true)) {
+            throw ChatException("Model preparation is already in progress. Wait for it to finish.")
+        }
+        try {
+            return action()
+        } finally {
+            owned.set(false)
+        }
+    }
+}
+
+internal object SdxModelPreparationClient {
+    // Binding, journal ownership and retirement form one lifecycle, shared by
+    // UI activation, instrumentation and storage mutations in this process.
+    private val lifecycle = SdxImporterLifecycle()
+
+    fun retireForStorageMutation(context: Context) = lifecycle.withOwnership {
+        retireExclusivelyForStorageMutation(context)
+    }
+
+    private fun retireExclusivelyForStorageMutation(context: Context) {
         val connection = SdxModelPreparationConnection.bind(context) { }
         val pid = try {
             connection.requireRemotePid()
@@ -238,6 +261,19 @@ internal object SdxModelPreparationClient {
     }
 
     fun prepare(
+        context: Context,
+        model: File,
+        tokenizerSourcePath: String?,
+        verifiedSourceSha256: String?,
+        verifiedSourceBytes: Long?,
+        options: ModelPreparationOptions,
+        onPreparationStage: (PreparationStage) -> Unit
+    ): PreparedModelInfo = lifecycle.withOwnership {
+        prepareExclusively(context, model, tokenizerSourcePath, verifiedSourceSha256,
+            verifiedSourceBytes, options, onPreparationStage)
+    }
+
+    private fun prepareExclusively(
         context: Context,
         model: File,
         tokenizerSourcePath: String?,
@@ -280,6 +316,7 @@ internal object SdxModelPreparationClient {
                 processId = pid
             )
             var primaryFailure: Throwable? = null
+            var requestRejected = false
             try {
                 val request = buildSdxModelPreparationRequest(
                     modelPath = model.absolutePath,
@@ -295,7 +332,11 @@ internal object SdxModelPreparationClient {
                         returned,
                         "SDX model preparation response"
                     ).also { finalizedResponse ->
-                        if (!finalizedResponse.getBoolean(KEY_OPERATION_TERMINAL, false)) {
+                        requestRejected = finalizedResponse.getBoolean(KEY_REQUEST_REJECTED, false)
+                        check(!requestRejected || !finalizedResponse.getBoolean(KEY_SUCCESS, false)) {
+                            "The SDX importer returned success for a rejected request."
+                        }
+                        if (!requestRejected && !finalizedResponse.getBoolean(KEY_OPERATION_TERMINAL, false)) {
                             throw ChatException(
                                 "The SDX importer returned before durably finalizing its operation journal."
                             )
@@ -322,7 +363,9 @@ internal object SdxModelPreparationClient {
                 }
                 throw failure
             } finally {
-                retireImporter(connection, pid, processStartTimeTicks)?.let { teardownFailure ->
+                // A rejected request never owned this worker. Its own journal is
+                // finalized above; only its binding is released by the outer finally.
+                if (!requestRejected) retireImporter(connection, pid, processStartTimeTicks)?.let { teardownFailure ->
                     val failure = primaryFailure
                     if (failure == null) {
                         throw teardownFailure
@@ -657,7 +700,8 @@ private class SdxModelPreparationConnection private constructor(
         } catch (_: IllegalArgumentException) {
             // Binding may have failed before Android registered the connection.
         }
-        context.stopService(Intent(context, SdxModelPreparationService::class.java))
+        // Bound-only service: Android calls onUnbind after the LAST binding is
+        // released. A rejected/inspection connection must not stop another owner.
         replyThread.quitSafely()
     }
 
@@ -837,7 +881,7 @@ class SdxModelPreparationService : Service() {
                 failureBundle(
                     IllegalStateException("The SDX importer already owns a model-preparation request."),
                     operationTerminal = false
-                )
+                ).apply { putBoolean(KEY_REQUEST_REJECTED, true) }
             )
             return
         }
@@ -848,7 +892,9 @@ class SdxModelPreparationService : Service() {
                 failureBundle(failure, operationTerminal = false)
             }
             sendResponse(replyTo, requestId, response)
-            activePreparation.set(false)
+            // One request per disposable process, including the reply-to-unbind
+            // interval. Releasing admission here lets a late caller steal a worker
+            // whose original owner is already waiting for retirement.
         }
     }
 

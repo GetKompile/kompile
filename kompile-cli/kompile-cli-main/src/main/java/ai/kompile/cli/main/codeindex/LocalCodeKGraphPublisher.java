@@ -16,6 +16,7 @@ import ai.kompile.project.KompileProjectManifest;
 import ai.kompile.project.KompileProjectStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
@@ -27,6 +28,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -65,7 +68,13 @@ public final class LocalCodeKGraphPublisher {
         normalizedRoot = normalizedRoot.toRealPath();
 
         KompileProjectStore store = new KompileProjectStore();
-        Path projectRoot = store.findProjectRoot(normalizedRoot).orElse(normalizedRoot);
+        Path projectRoot = store.findProjectRoot(normalizedRoot).orElse(null);
+        if (projectRoot == null) {
+            // Decided before anything is written: a refused directory must not gain a .kompile dir.
+            String refusal = autoInitRefusal(normalizedRoot);
+            if (refusal != null) return ProjectionResult.skipped(refusal);
+            projectRoot = normalizedRoot;
+        }
         Path projectState = projectRoot.resolve(".kompile");
         Files.createDirectories(projectState);
         Path lockKey = projectRoot.toRealPath();
@@ -84,6 +93,8 @@ public final class LocalCodeKGraphPublisher {
         if (Files.isRegularFile(projectRoot.resolve(KompileProjectStore.MANIFEST_FILE))) {
             manifest = store.load(projectRoot);
         } else {
+            String refusal = autoInitRefusal(projectRoot);
+            if (refusal != null) return ProjectionResult.skipped(refusal);
             KompileProjectInitRequest request = new KompileProjectInitRequest();
             String name = projectRoot.getFileName() != null
                     ? projectRoot.getFileName().toString() : indexProjectId;
@@ -99,10 +110,22 @@ public final class LocalCodeKGraphPublisher {
 
         KompileCodingProject codingProject = findExactRoot(manifest, projectRoot, normalizedRoot);
         if (codingProject == null) {
+            KompileCodingProject enclosing = findEnclosingRoot(manifest, projectRoot, normalizedRoot);
+            if (enclosing != null) {
+                // Registering the sub-directory would claim every file under it for a second id.
+                return ProjectionResult.skipped(normalizedRoot + " is part of code project '"
+                        + firstNonBlank(enclosing.getCodeProjectId(), enclosing.getId()) + "' rooted at "
+                        + registeredRoot(enclosing, projectRoot) + "; index that root to publish its code graph");
+            }
             codingProject = ProjectAutoDetection.buildDirectoryCodingProject(normalizedRoot);
             codingProject.setId(indexProjectId);
             codingProject.setCodeProjectId(indexProjectId);
-            manifest = store.registerCodingProject(projectRoot, codingProject);
+            try {
+                manifest = store.registerCodingProject(projectRoot, codingProject);
+            } catch (IllegalArgumentException refused) {
+                // The store refuses roots it cannot own (home, a root another id owns); the index stays searchable.
+                return ProjectionResult.skipped(refused.getMessage());
+            }
             codingProject = findExactRoot(manifest, projectRoot, normalizedRoot);
         }
         String canonicalId = firstNonBlank(codingProject.getCodeProjectId(), codingProject.getId());
@@ -123,22 +146,29 @@ public final class LocalCodeKGraphPublisher {
                 folderProject == null ? null : folderProject.getMetadata().get("knowledgeBaseId"),
                 folderProjectId.toLowerCase(Locale.ROOT) + "-knowledge"));
         String knowledgeBaseName = firstNonBlank(manifest.getName(), codingProject.getName(), knowledgeBaseId);
-        List<String> includePatterns = csv(includes != null ? includes : codingProject.getIncludePatterns());
-        List<String> excludePatterns = csv(excludes != null ? excludes : codingProject.getExcludePatterns());
 
-        LocalProjectGraphBackend.CodeProjectSource source =
-                new LocalProjectGraphBackend.CodeProjectSource(normalizedRoot, canonicalId,
-                        firstNonBlank(codingProject.getName(), canonicalId),
-                        includePatterns, excludePatterns);
+        List<String> includePatterns;
+        List<String> excludePatterns;
         LocalProjectGraphBackend.CodeProjectionUpdate update;
         String indexGeneration;
         try (IndexLockManager.LockToken ignoredIndex =
                      IndexLockManager.acquireReadLock(canonicalId)) {
             indexGeneration = currentIndexGeneration(canonicalId);
+            // A call that names no scope publishes the scope the committed index was built with;
+            // the registration's patterns are only the fallback when that metadata is unreadable.
+            Map<String, Object> indexMetadata = indexMetadata(canonicalId);
+            includePatterns = csv(includes != null ? includes : indexMetadata != null
+                    ? metadataString(indexMetadata.get("includePatterns")) : codingProject.getIncludePatterns());
+            excludePatterns = csv(excludes != null ? excludes : indexMetadata != null
+                    ? metadataString(indexMetadata.get("excludePatterns")) : codingProject.getExcludePatterns());
             ProjectionResult existing = existingProjection(projectRoot, codingProject,
                     knowledgeBaseId, factSheetId, folderProjectId,
                     includePatterns, excludePatterns, indexGeneration);
             if (existing != null) return existing;
+            LocalProjectGraphBackend.CodeProjectSource source =
+                    new LocalProjectGraphBackend.CodeProjectSource(normalizedRoot, canonicalId,
+                            firstNonBlank(codingProject.getName(), canonicalId),
+                            includePatterns, excludePatterns);
             update = new LocalProjectGraphBackend(MAPPER).projectIndexedCodeProject(
                     projectRoot, knowledgeBaseId, knowledgeBaseName, factSheetId,
                     folderProjectId, source, indexGeneration);
@@ -166,8 +196,8 @@ public final class LocalCodeKGraphPublisher {
                 factSheetId == null ? "" : factSheetId.toString());
         codingProject.getMetadata().put(META_INCLUDES, String.join(",", includePatterns));
         codingProject.getMetadata().put(META_EXCLUDES, String.join(",", excludePatterns));
-        if (includes != null) codingProject.setIncludePatterns(includes);
-        if (excludes != null) codingProject.setExcludePatterns(excludes);
+        // A call's scope stays in the index metadata and this receipt. Saved as the registration's
+        // patterns, it narrowed every later refresh of the project to that one call's scope.
         store.registerCodingProject(projectRoot, codingProject);
 
         return new ProjectionResult(update.graphPath(), update.knowledgeBaseId(), update.factSheetId(),
@@ -178,7 +208,7 @@ public final class LocalCodeKGraphPublisher {
         }
     }
 
-    private static <T> T withPublicationLock(Path root, java.util.concurrent.Callable<T> operation) throws Exception {
+    private static <T> T withPublicationLock(Path root, Callable<T> operation) throws Exception {
         Path state = root.resolve(".kompile");
         Files.createDirectories(state);
         ReentrantLock lock = PROJECT_LOCKS.computeIfAbsent(root.toRealPath(), ignored -> new ReentrantLock());
@@ -194,30 +224,41 @@ public final class LocalCodeKGraphPublisher {
 
     /** Only a new explicit tool request may lift the persistent removal fence. */
     public static void prepareExplicitIndex(Path directory, String projectId) throws Exception {
-        Path root = new KompileProjectStore().findProjectRoot(directory).orElse(directory).toRealPath();
+        Optional<Path> manifestRoot = new KompileProjectStore().findProjectRoot(directory);
         if (!LocalCodeIndexer.isSafeProjectId(projectId)) throw new IllegalArgumentException("Invalid project id");
+        if (manifestRoot.isEmpty() && autoInitRefusal(directory.toRealPath()) != null) {
+            // publish() refuses this directory: there is no registration to re-activate and no
+            // publication to serialize with, so no .kompile directory is created in it either.
+            liftRemovalFence(directory, projectId, null);
+            return;
+        }
+        Path root = manifestRoot.orElse(directory).toRealPath();
         withPublicationLock(root, () -> {
-            Path marker = LocalCodeIndexer.getIndexDir(projectId).resolve(LocalCodeIndexer.REMOVAL_MARKER);
-            try (var ignored = IndexLockManager.acquireWriteLock(projectId, LocalCodeIndexer.getIndexDir(projectId))) {
-                if (Files.isRegularFile(marker) && !directory.toRealPath().equals(Path.of(Files.readString(marker)).toRealPath())) {
-                    throw new IllegalArgumentException("Removed project belongs to a different directory");
-                }
-                KompileProjectStore store = new KompileProjectStore();
-                if (Files.isRegularFile(root.resolve(KompileProjectStore.MANIFEST_FILE))) {
-                    KompileProjectManifest manifest = store.load(root);
-                    for (KompileCodingProject cp : manifest.getCodingProjects()) {
-                        if (projectId.equals(firstNonBlank(cp.getCodeProjectId(), cp.getId()))) {
-                            cp.setLifecycle(KompileProjectLifecycleState.ACTIVE);
-                            cp.getMetadata().remove("codeProjectionState");
-                            store.registerCodingProject(root, cp);
-                            break;
-                        }
-                    }
-                }
-                Files.deleteIfExists(marker);
-            }
+            liftRemovalFence(directory, projectId, root);
             return null;
         });
+    }
+
+    private static void liftRemovalFence(Path directory, String projectId, Path root) throws Exception {
+        Path marker = LocalCodeIndexer.getIndexDir(projectId).resolve(LocalCodeIndexer.REMOVAL_MARKER);
+        try (var ignored = IndexLockManager.acquireWriteLock(projectId, LocalCodeIndexer.getIndexDir(projectId))) {
+            if (Files.isRegularFile(marker) && !directory.toRealPath().equals(Path.of(Files.readString(marker)).toRealPath())) {
+                throw new IllegalArgumentException("Removed project belongs to a different directory");
+            }
+            KompileProjectStore store = new KompileProjectStore();
+            if (root != null && Files.isRegularFile(root.resolve(KompileProjectStore.MANIFEST_FILE))) {
+                KompileProjectManifest manifest = store.load(root);
+                for (KompileCodingProject cp : manifest.getCodingProjects()) {
+                    if (projectId.equals(firstNonBlank(cp.getCodeProjectId(), cp.getId()))) {
+                        cp.setLifecycle(KompileProjectLifecycleState.ACTIVE);
+                        cp.getMetadata().remove("codeProjectionState");
+                        store.registerCodingProject(root, cp);
+                        break;
+                    }
+                }
+            }
+            Files.deleteIfExists(marker);
+        }
     }
 
     /** Fenced, retryable removal. The marker and lock inode deliberately outlive the index. */
@@ -225,12 +266,13 @@ public final class LocalCodeKGraphPublisher {
         if (!LocalCodeIndexer.isSafeProjectId(projectId)) throw new IllegalArgumentException("Invalid project id");
         Path requested = directory.toRealPath();
         KompileProjectStore store = new KompileProjectStore();
-        Path root = store.findProjectRoot(requested).orElse(requested).toRealPath();
+        Optional<Path> manifestRoot = store.findProjectRoot(requested);
+        Path root = manifestRoot.orElse(requested).toRealPath();
         Path index = LocalCodeIndexer.getIndexDir(projectId).toAbsolutePath().normalize();
         if (Files.isSymbolicLink(index) || !index.startsWith(LocalCodeIndexer.getBaseIndexDir().toAbsolutePath().normalize())) {
             throw new IllegalArgumentException("Unsafe code-index directory: " + index);
         }
-        return withPublicationLock(root, () -> {
+        Callable<Integer> removal = () -> {
             KompileProjectManifest manifest = Files.isRegularFile(root.resolve(KompileProjectStore.MANIFEST_FILE))
                     ? store.load(root) : null;
             KompileCodingProject registration = manifest == null ? null : manifest.getCodingProjects().stream()
@@ -285,7 +327,11 @@ public final class LocalCodeKGraphPublisher {
                 }
             }
             return updatedGraphs;
-        });
+        };
+        // publish() never writes into a directory it refuses, so there is no publication to
+        // serialize with, and taking the lock would leave a .kompile directory behind in it.
+        return manifestRoot.isEmpty() && autoInitRefusal(requested) != null
+                ? removal.call() : withPublicationLock(root, removal);
     }
 
     private static ProjectionResult existingProjection(Path projectRoot,
@@ -383,6 +429,74 @@ public final class LocalCodeKGraphPublisher {
         return null;
     }
 
+    /** The deepest ACTIVE registration whose root strictly contains {@code directory}, or null. */
+    private static KompileCodingProject findEnclosingRoot(KompileProjectManifest manifest,
+                                                          Path projectRoot, Path directory) {
+        if (manifest == null || manifest.getCodingProjects() == null) return null;
+        KompileCodingProject deepest = null;
+        int deepestDepth = -1;
+        for (KompileCodingProject candidate : manifest.getCodingProjects()) {
+            if (candidate == null || candidate.getLifecycle() != null
+                    && candidate.getLifecycle() != KompileProjectLifecycleState.ACTIVE) continue;
+            Path root = registeredRoot(candidate, projectRoot);
+            if (root == null || root.equals(directory) || !directory.startsWith(root)) continue;
+            if (root.getNameCount() > deepestDepth) {
+                deepest = candidate;
+                deepestDepth = root.getNameCount();
+            }
+        }
+        return deepest;
+    }
+
+    /** A registration's root as a canonical path, or null when it is blank or unparseable. */
+    private static Path registeredRoot(KompileCodingProject project, Path projectRoot) {
+        String configured = firstNonBlank(project.getRootPath());
+        if (configured == null) return null;
+        try {
+            Path root = Path.of(configured);
+            if (!root.isAbsolute()) root = projectRoot.resolve(root);
+            try {
+                return root.toRealPath();
+            } catch (IOException unavailable) {
+                return root.toAbsolutePath().normalize();
+            }
+        } catch (RuntimeException invalid) {
+            return null;
+        }
+    }
+
+    /**
+     * Why publication may not create a project manifest at {@code root}, or null when it may:
+     * only a checkout's top level, or a directory outside any checkout, is initialised implicitly.
+     */
+    private static String autoInitRefusal(Path root) {
+        Optional<Path> initRoot = ProjectAutoDetection.autoInitRoot(root);
+        if (initRoot.isEmpty()) {
+            return "no kompile project covers " + root + "; run `kompile project init` in the "
+                    + "project's top-level directory to publish its code graph";
+        }
+        if (!initRoot.get().equals(root)) {
+            return root + " is inside the checkout " + initRoot.get() + ", which has no kompile project; "
+                    + "index " + initRoot.get() + " or run `kompile project init` there to publish its code graph";
+        }
+        return null;
+    }
+
+    /** The committed index's metadata, or null when it is missing or unreadable. */
+    private static Map<String, Object> indexMetadata(String projectId) {
+        try {
+            Map<String, Object> metadata =
+                    new IndexFileStore(LocalCodeIndexer.getIndexDir(projectId), MAPPER).loadMetadata();
+            return metadata.isEmpty() ? null : metadata;
+        } catch (IOException unreadable) {
+            return null;
+        }
+    }
+
+    private static String metadataString(Object value) {
+        return value == null ? null : value.toString();
+    }
+
     private static boolean sameCanonicalPath(Path first, Path second) {
         try {
             return first.toRealPath().equals(second.toRealPath());
@@ -430,11 +544,30 @@ public final class LocalCodeKGraphPublisher {
         return null;
     }
 
+    /**
+     * Outcome of one publication. A skipped publication carries its reason and no graph: the code
+     * index itself is committed and searchable, only its KGraph slice was not written.
+     */
     public record ProjectionResult(Path graphPath,
                                    String knowledgeBaseId,
                                    Long factSheetId,
                                    int graphEntities,
                                    int graphRelations,
-                                   int codeEntities) {
+                                   int codeEntities,
+                                   String skippedReason) {
+
+        public ProjectionResult(Path graphPath, String knowledgeBaseId, Long factSheetId,
+                                int graphEntities, int graphRelations, int codeEntities) {
+            this(graphPath, knowledgeBaseId, factSheetId, graphEntities, graphRelations, codeEntities, null);
+        }
+
+        static ProjectionResult skipped(String reason) {
+            return new ProjectionResult(null, null, null, 0, 0, 0, reason);
+        }
+
+        /** True when a graph was written, or an up-to-date one was confirmed. */
+        public boolean published() {
+            return skippedReason == null;
+        }
     }
 }

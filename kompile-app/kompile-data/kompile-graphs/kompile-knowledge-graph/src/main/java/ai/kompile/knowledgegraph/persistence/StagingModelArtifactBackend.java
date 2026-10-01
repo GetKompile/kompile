@@ -48,7 +48,7 @@ import java.util.List;
 public class StagingModelArtifactBackend implements ModelArtifactBackend {
 
     /** Explicit test override; production resolves the managed endpoint for each operation. */
-    private String stagingUrl;
+    String stagingUrl;
 
     private final RestTemplate restTemplate = new RestTemplate();
 

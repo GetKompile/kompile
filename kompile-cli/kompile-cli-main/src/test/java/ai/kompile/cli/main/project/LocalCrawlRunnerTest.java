@@ -57,7 +57,16 @@ class LocalCrawlRunnerTest {
                     "ai.kompile.core.crawl.graph.ProcessingRouteConfig$ProcessingBackend",
                     "ai.kompile.core.crawl.graph.UnifiedCrawlRequest$RuntimeConfig",
                     "ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition",
-                    "ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition$ServingConfig");
+                    "ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition$ServingConfig",
+                    // Serialized by crawl_documents dry runs (resolvedPipeline) and by the guard
+                    // metadata every guarded native tool call carries (resourceClassification).
+                    "ai.kompile.cli.main.project.LocalCrawlCapabilities$ResolvedPipeline",
+                    "ai.kompile.cli.main.chat.tools.ResourcePolicy$Decision",
+                    // The Excel loader serializes its formula graph into each output's metadata.
+                    "ai.kompile.core.graphrag.model.Graph",
+                    "ai.kompile.core.graphrag.model.Entity",
+                    "ai.kompile.core.graphrag.model.Relationship",
+                    "ai.kompile.core.graphrag.model.Community");
             Set<String> missing = new HashSet<>(required);
             missing.removeAll(registered);
             assertTrue(missing.isEmpty(), () -> "Missing native reflection metadata: " + missing);

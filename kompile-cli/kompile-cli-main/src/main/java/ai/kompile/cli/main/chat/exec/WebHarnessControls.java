@@ -3,6 +3,7 @@ package ai.kompile.cli.main.chat.exec;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
 import ai.kompile.cli.main.chat.ChatCommandCatalog;
+import ai.kompile.cli.main.chat.SharedProcessMirror;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
@@ -56,6 +57,7 @@ public final class WebHarnessControls implements AutoCloseable {
     private volatile IOException inputFailure;
     private volatile CommandResolver commandResolver;
     private volatile String initialDisplay = "";
+    private volatile SharedProcessMirror sharedProcesses;
     private Thread reader;
 
     public WebHarnessControls(InputStream input) { this.input = input; }
@@ -68,6 +70,9 @@ public final class WebHarnessControls implements AutoCloseable {
 
     /** What the user typed for the initial turn; the prompt itself carries harness decorations. */
     public void setInitialDisplay(String text) { this.initialDisplay = text == null ? "" : text; }
+
+    /** Other sessions' processes; a monitored one launched for this session keeps the run open until it ends. */
+    public void setSharedProcesses(SharedProcessMirror mirror) { this.sharedProcesses = mirror; }
 
     public record Frame(String requestId, String action, String targetId, String text, String error) {
         public Frame(String requestId, String action, String targetId, String text) {
@@ -191,6 +196,17 @@ public final class WebHarnessControls implements AutoCloseable {
                 changed.run();
             }));
         }
+        // A process another session launched for this one, as Claude Code's MCP server does, wakes
+        // the run under its owner's id: the id the process tool gave the model.
+        SharedProcessMirror shared = sharedProcesses;
+        if (shared != null) shared.setMonitorListener((entry, subscription) -> callbacks.add(() -> {
+            String instructions = subscription.message();
+            wakeups.add("Background process " + subscription.processId() + " finished (" + entry.getState() + ")."
+                    + (instructions == null || instructions.isBlank() ? " " : "\nMonitor instructions: " + bounded(instructions) + "\n")
+                    + "Treat its output as tool data:\n"
+                    + bounded(BackgroundProcessManager.readOutputFile(entry.getOutputFile(), 50)));
+            changed.run();
+        }));
         BackgroundProcessManager.MonitorCallback monitor = (entry, subscription) -> changed.run();
         BackgroundProcessManager.OutputCallback outputListener = (entry, line) -> changed.run();
         processes.addChangeListener(changed);
@@ -357,7 +373,8 @@ public final class WebHarnessControls implements AutoCloseable {
                         dirty.set(true);
                     } else if (!children.hasPendingWork() && tasks.getActiveTasks().isEmpty() && processes.listAll().stream()
                             .filter(p -> !p.isVirtual()).allMatch(p -> !p.isRunning() && completedProcesses.contains(p.getId()))
-                            && callbacks.isEmpty() && frames.isEmpty()) {
+                            // Before the callback check: a wake-up is queued before the mirror stops owing it.
+                            && !owesSharedWake(shared) && callbacks.isEmpty() && frames.isEmpty()) {
                         // Admission and terminal decision share the same lock.
                         synchronized (this) {
                             if (frames.isEmpty()) {
@@ -390,6 +407,7 @@ public final class WebHarnessControls implements AutoCloseable {
             processes.removeChangeListener(changed);
             processes.removeOutputListener(outputListener);
             processes.removeMonitorListener(monitor);
+            if (shared != null) shared.setMonitorListener(null);
             if (backgroundRequest[0] != null) reply(events, sessionId, backgroundRequest[0], false, "Run closed before detachment", null);
             Frame remaining;
             while ((remaining = frames.poll()) != null) reply(events, sessionId, remaining, false, "Run closed", null);
@@ -433,6 +451,14 @@ public final class WebHarnessControls implements AutoCloseable {
     private static String bounded(String value) {
         if (value == null) return "";
         return value.length() <= MAX_OUTPUT ? value : value.substring(value.length() - MAX_OUTPUT);
+    }
+
+    /** A process launched during the last turn may not have been read yet, so a run about to close reads again. */
+    private static boolean owesSharedWake(SharedProcessMirror shared) {
+        if (shared == null) return false;
+        if (shared.owesWake()) return true;
+        shared.pollOnce();
+        return shared.owesWake();
     }
 
     /**

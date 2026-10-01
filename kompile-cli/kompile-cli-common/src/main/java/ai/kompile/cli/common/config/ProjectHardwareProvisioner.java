@@ -299,7 +299,7 @@ public final class ProjectHardwareProvisioner {
                 buildAppIndexConfig(tier), mapper, written, skipped, warnings);
 
         // (f) GPU-only files. Do not generate gpu-device-config.json: ND4J owns device discovery,
-        // and that file is reserved for explicit user overrides of edge-case index mappings.
+        // and the app ignores that file (ND4J's device index is already the placement index).
         if (!gpus.isEmpty()) {
             writeIfAbsent(configDir.resolve("device-routing-config.json"),
                     buildDeviceRoutingConfig(gpus), mapper, written, skipped, warnings);

@@ -7,14 +7,18 @@ package ai.kompile.knowledgegraph.unified;
 
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
+import ai.kompile.graph.reasoning.quantitative.QuantitativeQuery;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
+import ai.kompile.graph.reasoning.query.QuantitativeRequestParser;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Transport-neutral facade shared by the graph reasoning REST endpoint and MCP tool.
@@ -24,9 +28,7 @@ import java.util.Locale;
 public class GraphReasoningQueryService {
 
     private static final List<GraphQueryEngine.Capability> QUERY_REQUEST_CAPABILITIES =
-            GraphQueryEngine.capabilityContract().stream()
-                    .filter(GraphReasoningQueryService::supportedByQueryRequest)
-                    .toList();
+            GraphQueryEngine.capabilityContract();
     private static final List<String> QUERY_REQUEST_OPERATIONS =
             QUERY_REQUEST_CAPABILITIES.stream()
                     .map(GraphQueryEngine.Capability::intent)
@@ -45,7 +47,12 @@ public class GraphReasoningQueryService {
         this.engine = engine;
     }
 
-    /** JSON request contract used by REST and the stdio MCP proxy. */
+    /**
+     * JSON request contract used by REST and the stdio MCP proxy.
+     *
+     * <p>{@code quantitative} carries the MODELS, CALCULATE, SCENARIO, and SOLVE_TARGET request as a
+     * JSON object or its JSON string; {@link QuantitativeRequestParser} reads it.</p>
+     */
     public record QueryRequest(
             Long factSheetId,
             String operation,
@@ -58,7 +65,26 @@ public class GraphReasoningQueryService {
             List<Double> queryEmbedding,
             String structural,
             String queryText,
-            String question) {
+            String question,
+            Object quantitative) {
+
+        /** Constructor for requests without a quantitative object. */
+        public QueryRequest(
+                Long factSheetId,
+                String operation,
+                String entityId,
+                String targetId,
+                String direction,
+                List<String> relationTypes,
+                Integer maxDepth,
+                Integer topK,
+                List<Double> queryEmbedding,
+                String structural,
+                String queryText,
+                String question) {
+            this(factSheetId, operation, entityId, targetId, direction, relationTypes,
+                    maxDepth, topK, queryEmbedding, structural, queryText, question, null);
+        }
 
         /** Backward-compatible constructor used by the in-process graph tool. */
         public QueryRequest(
@@ -74,11 +100,11 @@ public class GraphReasoningQueryService {
                 String structural,
                 String queryText) {
             this(factSheetId, operation, entityId, targetId, direction, relationTypes,
-                    maxDepth, topK, queryEmbedding, structural, queryText, null);
+                    maxDepth, topK, queryEmbedding, structural, queryText, null, null);
         }
     }
 
-    /** Capabilities executable through {@link QueryRequest}; quantitative intents use their own API. */
+    /** Every engine capability; the quantitative ones read {@link QueryRequest#quantitative()}. */
     public static List<GraphQueryEngine.Capability> queryRequestCapabilities() {
         return QUERY_REQUEST_CAPABILITIES;
     }
@@ -90,7 +116,29 @@ public class GraphReasoningQueryService {
 
     /** Compact operation/required-field guide derived from the engine capability contract. */
     public static String queryRequestOperationGuide() {
-        List<String> operations = QUERY_REQUEST_CAPABILITIES.stream()
+        return guide(QUERY_REQUEST_CAPABILITIES) + " " + QuantitativeRequestParser.guidance();
+    }
+
+    /** Operations that need no {@code quantitative} object, for tools that do not carry one. */
+    public static List<String> nonQuantitativeOperations() {
+        return nonQuantitativeCapabilities().stream()
+                .map(GraphQueryEngine.Capability::intent)
+                .toList();
+    }
+
+    /** {@link #queryRequestOperationGuide()} restricted to {@link #nonQuantitativeOperations()}. */
+    public static String nonQuantitativeOperationGuide() {
+        return guide(nonQuantitativeCapabilities());
+    }
+
+    private static List<GraphQueryEngine.Capability> nonQuantitativeCapabilities() {
+        return QUERY_REQUEST_CAPABILITIES.stream()
+                .filter(capability -> !QuantitativeRequestParser.isQuantitative(capability))
+                .toList();
+    }
+
+    private static String guide(List<GraphQueryEngine.Capability> capabilities) {
+        List<String> operations = capabilities.stream()
                 .map(capability -> capability.requiredFields().isEmpty()
                         ? capability.intent()
                         : capability.intent() + "("
@@ -139,11 +187,6 @@ public class GraphReasoningQueryService {
             return invalid(e.getMessage());
         }
 
-        if (!QUERY_REQUEST_OPERATIONS.contains(intent.name())) {
-            return invalid("operation " + intent
-                    + " is not supported by this graph query request contract. "
-                    + "Use operation=CAPABILITIES.");
-        }
         List<String> missing = missingRequiredFields(request, intent);
         if (!missing.isEmpty()) {
             return invalid(intent + " requires " + String.join(", ", missing)
@@ -164,6 +207,15 @@ public class GraphReasoningQueryService {
             return invalid(e.getMessage());
         }
 
+        double[] queryEmbedding = toVector(request.queryEmbedding());
+        QuantitativeQuery quantitative;
+        try {
+            quantitative = QuantitativeRequestParser.parse(
+                    intent, request.quantitative(), request.topK(), queryEmbedding);
+        } catch (IllegalArgumentException e) {
+            return invalid(e.getMessage());
+        }
+
         GraphQueryEngine.Query query = new GraphQueryEngine.Query(
                 intent,
                 blankToNull(request.entityId()),
@@ -172,9 +224,10 @@ public class GraphReasoningQueryService {
                 request.relationTypes(),
                 request.maxDepth(),
                 request.topK(),
-                toVector(request.queryEmbedding()),
+                queryEmbedding,
                 structural,
-                firstNonBlank(request.queryText(), request.question()));
+                firstNonBlank(request.queryText(), request.question()),
+                quantitative);
 
         // CAPABILITIES is deliberately graph-free, keeping discovery available before a project is open.
         UnifiedGraph graph = intent == GraphQueryEngine.Intent.CAPABILITIES
@@ -186,9 +239,7 @@ public class GraphReasoningQueryService {
         if (Boolean.TRUE.equals(graph.meta().get("truncated"))) {
             result = markPartial(result, graph);
         }
-        return intent == GraphQueryEngine.Intent.CAPABILITIES
-                ? queryRequestCapabilitiesResult(result)
-                : result;
+        return result;
     }
 
     private UnifiedGraph persistedQueryGraph(
@@ -204,10 +255,13 @@ public class GraphReasoningQueryService {
         };
         if (!boundedIntent || entityId == null) return bridge.export(request.factSheetId());
 
-        List<String> seeds = new ArrayList<>();
-        seeds.add(entityId);
+        // Entity-scoped operations never fall back to a whole-graph export. An exact id seeds the
+        // neighborhood as is; a name or phrase seeds it with a few bounded search candidates, which
+        // the engine ranks and traces in resolutions.
+        List<String> sourceSeeds = bridge.resolveSeedIds(request.factSheetId(), entityId);
+        Set<String> seeds = new LinkedHashSet<>(sourceSeeds);
         String targetId = blankToNull(request.targetId());
-        if (targetId != null) seeds.add(targetId);
+        if (targetId != null) seeds.addAll(bridge.resolveSeedIds(request.factSheetId(), targetId));
         int depth = switch (intent) {
             case PATH -> request.maxDepth() == null || request.maxDepth() <= 0
                     ? 4 : Math.min(request.maxDepth(), 12);
@@ -227,12 +281,9 @@ public class GraphReasoningQueryService {
                     ? GraphQueryEngine.Direction.BOTH : requestedDirection;
             default -> GraphQueryEngine.Direction.BOTH;
         };
-        UnifiedGraph bounded = bridge.exportNeighborhood(
-                request.factSheetId(), seeds, List.of(entityId), depth, maxNodes,
+        return bridge.exportNeighborhood(
+                request.factSheetId(), List.copyOf(seeds), sourceSeeds, depth, maxNodes,
                 materializationDirection, maxEdges);
-        // Entity-scoped operations never fall back to a whole-graph export. Call SEARCH first when
-        // the input is a name or phrase, then use its exact stable id with this bounded path.
-        return bounded;
     }
 
     private static GraphQueryEngine.Result markPartial(
@@ -259,14 +310,6 @@ public class GraphReasoningQueryService {
                 result.trace());
     }
 
-    private static boolean supportedByQueryRequest(GraphQueryEngine.Capability capability) {
-        GraphQueryEngine.Intent intent = GraphQueryEngine.Intent.valueOf(capability.intent());
-        return switch (intent) {
-            case MODELS, CALCULATE, SCENARIO, SOLVE_TARGET -> false;
-            default -> true;
-        };
-    }
-
     private static List<String> missingRequiredFields(
             QueryRequest request, GraphQueryEngine.Intent intent) {
         GraphQueryEngine.Capability capability = QUERY_REQUEST_CAPABILITIES.stream()
@@ -278,6 +321,9 @@ public class GraphReasoningQueryService {
         }
         List<String> missing = new ArrayList<>();
         for (String field : capability.requiredFields()) {
+            if (field.startsWith(QuantitativeRequestParser.FIELD + ".")) {
+                continue; // The parser names missing quantitative members with a working example.
+            }
             boolean present = switch (field) {
                 case "entityId" -> blankToNull(request.entityId()) != null;
                 case "targetId" -> blankToNull(request.targetId()) != null;
@@ -293,22 +339,6 @@ public class GraphReasoningQueryService {
             }
         }
         return List.copyOf(missing);
-    }
-
-    private static GraphQueryEngine.Result queryRequestCapabilitiesResult(
-            GraphQueryEngine.Result result) {
-        return new GraphQueryEngine.Result(
-                result.status(),
-                result.intent(),
-                "Supports the transport-neutral read-only graph query contract.",
-                result.entities(),
-                result.relations(),
-                result.path(),
-                QUERY_REQUEST_CAPABILITIES,
-                result.guidance(),
-                result.data(),
-                result.resolutions(),
-                result.trace());
     }
 
     /** Stable invalid response helper used by both REST and in-process tool validation. */

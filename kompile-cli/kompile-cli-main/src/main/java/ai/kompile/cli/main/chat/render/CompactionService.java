@@ -16,11 +16,13 @@
 
 package ai.kompile.cli.main.chat.render;
 
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.context.ConversationLedger;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Context compaction service for managing conversation history when approaching
@@ -137,7 +139,7 @@ public class CompactionService {
      * per request in {@link #wireMaxOutputTokens(long)}.
      */
     public int wireMaxOutputTokens() {
-        return (int) Math.max(1_024L, effectiveReserveTokens());
+        return (int) Math.max(Math.min(1_024L, maxOutputTokens), effectiveReserveTokens());
     }
 
     /**
@@ -145,12 +147,12 @@ public class CompactionService {
      * {@code estimatedInputTokens}: the model's full output ceiling while the window
      * has room, shrinking to what actually fits only as the input approaches the
      * window. A 1% margin (floored at 1,024) absorbs the chars/4 estimate's error,
-     * and the floor keeps tiny windows workable.
+     * and an output floor bounded by the configured ceiling keeps tiny windows workable.
      */
     public int wireMaxOutputTokens(long estimatedInputTokens) {
         long byWindow = (long) maxTokens - estimatedInputTokens
                 - Math.max(1_024L, maxTokens / 100);
-        return (int) Math.max(1_024L, Math.min(effectiveReserveTokens(), byWindow));
+        return (int) Math.max(Math.min(1_024L, maxOutputTokens), Math.min(effectiveReserveTokens(), byWindow));
     }
 
     /**
@@ -269,7 +271,14 @@ public class CompactionService {
     }
 
     private int estimateEntryTokens(ConversationEntry entry) {
-        return entry == null ? 0 : estimateTextTokens(entry.content);
+        if (entry == null) return 0;
+        long tokens = estimateTextTokens(entry.content);
+        for (Attachment attachment : entry.attachments) {
+            tokens += attachment.image()
+                    ? DirectLlmClient.IMAGE_TOKEN_ESTIMATE
+                    : (long) Math.ceil(Math.max(0L, attachment.size()) / CHARS_PER_TOKEN);
+        }
+        return (int) Math.min(Integer.MAX_VALUE, tokens);
     }
 
     /**
@@ -374,20 +383,37 @@ public class CompactionService {
         SYSTEM, USER, ASSISTANT, TOOL_CALL, TOOL_RESULT
     }
 
+    /**
+     * A file sent with a user turn. The bytes live beside the conversation ledger under
+     * their SHA-256 {@code digest}, so a resumed or re-projected conversation can resend
+     * them; {@code size} is the byte count, which weighs a text attachment's tokens.
+     */
+    public record Attachment(String path, String mimeType, boolean image, String digest, long size) {
+    }
+
     public static class ConversationEntry {
         public final EntryType type;
         public final String role;
         public final String content;
         public final String toolName;
         public final String toolCallId;
+        /** Files the user sent with this turn; empty for every other entry. */
+        public final List<Attachment> attachments;
 
         public ConversationEntry(EntryType type, String role, String content,
                                   String toolName, String toolCallId) {
+            this(type, role, content, toolName, toolCallId, List.of());
+        }
+
+        public ConversationEntry(EntryType type, String role, String content,
+                                  String toolName, String toolCallId, List<Attachment> attachments) {
             this.type = type;
             this.role = role;
             this.content = content;
             this.toolName = toolName;
             this.toolCallId = toolCallId;
+            this.attachments = attachments == null ? List.of()
+                    : attachments.stream().filter(Objects::nonNull).toList();
         }
 
         public static ConversationEntry system(String content) {
@@ -396,6 +422,10 @@ public class CompactionService {
 
         public static ConversationEntry user(String content) {
             return new ConversationEntry(EntryType.USER, "user", content, null, null);
+        }
+
+        public static ConversationEntry user(String content, List<Attachment> attachments) {
+            return new ConversationEntry(EntryType.USER, "user", content, null, null, attachments);
         }
 
         public static ConversationEntry assistant(String content) {

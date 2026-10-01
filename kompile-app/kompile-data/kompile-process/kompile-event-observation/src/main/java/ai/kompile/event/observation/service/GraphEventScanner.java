@@ -20,6 +20,7 @@ import ai.kompile.event.observation.config.EventObservationConfigService;
 import ai.kompile.event.observation.config.OpportunityModel;
 import ai.kompile.event.observation.domain.EventChannel;
 import ai.kompile.event.observation.domain.EventSource;
+import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.EntityMention;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
@@ -138,7 +139,7 @@ public class GraphEventScanner {
 
         int observed = 0;
         for (EdgeInfo info : edges.values()) {
-            double strength = clamp01(info.weight * info.confidence);
+            double strength = GraphRelation.strength(info.weight, info.confidence);
             Observation obs = OpportunityCalculator.forConnection(model, strength, totalConnections);
             if (obs.isEmpty()) {
                 continue;
@@ -200,10 +201,6 @@ public class GraphEventScanner {
             }
         }
         return edges;
-    }
-
-    private static double clamp01(double v) {
-        return Math.max(0.0, Math.min(1.0, v));
     }
 
     private record EdgeInfo(String src, String tgt, EdgeType type, double weight, double confidence) {

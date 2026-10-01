@@ -17,7 +17,6 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
 
-import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.Optional;
 
@@ -38,9 +37,9 @@ class NoteSyncConnectionServiceTest {
         runRepository = mock(NoteSyncRunRepository.class);
         eventPublisher = mock(ApplicationEventPublisher.class);
         service = new NoteSyncConnectionService();
-        setField(service, "connectionRepository", repository);
-        setField(service, "syncRunRepository", runRepository);
-        setField(service, "eventPublisher", eventPublisher);
+        service.connectionRepository = repository;
+        service.syncRunRepository = runRepository;
+        service.eventPublisher = eventPublisher;
         connection = NoteSyncConnection.builder()
                 .id(42L)
                 .factSheetId(7L)
@@ -190,15 +189,5 @@ class NoteSyncConnectionServiceTest {
 
         assertTrue(failure.getMessage().contains("encryption is unavailable"));
         verify(repository, never()).save(any());
-    }
-
-    private static void setField(Object target, String name, Object value) {
-        try {
-            Field field = target.getClass().getDeclaredField(name);
-            field.setAccessible(true);
-            field.set(target, value);
-        } catch (ReflectiveOperationException failure) {
-            throw new AssertionError(failure);
-        }
     }
 }

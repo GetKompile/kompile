@@ -38,8 +38,6 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -72,20 +70,16 @@ class DiagramGenerationServiceTest {
     private DiagramGenerationService service;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         mermaidConverter = new MermaidProcessConverter();
         service = new DiagramGenerationService(
                 sessionRepository, agentChatService, mermaidConverter, serverPortService);
 
         // Inject optional KnowledgeGraphService
-        Field kgField = DiagramGenerationService.class.getDeclaredField("knowledgeGraphService");
-        kgField.setAccessible(true);
-        kgField.set(service, knowledgeGraphService);
+        service.knowledgeGraphService = knowledgeGraphService;
 
         // Inject optional McpToolRegistry
-        Field registryField = DiagramGenerationService.class.getDeclaredField("mcpToolRegistry");
-        registryField.setAccessible(true);
-        registryField.set(service, mcpToolRegistry);
+        service.mcpToolRegistry = mcpToolRegistry;
 
         // Default: registry returns empty so fallback catalog is used (matches existing tests)
         lenient().when(mcpToolRegistry.getToolsByCategory()).thenReturn(Map.of());
@@ -96,11 +90,8 @@ class DiagramGenerationServiceTest {
         lenient().when(serverPortService.getActualPort()).thenReturn(8080);
     }
 
-    private String invokeBuildDiagramPrompt(String userPrompt, Long factSheetId) throws Exception {
-        Method method = DiagramGenerationService.class.getDeclaredMethod(
-                "buildDiagramPrompt", String.class, Long.class);
-        method.setAccessible(true);
-        return (String) method.invoke(service, userPrompt, factSheetId);
+    private String invokeBuildDiagramPrompt(String userPrompt, Long factSheetId) {
+        return service.buildDiagramPrompt(userPrompt, factSheetId);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -163,9 +154,7 @@ class DiagramGenerationServiceTest {
     @Test
     void promptShowsKnowledgeGraphUnavailableWhenNull() throws Exception {
         // Remove the KG service to simulate unavailability
-        Field kgField = DiagramGenerationService.class.getDeclaredField("knowledgeGraphService");
-        kgField.setAccessible(true);
-        kgField.set(service, null);
+        service.knowledgeGraphService = null;
 
         String prompt = invokeBuildDiagramPrompt("Find processes", null);
 
@@ -223,10 +212,7 @@ class DiagramGenerationServiceTest {
 
     @Test
     void promptShowsProcessEngineAvailable() throws Exception {
-        // Process engine is not injected by default (null), need to set it
-        Field peField = DiagramGenerationService.class.getDeclaredField("processEngineService");
-        peField.setAccessible(true);
-        // Leave it null — default state
+        // The process engine is not injected by default; leave it null.
         when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of("totalNodes", 10L));
         when(knowledgeGraphService.getAllSources()).thenReturn(List.of());
 
@@ -266,9 +252,7 @@ class DiagramGenerationServiceTest {
 
     @Test
     void promptOmitsGraphToolsWhenKgUnavailable() throws Exception {
-        Field kgField = DiagramGenerationService.class.getDeclaredField("knowledgeGraphService");
-        kgField.setAccessible(true);
-        kgField.set(service, null);
+        service.knowledgeGraphService = null;
 
         String prompt = invokeBuildDiagramPrompt("Find processes", null);
 
@@ -392,9 +376,7 @@ class DiagramGenerationServiceTest {
 
     @Test
     void promptAdaptsWorkflowWhenKgUnavailable() throws Exception {
-        Field kgField = DiagramGenerationService.class.getDeclaredField("knowledgeGraphService");
-        kgField.setAccessible(true);
-        kgField.set(service, null);
+        service.knowledgeGraphService = null;
 
         String prompt = invokeBuildDiagramPrompt("Find processes", null);
 
@@ -614,9 +596,7 @@ class DiagramGenerationServiceTest {
     @Test
     void dynamicCatalogMarksGraphToolsUnavailableWhenKgDown() throws Exception {
         // Set KG to null
-        Field kgField = DiagramGenerationService.class.getDeclaredField("knowledgeGraphService");
-        kgField.setAccessible(true);
-        kgField.set(service, null);
+        service.knowledgeGraphService = null;
 
         when(mcpToolRegistry.getToolsByCategory()).thenReturn(buildSampleToolsByCategory());
 
@@ -652,9 +632,7 @@ class DiagramGenerationServiceTest {
     @Test
     void fallbackCatalogUsedWhenRegistryNull() throws Exception {
         // Set registry to null
-        Field registryField = DiagramGenerationService.class.getDeclaredField("mcpToolRegistry");
-        registryField.setAccessible(true);
-        registryField.set(service, null);
+        service.mcpToolRegistry = null;
 
         when(knowledgeGraphService.getGraphStatistics()).thenReturn(Map.of("totalNodes", 10L));
 

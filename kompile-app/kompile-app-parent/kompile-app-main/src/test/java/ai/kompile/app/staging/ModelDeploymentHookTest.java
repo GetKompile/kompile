@@ -29,7 +29,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.file.Files;
@@ -50,8 +49,8 @@ import static org.mockito.Mockito.when;
  * Unit tests for {@link ModelDeploymentHook}.
  *
  * <p>The hook reaches the staging server over HTTP — {@code kompile-model-staging} is a standalone
- * subprocess and is NOT a dependency of app-main. These tests inject a mock {@link RestTemplate}
- * (and the {@code @Value} staging URL) via {@link ReflectionTestUtils}, then verify that a
+ * subprocess and is NOT a dependency of app-main. These tests set a mock {@link RestTemplate}
+ * and a fixed staging URL on the hook's package-private fields, then verify that a
  * {@link ModelTrainedEvent} POSTs a deploy request to
  * {@code {stagingUrl}/api/staging/graph/{projectId}/{graphId}/deploy} with the right body, that the
  * guard conditions skip the POST, and that any POST failure is swallowed (a cascade/training job must
@@ -79,8 +78,8 @@ class ModelDeploymentHookTest {
         hook = new ModelDeploymentHook(projectBackendService);
         // @Value injection and the inline `new RestTemplate()` are not wired in a plain unit test,
         // so set both fields directly — no Spring context, no real network call.
-        ReflectionTestUtils.setField(hook, "stagingUrl", STAGING_URL);
-        ReflectionTestUtils.setField(hook, "restTemplate", restTemplate);
+        hook.stagingUrl = STAGING_URL;
+        hook.restTemplate = restTemplate;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -218,8 +217,8 @@ class ModelDeploymentHookTest {
     @Test
     void nullProjectBackendService_usesDefault() throws Exception {
         ModelDeploymentHook hookNoProject = new ModelDeploymentHook(null);
-        ReflectionTestUtils.setField(hookNoProject, "stagingUrl", STAGING_URL);
-        ReflectionTestUtils.setField(hookNoProject, "restTemplate", restTemplate);
+        hookNoProject.stagingUrl = STAGING_URL;
+        hookNoProject.restTemplate = restTemplate;
         Path artifact = createArtifact("artifact4.json");
 
         hookNoProject.onModelTrained(new ModelTrainedEvent(this, "mebn", 10L, artifact, "mebn-grounding"));

@@ -35,8 +35,6 @@ class CorpusSchemaPromptBuilderTest {
 
     @Test
     void promptJsonIgnoresNestedMapInsertionOrderButPreservesArrays() throws Exception {
-        var serialize = CorpusSchemaPromptBuilder.class.getDeclaredMethod("serializeValue", Object.class);
-        serialize.setAccessible(true);
         Map<String,Object> first = new LinkedHashMap<>();
         Map<String,Object> reverseNested = new LinkedHashMap<>();
         reverseNested.put("b", "B"); reverseNested.put("a", "A");
@@ -46,8 +44,8 @@ class CorpusSchemaPromptBuilderTest {
         nested.put("a", "A"); nested.put("b", "B");
         Map<String,Object> second = new LinkedHashMap<>();
         second.put("a", List.of("s2", "s1")); second.put("z", nested);
-        String left = (String) serialize.invoke(null, first);
-        String right = (String) serialize.invoke(null, second);
+        String left = CorpusSchemaPromptBuilder.serializeValue(first);
+        String right = CorpusSchemaPromptBuilder.serializeValue(second);
         assertEquals(left, right);
         assertTrue(left.indexOf("\"a\"") < left.indexOf("\"z\""));
         assertTrue(left.indexOf("\"s2\"") < left.indexOf("\"s1\""));

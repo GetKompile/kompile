@@ -166,7 +166,43 @@ public class ScheduledJob implements Comparable<ScheduledJob> {
     public void setState(JobState newState) { state.set(newState); }
 
     public boolean isTerminal() {
-        JobState s = state.get();
+        return isTerminal(state.get());
+    }
+
+    /**
+     * Move to {@code terminal} (COMPLETED, FAILED or CANCELLED) unless the job already ended. Exactly
+     * one caller wins; only the winner records the outcome and completes the result future.
+     */
+    public boolean tryTransitionToTerminal(JobState terminal) {
+        if (!isTerminal(terminal)) {
+            throw new IllegalArgumentException("Not a terminal state: " + terminal);
+        }
+        return transitionUnlessTerminal(terminal);
+    }
+
+    /** Move to the non-terminal {@code next} unless the job already ended (e.g. it was cancelled). */
+    public boolean advanceState(JobState next) {
+        return transitionUnlessTerminal(next);
+    }
+
+    /** Move from {@code expected} to {@code next} only if the job is still in {@code expected}. */
+    public boolean transitionState(JobState expected, JobState next) {
+        return state.compareAndSet(expected, next);
+    }
+
+    private boolean transitionUnlessTerminal(JobState next) {
+        while (true) {
+            JobState current = state.get();
+            if (isTerminal(current)) {
+                return false;
+            }
+            if (state.compareAndSet(current, next)) {
+                return true;
+            }
+        }
+    }
+
+    private static boolean isTerminal(JobState s) {
         return s == JobState.COMPLETED || s == JobState.FAILED || s == JobState.CANCELLED;
     }
 

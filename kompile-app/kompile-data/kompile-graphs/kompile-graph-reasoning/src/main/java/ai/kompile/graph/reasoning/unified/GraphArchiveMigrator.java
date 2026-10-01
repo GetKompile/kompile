@@ -89,13 +89,11 @@ public final class GraphArchiveMigrator {
                     }
                 }
 
-                Path candidate = Files.createTempFile(
-                        parent, "." + normalizedTarget.getFileName() + "-migration-", ".kgraph");
-                try {
-                    writeCurrentArchive(snapshot.path(), candidate, sourceHash, sourceVersion);
+                try (KGraphScratch scratch = KGraphScratch.forRebuild(normalizedTarget)) {
+                    Path candidate = scratch.createFile(normalizedTarget.getFileName() + ".migration-", ".kgraph");
+                    writeCurrentArchive(snapshot.path(), candidate, sourceHash, sourceVersion, scratch.directory());
+                    snapshot.requireSnapshotUnchanged(normalizedSource);
                     moveAtomically(candidate, normalizedTarget);
-                } finally {
-                    Files.deleteIfExists(candidate);
                 }
                 return new MigrationResult(
                         normalizedSource, normalizedTarget, null, sourceVersion, Status.MIGRATED);
@@ -136,14 +134,11 @@ public final class GraphArchiveMigrator {
                 throw new IOException("Migration backup already exists with different content: " + backup);
             }
             snapshot.requireSourceUnchanged(normalizedSource);
-            Path candidate = Files.createTempFile(
-                    normalizedSource.getParent(), "." + normalizedSource.getFileName() + "-migration-", ".kgraph");
-            try {
-                writeCurrentArchive(snapshot.path(), candidate, sourceHash, sourceVersion);
+            try (KGraphScratch scratch = KGraphScratch.forRebuild(normalizedSource)) {
+                Path candidate = scratch.createFile(normalizedSource.getFileName() + ".migration-", ".kgraph");
+                writeCurrentArchive(snapshot.path(), candidate, sourceHash, sourceVersion, scratch.directory());
                 snapshot.requireSourceUnchanged(normalizedSource);
                 moveAtomically(candidate, normalizedSource);
-            } finally {
-                Files.deleteIfExists(candidate);
             }
             return new MigrationResult(
                     normalizedSource, normalizedSource, backup, sourceVersion, Status.MIGRATED);
@@ -228,11 +223,12 @@ public final class GraphArchiveMigrator {
     }
 
     private static void writeCurrentArchive(
-            Path source, Path target, String sourceHash, int sourceVersion) throws IOException {
+            Path source, Path target, String sourceHash, int sourceVersion, Path scratchDirectory)
+            throws IOException {
         if (sourceVersion < 3) {
-            LegacyGraphTranscoder.transcode(source, target, sourceHash, sourceVersion);
+            LegacyGraphTranscoder.transcode(source, target, sourceHash, sourceVersion, scratchDirectory);
         } else {
-            LegacyGraphTranscoder.copyCurrent(source, target);
+            LegacyGraphTranscoder.copyCurrent(source, target, scratchDirectory);
         }
     }
 
@@ -240,13 +236,20 @@ public final class GraphArchiveMigrator {
         for (int attempt = 0; attempt < 2; attempt++) {
             BasicFileAttributes before = Files.readAttributes(
                     source, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-            Path snapshot = Files.createTempFile("kompile-kgraph-migration-", ".snapshot");
+            KGraphScratch scratch = KGraphScratch.forRead(source);
+            Path snapshot = scratch.directory().resolve("kompile-kgraph-migration.snapshot");
             Path sourceJournal = UnifiedGraphMutationJournal.pathFor(source);
             Path snapshotJournal = UnifiedGraphMutationJournal.pathFor(snapshot);
             boolean retained = false;
             try {
-                Files.copy(source, snapshot, StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.COPY_ATTRIBUTES);
+                try {
+                    // Writers publish by atomic rename, so a hard link is a stable snapshot and
+                    // spares copying the whole archive on every in-place check.
+                    Files.createLink(snapshot, source);
+                } catch (IOException | UnsupportedOperationException linkFailure) {
+                    Files.copy(source, snapshot, StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.COPY_ATTRIBUTES);
+                }
                 BasicFileAttributes journalBefore = Files.isRegularFile(sourceJournal)
                         ? Files.readAttributes(sourceJournal, BasicFileAttributes.class,
                         LinkOption.NOFOLLOW_LINKS) : null;
@@ -264,14 +267,13 @@ public final class GraphArchiveMigrator {
                         || journalBefore != null && journalAfter != null
                         && sameFileState(journalBefore, journalAfter)
                         && Files.size(snapshotJournal) == journalBefore.size())) {
+                    BasicFileAttributes snapshotState = Files.readAttributes(
+                            snapshot, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
                     retained = true;
-                    return new SourceSnapshot(snapshot, before);
+                    return new SourceSnapshot(snapshot, before, snapshotState, scratch);
                 }
             } finally {
-                if (!retained) {
-                    Files.deleteIfExists(snapshot);
-                    Files.deleteIfExists(snapshotJournal);
-                }
+                if (!retained) scratch.close();
             }
         }
         throw new IOException("Graph archive changed while creating a migration snapshot: " + source);
@@ -285,7 +287,9 @@ public final class GraphArchiveMigrator {
                 && left.lastModifiedTime().equals(right.lastModifiedTime());
     }
 
-    private record SourceSnapshot(Path path, BasicFileAttributes sourceState) implements AutoCloseable {
+    private record SourceSnapshot(
+            Path path, BasicFileAttributes sourceState, BasicFileAttributes snapshotState, KGraphScratch scratch)
+            implements AutoCloseable {
         private void requireSourceUnchanged(Path source) throws IOException {
             BasicFileAttributes current = Files.readAttributes(
                     source, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
@@ -294,9 +298,17 @@ public final class GraphArchiveMigrator {
             }
         }
 
-        @Override public void close() throws IOException {
-            Files.deleteIfExists(path);
-            Files.deleteIfExists(UnifiedGraphMutationJournal.pathFor(path));
+        /** The snapshot can be a hard link to the source, so an in-place write to it shows here. */
+        private void requireSnapshotUnchanged(Path source) throws IOException {
+            BasicFileAttributes current = Files.readAttributes(
+                    path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!sameFileState(snapshotState, current)) {
+                throw new IOException("Graph archive changed while it was being migrated: " + source);
+            }
+        }
+
+        @Override public void close() {
+            scratch.close();
         }
     }
 

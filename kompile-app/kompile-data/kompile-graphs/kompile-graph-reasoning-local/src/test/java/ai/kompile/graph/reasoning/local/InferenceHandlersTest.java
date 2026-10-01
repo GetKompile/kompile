@@ -102,6 +102,42 @@ class InferenceHandlersTest {
         assertEquals("ERROR", r.get("status"), "Expected ERROR for unknown entity");
     }
 
+    @Test
+    void mebn_evidenceConditionsThePosteriorsWhilePriorsStayTheMarginals() {
+        Map<String, Object> base = call("ask_graph_mebn", Map.of("nodeId", "alice", "maxDepth", 2));
+        Map<String, Object> observed = call("ask_graph_mebn", Map.of("nodeId", "alice", "maxDepth", 2,
+                "evidence", Map.of("alice", false)));
+        assertNoError(base, base.toString());
+        assertNoError(observed, observed.toString());
+
+        assertEquals(0L, base.get("evidenceApplied"));
+        assertEquals(1L, observed.get("evidenceApplied"));
+        assertEquals(base.get("posteriors"), base.get("priors"), "without evidence the priors are the posteriors");
+        assertEquals(base.get("priors"), observed.get("priors"), "evidence does not move the priors");
+        // alice is a root, so its prior is its confidence
+        assertEquals(0.8, probability(base, "priors", "alice"), 1e-4);
+        assertEquals(0.0, probability(observed, "posteriors", "alice"));
+        assertTrue(probability(observed, "posteriors", "acme") < probability(base, "posteriors", "acme"),
+                "alice FALSE must lower acme through WORKS_AT: " + observed);
+    }
+
+    @Test
+    void evidenceOutsideTheNetworkOrWithABadStateIsAnErrorNotSkipped() {
+        // london has no relations, so it is not in alice's network
+        Map<String, Object> unknown = call("ask_graph_mebn", Map.of("nodeId", "alice", "maxDepth", 2,
+                "evidence", Map.of("london", true)));
+        assertEquals("ERROR", unknown.get("status"), unknown.toString());
+        assertTrue(unknown.get("message").toString().contains("london"), unknown.toString());
+
+        Map<String, Object> badState = call("ask_graph_mebn", Map.of("nodeId", "alice",
+                "evidence", Map.of("alice", "maybe")));
+        assertEquals("ERROR", badState.get("status"), badState.toString());
+
+        Map<String, Object> bayes = call("graph_bayes", Map.of("action", "query", "node_id", "alice",
+                "max_depth", 2, "evidence", Map.of("london", 1)));
+        assertEquals("ERROR", bayes.get("status"), bayes.toString());
+    }
+
     // ── graph_bayes ───────────────────────────────────────────────────────────
 
     @Test
@@ -498,6 +534,15 @@ class InferenceHandlersTest {
     }
 
     // ── Assertion helper ──────────────────────────────────────────────────────
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> call(String tool, Map<String, Object> args) {
+        return (Map<String, Object>) MiniJson.parse(dispatcher.dispatch(session, tool, MiniJson.write(args)));
+    }
+
+    private static double probability(Map<String, Object> r, String field, String entityId) {
+        return ((Number) ((Map<?, ?>) r.get(field)).get(entityId)).doubleValue();
+    }
 
     private static void assertNoError(Map<String, Object> r, String json) {
         String status = (String) r.get("status");

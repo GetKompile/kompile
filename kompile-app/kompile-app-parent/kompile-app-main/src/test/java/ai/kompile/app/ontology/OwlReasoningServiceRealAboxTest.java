@@ -24,7 +24,6 @@ import ai.kompile.process.ontology.RelationshipTypeDefinition;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -116,10 +115,7 @@ class OwlReasoningServiceRealAboxTest {
         when(kg.getEdgesInFactSheet(7L)).thenReturn(List.of());
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
-        Method method = OwlReasoningService.class.getDeclaredMethod("buildAbox", long.class);
-        method.setAccessible(true);
-
-        ReasoningGraph abox = (ReasoningGraph) method.invoke(service, 7L);
+        ReasoningGraph abox = service.buildAbox(7L);
         GraphEntity graphEntity = abox.entity("acct-1").orElseThrow();
 
         assertTrue(graphEntity.typeMemberships().contains("Account"));
@@ -219,11 +215,7 @@ class OwlReasoningServiceRealAboxTest {
         when(kg.getNode(eq("a"))).thenReturn(Optional.of(entity));
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
-        Method method = OwlReasoningService.class.getDeclaredMethod(
-                "materializeInferredTypes", long.class, Map.class);
-        method.setAccessible(true);
-
-        Object updated = method.invoke(service, 7L, Map.of("a", "https://example.org/ontology#Assembly"));
+        int updated = service.materializeInferredTypes(7L, Map.of("a", "https://example.org/ontology#Assembly"));
 
         assertEquals(1, updated);
         ArgumentCaptor<Map<String, Object>> metadataCaptor = ArgumentCaptor.forClass(Map.class);
@@ -257,11 +249,7 @@ class OwlReasoningServiceRealAboxTest {
         when(kg.getNode(eq("a"))).thenReturn(Optional.of(entity));
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
-        Method method = OwlReasoningService.class.getDeclaredMethod(
-                "materializeInferredTypes", long.class, Map.class);
-        method.setAccessible(true);
-
-        Object updated = method.invoke(service, 7L, Map.of(
+        int updated = service.materializeInferredTypes(7L, Map.of(
                 "a", List.of(
                         "https://example.org/ontology#Assembly",
                         "https://example.org/ontology#Component")));
@@ -304,11 +292,7 @@ class OwlReasoningServiceRealAboxTest {
         when(kg.getNode(eq("a"))).thenReturn(Optional.of(entity));
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
-        Method method = OwlReasoningService.class.getDeclaredMethod(
-                "materializeInferredTypes", long.class, Map.class);
-        method.setAccessible(true);
-
-        Object updated = method.invoke(service, 7L, Map.of("a", "https://example.org/ontology#Assembly"));
+        int updated = service.materializeInferredTypes(7L, Map.of("a", "https://example.org/ontology#Assembly"));
 
         assertEquals(1, updated);
         ArgumentCaptor<Map<String, Object>> metadataCaptor = ArgumentCaptor.forClass(Map.class);
@@ -340,11 +324,7 @@ class OwlReasoningServiceRealAboxTest {
         when(kg.getNode(eq("wine-red"))).thenReturn(Optional.of(entity));
 
         OwlReasoningService service = new OwlReasoningService(binding, new OwlOntologyBridge(), kg);
-        Method method = OwlReasoningService.class.getDeclaredMethod(
-                "materializeInferredTypes", long.class, Map.class);
-        method.setAccessible(true);
-
-        Object updated = method.invoke(service, 7L, Map.of("wine-red", "https://example.org/ontology#Wine"));
+        int updated = service.materializeInferredTypes(7L, Map.of("wine-red", "https://example.org/ontology#Wine"));
 
         assertEquals(1, updated);
         ArgumentCaptor<Map<String, Object>> metadataCaptor = ArgumentCaptor.forClass(Map.class);

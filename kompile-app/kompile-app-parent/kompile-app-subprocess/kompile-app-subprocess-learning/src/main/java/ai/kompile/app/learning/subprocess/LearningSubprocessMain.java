@@ -17,6 +17,7 @@ package ai.kompile.app.learning.subprocess;
 
 import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
 import ai.kompile.core.kgembedding.KGEmbeddingConfig;
 import ai.kompile.core.kgembedding.KGEmbeddingModel;
 import ai.kompile.core.kgembedding.TrainingProgress;
@@ -62,8 +63,10 @@ import java.util.Map;
  * <h3>Stdout / Stderr split</h3>
  * Immediately on startup {@code System.out} is redirected to {@code System.err}
  * so that all Spring / ND4J log noise goes to stderr. Structured
- * {@link LearningSubprocessMessage} lines are written only to the original
- * {@code PrintStream}, which the parent launcher reads line-by-line.
+ * {@link LearningSubprocessMessage} lines are written only to the protocol channel
+ * the launcher set up ({@link SubprocessProtocolChannel}), which native output written
+ * to fd 1 can't reach, or to the original {@code PrintStream} when there is none.
+ * The parent launcher reads them line-by-line.
  *
  * <h3>Entity-ID consistency</h3>
  * The triples are serialised by the parent and written to {@code triplesFilePath}
@@ -107,8 +110,9 @@ public class LearningSubprocessMain {
 
     public static void main(String[] args) {
         NativeLibraryResolver.bootstrapOrThrow();
-        // 1. Capture original stdout BEFORE anything else writes to it
-        PrintStream originalStdout = System.out;
+        // 1. Protocol messages go to the channel the launcher set up, which native output written
+        //    to fd 1 can't reach, or to the original stdout when there is none
+        PrintStream originalStdout = SubprocessProtocolChannel.open(System.out);
         // 2. Redirect System.out → System.err so ND4J/log noise never pollutes the
         //    structured message channel.
         System.setOut(System.err);

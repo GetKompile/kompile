@@ -61,6 +61,7 @@ public class ModelRouter {
     public String onTurnComplete(String agentName, String model, float qualityScore,
                                   long latencyMs, boolean hadRateLimit) {
         if (!config.isAutoSwapEnabled()) return null;
+        if (model == null) return null; // Nothing to key rolling stats or cooldowns by — skip.
 
         // Decrement manual override counter
         if (manualOverrideTurnsRemaining > 0) {

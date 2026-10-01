@@ -8,11 +8,16 @@ package ai.kompile.cli.main.chat.tools.grounding;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.KnowledgeSearchCliTool;
 import ai.kompile.cli.main.chat.tools.KnowledgeStatusCliTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
+import ai.kompile.project.KompileProjectInitRequest;
+import ai.kompile.project.KompileProjectManifest;
+import ai.kompile.project.KompileProjectStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -23,15 +28,19 @@ import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.BufferedReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
@@ -49,15 +58,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@TemporaryUserHome
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class LocalProjectCrawlBackendTest {
     @TempDir
     Path projectRoot;
 
     private ObjectMapper mapper;
     private ToolContext context;
+    private String previousAdmissionMode;
 
     @BeforeEach
     void setUp() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
         mapper = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("offline-worker")
                 .enabledTools(Set.of("*"))
@@ -77,6 +91,15 @@ class LocalProjectCrawlBackendTest {
         }
         context = new ToolContext("offline-crawl-test", agent, permissions, projectRoot,
                 new ToolRegistry(mapper));
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
     }
 
     @Test
@@ -378,6 +401,25 @@ class LocalProjectCrawlBackendTest {
         assertTrue(jsonStart >= 0, result.getOutput());
         JsonNode preview = mapper.readTree(result.getOutput().substring(jsonStart));
         assertEquals("DRY_RUN", preview.path("status").asText(null));
+    }
+
+    @Test
+    void rejectsLocatorFreeGdriveDocumentWhoseOnlyPropertyIsABooleanFalse() throws Exception {
+        // GDRIVE is not locator-optional, and a bare `fileIds: false` is not an identifier (F6):
+        // the old type-agnostic hasIdentityMetadata read Boolean.FALSE's string form "false" as a
+        // non-blank value and wrongly accepted it as identity. identityWithoutLocator must still
+        // require a real path/url (or a real fileIds/folderId) here, producing the same precise
+        // error every other locator-centric type gets. No path/url and no external service calls.
+        ObjectNode request = mapper.createObjectNode().put("async", false).put("dryRun", true);
+        request.putObject("knowledgeBase").put("name", "locator-free-rejected");
+        ObjectNode source = request.putArray("documents").addObject();
+        source.put("sourceType", "GDRIVE");
+        source.putObject("properties").put("accessToken", "test-token").put("fileIds", false);
+
+        ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
+
+        assertTrue(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("must provide exactly one of path or url"), result.getOutput());
     }
 
     @Test
@@ -1029,5 +1071,189 @@ class LocalProjectCrawlBackendTest {
         request.putObject("embeddingTraining").put("enabled", false);
         request.putObject("reasoningLearning").put("enabled", false);
         return request;
+    }
+
+    // --- Remote URL / WEB_CRAWL: content-type suffix selection (E1) -----------------------
+
+    @Test
+    void remoteSuffixPrefersContentTypeOverUrlExtension() {
+        // The Node.js wiki-page bug: a page path ending in .js served as text/html must not be
+        // staged (and therefore not pipeline-routed) as JavaScript source.
+        assertEquals(".html", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/wiki/Node.js"), "text/html"));
+        assertEquals(".html", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/wiki/Node.js"), "text/html; charset=utf-8"));
+        assertEquals(".pdf", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/report"), "application/pdf"));
+        assertEquals(".docx", LocalProjectCrawlBackend.remoteSuffix(URI.create("https://example.com/d"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+    }
+
+    @Test
+    void remoteSuffixFallsBackToUrlExtensionForGenericOrMissingContentType() {
+        assertEquals(".png", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/image.png"), "application/octet-stream"));
+        assertEquals(".zip", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/archive.zip"), "binary/octet-stream"));
+        assertEquals(".zip", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/archive.zip"), ""));
+        assertEquals(".zip", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/archive.zip"), null));
+    }
+
+    @Test
+    void remoteSuffixDefaultsToBinWhenNoContentTypeAndNoUrlExtensionAreUsable() {
+        assertEquals(".bin", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/download"), "application/octet-stream"));
+        // Unrecognized binary content type: .bin, not the historical .txt default.
+        assertEquals(".bin", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/download"), "application/x-fake-binary"));
+    }
+
+    @Test
+    void remoteSuffixTextPlainUsesUrlExtensionOnlyWhenItIsAKnownTextExtension() {
+        assertEquals(".py", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/raw/script.py"), "text/plain"));
+        assertEquals(".txt", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/raw/app.exe"), "text/plain"));
+        assertEquals(".txt", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/raw/no-extension"), "text/plain"));
+    }
+
+    @Test
+    void remoteSuffixHandlesImageContentTypes() {
+        assertEquals(".png", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/i"), "image/png"));
+        assertEquals(".jpg", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/i"), "image/jpeg"));
+        assertEquals(".svg", LocalProjectCrawlBackend.remoteSuffix(
+                URI.create("https://example.com/i"), "image/svg+xml"));
+    }
+
+    // --- Remote URL / WEB_CRAWL: SSRF opt-in and externalSourceType tagging (E2/E3/E7) -----
+
+    /**
+     * Seeds {@code kompile.project.json} with {@code crawl.allowPrivateNetworkUrls=true} so a
+     * loopback fake {@link HttpServer} (the only kind a test may use per the credential/network
+     * rules) is reachable. {@code ProjectState}/{@code allowPrivateNetworkUrls(ProjectState)} are
+     * private to {@link LocalProjectCrawlBackend}'s compilation unit, so this project-level opt-in
+     * can only be exercised end to end through {@link LocalProjectCrawlBackend#crawlDocuments}.
+     */
+    private void enablePrivateNetworkUrlsForProject() {
+        KompileProjectStore projectStore = new KompileProjectStore();
+        KompileProjectInitRequest initRequest = new KompileProjectInitRequest();
+        initRequest.setName("remote-fetch-test");
+        initRequest.setIncludeStandardComponents(false);
+        KompileProjectManifest manifest = projectStore.init(projectRoot, initRequest);
+        manifest.getMetadata().put("crawl.allowPrivateNetworkUrls", "true");
+        projectStore.save(projectRoot, manifest);
+    }
+
+    @Test
+    void remoteUrlFetchIsRejectedByDefaultForLoopbackHosts() throws Exception {
+        // No project opt-in: crawl.allowPrivateNetworkUrls defaults to false, so even a
+        // same-machine fake server must be refused as a loopback address.
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/page.html", exchange -> {
+            byte[] bytes = "<html><body>should-not-be-fetched</body></html>"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/html");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream response = exchange.getResponseBody()) {
+                response.write(bytes);
+            }
+        });
+        server.start();
+        try {
+            LocalProjectCrawlBackend backend = new LocalProjectCrawlBackend(mapper);
+            ObjectNode request = mapper.createObjectNode().put("async", false);
+            request.putObject("knowledgeBase").put("name", "ssrf-default-deny");
+            request.putArray("documents").addObject()
+                    .put("url", "http://127.0.0.1:" + server.getAddress().getPort() + "/page.html");
+
+            ToolResult result = backend.crawlDocuments(request, context);
+
+            assertTrue(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("loopback"), result.getOutput());
+            assertTrue(result.getOutput().contains("crawl.allowPrivateNetworkUrls"), result.getOutput());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void projectOptInAllowsLoopbackUrlFetchAndTagsExternalSourceType() throws Exception {
+        enablePrivateNetworkUrlsForProject();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/wiki/Node.js", exchange -> {
+            // Content-Type decides the staged suffix (E1): text/html must win over the .js
+            // URL extension so this is staged as .html, not JavaScript source.
+            byte[] bytes = "<html><body>remote-url-opt-in-marker</body></html>"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/html");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream response = exchange.getResponseBody()) {
+                response.write(bytes);
+            }
+        });
+        server.start();
+        try {
+            String seedUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/wiki/Node.js";
+            LocalProjectCrawlBackend backend = new LocalProjectCrawlBackend(mapper);
+            ObjectNode request = mapper.createObjectNode().put("async", false);
+            request.putObject("knowledgeBase").put("name", "ssrf-opt-in");
+            request.putArray("documents").addObject().put("url", seedUrl);
+
+            ToolResult result = backend.crawlDocuments(request, context);
+
+            assertFalse(result.isError(), result.getOutput());
+            String knowledgeBase = (String) result.getMetadata().get("knowledgeBase");
+            Path crawl = projectRoot.resolve("data/crawls").resolve(knowledgeBase);
+            JsonNode persisted = mapper.readTree(crawl.resolve("mcp-request.json").toFile());
+            JsonNode document = persisted.path("request").path("documents").get(0);
+            assertEquals("URL", document.path("properties").path("externalSourceType").asText());
+            assertEquals(seedUrl, document.path("properties").path("sourceUrl").asText());
+            assertTrue(document.path("path").asText().endsWith(".html"), document.path("path").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void webCrawlSeedIsTaggedWithSourceUrlAndWebCrawlType() throws Exception {
+        enablePrivateNetworkUrlsForProject();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            byte[] bytes = "<html><body>web-crawl-seed-marker</body></html>"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/html");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream response = exchange.getResponseBody()) {
+                response.write(bytes);
+            }
+        });
+        server.start();
+        try {
+            String seedUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
+            LocalProjectCrawlBackend backend = new LocalProjectCrawlBackend(mapper);
+            ObjectNode request = mapper.createObjectNode().put("async", false);
+            request.putObject("knowledgeBase").put("name", "web-crawl-tag");
+            request.putArray("documents").addObject()
+                    .put("sourceType", "WEB_CRAWL")
+                    .put("url", seedUrl)
+                    .put("maxDepth", 0);
+
+            ToolResult result = backend.crawlDocuments(request, context);
+
+            assertFalse(result.isError(), result.getOutput());
+            String knowledgeBase = (String) result.getMetadata().get("knowledgeBase");
+            Path crawl = projectRoot.resolve("data/crawls").resolve(knowledgeBase);
+            JsonNode persisted = mapper.readTree(crawl.resolve("mcp-request.json").toFile());
+            JsonNode document = persisted.path("request").path("documents").get(0);
+            assertEquals("WEB_CRAWL", document.path("properties").path("externalSourceType").asText());
+            assertEquals(seedUrl, document.path("properties").path("sourceUrl").asText());
+        } finally {
+            server.stop(0);
+        }
     }
 }

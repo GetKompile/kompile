@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -16,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Verifies that .splan files produce the correct entity hierarchy:
  * Section→MODULE, Declaration→CONSTANT, Operation→FUNCTION, ContentBlock→FIELD.
  */
+@TemporaryUserHome
 class SplanParsingTest {
 
     @Test

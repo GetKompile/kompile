@@ -27,6 +27,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -849,6 +850,70 @@ class KbGroundingControllerTest {
             assertEquals(2, dto.completionSets().get(0).size());
             assertNotNull(dto.flatSuggestions());
             assertFalse(dto.budgetExhausted());
+        }
+    }
+
+    // ── Predicate spelling ────────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("predicate spelling")
+    class PredicateSpelling {
+
+        private void seed(long sheet, String... atoms) {
+            groundingService.seedInferredFacts(sheet, Arrays.stream(atoms)
+                    .map(atom -> InferredFact.of(atom, 0.9, List.of(), List.of(), "run", 1L))
+                    .toList());
+        }
+
+        @Test
+        @DisplayName("verify and explain: a camelCase atom finds the stored snake_case atom")
+        void verifyAndExplain_camelCase_findStoredSnakeCase() {
+            seed(310L, "works_for(alice, acme)");
+
+            ResponseEntity<VerifyResponse> verified = controller.verify(
+                    new VerifyRequest("worksFor(alice,acme)", 310L, null, null, null));
+            ResponseEntity<ExplainResponse> explained = controller.explain(
+                    new ExplainRequest("worksFor(alice, acme)", 310L, 3, null));
+
+            assertEquals("SUPPORTED", verified.getBody().verdict());
+            assertEquals("SUPPORTED", explained.getBody().verdict());
+        }
+
+        @Test
+        @DisplayName("query: a camelCase conjunct binds against snake_case atoms")
+        void query_camelCaseConjunct_binds() {
+            seed(311L, "works_for(alice, acme)", "works_for(bob, acme)");
+
+            ResponseEntity<QueryResponse> resp = controller.query(new QueryRequest(
+                    List.of(new QueryRequest.ConjunctEntry("worksFor", List.of("?p", "acme"))),
+                    311L, null, 10, 0.0, null));
+
+            assertEquals(2, resp.getBody().total());
+        }
+
+        @Test
+        @DisplayName("assert then retract: both land on the stored spelling")
+        void assertThenRetract_landOnStoredSpelling() {
+            seed(312L, "works_for(alice, acme)");
+
+            controller.assertFact(new AssertRequest("worksFor(bob, acme)", 0.9, 312L, null, "test", null));
+            ResponseEntity<RetractResponse> resp = controller.retractFact(
+                    new RetractRequest(312L, "WORKS_FOR(bob,acme)", null));
+
+            assertEquals("RETRACTED", resp.getBody().status());
+            assertEquals("works_for(bob, acme)", resp.getBody().atomKey());
+            assertTrue(groundingService.getState(312L).factStore().factFor("works_for(bob, acme)").isEmpty());
+        }
+
+        @Test
+        @DisplayName("claim: a camelCase predicate is assessed under the stored spelling")
+        void claim_camelCasePredicate_usesStoredSpelling() {
+            seed(313L, "works_for(alice, acme)");
+
+            ResponseEntity<ClaimResponse> resp = controller.assessClaim(
+                    new ClaimRequest("alice", "worksFor", "acme", 313L, null));
+
+            assertEquals("works_for(alice, acme)", resp.getBody().claimAtom());
         }
     }
 }

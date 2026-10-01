@@ -16,6 +16,8 @@
 
 package ai.kompile.app.mcp;
 
+import ai.kompile.app.mcp.SpringMvcSseServerTransport.DuplicateRequestIdException;
+import ai.kompile.app.mcp.SpringMvcSseServerTransport.UnknownSessionException;
 import ai.kompile.app.services.mcp.ScopedMcpCapabilityService;
 import ai.kompile.app.services.mcp.ScopedMcpCapabilityService.ScopeUnavailableException;
 
@@ -29,6 +31,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -46,9 +49,11 @@ import java.nio.charset.StandardCharsets;
  *    - POST /mcp/message - Receives JSON-RPC messages from clients
  *
  * 2. Streamable HTTP Transport (protocol version 2025-03-26):
- *    - POST /mcp/sse - Handles JSON-RPC messages directly, responds with SSE stream
+ *    - POST /mcp/sse - An initialize request starts a session (Mcp-Session-Id response header);
+ *      every other request gets its own SSE stream carrying its response; notifications and
+ *      responses are answered with 202 Accepted
+ *    - GET /mcp/sse with Mcp-Session-Id - Opens a stream for server requests and notifications
  *    - DELETE /mcp/sse - Terminates sessions
- *    - Uses Mcp-Session-Id header for session management
  *
  * The SSE connection sends two types of events:
  * - "endpoint" event: Contains the URL where the client should POST messages (SSE transport only)
@@ -73,23 +78,36 @@ public class McpSseController {
     }
 
     /**
-     * SSE endpoint for establishing MCP connections (GET - SSE Transport).
+     * SSE endpoint (GET).
      *
-     * When a client connects, they receive an "endpoint" event containing
-     * the URL where they should POST JSON-RPC messages.
+     * Without a session header this starts an SSE-transport session: the client receives an
+     * "endpoint" event containing the URL where it should POST JSON-RPC messages. With the
+     * Mcp-Session-Id header of a Streamable HTTP session it opens that session's server stream.
      *
      * @return SseEmitter for the SSE connection
      */
     @GetMapping(path = "/sse", produces = {MediaType.TEXT_EVENT_STREAM_VALUE, MediaType.ALL_VALUE})
-    public SseEmitter connectSse(@RequestHeader(value = "Accept", required = false) String acceptHeader) {
+    public SseEmitter connectSse(
+            @RequestHeader(value = "Accept", required = false) String acceptHeader,
+            @RequestHeader(value = "Mcp-Session-Id", required = false) String sessionId) {
+        if (sessionId != null && !sessionId.isBlank()) {
+            try {
+                return transport.openStreamableHttpStream(sessionId);
+            } catch (UnknownSessionException unknown) {
+                log.warn("Server stream requested for unknown MCP session: {}", sessionId);
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Unknown MCP session");
+            } catch (IllegalStateException closing) {
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "MCP transport is unavailable");
+            }
+        }
         log.info("New MCP SSE connection request (Accept: {})", acceptHeader);
         try {
             SseEmitter emitter = transport.createConnection();
             log.info("MCP SSE connection established. Active sessions: {}", transport.getSessionCount());
             return emitter;
-        } catch (Exception e) {
-            log.error("Failed to create MCP SSE connection", e);
-            throw e;
+        } catch (IllegalStateException closing) {
+            log.warn("Refused an MCP SSE connection: {}", closing.getMessage());
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "MCP transport is unavailable");
         }
     }
 
@@ -104,14 +122,11 @@ public class McpSseController {
                     ? scopedCapabilities.connect(capability)
                     : scopedCapabilities.openStream(capability, sessionId);
         } catch (ScopeUnavailableException unavailable) {
-            throw new org.springframework.web.server.ResponseStatusException(
-                    HttpStatus.NOT_FOUND, "Scoped MCP capability is unavailable");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Scoped MCP capability is unavailable");
         } catch (IllegalArgumentException missing) {
-            throw new org.springframework.web.server.ResponseStatusException(
-                    HttpStatus.NOT_FOUND, "Scoped MCP session is unavailable");
-        } catch (IllegalStateException duplicate) {
-            throw new org.springframework.web.server.ResponseStatusException(
-                    HttpStatus.CONFLICT, "Scoped MCP common stream is already open");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Scoped MCP session is unavailable");
+        } catch (IllegalStateException revoked) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Scoped MCP capability is unavailable");
         }
     }
 
@@ -119,43 +134,55 @@ public class McpSseController {
      * Streamable HTTP endpoint for MCP (POST - Streamable HTTP Transport).
      *
      * This endpoint implements the MCP Streamable HTTP transport (protocol version 2025-03-26).
-     * It handles JSON-RPC messages directly via POST and responds with an SSE stream.
      *
      * Session management:
-     * - On initialize request: Creates a new session and returns Mcp-Session-Id header
-     * - On subsequent requests: Requires Mcp-Session-Id header to identify the session
+     * - An initialize request always creates a new session and returns the Mcp-Session-Id header
+     * - Every other message requires the Mcp-Session-Id header of a live session (404 otherwise)
      *
      * @param sessionId Optional session ID from Mcp-Session-Id header
      * @param request The HTTP request containing the JSON-RPC message body
      * @param response The HTTP response for setting headers
-     * @return SseEmitter for streaming responses
+     * @return the request's SSE response stream, or 202 Accepted for a notification or a response
      */
     @PostMapping(path = "/sse", produces = {MediaType.TEXT_EVENT_STREAM_VALUE, MediaType.ALL_VALUE})
-    public SseEmitter handleStreamableHttp(
+    public Object handleStreamableHttp(
             @RequestHeader(value = "Mcp-Session-Id", required = false) String sessionId,
             HttpServletRequest request,
             HttpServletResponse response) {
 
         String body = readRequestBody(request);
 
-        log.info("Streamable HTTP request (Session: {}): {}",
+        log.debug("Streamable HTTP request (Session: {}): {}",
                 sessionId,
                 body.length() > 200 ? body.substring(0, 200) + "..." : body);
 
-        // Check if this is an initialize request (no session yet)
-        boolean isInitialize = body.contains("\"method\"") && body.contains("\"initialize\"");
-
-        if (isInitialize || sessionId == null) {
-            log.info("Creating new Streamable HTTP session");
-            SpringMvcSseServerTransport.StreamableHttpResult result = transport.createStreamableHttpConnection(body);
-            response.setHeader("Mcp-Session-Id", result.sessionId());
-            return result.emitter();
-        } else {
-            if (!transport.hasSession(sessionId)) {
-                log.warn("Streamable HTTP message for unknown session: {}", sessionId);
-                throw new RuntimeException("Unknown session: " + sessionId);
+        try {
+            if (transport.isInitializeRequest(body)) {
+                // Always a new session: a stale session header must not block re-initialization.
+                SpringMvcSseServerTransport.StreamableHttpResult result =
+                        transport.createStreamableHttpConnection(body);
+                response.setHeader("Mcp-Session-Id", result.sessionId());
+                log.info("Created Streamable HTTP session {}. Active sessions: {}",
+                        result.sessionId(), transport.getSessionCount());
+                return result.emitter();
             }
-            return transport.handleStreamableHttpMessage(sessionId, body);
+            if (sessionId == null || sessionId.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Mcp-Session-Id header is required");
+            }
+            SseEmitter stream = transport.handleStreamableHttpMessage(sessionId, body);
+            return stream != null ? stream : ResponseEntity.accepted().build();
+        } catch (UnknownSessionException unknown) {
+            log.warn("Streamable HTTP message for unknown session: {}", sessionId);
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Unknown MCP session");
+        } catch (DuplicateRequestIdException duplicate) {
+            log.warn("Refused a Streamable HTTP request on session {}: {}", sessionId, duplicate.getMessage());
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "MCP request id is already in flight");
+        } catch (IllegalArgumentException invalid) {
+            log.warn("Rejected an invalid Streamable HTTP message on session {}: {}", sessionId, invalid.getMessage());
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid MCP JSON-RPC message");
+        } catch (IllegalStateException unavailable) {
+            log.warn("Refused a Streamable HTTP message on session {}: {}", sessionId, unavailable.getMessage());
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "MCP transport is unavailable");
         }
     }
 
@@ -177,27 +204,20 @@ public class McpSseController {
                 return result.emitter();
             }
             if (sessionId == null) {
-                throw new org.springframework.web.server.ResponseStatusException(
-                        HttpStatus.BAD_REQUEST, "Scoped MCP session id is required");
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Scoped MCP session id is required");
             }
-            if (!scopedCapabilities.hasSession(capability, sessionId)) {
-                throw new org.springframework.web.server.ResponseStatusException(
-                        HttpStatus.NOT_FOUND, "Scoped MCP session is unavailable");
-            }
-            if (scopedCapabilities.isNotificationMessage(body)) {
-                scopedCapabilities.handleStreamableMessage(capability, sessionId, body);
-                return ResponseEntity.accepted().build();
-            }
-            return scopedCapabilities.handleStreamableMessage(capability, sessionId, body);
+            SseEmitter stream = scopedCapabilities.handleStreamableMessage(capability, sessionId, body);
+            return stream != null ? stream : ResponseEntity.accepted().build();
         } catch (ScopeUnavailableException unavailable) {
-            throw new org.springframework.web.server.ResponseStatusException(
-                    HttpStatus.NOT_FOUND, "Scoped MCP capability is unavailable");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Scoped MCP capability is unavailable");
+        } catch (UnknownSessionException missing) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Scoped MCP session is unavailable");
+        } catch (DuplicateRequestIdException duplicate) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Scoped MCP request id is already in flight");
         } catch (IllegalArgumentException invalid) {
-            throw new org.springframework.web.server.ResponseStatusException(
-                    HttpStatus.BAD_REQUEST, "Invalid scoped MCP request");
-        } catch (IllegalStateException concurrent) {
-            throw new org.springframework.web.server.ResponseStatusException(
-                    HttpStatus.CONFLICT, "Scoped MCP session already has an in-flight request");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid scoped MCP request");
+        } catch (IllegalStateException revoked) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Scoped MCP capability is unavailable");
         }
     }
 
@@ -206,7 +226,8 @@ public class McpSseController {
      *
      * @param sessionId The session ID from the SSE connection
      * @param request The HTTP request containing the JSON-RPC message body
-     * @return ResponseEntity indicating success or error
+     * @return 202 Accepted (the reply arrives on the SSE stream), 404 for an unknown session,
+     *         400 for a body that is not a single JSON-RPC message
      */
     @PostMapping(path = "/message")
     public ResponseEntity<Void> handleMessage(
@@ -219,27 +240,32 @@ public class McpSseController {
                 sessionId,
                 body.length() > 200 ? body.substring(0, 200) + "..." : body);
 
-        if (!transport.hasSession(sessionId)) {
-            log.warn("Message received for unknown session: {}", sessionId);
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        }
-
+        Mono<Void> result;
         try {
-            Mono<Void> result = transport.handleMessage(sessionId, body);
-            // Return 202 immediately; MCP responses are delivered asynchronously
-            // over the already-open SSE stream. Blocking here can deadlock when
-            // the session handler waits for the outbound emitter write.
-            result.subscribeOn(Schedulers.boundedElastic()).subscribe(
-                    unused -> { },
-                    error -> log.error("Error handling MCP message for session {}: {}", sessionId, error.getMessage(), error),
-                    () -> log.info("MCP message processing completed for session {}", sessionId)
-            );
-            log.info("MCP message accepted for asynchronous processing, session {}", sessionId);
-            return ResponseEntity.accepted().build();
-        } catch (Exception e) {
+            result = transport.handleMessage(sessionId, body);
+        } catch (UnknownSessionException unknown) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        } catch (IllegalArgumentException invalid) {
+            log.warn("Rejected an invalid MCP message for session {}: {}", sessionId, invalid.getMessage());
+            return ResponseEntity.badRequest().build();
+        } catch (IllegalStateException unavailable) {
+            log.warn("Refused an MCP message for session {}: {}", sessionId, unavailable.getMessage());
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+        } catch (RuntimeException e) {
             log.error("Error handling MCP message for session {}: {}", sessionId, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
+
+        // Return 202 immediately; MCP responses are delivered asynchronously
+        // over the already-open SSE stream. Blocking here can deadlock when
+        // the session handler waits for the outbound emitter write.
+        result.subscribeOn(Schedulers.boundedElastic()).subscribe(
+                unused -> { },
+                error -> log.error("Error handling MCP message for session {}: {}", sessionId, error.getMessage(), error),
+                () -> log.info("MCP message processing completed for session {}", sessionId)
+        );
+        log.info("MCP message accepted for asynchronous processing, session {}", sessionId);
+        return ResponseEntity.accepted().build();
     }
 
     /** Receive an SSE-transport message for one short-lived bearer capability. */
@@ -250,15 +276,16 @@ public class McpSseController {
             HttpServletRequest request) {
         String body = readRequestBody(request, ScopedMcpCapabilityService.MAX_SCHEMA_BYTES * 8);
         try {
-            if (!scopedCapabilities.hasSession(capability, sessionId)) {
-                return ResponseEntity.notFound().build();
-            }
             scopedCapabilities.handleMessage(capability, sessionId, body)
                     .subscribeOn(Schedulers.boundedElastic()).subscribe(
                             unused -> { },
                             error -> log.warn("Scoped MCP message processing failed"));
             return ResponseEntity.accepted().build();
-        } catch (ScopeUnavailableException unavailable) {
+        } catch (ScopeUnavailableException | UnknownSessionException unavailable) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalArgumentException invalid) {
+            return ResponseEntity.badRequest().build();
+        } catch (IllegalStateException revoked) {
             return ResponseEntity.notFound().build();
         }
     }
@@ -335,7 +362,7 @@ public class McpSseController {
      */
     public record McpStatus(boolean enabled, int activeSessions, String message) {}
 
-    private static final int MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+    static final int MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
     private String readRequestBody(HttpServletRequest request) {
         return readRequestBody(request, MAX_REQUEST_BODY_BYTES);
@@ -344,16 +371,18 @@ public class McpSseController {
     private String readRequestBody(HttpServletRequest request, int maximumBytes) {
         try {
             if (request.getContentLengthLong() > maximumBytes) {
-                throw new RuntimeException("Request body exceeds " + maximumBytes + " byte limit");
+                throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                        "Request body exceeds " + maximumBytes + " byte limit");
             }
             byte[] body = request.getInputStream().readNBytes(maximumBytes + 1);
             if (body.length > maximumBytes) {
-                throw new RuntimeException("Request body exceeds " + maximumBytes + " byte limit");
+                throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                        "Request body exceeds " + maximumBytes + " byte limit");
             }
             return new String(body, StandardCharsets.UTF_8);
         } catch (IOException e) {
-            log.error("Failed to read request body", e);
-            throw new RuntimeException("Failed to read request body", e);
+            log.warn("Failed to read MCP request body: {}", e.getMessage());
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Failed to read request body");
         }
     }
 }

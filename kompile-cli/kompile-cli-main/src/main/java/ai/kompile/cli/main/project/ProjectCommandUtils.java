@@ -62,6 +62,26 @@ final class ProjectCommandUtils {
         return null;
     }
 
+    /**
+     * The detail a failure report shows for {@code error}. Errors such as
+     * {@code ExceptionInInitializerError} carry no message of their own, so report the error type
+     * and its root cause rather than {@code null}.
+     */
+    static String failureDetail(Throwable error) {
+        if (error.getMessage() != null && !error.getMessage().isBlank()) {
+            return error.getMessage();
+        }
+        Throwable root = error;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        if (root == error) {
+            return error.getClass().getSimpleName();
+        }
+        return error.getClass().getSimpleName() + " caused by " + root.getClass().getSimpleName()
+                + (root.getMessage() == null ? "" : ": " + root.getMessage());
+    }
+
     static boolean hasTag(List<String> tags, String expectedTag) {
         if (tags == null) {
             return false;

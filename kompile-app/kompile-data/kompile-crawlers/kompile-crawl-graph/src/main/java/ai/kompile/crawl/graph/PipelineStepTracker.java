@@ -334,10 +334,7 @@ class PipelineStepTracker {
     }
 
     String normalizeStepId(String phase) {
-        if ("EMBEDDING".equals(phase) || "INDEXING".equals(phase)) {
-            return "VECTOR_INDEXING";
-        }
-        return phase != null ? phase : "UNKNOWN";
+        return phase != null ? CrawlPipelineStepRegistry.canonicalStepId(phase) : "UNKNOWN";
     }
 
     String stepDisplayName(String phase) {

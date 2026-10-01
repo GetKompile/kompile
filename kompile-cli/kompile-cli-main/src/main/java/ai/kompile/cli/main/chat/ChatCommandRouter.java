@@ -26,9 +26,9 @@ import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
-import ai.kompile.core.llm.ModelContextWindows;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard;
+import ai.kompile.cli.main.chat.exec.ChatAttachmentLoader;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
@@ -51,6 +51,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -2162,18 +2163,18 @@ public class ChatCommandRouter {
             return;
         }
 
-        warnWhenModelLacksVision();
-
         Path filePath = resolveAttachmentPath(pathStr);
         if (filePath == null) return;
 
-        String mime = detectImageMimeType(filePath);
-        if (mime == null) {
-            System.out.println(renderer.yellow("  ⚠ Could not detect image type for: " + filePath.getFileName()));
+        String mime = attachableMimeType(filePath);
+        if (mime == null) return;
+        if (!ChatAttachmentLoader.IMAGE_MIME_TYPES.contains(mime)) {
+            System.out.println(renderer.yellow("  ⚠ Not a supported image type: " + filePath.getFileName()));
             System.out.println(renderer.dim("    Supported formats: PNG, JPEG, GIF, WebP"));
             return;
         }
 
+        warnWhenModelLacksVision();
         pendingAttachments.add(new ChatRepl.PendingAttachment(filePath, mime, true));
         System.out.println(renderer.green("  ✓ Image attached: ") + renderer.cyan(filePath.getFileName().toString()));
         System.out.println(renderer.dim("    Type: " + mime + ", Size: " + formatFileSize(filePath)));
@@ -2184,28 +2185,19 @@ public class ChatCommandRouter {
         if (pathStr.isBlank()) {
             System.out.println("Usage: /file <path>");
             System.out.println("Attach a file to the next message.");
-            System.out.println("Images are sent as vision inputs; text files are inlined.");
+            System.out.println("Images are sent as vision inputs; text files are inlined; other files are passed by path.");
             return;
         }
 
         Path filePath = resolveAttachmentPath(pathStr);
         if (filePath == null) return;
 
-        String mime = detectImageMimeType(filePath);
-        boolean isImage = (mime != null);
+        String mime = attachableMimeType(filePath);
+        if (mime == null) return;
+        boolean isImage = ChatAttachmentLoader.IMAGE_MIME_TYPES.contains(mime);
 
         if (isImage) {
             warnWhenModelLacksVision();
-        }
-
-        if (!isImage) {
-            // Determine mime for text files
-            String ext = getFileExtension(filePath).toLowerCase();
-            if (ChatRepl.TEXT_EXTENSIONS.contains(ext)) {
-                mime = "text/plain";
-            } else {
-                mime = "application/octet-stream";
-            }
         }
 
         pendingAttachments.add(new ChatRepl.PendingAttachment(filePath, mime, isImage));
@@ -2235,23 +2227,26 @@ public class ChatCommandRouter {
 
     // Attachment helper utilities
 
-    /**
-     * Provider/model-scoped vision warning shared by /image, /file, and clipboard paste.
-     * Known text-only models warn up front; unknown models stay silent — the provider's
-     * API error surfaces on send, and guessing would block valid custom models.
-     */
     private void warnWhenModelLacksVision() {
-        ChatConfig chatConfig = repl.getChatConfig();
-        if (chatConfig == null) return;
-        String model = chatConfig.getModel();
-        if (model == null || model.isBlank()) return;
-        Optional<Boolean> vision = ModelContextWindows.supportsVision(
-                chatConfig.getProvider(), model);
-        if (vision.isPresent() && !vision.get()) {
-            System.out.println(renderer.yellow(
-                    "  ⚠ Model '" + model + "' is text-only — image attachments will be rejected by the API."));
+        if (repl == null || repl.getChatConfig() == null) return;
+        textOnlyModelWarning(agenticLoop).ifPresent(warning -> {
+            System.out.println(renderer.yellow("  ⚠ " + warning));
             System.out.println(renderer.dim("    Switch with /model, or drop the image and describe it instead."));
-        }
+        });
+    }
+
+    /**
+     * Vision warning shared by every way an image joins a message: /image, /file, a
+     * Ctrl+V chip and a bare image path. It asks the source a turn uses: the serving
+     * status for a staged local model, else the catalogs. Known text-only models warn up
+     * front; unknown models stay silent — the provider's error surfaces on send, and
+     * guessing would block valid custom models.
+     */
+    static Optional<String> textOnlyModelWarning(AgenticChatLoop loop) {
+        if (loop == null) return Optional.empty();
+        Optional<Boolean> vision = loop.imageInputSupport();
+        if (vision.isEmpty() || vision.get()) return Optional.empty();
+        return Optional.of("Model '" + loop.activeModel() + "' is text-only — it will reject image attachments.");
     }
 
     Path resolveAttachmentPath(String pathStr) {
@@ -2270,23 +2265,21 @@ public class ChatCommandRouter {
         return filePath;
     }
 
-    static String detectImageMimeType(Path path) {
-        String ext = getFileExtension(path).toLowerCase();
-        return switch (ext) {
-            case "png" -> "image/png";
-            case "jpg", "jpeg" -> "image/jpeg";
-            case "gif" -> "image/gif";
-            case "webp" -> "image/webp";
-            case "bmp" -> "image/bmp";
-            case "svg" -> "image/svg+xml";
-            default -> null;
-        };
+    /**
+     * The type the gate a headless {@code --attachment} applies gives a file, or null after
+     * printing why it refused the file (over 5 MiB, or an image type no route carries).
+     */
+    private String attachableMimeType(Path filePath) {
+        try {
+            return ChatAttachmentLoader.attachableMimeType(filePath);
+        } catch (IOException e) {
+            System.out.println(renderer.yellow("  ⚠ " + e.getMessage()));
+            return null;
+        }
     }
 
-    static String getFileExtension(Path path) {
-        String name = path.getFileName().toString();
-        int dot = name.lastIndexOf('.');
-        return dot >= 0 ? name.substring(dot + 1) : "";
+    static String detectImageMimeType(Path path) {
+        return ChatAttachmentLoader.imageMimeType(path);
     }
 
     static String formatFileSize(Path path) {
@@ -2629,15 +2622,12 @@ public class ChatCommandRouter {
             if (chatConfig != null) {
                 statusMap.put("Provider", chatConfig.getProvider());
                 statusMap.put("Model", chatConfig.getModel());
-                String model = chatConfig.getModel();
-                boolean vision = ModelContextWindows.supportsVision(chatConfig.getProvider(), model)
-                        .orElse(false);
-                // Before the first turn only the catalog number is known; once the loop
-                // has run, its budget also covers staged local models via the staging probe.
-                int ctx = agenticLoop.conversationEntryCount() > 0
-                        ? agenticLoop.contextWindowTokens()
-                        : ModelContextWindows.getContextWindow(chatConfig.getProvider(), model);
-                statusMap.put("Vision", vision ? renderer.green("supported") : renderer.dim("not supported"));
+                // Resolved the way a turn resolves them: the serving status for a staged
+                // local model, else the catalogs.
+                Optional<Boolean> vision = agenticLoop.imageInputSupport();
+                int ctx = agenticLoop.resolvedContextWindowTokens();
+                statusMap.put("Vision", vision.isEmpty() ? renderer.dim("unknown")
+                        : vision.get() ? renderer.green("supported") : renderer.dim("not supported"));
                 statusMap.put("Context window", String.format("%,d tokens", ctx));
                 // Kompile's history does not describe a Claude Code session: the
                 // session holds tool output the history never sees, and Claude Code

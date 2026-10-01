@@ -19,6 +19,7 @@ package ai.kompile.app.services.enforcer;
 import ai.kompile.app.services.agent.AgentChatService;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.app.services.agent.AgentRegistryService;
+import ai.kompile.app.services.agent.AgentSubprocessExecutor;
 import ai.kompile.app.services.agent.ClaudeStreamParser;
 import ai.kompile.core.agent.AgentProvider;
 import jakarta.annotation.PreDestroy;
@@ -130,15 +131,23 @@ public class EnforcerSessionManager {
                 workingDirectory != null ? workingDirectory : System.getProperty("user.dir"),
                 codingProjectId);
 
+        AgentSubprocessExecutor.PreparedCommand prepared = null;
+        boolean started = false;
         try {
-            List<String> command = agentChatService.buildInteractiveCommand(
+            prepared = agentChatService.prepareInteractiveCommand(
                     agent, skipPermissions, injectMcpTools, null);
+            List<String> command = prepared.command();
 
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(new File(state.getWorkingDirectory()));
             pb.redirectErrorStream(true);
+            pb.environment().putAll(agent.safeEnvironment());
+            prepared.applyEnvironment(pb.environment());
 
             Process process = pb.start();
+            started = true;
+            AgentSubprocessExecutor.PreparedCommand launch = prepared;
+            process.onExit().whenComplete((exited, failure) -> launch.close());
 
             Thread readerThread = new Thread(
                     () -> readProcessOutput(sessionId, process),
@@ -158,6 +167,10 @@ public class EnforcerSessionManager {
             return state;
         } catch (IOException e) {
             throw new RuntimeException("Failed to start enforcer session: " + e.getMessage(), e);
+        } finally {
+            if (!started && prepared != null) {
+                prepared.close();
+            }
         }
     }
 

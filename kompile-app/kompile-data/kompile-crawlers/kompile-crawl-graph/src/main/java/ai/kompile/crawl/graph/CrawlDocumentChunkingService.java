@@ -53,17 +53,17 @@ class CrawlDocumentChunkingService {
     // ── Dependencies ────────────────────────────────────────────────────────
 
     @Autowired(required = false)
-    private List<TextChunker> textChunkers;
+    List<TextChunker> textChunkers;
 
     /** Project defaults emitted by {@code kompile project init}; request/source settings override. */
     @Value("${kompile.chunker.type:}")
-    private String projectChunkerName = "";
+    String projectChunkerName = "";
 
     @Value("${kompile.chunker.chunkSize:0}")
-    private int projectChunkSize;
+    int projectChunkSize;
 
     @Value("${kompile.chunker.chunkOverlap:-1}")
-    private int projectChunkOverlap = -1;
+    int projectChunkOverlap = -1;
 
     private final CrawlBatchPlanner batchPlanner;
     private final PipelineStepTracker pipelineStepTracker;

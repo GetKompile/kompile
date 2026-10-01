@@ -9,6 +9,8 @@
  */
 package ai.kompile.cli.main.chat.tools.grounding;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -21,6 +23,7 @@ import org.springframework.http.converter.FormHttpMessageConverter;
 import org.springframework.http.converter.StringHttpMessageConverter;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.charset.StandardCharsets;
@@ -42,8 +45,15 @@ import java.util.List;
  *
  * <p>{@link #isAvailable()} returns {@code true} only when a non-blank base URL was
  * supplied at construction time — no port probing, no global static state.</p>
+ *
+ * <p>An HTTP error status is a value, not an exception: every method returns the status
+ * and the server's body for 4xx/5xx exactly as for 2xx, so a tool can put the server's own
+ * explanation in front of the model. Only transport failures (refused connection, timeout)
+ * throw.</p>
  */
 class GroundingBackendClient {
+
+    private static final ObjectMapper ERROR_MAPPER = new ObjectMapper();
 
     private final String baseUrl;
     private final RestTemplate restTemplate;
@@ -82,17 +92,11 @@ class GroundingBackendClient {
      *
      * @param path     API path, e.g. {@code /api/kb-grounding/verify}
      * @param jsonBody serialised JSON request body
-     * @return the status code and response body
+     * @return the status code and response body, error statuses included
      * @throws org.springframework.web.client.RestClientException on transport errors
      */
     GroundingResponse post(String path, String jsonBody) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-        ResponseEntity<String> resp = restTemplate.postForEntity(
-                baseUrl + path, new HttpEntity<>(jsonBody, headers), String.class);
-        return new GroundingResponse(resp.getStatusCode().value(),
-                resp.getBody() != null ? resp.getBody() : "");
+        return exchange(restTemplate, HttpMethod.POST, path, jsonEntity(jsonBody));
     }
 
     /**
@@ -106,7 +110,7 @@ class GroundingBackendClient {
      * @param path        API path, e.g. {@code /api/unified-crawl/single-source}
      * @param jsonBody    serialised JSON request body
      * @param readTimeout per-call read timeout; connect timeout is always 5 000 ms
-     * @return the status code and response body
+     * @return the status code and response body, error statuses included
      * @throws org.springframework.web.client.RestClientException on transport errors
      */
     GroundingResponse post(String path, String jsonBody, Duration readTimeout) {
@@ -119,13 +123,7 @@ class GroundingBackendClient {
             factory.setReadTimeout((int) readTimeout.toMillis());
             rt = createNativeSafeRestTemplate(factory);
         }
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-        ResponseEntity<String> resp = rt.postForEntity(
-                baseUrl + path, new HttpEntity<>(jsonBody, headers), String.class);
-        return new GroundingResponse(resp.getStatusCode().value(),
-                resp.getBody() != null ? resp.getBody() : "");
+        return exchange(rt, HttpMethod.POST, path, jsonEntity(jsonBody));
     }
 
     /**
@@ -135,7 +133,7 @@ class GroundingBackendClient {
      * @param path        API path, e.g. {@code /api/graph/unified/import}
      * @param file        the file to upload under the {@code file} part
      * @param factSheetId optional {@code factSheetId} form field (null to omit)
-     * @return the status code and response body
+     * @return the status code and response body, error statuses included
      * @throws org.springframework.web.client.RestClientException on transport errors
      */
     GroundingResponse postMultipartFile(
@@ -150,10 +148,7 @@ class GroundingBackendClient {
         if (requireManaged) {
             body.add("requireManaged", "true");
         }
-        ResponseEntity<String> resp = restTemplate.postForEntity(
-                baseUrl + path, new HttpEntity<>(body, headers), String.class);
-        return new GroundingResponse(resp.getStatusCode().value(),
-                resp.getBody() != null ? resp.getBody() : "");
+        return exchange(restTemplate, HttpMethod.POST, path, new HttpEntity<>(body, headers));
     }
 
     /**
@@ -163,26 +158,20 @@ class GroundingBackendClient {
      * (e.g. {@code /api/mebn/query?nodeId=n1&maxDepth=3}).</p>
      *
      * @param path API path with any query parameters already appended
-     * @return the status code and response body
+     * @return the status code and response body, error statuses included
      * @throws org.springframework.web.client.RestClientException on transport errors
      */
     GroundingResponse get(String path) {
         HttpHeaders headers = new HttpHeaders();
         headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-        ResponseEntity<String> resp = restTemplate.exchange(
-                baseUrl + path, HttpMethod.GET, new HttpEntity<>(headers), String.class);
-        return new GroundingResponse(resp.getStatusCode().value(),
-                resp.getBody() != null ? resp.getBody() : "");
+        return exchange(restTemplate, HttpMethod.GET, path, new HttpEntity<>(headers));
     }
 
     /** DELETE {@code baseUrl + path}, preserving the response for tool-led destructive controls. */
     GroundingResponse delete(String path) {
         HttpHeaders headers = new HttpHeaders();
         headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-        ResponseEntity<String> resp = restTemplate.exchange(
-                baseUrl + path, HttpMethod.DELETE, new HttpEntity<>(headers), String.class);
-        return new GroundingResponse(resp.getStatusCode().value(),
-                resp.getBody() != null ? resp.getBody() : "");
+        return exchange(restTemplate, HttpMethod.DELETE, path, new HttpEntity<>(headers));
     }
 
     /**
@@ -194,12 +183,57 @@ class GroundingBackendClient {
      * (e.g. {@code /api/graph/unified/export?factSheetId=42}).</p>
      *
      * @param path API path with any query parameters already appended
-     * @return the response body bytes, or an empty array if the body was null
-     * @throws org.springframework.web.client.RestClientException on transport errors or non-2xx status
+     * @return the status code and body bytes (empty when the body was null); on an error
+     *         status the bytes are the server's error body, never content
+     * @throws org.springframework.web.client.RestClientException on transport errors
      */
-    byte[] getBytes(String path) {
-        ResponseEntity<byte[]> resp = restTemplate.getForEntity(baseUrl + path, byte[].class);
-        return resp.getBody() != null ? resp.getBody() : new byte[0];
+    BinaryResponse getBytes(String path) {
+        try {
+            ResponseEntity<byte[]> resp = restTemplate.getForEntity(baseUrl + path, byte[].class);
+            return new BinaryResponse(resp.getStatusCode().value(),
+                    resp.getBody() != null ? resp.getBody() : new byte[0]);
+        } catch (RestClientResponseException e) {
+            return new BinaryResponse(e.getStatusCode().value(), e.getResponseBodyAsByteArray());
+        }
+    }
+
+    /**
+     * The server's own explanation in an error body: its {@code message}, else its
+     * {@code error}, else the body itself cut to 200 characters.
+     */
+    static String errorMessage(String body) {
+        if (body == null || body.isBlank()) return "";
+        try {
+            JsonNode json = ERROR_MAPPER.readTree(body);
+            String msg = json.path("message").asText(null);
+            if (msg != null && !msg.isBlank()) return msg;
+            msg = json.path("error").asText(null);
+            if (msg != null && !msg.isBlank()) return msg;
+        } catch (Exception ignored) {
+            // Not JSON: report the body as sent.
+        }
+        return body.length() > 200 ? body.substring(0, 200) + "..." : body;
+    }
+
+    private GroundingResponse exchange(RestTemplate rt, HttpMethod method, String path, HttpEntity<?> entity) {
+        try {
+            ResponseEntity<String> resp = rt.exchange(baseUrl + path, method, entity, String.class);
+            return new GroundingResponse(resp.getStatusCode().value(),
+                    resp.getBody() != null ? resp.getBody() : "");
+        } catch (RestClientResponseException e) {
+            // Spring's default error handler turns 4xx/5xx into exceptions. The status and body
+            // are the answer here; the body is read as UTF-8 because JSON error responses carry
+            // no charset and Spring's fallback is ISO-8859-1.
+            return new GroundingResponse(e.getStatusCode().value(),
+                    e.getResponseBodyAsString(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static HttpEntity<String> jsonEntity(String jsonBody) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+        return new HttpEntity<>(jsonBody, headers);
     }
 
     /** Visible for testing — allows a {@code MockRestServiceServer} to bind. */
@@ -236,4 +270,15 @@ class GroundingBackendClient {
      * {@code java.net.http.HttpResponse}: status code and body string.
      */
     record GroundingResponse(int statusCode, String body) {}
+
+    /** Status code and raw body bytes of a binary download. */
+    record BinaryResponse(int statusCode, byte[] body) {
+        boolean successful() {
+            return statusCode >= 200 && statusCode < 300;
+        }
+
+        String bodyText() {
+            return new String(body, StandardCharsets.UTF_8);
+        }
+    }
 }

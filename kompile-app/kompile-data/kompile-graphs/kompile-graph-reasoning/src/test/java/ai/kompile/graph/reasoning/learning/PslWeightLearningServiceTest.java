@@ -21,6 +21,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -56,12 +57,19 @@ class PslWeightLearningServiceTest {
         assertFalse(saved.isEmpty(), "learned weights serialize to JSON and parse back");
 
         // Re-load the saved weights onto a FRESH program — the load counterpart to weightsToJson.
+        // The fresh program carries the default weights, so its rule displays differ from the
+        // saved keys; every rule must still take its learned weight.
+        List<PslRule> defaults = program().rules();
+        boolean moved = false;
+        for (int i = 0; i < learned.size(); i++) {
+            moved |= learned.get(i).weight() != defaults.get(i).weight();
+        }
+        assertTrue(moved, "learning moved at least one weight off its default, so the reload is observable");
         PslProgram warm = PslWeightLearningService.applyWeights(program(), saved);
-        for (PslRule r : warm.rules()) {
-            if (saved.containsKey(r.toString())) {
-                assertEquals(saved.get(r.toString()), r.weight(), 1e-9,
-                        "re-loaded weight round-trips exactly for " + r);
-            }
+        assertEquals(learned.size(), warm.rules().size());
+        for (int i = 0; i < learned.size(); i++) {
+            assertEquals(learned.get(i).weight(), warm.rules().get(i).weight(),
+                    "re-loaded weight round-trips exactly for " + learned.get(i));
         }
 
         // An incremental mini-batch update continues from the warm-started weights: structure is
@@ -119,6 +127,61 @@ class PslWeightLearningServiceTest {
             assertEquals(rule.weight(), parsed.get(rule.toString()), 1e-9,
                     "each learned weight survives the JSON round-trip");
         }
+    }
+
+    @Test
+    void applyWeights_findsARuleWhateverWeightItWasSavedWith() {
+        // A persisted key is the rule display at save time, weight prefix included, while the
+        // program it is re-applied to was rebuilt with its default weight.
+        PslRule propagation = program().rules().get(0);
+        PslRule learnedPropagation = new PslRule(2.5, propagation.hard(), propagation.squared(),
+                propagation.body(), propagation.head(), propagation.distinct());
+        assertNotEquals(propagation.toString(), learnedPropagation.toString());
+
+        PslProgram warm = PslWeightLearningService.applyWeights(program(),
+                Map.of(learnedPropagation.toString(), 2.5));
+
+        assertEquals(2.5, warm.rules().get(0).weight(), "the propagation rule takes its saved weight");
+        assertEquals(0.5, warm.rules().get(1).weight(), "a rule with no saved entry keeps its weight");
+    }
+
+    @Test
+    void applyWeights_matchesTheWholeStructure_notJustBodyAndHead() {
+        PslRule soft = program().rules().get(0);
+        PslRule hardTwin = PslRule.hard(soft.body(), soft.head());
+        PslProgram program = program().withRules(List.of(soft, program().rules().get(1), hardTwin));
+
+        // Same body and head with a linear hinge is a different rule: nothing changes.
+        PslRule linearTwin = new PslRule(4.0, false, false, soft.body(), soft.head(), soft.distinct());
+        PslProgram unchanged = PslWeightLearningService.applyWeights(program,
+                Map.of(linearTwin.toString(), 4.0));
+        assertEquals(displays(program), displays(unchanged));
+
+        // The soft rule's own entry re-weights it and leaves its hard twin a hard constraint.
+        PslRule reweighted = new PslRule(3.0, false, soft.squared(), soft.body(), soft.head(), soft.distinct());
+        PslProgram warm = PslWeightLearningService.applyWeights(program,
+                Map.of(reweighted.toString(), 3.0));
+        assertEquals(3.0, warm.rules().get(0).weight());
+        assertEquals(hardTwin.toString(), warm.rules().get(2).toString());
+        assertTrue(warm.rules().get(2).hard());
+    }
+
+    @Test
+    void withoutWeight_stripsOnlyANumericWeightPrefix() {
+        assertEquals("A(X) -> B(X) ^2", PslRule.withoutWeight("2.5: A(X) -> B(X) ^2"));
+        assertEquals("A(X) -> B(X) ^2", PslRule.withoutWeight("1.0E-4: A(X) -> B(X) ^2"),
+                "a small learned weight renders in exponent form");
+        assertEquals("A(X) -> B(X) .", PslRule.withoutWeight("A(X) -> B(X) ."),
+                "a hard rule has no weight prefix");
+        assertEquals("note: A(X) -> B(X) ^2", PslRule.withoutWeight("note: A(X) -> B(X) ^2"),
+                "text before ':' that is not a number belongs to the rule");
+        assertEquals(PslRule.parse("1.0: A(X) -> B(X) ^2").signature(),
+                PslRule.parse("7.25: A(X) -> B(X) ^2").signature(),
+                "the weight is not part of the signature");
+    }
+
+    private static List<String> displays(PslProgram program) {
+        return program.rules().stream().map(PslRule::toString).toList();
     }
 
     // ─── Phase 3: facts carry learned weights end-to-end ────────────────────────────

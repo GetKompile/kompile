@@ -13,7 +13,10 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -295,19 +298,108 @@ class DirectLlmClientContentBlockTest {
     }
 
     @Test
-    void unsupportedProtocolRejectsRatherThanDroppingAttachment() {
+    void localServingCarriesImagesOnTheUserMessageThatAttachedThem() throws Exception {
+        List<JsonNode> captured = new CopyOnWriteArrayList<>();
+        HttpServer server = startServingServer(captured);
+        try {
+            DirectLlmClient requestClient = localServingClient(server);
+            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+                    "/tmp/page.png", "image/png", true, "cGFnZQ==", null);
+            DirectLlmClient.AttachmentInput notes = new DirectLlmClient.AttachmentInput(
+                    "/tmp/notes.txt", "text/plain", false, null, "margin notes");
+
+            DirectLlmClient.StreamResult result = requestClient.streamChat(
+                    "Extract", "system", null, null, null, List.of(image, notes));
+
+            assertFalse(result.failed, result.text);
+            assertEquals("ok", result.text);
+            JsonNode request = captured.get(0).path("request");
+            assertTrue(request.path("images").isMissingNode(),
+                    "images ride on their message, not the request: " + request);
+            JsonNode messages = request.path("messages");
+            JsonNode user = messages.get(messages.size() - 1);
+            assertEquals("user", user.path("role").asText());
+            assertTrue(user.path("content").asText().contains("margin notes"), user.toString());
+            assertTrue(user.path("content").asText().endsWith("Extract"), user.toString());
+            assertEquals(1, user.path("images").size(), user.toString());
+            assertEquals("image/png", user.path("images").get(0).path("mimeType").asText());
+            assertEquals("cGFnZQ==", user.path("images").get(0).path("base64Data").asText());
+            assertTrue(user.path("images").get(0).path("path").isMissingNode(),
+                    "the serving Request type has no path field: " + user);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void localServingKeepsEarlierImagesWithinThePerRequestLimitNewestFirst() throws Exception {
+        List<JsonNode> captured = new CopyOnWriteArrayList<>();
+        HttpServer server = startServingServer(captured);
+        try {
+            DirectLlmClient requestClient = localServingClient(server);
+            assertFalse(requestClient.streamChat(
+                    "first", "system", null, null, null, images("first", 5)).failed);
+
+            DirectLlmClient.StreamResult second = requestClient.streamChat(
+                    "second", "system", null, null, null, images("second", 4));
+
+            assertFalse(second.failed, second.text);
+            JsonNode messages = captured.get(1).path("request").path("messages");
+            int sent = 0;
+            for (JsonNode message : messages) sent += message.path("images").size();
+            assertEquals(8, sent, messages.toString());
+            JsonNode firstTurn = messages.get(1);
+            assertEquals("user", firstTurn.path("role").asText());
+            assertTrue(firstTurn.path("content").asText()
+                            .startsWith("[Earlier image omitted: /tmp/first-0.png]\n"),
+                    firstTurn.toString());
+            assertEquals(4, firstTurn.path("images").size(), firstTurn.toString());
+            assertEquals("Zmlyc3QtMQ==", firstTurn.path("images").get(0).path("base64Data").asText());
+            assertEquals(4, messages.get(messages.size() - 1).path("images").size());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void localServingRefusesMoreImagesThanOneRequestCarries() {
         ChatConfig config = new ChatConfig(
                 "kompile-local", null, "local", "http://127.0.0.1:1");
         DirectLlmClient requestClient = new DirectLlmClient(config, mapper);
         requestClient.setOutputConsumer(ignored -> { });
-        DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
-                "page.png", "image/png", true, "cGFnZQ==", null);
 
         DirectLlmClient.StreamResult result = requestClient.streamChat(
-                "Extract", "", null, null, null, List.of(image));
+                "Extract", "", null, null, null, images("page", 9));
 
         assertTrue(result.failed);
-        assertTrue(result.text.contains("does not support structured attachments"), result.text);
+        assertTrue(result.text.contains("at most 8 images"), result.text);
+    }
+
+    @Test
+    void inputEstimateCountsAnInlineImageAsVisionTokensInEveryWireShape() {
+        String payload = "A".repeat(400_000);
+        ArrayNode serving = mapper.createArrayNode();
+        serving.addObject().put("role", "user").put("content", "look")
+                .putArray("images").addObject()
+                .put("mimeType", "image/png").put("base64Data", payload);
+        ArrayNode anthropic = mapper.createArrayNode();
+        anthropic.addObject().put("role", "user").putArray("content").addObject()
+                .put("type", "image").putObject("source")
+                .put("type", "base64").put("media_type", "image/png").put("data", payload);
+        ArrayNode openAi = mapper.createArrayNode();
+        openAi.addObject().put("role", "user").putArray("content").addObject()
+                .put("type", "image_url").putObject("image_url")
+                .put("url", "data:image/png;base64," + payload);
+        ArrayNode pi = mapper.createArrayNode();
+        pi.addObject().put("role", "user").putArray("content").addObject()
+                .put("type", "image").put("mimeType", "image/png").put("data", payload);
+
+        for (ArrayNode messages : List.of(serving, anthropic, openAi, pi)) {
+            long estimate = DirectLlmClient.estimateRequestInputTokens(messages, null);
+            assertTrue(estimate >= DirectLlmClient.IMAGE_TOKEN_ESTIMATE, messages.toString().substring(0, 120));
+            assertTrue(estimate < DirectLlmClient.IMAGE_TOKEN_ESTIMATE + 100,
+                    estimate + " for " + messages.toString().substring(0, 120));
+        }
     }
 
     @Test
@@ -567,6 +659,42 @@ class DirectLlmClientContentBlockTest {
         });
         server.start();
         return server;
+    }
+
+    /** A serving child's {@code /api/llm/chat}: records each request, answers "ok". */
+    private HttpServer startServingServer(List<JsonNode> captured) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/llm/chat", exchange -> {
+            captured.add(mapper.readTree(exchange.getRequestBody()));
+            byte[] bytes = "{\"content\":\"ok\",\"rawText\":\"ok\",\"finishReason\":\"stop\",\"toolCalls\":[]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream responseBody = exchange.getResponseBody()) {
+                responseBody.write(bytes);
+            }
+        });
+        server.start();
+        return server;
+    }
+
+    private DirectLlmClient localServingClient(HttpServer server) {
+        ChatConfig config = new ChatConfig("kompile-local", null, "local",
+                "http://127.0.0.1:" + server.getAddress().getPort());
+        DirectLlmClient localClient = new DirectLlmClient(config, mapper);
+        localClient.setOutputConsumer(ignored -> { });
+        return localClient;
+    }
+
+    /** {@code count} PNG attachments named {@code /tmp/<prefix>-<i>.png}, each carrying its name. */
+    private static List<DirectLlmClient.AttachmentInput> images(String prefix, int count) {
+        List<DirectLlmClient.AttachmentInput> images = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            images.add(new DirectLlmClient.AttachmentInput("/tmp/" + prefix + "-" + i + ".png",
+                    "image/png", true, Base64.getEncoder().encodeToString(
+                            (prefix + "-" + i).getBytes(StandardCharsets.UTF_8)), null));
+        }
+        return images;
     }
 
     private HttpServer startJsonServer(String path, int status, String body) throws IOException {

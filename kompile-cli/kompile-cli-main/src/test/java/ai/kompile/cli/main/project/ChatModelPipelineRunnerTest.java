@@ -6,16 +6,20 @@
 package ai.kompile.cli.main.project;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
+import ai.kompile.utils.NativeImageInfo;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -23,16 +27,26 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@TemporaryUserHome
 class ChatModelPipelineRunnerTest {
+    // Mirrors ai.kompile.utils.NativeImageInfo.IMAGE_CODE_PROPERTY, which is package-private to a
+    // different package. NativeImageInfo.isRunningInNativeImage() re-reads this property on every
+    // call, so setting it simulates native-image mode from an ordinary JVM test.
+    private static final String IMAGE_CODE_PROPERTY = "org.graalvm.nativeimage.imagecode";
+
     @TempDir
     Path tempDir;
 
@@ -219,6 +233,128 @@ class ChatModelPipelineRunnerTest {
                         tempDir, input, pipeline("text", Map.of()), "", null));
 
         assertTrue(failure.getMessage().contains("Use UNIFIED_PIPELINE"), failure.getMessage());
+    }
+
+    @Test
+    void nativeImagePdfPagesAreCountedAndRenderedByPoppler() throws Exception {
+        Assumptions.assumeTrue(onPath("pdfinfo") && onPath("pdftoppm"), "poppler-utils must be on PATH");
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = startOpenAiServer(requests, "native page batch");
+        try {
+            saveCustomChat(server, "vision-model");
+            Path input = tempDir.resolve("three-pages.pdf");
+            try (PDDocument pdf = new PDDocument()) {
+                for (int i = 0; i < 3; i++) pdf.addPage(new PDPage());
+                // pdfinfo prints the Title raw, so this plants a fake "Pages:" line ahead of the real one.
+                pdf.getDocumentInformation().setTitle("Injected\nPages:           99");
+                pdf.save(input.toFile());
+            }
+            LocalCrawlCapabilities.ResolvedPipeline pipeline = pipeline("pdf", Map.of(
+                    "pageRange", "2-3", "pageBatchSize", 2, "pdfRenderDpi", 72));
+
+            List<Map<String, Object>> progress = new ArrayList<>();
+            Map<String, Object> preview = inSimulatedNativeImage(
+                    () -> ChatModelPipelineRunner.previewSelection(tempDir, pipeline, input));
+            String result = inSimulatedNativeImage(
+                    () -> ChatModelPipelineRunner.extract(tempDir, input, pipeline, "", progress::add));
+
+            assertEquals(3, preview.get("totalPages"));
+            assertEquals("2-3", preview.get("selectedPageRange"));
+            assertTrue(result.contains("## Pages 2-3"), result);
+            assertEquals(1, requests.size(), "both selected pages should share the configured batch");
+            JsonNode content = userContent(requests.get(0));
+            assertTrue(content.toString().contains("original PDF page(s) 2-3 of 3"), content.toString());
+            int pages = 0;
+            for (JsonNode block : content) {
+                if (!"image_url".equals(block.path("type").asText())) continue;
+                String url = block.path("image_url").path("url").asText();
+                assertTrue(url.startsWith("data:image/png;base64,"), url);
+                BufferedImage page = ImageIO.read(new ByteArrayInputStream(
+                        Base64.getDecoder().decode(url.substring(url.indexOf(',') + 1))));
+                assertEquals(612, page.getWidth(), "US Letter at 72 dpi");
+                assertEquals(792, page.getHeight(), "US Letter at 72 dpi");
+                page.flush();
+                pages++;
+            }
+            assertEquals(2, pages, content.toString());
+            assertEquals(3, progress.get(progress.size() - 1).get("totalPages"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void nativeImageFailsAnUnreadablePdfInPopplerBeforeAnyProviderRequest() throws Exception {
+        Assumptions.assumeTrue(onPath("pdfinfo"), "poppler-utils must be on PATH");
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = startOpenAiServer(requests, "should not be returned");
+        try {
+            saveCustomChat(server, "vision-model");
+            Path input = tempDir.resolve("not-a.pdf");
+            Files.writeString(input, "plain text with a .pdf name");
+
+            IOException failure = assertThrows(IOException.class, () -> inSimulatedNativeImage(
+                    () -> ChatModelPipelineRunner.extract(tempDir, input, pipeline("pdf", Map.of()), "", null)));
+
+            // PDFBox reports its own parse error; the native path must fail in pdfinfo instead.
+            assertTrue(failure.getMessage().startsWith("pdfinfo failed for"), failure.getMessage());
+            assertTrue(requests.isEmpty());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void nativeImageRejectsImagesThatNeedAwtConversionButTheJvmStillConvertsThem() throws Exception {
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = startOpenAiServer(requests, "# Converted image");
+        try {
+            saveCustomChat(server, "vision-model");
+            Path input = tempDir.resolve("square.bmp");
+            BufferedImage image = new BufferedImage(8, 8, BufferedImage.TYPE_INT_RGB);
+            assertTrue(ImageIO.write(image, "bmp", input.toFile()));
+            image.flush();
+
+            IOException failure = assertThrows(IOException.class, () -> inSimulatedNativeImage(
+                    () -> ChatModelPipelineRunner.extract(tempDir, input, pipeline("image", Map.of()), "", null)));
+            assertTrue(failure.getMessage().contains("cannot convert"), failure.getMessage());
+            assertTrue(requests.isEmpty());
+
+            ChatModelPipelineRunner.extract(tempDir, input, pipeline("image", Map.of()), "", null);
+            assertEquals(1, requests.size());
+            assertTrue(userContent(requests.get(0)).get(0).path("image_url").path("url").asText()
+                    .startsWith("data:image/png;base64,"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * Runs {@code call} with native-image mode simulated, then restores the property. Keep the
+     * window that narrow: NativeImageInfo caches getExecutablePath() once it resolves in native
+     * mode, which would leak native state into later tests.
+     */
+    private static <T> T inSimulatedNativeImage(Callable<T> call) throws Exception {
+        String previousImageCode = System.getProperty(IMAGE_CODE_PROPERTY);
+        System.setProperty(IMAGE_CODE_PROPERTY, "runtime");
+        try {
+            return call.call();
+        } finally {
+            if (previousImageCode == null) System.clearProperty(IMAGE_CODE_PROPERTY);
+            else System.setProperty(IMAGE_CODE_PROPERTY, previousImageCode);
+            assertNull(NativeImageInfo.getExecutablePath(), "simulated native call left a cached executable path");
+        }
+    }
+
+    private static boolean onPath(String tool) {
+        try {
+            Process process = new ProcessBuilder(tool, "-v").redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+            if (!process.waitFor(5, TimeUnit.SECONDS)) process.destroyForcibly();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private LocalCrawlCapabilities.ResolvedPipeline pipeline(

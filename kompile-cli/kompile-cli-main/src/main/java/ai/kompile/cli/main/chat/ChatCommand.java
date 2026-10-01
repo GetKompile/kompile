@@ -94,6 +94,9 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--web", description = "Start a fresh installed CHAT web UI (LAN-accessible by default) and print its local URL using CLI config (CHAT JAR tier only). Combine with --setup to configure first.")
     private boolean web;
 
+    @CommandLine.Option(names = "--workspace", description = "Launch the multi-project web workspace; select and run independent CLI chats concurrently (requires --web).")
+    private boolean workspace;
+
     @CommandLine.Option(names = "--open-browser", description = "Also open the web UI in a local browser (requires --web).")
     private boolean openBrowser;
 
@@ -366,6 +369,7 @@ public class ChatCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        if (workspace && !web) return printError("--workspace requires --web.", 2);
         if (openBrowser && !web) return printError("--open-browser requires --web.", 2);
         if (web) return runWebHandoff();
         if (multiSession) {
@@ -680,7 +684,7 @@ public class ChatCommand implements Callable<Integer> {
     String webOptionError() {
         if (!promptParts.isEmpty()) return "--web does not accept a prompt; send it in the browser.";
         if (commandSpec != null && commandSpec.commandLine().getParseResult() != null) {
-            var allowed = java.util.Set.of("--web", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout", "--workflow");
+            var allowed = java.util.Set.of("--web", "--workspace", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout", "--workflow");
             for (var option : commandSpec.commandLine().getParseResult().matchedOptions()) {
                 if (!allowed.contains(option.longestName())) {
                     return "--web cannot be combined with " + option.longestName()
@@ -709,7 +713,7 @@ public class ChatCommand implements Callable<Integer> {
 
     /** {@code workflowName} is the team new web sessions start with, or {@code null}. */
     ChatInstanceBootstrap.StartupResult startWeb(Path directory, String workflowName) throws Exception {
-        return ChatInstanceBootstrap.startWeb(directory, globalConfig, workflowName, startupTimeoutSeconds);
+        return ChatInstanceBootstrap.startWeb(directory, globalConfig, workflowName, startupTimeoutSeconds, workspace);
     }
 
     void openWebBrowser(String address) {
@@ -763,7 +767,9 @@ public class ChatCommand implements Callable<Integer> {
                         + " creation wizard; rename the team or continue in the terminal.", 2);
             }
             ChatInstanceBootstrap.StartupResult result = startWeb(directory, teamName);
-            System.out.println("Web chat: " + result.chatUrl());
+            String address = result.chatUrl() + (workspace ? "/#/workspace" : "");
+            System.out.println("Web chat: " + address);
+            if (workspace) System.out.println("Multi-project workspace; tracked projects: ~/.kompile/chat-workspace.json");
             System.out.println("Working directory: " + directory + "; config scope: "
                     + (globalConfig ? "global" : "project")
                     + ". New sessions bind current CLI config on their first turn; resumed sessions retain their pins.");
@@ -771,7 +777,7 @@ public class ChatCommand implements Callable<Integer> {
                 System.out.println("Workflow team: " + teamName
                         + ". New web sessions start with it; resumed sessions keep the team they recorded.");
             }
-            if (openBrowser) openWebBrowser(result.chatUrl());
+            if (openBrowser) openWebBrowser(address);
             return 0;
         } catch (Exception e) {
             return printError("Web chat handoff failed: " + e.getMessage(), 1);

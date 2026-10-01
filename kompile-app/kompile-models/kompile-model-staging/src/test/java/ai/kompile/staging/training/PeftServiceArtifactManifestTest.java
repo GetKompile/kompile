@@ -26,7 +26,6 @@ import org.junit.jupiter.api.io.TempDir;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.factory.Nd4j;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -48,11 +47,9 @@ class PeftServiceArtifactManifestTest {
     private PeftService peftService;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         peftService = new PeftService();
-        Field modelsDir = PeftService.class.getDeclaredField("modelsDir");
-        modelsDir.setAccessible(true);
-        modelsDir.set(peftService, tempDir.toString());
+        peftService.modelsDir = tempDir.toString();
     }
 
     @Test

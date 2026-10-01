@@ -218,6 +218,14 @@ public class BackgroundProcessManager implements AutoCloseable {
     private volatile ExitCallback exitCallback;
     private final Thread shutdownHook;
     private volatile boolean historyEnabled;
+    /** Set once {@link #close()} has drained; a closed manager writes no more virtual output. */
+    private volatile boolean closed;
+    /**
+     * Set when {@link #close()} or the shutdown hook begins, under {@link #launchLock}. A launch
+     * holds that lock until its process is registered, so shutdown either kills it or refuses it.
+     */
+    private boolean stopping;
+    private final Object launchLock = new Object();
     private final Object historyLock = new Object();
     /** The history last read or written, so an unchanged list is not rewritten. */
     private String lastHistory;
@@ -268,6 +276,7 @@ public class BackgroundProcessManager implements AutoCloseable {
 
         // Register shutdown hook to kill all running processes
         this.shutdownHook = new Thread(() -> {
+            stopLaunching();
             killAllRunning();
             ioExecutor.shutdownNow();
         }, "bg-proc-manager-shutdown-" + sessionId);
@@ -646,12 +655,12 @@ public class BackgroundProcessManager implements AutoCloseable {
      * listeners, exactly as captured subprocess output is recorded. Virtual entries
      * have no OS stream of their own; this is how their owner gives them output.
      *
-     * @return false when the entry is not a running virtual entry or the log
-     *         cannot be written
+     * @return false when the manager is closed, the entry is not a running virtual
+     *         entry, or the log cannot be written
      */
     public boolean appendVirtualOutput(String processId, String line) {
         ProcessEntry entry = processId != null ? processes.get(processId) : null;
-        if (entry == null || !entry.isVirtual() || !entry.isRunning() || line == null) {
+        if (closed || entry == null || !entry.isVirtual() || !entry.isRunning() || line == null) {
             return false;
         }
         Path file = entry.outputFile;
@@ -799,7 +808,8 @@ public class BackgroundProcessManager implements AutoCloseable {
      * @param description human-readable description of the process
      * @param workDir     working directory for the process
      * @return the new ProcessEntry
-     * @throws IOException if the process cannot be started or output directory cannot be created
+     * @throws IOException if the manager is closed, the process cannot be started or the output
+     *                     directory cannot be created
      */
     public ProcessEntry launch(String command, String description, Path workDir) throws IOException {
         return launchMonitored(command, description, workDir, "");
@@ -819,7 +829,8 @@ public class BackgroundProcessManager implements AutoCloseable {
      * @param description human-readable description of the process
      * @param workDir     working directory for the process
      * @return the new ProcessEntry
-     * @throws IOException if the process cannot be started or output directory cannot be created
+     * @throws IOException if the manager is closed, the process cannot be started or the output
+     *                     directory cannot be created
      */
     public ProcessEntry launch(String[] args, String description, Path workDir) throws IOException {
         String command = String.join(" ", args);
@@ -828,41 +839,56 @@ public class BackgroundProcessManager implements AutoCloseable {
 
     private ProcessEntry launch(String[] args, String command, String description, Path workDir,
                                 boolean monitored, String monitorMessage) throws IOException {
-        // Ensure output directory exists
-        Files.createDirectories(outputDir);
+        ProcessEntry entry;
+        synchronized (launchLock) {
+            // A process started past close() would run on with no one left to kill it.
+            if (stopping) {
+                throw new IOException("Background process manager for session " + sessionId
+                        + " is closed");
+            }
+            // Ensure output directory exists
+            Files.createDirectories(outputDir);
 
-        String id = nextId(ProcessKind.COMMAND);
-        Path outputFile = outputDir.resolve(id + ".log");
+            String id = nextId(ProcessKind.COMMAND);
+            Path outputFile = outputDir.resolve(id + ".log");
 
-        ProcessBuilder pb = new ProcessBuilder(args);
-        pb.directory(workDir != null ? workDir.toFile() : new File("."));
-        pb.redirectErrorStream(true);
+            ProcessBuilder pb = new ProcessBuilder(args);
+            pb.directory(workDir != null ? workDir.toFile() : new File("."));
+            pb.redirectErrorStream(true);
 
-        // Inherit the same baseline environment used by managed agent subprocesses.
-        Map<String, String> env = pb.environment();
-        for (String key : List.of("PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL",
-                "JAVA_HOME", "MAVEN_HOME", "M2_HOME", "TERM", "COLORTERM",
-                "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")) {
-            String val = System.getenv(key);
-            if (val != null) env.put(key, val);
+            // Inherit the same baseline environment used by managed agent subprocesses.
+            Map<String, String> env = pb.environment();
+            for (String key : List.of("PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL",
+                    "JAVA_HOME", "MAVEN_HOME", "M2_HOME", "TERM", "COLORTERM",
+                    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")) {
+                String val = System.getenv(key);
+                if (val != null) env.put(key, val);
+            }
+            env.put("GEMINI_CLI_TRUST_WORKSPACE", "true");
+
+            Process process = pb.start();
+            entry = new ProcessEntry(
+                    id, command, process.pid(), Instant.now(), outputFile, description, process,
+                    ProcessKind.COMMAND, Map.of());
+            entry.osStart = process.info().startInstant().orElse(null);
+            processes.put(id, entry);
+            if (monitored) {
+                monitors.put(id, new ProcessMonitor(id, monitorMessage, Instant.now()));
+            }
+
+            // Start daemon thread to capture output and watch for exit
+            ioExecutor.submit(() -> captureOutputAndWait(entry));
         }
-        env.put("GEMINI_CLI_TRUST_WORKSPACE", "true");
-
-        Process process = pb.start();
-        ProcessEntry entry = new ProcessEntry(
-                id, command, process.pid(), Instant.now(), outputFile, description, process,
-                ProcessKind.COMMAND, Map.of());
-        entry.osStart = process.info().startInstant().orElse(null);
-        processes.put(id, entry);
-        if (monitored) {
-            monitors.put(id, new ProcessMonitor(id, monitorMessage, Instant.now()));
-        }
-
-        // Start daemon thread to capture output and watch for exit
-        ioExecutor.submit(() -> captureOutputAndWait(entry));
 
         fireChange();
         return entry;
+    }
+
+    /** Refuses every later launch; one already past the check finishes registering first. */
+    private void stopLaunching() {
+        synchronized (launchLock) {
+            stopping = true;
+        }
     }
 
     /**
@@ -1398,6 +1424,7 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     @Override
     public void close() {
+        stopLaunching();
         // Kill all running processes and publish their exits. Ones restored from an
         // earlier run are not this run's to stop: they stay recorded as running for a
         // later run to kill.
@@ -1419,6 +1446,9 @@ public class BackgroundProcessManager implements AutoCloseable {
             ioExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
+        // The log directory can go with its session, so a late writer (a diagnostics
+        // sink still registered) must not recreate it.
+        closed = true;
 
         // Remove shutdown hook to prevent leak
         try {

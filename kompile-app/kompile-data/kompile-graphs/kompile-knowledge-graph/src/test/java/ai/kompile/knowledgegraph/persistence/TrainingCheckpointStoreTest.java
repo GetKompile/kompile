@@ -18,7 +18,6 @@ package ai.kompile.knowledgegraph.persistence;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.Optional;
 
@@ -45,12 +44,9 @@ class TrainingCheckpointStoreTest {
 
     // ── Helper: create a store rooted at the temp dir ─────────────────────────
 
-    private TrainingCheckpointStore storeFor(Path base) throws Exception {
+    private TrainingCheckpointStore storeFor(Path base) {
         TrainingCheckpointStore store = new TrainingCheckpointStore();
-        // Inject dataDir via the package-visible checkpointPath logic
-        Field f = TrainingCheckpointStore.class.getDeclaredField("dataDir");
-        f.setAccessible(true);
-        f.set(store, base.toString());
+        store.dataDir = base.toString();
         return store;
     }
 

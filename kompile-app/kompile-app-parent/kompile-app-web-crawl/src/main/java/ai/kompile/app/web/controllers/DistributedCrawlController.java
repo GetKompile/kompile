@@ -67,7 +67,7 @@ public class DistributedCrawlController {
 
     /** Optional cluster-wide backend breaker (Phase 4); field-injected so the constructor (and its tests) are unchanged. */
     @Autowired(required = false)
-    private ClusterBackendHealthAdapter backendHealth;
+    ClusterBackendHealthAdapter backendHealth;
 
     /**
      * Start a distributed crawl. The request must include a distribution config.

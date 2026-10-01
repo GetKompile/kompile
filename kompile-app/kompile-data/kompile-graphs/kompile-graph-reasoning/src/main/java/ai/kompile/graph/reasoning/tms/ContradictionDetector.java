@@ -13,11 +13,13 @@ import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.FactStore;
 import ai.kompile.graph.reasoning.psl.GroundRule;
 import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
+import ai.kompile.graph.reasoning.query.PredicateNames;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -25,6 +27,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Detects constraint violations and fact-level contradictions in PSL inference results.
@@ -57,6 +60,7 @@ public final class ContradictionDetector {
             "DEATH_DATE",
             "FOUNDED_ON",
             "INCORPORATED_ON");
+    private static final Set<String> DEFAULT_FUNCTIONAL_KEYS = keys(DEFAULT_FUNCTIONAL_PREDICATES);
     private static final List<String> NEGATION_PREFIXES = List.of(
             "NOT_", "NO_", "NON_", "NEGATED_", "DENIES_", "DENY_", "REFUTES_", "REFUTE_", "DISPROVES_");
 
@@ -82,16 +86,29 @@ public final class ContradictionDetector {
      * default rules (explicit membership OR {@code CURRENT_}/{@code PRIMARY_} prefix OR
      * {@code _CURRENT_STATUS}/{@code _PRIMARY_VALUE} suffix).
      *
-     * <p>The predicate is normalised (upper-cased, dashes/spaces → underscores) before testing,
-     * matching the normalisation applied inside {@link #findFactContradictions}.</p>
+     * <p>Membership is by {@link PredicateNames#key}, so {@code currentStatus}, {@code CURRENT_STATUS},
+     * and {@code CURRENTSTATUS} are one predicate; the prefix and suffix rules read the
+     * {@link PredicateNames#canonical} form. {@link #findFactContradictions} applies the same rule.</p>
      *
      * @param rawPredicate the raw predicate name as it appears in an atom key
      * @return true if the predicate is treated as functional
      */
     public static boolean isFunctionalPredicate(String rawPredicate) {
         if (rawPredicate == null || rawPredicate.isBlank()) return false;
-        String normalized = normalizePredicate(rawPredicate);
-        return isFunctionalPredicate(normalized, DEFAULT_FUNCTIONAL_PREDICATES);
+        return isFunctionalCanonical(PredicateNames.canonical(rawPredicate), DEFAULT_FUNCTIONAL_KEYS);
+    }
+
+    /**
+     * {@link #isFunctionalPredicate(String)} with {@code functionalPredicates}, in any spelling, added
+     * to the default members: the rule {@link #findFactContradictions(FactStore, Set)} applies.
+     *
+     * @param rawPredicate         the raw predicate name as it appears in an atom key
+     * @param functionalPredicates extra single-valued predicates; null or empty means the defaults only
+     * @return true if the predicate is treated as functional
+     */
+    public static boolean isFunctionalPredicate(String rawPredicate, Set<String> functionalPredicates) {
+        if (rawPredicate == null || rawPredicate.isBlank()) return false;
+        return isFunctionalCanonical(PredicateNames.canonical(rawPredicate), functionalKeys(functionalPredicates));
     }
 
     /**
@@ -156,8 +173,9 @@ public final class ContradictionDetector {
      * Check if two facts directly contradict each other.
      *
      * <p>Two facts contradict if they are both hard and either have the same atom key
-     * with opposite values, or assert opposite polarities of the same normalized atom
-     * (for example {@code State(alice)} and {@code Not_State(alice)}).</p>
+     * with opposite values, or assert opposite polarities of the same ground atom
+     * (for example {@code State(alice)} and {@code Not_State(alice)}, or {@code worksFor(a, b)}
+     * and {@code ~WORKS_FOR(a, b)}).</p>
      *
      * @param f1 the first fact
      * @param f2 the second fact
@@ -207,7 +225,7 @@ public final class ContradictionDetector {
     public static List<Pair<Fact, Fact>> findFactContradictions(FactStore factStore,
                                                                 Set<String> functionalPredicates) {
         Objects.requireNonNull(factStore, "factStore must not be null");
-        Set<String> normalizedFunctionalPredicates = normalizePredicates(functionalPredicates);
+        Set<String> functionalKeys = functionalKeys(functionalPredicates);
 
         // Parse every atom ONCE up front — O(n) total, never inside a pair loop.
         List<Fact> facts = new ArrayList<>(factStore.allFacts());
@@ -254,7 +272,7 @@ public final class ContradictionDetector {
 
         // ── KIND B: contradicts() — sameGroundAtom with opposite negated flag,
         //   both hard + highTruth ──────────────────────────────────────────────────────
-        // Index: (normalizedPredicate, args) → list of indices for hard+highTruth facts.
+        // Index: (predicate key, args) → list of indices for hard+highTruth facts.
         // Within each bucket, a pair contradicts iff one is negated and the other is not.
         {
             Map<String, List<Integer>> byGroundAtom = new HashMap<>();
@@ -262,8 +280,8 @@ public final class ContradictionDetector {
                 Fact f = facts.get(i);
                 if (!f.hard() || !highTruth(f)) continue;
                 ParsedAtom pa = parsed[i];
-                // Key: predicate + serialized args (args are already trimmed strings).
-                String bucketKey = pa.predicate() + "|" + pa.args();
+                // Key: predicate key + serialized args (args are already trimmed strings).
+                String bucketKey = pa.predicateKey() + "|" + pa.args();
                 byGroundAtom.computeIfAbsent(bucketKey, k -> new ArrayList<>()).add(i);
             }
             for (List<Integer> group : byGroundAtom.values()) {
@@ -284,10 +302,9 @@ public final class ContradictionDetector {
         }
 
         // ── FUNCTIONAL CONTRADICTIONS ────────────────────────────────────────────────
-        // Conditions (from functionalContradiction): both hard + highTruth + non-negated,
-        // same predicate, predicate is functional, non-empty args, same first arg, different
-        // full args.
-        // Index: (predicate, args.get(0)) → list of indices.
+        // Conditions: both hard + highTruth + non-negated, same predicate key, predicate is
+        // functional, non-empty args, same first arg, different full args.
+        // Index: (predicate key, args.get(0)) → list of indices.
         // Buckets are tiny (typically 2–3 values for one subject), so inner loops are O(1).
         {
             Map<String, List<Integer>> byFuncSubject = new HashMap<>();
@@ -297,8 +314,8 @@ public final class ContradictionDetector {
                 ParsedAtom pa = parsed[i];
                 if (pa.negated()) continue;
                 if (pa.args().isEmpty()) continue;
-                if (!isFunctionalPredicate(pa.predicate(), normalizedFunctionalPredicates)) continue;
-                String bucketKey = pa.predicate() + "|" + pa.args().get(0);
+                if (!isFunctionalCanonical(pa.predicate(), functionalKeys)) continue;
+                String bucketKey = pa.predicateKey() + "|" + pa.args().get(0);
                 byFuncSubject.computeIfAbsent(bucketKey, k -> new ArrayList<>()).add(i);
             }
             for (List<Integer> group : byFuncSubject.values()) {
@@ -318,21 +335,12 @@ public final class ContradictionDetector {
         return result;
     }
 
-    private static boolean functionalContradiction(Fact f1, Fact f2, Set<String> functionalPredicates) {
-        if (!f1.hard() || !f2.hard() || !highTruth(f1) || !highTruth(f2)) {
-            return false;
-        }
-        ParsedAtom a = ParsedAtom.parse(f1.atomKey());
-        ParsedAtom b = ParsedAtom.parse(f2.atomKey());
-        if (a.negated() || b.negated()) return false;
-        if (!Objects.equals(a.predicate(), b.predicate())) return false;
-        if (!isFunctionalPredicate(a.predicate(), functionalPredicates)) return false;
-        if (a.args().isEmpty() || b.args().isEmpty()) return false;
-        return Objects.equals(a.args().get(0), b.args().get(0)) && !Objects.equals(a.args(), b.args());
-    }
-
-    private static boolean isFunctionalPredicate(String predicate, Set<String> functionalPredicates) {
-        return functionalPredicates.contains(predicate)
+    /**
+     * Whether a {@link PredicateNames#canonical} predicate is single-valued: its key is one of
+     * {@code functionalKeys}, or its canonical form carries a functional prefix or suffix.
+     */
+    private static boolean isFunctionalCanonical(String predicate, Set<String> functionalKeys) {
+        return functionalKeys.contains(PredicateNames.key(predicate))
                 || predicate.startsWith("CURRENT_")
                 || predicate.startsWith("PRIMARY_")
                 || predicate.endsWith("_CURRENT_STATUS")
@@ -348,27 +356,21 @@ public final class ContradictionDetector {
         return fact.value() >= 0.9;
     }
 
-    private static Set<String> normalizePredicates(Set<String> predicates) {
+    /** Keys of the default functional predicates plus the caller's. */
+    private static Set<String> functionalKeys(Set<String> predicates) {
         if (predicates == null || predicates.isEmpty()) {
-            return DEFAULT_FUNCTIONAL_PREDICATES;
+            return DEFAULT_FUNCTIONAL_KEYS;
         }
-        Set<String> normalized = new LinkedHashSet<>(DEFAULT_FUNCTIONAL_PREDICATES);
-        predicates.stream()
-                .filter(Objects::nonNull)
-                .map(ContradictionDetector::normalizePredicate)
-                .filter(p -> !p.isBlank())
-                .forEach(normalized::add);
-        return Collections.unmodifiableSet(normalized);
+        Set<String> keys = new HashSet<>(DEFAULT_FUNCTIONAL_KEYS);
+        keys.addAll(keys(predicates));
+        return keys;
     }
 
-    private static String normalizePredicate(String raw) {
-        if (raw == null) return "";
-        return raw.trim()
-                .replace('-', '_')
-                .replace(' ', '_')
-                .replaceAll("[^A-Za-z0-9_]", "")
-                .replaceAll("_+", "_")
-                .toUpperCase(Locale.ROOT);
+    private static Set<String> keys(Collection<String> predicates) {
+        return predicates.stream()
+                .map(PredicateNames::key)
+                .filter(key -> !key.isEmpty())
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     private static String stripNegationPrefix(String predicate) {
@@ -390,11 +392,26 @@ public final class ContradictionDetector {
         return stripped;
     }
 
-    private record ParsedAtom(String predicate, List<String> args, boolean negated) {
-        static ParsedAtom parse(String atomKey) {
+    /**
+     * An atom key split into predicate, arguments, and polarity. It is the one parser the
+     * contradiction checks and {@link ai.kompile.graph.reasoning.tms.inconsistency.BelnapMarking}
+     * share, so both agree on which facts negate which.
+     *
+     * <p>Negation is read from the {@code !} and {@code ~} markers, a {@code not } or
+     * {@code not(...)} wrapper, and the predicate prefixes {@code NOT_}, {@code NO_}, {@code NON_},
+     * {@code NEGATED_}, {@code DENIES_}, {@code DENY_}, {@code REFUTES_}, {@code REFUTE_},
+     * {@code DISPROVES_}, and {@code IS_NOT_}, in any spelling ({@code notWorksFor} is
+     * {@code NOT_WORKS_FOR}).</p>
+     *
+     * @param predicate the {@link PredicateNames#canonical} predicate, negation prefixes removed
+     * @param args      trimmed arguments, empty for a 0-ary atom
+     * @param negated   whether the atom was negated in any supported form
+     */
+    public record ParsedAtom(String predicate, List<String> args, boolean negated) {
+        public static ParsedAtom parse(String atomKey) {
             String text = atomKey == null ? "" : atomKey.trim();
             boolean negated = false;
-            if (text.startsWith("!")) {
+            if (text.startsWith("!") || text.startsWith("~")) {
                 negated = true;
                 text = text.substring(1).trim();
             }
@@ -410,7 +427,7 @@ public final class ContradictionDetector {
             int lp = text.indexOf('(');
             int rp = text.lastIndexOf(')');
             String rawPredicate = lp < 0 ? text : text.substring(0, lp);
-            String predicate = normalizePredicate(rawPredicate);
+            String predicate = PredicateNames.canonical(rawPredicate);
             if (startsWithNegation(predicate)) {
                 negated = true;
                 predicate = stripNegationPrefix(predicate);
@@ -428,8 +445,14 @@ public final class ContradictionDetector {
             return new ParsedAtom(predicate, args, negated);
         }
 
-        boolean sameGroundAtom(ParsedAtom other) {
-            return Objects.equals(predicate, other.predicate()) && Objects.equals(args, other.args());
+        /** Comparison form of the predicate: spellings that differ only in case or separators share it. */
+        public String predicateKey() {
+            return PredicateNames.key(predicate);
+        }
+
+        /** Same predicate, compared by key, over the same arguments, whatever the polarity. */
+        public boolean sameGroundAtom(ParsedAtom other) {
+            return predicateKey().equals(other.predicateKey()) && Objects.equals(args, other.args());
         }
 
         private static boolean startsWithNegation(String predicate) {

@@ -23,7 +23,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -39,11 +38,9 @@ class CompilerServiceQuantizationComparisonTest {
     private CompilerService compilerService;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         compilerService = new CompilerService(new RegistryService(tempDir));
-        Field modelsDir = CompilerService.class.getDeclaredField("modelsDir");
-        modelsDir.setAccessible(true);
-        modelsDir.set(compilerService, tempDir.toString());
+        compilerService.modelsDir = tempDir.toString();
     }
 
     @Test

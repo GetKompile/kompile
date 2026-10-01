@@ -35,9 +35,6 @@ import java.util.regex.Pattern;
  */
 public class CliToolGatewayRulesLoader {
 
-    private static final Path DEFAULT_RULES_PATH = Path.of(
-            System.getProperty("user.home"), ".kompile", "config", "tool-gateway-rules.json");
-
     private final ObjectMapper objectMapper;
     private volatile List<Map<String, Object>> rules = Collections.emptyList();
     private volatile String systemPrompt;
@@ -52,14 +49,15 @@ public class CliToolGatewayRulesLoader {
      */
     @SuppressWarnings("unchecked")
     public void reload() {
-        if (!Files.exists(DEFAULT_RULES_PATH)) {
+        Path rulesPath = rulesPath();
+        if (!Files.exists(rulesPath)) {
             rules = Collections.emptyList();
             systemPrompt = null;
             return;
         }
 
         try {
-            JsonNode root = objectMapper.readTree(Files.readString(DEFAULT_RULES_PATH));
+            JsonNode root = objectMapper.readTree(Files.readString(rulesPath));
 
             systemPrompt = root.has("systemPrompt") ? root.get("systemPrompt").asText(null) : null;
 
@@ -117,6 +115,11 @@ public class CliToolGatewayRulesLoader {
 
     public String getSystemPrompt() {
         return systemPrompt;
+    }
+
+    /** The rules file under the {@code user.home} current when the rules are (re)loaded. */
+    static Path rulesPath() {
+        return Path.of(System.getProperty("user.home"), ".kompile", "config", "tool-gateway-rules.json");
     }
 
     private boolean matchesAny(List<String> patterns, String toolName) {

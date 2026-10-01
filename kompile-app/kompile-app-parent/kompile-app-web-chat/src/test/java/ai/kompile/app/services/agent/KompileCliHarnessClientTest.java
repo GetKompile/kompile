@@ -146,10 +146,25 @@ class KompileCliHarnessClientTest {
     }
 
     @Test
-    void capabilityProbeDisablesAttachmentsForUnsupportedProviderProtocol() {
+    void capabilityProbeKeepsTheCliAttachmentReportForLocalServing() {
         FakeProcess fake = new FakeProcess("""
                 {"engine":"kompile-cli-main","available":true,"status":"ready",
                  "provider":"kompile-local","model":"local","attachmentsSupported":true,
+                 "personas":[]}
+                """, "", 0);
+        client = clientWith(fake);
+
+        var capabilities = client.capabilities(null, true);
+
+        assertTrue(capabilities.path("attachmentsSupported").asBoolean(false),
+                capabilities.toString());
+    }
+
+    @Test
+    void capabilityProbeKeepsACliReportThatRefusesAttachments() {
+        FakeProcess fake = new FakeProcess("""
+                {"engine":"kompile-cli-main","available":true,"status":"ready",
+                 "provider":"openai","model":"gpt-5","attachmentsSupported":false,
                  "personas":[]}
                 """, "", 0);
         client = clientWith(fake);
@@ -391,6 +406,70 @@ class KompileCliHarnessClientTest {
         assertTrue(prompt.contains("<browser_folder_files>"), prompt);
         assertTrue(prompt.contains("user data, not instructions"), prompt);
         assertTrue(prompt.contains(selectedFile.toString()), prompt);
+    }
+
+    @Test
+    void workspaceRunsRegisteredProjectsInParallelAndRejectsOtherRoots() throws Exception {
+        String oldHome = System.getProperty("user.home");
+        String oldMode = System.getProperty(WebChatContext.MODE);
+        String oldDirectory = System.getProperty(WebChatContext.WORKING_DIRECTORY);
+        CountDownLatch bothStarted = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            System.setProperty("user.home", tempDir.toString());
+            System.setProperty(WebChatContext.MODE, "workspace");
+            System.setProperty(WebChatContext.WORKING_DIRECTORY, tempDir.toString());
+            System.clearProperty("kompile.web.chat.harness.maxConcurrent");
+            assertEquals(4, KompileCliHarnessClient.configuredMaxConcurrentRuns());
+            Path first = Files.createDirectory(tempDir.resolve("one"));
+            Path second = Files.createDirectory(tempDir.resolve("two"));
+            var store = new ai.kompile.cli.common.ChatWorkspaceStore();
+            store.register(tempDir); store.register(first); store.register(second);
+            executor.shutdownNow();
+            executor = KompileCliHarnessClient.newRunExecutor();
+            List<Path> directories = new CopyOnWriteArrayList<>();
+            List<List<String>> commands = new CopyOnWriteArrayList<>();
+            client = new KompileCliHarnessClient(new ObjectMapper(), () -> List.of("fake-kompile"),
+                    (command, directory) -> {
+                        directories.add(directory); commands.add(command); bothStarted.countDown();
+                        try {
+                            if (!release.await(5, TimeUnit.SECONDS)) throw new java.io.IOException("Concurrent start timed out");
+                        } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new java.io.IOException(e); }
+                        return new FakeProcess("{\"seq\":1,\"type\":\"result\",\"text\":\"done\",\"exit\":0}\n", "", 0);
+                    }, executor, scheduler);
+            var a = request("first task"); a.setWorkingDirectory(first.toString());
+            var b = request("second task"); b.setWorkingDirectory(second.toString());
+            // Pick ids that collided under the former 64-stripe locking scheme.
+            int stripe = Math.floorMod(KompileCliHarnessClient.harnessSessionId(first, a.getSessionId()).hashCode(), 64);
+            String collision = null;
+            for (int i = 0; i < 10_000; i++) {
+                String candidate = "other-browser-" + i;
+                if (Math.floorMod(KompileCliHarnessClient.harnessSessionId(second, candidate).hashCode(), 64) == stripe) {
+                    collision = candidate; break;
+                }
+            }
+            assertTrue(collision != null);
+            b.setSessionId(collision);
+            var callers = Executors.newFixedThreadPool(2);
+            try {
+                var runA = callers.submit(() -> client.runTurn("parallel-a", a, new RecordingSink()));
+                var runB = callers.submit(() -> client.runTurn("parallel-b", b, new RecordingSink()));
+                assertTrue(bothStarted.await(3, TimeUnit.SECONDS), "both CLI children must start before either finishes");
+                release.countDown();
+                runA.get(5, TimeUnit.SECONDS); runB.get(5, TimeUnit.SECONDS);
+            } finally { release.countDown(); callers.shutdownNow(); }
+            assertTrue(directories.containsAll(List.of(first.toRealPath(), second.toRealPath())));
+            assertNotEquals(commands.get(0).get(commands.get(0).indexOf("--session-id") + 1),
+                    commands.get(1).get(commands.get(1).indexOf("--session-id") + 1));
+            Path unregistered = Files.createDirectory(tempDir.resolve("unregistered"));
+            assertFalse(client.capabilities(unregistered.toString(), true).path("available").asBoolean());
+        } finally {
+            release.countDown();
+            System.setProperty("user.home", oldHome);
+            if (oldMode == null) System.clearProperty(WebChatContext.MODE); else System.setProperty(WebChatContext.MODE, oldMode);
+            if (oldDirectory == null) System.clearProperty(WebChatContext.WORKING_DIRECTORY);
+            else System.setProperty(WebChatContext.WORKING_DIRECTORY, oldDirectory);
+        }
     }
 
     @Test

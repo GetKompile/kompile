@@ -151,6 +151,26 @@ class KGEmbeddingStorageServiceTest {
         assertEquals(0, result);
     }
 
+    @Test
+    void storeEmbeddings_fromTrainedVectors_storesEntitiesAndRelations() {
+        GraphNode alice = buildNode("Alice", NodeLevel.ENTITY);
+        when(knowledgeGraphService.getNodesByTypeInFactSheet(FACT_SHEET_ID, NodeLevel.ENTITY))
+                .thenReturn(List.of(alice));
+
+        int stored = service.storeEmbeddings(
+                Map.of("Alice", new float[]{1f, 2f}, "Unknown", new float[]{3f, 4f}),
+                Map.of("KNOWS", new float[]{5f, 6f}),
+                KGEmbeddingAlgorithm.ROTATE, FACT_SHEET_ID, EMBEDDING_VERSION);
+
+        assertEquals(2, stored, "Alice and the KNOWS relation; Unknown has no node");
+        verify(knowledgeGraphService).storeNodeKgEmbedding(eq(alice.getNodeId()),
+                argThat(v -> Arrays.equals(new float[]{1f, 2f}, v.data().asFloat())),
+                eq(KGEmbeddingAlgorithm.ROTATE), eq(EMBEDDING_VERSION), any());
+        verify(knowledgeGraphService).storeEdgeTypeKgEmbedding(eq("KNOWS"),
+                argThat(v -> Arrays.equals(new float[]{5f, 6f}, v.data().asFloat())),
+                eq(KGEmbeddingAlgorithm.ROTATE), eq(EMBEDDING_VERSION), eq(FACT_SHEET_ID));
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // loadEmbeddings
     // ═══════════════════════════════════════════════════════════════════════════

@@ -34,6 +34,9 @@ import ai.kompile.project.KompileProjectWorkflowStep;
 import ai.kompile.utils.NativeImageInfo;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -46,6 +49,7 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
@@ -56,6 +60,11 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CoderResult;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -67,6 +76,7 @@ import java.text.Normalizer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -78,10 +88,12 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import static ai.kompile.cli.main.project.ProjectCommandUtils.failureDetail;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.firstNonBlank;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.hasTag;
 import static ai.kompile.cli.main.project.ProjectCommandUtils.jsonArray;
@@ -118,6 +130,10 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     private static final int MAX_HTML_TOKEN_CHARS = 8 * 1024;
     private static final int MAX_GENERATED_FRONT_MATTER_CHARS = 64 * 1024;
     private static final ObjectMapper LOADER_METADATA_MAPPER = new ObjectMapper();
+    private static final long PDFTOTEXT_TIMEOUT_SECONDS = 60;
+    private static final int BINARY_SNIFF_BYTES = 8 * 1024;
+    private static final int SOURCE_METADATA_MAX_ENTRIES = 32;
+    private static final int SOURCE_METADATA_MAX_VALUE_CHARS = 256;
 
     private static final Set<String> LOCAL_KNOWLEDGE_STOP_WORDS = Set.of(
             "the", "and", "for", "that", "with", "this", "from", "are", "was", "were",
@@ -1478,7 +1494,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             return "FAILED".equals(execution.status()) ? 1
                     : "COMPLETED_WITH_ERRORS".equals(execution.status()) ? 2 : 0;
         } catch (IOException e) {
-            System.err.println("Local crawl failed: " + e.getMessage());
+            System.err.println("Local crawl failed: " + failureDetail(e));
             return 1;
         }
     }
@@ -1526,7 +1542,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     LocalCrawlCapabilities.ResolvedPipeline pipeline =
                             LocalCrawlCapabilities.resolve(request, profile, sourcePath, file);
                     LocalMarkdownArtifact markdown = writeLocalCrawlMarkdown(projectRoot, markdownDir,
-                            document, file, profile, projectName, pipeline, modelPipelineExecutor);
+                            document, file, profile, projectName, pipeline, modelPipelineExecutor, request);
                     checkCancellation();
                     document = document.withMarkdown(markdown);
                     if (markdown.markdownPath() != null) {
@@ -1646,7 +1662,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         String contentType = firstNonBlank(Files.probeContentType(normalized), "application/octet-stream");
         return new LocalCrawlDocument(documentId, normalized.toString(), relative.toString().replace('\\', '/'),
                 Files.size(normalized), Files.getLastModifiedTime(normalized).toInstant().toString(), contentType,
-                null, null, "PENDING", null, null, null, null, null, 0, 0, List.of());
+                null, null, "PENDING", null, null, null, null, null, 0, 0, List.of(), Map.of());
     }
 
     private static LocalMarkdownArtifact writeLocalCrawlMarkdown(Path projectRoot, Path markdownDir,
@@ -1654,17 +1670,23 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         LocalCrawlCapabilities.ResolvedPipeline pipeline = LocalCrawlCapabilities.resolve(
                 null, null, file, file);
         return writeLocalCrawlMarkdown(projectRoot, markdownDir, document, file, null, null, pipeline,
-                LocalModelPipelineRunner::extract);
+                LocalModelPipelineRunner::extract, null);
     }
 
-    private static LocalMarkdownArtifact writeLocalCrawlMarkdown(Path projectRoot, Path markdownDir,
+    static LocalMarkdownArtifact writeLocalCrawlMarkdown(Path projectRoot, Path markdownDir,
                                                                  LocalCrawlDocument document, Path file,
                                                                  KompileProjectCrawlProfile profile,
                                                                  String projectName,
                                                                  LocalCrawlCapabilities.ResolvedPipeline pipeline,
-                                                                 ModelPipelineExecutor modelPipelineExecutor)
+                                                                 ModelPipelineExecutor modelPipelineExecutor,
+                                                                 JsonNode request)
             throws IOException {
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (isImageKnowledgeSource(name) && !LocalCrawlCapabilities.usesModelPipeline(pipeline)) {
+            return LocalMarkdownArtifact.skipped("image needs a vision pipeline: set pipelineId="
+                    + LocalCrawlCapabilities.VLM_PIPELINE
+                    + " or configure a multimodal/VLM model for the project", pipeline);
+        }
         if (!LocalCrawlCapabilities.loaderSupports(pipeline.loaderName(), file)) {
             return LocalMarkdownArtifact.failed("Loader '" + pipeline.loaderName()
                     + "' does not support " + file.getFileName(), pipeline);
@@ -1687,8 +1709,40 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 }
             }
             String title = bodyResult.title();
+            String scannedPdfNote = null;
             if (Files.size(bodyPath) == 0) {
-                return LocalMarkdownArtifact.skipped("No extractable text", pipeline);
+                // Computed once and reused for both the retry attempt below and the skip hint,
+                // so the hint always names a pipelineId that LocalCrawlCapabilities.resolve can
+                // actually find - the conventional "vlm-ocr-pdf" when the project registers one
+                // (even only under pipelineRegistry.defaults), else a project VLM pipeline, else
+                // the always-present built-in vlm-document. A hardcoded "vlm-ocr-pdf" here would
+                // send an unconfigured project's retry hint to a pipelineId resolve() rejects.
+                String vlmPipelineId = name.endsWith(".pdf")
+                        ? LocalCrawlCapabilities.scannedPdfPipelineId(request) : null;
+                if (vlmPipelineId != null && !LocalCrawlCapabilities.usesModelPipeline(pipeline)
+                        && profile != null && (profile.isMultimodal()
+                                || (profile.getVlmModel() != null && !profile.getVlmModel().isBlank()))) {
+                    LocalCrawlCapabilities.ResolvedPipeline vlmPipeline = LocalCrawlCapabilities.resolve(
+                            forcePipelineId(request, file, vlmPipelineId), profile, projectRoot, file);
+                    if (LocalCrawlCapabilities.usesModelPipeline(vlmPipeline)) {
+                        String extracted = modelPipelineExecutor.extract(projectRoot, file, vlmPipeline, "");
+                        if (extracted != null && !extracted.isBlank()) {
+                            try (Writer retryWriter = Files.newBufferedWriter(bodyPath, StandardCharsets.UTF_8,
+                                    StandardOpenOption.TRUNCATE_EXISTING)) {
+                                retryWriter.write(extracted);
+                            }
+                            pipeline = vlmPipeline;
+                            scannedPdfNote = "scanned PDF: used " + vlmPipeline.pipelineId();
+                            System.out.println("  " + scannedPdfNote + " for " + file.getFileName());
+                        }
+                    }
+                }
+                if (Files.size(bodyPath) == 0) {
+                    return LocalMarkdownArtifact.skipped(name.endsWith(".pdf")
+                            ? "no extractable text (scanned PDF?): re-crawl with pipelineId="
+                                    + vlmPipelineId + " or configure a VLM model"
+                            : "No extractable text", pipeline);
+                }
             }
             Path markdownPath = markdownDir.resolve(document.documentId() + ".md").normalize();
             if (!markdownPath.startsWith(markdownDir)) {
@@ -1723,21 +1777,78 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                         }
                         return new LocalDocumentLoaderRegistry.LoadedOutput(section.index(), section.title(), metadata);
                     }).toList();
-            return LocalMarkdownArtifact.extracted(title, relativeMarkdown, pipeline, outputs);
+            LocalMarkdownArtifact artifact = LocalMarkdownArtifact.extracted(title, relativeMarkdown, pipeline, outputs);
+            return scannedPdfNote == null ? artifact : artifact.withMessage(scannedPdfNote);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("Model-backed document extraction was cancelled", interrupted);
-        } catch (Exception e) {
-            return LocalMarkdownArtifact.failed(e.getMessage(), pipeline);
+        } catch (BinaryContentException binary) {
+            return LocalMarkdownArtifact.skipped(binary.getMessage(), pipeline);
+        } catch (Exception | LinkageError e) {
+            return LocalMarkdownArtifact.failed(failureDetail(e), pipeline);
         } finally {
             if (bodyPath != null) Files.deleteIfExists(bodyPath);
             if (temporaryMarkdown != null) Files.deleteIfExists(temporaryMarkdown);
         }
     }
 
+    /**
+     * Builds a synthetic copy of the request whose sole "documents[]" entry exactly matches
+     * `file` by absolute path and forces pipelineId. LocalCrawlCapabilities.resolve()'s
+     * matchingDocument() picks an exact/prefix path match regardless of sourceRoot, so this
+     * reliably routes the re-resolve to `pipelineId` using only resolve()'s public contract.
+     */
+    private static JsonNode forcePipelineId(JsonNode request, Path file, String pipelineId) {
+        ObjectNode copy = request != null && request.isObject()
+                ? (ObjectNode) request.deepCopy()
+                : JsonNodeFactory.instance.objectNode();
+        ArrayNode documents = copy.putArray("documents");
+        documents.addObject()
+                .put("path", file.toAbsolutePath().normalize().toString())
+                .put("pipelineId", pipelineId);
+        return copy;
+    }
+
+    private static String text(JsonNode node, String field) {
+        if (node == null || !node.hasNonNull(field)) return null;
+        String value = node.path(field).asText().trim();
+        return value.isEmpty() ? null : value;
+    }
+
+    /** Signals that a file sniffed as binary content should be skipped, not failed. */
+    private static final class BinaryContentException extends RuntimeException {
+        BinaryContentException(String message) {
+            super(message);
+        }
+    }
+
     private static boolean isKnowledgeSource(String name) {
         return name.endsWith(".pdf") || isTextKnowledgeSource(name)
-                || isStructuredKnowledgeSource(name) || isCodeKnowledgeSource(name);
+                || isStructuredKnowledgeSource(name) || isCodeKnowledgeSource(name)
+                || isMailKnowledgeSource(name) || isOfficeKnowledgeSource(name)
+                || isRtfKnowledgeSource(name) || isImageKnowledgeSource(name);
+    }
+
+    private static boolean isMailKnowledgeSource(String name) {
+        return name.endsWith(".eml") || name.endsWith(".mbox") || name.endsWith(".msg");
+    }
+
+    private static boolean isOfficeKnowledgeSource(String name) {
+        return name.endsWith(".doc") || name.endsWith(".docx")
+                || name.endsWith(".ppt") || name.endsWith(".pptx");
+    }
+
+    private static boolean isRtfKnowledgeSource(String name) {
+        return name.endsWith(".rtf");
+    }
+
+    // Images are only ever worth walking into the crawl when a model (VLM) pipeline can actually
+    // read them - see the image gate at the top of writeLocalCrawlMarkdown, which skips them with
+    // an actionable reason when the resolved pipeline is not a model pipeline.
+    private static boolean isImageKnowledgeSource(String name) {
+        return name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg")
+                || name.endsWith(".gif") || name.endsWith(".webp") || name.endsWith(".bmp")
+                || name.endsWith(".tif") || name.endsWith(".tiff");
     }
 
     private static boolean isStructuredKnowledgeSource(String name) {
@@ -1783,6 +1894,9 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         List<LocalDocumentLoaderRegistry.LoadedOutput> outputs = List.of();
         if (LocalDocumentLoaderRegistry.supports(loaderName)) {
             try {
+                // For "pdf", LocalDocumentLoaderRegistry.load() itself routes to pdftotext under
+                // GraalVM Native Image before ever constructing PdfExtendedLoaderImpl - see the
+                // comment there for why PDFBox's PDDocument cannot be touched in that mode.
                 LocalDocumentLoaderRegistry.LoadedDocument loaded =
                         LocalDocumentLoaderRegistry.load(file, loaderName, loaderOptions);
                 if ("html".equals(loaderName)) {
@@ -1792,12 +1906,30 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     title = firstNonBlank(loaded.title(), title);
                 }
                 outputs = loaded.outputs();
-            } catch (Exception e) {
+            } catch (Exception | LinkageError e) {
+                // The load above completes (or throws) before anything reaches `output`, so a
+                // failure here has never touched the body writer - safe to retry from scratch.
+                // The pdftotext-backed fallback keeps page citations (pageNumber/bodyStart/
+                // bodyEnd) instead of falling back to plain, unnumbered text.
+                if ("pdf".equals(loaderName)) {
+                    try {
+                        LocalDocumentLoaderRegistry.LoadedDocument fallback =
+                                LocalDocumentLoaderRegistry.loadPdfViaPdftotext(file);
+                        if (fallback.text() != null && !fallback.text().isBlank()) {
+                            output.write(fallback.text());
+                        }
+                        title = firstNonBlank(fallback.title(), title);
+                        return new LocalMarkdownBody(title, fallback.outputs());
+                    } catch (IOException fallbackFailure) {
+                        IOException failure = new IOException("Unable to extract " + loaderName
+                                + " content from " + file + ": " + failureDetail(e), e);
+                        failure.addSuppressed(fallbackFailure);
+                        throw failure;
+                    }
+                }
                 throw new IOException("Unable to extract " + loaderName + " content from " + file
-                        + ": " + e.getMessage(), e);
+                        + ": " + failureDetail(e), e);
             }
-        } else if ("pdf".equals(loaderName)) {
-            streamPdfText(file, output);
         } else if ("html".equals(loaderName)) {
             title = firstNonBlank(streamHtmlToMarkdown(file, output), title);
         } else if ("table".equals(loaderName)) {
@@ -1815,6 +1947,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     }
 
     private static void streamUtf8(Path file, Writer output) throws IOException {
+        requireNotBinary(file);
         try (BufferedReader input = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
             int read;
@@ -1822,6 +1955,39 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 if (read > 0) output.write(buffer, 0, read);
             }
         }
+    }
+
+    /**
+     * Sniffs the first BINARY_SNIFF_BYTES of `file` before any UTF-8 text read: a NUL byte, or a
+     * malformed/unmappable byte sequence anywhere else in the sample, means this is not text.
+     * Decoding with endOfInput=false tolerates a multibyte UTF-8 character truncated exactly at
+     * the sample boundary (CoderResult.UNDERFLOW, not an error) so a valid file is never flagged
+     * just because the sniff window cut a character in half.
+     */
+    private static void requireNotBinary(Path file) throws IOException {
+        byte[] sample;
+        try (InputStream in = Files.newInputStream(file)) {
+            sample = in.readNBytes(BINARY_SNIFF_BYTES);
+        }
+        for (byte value : sample) {
+            if (value == 0) {
+                throw new BinaryContentException(binaryContentMessage(file));
+            }
+        }
+        CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+        CoderResult result = decoder.decode(ByteBuffer.wrap(sample), CharBuffer.allocate(sample.length + 1), false);
+        if (result.isError()) {
+            throw new BinaryContentException(binaryContentMessage(file));
+        }
+    }
+
+    private static String binaryContentMessage(Path file) {
+        String name = file.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        String extension = dot >= 0 ? name.substring(dot) : name;
+        return "binary content; no text loader for " + extension;
     }
 
     private static void streamPdfText(Path file, Writer output) throws IOException {
@@ -1845,36 +2011,74 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 streamPdfTextWithPdftotext(file, output);
                 return;
             }
-            throw new IOException("Unable to extract PDF text from " + file + ": " + e.getMessage(), e);
+            throw new IOException("Unable to extract PDF text from " + file + ": " + failureDetail(e), e);
         }
     }
 
     private static void streamPdfTextWithPdftotext(Path file, Writer output) throws IOException {
-        Process process = new ProcessBuilder("pdftotext", "-layout", file.toString(), "-")
-                .redirectErrorStream(true)
-                .start();
-        StringBuilder tail = new StringBuilder();
+        streamPdfTextWithPdftotext(file, output,
+                List.of("pdftotext", "-layout", file.toString(), "-"), PDFTOTEXT_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * Package-private so tests can inject a slow/hanging command and a short timeout without
+     * waiting out the production 60s budget. `command` and `timeoutSeconds` are otherwise fixed
+     * by the 2-arg overload above, which is the only production call.
+     *
+     * The read loop below blocks in input.read() until the process closes its stdout, which does
+     * NOT happen just because output has paused - a hung process that is merely slow (or stuck)
+     * can block that read forever. A separate watchdog thread is what enforces the timeout in that
+     * case: destroyForcibly() closes the process's stdout pipe, which is what unblocks the
+     * concurrent blocking read with EOF, letting the main thread notice `timedOut` afterwards.
+     */
+    static void streamPdfTextWithPdftotext(Path file, Writer output, List<String> command, long timeoutSeconds)
+            throws IOException {
+        // stderr goes to its own temp file - never redirectErrorStream(true) - so poppler's
+        // "Syntax Warning/Error" chatter can never leak into the extracted document body.
+        Path stderrFile = Files.createTempFile("kompile-pdftotext-table-err-", ".txt");
         try {
-            try (Reader input = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)) {
-                char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
-                int read;
-                while ((read = input.read(buffer)) >= 0) {
-                    if (read == 0) continue;
-                    output.write(buffer, 0, read);
-                    tail.append(buffer, 0, read);
-                    if (tail.length() > 4_000) tail.delete(0, tail.length() - 4_000);
+            Process process = new ProcessBuilder(command)
+                    .redirectError(stderrFile.toFile())
+                    .start();
+            AtomicBoolean timedOut = new AtomicBoolean(false);
+            Thread watchdog = new Thread(() -> {
+                try {
+                    if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                        timedOut.set(true);
+                        process.destroyForcibly();
+                    }
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
                 }
+            }, "pdftotext-watchdog");
+            watchdog.setDaemon(true);
+            watchdog.start();
+            try {
+                try (Reader input = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)) {
+                    char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
+                    int read;
+                    while ((read = input.read(buffer)) >= 0) {
+                        if (read == 0) continue;
+                        output.write(buffer, 0, read);
+                    }
+                }
+                process.waitFor();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while extracting PDF text: " + file, e);
+            } finally {
+                watchdog.interrupt();
             }
-            if (!process.waitFor(60, TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-                throw new IOException("pdftotext timed out for " + file);
+            if (timedOut.get()) {
+                throw new IOException("pdftotext timed out after " + timeoutSeconds + " s for " + file);
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while extracting PDF text: " + file, e);
-        }
-        if (process.exitValue() != 0) {
-            throw new IOException("pdftotext failed for " + file + ": " + tail.toString().strip());
+            if (process.exitValue() != 0) {
+                String stderrText = Files.readString(stderrFile, StandardCharsets.UTF_8).strip();
+                if (stderrText.length() > 4_000) stderrText = stderrText.substring(stderrText.length() - 4_000);
+                throw new IOException("pdftotext failed for " + file + ": " + stderrText);
+            }
+        } finally {
+            Files.deleteIfExists(stderrFile);
         }
     }
 
@@ -2500,6 +2704,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 output.write(jsonString(pipeline.loaderName()));
                 output.write(",\"chunker\":");
                 output.write(jsonString(pipeline.chunkerName()));
+                output.write(",\"sourceMetadata\":");
+                output.write(sourceMetadataJson(document.sourceMetadata()));
                 output.write(",\"text\":");
                 output.write(jsonString(text));
                 output.write("}\n");
@@ -2556,6 +2762,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 documents.write("\"loader\":" + jsonString(document.loader()) + ",");
                 documents.write("\"chunker\":" + jsonString(document.chunker()) + ",");
                 documents.write("\"loaderOutputs\":" + loaderOutputsJson(document.loaderOutputs()) + ",");
+                documents.write("\"sourceMetadata\":" + sourceMetadataJson(document.sourceMetadata()) + ",");
                 documents.write("\"markdownChars\":" + document.markdownChars() + ",");
                 documents.write("\"wordCount\":" + document.wordCount() + "}\n");
             }
@@ -2619,6 +2826,46 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             return LOADER_METADATA_MAPPER.writeValueAsString(outputs);
         } catch (Exception ignored) {
             return "[]";
+        }
+    }
+
+    /**
+     * C7: for documents loaded by "external-materialized" (see LocalDocumentLoaderRegistry), the
+     * primary loader output's (index 0) metadata IS the complete materialized-source metadata.
+     * This keeps only its scalar (String/Number/Boolean) entries, truncates String values to
+     * SOURCE_METADATA_MAX_VALUE_CHARS, and caps the result at SOURCE_METADATA_MAX_ENTRIES entries
+     * - documents.jsonl already carries the untrimmed metadata under loaderOutputs[].metadata.
+     * Attachment files crawled directly from a materialized connector directory use a different
+     * loader (their own automatic loader), so this is empty for them, as intended.
+     */
+    private static Map<String, Object> sourceMetadataFor(LocalMarkdownArtifact artifact) {
+        if (!"external-materialized".equals(artifact.loader()) || artifact.loaderOutputs().isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> materialized = artifact.loaderOutputs().get(0).metadata();
+        if (materialized == null || materialized.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> filtered = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : materialized.entrySet()) {
+            if (filtered.size() >= SOURCE_METADATA_MAX_ENTRIES) break;
+            Object value = entry.getValue();
+            if (value instanceof String text) {
+                filtered.put(entry.getKey(), text.length() > SOURCE_METADATA_MAX_VALUE_CHARS
+                        ? text.substring(0, SOURCE_METADATA_MAX_VALUE_CHARS) : text);
+            } else if (value instanceof Number || value instanceof Boolean) {
+                filtered.put(entry.getKey(), value);
+            }
+        }
+        return Collections.unmodifiableMap(filtered);
+    }
+
+    private static String sourceMetadataJson(Map<String, Object> sourceMetadata) {
+        if (sourceMetadata == null || sourceMetadata.isEmpty()) return "{}";
+        try {
+            return LOADER_METADATA_MAPPER.writeValueAsString(sourceMetadata);
+        } catch (Exception ignored) {
+            return "{}";
         }
     }
 
@@ -2944,12 +3191,14 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                               String title, String markdownPath, String extractionStatus,
                               String extractionMessage, String pipelineId, String pipelineType,
                               String loader, String chunker, long markdownChars, long wordCount,
-                              List<LocalDocumentLoaderRegistry.LoadedOutput> loaderOutputs) {
+                              List<LocalDocumentLoaderRegistry.LoadedOutput> loaderOutputs,
+                              Map<String, Object> sourceMetadata) {
         LocalCrawlDocument withMarkdown(LocalMarkdownArtifact artifact) {
             return new LocalCrawlDocument(documentId, source, relativePath, sizeBytes, lastModified, contentType,
                     artifact.title(), artifact.markdownPath(), artifact.status(), artifact.message(),
                     artifact.pipelineId(), artifact.pipelineType(), artifact.loader(), artifact.chunker(),
-                    artifact.markdownChars(), artifact.wordCount(), artifact.loaderOutputs());
+                    artifact.markdownChars(), artifact.wordCount(), artifact.loaderOutputs(),
+                    sourceMetadataFor(artifact));
         }
     }
 
@@ -2969,6 +3218,11 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         }
 
         LocalMarkdownArtifact withStats(long markdownChars, long wordCount) {
+            return new LocalMarkdownArtifact(title, markdownPath, status, message, pipelineId, pipelineType,
+                    loader, chunker, markdownChars, wordCount, loaderOutputs);
+        }
+
+        LocalMarkdownArtifact withMessage(String message) {
             return new LocalMarkdownArtifact(title, markdownPath, status, message, pipelineId, pipelineType,
                     loader, chunker, markdownChars, wordCount, loaderOutputs);
         }

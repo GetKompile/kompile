@@ -2,6 +2,7 @@
   "resources": {
     "includes": [
       {"pattern": "cli-agents\\.json"},
+      {"pattern": "log4j2\\.component\\.properties"},
       {"pattern": "pi-mcp-adapter/.*"},
       {"pattern": "installer/install\\.sh"},
       {"pattern": "templates/.*"},
@@ -14,7 +15,14 @@
       {"pattern": "ai/kompile/cli/main/chat/providers/.*\\.json"},
       {"pattern": "io/anserini/encoder/.*"},
       {"pattern": "org/jline/.*"},
-      {"pattern": "META-INF/services/org/jline/.*"}
+      {"pattern": "META-INF/services/org/jline/.*"},
+      {"pattern": "org/apache/poi/schemas/ooxml/.*\\.xsb"},
+      {"pattern": "org/apache/xmlbeans/metadata/.*\\.xsb"},
+      {"pattern": "org/apache/poi/ss/formula/function/functionMetadata.*\\.txt"}
     ]
-  }
+  },
+  "bundles": [
+    {"name": "org.apache.xmlbeans.impl.regex.message"},
+    {"name": "org.apache.xmlbeans.message"}
+  ]
 }

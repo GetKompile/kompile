@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -55,7 +56,7 @@ class UnifiedGraphMutationJournalTest {
             assertEquals(Set.of("r1", "r2"), archive.incidentLinks(
                     "b", GraphQueryEngine.Direction.BOTH, 10).stream()
                     .map(UnifiedGraphArchive.Link::id)
-                    .collect(java.util.stream.Collectors.toSet()));
+                    .collect(Collectors.toSet()));
             UnifiedGraph neighborhood = archive.materializeNeighborhood(
                     List.of("b"), List.of("b"), GraphQueryEngine.Direction.OUTGOING,
                     1, 10, 10);
@@ -76,6 +77,30 @@ class UnifiedGraphMutationJournalTest {
             assertTrue(archive.incidentLinks("b", GraphQueryEngine.Direction.BOTH, 10).isEmpty());
         }
         assertEquals(0, UnifiedGraph.load(graphPath).relationCount());
+    }
+
+    @Test
+    void boundedNeighborhoodMarksLearningStaleWhileAJournalIsPending() throws Exception {
+        Path graphPath = baseGraph("stale.kgraph");
+        UnifiedGraphArchive.Link base;
+        try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath);
+             UnifiedGraphArchive.LinkCursor links = archive.openLinks()) {
+            base = links.next();
+            UnifiedGraph clean = archive.materializeNeighborhood(
+                    List.of("a"), List.of("a"), GraphQueryEngine.Direction.BOTH, 1, 10, 10);
+            assertFalse(Boolean.TRUE.equals(clean.meta().get("learning.reasoningStale")));
+            assertFalse(Boolean.TRUE.equals(clean.meta().get("learning.kgeStale")));
+        }
+
+        UnifiedGraphMutationJournal.appendRetractions(graphPath, List.of(base));
+
+        // Bounded reads must not report learned scores for the pre-retraction topology before compaction.
+        try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath)) {
+            UnifiedGraph neighborhood = archive.materializeNeighborhood(
+                    List.of("a"), List.of("a"), GraphQueryEngine.Direction.BOTH, 1, 10, 10);
+            assertEquals(true, neighborhood.meta().get("learning.reasoningStale"));
+            assertEquals(true, neighborhood.meta().get("learning.kgeStale"));
+        }
     }
 
     @Test
@@ -173,6 +198,53 @@ class UnifiedGraphMutationJournalTest {
         UnifiedGraph.load(source).saveCompact(source);
         assertFalse(UnifiedGraphMutationJournal.exists(source));
         assertTrue(UnifiedGraph.load(source).relation("r2").isPresent());
+    }
+
+    @Test
+    void assertionTombstonesTheRelationsItReplacesInTheSameTransaction() throws Exception {
+        Path graphPath = baseGraph("supersede.kgraph");
+        UnifiedGraphArchive.Link base;
+        try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath);
+             UnifiedGraphArchive.LinkCursor links = archive.openLinks()) {
+            base = links.next();
+        }
+        UnifiedGraphArchive.Link respelled = link("r2", "a", "b", "Knows", 0.9);
+
+        // Listing the assertion itself among the replaced links must not tombstone it.
+        UnifiedGraphMutationJournal.AppendResult append = UnifiedGraphMutationJournal.appendAssertion(
+                graphPath, List.of(), respelled, null, List.of(base, respelled));
+
+        assertEquals(1, append.recordCount());
+        try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath)) {
+            assertEquals(1, archive.linkCount());
+            assertEquals(List.of("r2"), archive.incidentLinks(
+                    "a", GraphQueryEngine.Direction.OUTGOING, 10).stream()
+                    .map(UnifiedGraphArchive.Link::id).toList());
+        }
+        UnifiedGraph materialized = UnifiedGraph.load(graphPath);
+        assertTrue(materialized.relation("r1").isEmpty());
+        assertEquals("Knows", materialized.relation("r2").orElseThrow().type());
+    }
+
+    @Test
+    void retractedRelationTypesSurviveLoadAndCompaction() throws Exception {
+        Path graphPath = baseGraph("retracted-vocabulary.kgraph");
+        UnifiedGraphArchive.Link base;
+        try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath);
+             UnifiedGraphArchive.LinkCursor links = archive.openLinks()) {
+            base = links.next();
+        }
+
+        UnifiedGraphMutationJournal.appendRetractions(graphPath, List.of(base));
+
+        assertEquals(Set.of("KNOWS"), UnifiedGraphMutationJournal.load(graphPath).retractedRelationTypes());
+        UnifiedGraph pending = UnifiedGraph.load(graphPath);
+        assertEquals(0, pending.relationCount());
+        assertEquals(Set.of("KNOWS"), pending.retractedRelationTypes());
+
+        assertTrue(UnifiedGraphMutationJournal.compact(graphPath));
+        assertFalse(UnifiedGraphMutationJournal.exists(graphPath));
+        assertEquals(Set.of("KNOWS"), UnifiedGraph.load(graphPath).retractedRelationTypes());
     }
 
     private Path baseGraph(String name) throws Exception {

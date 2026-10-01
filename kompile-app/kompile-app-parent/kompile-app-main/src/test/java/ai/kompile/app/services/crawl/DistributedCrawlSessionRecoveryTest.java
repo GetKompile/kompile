@@ -28,7 +28,6 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlSource;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.file.Path;
 import java.time.Instant;
@@ -123,8 +122,7 @@ class DistributedCrawlSessionRecoveryTest {
         CapturingDelegate delegate = new CapturingDelegate();
         DistributedCrawlCoordinator coordinator = new DistributedCrawlCoordinator(
                 List.of(delegate), cfgService(true, true), mapper());
-        ReflectionTestUtils.setField(coordinator, "workerRegistry",
-                registryWith(liveCrawlWorker("w2", "http://w2")));
+        coordinator.workerRegistry = registryWith(liveCrawlWorker("w2", "http://w2"));
 
         DistributedCrawlSession session =
                 runningSession("sx", List.of(src("A", "a"), src("B", "b")), "ext-old");
@@ -151,8 +149,7 @@ class DistributedCrawlSessionRecoveryTest {
         CapturingDelegate delegate = new CapturingDelegate();
         DistributedCrawlCoordinator coordinator = new DistributedCrawlCoordinator(
                 List.of(delegate), cfgService(true, true), mapper());
-        ReflectionTestUtils.setField(coordinator, "workerRegistry",
-                registryWith(liveCrawlWorker("w2", "http://w2")));
+        coordinator.workerRegistry = registryWith(liveCrawlWorker("w2", "http://w2"));
 
         DistributedCrawlSession session =
                 runningSession("sy", List.of(src("A", "a"), src("B", "b")), "ext-old");
@@ -181,7 +178,7 @@ class DistributedCrawlSessionRecoveryTest {
         delegate.statusToReturn = "COMPLETED"; // the external job finished while the coordinator was down
         DistributedCrawlCoordinator coordinator = new DistributedCrawlCoordinator(
                 List.of(delegate), cfgService(false, true), mapper());
-        ReflectionTestUtils.setField(coordinator, "sessionStore", store);
+        coordinator.sessionStore = store;
 
         coordinator.reconcilePersistedSessions();
         store.flush(); // drain the async persist so @TempDir cleanup doesn't race the writer
@@ -201,7 +198,7 @@ class DistributedCrawlSessionRecoveryTest {
         delegate.statusToReturn = "RUNNING"; // still alive on the worker
         DistributedCrawlCoordinator coordinator = new DistributedCrawlCoordinator(
                 List.of(delegate), cfgService(false, true), mapper());
-        ReflectionTestUtils.setField(coordinator, "sessionStore", store);
+        coordinator.sessionStore = store;
 
         coordinator.reconcilePersistedSessions();
         store.flush(); // drain the async persist so @TempDir cleanup doesn't race the writer
@@ -221,7 +218,7 @@ class DistributedCrawlSessionRecoveryTest {
         delegate.statusToReturn = "FAILED"; // gone, and reassignment is off
         DistributedCrawlCoordinator coordinator = new DistributedCrawlCoordinator(
                 List.of(delegate), cfgService(false, true), mapper());
-        ReflectionTestUtils.setField(coordinator, "sessionStore", store);
+        coordinator.sessionStore = store;
 
         coordinator.reconcilePersistedSessions();
         store.flush(); // drain the async persist so @TempDir cleanup doesn't race the writer
@@ -239,7 +236,7 @@ class DistributedCrawlSessionRecoveryTest {
 
         DistributedCrawlCoordinator coordinator = new DistributedCrawlCoordinator(
                 List.of(new CapturingDelegate()), cfgService(false, false), mapper()); // role=worker
-        ReflectionTestUtils.setField(coordinator, "sessionStore", store);
+        coordinator.sessionStore = store;
 
         coordinator.reconcilePersistedSessions();
         store.flush(); // drain the async persist so @TempDir cleanup doesn't race the writer

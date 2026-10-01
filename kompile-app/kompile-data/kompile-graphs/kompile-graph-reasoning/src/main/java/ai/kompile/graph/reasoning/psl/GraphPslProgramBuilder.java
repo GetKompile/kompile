@@ -37,9 +37,9 @@ import java.util.Map;
  * <ul>
  *   <li>{@code State(N)} — the inferred soft truth that entity {@code N} is active (a target),</li>
  *   <li>{@code Link(X, Y)} — an observed atom whose truth is the directed strength of the relation
- *       {@code X→Y} (read directly from {@link GraphRelation#weight()}),</li>
+ *       {@code X→Y} ({@link GraphRelation#strength()}),</li>
  *   <li>{@code Prior(N)} — an observed structural prior derived from the entity's
- *       {@link GraphEntity#weight() weight} and out-degree (via {@link NoisyOrCpt#estimatePrior}).</li>
+ *       {@link GraphEntity#confidence() confidence} and out-degree (via {@link NoisyOrCpt#estimatePrior}).</li>
  * </ul>
  *
  * <p>Entity ids (which can embed arbitrary characters) are replaced by safe synthetic constants
@@ -108,7 +108,7 @@ public class GraphPslProgramBuilder {
         for (GraphRelation relation : relations) {
             String cs = entityIdToConstant.get(relation.sourceId());
             String ct = entityIdToConstant.get(relation.targetId());
-            double strength = clamp01(relation.weight() * relation.confidence());
+            double strength = relation.strength();
             if (cs == null || ct == null || strength < minEdgeWeight
                     || isIdentitySeparationType(relation.type())) {
                 continue;
@@ -158,7 +158,7 @@ public class GraphPslProgramBuilder {
             if (isIdentitySeparationType(relation.type())) {
                 continue;
             }
-            double strength = clamp01(relation.weight() * relation.confidence());
+            double strength = relation.strength();
             if (strength >= minEdgeWeight) {
                 String sourceId = relation.sourceId();
                 String targetId = relation.targetId();
@@ -212,12 +212,5 @@ public class GraphPslProgramBuilder {
                 || normalized.equals("SIMILAR_TO")
                 || normalized.equals("COREFERS_TO")
                 || normalized.equals("SAME_ENTITY");
-    }
-
-    private static double clamp01(double value) {
-        if (Double.isNaN(value)) {
-            return 0.0;
-        }
-        return Math.max(0.0, Math.min(1.0, value));
     }
 }

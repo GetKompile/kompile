@@ -14,6 +14,7 @@ import ai.kompile.graph.reasoning.embedding.kge.StubKgeTripleScorer;
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
 import ai.kompile.graph.reasoning.explain.ReasoningTrace.Step;
 import ai.kompile.graph.reasoning.explain.ReasoningTrace.StepKind;
+import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.FactStore;
 import ai.kompile.graph.reasoning.fol.FolRule;
 import ai.kompile.graph.reasoning.fol.FolRuleSet;
@@ -109,6 +110,48 @@ class DossierBuilderTest {
                     .filter(i -> i.kind() == DossierItem.Kind.DIRECT_EDGE)
                     .findFirst().orElseThrow();
             assertEquals(0.9, de.probability(), 0.01, "Item probability should reflect edge confidence");
+        }
+    }
+
+    // ── Stored spellings ─────────────────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("Stored spellings: the claim is found however the stores spell it")
+    class StoredSpellingClaim {
+
+        @Test
+        @DisplayName("a snake_case edge type names a camelCase claim predicate")
+        void snakeCaseEdgeNamesCamelCasePredicate() {
+            graph.addRelation("b2", "alice", "london", "based_in", 0.9);
+
+            ClaimDossier dossier = builder.assess(graph, "alice", "basedIn", "london",
+                    facts, inferred, null, null);
+
+            assertTrue(dossier.supporting().stream().anyMatch(i -> i.kind() == DossierItem.Kind.DIRECT_EDGE),
+                    "based_in edge should support basedIn: " + dossier.supporting());
+        }
+
+        @Test
+        @DisplayName("an atom asserted without the space is verified and named as stored")
+        void noSpaceObservedAtomIsVerified() {
+            facts.assertFact(Fact.observed("basedIn(alice,london)", "agent"));
+
+            ClaimDossier dossier = builder.assess(graph, "alice", "basedIn", "london",
+                    facts, inferred, null, null);
+
+            assertEquals("basedIn(alice,london)", dossier.claimAtom());
+            assertTrue(dossier.supporting().stream().anyMatch(i -> i.kind() == DossierItem.Kind.DATALOG_PROOF
+                            || i.kind() == DossierItem.Kind.PSL),
+                    "verifier should support the observed atom: " + dossier.supporting());
+        }
+
+        @Test
+        @DisplayName("an unheld claim is named with the spaced key")
+        void unheldClaimNamedWithSpacedKey() {
+            ClaimDossier dossier = builder.assess(graph, "alice", "basedIn", "london",
+                    facts, inferred, null, null);
+
+            assertEquals("basedIn(alice, london)", dossier.claimAtom());
         }
     }
 

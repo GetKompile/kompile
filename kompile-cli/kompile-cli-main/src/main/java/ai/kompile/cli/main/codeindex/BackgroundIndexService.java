@@ -62,6 +62,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *       for the project it waits briefly (bounded) so callers still read
  *       their own writes; when the index is quiet it returns immediately
  *       (no stat walk at all).</li>
+ *   <li><b>Session start</b> — {@link #refreshOnSessionStart} runs one
+ *       incremental pass when an agent session opens, without a watcher.</li>
  *   <li><b>Periodic backstop</b> — a low-frequency sweep re-runs the cheap
  *       fingerprint pass for recently-used projects, catching anything a
  *       watcher missed (inotify overflow, unwatchable trees).</li>
@@ -178,9 +180,11 @@ public final class BackgroundIndexService {
 
     private static final class ProjectState {
         final String projectId;
+        /**
+         * The project's root. Its include/exclude scope is deliberately not cached:
+         * every pass reads the scope the index records, which another process may change.
+         */
         volatile Path root;
-        volatile String includePatterns;
-        volatile String excludePatterns;
         volatile IndexFileWatcher watcher;
         volatile boolean watcherFailed;
         final AtomicBoolean watcherStartQueued = new AtomicBoolean();
@@ -193,6 +197,8 @@ public final class BackgroundIndexService {
         /** writeSeq value covered by the last completed refresh. */
         volatile long cleanSeq;
         volatile boolean refreshQueued;
+        /** The queued refresh re-checks the graph projection even if nothing changed. */
+        volatile boolean verifyProjectionRequested;
         volatile boolean projectionDirty;
         volatile boolean projectionQueued;
         volatile boolean projectionRunning;
@@ -383,8 +389,6 @@ public final class BackgroundIndexService {
             IndexJob existing = state.activeJob;
             if (existing != null && !existing.isDone()) return existing;
             state.root = root;
-            state.includePatterns = includes;
-            state.excludePatterns = excludes;
             state.lastTouchedMs = System.currentTimeMillis();
             IndexJob job = new IndexJob("idx-" + jobCounter.incrementAndGet(),
                     projectId, root.toString(), force);
@@ -493,6 +497,17 @@ public final class BackgroundIndexService {
      *         nothing worth saying.
      */
     public String prepareForRead(LocalCodeIndexer callerIndexer, String projectId) {
+        return prepareForRead(callerIndexer, projectId, null);
+    }
+
+    /**
+     * {@link #prepareForRead(LocalCodeIndexer, String)} for a caller working in
+     * {@code workingDirectory}. When the project's index metadata is unreadable,
+     * the root its manifest declares (walking up from there) lets the background
+     * pass rebuild the index instead of skipping the project.
+     */
+    public String prepareForRead(LocalCodeIndexer callerIndexer, String projectId,
+                                 Path workingDirectory) {
         if (projectId == null || projectId.isBlank() || closed.get()) return null;
         if (LocalCodeIndexer.isRemoved(projectId)) {
             retireRemovedProject(projectId);
@@ -506,10 +521,7 @@ public final class BackgroundIndexService {
                 Path root = lookupRoot(projectId);
                 if (root != null) {
                     try {
-                        Map<String, Object> stats = indexer.getStats(projectId);
-                        LocalCodeKGraphPublisher.publish(root, projectId,
-                                stringValue(stats.get("includePatterns")),
-                                stringValue(stats.get("excludePatterns")));
+                        LocalCodeKGraphPublisher.publish(root, projectId, null, null);
                     } catch (Exception e) {
                         CodeIndexDiagnostics.alert("[code-index] inline KGraph publication failed for '"
                                 + projectId + "': " + diagnosticMessage(e));
@@ -521,7 +533,7 @@ public final class BackgroundIndexService {
         try {
             ProjectState state = stateFor(projectId);
             state.lastTouchedMs = System.currentTimeMillis();
-            if (state.root == null && !loadStateMetadata(state)) return null;
+            if (state.root == null && !loadStateMetadata(state, workingDirectory)) return null;
 
             // Watcher registration walks the tree — never pay that on a read.
             boolean watching = isWatching(projectId);
@@ -556,6 +568,27 @@ public final class BackgroundIndexService {
             CodeIndexDiagnostics.alert("[code-index] background freshness skipped for '"
                     + projectId + "': " + diagnosticMessage(e));
             return null;
+        }
+    }
+
+    /**
+     * One incremental pass when an agent session starts, so the session's first
+     * query reads a current index. Unlike {@link #prepareForRead} it starts no
+     * watcher (each holds an inotify instance, and every session is its own
+     * process) and does not mark the project active, so the backstop sweep stays
+     * idle until the session reads the index. The graph projection runs only
+     * when the pass changed the index.
+     */
+    public void refreshOnSessionStart(String projectId) {
+        if (projectId == null || projectId.isBlank() || closed.get() || !enabled()) return;
+        if (LocalCodeIndexer.isRemoved(projectId)) return;
+        try {
+            ProjectState state = stateFor(projectId);
+            if (state.root == null && !loadStateMetadata(state)) return;
+            scheduleRefresh(state, IndexAutoRefresherDefaultInterval.VALUE, false);
+        } catch (Exception e) {
+            CodeIndexDiagnostics.alert("[code-index] session-start refresh skipped for '"
+                    + projectId + "': " + diagnosticMessage(e));
         }
     }
 
@@ -700,11 +733,23 @@ public final class BackgroundIndexService {
     /**
      * Schedule a single-flight incremental refresh for the project. A
      * {@code throttleMs} of 0 bypasses the shared throttle (used when we know
-     * something changed); otherwise the legacy 30s throttle applies.
+     * something changed); otherwise the legacy 30s throttle applies. Passes on
+     * the legacy interval are backstop checks and re-check the graph projection.
      */
     private void scheduleRefresh(ProjectState state, long throttleMs) {
+        scheduleRefresh(state, throttleMs, throttleMs == IndexAutoRefresherDefaultInterval.VALUE);
+    }
+
+    /**
+     * {@code verifyProjection} re-runs the graph projection even when the pass
+     * changes nothing (the publisher's generation check keeps that cheap for a
+     * current graph). A request that coalesces into a queued pass keeps it.
+     */
+    private void scheduleRefresh(ProjectState state, long throttleMs, boolean verifyProjection) {
         synchronized (state) {
-            if (state.refreshQueued || LocalCodeIndexer.isRemoved(state.projectId)) return;
+            if (LocalCodeIndexer.isRemoved(state.projectId)) return;
+            if (verifyProjection) state.verifyProjectionRequested = true;
+            if (state.refreshQueued) return;
             state.refreshQueued = true;
         }
         long delay = throttleMs == 0 ? WRITE_DEBOUNCE_MS : 0;
@@ -720,8 +765,11 @@ public final class BackgroundIndexService {
 
     private void runRefresh(ProjectState state, long throttleMs) {
         long seqBefore = state.writeSeq.get();
+        boolean verifyProjection;
         synchronized (state) {
             state.refreshQueued = false;
+            verifyProjection = state.verifyProjectionRequested;
+            state.verifyProjectionRequested = false;
             if (LocalCodeIndexer.isRemoved(state.projectId)) return;
             IndexJob job = state.activeJob;
             if (job != null && !job.isDone()) {
@@ -734,8 +782,7 @@ public final class BackgroundIndexService {
         }
         try {
             IndexAutoRefresher.RefreshOutcome outcome = IndexAutoRefresher.refresh(
-                    indexer, state.projectId, throttleMs,
-                    state.includePatterns, state.excludePatterns);
+                    indexer, state.projectId, throttleMs, state.root);
             String note = outcome.note();
             if (note != null) {
                 state.lastNote.set(note.replace("[index auto-refreshed:",
@@ -746,10 +793,9 @@ public final class BackgroundIndexService {
                 state.lastRefreshCompletedMs = System.currentTimeMillis();
                 return;
             }
-            boolean backstopCheck = throttleMs == IndexAutoRefresherDefaultInterval.VALUE;
             if (state.root != null && (outcome.changed()
                     || throttleMs == 0 && !outcome.fileFailures()
-                    || state.projectionDirty || backstopCheck)) {
+                    || state.projectionDirty || verifyProjection)) {
                 scheduleProjection(state, null);
             }
             // A bypass pass (throttle 0) always runs, so it certifies every
@@ -1021,8 +1067,10 @@ public final class BackgroundIndexService {
 
         boolean successful = false;
         try {
+            // No scope: the publisher projects the scope the committed index records,
+            // read under the index lock.
             LocalCodeKGraphPublisher.ProjectionResult projection = projectionPublisher.publish(
-                    state.root, state.projectId, state.includePatterns, state.excludePatterns);
+                    state.root, state.projectId, null, null);
             for (IndexJob targetJob : targetJobs) targetJob.projection = projection;
             if (projection != null && projection.graphPath() != null) {
                 scheduleLearning(state, projection, targetJobs);
@@ -1097,8 +1145,7 @@ public final class BackgroundIndexService {
             if (existing != null && existing.isRunning()) return true;
             evictWatchersOverCap(state.projectId);
             try {
-                IndexFileWatcher watcher = indexer.createWatcher(root, state.projectId,
-                        state.includePatterns, state.excludePatterns, silentStream());
+                IndexFileWatcher watcher = indexer.createWatcher(root, state.projectId, silentStream());
                 watcher.setListener(new IndexFileWatcher.WatchListener() {
                     @Override
                     public void onFilesChanged(Set<String> changedPaths) {
@@ -1270,23 +1317,39 @@ public final class BackgroundIndexService {
     }
 
     private boolean loadStateMetadata(ProjectState state) {
+        return loadStateMetadata(state, null);
+    }
+
+    /**
+     * Loads the project's root from its index metadata. When that
+     * metadata is unreadable, the root the project's manifest declares walking up
+     * from {@code workingDirectory} stands in (never the home directory or one
+     * of its ancestors); the next pass rebuilds the metadata.
+     */
+    private boolean loadStateMetadata(ProjectState state, Path workingDirectory) {
         try {
-            Map<String, Object> stats = indexer.getStats(state.projectId);
+            Map<String, Object> stats;
+            try {
+                stats = indexer.getStats(state.projectId);
+            } catch (IndexFileStore.UnreadableIndexStateException torn) {
+                if (workingDirectory == null) return false;
+                Path declared = ProjectIdResolver.declaredRoot(state.projectId, workingDirectory);
+                Path home = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize();
+                if (declared == null || !Files.isDirectory(declared) || home.startsWith(declared)) {
+                    return false;
+                }
+                state.root = declared;
+                return true;
+            }
             Object rootPath = stats.get("rootPath");
             if (rootPath == null) return false;
             Path root = Path.of(rootPath.toString()).toAbsolutePath().normalize();
             if (!Files.isDirectory(root)) return false;
             state.root = root;
-            state.includePatterns = stringValue(stats.get("includePatterns"));
-            state.excludePatterns = stringValue(stats.get("excludePatterns"));
             return true;
         } catch (Exception ignored) {
             return false;
         }
-    }
-
-    private static String stringValue(Object value) {
-        return value == null || value.toString().isBlank() ? null : value.toString();
     }
 
     private static String diagnosticMessage(Throwable error) {

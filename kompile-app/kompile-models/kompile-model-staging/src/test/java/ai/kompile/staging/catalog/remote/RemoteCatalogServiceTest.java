@@ -11,7 +11,6 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -129,7 +128,7 @@ class RemoteCatalogServiceTest {
         transports.add(transport);
         RemoteCatalogService service =
                 new RemoteCatalogService(authProviderChain, limits, transport);
-        ReflectionTestUtils.setField(service, "refreshInterval", "24h");
+        service.refreshInterval = "24h";
         return service;
     }
 

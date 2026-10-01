@@ -42,7 +42,7 @@ public class GraphRagController {
     private final GraphRagService graphRagService;
 
     @Autowired(required = false)
-    private GraphReasoningRetriever graphReasoningRetriever;
+    GraphReasoningRetriever graphReasoningRetriever;
 
     @Autowired
     public GraphRagController(@Autowired(required = false) GraphRagService graphRagService) {

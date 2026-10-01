@@ -1,16 +1,19 @@
 package ai.kompile.cli.main.chat.harness.eval;
 
 import ai.kompile.cli.main.chat.harness.TaskOutcome;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class EvalResultStoreTest {
 
     @TempDir
@@ -172,6 +175,35 @@ class EvalResultStoreTest {
         assertTrue(reloaded.getSuiteNames().contains("Suite B"));
         assertTrue(reloaded.getLatestRun("Suite A").isSuitePassed());
         assertFalse(reloaded.getLatestRun("Suite B").isSuitePassed());
+    }
+
+    @Test
+    void defaultStoreFollowsTheCurrentHome() {
+        Path first = tempDir.resolve("first-home");
+        Path second = tempDir.resolve("second-home");
+        String original = System.getProperty("user.home");
+        try {
+            // The class can first load while an earlier home is current.
+            System.setProperty("user.home", first.toString());
+            new EvalResultStore().record(makeRunResult("First", true, 1, 1));
+
+            System.setProperty("user.home", second.toString());
+            EvalResultStore current = new EvalResultStore();
+            current.load();
+            assertEquals(0, current.size(), "the second home has no runs yet");
+            current.record(makeRunResult("Second", true, 1, 1));
+
+            Path firstFile = first.resolve(".kompile").resolve("eval-results.json");
+            Path secondFile = second.resolve(".kompile").resolve("eval-results.json");
+            assertTrue(Files.exists(firstFile));
+            assertTrue(Files.exists(secondFile));
+            EvalResultStore reread = new EvalResultStore(secondFile);
+            reread.load();
+            assertEquals(List.of("Second"), reread.getSuiteNames());
+        } finally {
+            if (original == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", original);
+        }
     }
 
     // ========================================================================

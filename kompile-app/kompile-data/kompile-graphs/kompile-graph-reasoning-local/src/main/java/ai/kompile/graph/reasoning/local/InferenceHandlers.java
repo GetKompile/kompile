@@ -47,9 +47,11 @@ import java.util.Optional;
  *
  * <h3>Tools registered</h3>
  * <ul>
- *   <li>{@code ask_graph_mebn} — BFS neighborhood subgraph + Bayesian network variable elimination.
- *       Entity {@link GraphEntity#weight()} is the root prior (default 1.0 → deterministic
- *       posteriors; meaningful results require entities with weights strictly between 0 and 1).</li>
+ *   <li>{@code ask_graph_mebn} — BFS neighborhood subgraph + Bayesian network variable elimination,
+ *       conditioned on optional {@code evidence}. Entity {@link GraphEntity#confidence()} is the
+ *       root prior (default 1.0 → deterministic posteriors; meaningful results require entities
+ *       with confidences strictly between 0 and 1). {@code priors} are the marginals before
+ *       evidence.</li>
  *   <li>{@code graph_bayes} — four actions: query, mpe, whatif, stats.</li>
  *   <li>{@code ask_graph_claim} — multi-signal claim dossier via {@link DossierBuilder}.</li>
  *   <li>{@code ask_graph_synthesize} — ranked answer synthesis via {@link AnswerSynthesizer}.</li>
@@ -80,10 +82,11 @@ public final class InferenceHandlers {
                 schemaFor("ask_graph_mebn",
                         "Run MEBN/Bayesian belief propagation around a node. BFS extracts a " +
                         "neighborhood subgraph (maxDepth, maxNodes), builds a Bayesian network " +
-                        "via noisy-OR CPTs (entity.weight() is the root prior — all-1.0 weights " +
-                        "produce degenerate/deterministic posteriors; use meaningful weights for " +
-                        "probabilistic results), then runs variable elimination. Returns posteriors " +
-                        "and priors keyed by entity id.",
+                        "via noisy-OR CPTs (entity confidence is the root prior — all-1.0 " +
+                        "confidences produce degenerate/deterministic posteriors), then runs " +
+                        "variable elimination. Pass evidence {entityId: true|false} to condition " +
+                        "the posteriors; priors are the marginals before evidence. Both are keyed " +
+                        "by entity id.",
                         List.of("nodeId"),
                         buildMebnSchema()),
                 InferenceHandlers::handleMebn);
@@ -91,7 +94,7 @@ public final class InferenceHandlers {
         builder.handler("graph_bayes",
                 schemaFor("graph_bayes",
                         "Bayesian inference over the session graph. action=query: posteriors given " +
-                        "evidence (evidence map {entityId:0|1}); action=mpe: most probable " +
+                        "evidence (evidence map {entityId: true|false}); action=mpe: most probable " +
                         "explanation assignment; action=whatif: posterior shift under " +
                         "hypothetical_evidence vs baseline; action=stats: network statistics.",
                         List.of("action"),
@@ -156,39 +159,26 @@ public final class InferenceHandlers {
 
             Map<String, String> varToEntityId = builder.variableToEntityId();
             Map<String, String> entityIdToVar = builder.entityIdToVariable();
+            Map<String, Integer> evidence = parseEvidenceMap(args, "evidence", entityIdToVar);
 
-            // Prior: read CPT root nodes (P(v=TRUE) from CPT[1])
-            Map<String, Object> priors = new LinkedHashMap<>();
             Map<String, Object> variableToTitle = new LinkedHashMap<>();
-
             for (GraphEntity entity : sub.entities()) {
-                String var = entityIdToVar.get(entity.id());
-                if (var == null) continue;
-                String title = entity.label().isEmpty() ? entity.id() : entity.label();
-                variableToTitle.put(entity.id(), title);
-                // Prior = entity.weight() clamped to [0,1] (used as root prior by builder)
-                double prior = Math.max(0.0, Math.min(1.0, entity.weight()));
-                priors.put(entity.id(), prior);
+                if (!entityIdToVar.containsKey(entity.id())) continue;
+                variableToTitle.put(entity.id(), entity.label().isEmpty() ? entity.id() : entity.label());
             }
 
-            // Run variable elimination: posteriors with no evidence
-            Map<String, Double> varPosteriors = VariableElimination.queryAll(network, Map.of());
-
-            // Map back from var names to entity ids
-            Map<String, Object> posteriors = new LinkedHashMap<>();
-            for (Map.Entry<String, Double> e : varPosteriors.entrySet()) {
-                String entityId = varToEntityId.get(e.getKey());
-                if (entityId != null) {
-                    posteriors.put(entityId, round4(e.getValue()));
-                }
-            }
+            // Priors are the marginals before evidence; without evidence they are the posteriors.
+            Map<String, Double> varPriors = VariableElimination.queryAll(network, Map.of());
+            Map<String, Double> varPosteriors = evidence.isEmpty()
+                    ? varPriors : VariableElimination.queryAll(network, evidence);
 
             long elapsed = System.currentTimeMillis() - t0;
 
             Map<String, Object> out = new LinkedHashMap<>();
-            out.put("posteriors", posteriors);
-            out.put("priors", priors);
+            out.put("posteriors", byEntityId(varPosteriors, varToEntityId));
+            out.put("priors", byEntityId(varPriors, varToEntityId));
             out.put("variableToTitle", variableToTitle);
+            out.put("evidenceApplied", evidence.size());
             out.put("computationTimeMs", elapsed);
             out.put("nodeCount", sub.entityCount());
             out.put("edgeCount", sub.relationCount());
@@ -536,29 +526,70 @@ public final class InferenceHandlers {
     }
 
     /**
-     * Parse an evidence map: input is a JSON object {entityId: 0|1} (0=FALSE, 1=TRUE).
+     * Parse an evidence map: input is a JSON object {entityId: true|false} (1|0 also accepted).
      * Translates entity ids to Bayesian variable names via {@code entityIdToVar}.
+     *
+     * @throws IllegalArgumentException when a state is anything else or an id is not in the
+     *         network — skipping it would report the posteriors as conditioned on it
      */
-    @SuppressWarnings("unchecked")
     private static Map<String, Integer> parseEvidenceMap(Map<String, Object> args, String key,
                                                           Map<String, String> entityIdToVar) {
         Object v = args.get(key);
-        if (!(v instanceof Map<?, ?> m)) return Map.of();
+        if (v == null) return Map.of();
+        if (!(v instanceof Map<?, ?> m)) {
+            throw new IllegalArgumentException(key + " must be an object mapping entity ids to true/false");
+        }
         Map<String, Integer> result = new LinkedHashMap<>();
+        List<String> unknown = new ArrayList<>();
         for (Map.Entry<?, ?> e : m.entrySet()) {
-            String entityId = e.getKey().toString();
-            String varName  = entityIdToVar.get(entityId);
-            if (varName == null) continue; // entity not in subgraph
-            int stateIdx;
-            if (e.getValue() instanceof Number n) {
-                stateIdx = n.intValue();
-            } else {
-                String sv = e.getValue().toString().trim();
-                stateIdx  = ("1".equals(sv) || "true".equalsIgnoreCase(sv)) ? 1 : 0;
+            String entityId = String.valueOf(e.getKey());
+            Integer state = evidenceState(e.getValue());
+            if (state == null) {
+                throw new IllegalArgumentException(key + " states must be true/false or 1/0: " + entityId);
             }
-            result.put(varName, stateIdx);
+            String varName = entityIdToVar.get(entityId);
+            if (varName == null) {
+                unknown.add(entityId);
+            } else {
+                result.put(varName, state);
+            }
+        }
+        if (!unknown.isEmpty()) {
+            List<String> known = entityIdToVar.keySet().stream().sorted().limit(10).toList();
+            throw new IllegalArgumentException("Unknown " + key + " entity id(s): " + String.join(", ", unknown)
+                    + (known.isEmpty() ? ". The network has no variables."
+                        : ". Use ids from posteriors, e.g. " + String.join(", ", known)
+                          + (entityIdToVar.size() > known.size() ? " (" + entityIdToVar.size() + " in total)." : ".")));
         }
         return Collections.unmodifiableMap(result);
+    }
+
+    /** An evidence state: true/false or 1/0, as JSON values or strings; null for anything else. */
+    private static Integer evidenceState(Object value) {
+        if (value instanceof Boolean b) return b ? 1 : 0;
+        if (value instanceof Number n) {
+            double d = n.doubleValue();
+            return d == 1.0 ? Integer.valueOf(1) : d == 0.0 ? Integer.valueOf(0) : null;
+        }
+        if (value instanceof String s) {
+            return switch (s.trim().toLowerCase(Locale.ROOT)) {
+                case "true", "1" -> 1;
+                case "false", "0" -> 0;
+                default -> null;
+            };
+        }
+        return null;
+    }
+
+    /** Maps variable-keyed probabilities back to entity ids, rounded for the response. */
+    private static Map<String, Object> byEntityId(Map<String, Double> byVariable,
+                                                  Map<String, String> varToEntityId) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        byVariable.forEach((var, p) -> {
+            String entityId = varToEntityId.get(var);
+            if (entityId != null) out.put(entityId, round4(p));
+        });
+        return out;
     }
 
     private static List<Object> serializeDossierItems(List<DossierItem> items) {
@@ -619,6 +650,8 @@ public final class InferenceHandlers {
         props.put("nodeId",    stringProp("Entity id to use as the root for BFS subgraph extraction"));
         props.put("maxDepth",  intProp("BFS radius (default 3)"));
         props.put("maxNodes",  intProp("Maximum subgraph nodes (default 50)"));
+        props.put("evidence",  objectProp("Observed states {entityId: true|false} (1|0 also accepted), " +
+                "keyed like posteriors; an id outside the subgraph is an error"));
         props.put("factSheetId", stringProp("Accepted and ignored (local session is single-graph)"));
         return props;
     }
@@ -631,7 +664,8 @@ public final class InferenceHandlers {
                 "type", "array",
                 "description", "Multiple seed entity ids for subgraph extraction",
                 "items", Map.of("type", "string")));
-        props.put("evidence",      objectProp("Observed evidence map {entityId: 0|1} (0=FALSE, 1=TRUE)"));
+        props.put("evidence",      objectProp("Observed evidence map {entityId: true|false} (1|0 also " +
+                "accepted); an id outside the subgraph is an error"));
         props.put("hypothetical_evidence", objectProp("Hypothetical evidence for whatif comparison"));
         props.put("max_depth",     intProp("BFS depth for neighborhood subgraph (default 3)"));
         props.put("max_nodes",     intProp("Max subgraph nodes (default 100)"));

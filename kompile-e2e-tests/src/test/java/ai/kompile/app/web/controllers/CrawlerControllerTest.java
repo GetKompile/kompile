@@ -132,7 +132,7 @@ class CrawlerControllerTest {
 
         ResponseEntity<?> response = controller.validateConfig(config);
 
-        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
         @SuppressWarnings("unchecked")
         Map<String, Object> body = (Map<String, Object>) response.getBody();
         assertEquals(false, body.get("valid"));

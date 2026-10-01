@@ -354,6 +354,52 @@ class GmailMessageParserTest {
         assertTrue(body.contains("Hello World"));
     }
 
+    @Test
+    void textAttachmentPartDoesNotOverwriteRealPlainTextBody() {
+        // A text/plain part that also carries a filename is an attachment (e.g. a .txt file the
+        // sender attached), not the message body — it must not clobber the real body text even
+        // though both parts share the same text/plain mimeType.
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("mimeType", "multipart/mixed");
+        ArrayNode parts = payload.putArray("parts");
+
+        ObjectNode bodyPart = parts.addObject();
+        bodyPart.put("mimeType", "text/plain");
+        bodyPart.put("filename", "");
+        bodyPart.putObject("body").put("data", base64Url("Real body"));
+
+        ObjectNode attachmentPart = parts.addObject();
+        attachmentPart.put("mimeType", "text/plain");
+        attachmentPart.put("filename", "notes.txt");
+        attachmentPart.putObject("body").put("data", base64Url("Attachment content"));
+
+        String body = parser.extractBodyContent(payload).text();
+
+        assertEquals("Real body", body);
+    }
+
+    @Test
+    void htmlAttachmentPartDoesNotOverwriteRealHtmlBody() {
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("mimeType", "multipart/mixed");
+        ArrayNode parts = payload.putArray("parts");
+
+        ObjectNode bodyPart = parts.addObject();
+        bodyPart.put("mimeType", "text/html");
+        bodyPart.put("filename", "");
+        bodyPart.putObject("body").put("data", base64Url("<p>Real HTML body</p>"));
+
+        ObjectNode attachmentPart = parts.addObject();
+        attachmentPart.put("mimeType", "text/html");
+        attachmentPart.put("filename", "page.html");
+        attachmentPart.putObject("body").put("data", base64Url("<p>Attached page</p>"));
+
+        GmailMessageParser.BodyContent result = parser.extractBodyContent(payload);
+
+        assertTrue(result.html().contains("Real HTML body"));
+        assertFalse(result.html().contains("Attached page"));
+    }
+
     // ── extractAttachmentMetadata() ─────────────────────────────────────
 
     @Test
@@ -381,6 +427,60 @@ class GmailMessageParserTest {
         assertEquals("image/png", result.get(0).get("mimeType"));
         assertEquals(51200, result.get(0).get("size"));
         assertEquals("att-xyz", result.get(0).get("attachmentId"));
+    }
+
+    @Test
+    void extractAttachmentMetadataCapturesContentIdForNamedInlineImage() {
+        // A named part (e.g. a signature logo some mail clients give a real filename) can still
+        // be an inline-rendered image when it carries a Content-ID header — callers need this to
+        // implement the shared "skip inline images referenced by Content-ID" rule.
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("mimeType", "multipart/related");
+        ArrayNode parts = payload.putArray("parts");
+
+        ObjectNode logoPart = parts.addObject();
+        logoPart.put("mimeType", "image/png");
+        logoPart.put("filename", "logo.png");
+        ObjectNode logoBody = logoPart.putObject("body");
+        logoBody.put("size", 2048);
+        logoBody.put("attachmentId", "att-logo-1");
+        ArrayNode logoHeaders = logoPart.putArray("headers");
+        addHeaderNode(logoHeaders, "Content-ID", "<logo123>");
+
+        List<Map<String, Object>> result = parser.extractAttachmentMetadata(payload);
+
+        assertEquals(1, result.size());
+        assertEquals("logo123", result.get(0).get("contentId"));
+    }
+
+    @Test
+    void extractAttachmentMetadataOmitsContentIdWhenAbsent() {
+        List<Map<String, Object>> result = parser.extractAttachmentMetadata(
+                buildMessageWithAttachment("msg014", "thread013", "report.pdf",
+                        "application/pdf", "att-id-002", 4096).get("payload"));
+
+        assertEquals(1, result.size());
+        assertNull(result.get(0).get("contentId"));
+    }
+
+    @Test
+    void extractAttachmentMetadataCapturesInlineDataWhenNoAttachmentId() {
+        // Small attachments can arrive with the data inlined directly on the part instead of
+        // behind an attachmentId — callers need this to decode it without a round trip.
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("mimeType", "multipart/mixed");
+        ArrayNode parts = payload.putArray("parts");
+
+        ObjectNode smallAtt = parts.addObject();
+        smallAtt.put("mimeType", "text/plain");
+        smallAtt.put("filename", "small.txt");
+        smallAtt.putObject("body").put("data", base64Url("small content"));
+
+        List<Map<String, Object>> result = parser.extractAttachmentMetadata(payload);
+
+        assertEquals(1, result.size());
+        assertEquals(base64Url("small content"), result.get(0).get("inlineData"));
+        assertNull(result.get(0).get("attachmentId"));
     }
 
     @Test

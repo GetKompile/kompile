@@ -19,7 +19,6 @@ package ai.kompile.app.services.diffindex;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 
@@ -31,12 +30,9 @@ class DiffIndexServiceSortTest {
     private Map<String, DiffIndexEntry> entries;
 
     @BeforeEach
-    @SuppressWarnings("unchecked")
-    void setUp() throws ReflectiveOperationException {
+    void setUp() {
         service = new DiffIndexService();
-        Field entriesField = DiffIndexService.class.getDeclaredField("entries");
-        entriesField.setAccessible(true);
-        entries = (Map<String, DiffIndexEntry>) entriesField.get(service);
+        entries = service.entries;
         entries.clear();
 
         put("e1", "codex", "codex", "/projects/B", "src/Zeta.java",

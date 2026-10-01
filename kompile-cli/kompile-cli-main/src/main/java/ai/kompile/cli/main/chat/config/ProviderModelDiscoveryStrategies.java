@@ -48,10 +48,6 @@ final class ProviderModelDiscoveryStrategies {
         return ProviderModelCatalogs.strategy("gemini");
     }
 
-    static ModelDiscovery.Strategy ollama() {
-        return ProviderModelCatalogs.strategy("ollama");
-    }
-
     static ModelDiscovery.Strategy openRouter() {
         return ProviderModelCatalogs.strategy("openrouter");
     }

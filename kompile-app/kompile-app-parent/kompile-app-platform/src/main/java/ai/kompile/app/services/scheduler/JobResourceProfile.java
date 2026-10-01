@@ -27,8 +27,9 @@ import java.util.List;
  * <p>GPU memory is declared in bytes to match {@link ai.kompile.app.services.GpuResourceManager}'s
  * native unit. CPU/heap estimates are advisory for throttling decisions.</p>
  *
- * <p>{@code phaseProfiles} is ordered — entries run in pipeline order.
- * Only phases that change resource requirements need entries.</p>
+ * <p>{@code phaseProfiles} is ordered — entries run in pipeline order. A phase without an entry
+ * falls back to the job-wide {@code requiresGpu}/{@code peakGpuMemoryBytes}, so a job that needs a GPU
+ * in some phases must declare every phase it reports, its CPU phases included.</p>
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record JobResourceProfile(

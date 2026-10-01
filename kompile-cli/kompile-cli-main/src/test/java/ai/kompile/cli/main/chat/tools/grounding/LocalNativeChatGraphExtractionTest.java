@@ -4,10 +4,12 @@ package ai.kompile.cli.main.chat.tools.grounding;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.KnowledgeGraphTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig.ProcessingBackendType;
@@ -16,9 +18,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
@@ -35,6 +40,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class LocalNativeChatGraphExtractionTest {
     private static final String GRAPH = """
             {"$schema":"kompile-graph-extraction/v1","entities":[
@@ -47,15 +54,27 @@ class LocalNativeChatGraphExtractionTest {
     @TempDir Path root;
     private final ObjectMapper mapper = new ObjectMapper();
     private ToolContext context;
+    private String previousAdmissionMode;
 
     @BeforeEach
     void context() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
         PermissionService permissions = new PermissionService();
         for (String tool : List.of("crawl_documents", "crawl_source", "crawl_discover", "knowledge_graph", "external_directory")) {
             permissions.setUserOverride(tool, PermissionService.PermissionLevel.ALLOW);
         }
         context = new ToolContext("native-graph-test", AgentConfig.builder("tester").enabledTools(Set.of("*")).build(),
                 permissions, root, new ToolRegistry(mapper));
+    }
+
+    @AfterEach
+    void restoreAdmissionMode() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
     }
 
     @Test

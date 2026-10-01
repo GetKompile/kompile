@@ -63,23 +63,36 @@ public final class JobResourceProfiles {
             JobResourceProfile.cpuOnly("crawl", "Web/File Crawl", 2 * GB)
     );
 
-    // --- Unified crawl-graph pipeline (8 phases, GPU only at tail) ---
+    // --- Unified crawl-graph pipeline (GPU only for entity resolution, edge computation and vector
+    // indexing). Declares every phase a crawl resolves to (CrawlPipelineStepRegistry.workPhase: QUEUED,
+    // the pipeline steps, LEARNING) — an undeclared phase would inherit the job-wide 5 GB GPU default. ---
     public static final JobResourceProfile UNIFIED_CRAWL = register(
             new JobResourceProfile(
                     "unifiedCrawl", "Unified Crawl + Graph",
                     true, 5 * GB, 8 * GB,
                     false, 1,
                     List.of(
+                            // Waiting for a crawl slot; first, so the crawl is dispatched without a GPU
+                            new JobResourceProfile.PhaseResourceProfile(
+                                    "QUEUED", false, 0, 0, true),
                             new JobResourceProfile.PhaseResourceProfile(
                                     "LOADING", false, 0, 60, true),
                             new JobResourceProfile.PhaseResourceProfile(
+                                    "DISCOVERING", false, 0, 10, true),
+                            new JobResourceProfile.PhaseResourceProfile(
                                     "CONVERTING", false, 0, 30, true),
                             new JobResourceProfile.PhaseResourceProfile(
+                                    "PREPROCESSING", false, 0, 30, true),
+                            new JobResourceProfile.PhaseResourceProfile(
                                     "ROUTING", false, 0, 10, true),
+                            new JobResourceProfile.PhaseResourceProfile(
+                                    "GRAPH_PREP", false, 0, 30, true),
                             new JobResourceProfile.PhaseResourceProfile(
                                     "CHUNKING", false, 0, 30, true),
                             new JobResourceProfile.PhaseResourceProfile(
                                     "GRAPH_EXTRACTION", false, 0, 120, true),
+                            new JobResourceProfile.PhaseResourceProfile(
+                                    "SURFACING", false, 0, 30, true),
                             new JobResourceProfile.PhaseResourceProfile(
                                     "ENTITY_RESOLUTION", true, 5 * GB, 60, false),
                             new JobResourceProfile.PhaseResourceProfile(

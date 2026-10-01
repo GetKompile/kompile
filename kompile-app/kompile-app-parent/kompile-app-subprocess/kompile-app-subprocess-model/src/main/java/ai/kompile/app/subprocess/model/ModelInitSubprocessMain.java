@@ -19,6 +19,7 @@ package ai.kompile.app.subprocess.model;
 import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import ai.kompile.embedding.anserini.RetryableErrorClassifier;
@@ -105,8 +106,9 @@ public class ModelInitSubprocessMain {
 
     public static void main(String[] args) {
         NativeLibraryResolver.bootstrapOrThrow();
-        // Capture original stdout for protocol messages
-        originalStdout = System.out;
+        // Protocol messages go to the channel the launcher set up, which native output written to
+        // fd 1 can't reach, or to the original stdout when there is none
+        originalStdout = SubprocessProtocolChannel.open(System.out);
 
         // Redirect System.out to stderr so logging doesn't interfere with protocol
         System.setOut(System.err);

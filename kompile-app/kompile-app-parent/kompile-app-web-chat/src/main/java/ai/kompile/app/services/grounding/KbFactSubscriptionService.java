@@ -9,6 +9,7 @@
  */
 package ai.kompile.app.services.grounding;
 
+import ai.kompile.graph.reasoning.query.PredicateNames;
 import ai.kompile.graphchangetracking.event.GraphBatchMutationEvent;
 import ai.kompile.graphchangetracking.event.NodeMutationEvent;
 import ai.kompile.graphchangetracking.event.EdgeMutationEvent;
@@ -332,13 +333,22 @@ public class KbFactSubscriptionService {
 
         /**
          * Returns true if this subscription is interested in events for {@code atomKey}.
-         * An empty predicate list means "all predicates on this fact sheet".
+         * An empty predicate list means "all predicates on this fact sheet". A subscribed predicate
+         * matches whatever the spelling ({@code worksFor} receives {@code works_for(...)} events):
+         * asserts land on the fact sheet's stored spelling, not necessarily the one subscribed to.
          */
         public boolean matchesPredicate(String atomKey) {
             if (atomKey == null) return true;
             if (predicates.isEmpty()) return true;
+            int lp = atomKey.indexOf('(');
+            if (lp <= 0) return false;
+            String atomPredicate = atomKey.substring(0, lp).trim();
             for (String pred : predicates) {
-                if (atomKey.startsWith(pred + "(")) return true;
+                if (pred == null || pred.isBlank()) continue;
+                String subscribed = pred.trim();
+                if (subscribed.equalsIgnoreCase(atomPredicate) || PredicateNames.same(subscribed, atomPredicate)) {
+                    return true;
+                }
             }
             return false;
         }

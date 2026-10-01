@@ -83,18 +83,18 @@ public class StagingServingBridge {
     private static final String LLM_MODEL_TYPE = "llm_ggml";
 
     /** Local cache directory resolved through the same CLI-managed project rules as serving. */
-    private static Path llmCacheDir() {
+    static Path llmCacheDir() {
         return KompileHome.llmCacheDirectory().toPath();
     }
 
     /** Explicit test override; production resolves the managed endpoint for each poll. */
-    private String stagingUrl;
+    String stagingUrl;
 
     @Autowired(required = false)
-    private ServingSubprocessLauncher launcher;
+    ServingSubprocessLauncher launcher;
 
     @Autowired(required = false)
-    private KbConfigManager kbConfigManager;
+    KbConfigManager kbConfigManager;
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
@@ -109,7 +109,7 @@ public class StagingServingBridge {
     });
 
     /** Model ID that is currently loaded into the serving subprocess (null = none). */
-    private volatile String currentModelId;
+    volatile String currentModelId;
 
     /** Failure memo: last model whose load failed, with exponential backoff — without this the
      *  poll loop re-downloads a multi-GB artifact every interval forever (observed live 2026-07-05:

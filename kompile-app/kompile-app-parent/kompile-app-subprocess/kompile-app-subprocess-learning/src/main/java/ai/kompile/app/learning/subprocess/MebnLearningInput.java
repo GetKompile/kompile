@@ -34,9 +34,9 @@ import java.util.Map;
  * <h3>Design rationale</h3>
  * <p>Serializing a full {@link ai.kompile.graph.reasoning.mebn.MTheory} and
  * {@link ai.kompile.graph.reasoning.model.ReasoningGraph} is expensive. Instead, the main JVM
- * pre-computes the {@code [E × M]} tensor batch that
- * {@link ai.kompile.graph.reasoning.learning.SameDiffMebnStrengthLearner#buildTensorBatch} would
- * build and passes the plain-Java {@code double[][]} matrices to the subprocess. The subprocess
+ * pre-computes the {@code [E × M]} matrices with
+ * {@link ai.kompile.graph.reasoning.learning.SameDiffMebnStrengthLearner#buildMatrixBatch} (plain
+ * Java, no ND4J) and passes the {@code double[][]} arrays to the subprocess. The subprocess
  * then runs only the SameDiff autodiff gradient step ({@code sdGradient}) and projected-gradient
  * update, which is the compute- and memory-intensive native operation.
  *

@@ -13,7 +13,6 @@ import ai.kompile.app.sync.service.NoteSyncConnectionService;
 import ai.kompile.cli.common.util.JsonUtils;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -67,10 +66,10 @@ class NotionWebhookControllerTest {
         NoteSyncConnectionRepository repository = mock(NoteSyncConnectionRepository.class);
         NoteSyncConnectionService service = mock(NoteSyncConnectionService.class);
         NotionWebhookController controller = new NotionWebhookController();
-        ReflectionTestUtils.setField(controller, "configService", config);
-        ReflectionTestUtils.setField(controller, "connectionRepository", repository);
-        ReflectionTestUtils.setField(controller, "connectionService", service);
-        ReflectionTestUtils.setField(controller, "objectMapper", JsonUtils.standardMapper());
+        controller.configService = config;
+        controller.connectionRepository = repository;
+        controller.connectionService = service;
+        controller.objectMapper = JsonUtils.standardMapper();
         return new Fixture(MockMvcBuilders.standaloneSetup(controller).build(), repository, service);
     }
 

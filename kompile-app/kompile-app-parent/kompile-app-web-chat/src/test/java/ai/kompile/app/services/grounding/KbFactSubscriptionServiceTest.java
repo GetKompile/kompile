@@ -128,6 +128,20 @@ class KbFactSubscriptionServiceTest {
         }
 
         @Test
+        @DisplayName("Predicate filtering ignores spelling: worksFor receives works_for and WORKSFOR events")
+        void predicateFilterIgnoresSpelling() {
+            KbSubscription sub = service.createSubscription(10L, List.of("worksFor"));
+            service.onFactAsserted(new AgentFactAssertedEvent(this, 10L, "works_for(Alice, Acme)", 1.0, null));
+            service.onFactAsserted(new AgentFactAssertedEvent(this, 10L, "WORKSFOR(Bob, Acme)", 1.0, null));
+            service.onFactAsserted(new AgentFactAssertedEvent(this, 10L, "worksAt(Carol, Acme)", 1.0, null));
+            service.onFactAsserted(new AgentFactAssertedEvent(this, 10L, "~works_for(Dave, Acme)", 1.0, null));
+
+            PollResult result = service.poll(sub.subscriptionId(), -1, 0);
+            assertEquals(List.of("works_for(Alice, Acme)", "WORKSFOR(Bob, Acme)"),
+                    result.events().stream().map(se -> se.event().atomKey()).toList());
+        }
+
+        @Test
         @DisplayName("Empty predicate list matches all predicates on the fact sheet")
         void emptyPredicateMatchesAll() {
             KbSubscription sub = service.createSubscription(10L, List.of()); // no filter

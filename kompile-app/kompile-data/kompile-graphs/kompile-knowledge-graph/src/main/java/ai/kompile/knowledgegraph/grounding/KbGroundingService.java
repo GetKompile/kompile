@@ -33,11 +33,13 @@ import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.graph.reasoning.fol.grounding.WhyNotExplainer;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.PslRule;
+import ai.kompile.graph.reasoning.query.PredicateNames;
 import ai.kompile.graph.reasoning.tms.BeliefReviser;
 import ai.kompile.graph.reasoning.tms.BeliefRevisionResult;
 import ai.kompile.graph.reasoning.tms.ContradictionDetector;
 import ai.kompile.graph.reasoning.tms.JustificationIndex;
 import ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory;
+import ai.kompile.knowledgegraph.reasoning.SparseGraphAssessor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -46,14 +48,23 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * L2 Spring service that surfaces the infra-free {@code kompile-graph-reasoning} grounding
@@ -101,6 +112,13 @@ public class KbGroundingService {
      * Read by agent tools that want to know whether the KB has been updated since they last queried.
      */
     private final ConcurrentHashMap<Long, AtomicReference<String>> epochMap = new ConcurrentHashMap<>();
+
+    /**
+     * Per-factSheet index of the stored predicate spellings, so {@link #resolveAtomKey} looks a
+     * spelling up instead of scanning every stored atom. Reused while its {@link SpellingStamp}
+     * matches the sheet's stores; dropped with the sheet's state.
+     */
+    private final ConcurrentHashMap<Long, SpellingIndex> spellingIndexes = new ConcurrentHashMap<>();
 
     // ── Spring event publisher (optional — null-safe if not wired in tests) ─────
 
@@ -182,7 +200,7 @@ public class KbGroundingService {
             DefaultKbVerifier verifier = new DefaultKbVerifier(
                     state.inferredFactStore(),
                     state.factStore());
-            return verifier.verify(atomKey);
+            return verifier.verify(resolveAtomKey(factSheetId, atomKey));
         } finally {
             lock.readLock().unlock();
         }
@@ -205,7 +223,7 @@ public class KbGroundingService {
                     state.inferredFactStore(),
                     state.factStore(),
                     threshold);
-            return verifier.verify(atomKey);
+            return verifier.verify(resolveAtomKey(factSheetId, atomKey));
         } finally {
             lock.readLock().unlock();
         }
@@ -217,7 +235,7 @@ public class KbGroundingService {
      * plain-Java unit tests — {@link #verifyOpinion} then falls back to a plain vacuous Opinion.
      */
     @Autowired(required = false)
-    private ai.kompile.knowledgegraph.reasoning.SparseGraphAssessor sparseGraphAssessor;
+    private SparseGraphAssessor sparseGraphAssessor;
 
     /**
      * Opinion-valued verification. {@code SUPPORTED}/{@code REFUTED} map to belief/disbelief; an
@@ -255,9 +273,57 @@ public class KbGroundingService {
         ReadWriteLock lock = state.lock();
         lock.readLock().lock();
         try {
-            return state.inferredFactStore().latest(atomKey)
+            return state.inferredFactStore().latest(resolveAtomKey(factSheetId, atomKey))
                     .map(fact -> OptionalDouble.of(fact.value()))
                     .orElse(OptionalDouble.empty());
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Resolve a caller-supplied atom key to the spelling this fact sheet's stores use, so
+     * {@code worksFor(alice, acme)} finds a stored {@code works_for(alice, acme)}.
+     *
+     * <p>A key the stores hold as given comes back unchanged. Otherwise each stored spelling of the
+     * predicate is tried, best first: the spelling as given, a case-only difference (the projector
+     * lowercases relation types), then a {@link PredicateNames#same} spelling, most atoms first.
+     * Each is tried with the arguments as given, then re-joined with {@code ", "} (the separator
+     * projected keys use), then with {@code ","} (the form agents are taught to assert). The first
+     * key the stores hold wins. When none is held, the predicate is rewritten to the best stored
+     * spelling with the arguments left as given, so an assert lands under the vocabulary already
+     * in use. With no matching stored predicate the key comes back unchanged.</p>
+     *
+     * <p>{@link #verify}, {@link #latestValue}, and {@link #explain} resolve caller keys here.
+     * Stored keys take the exact-key fast path. A miss costs a lookup in a per-sheet spelling
+     * index, rebuilt only after a write changes the stores.</p>
+     *
+     * @return the resolved key; the trimmed input when it is not atom-shaped
+     */
+    public String resolveAtomKey(long factSheetId, String atomKey) {
+        if (atomKey == null) return null;
+        String key = atomKey.trim();
+        String sign = key.startsWith("~") ? "~" : "";
+        String body = key.substring(sign.length()).trim();
+        int lp = body.indexOf('(');
+        if (lp <= 0 || !body.endsWith(")")) return key;
+        String requested = body.substring(0, lp).trim();
+        String args = body.substring(lp + 1, body.length() - 1);
+        FactSheetKbState state = getState(factSheetId);
+        ReadWriteLock lock = state.lock();
+        lock.readLock().lock();
+        try {
+            if (isKnownAtom(state, key)) return key;
+            List<String> spellings = spellingIndex(factSheetId, state).matching(requested);
+            List<String> joins = Stream.of(args, rejoinArgs(args, ", "), rejoinArgs(args, ","))
+                    .distinct().toList();
+            for (String spelling : spellings) {
+                for (String joined : joins) {
+                    String candidate = sign + spelling + "(" + joined + ")";
+                    if (isKnownAtom(state, candidate)) return candidate;
+                }
+            }
+            return spellings.isEmpty() ? key : sign + spellings.get(0) + "(" + args + ")";
         } finally {
             lock.readLock().unlock();
         }
@@ -268,6 +334,10 @@ public class KbGroundingService {
      *
      * <p>All conjuncts must be satisfied simultaneously. Variables use the {@code "?"} prefix
      * convention. Per-row confidence = min across matched atoms (Łukasiewicz T-norm).</p>
+     *
+     * <p>Predicates match under {@link PredicateNames#same} spellings (for example
+     * {@code worksFor}, {@code works_for}, and {@code WORKSFOR}). Every equivalent stored
+     * bucket contributes candidates; fact atom keys retain their original spelling.</p>
      *
      * @param factSheetId the fact sheet id
      * @param conjuncts   the ordered list of atom patterns
@@ -282,7 +352,9 @@ public class KbGroundingService {
         lock.readLock().lock();
         try {
             int limit = maxResults > 0 ? maxResults : ConjunctiveQueryEngine.DEFAULT_MAX_RESULTS;
-            return ConjunctiveQueryEngine.query(conjuncts, state.inferredFactStore(), limit);
+            Map<String, List<InferredFact>> index =
+                    ConjunctiveQueryEngine.buildPredicateIndex(state.inferredFactStore());
+            return ConjunctiveQueryEngine.query(storedSpellings(conjuncts, index), index, limit);
         } finally {
             lock.readLock().unlock();
         }
@@ -309,7 +381,7 @@ public class KbGroundingService {
             int depth = (maxDepth > 0)
                     ? Math.min(maxDepth, DerivationTree.DEFAULT_MAX_DEPTH)
                     : DerivationTree.DEFAULT_MAX_DEPTH;
-            return DerivationTree.build(atomKey, state.inferredFactStore(),
+            return DerivationTree.build(resolveAtomKey(factSheetId, atomKey), state.inferredFactStore(),
                     state.justificationIndex(), depth);
         } finally {
             lock.readLock().unlock();
@@ -379,7 +451,7 @@ public class KbGroundingService {
     public AssertResult assertFactsBatch(long factSheetId, List<Fact> facts) {
         List<Fact> batch = facts == null
                 ? List.of()
-                : facts.stream().filter(java.util.Objects::nonNull).toList();
+                : facts.stream().filter(Objects::nonNull).toList();
         if (batch.isEmpty()) {
             return new AssertResult(getState(factSheetId).concurrentFactStore().version(), List.of());
         }
@@ -469,6 +541,9 @@ public class KbGroundingService {
                     state.factStore(),
                     state.justificationIndex(),
                     state.inferredFactStore());
+            // An inferred-only retraction leaves the observed store's version alone, so a later
+            // add could restore the sizes and hide this change from the spelling stamp.
+            spellingIndexes.remove(factSheetId);
             return new RetractResult(found, revision);
         } finally {
             lock.writeLock().unlock();
@@ -549,6 +624,7 @@ public class KbGroundingService {
             for (InferredFact fact : facts) {
                 state.inferredFactStore().store(fact);
             }
+            spellingIndexes.remove(factSheetId);
         } finally {
             lock.writeLock().unlock();
         }
@@ -556,20 +632,6 @@ public class KbGroundingService {
 
     // ── L3 Cascade support ────────────────────────────────────────────────────────
 
-    /**
-     * Mark the completion of a grounding cascade for {@code factSheetId}.
-     *
-     * <p>Called by {@link ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator}
-     * at STEP 8 of the cascade (§3.2 of the design). Updates the epoch reference and
-     * replaces the {@link FactSheetKbState}'s justification index with the freshly-rebuilt
-     * index from the MAP result. This is thread-safe: the epoch map uses an
-     * {@link AtomicReference} per fact sheet and the state swap is guarded by the write lock
-     * already held by the orchestrator when it calls this method.</p>
-     *
-     * @param factSheetId  the fact sheet whose grounding was refreshed
-     * @param runId        the runId of the MAP inference run that just completed
-     * @param newIndex     the freshly-built {@link JustificationIndex} from the MAP result
-     */
     /**
      * Rules used by the last grounding cascade, converted to why-not normal form — the chaining
      * vocabulary for deep why-not completion search on UNKNOWN verdicts.
@@ -591,7 +653,7 @@ public class KbGroundingService {
     public void markEpoch(long factSheetId, String runId, JustificationIndex newIndex,
                           List<PslRule> groundingRules) {
         if (groundingRules != null && !groundingRules.isEmpty()) {
-            List<WhyNotExplainer.RuleNf> normalized = new java.util.ArrayList<>();
+            List<WhyNotExplainer.RuleNf> normalized = new ArrayList<>();
             for (PslRule rule : groundingRules) {
                 try {
                     normalized.add(WhyNotExplainer.fromPslRule(rule));
@@ -607,6 +669,20 @@ public class KbGroundingService {
         markEpoch(factSheetId, runId, newIndex);
     }
 
+    /**
+     * Mark the completion of a grounding cascade for {@code factSheetId}.
+     *
+     * <p>Called by {@link ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator}
+     * at STEP 8 of the cascade (§3.2 of the design). Updates the epoch reference and
+     * replaces the {@link FactSheetKbState}'s justification index with the freshly-rebuilt
+     * index from the MAP result. This is thread-safe: the epoch map uses an
+     * {@link AtomicReference} per fact sheet and the state swap is guarded by the write lock
+     * already held by the orchestrator when it calls this method.</p>
+     *
+     * @param factSheetId  the fact sheet whose grounding was refreshed
+     * @param runId        the runId of the MAP inference run that just completed
+     * @param newIndex     the freshly-built {@link JustificationIndex} from the MAP result
+     */
     public void markEpoch(long factSheetId, String runId, JustificationIndex newIndex) {
         // Update epoch reference
         epochMap.computeIfAbsent(factSheetId, id -> new AtomicReference<>(""))
@@ -693,6 +769,7 @@ public class KbGroundingService {
      */
     public void resetState(long factSheetId) {
         stateMap.remove(factSheetId);
+        spellingIndexes.remove(factSheetId);
         clearStale(factSheetId);
         log.info("KbGroundingService: evicted cached KB state for factSheet={} (snapshot restore)", factSheetId);
     }
@@ -710,6 +787,7 @@ public class KbGroundingService {
             return;
         }
         stateMap.remove(factSheetId);
+        spellingIndexes.remove(factSheetId);
         epochMap.remove(factSheetId);
         groundingRulesMap.remove(factSheetId);
         clearStale(factSheetId);
@@ -724,17 +802,25 @@ public class KbGroundingService {
      * @param factSheetId the fact sheet scope
      * @param graph       reasoning graph for structural evidence (never null; may be empty)
      * @param subject     subject entity id
-     * @param predicate   relation type
+     * @param predicate   relation type; assessed under the stored spelling when the stores hold
+     *                    the claim under one (see {@link #resolveAtomKey})
      * @param object      object entity id
      * @return the assembled dossier with fused score and supporting/refuting items
      */
     public ClaimDossier assessClaim(long factSheetId, ReasoningGraph graph,
                                     String subject, String predicate, String object) {
+        String claimKey = subject == null || predicate == null || object == null ? null
+                : resolveAtomKey(factSheetId, predicate + "(" + subject + ", " + object + ")");
         FactSheetKbState state = getState(factSheetId);
         ReadWriteLock lock = state.lock();
         lock.readLock().lock();
         try {
-            return new DossierBuilder().assess(graph, subject, predicate, object,
+            // Switch spelling only when the stores hold the claim under it. The direct-edge
+            // channel already matches every spelling of the relation, so an unheld switch would
+            // only rename the claim to an atom nothing holds.
+            String assessed = claimKey != null && isKnownAtom(state, claimKey)
+                    ? claimKey.substring(0, claimKey.indexOf('(')) : predicate;
+            return new DossierBuilder().assess(graph, subject, assessed, object,
                     state.factStore(), state.inferredFactStore(), null, null);
         } finally {
             lock.readLock().unlock();
@@ -828,7 +914,7 @@ public class KbGroundingService {
         // Derivation context + counterfactual fragility for supported verdicts, computed on the
         // justification index under one read lock.
         int derivationDepth = 0;
-        java.util.LinkedHashSet<String> provenance = new java.util.LinkedHashSet<>();
+        LinkedHashSet<String> provenance = new LinkedHashSet<>();
         Double robustness = null;
         List<String> wouldFlipIf = List.of();
         Integer minimalSupportSize = null;
@@ -864,10 +950,10 @@ public class KbGroundingService {
 
                 JustificationIndex index = state.justificationIndex();
                 boolean directlyObserved = state.factStore().factFor(atomKey).isPresent();
-                java.util.Set<String> supportingFacts = index.supportingFacts(atomKey);
-                List<java.util.Set<String>> ruleBodies = index.perRuleBodyFacts(atomKey);
+                Set<String> supportingFacts = index.supportingFacts(atomKey);
+                List<Set<String>> ruleBodies = index.perRuleBodyFacts(atomKey);
 
-                java.util.LinkedHashSet<String> critical = new java.util.LinkedHashSet<>();
+                LinkedHashSet<String> critical = new LinkedHashSet<>();
                 if (directlyObserved && ruleBodies.isEmpty()) {
                     // The observation itself is the only support: retracting it flips.
                     critical.add(atomKey);
@@ -885,7 +971,7 @@ public class KbGroundingService {
 
                 int supportUniverse = (directlyObserved ? 1 : 0) + supportingFacts.size();
                 minimalSupportSize = directlyObserved ? 1
-                        : ruleBodies.stream().mapToInt(java.util.Set::size).min()
+                        : ruleBodies.stream().mapToInt(Set::size).min()
                                 .orElse(Math.max(1, supportingFacts.size()));
                 wouldFlipIf = List.copyOf(critical);
                 robustness = supportUniverse == 0
@@ -911,7 +997,7 @@ public class KbGroundingService {
     }
 
     /** Collect distinct non-blank source provenance identifiers from a derivation tree. */
-    private static void collectProvenance(DerivationTree tree, java.util.Set<String> out) {
+    private static void collectProvenance(DerivationTree tree, Set<String> out) {
         if (tree.sourceProvenance() != null && !tree.sourceProvenance().isBlank()) {
             out.add(tree.sourceProvenance());
         }
@@ -940,15 +1026,174 @@ public class KbGroundingService {
         }
     }
 
-    // ── Result type ───────────────────────────────────────────────────────────────
+    /** Whether verify would find {@code key}: in either store, or its negation in the inferred store. */
+    private static boolean isKnownAtom(FactSheetKbState state, String key) {
+        String negation = key.startsWith("~") ? key.substring(1).trim() : "~" + key;
+        return state.inferredFactStore().latest(key).isPresent()
+                || state.inferredFactStore().latest(negation).isPresent()
+                || state.factStore().factFor(key).isPresent();
+    }
+
+    /** Atom count per stored predicate spelling, across the inferred and observed stores. */
+    private static Map<String, Integer> storedPredicateCounts(FactSheetKbState state) {
+        Map<String, Integer> counts = new HashMap<>();
+        for (InferredFact fact : state.inferredFactStore().allLatest()) {
+            countPredicate(fact.atomKey(), counts);
+        }
+        for (Fact fact : state.factStore().allFacts()) {
+            countPredicate(fact.atomKey(), counts);
+        }
+        return counts;
+    }
+
+    private static void countPredicate(String atomKey, Map<String, Integer> counts) {
+        if (atomKey == null) return;
+        String body = atomKey.trim();
+        if (body.startsWith("~")) body = body.substring(1).trim();
+        int lp = body.indexOf('(');
+        if (lp > 0) counts.merge(body.substring(0, lp).trim(), 1, Integer::sum);
+    }
 
     /**
-     * Result of an {@link #assertFact} operation.
-     *
-     * @param version         the new store version after the write ({@link ConcurrentFactStore#CONFLICT}
-     *                        if the write was rejected)
-     * @param contradictions  list of detected contradiction descriptions (empty if none)
+     * The stored spellings naming the same relation as {@code requested}, best first: the same
+     * spelling, then a case-only difference, then a {@link PredicateNames#same} spelling; within
+     * a tier the one holding the most atoms, then alphabetical.
      */
+    private static List<String> matchingPredicates(String requested, Map<String, Integer> counts) {
+        List<String> matches = new ArrayList<>();
+        for (String stored : counts.keySet()) {
+            if (spellingTier(requested, stored) >= 0) matches.add(stored);
+        }
+        matches.sort((a, b) -> {
+            int byTier = Integer.compare(spellingTier(requested, a), spellingTier(requested, b));
+            if (byTier != 0) return byTier;
+            int bySize = Integer.compare(counts.get(b), counts.get(a));
+            return bySize != 0 ? bySize : a.compareTo(b);
+        });
+        return matches;
+    }
+
+    /** 0 = same spelling, 1 = case-only difference, 2 = {@link PredicateNames#same}, -1 = unrelated. */
+    private static int spellingTier(String requested, String stored) {
+        if (stored.equals(requested)) return 0;
+        if (stored.equalsIgnoreCase(requested)) return 1;
+        return PredicateNames.same(requested, stored) ? 2 : -1;
+    }
+
+    /** Arguments trimmed and re-joined: {@code ("Alice,Acme", ", ")} gives {@code "Alice, Acme"}. */
+    private static String rejoinArgs(String args, String separator) {
+        return Arrays.stream(args.split(",", -1)).map(String::trim).collect(Collectors.joining(separator));
+    }
+
+    /**
+     * The sheet's {@link SpellingIndex}, rebuilt when its {@link SpellingStamp} has moved. Call
+     * under the sheet's read lock so no write through this service lands mid-build. The stamp is
+     * taken before the scan: a write from outside the lock that lands during it leaves the index a
+     * stamp behind, and the next call rebuilds it.
+     */
+    private SpellingIndex spellingIndex(long factSheetId, FactSheetKbState state) {
+        SpellingStamp stamp = SpellingStamp.of(state, currentEpoch(factSheetId));
+        SpellingIndex index = spellingIndexes.get(factSheetId);
+        if (index == null || !index.stamp().matches(stamp)) {
+            index = SpellingIndex.build(stamp, storedPredicateCounts(state));
+            spellingIndexes.put(factSheetId, index);
+        }
+        return index;
+    }
+
+    /**
+     * What a {@link SpellingIndex} was built from. The stores compare by identity, since a reset
+     * swaps them. The sizes catch an atom added or purged, the observed store's version catches an
+     * assert or a projection that keeps the count, and the epoch catches a re-ground.
+     */
+    private record SpellingStamp(InferredFactStore inferred, int inferredSize, FactStore facts,
+                                 int factCount, ConcurrentFactStore observed, long version, String epoch) {
+
+        static SpellingStamp of(FactSheetKbState state, String epoch) {
+            return new SpellingStamp(state.inferredFactStore(), state.inferredFactStore().size(),
+                    state.factStore(), state.factStore().size(), state.concurrentFactStore(),
+                    state.concurrentFactStore().version(), epoch);
+        }
+
+        boolean matches(SpellingStamp other) {
+            return inferred == other.inferred && facts == other.facts && observed == other.observed
+                    && inferredSize == other.inferredSize && factCount == other.factCount
+                    && version == other.version && Objects.equals(epoch, other.epoch);
+        }
+    }
+
+    /**
+     * A fact sheet's stored predicate spellings with their atom counts, grouped the two ways
+     * {@link #spellingTier} relates spellings: by {@link #caseFold} and by {@link PredicateNames#key}.
+     */
+    private record SpellingIndex(SpellingStamp stamp, Map<String, Integer> counts,
+                                 Map<String, List<String>> byCaseFold, Map<String, List<String>> byKey) {
+
+        static SpellingIndex build(SpellingStamp stamp, Map<String, Integer> counts) {
+            Map<String, List<String>> byCaseFold = new HashMap<>();
+            Map<String, List<String>> byKey = new HashMap<>();
+            for (String spelling : counts.keySet()) {
+                byCaseFold.computeIfAbsent(caseFold(spelling), k -> new ArrayList<>()).add(spelling);
+                byKey.computeIfAbsent(PredicateNames.key(spelling), k -> new ArrayList<>()).add(spelling);
+            }
+            return new SpellingIndex(stamp, counts, byCaseFold, byKey);
+        }
+
+        /** {@link #matchingPredicates} over the stored spellings, reading only the two groups that can match. */
+        List<String> matching(String requested) {
+            Map<String, Integer> candidates = new HashMap<>();
+            for (String spelling : byCaseFold.getOrDefault(caseFold(requested), List.of())) {
+                candidates.put(spelling, counts.get(spelling));
+            }
+            for (String spelling : byKey.getOrDefault(PredicateNames.key(requested), List.of())) {
+                candidates.put(spelling, counts.get(spelling));
+            }
+            return matchingPredicates(requested, candidates);
+        }
+    }
+
+    /** Case-folded form: two spellings fold equal whenever {@link String#equalsIgnoreCase} holds for them. */
+    private static String caseFold(String s) {
+        StringBuilder folded = new StringBuilder(s.length());
+        s.codePoints().forEach(cp -> folded.appendCodePoint(Character.toLowerCase(Character.toUpperCase(cp))));
+        return folded.toString();
+    }
+
+    /**
+     * Point each conjunct at the stored spelling of its predicate. The index is keyed lowercase and
+     * the engine lowercases its lookup, so a case-only difference already matched; this adds
+     * {@link PredicateNames#same} spellings. Spellings are counted from the facts' own keys, not the
+     * lowercased index keys, which have lost the camelCase humps that {@code same} reads. A
+     * predicate with no stored match is left as given.
+     */
+    private static List<ConjunctiveQueryEngine.AtomPattern> storedSpellings(
+            List<ConjunctiveQueryEngine.AtomPattern> conjuncts, Map<String, List<InferredFact>> index) {
+        if (conjuncts == null) return null;
+        Map<String, Integer> sizes = new HashMap<>();
+        index.values().forEach(facts -> facts.forEach(fact -> countPredicate(fact.atomKey(), sizes)));
+        Map<String, List<InferredFact>> original = new HashMap<>(index);
+        List<ConjunctiveQueryEngine.AtomPattern> resolved = new ArrayList<>(conjuncts.size());
+        for (ConjunctiveQueryEngine.AtomPattern pattern : conjuncts) {
+            List<String> spellings = matchingPredicates(pattern.predicate().trim(), sizes);
+            if (spellings.isEmpty()) {
+                resolved.add(pattern);
+                continue;
+            }
+            // A relation can be stored under several spellings. Query every bucket, not just
+            // the most-used spelling; retain each fact's own atom key for evidence display.
+            Set<String> buckets = new LinkedHashSet<>();
+            spellings.forEach(spelling -> buckets.add(spelling.toLowerCase(Locale.ROOT)));
+            List<InferredFact> candidates = new ArrayList<>();
+            buckets.forEach(bucket -> candidates.addAll(original.getOrDefault(bucket, List.of())));
+            String stored = spellings.get(0);
+            index.put(stored.toLowerCase(Locale.ROOT), candidates);
+            resolved.add(new ConjunctiveQueryEngine.AtomPattern(stored, pattern.args()));
+        }
+        return resolved;
+    }
+
+    // ── Result type ───────────────────────────────────────────────────────────────
+
     /** Result of TMS-aware fact retraction. */
     public record RetractResult(boolean found, BeliefRevisionResult revision) {
         public RetractResult {
@@ -958,6 +1203,13 @@ public class KbGroundingService {
         }
     }
 
+    /**
+     * Result of an {@link #assertFact} operation.
+     *
+     * @param version         the new store version after the write ({@link ConcurrentFactStore#CONFLICT}
+     *                        if the write was rejected)
+     * @param contradictions  list of detected contradiction descriptions (empty if none)
+     */
     public record AssertResult(long version, List<String> contradictions) {
 
         public AssertResult {

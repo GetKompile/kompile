@@ -167,10 +167,20 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
         return streamChat(userMessage, systemPrompt, toolDefs, toolResults, modelOverride, null);
     }
 
+    /** The agent CLI takes each turn as plain text, so no attachment can ride with it. */
+    @Override
+    public boolean supportsAttachments(String modelOverride) {
+        return false;
+    }
+
     @Override
     public StreamResult streamChat(String userMessage, String systemPrompt,
                                     ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
                                     String modelOverride, List<AttachmentInput> attachments) {
+        if (attachments != null && !attachments.isEmpty()) {
+            return attachmentFailure("Agent '" + agentName + "' takes its turns as plain text, "
+                    + "so attachments cannot be sent to it; use a direct chat provider");
+        }
         ScoringRealtimeMonitor monitor = this.realtimeMonitor;
 
         // Reset monitor for this turn

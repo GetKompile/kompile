@@ -45,6 +45,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -151,10 +152,13 @@ public class SubprocessAgentRunner {
     private volatile String blockingNotice;
 
     // Injected settings file path (for cleanup)
-    private Path injectedSettingsFile;
+    volatile Path injectedSettingsFile;
+
+    // A launch config this runner's owner injected and removes (see setManagedLaunchConfig).
+    private volatile Path managedLaunchConfig;
 
     // Invocation-local options such as Codex MCP config overrides.
-    private List<String> managedCommandPrefixArguments = List.of();
+    volatile List<String> managedCommandPrefixArguments = List.of();
 
     // Explicit launch selection; persisted per-agent defaults are resolved at command-build time.
     private volatile String modelOverride;
@@ -228,11 +232,16 @@ public class SubprocessAgentRunner {
     }
 
     /**
-     * Reuse already-resolved provider-global MCP arguments without mutating shared
-     * project configuration. Used when a detached interactive turn hands new
-     * messages to an isolated managed runner.
+     * Launch with the MCP config this runner's owner injected, without mutating shared
+     * project configuration. Used when a detached interactive turn hands new messages to
+     * an isolated managed runner; the owner hands its current config again before each
+     * turn, and removes it. {@link #cleanup()} leaves it alone.
+     *
+     * @param launchConfig the file {@link McpToolInjection#injectTools} returned to the owner, or null
+     * @param arguments    the command-line options for that file
      */
-    public void setManagedCommandPrefixArguments(List<String> arguments) {
+    public void setManagedLaunchConfig(Path launchConfig, List<String> arguments) {
+        this.managedLaunchConfig = launchConfig;
         this.managedCommandPrefixArguments = arguments == null ? List.of() : List.copyOf(arguments);
     }
 
@@ -323,9 +332,14 @@ public class SubprocessAgentRunner {
     public boolean isFirstMessageSent() { return firstMessageSent; }
 
     /**
-     * Inject MCP tools into the agent's working directory. Call once before first message.
+     * Inject MCP tools into the agent's working directory. Call before the first message;
+     * a later call replaces the last injection.
      */
     public void injectMcpTools() {
+        // A new injection replaces this runner's last one.
+        McpToolInjection.removeTools(injectedSettingsFile);
+        injectedSettingsFile = null;
+        managedLaunchConfig = null;
         managedCommandPrefixArguments = List.of();
         if (!injectTools) return;
         // The agent's kompile MCP server runs as the workflow participant this agent was
@@ -358,6 +372,25 @@ public class SubprocessAgentRunner {
         } catch (IOException e) {
             McpDiagnostics.log(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
         }
+    }
+
+    /**
+     * Inject again when this runner's own launch config is gone, for example deleted by a
+     * cleaner while a long run sat idle: Claude Code refuses to start on a missing
+     * {@code --mcp-config} file.
+     */
+    void reinjectMissingLaunchConfig() {
+        Path injected = injectedSettingsFile;
+        if (injected != null && McpToolInjection.isLaunchConfig(injected) && !Files.exists(injected)) {
+            McpDiagnostics.log("[MCP] " + injected + " is gone; injecting Kompile tools again");
+            injectMcpTools();
+        }
+    }
+
+    /** The launch config this runner's agent starts with: its own, else the one its owner handed it. */
+    private Path mcpLaunchConfig() {
+        Path injected = injectedSettingsFile;
+        return injected != null ? injected : managedLaunchConfig;
     }
 
     /**
@@ -402,6 +435,8 @@ public class SubprocessAgentRunner {
             tuiProcess = null;
         }
         McpToolInjection.removeTools(injectedSettingsFile);
+        injectedSettingsFile = null;
+        managedLaunchConfig = null;
         managedCommandPrefixArguments = List.of();
         if (skillsInjection != null) {
             skillsInjection.cleanup();
@@ -529,6 +564,7 @@ public class SubprocessAgentRunner {
             emitLine(renderer.renderReminderSection(reminderContent));
         }
 
+        reinjectMissingLaunchConfig();
         List<String> agentCmd = buildCommand(agentBinary, outboundMessage);
         boolean managedOneShot = requiresManagedOneShot(agent);
         AtomicReference<String> managedOneShotDiagnostic = new AtomicReference<>();
@@ -563,6 +599,7 @@ public class SubprocessAgentRunner {
                 env.putAll(systemPromptManager.getExtraEnv(agent));
             }
             env.putAll(extraEnvironment);
+            McpToolInjection.applyLaunchEnvironment(env, mcpLaunchConfig());
 
             final Process process;
             synchronized (lifecycleLock) {
@@ -767,6 +804,7 @@ public class SubprocessAgentRunner {
         try {
             // Launch persistent TUI process on first message
             if (tuiProcess == null || !tuiProcess.isAlive()) {
+                reinjectMissingLaunchConfig();
                 List<String> agentCmd = buildCommand(agentBinary, outboundMessage);
                 List<String> wrappedCmd = wrapWithPty(agentCmd);
 
@@ -783,6 +821,7 @@ public class SubprocessAgentRunner {
                     env.putAll(systemPromptManager.getExtraEnv(agent));
                 }
                 env.putAll(extraEnvironment);
+                McpToolInjection.applyLaunchEnvironment(env, mcpLaunchConfig());
 
                 Process process = pb.start();
                 tuiProcess = process;

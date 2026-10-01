@@ -28,7 +28,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.ObjectProvider;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -127,9 +126,7 @@ class GraphHealthServiceTest {
         when(kg.getNodesInFactSheet(1L)).thenReturn(List.of(entity("A", "Alpha", 0.9)));
         when(kg.getEdgesInFactSheet(1L)).thenReturn(List.of());
         GraphHealthService svc = service(null);
-        Field f = GraphHealthService.class.getDeclaredField("dataDir");
-        f.setAccessible(true);
-        f.set(svc, tempDir.toString());
+        svc.dataDir = tempDir.toString();
 
         GraphHealthSnapshot persisted = svc.persistSnapshot(1L);
         List<GraphHealthSnapshot> history = svc.listHistory(1L);

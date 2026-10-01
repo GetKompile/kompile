@@ -59,7 +59,7 @@ class VectorIndexingHelper {
     private static final int MIN_EMBEDDING_BATCH_SIZE = 4;
 
     @Autowired(required = false)
-    private VectorStore vectorStore;
+    VectorStore vectorStore;
 
     @Autowired(required = false)
     private List<EmbeddingModel> embeddingModels;

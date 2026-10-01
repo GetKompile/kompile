@@ -21,8 +21,6 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.ops.transforms.Transforms;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -176,33 +174,8 @@ class RotatEVectorizationEquivalenceTest {
     }
 
     // -----------------------------------------------------------------------
-    // Reflection helpers
-    // -----------------------------------------------------------------------
-    private static void setField(Object obj, String name, Object value) throws Exception {
-        Field f = obj.getClass().getDeclaredField(name);
-        f.setAccessible(true);
-        f.set(obj, value);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T> T getField(Object obj, String name) throws Exception {
-        Field f = obj.getClass().getDeclaredField(name);
-        f.setAccessible(true);
-        return (T) f.get(obj);
-    }
-
-    private static double callTrainBatch(RotatEModel model,
-                                          List<Triple> positives,
-                                          List<Triple> negatives,
-                                          double lr, double margin) throws Exception {
-        Method m = RotatEModel.class.getDeclaredMethod("trainBatch",
-                List.class, List.class, double.class, double.class);
-        m.setAccessible(true);
-        return (Double) m.invoke(model, positives, negatives, lr, margin);
-    }
-
-    // -----------------------------------------------------------------------
-    // Tests
+    // Tests. The model's embedding matrices and index maps are package-private,
+    // so each test sets them directly to control the exact starting state.
     // -----------------------------------------------------------------------
     @Test
     void trainBatch_vectorized_matchesScalarOracle_withinTolerance() throws Exception {
@@ -239,24 +212,24 @@ class RotatEVectorizationEquivalenceTest {
 
         // Vectorized model
         RotatEModel model = new RotatEModel();
-        setField(model, "entityToIndex",    entityMap);
-        setField(model, "relationToIndex",  relMap);
-        setField(model, "indexToEntity",    indexToEntity);
-        setField(model, "indexToRelation",  indexToRelation);
-        setField(model, "embeddingDim",     DIM);
-        setField(model, "embeddingRange",   MARGIN / DIM);
+        model.entityToIndex   = entityMap;
+        model.relationToIndex = relMap;
+        model.indexToEntity   = indexToEntity;
+        model.indexToRelation = indexToRelation;
+        model.embeddingDim    = DIM;
+        model.embeddingRange  = MARGIN / DIM;
         INDArray vEReal  = eRealSeed.dup();
         INDArray vEImag  = eImagSeed.dup();
         INDArray vTheta  = thetaSeed.dup();
-        setField(model, "entityRealEmbeddings", vEReal);
-        setField(model, "entityImagEmbeddings", vEImag);
-        setField(model, "relationPhaseAngles",  vTheta);
+        model.entityRealEmbeddings = vEReal;
+        model.entityImagEmbeddings = vEImag;
+        model.relationPhaseAngles  = vTheta;
 
-        double vLoss = callTrainBatch(model, positives, negatives, LR, MARGIN);
+        double vLoss = model.trainBatch(positives, negatives, LR, MARGIN);
 
-        INDArray aEReal = getField(model, "entityRealEmbeddings");
-        INDArray aEImag = getField(model, "entityImagEmbeddings");
-        INDArray aTheta = getField(model, "relationPhaseAngles");
+        INDArray aEReal = model.entityRealEmbeddings;
+        INDArray aEImag = model.entityImagEmbeddings;
+        INDArray aTheta = model.relationPhaseAngles;
 
         assertEquals(sLoss, vLoss, TOLERANCE,
                 String.format("Loss: scalar=%.8f  vector=%.8f", sLoss, vLoss));
@@ -309,23 +282,23 @@ class RotatEVectorizationEquivalenceTest {
                 entityMap, relMap, positives, negatives, LR, MARGIN);
 
         RotatEModel model = new RotatEModel();
-        setField(model, "entityToIndex",    entityMap);
-        setField(model, "relationToIndex",  relMap);
-        setField(model, "indexToEntity",    indexToEntity);
-        setField(model, "indexToRelation",  indexToRelation);
-        setField(model, "embeddingDim",     DIM);
-        setField(model, "embeddingRange",   MARGIN / DIM);
+        model.entityToIndex   = entityMap;
+        model.relationToIndex = relMap;
+        model.indexToEntity   = indexToEntity;
+        model.indexToRelation = indexToRelation;
+        model.embeddingDim    = DIM;
+        model.embeddingRange  = MARGIN / DIM;
         INDArray vEReal = eRealSeed.dup(); INDArray vEImag = eImagSeed.dup();
         INDArray vTheta = thetaSeed.dup();
-        setField(model, "entityRealEmbeddings", vEReal);
-        setField(model, "entityImagEmbeddings", vEImag);
-        setField(model, "relationPhaseAngles",  vTheta);
+        model.entityRealEmbeddings = vEReal;
+        model.entityImagEmbeddings = vEImag;
+        model.relationPhaseAngles  = vTheta;
 
-        double vLoss = callTrainBatch(model, positives, negatives, LR, MARGIN);
+        double vLoss = model.trainBatch(positives, negatives, LR, MARGIN);
 
-        INDArray aEReal = getField(model, "entityRealEmbeddings");
-        INDArray aEImag = getField(model, "entityImagEmbeddings");
-        INDArray aTheta = getField(model, "relationPhaseAngles");
+        INDArray aEReal = model.entityRealEmbeddings;
+        INDArray aEImag = model.entityImagEmbeddings;
+        INDArray aTheta = model.relationPhaseAngles;
 
         assertEquals(sLoss, vLoss, TOLERANCE,
                 String.format("Loss: scalar=%.8f  vector=%.8f", sLoss, vLoss));

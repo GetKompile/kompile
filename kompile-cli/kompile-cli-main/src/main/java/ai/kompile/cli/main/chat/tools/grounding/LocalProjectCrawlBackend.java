@@ -7,7 +7,6 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.main.chat.tools.ToolContext;
-import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.project.ChatModelPipelineRunner;
 import ai.kompile.cli.main.project.LocalCrawlCapabilities;
@@ -35,7 +34,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -67,11 +65,34 @@ import java.util.stream.Stream;
      * explicitly needs the legacy blocking behavior.</p>
      */
 public final class LocalProjectCrawlBackend {
-    private static final int MAX_REMOTE_SOURCE_BYTES = 25 * 1024 * 1024;
+    static final int MAX_REMOTE_SOURCE_BYTES = 25 * 1024 * 1024;
     private static final List<String> DEFAULT_CODE_EXCLUDES = List.of(
             "**/.git/**", "**/.kompile/**", "**/target/**", "**/build/**",
             "**/.gradle/**", "**/.idea/**", "**/node_modules/**",
             "**/data/crawls/**", "**/data/markdown/**");
+    private static final Map<String, String> CONTENT_TYPE_SUFFIXES = Map.ofEntries(
+            Map.entry("text/html", ".html"),
+            Map.entry("application/xhtml+xml", ".html"),
+            Map.entry("application/pdf", ".pdf"),
+            Map.entry("text/markdown", ".md"),
+            Map.entry("text/x-markdown", ".md"),
+            Map.entry("application/json", ".json"),
+            Map.entry("application/xml", ".xml"),
+            Map.entry("text/xml", ".xml"),
+            Map.entry("text/csv", ".csv"),
+            Map.entry("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"),
+            Map.entry("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),
+            Map.entry("application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"),
+            Map.entry("application/msword", ".doc"),
+            Map.entry("application/vnd.ms-excel", ".xls"),
+            Map.entry("application/vnd.ms-powerpoint", ".ppt"),
+            Map.entry("application/vnd.oasis.opendocument.text", ".odt"),
+            Map.entry("application/vnd.oasis.opendocument.spreadsheet", ".ods"),
+            Map.entry("application/vnd.oasis.opendocument.presentation", ".odp"));
+    private static final Set<String> TEXT_LIKE_URL_EXTENSIONS = Set.of(
+            ".txt", ".md", ".markdown", ".rst", ".json", ".xml", ".csv", ".yaml", ".yml",
+            ".java", ".js", ".ts", ".py", ".c", ".cpp", ".h", ".hpp", ".go", ".rs", ".rb",
+            ".sh", ".sql", ".html", ".htm", ".css", ".log", ".ini", ".toml", ".properties");
     private static final ConcurrentHashMap<String, ReentrantLock> CRAWL_LOCKS = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper;
@@ -125,8 +146,8 @@ public final class LocalProjectCrawlBackend {
     private ToolResult submitAsync(JsonNode params, ToolContext context) {
         String jobId = LocalCrawlJobRegistry.newJobId();
         String knowledgeBase = knowledgeBaseHint(params);
-        Path localStateRoot = store.findProjectRoot(context.getWorkingDirectory())
-                .orElse(context.getWorkingDirectory()).toAbsolutePath().normalize();
+        // The root the worker's crawl uses, so job state lands beside the project it initialises.
+        Path localStateRoot = project(context.getWorkingDirectory()).root();
         ObjectNode workerParams = params.deepCopy();
         workerParams.put("_asyncWorker", true);
         workerParams.put("_asyncJobId", jobId);
@@ -202,12 +223,17 @@ public final class LocalProjectCrawlBackend {
             return crawlDocuments(merged, context);
         }
         // Fail before queued-job snapshots, project registration, source downloads, or index writes.
+        ProjectState discovered = project(context.getWorkingDirectory());
         try {
-            graphBackend.preflightNativeChat(project(context.getWorkingDirectory()).root(), params);
+            graphBackend.preflightNativeChat(discovered.root(), params);
         } catch (Exception invalid) {
             return ToolResult.error("Native graph chat preflight failed: " + message(invalid));
         }
         if (asyncRequested(params)) {
+            String refusal = autoInitRefusal(discovered);
+            if (refusal != null) {
+                return ToolResult.error("Project-local crawl failed: " + refusal);
+            }
             return submitAsync(params, context);
         }
         List<Path> temporarySources = new ArrayList<>();
@@ -257,8 +283,8 @@ public final class LocalProjectCrawlBackend {
                     String url = text(document, "url");
                     String requestedSourceType = firstNonBlank(text(document, "sourceType"), "FILE");
                     if ((path == null) == (url == null)
-                            && !DocumentSourceDescriptor.locatorOptional(requestedSourceType)
-                            && !hasIdentityMetadata(document.path("properties"))) {
+                            && !LocalExternalSourceLoaderRegistry.identityWithoutLocator(
+                                    requestedSourceType, propertiesMap(document.path("properties"), mapper))) {
                         return ToolResult.error(
                                 "documents[" + i + "] must provide exactly one of path or url.");
                     }
@@ -282,8 +308,12 @@ public final class LocalProjectCrawlBackend {
                                     ? mapper.convertValue(document.path("properties"),
                                     new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
                                     : Map.of();
-                            downloaded = LocalExternalSourceLoaderRegistry.materializeFiles(
-                                    requestedSourceType, firstNonBlank(path, url), properties, directory);
+                            int maxDocuments = document.path("maxDocuments").asInt(0);
+                            LocalExternalSourceLoaderRegistry.MaterializedFiles materialized =
+                                    LocalExternalSourceLoaderRegistry.materializeFiles(requestedSourceType,
+                                            firstNonBlank(path, url), properties, directory, maxDocuments);
+                            downloaded = materialized.files();
+                            warnings.addAll(materialized.warnings());
                         } catch (Exception error) {
                             return ToolResult.error("Source download failed for "
                                     + requestedSourceType + ": "
@@ -330,6 +360,51 @@ public final class LocalProjectCrawlBackend {
                         unrestrictedSource = true;
                         continue;
                     }
+                    if ("WEB_CRAWL".equalsIgnoreCase(requestedSourceType)) {
+                        if (url == null) {
+                            return ToolResult.error(
+                                    "documents[" + i + "] WEB_CRAWL requires url as the crawl seed.");
+                        }
+                        Path directory = materializeExternalSourceDirectory(
+                                document, requestedSourceType, url, project, knowledgeBase, dryRun(params));
+                        if (dryRun(params)) {
+                            temporarySources.add(directory);
+                            sources.add(directory.toString());
+                            explicitDocuments++;
+                            unrestrictedSource = true;
+                            continue;
+                        }
+                        int webCrawlMaxDepth = document.path("maxDepth").asInt(1);
+                        int webCrawlMaxDocuments = document.path("maxDocuments").asInt(0);
+                        WebCrawlFetcher.Result crawlResult;
+                        try {
+                            crawlResult = WebCrawlFetcher.crawl(url, webCrawlMaxDepth, webCrawlMaxDocuments,
+                                    strings(document.get("includePatterns")),
+                                    strings(document.get("excludePatterns")),
+                                    directory, allowPrivateNetworkUrls(project));
+                        } catch (Exception error) {
+                            return ToolResult.error("WEB_CRAWL failed for " + url + ": "
+                                    + firstNonBlank(error.getMessage(), error.getClass().getSimpleName()));
+                        }
+                        warnings.addAll(crawlResult.warnings());
+                        String label = firstNonBlank(text(document, "label"), url);
+                        for (WebCrawlFetcher.Page page : crawlResult.pages()) {
+                            sources.add(page.file().toString());
+                            ObjectNode pageConfig = mapper.createObjectNode()
+                                    .put("path", page.file().toString())
+                                    .put("sourceType", "FILE")
+                                    .put("loaderName", "external-materialized")
+                                    .put("label", label + ": " + page.url());
+                            copyMaterializedPipelineOptions(document, pageConfig);
+                            pageConfig.putObject("properties")
+                                    .put("externalSourceType", "WEB_CRAWL")
+                                    .put("sourceUrl", page.url());
+                            sourceConfigs.put(page.file().toString(), pageConfig);
+                        }
+                        explicitDocuments += crawlResult.pages().size();
+                        unrestrictedSource = true;
+                        continue;
+                    }
                     Path resolved;
                     if ("OBSIDIAN".equalsIgnoreCase(requestedSourceType)) {
                         if (path == null) return ToolResult.error("Obsidian local crawl requires a vault path.");
@@ -360,6 +435,7 @@ public final class LocalProjectCrawlBackend {
                                 ? (ObjectNode) configuredProperties
                                 : mapper.createObjectNode();
                         properties.put("sourceUrl", url);
+                        properties.put("externalSourceType", "URL");
                         sourceConfig.set("properties", properties);
                     }
                     sourceConfigs.put(resolved.toString(), sourceConfig);
@@ -800,6 +876,9 @@ public final class LocalProjectCrawlBackend {
                         "A code project registered in kompile.project.json, or the current directory.");
                 sourceType(types, "URL", true,
                         "Fetched directly by the in-process MCP worker over HTTP or HTTPS.");
+                sourceType(types, "WEB_CRAWL", true,
+                        "Bounded same-origin breadth-first crawl from a url seed (maxDepth default 1, "
+                                + "maxDocuments default 25); follows <a href> links, http/https only.");
                 sourceType(types, "INLINE_TEXT", true, "Use crawl_source text=... .");
                 for (String external : LocalExternalSourceLoaderRegistry.sourceTypes().stream().sorted().toList()) {
                     String description = LocalExternalSourceLoaderRegistry.downloadsOriginalFiles(external)
@@ -807,7 +886,15 @@ public final class LocalProjectCrawlBackend {
                               + "through its content-type pipeline (pdf, pipelineId=vlm-ocr-pdf for "
                               + "scanned PDFs, excel, ...). Identify via properties.fileIds/itemIds, "
                               + "properties.folderId, or path."
-                            : "Loaded in-process with explicit request credentials; no app server required.";
+                            : "Loaded in-process from a connected account or a stored channel "
+                              + "connection (properties.fromChannelConnection); no app server or "
+                              + "pasted credentials required.";
+                    if (ai.kompile.source.erp.ErpSourceConfiguration.isErp(external)) {
+                        description = "Read-only Camel HTTP ingestion: service-root url (or properties.serviceRoot), "
+                                + "properties.entitySet and optional connectionName from 'kompile auth source erp'. "
+                                + "SAP V2/OData V4, Dynamics F&O, NetSuite REST records, Odoo 19 search_read or Salesforce query; bounded by maxDocuments/maxRecords and maxPages. "
+                                + "No RFC, mutations or arbitrary Camel routes.";
+                    }
                     sourceType(types, external, true, description);
                 }
                 sourceType(types, "OBSIDIAN", true,
@@ -945,12 +1032,12 @@ public final class LocalProjectCrawlBackend {
         try {
             String jobId = text(params, "jobId");
             boolean localAsyncJob = LocalCrawlJobRegistry.isJobId(jobId);
-            Path localStateRoot = store.findProjectRoot(context.getWorkingDirectory())
-                    .orElse(context.getWorkingDirectory()).toAbsolutePath().normalize();
+            ProjectState discovered = project(context.getWorkingDirectory());
+            Path localStateRoot = discovered.root();
             ProjectState project = (localAsyncJob
                     && ("status".equals(operation) || "cancel".equals(operation)
                     || "transcript".equals(operation)))
-                    ? null : project(context.getWorkingDirectory());
+                    ? null : discovered;
             switch (operation) {
                 case "preflight":
                     if (params.path("body").isObject() || params.path("request").isObject()) {
@@ -1046,8 +1133,7 @@ public final class LocalProjectCrawlBackend {
             return ToolResult.error("crawl_result requires jobId");
         }
         LocalCrawlJobRegistry.AsyncJob asyncJob = LocalCrawlJobRegistry.get(jobId);
-        Path localStateRoot = store.findProjectRoot(context.getWorkingDirectory())
-                .orElse(context.getWorkingDirectory()).toAbsolutePath().normalize();
+        Path localStateRoot = project(context.getWorkingDirectory()).root();
         if (asyncJob != null) {
             return LocalCrawlJobRegistry.result(jobId, mapper, localStateRoot);
         }
@@ -1577,7 +1663,9 @@ public final class LocalProjectCrawlBackend {
 
     private ProjectState project(Path workingDirectory) {
         Path working = workingDirectory.toAbsolutePath().normalize();
-        Path root = store.findProjectRoot(working).orElse(working);
+        // An uninitialised checkout is one project at its top level, never one per sub-directory.
+        Path root = store.findProjectRoot(working)
+                .orElseGet(() -> ProjectAutoDetection.autoInitRoot(working).orElse(working));
         KompileProjectManifest manifest = null;
         try {
             manifest = store.load(root);
@@ -1592,6 +1680,10 @@ public final class LocalProjectCrawlBackend {
         Path root = existing.root();
         KompileProjectManifest manifest = existing.manifest();
         if (manifest == null) {
+            String refusal = autoInitRefusal(existing);
+            if (refusal != null) {
+                throw new IllegalStateException(refusal);
+            }
             KompileProjectInitRequest request = new KompileProjectInitRequest();
             String name = root.getFileName() != null ? root.getFileName().toString() : "project";
             request.setName(name);
@@ -1609,6 +1701,16 @@ public final class LocalProjectCrawlBackend {
             }
         }
         return projectState(root, manifest);
+    }
+
+    /** Why no project may be created for this uninitialised directory; null when one exists or may be created. */
+    private static String autoInitRefusal(ProjectState project) {
+        if (project.manifest() != null || ProjectAutoDetection.autoInitRoot(project.root()).isPresent()) {
+            return null;
+        }
+        return "No kompile project covers " + project.root() + ", and none is created automatically in the home "
+                + "directory, its parents, or a checkout that contains the home directory. Run `kompile project init` "
+                + "in a project directory, or start the session in one.";
     }
 
     private ProjectState projectState(Path root, KompileProjectManifest manifest) {
@@ -1670,7 +1772,12 @@ public final class LocalProjectCrawlBackend {
     }
 
     ToolResult ensureFolderKnowledgeBase(ToolContext context) {
-        ProjectState project = ensureDirectoryProject(context.getWorkingDirectory());
+        ProjectState project;
+        try {
+            project = ensureDirectoryProject(context.getWorkingDirectory());
+        } catch (RuntimeException unavailable) {
+            return ToolResult.error(message(unavailable));
+        }
         String id = knowledgeBase(null, project).id();
         Path graph = project.root().resolve("data/crawls").resolve(id)
                 .resolve(LocalProjectGraphBackend.GRAPH_FILE);
@@ -1805,7 +1912,10 @@ public final class LocalProjectCrawlBackend {
         if (temporary) {
             return Files.createTempDirectory("kompile-local-source-");
         }
-        String identity = LocalExternalSourceLoaderRegistry.identityKey(sourceType, locator);
+        Map<String, Object> scope = document.path("properties").isObject()
+                ? mapper.convertValue(document.path("properties"),
+                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {}) : Map.of();
+        String identity = LocalExternalSourceLoaderRegistry.identityKey(sourceType, locator, scope);
         String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(identity.getBytes(StandardCharsets.UTF_8))).substring(0, 24);
         return project.root().resolve("data/knowledge-sources")
@@ -1820,17 +1930,8 @@ public final class LocalProjectCrawlBackend {
             ProjectState project,
             KnowledgeBaseRef knowledgeBase,
             boolean temporary) throws Exception {
-        Path directory;
-        if (temporary) {
-            directory = Files.createTempDirectory("kompile-local-source-");
-        } else {
-            String identity = LocalExternalSourceLoaderRegistry.identityKey(sourceType, locator);
-            String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(identity.getBytes(StandardCharsets.UTF_8))).substring(0, 24);
-            directory = project.root().resolve("data/knowledge-sources")
-                    .resolve(knowledgeBase.id()).resolve("external")
-                    .resolve(sourceType.toLowerCase(Locale.ROOT) + "-" + digest).normalize();
-        }
+        Path directory = materializeExternalSourceDirectory(
+                document, sourceType, locator, project, knowledgeBase, temporary);
         Map<String, Object> properties = document.path("properties").isObject()
                 ? mapper.convertValue(document.path("properties"),
                 new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
@@ -1841,7 +1942,7 @@ public final class LocalProjectCrawlBackend {
         return directory;
     }
 
-    private static void deleteRecursively(Path path) throws IOException {
+    static void deleteRecursively(Path path) throws IOException {
         if (path == null || !Files.exists(path)) return;
         if (Files.isDirectory(path)) {
             try (Stream<Path> walk = Files.walk(path)) {
@@ -2196,10 +2297,13 @@ public final class LocalProjectCrawlBackend {
                         + "data/knowledge-sources/<kb>/external/ and then process each file through its "
                         + "content-type pipeline (pdf text or pipelineId=vlm-ocr-pdf for scanned PDFs, "
                         + "excel for xlsx, ...). Identify them with properties.fileIds/itemIds, a single "
-                        + "properties.folderId, or pathOrUrl; cap with properties.maxFiles. Credentials: "
-                        + "properties.accessToken, or the connected OAuth account. Text connectors "
-                        + "(GMAIL, SLACK, NOTION, REDDIT, ...) materialize text directly and accept "
-                        + "provider-native query properties (e.g. GMAIL gmailQuery).");
+                        + "properties.folderId, or pathOrUrl; cap with properties.maxFiles. Credentials "
+                        + "come from a connected account automatically (connect with `kompile auth login "
+                        + "<provider>`); Slack/Discord/email can instead reference a stored channel "
+                        + "connection with properties.fromChannelConnection. Never ask the user to paste "
+                        + "tokens or passwords into chat. Text connectors (GMAIL, SLACK, NOTION, REDDIT, "
+                        + "...) materialize text directly and accept provider-native query properties "
+                        + "(e.g. GMAIL gmailQuery).");
         shape.put("execution", "asynchronous MCP-host job by default: start returns jobId; the worker may report WAITING_FOR_CAPACITY according to subprocess_watchdog admission config; poll crawl_control operation=status and respect pollAfterMs=1000; call crawl_result at terminal=true; async=false or waitForCompletion=true enables blocking compatibility");
         shape.put("progress", "crawl_control status reports stage, stageDetail, progressPercent, stageUpdatedAt, and request-scoped pipelineProgress including currentPage/totalPages when available");
         shape.put("graph", "portable incremental snapshot at data/crawls/<knowledge-base>/graph.kgraph");
@@ -2254,19 +2358,14 @@ public final class LocalProjectCrawlBackend {
                                          KnowledgeBaseRef knowledgeBase,
                                          boolean temporary) throws Exception {
         URI uri = URI.create(rawUrl);
-        String scheme = uri.getScheme();
-        if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
-            throw new IllegalArgumentException("Project-local URL crawl supports only http and https: " + rawUrl);
-        }
-
-        HttpRequest request = HttpRequest.newBuilder(uri)
+        RemoteFetchGuard.FetchResult fetched = RemoteFetchGuard.fetch(uri, target -> HttpRequest.newBuilder(target)
                 .timeout(Duration.ofSeconds(60))
                 .header("Accept", "text/html,application/xhtml+xml,application/pdf,text/plain,text/markdown,application/json,*/*;q=0.5")
                 .header("User-Agent", "Kompile-MCP/0.1")
                 .GET()
-                .build();
-        HttpResponse<InputStream> response = RemoteHttpClientHolder.CLIENT.send(
-                request, HttpResponse.BodyHandlers.ofInputStream());
+                .build(), allowPrivateNetworkUrls(project));
+        HttpResponse<InputStream> response = fetched.response();
+        URI finalUri = fetched.uri();
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             response.body().close();
             throw new IOException("URL crawl returned HTTP " + response.statusCode() + " for " + rawUrl);
@@ -2288,7 +2387,7 @@ public final class LocalProjectCrawlBackend {
             throw new IOException("URL crawl returned an empty response: " + rawUrl);
         }
 
-        String suffix = remoteSuffix(uri, response.headers().firstValue("Content-Type").orElse(""));
+        String suffix = remoteSuffix(finalUri, response.headers().firstValue("Content-Type").orElse(""));
         Path destination;
         if (temporary) {
             destination = Files.createTempFile("kompile-url-crawl-", suffix);
@@ -2310,36 +2409,74 @@ public final class LocalProjectCrawlBackend {
         return destination.toAbsolutePath().normalize();
     }
 
-    private String remoteSuffix(URI uri, String contentType) {
-        String path = uri.getPath();
-        if (path != null) {
-            int slash = path.lastIndexOf('/');
-            String name = slash >= 0 ? path.substring(slash + 1) : path;
-            int dot = name.lastIndexOf('.');
-            if (dot >= 0) {
-                String suffix = name.substring(dot).toLowerCase(Locale.ROOT);
-                if (suffix.matches("\\.[a-z0-9]{1,8}")) {
-                    return suffix;
-                }
-            }
+    /**
+     * Content-Type decides the staged file suffix; the URL path extension is only a fallback
+     * for a missing or generic Content-Type (octet-stream), or to keep a known text/code
+     * extension when the server merely says {@code text/plain}. This avoids mis-suffixing pages
+     * such as {@code .../wiki/Node.js} (served as {@code text/html}) with {@code .js}.
+     */
+    static String remoteSuffix(URI uri, String contentType) {
+        String normalized = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT).trim();
+        int semicolon = normalized.indexOf(';');
+        if (semicolon >= 0) {
+            normalized = normalized.substring(0, semicolon).trim();
         }
-        String normalized = contentType.toLowerCase(Locale.ROOT);
-        if (normalized.contains("html")) return ".html";
-        if (normalized.contains("pdf")) return ".pdf";
-        if (normalized.contains("markdown")) return ".md";
-        if (normalized.contains("json")) return ".json";
-        return ".txt";
+        if (normalized.isBlank() || normalized.equals("application/octet-stream")
+                || normalized.equals("binary/octet-stream")) {
+            String urlExtension = urlExtension(uri);
+            return urlExtension != null ? urlExtension : ".bin";
+        }
+        String mapped = CONTENT_TYPE_SUFFIXES.get(normalized);
+        if (mapped != null) {
+            return mapped;
+        }
+        if (normalized.equals("text/plain")) {
+            String urlExtension = urlExtension(uri);
+            return urlExtension != null && TEXT_LIKE_URL_EXTENSIONS.contains(urlExtension)
+                    ? urlExtension : ".txt";
+        }
+        if (normalized.startsWith("text/")) {
+            return ".txt";
+        }
+        if (normalized.startsWith("image/")) {
+            String subtype = normalized.substring("image/".length())
+                    .replace("svg+xml", "svg").replace("jpeg", "jpg");
+            return subtype.matches("[a-z0-9]{1,8}") ? "." + subtype : ".bin";
+        }
+        return ".bin";
+    }
+
+    private static String urlExtension(URI uri) {
+        String path = uri.getPath();
+        if (path == null) {
+            return null;
+        }
+        int slash = path.lastIndexOf('/');
+        String name = slash >= 0 ? path.substring(slash + 1) : path;
+        int dot = name.lastIndexOf('.');
+        if (dot < 0) {
+            return null;
+        }
+        String suffix = name.substring(dot).toLowerCase(Locale.ROOT);
+        return suffix.matches("\\.[a-z0-9]{1,8}") ? suffix : null;
     }
 
     private boolean dryRun(JsonNode params) {
         return params.path("dryRun").asBoolean(false);
     }
 
-    private static final class RemoteHttpClientHolder {
-        private static final HttpClient CLIENT = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
+    /**
+     * Reads the project's opt-in for private-network URL fetches
+     * ({@code crawl.allowPrivateNetworkUrls} in {@code kompile.project.json} metadata). Defaults
+     * to false: SSRF protection is opt-in only via project configuration, never a request
+     * parameter, so an LLM or crawled page can never self-authorize internal-network access.
+     */
+    private static boolean allowPrivateNetworkUrls(ProjectState project) {
+        if (project == null || project.manifest() == null) {
+            return false;
+        }
+        Map<String, String> metadata = project.manifest().getMetadata();
+        return metadata != null && Boolean.parseBoolean(metadata.get("crawl.allowPrivateNetworkUrls"));
     }
 
     private boolean matches(String requested, String candidate) {
@@ -2400,20 +2537,16 @@ public final class LocalProjectCrawlBackend {
     }
 
     /**
-     * Locator-free identity for external source types: the item identifiers live in the
-     * document properties instead of path/url. Must stay aligned with
-     * LocalExternalSourceLoaderRegistry.identityWithoutLocator.
+     * Converts a JSON properties node into the plain map
+     * {@link LocalExternalSourceLoaderRegistry#identityWithoutLocator} expects. Shared by the
+     * local ({@link #crawlDocuments}) and remote-delegating ({@link CrawlDocumentsTool}) document
+     * validation call sites so the conversion isn't duplicated inline in both.
      */
-    private static boolean hasIdentityMetadata(JsonNode properties) {
-        for (String key : List.of("fileIds", "itemIds", "folderId", "pageIds", "databaseIds",
-                "guildId", "loadAllChannels")) {
-            JsonNode value = properties == null ? null : properties.get(key);
-            if (value == null || value.isNull()) continue;
-            if (value.isValueNode() ? !value.asText().isBlank() : value.size() > 0) {
-                return true;
-            }
-        }
-        return false;
+    static Map<String, Object> propertiesMap(JsonNode properties, ObjectMapper mapper) {
+        return properties != null && properties.isObject()
+                ? mapper.convertValue(properties,
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
+                : Map.of();
     }
 
     private String stringValue(Object value) {

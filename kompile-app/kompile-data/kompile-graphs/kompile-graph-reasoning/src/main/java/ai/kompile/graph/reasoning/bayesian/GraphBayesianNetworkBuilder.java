@@ -33,8 +33,8 @@ import java.util.Map;
  * counterpart of the former KG-specific {@code BayesianNetworkBuilder}.
  *
  * <p>Each entity becomes a binary node; each relation becomes a directed edge whose causal strength
- * is {@link GraphRelation#weight()}. Strongest edges are added first and any edge that would close a
- * cycle is dropped, yielding a DAG. Root nodes get a prior from their {@link GraphEntity#weight()};
+ * is {@link GraphRelation#strength()}. Strongest edges are added first and any edge that would close a
+ * cycle is dropped, yielding a DAG. Root nodes get a prior from their {@link GraphEntity#confidence()};
  * non-roots get a noisy-OR CPT over their parents' edge strengths. Entities with no directed
  * dependency stay (conditionally) independent — exactly the right probabilistic structure.</p>
  */
@@ -73,7 +73,7 @@ public class GraphBayesianNetworkBuilder {
         // Strongest relations first with stable secondary keys; drop any edge that would close a cycle.
         List<GraphRelation> relations = new ArrayList<>(graph.relations());
         relations.sort(Comparator
-                .comparingDouble(GraphBayesianNetworkBuilder::effectiveStrength).reversed()
+                .<GraphRelation>comparingDouble(GraphRelation::strength).reversed()
                 .thenComparing(GraphBayesianNetworkBuilder::sourceId)
                 .thenComparing(GraphBayesianNetworkBuilder::targetId)
                 .thenComparing(r -> r.type() == null ? "" : r.type())
@@ -83,7 +83,7 @@ public class GraphBayesianNetworkBuilder {
         for (GraphRelation relation : relations) {
             String parentVar = entityIdToVariable.get(sourceId(relation));
             String childVar = entityIdToVariable.get(targetId(relation));
-            double strength = effectiveStrength(relation);
+            double strength = relation.strength();
             if (parentVar == null || childVar == null || parentVar.equals(childVar)
                     || strength <= 0.0 || isConflictType(relation.type())) {
                 continue;
@@ -122,10 +122,6 @@ public class GraphBayesianNetworkBuilder {
 
     private static double clamp01(double x) {
         return Math.max(0.0, Math.min(1.0, x));
-    }
-
-    private static double effectiveStrength(GraphRelation relation) {
-        return clamp01(relation.weight() * relation.confidence());
     }
 
     private static String sourceId(GraphRelation relation) {

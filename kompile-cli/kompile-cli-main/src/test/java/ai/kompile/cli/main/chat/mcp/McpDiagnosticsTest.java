@@ -147,4 +147,38 @@ class McpDiagnosticsTest {
             processes.close();
         }
     }
+
+    @Test
+    void closedProcessLogSendsLaterLinesToStderrWithoutRecreatingItsDirectory(@TempDir Path workDir)
+            throws Exception {
+        // A chat whose manager is closed but whose sink is still registered (a test that
+        // never closes its chat) must not bring back a log directory deleted with it.
+        Path projectKompile = Files.createDirectories(workDir.resolve(".kompile"));
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("mcp-closed-log-" + System.nanoTime(), workDir);
+        ChatUiSession session = new ChatUiSession();
+        Runnable cleanup = McpDiagnostics.installProcessLog(session, processes, () -> false);
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        PrintStream previous = System.err;
+        try (PrintStream capture = new PrintStream(err, true, StandardCharsets.UTF_8);
+             var ignored = session.bind()) {
+            System.setErr(capture);
+            McpDiagnostics.log("[MCP] while open");
+            processes.close();
+            try (var walk = Files.walk(projectKompile)) {
+                walk.sorted((a, b) -> b.compareTo(a)).forEach(path -> path.toFile().delete());
+            }
+            assertFalse(Files.exists(projectKompile), "precondition: the log directory is gone");
+
+            McpDiagnostics.log("[MCP] after close");
+
+            assertEquals("[MCP] after close" + System.lineSeparator(), err.toString(StandardCharsets.UTF_8));
+            assertFalse(Files.exists(projectKompile));
+        } finally {
+            System.setErr(previous);
+            cleanup.run();
+            session.close();
+            processes.close();
+        }
+    }
 }

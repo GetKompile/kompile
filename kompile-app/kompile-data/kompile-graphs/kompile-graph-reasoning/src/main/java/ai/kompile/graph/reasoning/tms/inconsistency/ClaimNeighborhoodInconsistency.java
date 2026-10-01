@@ -28,7 +28,8 @@ import java.util.Objects;
  *
  * <p>Formally, for claim atom {@code P(a₁, …, aₙ)}:</p>
  * <ul>
- *   <li>A fact is in the neighbourhood if its <em>predicate</em> equals {@code P} (case-normalised), OR</li>
+ *   <li>A fact is in the neighbourhood if its <em>predicate</em> is {@code P} in any spelling
+ *       (compared by {@link BelnapMarking.ParsedAtom#predicateKey()}), OR</li>
  *   <li>Its <em>atom key string</em> contains any of the argument strings {@code aᵢ}
  *       (simple substring match on the raw atom key — argument-level proximity, not equality).</li>
  * </ul>
@@ -125,7 +126,7 @@ public final class ClaimNeighborhoodInconsistency {
      *
      * <p>A fact is included if:</p>
      * <ol>
-     *   <li>Its parsed predicate equals the claim's predicate (case-normalised), OR</li>
+     *   <li>Its parsed predicate has the claim predicate's key (any spelling), OR</li>
      *   <li>The raw atom key string contains any of the claim's arguments as a substring.</li>
      * </ol>
      *
@@ -136,7 +137,7 @@ public final class ClaimNeighborhoodInconsistency {
                                                   Collection<Fact> allFacts) {
         if (allFacts == null || allFacts.isEmpty()) return List.of();
 
-        String claimPredicate = claimParsed.predicate(); // already normalised
+        String claimPredicateKey = claimParsed.predicateKey();
         List<String> claimArgs = claimParsed.args();
 
         List<Fact> result = new ArrayList<>();
@@ -144,7 +145,7 @@ public final class ClaimNeighborhoodInconsistency {
             if (f == null) continue;
             BelnapMarking.ParsedAtom fp = BelnapMarking.ParsedAtom.parse(f.atomKey());
             // Predicate match
-            if (fp.predicate().equals(claimPredicate)) {
+            if (fp.predicateKey().equals(claimPredicateKey)) {
                 result.add(f);
                 continue;
             }

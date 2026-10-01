@@ -14,6 +14,7 @@ import ai.kompile.event.attribution.algorithm.CausalTraversal;
 import ai.kompile.event.attribution.algorithm.bayesian.EmpiricalPriorBlend;
 import ai.kompile.graph.reasoning.mebn.*;
 import ai.kompile.graph.reasoning.mebn.logic.*;
+import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -385,7 +386,7 @@ public class KgMTheoryBuilder {
                 double weight = edge.weight;
                 double confidence = edge.confidence != null ? edge.confidence : 0.5;
                 double provenanceMult = getProvenanceMultiplier(edge.provenance);
-                edgeStrength = weight * confidence * provenanceMult;
+                edgeStrength = GraphRelation.strength(weight, confidence) * provenanceMult;
                 // Blend with the empirical observed-connection prior (gated; structural if none).
                 edgeStrength = EmpiricalPriorBlend.forConnection(
                         edgeStrength, empiricalPriors, edge.sourceId, edge.edgeType.name(), edge.targetId);

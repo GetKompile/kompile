@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * Converts subprocess progress/completion/runtime messages to application DTO types.
@@ -38,6 +39,12 @@ import java.util.List;
 public class VectorPopulationStatsConverter {
 
     private static final Logger logger = LoggerFactory.getLogger(VectorPopulationStatsConverter.class);
+
+    /**
+     * Error types the child's memory watchdog reports when it stops its own run before an OOM
+     * ({@code checkWatchdogOrExit} in VectorPopulationSubprocessMain) — restarted with adaptive settings like one.
+     */
+    private static final Set<String> MEMORY_GUARD_ERROR_TYPES = Set.of("MemoryThreshold", "MemoryKillThreshold");
 
     private final SubprocessRestartManager restartManager;
 
@@ -426,7 +433,8 @@ public class VectorPopulationStatsConverter {
         if (isBatchSizeTooLargeMessage(errorMessage)) {
             return SubprocessRestartManager.FailureReason.BATCH_SIZE_TOO_LARGE;
         }
-        if (isOomRelatedMessage(errorMessage) || isOomRelatedMessage(errorType)) {
+        if (isOomRelatedMessage(errorMessage) || isOomRelatedMessage(errorType)
+                || (errorType != null && MEMORY_GUARD_ERROR_TYPES.contains(errorType))) {
             return SubprocessRestartManager.FailureReason.OUT_OF_MEMORY;
         }
         return SubprocessRestartManager.FailureReason.UNKNOWN;

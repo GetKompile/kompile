@@ -29,11 +29,14 @@ import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.MebnTheoryRegistrationService;
 import ai.kompile.knowledgegraph.reasoning.RegroundResult;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
@@ -52,6 +55,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -101,6 +105,13 @@ class GraphHydrationOrchestratorTest {
      */
     @Mock
     private KbConfigManager kbConfigManager;
+
+    /** Wired only by the relation-opinion publish tests. */
+    @Mock
+    private ObjectProvider<UnifiedGraphBridge> unifiedGraphBridges;
+
+    @Mock
+    private UnifiedGraphBridge unifiedGraphBridge;
 
     private GraphHydrationOrchestrator orchestrator;
 
@@ -847,6 +858,64 @@ class GraphHydrationOrchestratorTest {
         // Derivation succeeded: versions from reground are captured
         assertEquals(5, result.relationsDerived());
         // All 4 stages completed (DERIVATION + PRUNE_COMPACT + ONTOLOGY_CONFORMANCE + HEALTH)
+        assertEquals(4, result.stagesRun());
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // 15. Learned relation opinions: published to the analysis asset store after a
+    //     successful derivation, once PRUNE_COMPACT has removed the edges it drops
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void relationOpinions_publishedAfterPruneWhenDerivationSucceeds() {
+        ReflectionTestUtils.setField(orchestrator, "unifiedGraphBridges", unifiedGraphBridges);
+        when(unifiedGraphBridges.getIfAvailable()).thenReturn(unifiedGraphBridge);
+        when(unifiedGraphBridge.publishLearnedRelationOpinions(51L)).thenReturn(3);
+        when(reasoningOrchestrator.runFullReground(51L))
+                .thenReturn(new RegroundResult(3, "run-opinions", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        List<String> messages = new ArrayList<>();
+        HydrationResult result = orchestrator.run(51L, HydrationConfig.defaults(), (s, m) -> messages.add(m));
+
+        InOrder order = inOrder(pruneCompactOrchestrator, unifiedGraphBridge);
+        order.verify(pruneCompactOrchestrator).run(anyLong(), anySet(), anyString(), anyBoolean(), any());
+        order.verify(unifiedGraphBridge).publishLearnedRelationOpinions(51L);
+        assertThat(messages).contains("Published 3 learned relation opinion(s) to the analysis asset store");
+        assertEquals(4, result.stagesRun(), "publishing is not a stage of its own");
+    }
+
+    @Test
+    void relationOpinions_notPublishedWhenDerivationFails() {
+        ReflectionTestUtils.setField(orchestrator, "unifiedGraphBridges", unifiedGraphBridges);
+        when(reasoningOrchestrator.runFullReground(52L))
+                .thenThrow(new RuntimeException("MAP solve failed"));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        orchestrator.run(52L, HydrationConfig.defaults(), (s, m) -> {});
+
+        // No derivation, no learned posteriors to publish.
+        verifyNoInteractions(unifiedGraphBridges, unifiedGraphBridge);
+    }
+
+    @Test
+    void relationOpinions_publishFailure_doesNotAbortHydration() {
+        ReflectionTestUtils.setField(orchestrator, "unifiedGraphBridges", unifiedGraphBridges);
+        when(unifiedGraphBridges.getIfAvailable()).thenReturn(unifiedGraphBridge);
+        when(unifiedGraphBridge.publishLearnedRelationOpinions(53L))
+                .thenThrow(new IllegalStateException("asset store unavailable"));
+        when(reasoningOrchestrator.runFullReground(53L))
+                .thenReturn(new RegroundResult(2, "run-publish-fails", Set.of()));
+        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
+                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
+
+        HydrationResult result = assertDoesNotThrow(() ->
+                orchestrator.run(53L, HydrationConfig.defaults(), (s, m) -> {}));
+
+        assertEquals(2, result.relationsDerived());
+        assertEquals("run-publish-fails", result.runId());
         assertEquals(4, result.stagesRun());
     }
 }

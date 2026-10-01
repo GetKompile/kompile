@@ -23,6 +23,8 @@ import ai.kompile.app.services.OpTimingService;
 import ai.kompile.app.services.VectorPopulationProgressTracker;
 import ai.kompile.app.services.VectorPopulationProgressTracker.VectorPopulationStats;
 import ai.kompile.app.subprocess.SubprocessMessage;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
+import ai.kompile.app.subprocess.SubprocessSignals;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestPhase;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestStats;
@@ -53,6 +55,11 @@ public class SubprocessOutputHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(SubprocessOutputHandler.class);
 
+    private static final long TIMEOUT_MINUTES = 120;
+
+    /** Upper bound on waiting for the output readers to drain the child's pipes after it exits. */
+    private static final long OUTPUT_DRAIN_TIMEOUT_MS = 5_000;
+
     private final VectorPopulationProgressTracker progressTracker;
     private final IngestProgressTracker ingestProgressTracker;
     private final OpTimingService opTimingService;
@@ -67,8 +74,10 @@ public class SubprocessOutputHandler {
     private BiConsumer<VectorPopulationHandle, SubprocessMessage.PhaseTransition> onPhaseTransitionCallback;
     /** Called when a completed message arrives */
     private BiConsumer<VectorPopulationHandle, SubprocessMessage.Completed> onCompletedCallback;
-    /** Called when a failed message arrives */
+    /** Called when an attempt fails for good */
     private BiConsumer<VectorPopulationHandle, SubprocessMessage.Failed> onFailedCallback;
+    /** Called when a failed message makes the attempt restartable once it exits */
+    private BiConsumer<VectorPopulationHandle, SubprocessMessage.Failed> onRecoveryScheduledCallback;
     /** Called to broadcast a raw progress update via WebSocket */
     private BiConsumer<VectorPopulationHandle, SubprocessMessage.Heartbeat> onHeartbeatCallback;
     /** Called when the subprocess watchCompletion thread detects exit */
@@ -96,6 +105,7 @@ public class SubprocessOutputHandler {
             BiConsumer<VectorPopulationHandle, SubprocessMessage.PhaseTransition> onPhaseTransition,
             BiConsumer<VectorPopulationHandle, SubprocessMessage.Completed> onCompleted,
             BiConsumer<VectorPopulationHandle, SubprocessMessage.Failed> onFailed,
+            BiConsumer<VectorPopulationHandle, SubprocessMessage.Failed> onRecoveryScheduled,
             BiConsumer<VectorPopulationHandle, SubprocessMessage.Heartbeat> onHeartbeat,
             BiConsumer<VectorPopulationHandle, Integer> onCompletion,
             Set<String> warnedTaskIds) {
@@ -103,6 +113,7 @@ public class SubprocessOutputHandler {
         this.onPhaseTransitionCallback = onPhaseTransition;
         this.onCompletedCallback = onCompleted;
         this.onFailedCallback = onFailed;
+        this.onRecoveryScheduledCallback = onRecoveryScheduled;
         this.onHeartbeatCallback = onHeartbeat;
         this.onCompletionCallback = onCompletion;
         this.warnedTaskIds = warnedTaskIds;
@@ -110,17 +121,20 @@ public class SubprocessOutputHandler {
 
     /**
      * Start stdout, stderr, and completion-watcher threads for the given handle.
+     *
+     * @param stderrProtocol finds the protocol messages of a wrapped child that writes them to fd 1
      */
-    public void startMonitoring(VectorPopulationHandle handle) {
+    public void startMonitoring(VectorPopulationHandle handle, SubprocessProtocolChannel.StderrProtocol stderrProtocol) {
         Thread stdoutReader = new Thread(() -> readStdout(handle), "vector-pop-stdout-" + handle.getTaskId());
         stdoutReader.setDaemon(true);
         stdoutReader.start();
 
-        Thread stderrReader = new Thread(() -> readStderr(handle), "vector-pop-stderr-" + handle.getTaskId());
+        Thread stderrReader = new Thread(() -> readStderr(handle, stderrProtocol),
+                "vector-pop-stderr-" + handle.getTaskId());
         stderrReader.setDaemon(true);
         stderrReader.start();
 
-        Thread completionWatcher = new Thread(() -> watchCompletion(handle),
+        Thread completionWatcher = new Thread(() -> watchCompletion(handle, stdoutReader, stderrReader),
                 "vector-pop-watcher-" + handle.getTaskId());
         completionWatcher.setDaemon(true);
         completionWatcher.start();
@@ -133,25 +147,18 @@ public class SubprocessOutputHandler {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(handle.getProcess().getInputStream()))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                if (line.startsWith(SubprocessMessage.MESSAGE_PREFIX)) {
-                    String json = line.substring(SubprocessMessage.MESSAGE_PREFIX.length());
+                // A child started without the protocol channel shares this pipe with native code, which writes
+                // to fd 1 beneath its System.setOut redirect, so a native message without a newline can precede
+                // a protocol message on the same line.
+                int prefixAt = line.indexOf(SubprocessMessage.MESSAGE_PREFIX);
+                if (prefixAt > 0) {
+                    forwardOutput(handle, line.substring(0, prefixAt));
+                }
+                if (prefixAt >= 0) {
+                    String json = line.substring(prefixAt + SubprocessMessage.MESSAGE_PREFIX.length());
                     handleMessage(handle, json);
-                } else if (!line.isBlank()) {
-                    logger.debug("[vector-pop-{}] {}", handle.getTaskId(), line);
-                    if (progressTracker != null) {
-                        progressTracker.sendLog(handle.getTaskId(), "STDOUT", "INFO", line);
-                    }
-                    if (ingestProgressTracker != null) {
-                        ingestProgressTracker.sendLog(handle.getTaskId(), "STDOUT", "INFO", line);
-                    }
-                    SubprocessLogWriter lw = handle.logWriter;
-                    if (lw != null) {
-                        try {
-                            lw.writeLine(AgentLogRecord.Stream.STDOUT, line);
-                        } catch (Exception logEx) {
-                            logger.debug("[vector-pop-{}] log write failed: {}", handle.getTaskId(), logEx.getMessage());
-                        }
-                    }
+                } else {
+                    forwardOutput(handle, line);
                 }
             }
         } catch (IOException e) {
@@ -161,10 +168,34 @@ public class SubprocessOutputHandler {
         }
     }
 
+    /** Stdout that is not a protocol message: regular log output. */
+    private void forwardOutput(VectorPopulationHandle handle, String line) {
+        if (line.isBlank()) {
+            return;
+        }
+        logger.debug("[vector-pop-{}] {}", handle.getTaskId(), line);
+        if (progressTracker != null) {
+            progressTracker.sendLog(handle.getTaskId(), "STDOUT", "INFO", line);
+        }
+        if (ingestProgressTracker != null) {
+            ingestProgressTracker.sendLog(handle.getTaskId(), "STDOUT", "INFO", line);
+        }
+        SubprocessLogWriter lw = handle.logWriter;
+        if (lw != null) {
+            try {
+                lw.writeLine(AgentLogRecord.Stream.STDOUT, line);
+            } catch (Exception logEx) {
+                logger.debug("[vector-pop-{}] log write failed: {}", handle.getTaskId(), logEx.getMessage());
+            }
+        }
+    }
+
     /**
-     * Read stderr from subprocess.
+     * Read stderr from subprocess. A wrapped child's fd 1 is this pipe too, so it carries the native output
+     * that reaches fd 1, and the protocol messages of a child that writes them there
+     * ({@link SubprocessProtocolChannel.StderrProtocol}).
      */
-    public void readStderr(VectorPopulationHandle handle) {
+    public void readStderr(VectorPopulationHandle handle, SubprocessProtocolChannel.StderrProtocol stderrProtocol) {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(handle.getProcess().getErrorStream()))) {
 
@@ -173,44 +204,16 @@ public class SubprocessOutputHandler {
                 if (line.isBlank())
                     continue;
 
-                String level;
-                if (line.contains("OutOfMemoryError") || line.contains("Java heap space")) {
-                    logger.error("[vector-pop-{}] OOM detected: {}", handle.getTaskId(), line);
-                    handle.setOomDetected(true);
-                    level = "ERROR";
-                } else if (line.startsWith("\tat") || line.startsWith("Caused by:") || line.startsWith("Suppressed:")) {
-                    logger.error("[vector-pop-{}] {}", handle.getTaskId(), line);
-                    level = "ERROR";
-                } else if (line.contains("ERROR") || line.contains("Exception") || line.contains("FATAL")) {
-                    logger.error("[vector-pop-{}] {}", handle.getTaskId(), line);
-                    level = "ERROR";
-                } else if (line.contains("WARN")) {
-                    logger.warn("[vector-pop-{}] {}", handle.getTaskId(), line);
-                    level = "WARN";
-                } else if (line.contains(" INFO ")) {
-                    logger.info("[vector-pop-{}] {}", handle.getTaskId(), line);
-                    level = "INFO";
-                } else if (line.contains("DEBUG")) {
-                    logger.debug("[vector-pop-{}] {}", handle.getTaskId(), line);
-                    level = "DEBUG";
+                // A child that writes its protocol messages to fd 1 has them here, behind whatever else
+                // reached fd 1
+                int prefixAt = stderrProtocol.prefixIndex(line);
+                if (prefixAt > 0) {
+                    forwardStderr(handle, line.substring(0, prefixAt));
+                }
+                if (prefixAt >= 0) {
+                    handleMessage(handle, line.substring(prefixAt + SubprocessMessage.MESSAGE_PREFIX.length()));
                 } else {
-                    logger.debug("[vector-pop-{}] {}", handle.getTaskId(), line);
-                    level = "INFO";
-                }
-
-                if (progressTracker != null) {
-                    progressTracker.sendLog(handle.getTaskId(), "STDERR", level, line);
-                }
-                if (ingestProgressTracker != null) {
-                    ingestProgressTracker.sendLog(handle.getTaskId(), "STDERR", level, line);
-                }
-                SubprocessLogWriter lw = handle.logWriter;
-                if (lw != null) {
-                    try {
-                        lw.writeLine(AgentLogRecord.Stream.STDERR, line);
-                    } catch (Exception logEx) {
-                        logger.debug("[vector-pop-{}] log write failed: {}", handle.getTaskId(), logEx.getMessage());
-                    }
+                    forwardStderr(handle, line);
                 }
             }
         } catch (IOException e) {
@@ -220,19 +223,75 @@ public class SubprocessOutputHandler {
         }
     }
 
-    /**
-     * Watch for process completion.
-     */
-    public void watchCompletion(VectorPopulationHandle handle) {
-        try {
-            boolean exited = handle.getProcess().waitFor(120, TimeUnit.MINUTES);
-            if (!exited) {
-                logger.error("Vector population subprocess {} timed out after 120 minutes, destroying", handle.getTaskId());
-                handle.getProcess().destroyForcibly();
-                return;
+    /** Stderr that is not a protocol message: scanned for OOMs and forwarded as log output. */
+    private void forwardStderr(VectorPopulationHandle handle, String line) {
+        if (line.isBlank()) {
+            return;
+        }
+        String level;
+        if (line.contains("OutOfMemoryError") || line.contains("Java heap space")) {
+            logger.error("[vector-pop-{}] OOM detected: {}", handle.getTaskId(), line);
+            handle.setOomDetected(true);
+            level = "ERROR";
+        } else if (line.startsWith("\tat") || line.startsWith("Caused by:") || line.startsWith("Suppressed:")) {
+            logger.error("[vector-pop-{}] {}", handle.getTaskId(), line);
+            level = "ERROR";
+        } else if (line.contains("ERROR") || line.contains("Exception") || line.contains("FATAL")) {
+            logger.error("[vector-pop-{}] {}", handle.getTaskId(), line);
+            level = "ERROR";
+        } else if (line.contains("WARN")) {
+            logger.warn("[vector-pop-{}] {}", handle.getTaskId(), line);
+            level = "WARN";
+        } else if (line.contains(" INFO ")) {
+            logger.info("[vector-pop-{}] {}", handle.getTaskId(), line);
+            level = "INFO";
+        } else if (line.contains("DEBUG")) {
+            logger.debug("[vector-pop-{}] {}", handle.getTaskId(), line);
+            level = "DEBUG";
+        } else {
+            logger.debug("[vector-pop-{}] {}", handle.getTaskId(), line);
+            level = "INFO";
+        }
+
+        if (progressTracker != null) {
+            progressTracker.sendLog(handle.getTaskId(), "STDERR", level, line);
+        }
+        if (ingestProgressTracker != null) {
+            ingestProgressTracker.sendLog(handle.getTaskId(), "STDERR", level, line);
+        }
+        SubprocessLogWriter lw = handle.logWriter;
+        if (lw != null) {
+            try {
+                lw.writeLine(AgentLogRecord.Stream.STDERR, line);
+            } catch (Exception logEx) {
+                logger.debug("[vector-pop-{}] log write failed: {}", handle.getTaskId(), logEx.getMessage());
             }
-            int exitCode = handle.getProcess().exitValue();
-            logger.info("Vector population subprocess {} exited with code: {}", handle.getTaskId(), exitCode);
+        }
+    }
+
+    /**
+     * Watch for process completion. The exit is handled once the output readers have drained the child's
+     * pipes: its COMPLETED message, or the OOM that makes the exit restartable, is often still unread
+     * when the process exits.
+     */
+    public void watchCompletion(VectorPopulationHandle handle, Thread... outputReaders) {
+        try {
+            Process process = handle.getProcess();
+            int exitCode;
+            if (process.waitFor(TIMEOUT_MINUTES, TimeUnit.MINUTES)) {
+                exitCode = process.exitValue();
+                logger.info("Vector population subprocess {} exited with code: {}", handle.getTaskId(), exitCode);
+            } else {
+                logger.error("Vector population subprocess {} timed out after {} minutes, destroying",
+                        handle.getTaskId(), TIMEOUT_MINUTES);
+                // Failed before the kill, so its exit is not taken for an OOM and restarted
+                failAttempt(handle, new SubprocessMessage.Failed(handle.getTaskId(), handle.getCurrentPhase(),
+                        "Timed out after " + TIMEOUT_MINUTES + " minutes", "TIMEOUT", null));
+                SubprocessSignals.kill(process);
+                exitCode = process.waitFor(30, TimeUnit.SECONDS) ? process.exitValue() : 137;
+            }
+
+            awaitOutputReaders(handle, outputReaders);
 
             if (onCompletionCallback != null) {
                 onCompletionCallback.accept(handle, exitCode);
@@ -241,6 +300,29 @@ public class SubprocessOutputHandler {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             logger.debug("Completion watcher interrupted for task: {}", handle.getTaskId());
+        }
+    }
+
+    /**
+     * Wait for the output readers to reach the end of the child's pipes. Bounded: a grandchild that
+     * inherited the pipes keeps them open after the child exits.
+     */
+    private void awaitOutputReaders(VectorPopulationHandle handle, Thread... outputReaders) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(OUTPUT_DRAIN_TIMEOUT_MS);
+        try {
+            for (Thread reader : outputReaders) {
+                long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                if (remainingMs > 0) {
+                    reader.join(remainingMs);
+                }
+                if (reader.isAlive()) {
+                    logger.warn("[vector-pop-{}] {} still reading {} ms after the process exited; handling the exit",
+                            handle.getTaskId(), reader.getName(), OUTPUT_DRAIN_TIMEOUT_MS);
+                }
+            }
+        } catch (InterruptedException e) {
+            // The process has exited, so its exit is still handled
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -376,13 +458,17 @@ public class SubprocessOutputHandler {
                     logger.info("Task {} completed: {} docs embedded and indexed",
                             handle.getTaskId(), completed.documentsIndexed());
 
+                    if (!handle.getResultFuture().complete(VectorPopulationResult.success(
+                            handle.getTaskId(), completed.documentsLoaded(), completed.chunksEmbedded(),
+                            completed.documentsIndexed(), completed.totalDurationMs(), handle.getVectorIndexPath()))) {
+                        logger.warn("Task {} reported completion after its attempt had already ended; not reporting it again",
+                                handle.getTaskId());
+                        return;
+                    }
+
                     if (opTimingService != null) {
                         opTimingService.recordSubprocessComplete(handle.getTaskId(), true);
                     }
-
-                    handle.getResultFuture().complete(VectorPopulationResult.success(
-                            handle.getTaskId(), completed.documentsLoaded(), completed.chunksEmbedded(),
-                            completed.documentsIndexed(), completed.totalDurationMs(), handle.getVectorIndexPath()));
 
                     if (progressTracker != null) {
                         VectorPopulationStats finalStats = new VectorPopulationStats(
@@ -429,6 +515,11 @@ public class SubprocessOutputHandler {
                             failureReason == SubprocessRestartManager.FailureReason.BATCH_SIZE_TOO_LARGE;
 
                     if (isRestartableFailure) {
+                        if (handle.getResultFuture().isDone()) {
+                            logger.warn("Task {} reported {} after its attempt had already ended; not scheduling a recovery",
+                                    handle.getTaskId(), failureReason);
+                            return;
+                        }
                         handle.setOomDetected(true);
                         handle.setCurrentPhase(failed.phase());
                         handle.setFailureReason(failureReason);
@@ -450,35 +541,13 @@ public class SubprocessOutputHandler {
                         }
 
                         earlyReturn[0] = true;
-                        // Signal the launcher for the broadcast (via onFailed with restartable flag)
-                        if (onFailedCallback != null) {
-                            // Pass through so launcher can broadcast RECOVERY_SCHEDULED
-                            onFailedCallback.accept(handle, failed);
+                        if (onRecoveryScheduledCallback != null) {
+                            onRecoveryScheduledCallback.accept(handle, failed);
                         }
                         return;
                     }
 
-                    if (opTimingService != null) {
-                        opTimingService.recordSubprocessComplete(handle.getTaskId(), false);
-                    }
-
-                    handle.getResultFuture().complete(VectorPopulationResult.failure(
-                            handle.getTaskId(), failed.phase(), failed.errorMessage()));
-
-                    if (progressTracker != null) {
-                        progressTracker.failTask(handle.getTaskId(),
-                                statsConverter.mapPhaseToEnum(failed.phase()), failed.errorMessage());
-                    }
-
-                    if (ingestProgressTracker != null) {
-                        String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
-                        IngestPhase ingestPhase = statsConverter.mapPhaseToIngestPhase(failed.phase());
-                        ingestProgressTracker.failTask(handle.getTaskId(), displayName, ingestPhase, failed.errorMessage());
-                    }
-
-                    if (onFailedCallback != null) {
-                        onFailedCallback.accept(handle, failed);
-                    }
+                    failAttempt(handle, failed);
                 }
             });
 
@@ -495,6 +564,38 @@ public class SubprocessOutputHandler {
                 ingestProgressTracker.sendLog(handle.getTaskId(), "PARENT", "ERROR",
                         "Failed to parse subprocess protocol message: " + e.getMessage());
             }
+        }
+    }
+
+    /**
+     * Fail an attempt for good: its result, the progress trackers, and the launcher's failure handling.
+     * Reported once — an attempt whose verdict was already given is left as it is.
+     */
+    private void failAttempt(VectorPopulationHandle handle, SubprocessMessage.Failed failed) {
+        if (!handle.getResultFuture().complete(VectorPopulationResult.failure(
+                handle.getTaskId(), failed.phase(), failed.errorMessage()))) {
+            logger.warn("Task {} reported a failure after its attempt had already ended; not reporting it again: {}",
+                    handle.getTaskId(), failed.errorMessage());
+            return;
+        }
+
+        if (opTimingService != null) {
+            opTimingService.recordSubprocessComplete(handle.getTaskId(), false);
+        }
+
+        if (progressTracker != null) {
+            progressTracker.failTask(handle.getTaskId(),
+                    statsConverter.mapPhaseToEnum(failed.phase()), failed.errorMessage());
+        }
+
+        if (ingestProgressTracker != null) {
+            String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
+            IngestPhase ingestPhase = statsConverter.mapPhaseToIngestPhase(failed.phase());
+            ingestProgressTracker.failTask(handle.getTaskId(), displayName, ingestPhase, failed.errorMessage());
+        }
+
+        if (onFailedCallback != null) {
+            onFailedCallback.accept(handle, failed);
         }
     }
 

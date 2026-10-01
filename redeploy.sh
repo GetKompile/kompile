@@ -19,8 +19,11 @@
 # 3. Validates each artifact (zip integrity, Main-Class + third-party deps for
 #    the CLI uber jar, exact backend lane inside the jar) and refuses to touch
 #    the install on any mismatch.
-# 4. Atomically swaps each jar (same-dir temp + rename(2)) with a timestamped
-#    /tmp backup, so running sessions keep the old inode and stay alive.
+# 4. Atomically swaps each jar (same-dir temp + rename(2)); the rename is what
+#    lets running sessions keep the old inode and stay alive. The outgoing jar
+#    is kept as a hard link under ~/.kompile/backups/lib (no copy, and never in
+#    RAM-backed /tmp); only the newest KOMPILE_REDEPLOY_KEEP_BACKUPS (default 1)
+#    per jar are retained, 0 disables backups.
 # 5. Purges ~/.kompile/lib/.boot-inf-extracted (stale subprocess classpaths go
 #    silently stale after a jar swap — AGENTS.md runtime rule).
 # 6. Runs `kompile doctor` for a post-install health summary.
@@ -51,6 +54,8 @@ PLATFORM="${OS}-${ARCH}"
 
 MVN="${MVN:-${HOME}/dev-apps/mvn/bin/mvn}"
 INSTALL_DIR="${KOMPILE_INSTALL_DIR:-${HOME}/.kompile}"
+BACKUP_DIR="${INSTALL_DIR}/backups/lib"
+KEEP_BACKUPS="${KOMPILE_REDEPLOY_KEEP_BACKUPS:-1}"
 BACKEND_ARG=""
 DO_CLI=true
 DO_CHAT=false
@@ -97,6 +102,13 @@ if [ ! -x "${MVN}" ]; then
     echo "ERROR: maven not found at ${MVN} (override with MVN=…)" >&2
     exit 1
 fi
+
+case "${KEEP_BACKUPS}" in
+    ''|*[!0-9]*)
+        echo "ERROR: KOMPILE_REDEPLOY_KEEP_BACKUPS must be a non-negative integer (got '${KEEP_BACKUPS}')" >&2
+        exit 1
+        ;;
+esac
 
 # ── Lane selection ───────────────────────────────────────────────────────────
 
@@ -350,10 +362,31 @@ done
 
 # ── Atomic deploy ────────────────────────────────────────────────────────────
 
+# Pin the outgoing jar before the swap. A hard link costs no copy and no space
+# beyond the inode the rename would otherwise release; a cross-device install
+# falls back to a copy. A failed backup never blocks the deploy.
+backup_one() {
+    local name="$1" src="${INSTALL_DIR}/lib/$1" backup stale
+    [ -f "${src}" ] || return 0
+    [ "${KEEP_BACKUPS}" -gt 0 ] || return 0
+    mkdir -p "${BACKUP_DIR}"
+    backup="${BACKUP_DIR}/${name}.bak-$(date +%Y%m%d-%H%M%S)"
+    if ! ln -f "${src}" "${backup}" 2>/dev/null && ! cp "${src}" "${backup}"; then
+        rm -f "${backup}"
+        echo "  WARNING: could not back up ${name} (disk full?); deploying without a backup" >&2
+        return 0
+    fi
+    echo "  backup:  ${backup}"
+    # The timestamp suffix sorts chronologically; drop all but the newest.
+    while IFS= read -r stale; do
+        rm -f -- "${stale}"
+    done < <(printf '%s\n' "${BACKUP_DIR}/${name}".bak-* | sort -r | tail -n +"$((KEEP_BACKUPS + 1))")
+}
+
 # replace via same-dir temp + rename(2): running JVMs keep the old inode and
 # never observe a partially-written or size-changed jar.
 deploy_one() {
-    local jar="$1" name="$2" kind="$3" backup tmp dest_bytes src_bytes smoke
+    local jar="$1" name="$2" kind="$3" tmp dest_bytes src_bytes smoke
     src_bytes="$(wc -c < "${jar}" | tr -d '[:space:]')"
 
     # Smoke the CLI uber jar BEFORE touching the install: a jar that cannot
@@ -373,11 +406,7 @@ deploy_one() {
         rm -f "${smoke}"
     fi
 
-    if [ -f "${INSTALL_DIR}/lib/${name}" ]; then
-        backup="/tmp/${name}.bak-$(date +%Y%m%d-%H%M%S)"
-        cp "${INSTALL_DIR}/lib/${name}" "${backup}"
-        echo "  backup:  ${backup}"
-    fi
+    backup_one "${name}"
 
     tmp="${INSTALL_DIR}/lib/.${name}.tmp.$$"
     install -m 644 "${jar}" "${tmp}"
@@ -404,6 +433,13 @@ done
 if [ -d "${INSTALL_DIR}/lib/.boot-inf-extracted" ]; then
     rm -rf "${INSTALL_DIR}/lib/.boot-inf-extracted"
     echo "  removed stale ${INSTALL_DIR}/lib/.boot-inf-extracted"
+fi
+
+# Earlier versions of this script copied a backup into /tmp on every deploy and
+# never pruned them; on a tmpfs /tmp that is RAM + swap. Report, never delete.
+if compgen -G "/tmp/*.jar.bak-*" >/dev/null; then
+    echo "  NOTE: legacy redeploy backups in /tmp: $(du -csh /tmp/*.jar.bak-* | tail -1 | cut -f1)"
+    echo "        (remove with: rm -f /tmp/*.jar.bak-*)"
 fi
 
 # ── Post-install diagnostics ────────────────────────────────────────────────

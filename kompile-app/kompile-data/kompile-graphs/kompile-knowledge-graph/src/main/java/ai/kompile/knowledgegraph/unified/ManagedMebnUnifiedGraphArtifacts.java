@@ -24,11 +24,11 @@ public class ManagedMebnUnifiedGraphArtifacts
     public static final String THEORY_ARTIFACT = "reasoning/mebn-theory.v1.json";
 
     @Autowired(required = false)
-    private IncrementalReasoningOrchestrator orchestrator;
+    IncrementalReasoningOrchestrator orchestrator;
     @Autowired(required = false)
     private MebnTheoryRegistrationService registrationService;
     @Autowired(required = false)
-    private MebnWeightPersistenceAdapter weights;
+    MebnWeightPersistenceAdapter weights;
 
     @Override
     public void contribute(Long factSheetId, UnifiedGraph graph) {

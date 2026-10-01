@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.tui;
 
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
 import ai.kompile.cli.main.chat.ChatUiSession;
+import ai.kompile.cli.main.chat.ForegroundRequestProgress;
 import ai.kompile.utils.AnsiConstants;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.utils.StringUtils;
@@ -718,14 +719,25 @@ public class StatusBar {
         // --- Foreground model activity ---
         String activity = uiSession.getActivity();
         if (activity != null && !activity.isBlank()) {
+            ForegroundRequestProgress.Snapshot progress =
+                    uiSession.progress() != null ? uiSession.progress().snapshot() : null;
             if (uiSession.isActivityTerminal()) {
                 segments.add(YELLOW + "■" + RESET + " " + YELLOW + activity + RESET);
             } else {
                 String spinner = YELLOW + SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length] + RESET;
+                // Thinking/Responding are phase noise; the random working word is the
+                // visible label while a request runs. Functional labels (Working: <tool>,
+                // reconnect warnings) keep their text.
+                String label = activity;
+                if (progress != null && progress.active()
+                        && ("Thinking".equals(activity) || "Responding".equals(activity))) {
+                    label = progress.word() + "…";
+                }
+                String progressTail = progressTail(progress);
                 String backgroundHint = taskManager.isCurrentTaskBackgroundable()
                         ? DIM + " (Ctrl+B backgrounds active subagent)" + RESET
                         : "";
-                segments.add(spinner + " " + YELLOW + activity + RESET + backgroundHint);
+                segments.add(spinner + " " + YELLOW + label + RESET + progressTail + backgroundHint);
             }
         }
 
@@ -734,6 +746,8 @@ public class StatusBar {
         List<ProcessEntry> watchers = new ArrayList<>();
         List<ProcessEntry> commands = new ArrayList<>();
         for (ProcessEntry p : runningProcs) {
+            // The MCP log is browsable in /processes and the process pane, not work.
+            if (p.getKind() == BackgroundProcessManager.ProcessKind.MCP) continue;
             if (p.getKind() == BackgroundProcessManager.ProcessKind.JUDGE
                     || p.getKind() == BackgroundProcessManager.ProcessKind.ENFORCER) {
                 watchers.add(p);
@@ -871,6 +885,23 @@ public class StatusBar {
 
     static int safeDrawWidth(int terminalWidth) {
         return Math.max(1, terminalWidth - 1);
+    }
+
+    /**
+     * " · ↓ 1.2k tokens · 12s" tail appended to the foreground activity segment
+     * while a request-scoped progress snapshot is active. Empty when inactive
+     * or during interrupted/terminal activity.
+     */
+    private String progressTail(ForegroundRequestProgress.Snapshot progress) {
+        if (progress == null || !progress.active()) return "";
+        StringBuilder sb = new StringBuilder();
+        sb.append(DIM).append(" · ").append(RESET);
+        sb.append(CYAN).append("↓ ").append(RESET);
+        sb.append(progress.estimate() ? "~" : "");
+        sb.append(FormatUtils.formatCompactNumber(progress.tokens()));
+        sb.append(DIM).append(" tokens · ").append(RESET);
+        sb.append(DIM).append(FormatUtils.formatDuration(progress.elapsedMillis())).append(RESET);
+        return sb.toString();
     }
 
     // ========================================================================
@@ -1067,7 +1098,8 @@ public class StatusBar {
 
     private boolean hasActiveItems() {
         return (uiSession.getActivity() != null && !uiSession.isActivityTerminal())
-                || !processManager.listRunning().isEmpty()
+                || processManager.listRunning().stream()
+                        .anyMatch(p -> p.getKind() != BackgroundProcessManager.ProcessKind.MCP)
                 || !taskManager.getActiveTasks().isEmpty()
                 || activeSubagents.stream().anyMatch(sa -> !isIdleStatus(sa.getStatus()));
     }

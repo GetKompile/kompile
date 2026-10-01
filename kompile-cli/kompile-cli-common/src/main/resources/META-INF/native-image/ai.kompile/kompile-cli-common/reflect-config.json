@@ -1,0 +1,5 @@
+[
+  { "name": "ai.kompile.cli.common.ChatWorkspaceStore$Workspace", "allDeclaredConstructors": true, "allDeclaredMethods": true, "allDeclaredFields": true },
+  { "name": "ai.kompile.cli.common.ChatWorkspaceStore$Project", "allDeclaredConstructors": true, "allDeclaredMethods": true, "allDeclaredFields": true },
+  { "name": "ai.kompile.cli.common.ChatWorkspaceStore$Chat", "allDeclaredConstructors": true, "allDeclaredMethods": true, "allDeclaredFields": true }
+]

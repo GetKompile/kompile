@@ -28,6 +28,7 @@ import ai.kompile.app.services.scheduler.JobResourceProfiles;
 import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
 import ai.kompile.app.services.scheduler.ScheduledJob;
 import ai.kompile.app.services.subprocess.VectorPopulationSubprocessLauncher;
+import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestPhase;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestStats;
@@ -81,7 +82,7 @@ public class VectorStorePopulationService implements org.springframework.beans.f
     @Autowired(required = false)
     private List<DocumentLoader> documentLoaders;
     @Autowired
-    private IndexerService indexerService;
+    IndexerService indexerService;
     @Autowired(required = false)
     private EmbeddingModel embeddingModel;
     @Autowired(required = false)
@@ -91,21 +92,21 @@ public class VectorStorePopulationService implements org.springframework.beans.f
     @Autowired(required = false)
     private AppIndexConfigService appIndexConfigService;
     @Autowired(required = false)
-    private VectorPopulationSubprocessLauncher subprocessLauncher;
+    VectorPopulationSubprocessLauncher subprocessLauncher;
     @Autowired(required = false)
     private IngestProgressTracker ingestProgressTracker;
     @Autowired(required = false)
     private IndexingJobHistoryService jobHistoryService;
     @Autowired(required = false)
-    private ResourceAwareJobScheduler resourceScheduler;
+    ResourceAwareJobScheduler resourceScheduler;
 
     @Value("${kompile.vectorpopulation.subprocess.enabled:true}")
     private volatile boolean subprocessModeEnabled;
 
     // Track active population tasks
-    private final Map<String, PopulationTaskStatus> activeTasks = new ConcurrentHashMap<>();
+    final Map<String, PopulationTaskStatus> activeTasks = new ConcurrentHashMap<>();
     private final Set<String> cancelledTasks = ConcurrentHashMap.newKeySet();
-    private final Map<String, ParallelIngestPipeline> activePipelines = new ConcurrentHashMap<>();
+    final Map<String, ParallelIngestPipeline> activePipelines = new ConcurrentHashMap<>();
     private final Map<String, String> taskDisplayNames = new ConcurrentHashMap<>();
     private final Map<String, IngestPhase> taskLastPhases = new ConcurrentHashMap<>();
 
@@ -236,13 +237,13 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                 .resourceProfile(JobResourceProfiles.VECTOR_POPULATION)
                 .priority(30)
                 .executor(ctx -> {
-                    if (subprocessLauncher != null && ctx.placement() != null) {
-                        subprocessLauncher.applyPlacement(ctx.placement());
-                    }
                     PopulationResult result = populateVectorStore(finalTaskId);
                     if (!result.success()) {
                         throw new RuntimeException("Vector population failed: " + result.errorMessage());
                     }
+                    // The Lucene load and the pipeline stop early on an interrupt and can still
+                    // report success for the part they finished.
+                    ctx.throwIfCancellationRequested();
                 })
                 .build();
 
@@ -275,17 +276,16 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                         .description("Vector population: " + finalTaskId)
                         .resourceProfile(JobResourceProfiles.VECTOR_POPULATION)
                         .executor(ctx -> {
-                            // Deliver the scheduler's device-agnostic placement to the launcher before it
-                            // spawns (per-invocation, from the execution context — no shared-field race).
-                            if (subprocessLauncher != null && ctx.placement() != null) {
-                                subprocessLauncher.applyPlacement(ctx.placement());
-                            }
                             try {
-                                PopulationResult result = populateVectorStoreViaSubprocess(finalTaskId).get();
+                                // The scheduler's placement for this job goes with the launch (no shared field)
+                                PopulationResult result = populateVectorStoreViaSubprocess(finalTaskId, ctx.placement()).get();
                                 if (!result.success()) {
                                     throw new RuntimeException("Vector population failed: " + result.errorMessage());
                                 }
                             } catch (InterruptedException e) {
+                                // A scheduler cancel interrupts this wait; stop the child as well
+                                // rather than leave it running after its job has ended.
+                                cancelTask(finalTaskId);
                                 Thread.currentThread().interrupt();
                                 throw new RuntimeException("Vector population interrupted", e);
                             } catch (ExecutionException e) {
@@ -302,7 +302,8 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             }
 
             logger.info("Starting vector population in SUBPROCESS mode for task: {}", finalTaskId);
-            return populateVectorStoreViaSubprocess(finalTaskId);
+            // No scheduler row: the launcher reserves the task's own GPU row, or runs it on CPU
+            return populateVectorStoreViaSubprocess(finalTaskId, null);
         }
 
         // Fall back to in-process mode
@@ -320,8 +321,11 @@ public class VectorStorePopulationService implements org.springframework.beans.f
     /**
      * Populate vector store using subprocess for process isolation.
      * This prevents native crashes from affecting the main application.
+     *
+     * @param placement the scheduler's placement for this task, or null when no scheduler holds its row
      */
-    private CompletableFuture<PopulationResult> populateVectorStoreViaSubprocess(String taskId) {
+    private CompletableFuture<PopulationResult> populateVectorStoreViaSubprocess(String taskId,
+            SubprocessPlacement placement) {
         try {
             // Resolve paths
             String keywordPath = resolveKeywordIndexPath();
@@ -342,7 +346,7 @@ public class VectorStorePopulationService implements org.springframework.beans.f
 
             // Launch subprocess
             final String finalVectorPath = vectorPath;
-            return subprocessLauncher.launchVectorPopulation(taskId, keywordPath, vectorPath, options)
+            return subprocessLauncher.launchVectorPopulation(taskId, keywordPath, vectorPath, options, placement)
                     .thenApply(result -> {
                         if (result.success()) {
                             // Ensure main app's VectorStore is pointing to the correct path and refreshed
@@ -1158,6 +1162,12 @@ public class VectorStorePopulationService implements org.springframework.beans.f
      * Works with both in-process and subprocess modes.
      */
     public boolean cancelTask(String taskId) {
+        // A scheduled population is cancelled as a job too: a queued one then never starts, and a
+        // running subprocess one is interrupted, which stops its child. A running in-process pipeline
+        // stops cooperatively below instead, since an interrupt can close its index's file channels.
+        boolean jobCancelled = resourceScheduler != null && activePipelines.get(taskId) == null
+                && resourceScheduler.cancel(taskId);
+
         // Try subprocess cancellation first
         if (subprocessLauncher != null && subprocessLauncher.cancelVectorPopulation(taskId)) {
             logger.info("Cancelled vector population subprocess: {}", taskId);
@@ -1166,7 +1176,10 @@ public class VectorStorePopulationService implements org.springframework.beans.f
 
         // Fall back to in-process cancellation
         if (!activeTasks.containsKey(taskId)) {
-            return false;
+            if (jobCancelled) {
+                logger.info("Cancelled scheduled vector population before it started: {}", taskId);
+            }
+            return jobCancelled;
         }
 
         cancelledTasks.add(taskId);

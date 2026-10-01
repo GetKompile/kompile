@@ -24,7 +24,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -45,7 +44,7 @@ class DatasetServiceTest {
     @BeforeEach
     void setUp() {
         service = new DatasetService(objectMapper);
-        ReflectionTestUtils.setField(service, "datasetsDir", tempDir.toString());
+        service.datasetsDir = tempDir.toString();
     }
 
     @Test

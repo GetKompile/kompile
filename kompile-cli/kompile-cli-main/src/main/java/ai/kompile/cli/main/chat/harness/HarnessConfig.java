@@ -36,9 +36,6 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class HarnessConfig {
 
-    private static final Path CONFIG_FILE = Path.of(System.getProperty("user.home"),
-            ".kompile", "harness-config.json");
-
     @JsonProperty private boolean enabled = true;
     @JsonProperty private boolean judgeEnabled = true;
     /** Persistent master switch for every judge/policy/direction intervention. */
@@ -70,11 +67,21 @@ public class HarnessConfig {
     @JsonProperty private String judgeMode = null;           // null = auto
     @JsonProperty private String judgeLocalModel = null;     // e.g. "qwen3.5-0.8b" or file path
     @JsonProperty private String judgeLocalQuant = null;     // e.g. "Q4_K_M" (default if null)
-    @JsonProperty private String judgeServerType = null;     // "ollama" (default) or "kompile"
+    @JsonProperty private String judgeServerType = null;     // "kompile" (default when null); other values fail closed
     @JsonProperty private int judgeServerPort = 0;           // 0 = default for server type
 
     // ── Judge call robustness ─────────────────────────────────────
     @JsonProperty private int judgeDeadlineMs = 15_000;      // hard per-judge-call deadline (0 = none)
+    /**
+     * Per-verdict deadline for a judge that starts a provider CLI process for each verdict
+     * (Claude Code, OpenCode): the process start counts against it. 0 = {@link #judgeDeadlineMs}.
+     */
+    @JsonProperty private int judgeProcessDeadlineMs = 45_000;
+    /**
+     * Reasoning effort a verdict asks for when neither the judge profile nor the vendor default
+     * sets one and the judge's route offers this level; blank = the route's own default.
+     */
+    @JsonProperty private String judgeEffort = "low";
     @JsonProperty private List<String> judgeSwapCandidates = new ArrayList<>(); // backup judge models on failure
 
     // ── Layer toggles ─────────────────────────────────────────────
@@ -90,9 +97,10 @@ public class HarnessConfig {
     }
 
     public static HarnessConfig load(ObjectMapper mapper) {
-        if (Files.exists(CONFIG_FILE)) {
+        Path configFile = getConfigFilePath();
+        if (Files.exists(configFile)) {
             try {
-                return mapper.readValue(CONFIG_FILE.toFile(), HarnessConfig.class);
+                return mapper.readValue(configFile.toFile(), HarnessConfig.class);
             } catch (IOException e) {
                 System.err.println("Warning: Failed to load harness config: " + e.getMessage());
             }
@@ -108,15 +116,17 @@ public class HarnessConfig {
     }
 
     public void save(ObjectMapper mapper) {
+        Path configFile = getConfigFilePath();
         try {
-            Files.createDirectories(CONFIG_FILE.getParent());
-            mapper.writerWithDefaultPrettyPrinter().writeValue(CONFIG_FILE.toFile(), this);
+            Files.createDirectories(configFile.getParent());
+            mapper.writerWithDefaultPrettyPrinter().writeValue(configFile.toFile(), this);
         } catch (IOException e) {
             System.err.println("Warning: Failed to save harness config: " + e.getMessage());
         }
     }
 
+    /** Resolved on each call, so a {@code user.home} changed after class load is honoured. */
     public static Path getConfigFilePath() {
-        return CONFIG_FILE;
+        return Path.of(System.getProperty("user.home"), ".kompile", "harness-config.json");
     }
 }

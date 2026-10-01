@@ -78,6 +78,32 @@ class MainCommandTest {
 
     @Test
     @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void jlineAlternateCharsetIsDisabledSoBoxDrawingNeverDegradesToAcsMnemonics() throws Exception {
+        String previous = System.getProperty("org.jline.utils.disableAlternateCharset");
+        System.clearProperty("org.jline.utils.disableAlternateCharset");
+        try {
+            java.lang.reflect.Method configure =
+                    MainCommand.class.getDeclaredMethod("configureJLineRendering");
+            configure.setAccessible(true);
+            configure.invoke(null);
+
+            assertEquals("true", System.getProperty("org.jline.utils.disableAlternateCharset"),
+                    "MainCommand must opt out of JLine's alt-charset box-drawing substitution "
+                            + "before any AttributedString use — otherwise real Unicode "
+                            + "box-drawing characters (panels, activity-view headers) can "
+                            + "render as literal ACS mnemonic letters ('q', 'x', ...) under "
+                            + "tmux when the smacs/rmacs framing does not survive a redraw");
+        } finally {
+            if (previous == null) {
+                System.clearProperty("org.jline.utils.disableAlternateCharset");
+            } else {
+                System.setProperty("org.jline.utils.disableAlternateCharset", previous);
+            }
+        }
+    }
+
+    @Test
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
     void delegatedDistributionBinaryReceivesResolvedInstallRoot(@TempDir Path tempDir) throws Exception {
         Path binDir = Files.createDirectories(tempDir.resolve("bin"));
         Files.createDirectories(tempDir.resolve("lib"));

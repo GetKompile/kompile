@@ -111,8 +111,8 @@ public final class ParserTestFixtures {
     /**
      * {@code {"type":"result","duration_ms":...,"cost_usd":...,"usage":{...}}}
      * <p>
-     * Usage mirrors the Claude CLI result event: {@code input_tokens} is inclusive
-     * of cache read/creation tokens (they are subtracted when parsed).
+     * Usage mirrors the Claude CLI result event: {@code input_tokens} counts only
+     * uncached input; cache reads and writes are reported separately.
      */
     public static String claudeResultEventWithUsage(long durationMs, double cost,
                                                     long inputTokens, long outputTokens,

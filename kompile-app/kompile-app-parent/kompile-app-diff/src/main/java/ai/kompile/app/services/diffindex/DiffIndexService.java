@@ -58,7 +58,7 @@ public class DiffIndexService {
 
     private final Path indexDir;
     private final ObjectMapper mapper;
-    private final ConcurrentHashMap<String, DiffIndexEntry> entries = new ConcurrentHashMap<>();
+    protected final ConcurrentHashMap<String, DiffIndexEntry> entries = new ConcurrentHashMap<>();
     private final AtomicLong idCounter = new AtomicLong(0);
     private final AtomicBoolean indexing = new AtomicBoolean(false);
 

@@ -260,17 +260,6 @@ public class ChatRepl implements AutoCloseable {
     /** A file or image queued for the next chat message. */
     public record PendingAttachment(Path path, String mimeType, boolean isImage) {}
 
-    public static final Set<String> IMAGE_MIME_TYPES = Set.of(
-            "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/svg+xml");
-
-    public static final Set<String> TEXT_EXTENSIONS = Set.of(
-            "txt", "md", "java", "py", "js", "ts", "json", "xml", "yaml", "yml",
-            "toml", "ini", "cfg", "conf", "sh", "bash", "zsh", "fish", "ps1",
-            "c", "cpp", "h", "hpp", "cs", "go", "rs", "rb", "kt", "scala",
-            "cu", "cuh", "cuda",
-            "html", "css", "scss", "less", "sql", "graphql", "proto",
-            "dockerfile", "makefile", "cmake", "gradle", "properties", "csv", "log");
-
     // ── Constructors ──────────────────────────────────────────────────────────
 
     /**
@@ -422,6 +411,13 @@ public class ChatRepl implements AutoCloseable {
                 agentRegistry, workDir, directClient, processManager, skillRegistry);
         this.agenticLoop.configureConversationSession(sessionId);
         this.agenticLoop.setReminderManager(reminderManager);
+        if (directClient != null && chatConfig.isKompileLocalServing()) {
+            // ChatCommand just started the serving child and closed its lease, so idle
+            // eviction can stop it before the first turn. Read the served model's limits
+            // and image support while it is up; the resolver keeps them for /status and
+            // /image after the child stops.
+            this.agenticLoop.refreshCompactionPolicy();
+        }
 
         // Initialize message queue for queued chats
         this.messageQueue = new MessageQueue(sessionId);
@@ -573,6 +569,17 @@ public class ChatRepl implements AutoCloseable {
                 sessionContext.wrapConsumer(this::handleBackgroundTaskCompletion);
         backgroundTaskManager.addCompletionListener(completionListener::accept);
         processManager.addMonitorListener(processExitWakeListener);
+        if (directClient != null) {
+            // Claude Code's tasks are rows of the process panel, and a turn it
+            // starts by itself once a task finishes is shown as a chat turn.
+            directClient.setClaudeTaskProcesses(processManager);
+            directClient.setClaudeFollowUpListener(marker -> sessionContext.wrap(() -> {
+                if (!acceptingProcessWakeups.get() || forceAgentic) return;
+                // Informational: a transcript line, not an alert in the top bar.
+                ChatCompleter.printAbove(renderer.dim("  ↻ Claude Code started a turn by itself"));
+                messageHandler.handleExternalMessage(marker);
+            }).run());
+        }
         SubagentRunner subagentRunner = toolRegistry.getSubagentRunner();
         if (subagentRunner != null) {
             subagentRunner.setAsyncCompletionListener((id, result) -> sessionContext.wrap(() -> {
@@ -602,7 +609,11 @@ public class ChatRepl implements AutoCloseable {
     }
 
     private ToolContext dashboardToolContext() {
-        AgentConfig agent = agentRegistry.get(localAgentName);
+        // The chat's agent, which may be a role the registry does not hold.
+        AgentConfig agent = agenticLoop != null ? agenticLoop.getCurrentAgentConfig() : null;
+        if (agent == null) {
+            agent = agentRegistry.get(localAgentName);
+        }
         return new ToolContext(
                 sessionId, agent, permissionService, workingDirectory, toolRegistry);
     }
@@ -695,6 +706,7 @@ public class ChatRepl implements AutoCloseable {
             }
             pendingAttachments.add(new ChatRepl.PendingAttachment(
                     stagedImage, "image/png", true));
+            noticeWhenModelLacksVision();
             statusBar.requestRedraw();
             return true;
         } catch (Exception e) {
@@ -717,6 +729,7 @@ public class ChatRepl implements AutoCloseable {
         matcher.reset();
         StringBuilder rewritten = new StringBuilder();
         int last = 0;
+        boolean attachedImage = false;
         while (matcher.find()) {
             String raw = matcher.group(1);
             Path candidate = Path.of(raw);
@@ -738,6 +751,7 @@ public class ChatRepl implements AutoCloseable {
                     continue;
                 }
                 pendingAttachments.add(new ChatRepl.PendingAttachment(candidate, mime, true));
+                attachedImage = true;
                 String chip = "[Image #" + pendingAttachments.size() + "]";
                 matcher.appendReplacement(rewritten,
                         java.util.regex.Matcher.quoteReplacement(chip));
@@ -749,11 +763,18 @@ public class ChatRepl implements AutoCloseable {
             last = matcher.end();
         }
         matcher.appendTail(rewritten);
+        if (attachedImage) noticeWhenModelLacksVision();
         return rewritten.toString();
     }
 
+    /** The /image text-only-model warning, as a notice that leaves the input line intact. */
+    private void noticeWhenModelLacksVision() {
+        ChatCommandRouter.textOnlyModelWarning(agenticLoop)
+                .ifPresent(warning -> ChatCompleter.showNotice(renderer.yellow("  ⚠ " + warning)));
+    }
+
     private static final java.util.regex.Pattern IMAGE_PATH_PATTERN = java.util.regex.Pattern.compile(
-            "(?<![\\w/])(/[A-Za-z0-9._~/-]+\\.(?:png|jpe?g|gif|webp|bmp))\\b",
+            "(?<![\\w/])(/[A-Za-z0-9._~/-]+\\.(?:png|jpe?g|gif|webp))\\b",
             java.util.regex.Pattern.CASE_INSENSITIVE);
 
     void requestNewConversation() {
@@ -803,7 +824,7 @@ public class ChatRepl implements AutoCloseable {
 
         DirectLlmClient client = JudgeBackendFactory.createDirectJudgeClient(
                 baseChatConfig, providerOverride, apiKeyOverride, modelOverride, baseUrlOverride,
-                objectMapper, workingDirectory);
+                HarnessConfig.load(objectMapper).getJudgeEffort(), objectMapper, workingDirectory);
         return client == null
                 ? AuxiliaryChatRepl.observer(kind, "model client unavailable")
                 : AuxiliaryChatRepl.modelBacked(kind, client, null);
@@ -1092,7 +1113,14 @@ public class ChatRepl implements AutoCloseable {
 
     static void appendSupervisorActivity(AuxiliaryChatRepl repl, String event) {
         if (repl == null || event == null || event.isBlank()) return;
-        if (event.startsWith("[state] ")) {
+        if (event.startsWith("[enforcer state] ")) {
+            // Inline tool-call policy readiness (AgenticChatLoop's enforcer lane) is a
+            // separate concept from the judge's own "[state]" below — pass it through
+            // labeled as the enforcer so the judge transcript never claims the judge
+            // itself is disabled just because the (often unconfigured) enforcer policy
+            // is off.
+            repl.observe(event);
+        } else if (event.startsWith("[state] ")) {
             repl.observe("[judge state] "
                     + event.substring("[state] ".length()).strip());
         } else if (event.startsWith("[judge ")
@@ -1669,6 +1697,10 @@ public class ChatRepl implements AutoCloseable {
                 AgentConfig nextAgent = primaries.get(nextIdx);
                 localAgentName = nextAgent.getName();
                 agenticLoop.setAgentConfig(nextAgent);
+                // The chat no longer runs as a role.
+                roleManager.clearActiveRole();
+                sessionMetrics.setAgentName(localAgentName);
+                sessionMetrics.setActiveRole(null);
                 tui.setAgentName(localAgentName);
 
                 System.out.println();
@@ -1981,12 +2013,23 @@ public class ChatRepl implements AutoCloseable {
             if (hostManaged && trimmed.equalsIgnoreCase("/help")) {
                 ChatCompleter.printAbove(MultiChatSessionHost.HELP);
             }
-            return tui.runCommandOutput(() -> commandRouter.handleSlashCommand(trimmed));
+            boolean keepRunning = tui.runCommandOutput(() -> commandRouter.handleSlashCommand(trimmed));
+            if (!keepRunning && isRestartCommand(trimmed)) {
+                // Its replacement resumes this transcript, where the turn the
+                // shutdown cancels must not read as the user's Escape.
+                messageHandler.noteSessionRestarting();
+            }
+            return keepRunning;
         }
         // The accepted editor rows are gone; keep one retained transcript copy.
         tui.recordInScrollRegion("kompile> " + trimmed);
         messageHandler.handleChatMessage(trimmed);
         return true;
+    }
+
+    private static boolean isRestartCommand(String command) {
+        String name = command.split("\\s+", 2)[0].toLowerCase(Locale.ROOT);
+        return name.equals("/restart") || name.equals("/reset") || name.equals("/reset-all");
     }
 
     /** Final disposal only, never called when switching focus. */
@@ -2266,8 +2309,10 @@ public class ChatRepl implements AutoCloseable {
         int exitCode = entry.getExitCode() == null ? -1 : entry.getExitCode();
         String description = entry.getDescription() == null
                 ? entry.getCommand() : entry.getDescription();
+        // The owner's id, which the agent's tools know; a mirror row has its own local id.
+        String processId = monitor.processId();
         String message = "[System process completion]\n"
-                + "Process " + entry.getId() + " finished with state "
+                + "Process " + processId + " finished with state "
                 + entry.getState().name().toLowerCase(Locale.ROOT)
                 + " and exit code " + exitCode + ".\n"
                 + "Description: " + description + "\n"
@@ -2276,7 +2321,7 @@ public class ChatRepl implements AutoCloseable {
                 + (monitor.message().isBlank() ? ""
                 : "Monitor instructions: " + monitor.message() + "\n")
                 + "Inspect the process output if relevant, then continue the parent task.";
-        ChatCompleter.showNotice(renderer.cyan("  ↻ Monitored process " + entry.getId()
+        ChatCompleter.showNotice(renderer.cyan("  ↻ Monitored process " + processId
                 + " exited; waking agent"));
         messageHandler.handleExternalMessage(message);
     }
@@ -2474,24 +2519,24 @@ public class ChatRepl implements AutoCloseable {
             return;
         }
 
-        // Update the agent name to reflect the role
-        String oldAgentName = agentName;
-        agentName = role.getName();
-
-        // Update the agentic loop with the role's agent config
-        AgentConfig roleAgentConfig = role.toAgentConfig();
-        agenticLoop.setAgentConfig(roleAgentConfig);
+        // The role becomes the chat's agent on every route: each turn builds
+        // its prompt, tools and compaction from it. A server-mode turn carries
+        // that prompt to the server agent, which stays the one the user chose.
+        String previousAgent = localAgentName;
+        AgentConfig roleAgent = role.toAgentConfig();
+        localAgentName = roleAgent.getName();
+        agenticLoop.setAgentConfig(roleAgent);
 
         System.out.println();
         System.out.println(renderer.green("  ✓ Role assigned: ") + renderer.cyan(role.getName()));
         System.out.println("  " + role.getDisplayName() + renderer.dim(" - " + role.getDescription()));
         System.out.println();
-        System.out.println(renderer.dim("  Agent set to " + agentName + " (was " + oldAgentName + ")"));
+        System.out.println(renderer.dim("  Agent set to " + localAgentName + " (was " + previousAgent + ")"));
         System.out.println(renderer.dim("  Use /roles to change"));
         System.out.println();
 
         // Track in metrics
-        sessionMetrics.setAgentName(agentName);
+        sessionMetrics.setAgentName(localAgentName);
         sessionMetrics.setActiveRole(role.getName());
     }
 
@@ -3474,14 +3519,27 @@ public class ChatRepl implements AutoCloseable {
 
         String previousProvider = this.chatConfig.getProvider();
         String previousModel = this.chatConfig.getModel();
-        this.chatConfig.applyLlmSettingsFrom(config);
-        int retainedMessages = agenticLoop.rebuildDirectHistoryForProviderSwitch();
+        // A model change on the same provider-owned route (Claude Code,
+        // OpenCode) keeps that session and its process; a route change
+        // rebuilds the wire history for the new route.
+        AgenticChatLoop.DirectSettingsChange change = agenticLoop.changeDirectSettings(
+                () -> this.chatConfig.applyLlmSettingsFrom(config));
         sessionMetrics.setProvider(this.chatConfig.getProvider());
         sessionMetrics.setModel(this.chatConfig.getModel());
         chatHistory.logSystem("Switched LLM from " + previousProvider + "/" + previousModel
                 + " to " + this.chatConfig.getProvider() + "/" + this.chatConfig.getModel()
-                + "; retained " + retainedMessages + " conversation messages");
+                + (change.keptProviderSession()
+                        ? "; kept the provider session and its process, with "
+                                + change.retainedMessages() + " conversation messages"
+                        : "; retained " + change.retainedMessages() + " conversation messages"));
         refreshModelDisplay();
+        if (directClient != null) {
+            // The session and its process kept running (checked above): make sure a
+            // turn Claude Code starts by itself before the user's next message
+            // already sees this switch, not just the next send().
+            directClient.syncClaudeIdleSettings(this.chatConfig.getModel(),
+                    this.chatConfig.effectiveEffort(), this.chatConfig.isFastMode());
+        }
         return true;
     }
 
@@ -3737,9 +3795,8 @@ public class ChatRepl implements AutoCloseable {
                     // indicator and exit. Logged in but no catalog → the picker
                     // below shows Claude Code's reason and takes a typed id or
                     // alias, which the claude CLI resolves itself.
-                    boolean claudeCliRoute = ChatConfig.isClaudeCliNativeProvider(selectedProvider)
-                            && "oauth".equalsIgnoreCase(
-                                    authentication.authMethod().configValue());
+                    boolean claudeCliRoute = SetupWizard.isClaudeCodeRoute(
+                            selectedProvider, authentication.authMethod());
                     if (claudeCliRoute && models.isEmpty()
                             && discovery.status() == ModelDiscovery.Status.AUTH_REQUIRED) {
                         ChatCompleter.printAbove(renderer.yellow("  ⚠ " + discovery.message()

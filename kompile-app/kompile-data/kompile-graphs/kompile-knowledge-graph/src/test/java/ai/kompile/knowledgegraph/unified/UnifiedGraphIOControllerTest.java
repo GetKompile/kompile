@@ -14,7 +14,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -47,7 +46,7 @@ class UnifiedGraphIOControllerTest {
     void setUp() {
         controller = new UnifiedGraphIOController(bridge);
         lenient().when(bridge.hasDurableImportJournal()).thenReturn(true);
-        ReflectionTestUtils.setField(controller, "importProfile", "MANAGED");
+        controller.importProfile = "MANAGED";
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
@@ -100,7 +99,7 @@ class UnifiedGraphIOControllerTest {
 
     @Test
     void managedRequirementFailsClosedOnEphemeralService() throws Exception {
-        ReflectionTestUtils.setField(controller, "importProfile", "EPHEMERAL");
+        controller.importProfile = "EPHEMERAL";
         byte[] payload = new byte[]{0x4b, 0x47, 0x52, 0x46};
         MockMultipartFile file = new MockMultipartFile(
                 "file", "sample.kgraph", MediaType.APPLICATION_OCTET_STREAM_VALUE, payload);

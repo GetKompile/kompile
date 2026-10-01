@@ -11,15 +11,19 @@ package ai.kompile.graph.reasoning.tms;
 
 import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.FactStore;
+import ai.kompile.graph.reasoning.query.PredicateNames;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
@@ -85,33 +89,35 @@ class ContradictionDetectorTest {
             "BIRTH_DATE", "DEATH_DATE", "FOUNDED_ON", "INCORPORATED_ON");
 
     /**
-     * Mirror of ContradictionDetector.normalizePredicates — merges caller set with defaults.
+     * Mirror of ContradictionDetector.functionalKeys — keys of the defaults plus the caller's set.
      */
-    private static Set<String> normalizePredicatesRef(Set<String> predicates) {
-        if (predicates == null || predicates.isEmpty()) return DEFAULT_FUNCTIONAL_PREDICATES;
-        Set<String> normalized = new LinkedHashSet<>(DEFAULT_FUNCTIONAL_PREDICATES);
-        predicates.stream()
-                .filter(Objects::nonNull)
-                .map(ContradictionDetectorTest::normPred)
-                .filter(p -> !p.isBlank())
-                .forEach(normalized::add);
-        return java.util.Collections.unmodifiableSet(normalized);
+    private static Set<String> functionalKeysRef(Set<String> predicates) {
+        Set<String> keys = new LinkedHashSet<>();
+        DEFAULT_FUNCTIONAL_PREDICATES.forEach(p -> keys.add(PredicateNames.key(p)));
+        if (predicates != null) {
+            predicates.stream()
+                    .filter(Objects::nonNull)
+                    .map(PredicateNames::key)
+                    .filter(k -> !k.isEmpty())
+                    .forEach(keys::add);
+        }
+        return Collections.unmodifiableSet(keys);
     }
 
     /**
-     * Naive O(n²) reference implementation — mirrors the original production code
-     * EXACTLY (before the indexed rewrite), including the normalizePredicates expansion.
+     * Naive O(n²) reference implementation — the detector's pairwise rules applied to every
+     * pair, with predicates compared by {@link PredicateNames#key} as the detector does.
      * Kept here for parity verification only.
      */
     private static List<ContradictionDetector.Pair<Fact, Fact>> naiveFindFactContradictions(
             List<Fact> facts, Set<String> functionalPredicates) {
-        Set<String> normalizedFps = normalizePredicatesRef(functionalPredicates);
+        Set<String> functionalKeys = functionalKeysRef(functionalPredicates);
         List<ContradictionDetector.Pair<Fact, Fact>> result = new ArrayList<>();
         for (int i = 0; i < facts.size(); i++) {
             for (int j = i + 1; j < facts.size(); j++) {
                 Fact a = facts.get(i);
                 Fact b = facts.get(j);
-                if (ContradictionDetector.contradicts(a, b) || naiveFunctionalContradiction(a, b, normalizedFps)) {
+                if (ContradictionDetector.contradicts(a, b) || naiveFunctionalContradiction(a, b, functionalKeys)) {
                     result.add(new ContradictionDetector.Pair<>(a, b));
                 }
             }
@@ -119,22 +125,22 @@ class ContradictionDetectorTest {
         return result;
     }
 
-    // Verbatim copy of the pre-rewrite private functionalContradiction logic.
-    private static boolean naiveFunctionalContradiction(Fact f1, Fact f2, Set<String> functionalPredicates) {
+    // Pairwise form of the detector's functional-contradiction rule.
+    private static boolean naiveFunctionalContradiction(Fact f1, Fact f2, Set<String> functionalKeys) {
         if (!f1.hard() || !f2.hard() || !naiveHighTruth(f1) || !naiveHighTruth(f2)) return false;
         ParsedAtomRef a = parsedRef(f1.atomKey());
         ParsedAtomRef b = parsedRef(f2.atomKey());
         if (a.negated || b.negated) return false;
-        if (!Objects.equals(a.predicate, b.predicate)) return false;
-        if (!naiveIsFunctional(a.predicate, functionalPredicates)) return false;
+        if (!PredicateNames.same(a.predicate, b.predicate)) return false;
+        if (!naiveIsFunctional(a.predicate, functionalKeys)) return false;
         if (a.args.isEmpty() || b.args.isEmpty()) return false;
         return Objects.equals(a.args.get(0), b.args.get(0)) && !Objects.equals(a.args, b.args);
     }
 
     private static boolean naiveHighTruth(Fact f) { return f.value() >= 0.9; }
 
-    private static boolean naiveIsFunctional(String predicate, Set<String> fps) {
-        return fps.contains(predicate)
+    private static boolean naiveIsFunctional(String predicate, Set<String> functionalKeys) {
+        return functionalKeys.contains(PredicateNames.key(predicate))
                 || predicate.startsWith("CURRENT_")
                 || predicate.startsWith("PRIMARY_")
                 || predicate.endsWith("_CURRENT_STATUS")
@@ -147,36 +153,31 @@ class ContradictionDetectorTest {
     private static ParsedAtomRef parsedRef(String atomKey) {
         String text = atomKey == null ? "" : atomKey.trim();
         boolean negated = false;
-        if (text.startsWith("!")) { negated = true; text = text.substring(1).trim(); }
-        String lower = text.toLowerCase(java.util.Locale.ROOT);
+        if (text.startsWith("!") || text.startsWith("~")) { negated = true; text = text.substring(1).trim(); }
+        String lower = text.toLowerCase(Locale.ROOT);
         if (lower.startsWith("not ")) { negated = true; text = text.substring(4).trim(); }
         else if (lower.startsWith("not(") && text.endsWith(")")) {
             negated = true; text = text.substring(4, text.length() - 1).trim();
         }
         int lp = text.indexOf('('), rp = text.lastIndexOf(')');
         String rawPred = lp < 0 ? text : text.substring(0, lp);
-        String pred = normPred(rawPred);
-        boolean negFromPrefix = false;
-        for (String pfx : List.of("NOT_","NO_","NON_","NEGATED_","DENIES_","DENY_","REFUTES_","REFUTE_","DISPROVES_","IS_NOT_")) {
-            if (pred.startsWith(pfx)) { negFromPrefix = true; pred = pred.substring(pfx.length()); break; }
+        String pred = PredicateNames.canonical(rawPred);
+        boolean stripped = true;
+        while (stripped) {
+            stripped = false;
+            for (String pfx : List.of("NOT_","NO_","NON_","NEGATED_","DENIES_","DENY_","REFUTES_","REFUTE_","DISPROVES_","IS_NOT_")) {
+                if (pred.startsWith(pfx)) { negated = true; pred = pred.substring(pfx.length()); stripped = true; break; }
+            }
         }
-        if (negFromPrefix) negated = true;
         List<String> args = List.of();
         if (lp >= 0 && rp > lp) {
             String inside = text.substring(lp + 1, rp).trim();
             if (!inside.isBlank()) {
-                args = java.util.Arrays.stream(inside.split(","))
+                args = Arrays.stream(inside.split(","))
                         .map(String::trim).filter(s -> !s.isBlank()).toList();
             }
         }
         return new ParsedAtomRef(pred, args, negated);
-    }
-
-    private static String normPred(String raw) {
-        if (raw == null) return "";
-        return raw.trim().replace('-','_').replace(' ','_')
-                .replaceAll("[^A-Za-z0-9_]","").replaceAll("_+","_")
-                .toUpperCase(java.util.Locale.ROOT);
     }
 
     /** Build a FactStore from a list (last-write-wins for duplicate atomKeys). */
@@ -198,7 +199,7 @@ class ContradictionDetectorTest {
      */
     private static void assertParity(List<Fact> facts, Set<String> functionalPredicates) {
         // Dedup by atomKey (same as FactStore semantics — last writer wins).
-        java.util.LinkedHashMap<String, Fact> dedupMap = new java.util.LinkedHashMap<>();
+        LinkedHashMap<String, Fact> dedupMap = new LinkedHashMap<>();
         for (Fact f : facts) dedupMap.put(f.atomKey(), f);
         List<Fact> deduped = new ArrayList<>(dedupMap.values());
 
@@ -280,6 +281,37 @@ class ContradictionDetectorTest {
     }
 
     @Test
+    @DisplayName("~State(alice) vs State(alice) — tilde negation, as FOL and PSL write it")
+    void tildePrefix() {
+        List<Fact> facts = List.of(
+                hardTrue("State(alice)"),
+                hardTrue("~State(alice)")
+        );
+        assertParity(facts, Set.of());
+        assertEquals(1, ContradictionDetector.findFactContradictions(storeOf(facts)).size());
+    }
+
+    @Test
+    @DisplayName("A negation in one spelling contradicts the fact in another")
+    void negationAcrossPredicateSpellings() {
+        List<Fact> facts = List.of(
+                hardTrue("worksFor(alice, acme)"),
+                hardTrue("NOT_WORKS_FOR(alice, acme)"),
+                hardTrue("WORKS_FOR(bob, acme)"),
+                hardTrue("notWorksFor(bob, acme)"),
+                hardTrue("WORKSFOR(carol, acme)"),
+                hardTrue("~works-for(carol, acme)")
+        );
+        assertParity(facts, Set.of());
+        assertEquals(3, ContradictionDetector.findFactContradictions(storeOf(facts)).size());
+        assertTrue(ContradictionDetector.contradicts(
+                hardTrue("worksFor(alice, acme)"), hardTrue("~WORKS_FOR(alice, acme)")));
+        assertFalse(ContradictionDetector.contradicts(
+                hardTrue("worksFor(alice, acme)"), hardTrue("WORKS_FOR(alice, acme)")),
+                "two spellings of the same positive fact agree");
+    }
+
+    @Test
     @DisplayName("Multiple negation pairs in one store")
     void multipleNegationPairs() {
         assertParity(List.of(
@@ -328,8 +360,7 @@ class ContradictionDetectorTest {
     @Test
     @DisplayName("CURRENT_STATUS(order1, open) vs CURRENT_STATUS(order1, closed) — default functional clash")
     void functionalPredicateCurrentStatus() {
-        // CURRENT_STATUS (with underscore) matches the default isFunctionalPredicate startsWith("CURRENT_") pattern.
-        // CamelCase "CurrentStatus" normalizes to "CURRENTSTATUS" which does NOT match — use the underscore form.
+        // CURRENT_STATUS is a default functional predicate and matches the startsWith("CURRENT_") pattern.
         List<Fact> facts = List.of(
                 hardTrue("CURRENT_STATUS(order1, open)"),
                 hardTrue("CURRENT_STATUS(order1, closed)")
@@ -343,20 +374,55 @@ class ContradictionDetectorTest {
     }
 
     @Test
-    @DisplayName("CurrentStatus(order1, open) vs CurrentStatus(order1, closed) — requires explicit predicate")
-    void functionalPredicateCamelCaseRequiresExplicit() {
-        // CamelCase "CurrentStatus" normalizes to "CURRENTSTATUS" — not in default set, not a CURRENT_ prefix.
-        // Must supply explicitly. Parity asserts both naive and indexed agree (both detect it with explicit set).
+    @DisplayName("CurrentStatus(order1, open) vs CurrentStatus(order1, closed) — camelCase is the default CURRENT_STATUS")
+    void functionalPredicateCamelCaseMatchesTheDefault() {
+        // CamelCase "CurrentStatus" is CURRENT_STATUS, so no caller-supplied predicate is needed.
         List<Fact> facts = List.of(
                 hardTrue("CurrentStatus(order1, open)"),
                 hardTrue("CurrentStatus(order1, closed)")
         );
+        assertParity(facts, Set.of());
         assertParity(facts, Set.of("CurrentStatus"));
 
         FactStore store = storeOf(facts);
-        List<ContradictionDetector.Pair<Fact, Fact>> result =
-                ContradictionDetector.findFactContradictions(store, Set.of("CurrentStatus"));
-        assertEquals(1, result.size(), "Two different values for same functional subject (explicit predicate)");
+        assertEquals(1, ContradictionDetector.findFactContradictions(store).size(),
+                "Two different values for same functional subject (default predicate)");
+        assertEquals(1, ContradictionDetector.findFactContradictions(store, Set.of("CurrentStatus")).size(),
+                "Naming the predicate explicitly finds the same pair once");
+    }
+
+    @Test
+    @DisplayName("A functional predicate clashes across its spellings")
+    void functionalClashAcrossSpellings() {
+        List<Fact> facts = List.of(
+                hardTrue("headquarteredIn(acme, paris)"),
+                hardTrue("HEADQUARTERED_IN(acme, berlin)"),
+                hardTrue("HEADQUARTEREDIN(acme, rome)")
+        );
+        assertParity(facts, Set.of());
+
+        FactStore store = storeOf(facts);
+        assertEquals(3, ContradictionDetector.findFactContradictions(store).size(),
+                "Three spellings of one functional predicate over one subject clash pairwise");
+
+        List<Fact> callerSpelling = List.of(
+                hardTrue("LifecyclePhase(order-1, draft)"),
+                hardTrue("LIFECYCLE_PHASE(order-1, approved)")
+        );
+        assertParity(callerSpelling, Set.of("lifecycle-phase"));
+        assertEquals(1, ContradictionDetector.findFactContradictions(
+                storeOf(callerSpelling), Set.of("lifecycle-phase")).size());
+    }
+
+    @Test
+    @DisplayName("isFunctionalPredicate reads every spelling of a default functional predicate")
+    void isFunctionalPredicateAcrossSpellings() {
+        assertTrue(ContradictionDetector.isFunctionalPredicate("headquarteredIn"));
+        assertTrue(ContradictionDetector.isFunctionalPredicate("HEADQUARTEREDIN"));
+        assertTrue(ContradictionDetector.isFunctionalPredicate("currentStatus"));
+        assertTrue(ContradictionDetector.isFunctionalPredicate("has-ceo"));
+        assertFalse(ContradictionDetector.isFunctionalPredicate("worksFor"));
+        assertFalse(ContradictionDetector.isFunctionalPredicate(" "));
     }
 
     @Test
@@ -441,7 +507,7 @@ class ContradictionDetectorTest {
         // This is contrived but must not produce a duplicate pair.
         // STATUS(x, open) vs NOT_STATUS(x, open) — both facts:
         //   - contradicts() negated-kind: same ground atom STATUS+[x, open], opposite negated flag, both highTruth
-        //   - functionalContradiction: same predicate STATUS, both highTruth, same first arg x,
+        //   - functional check: same predicate STATUS, both highTruth, same first arg x,
         //     but args are [x, open] vs [x, open] — SAME full args → NOT a functional contradiction
         // So no duplicate in this specific case. Let's just verify parity covers general case.
         List<Fact> facts = List.of(
@@ -471,6 +537,8 @@ class ContradictionDetectorTest {
                 hardMid("Status(x, inactive)")        // mid-truth → excluded from highTruth checks
         );
         assertParity(facts, Set.of());
+        assertEquals(2, ContradictionDetector.findFactContradictions(storeOf(facts)).size(),
+                "The negation pair and the CurrentStatus clash; nothing else");
     }
 
     // ── fixture: large random — 500 facts ─────────────────────────────────────
@@ -485,7 +553,7 @@ class ContradictionDetectorTest {
         for (int i = 0; i < 30; i++) entities.add("e" + i);
         List<String> values = List.of("v0", "v1", "v2", "v3", "v4");
 
-        java.util.LinkedHashMap<String, Fact> byKey = new java.util.LinkedHashMap<>();
+        LinkedHashMap<String, Fact> byKey = new LinkedHashMap<>();
         int added = 0;
         while (added < 500) {
             String pred = predicates.get(rng.nextInt(predicates.size()));
@@ -516,7 +584,7 @@ class ContradictionDetectorTest {
         }
 
         List<Fact> facts = new ArrayList<>(byKey.values());
-        // Use empty functionalPredicates so normalizePredicates() merges DEFAULT set
+        // Use empty functionalPredicates so functionalKeys() falls back to the DEFAULT set
         assertParity(facts, Set.of());
     }
 
@@ -529,7 +597,7 @@ class ContradictionDetectorTest {
         for (int i = 0; i < 20; i++) entities.add("ent" + i);
         List<String> vals = List.of("alpha", "beta", "gamma", "delta");
 
-        java.util.LinkedHashMap<String, Fact> byKey = new java.util.LinkedHashMap<>();
+        LinkedHashMap<String, Fact> byKey = new LinkedHashMap<>();
         int added = 0;
         while (added < 500) {
             String pred = predicates.get(rng.nextInt(predicates.size()));

@@ -36,6 +36,9 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xslf.usermodel.XMLSlideShow;
 import org.apache.poi.xslf.usermodel.XSLFSlide;
 import org.apache.poi.xslf.usermodel.XSLFShape;
+import org.apache.poi.xslf.usermodel.XSLFTable;
+import org.apache.poi.xslf.usermodel.XSLFTableCell;
+import org.apache.poi.xslf.usermodel.XSLFTableRow;
 import org.apache.poi.xslf.usermodel.XSLFTextShape;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
@@ -551,7 +554,7 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
                 return cell.getStringCellValue();
             case NUMERIC:
                 if (DateUtil.isCellDateFormatted(cell)) {
-                    return cell.getDateCellValue().toString();
+                    return ExcelCellDates.format(cell);
                 } else {
                     return String.valueOf(cell.getNumericCellValue());
                 }
@@ -603,17 +606,24 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
 
                 // Collect slide text
                 StringBuilder slideText = new StringBuilder();
-                String slideTitle = null;
                 for (XSLFShape shape : slide.getShapes()) {
-                    if (shape instanceof XSLFTextShape textShape) {
+                    if (shape instanceof XSLFTable table) {
+                        // XSLFTable is a graphic frame, not an XSLFTextShape - handled separately
+                        // so table cell text is not silently dropped from the slide text.
+                        appendTableText(slideText, table);
+                    } else if (shape instanceof XSLFTextShape textShape) {
                         String text = textShape.getText();
                         if (text != null && !text.isBlank()) {
                             slideText.append(text).append("\n");
-                            // First non-blank text shape is the title candidate
-                            if (slideTitle == null) {
-                                slideTitle = text.trim();
-                            }
                         }
+                    }
+                }
+                // Use the real title placeholder rather than guessing from shape order.
+                String slideTitle = slide.getTitle();
+                if (slideTitle != null) {
+                    slideTitle = slideTitle.trim();
+                    if (slideTitle.isEmpty()) {
+                        slideTitle = null;
                     }
                 }
 
@@ -649,6 +659,30 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
         }
 
         return documents;
+    }
+
+    /**
+     * Appends the text of every cell in a pptx table, tab-separated within a row and
+     * newline-separated between rows, so table content is not silently dropped from
+     * per-slide text (XSLFTable is a graphic frame, not an XSLFTextShape, so it is
+     * never matched by the plain shape-text loop above).
+     */
+    private void appendTableText(StringBuilder out, XSLFTable table) {
+        for (XSLFTableRow row : table.getRows()) {
+            StringBuilder rowText = new StringBuilder();
+            for (XSLFTableCell cell : row.getCells()) {
+                String cellText = cell.getText();
+                if (cellText != null && !cellText.isBlank()) {
+                    if (rowText.length() > 0) {
+                        rowText.append("\t");
+                    }
+                    rowText.append(cellText.trim());
+                }
+            }
+            if (rowText.length() > 0) {
+                out.append(rowText).append("\n");
+            }
+        }
     }
 
     /**

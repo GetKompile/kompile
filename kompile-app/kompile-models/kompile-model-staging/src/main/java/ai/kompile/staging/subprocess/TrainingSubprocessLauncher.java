@@ -20,6 +20,8 @@ import ai.kompile.app.subprocess.BackendConfigurable;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.subprocess.SubprocessPlacementSupport;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
+import ai.kompile.app.subprocess.SubprocessSignals;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.staging.config.StagingPropertyKeys;
@@ -45,10 +47,12 @@ import jakarta.annotation.PreDestroy;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -62,6 +66,15 @@ import java.util.concurrent.atomic.AtomicLong;
 public class TrainingSubprocessLauncher implements ai.kompile.core.staging.TrainingSubprocessLauncherApi, BackendConfigurable {
 
     private static final Logger log = LoggerFactory.getLogger(TrainingSubprocessLauncher.class);
+
+    /** How long the exit judge waits for the readers to hand over the child's last output lines. */
+    private static final long OUTPUT_DRAIN_TIMEOUT_MS = 5_000;
+    /** How long a timed-out child gets to exit once it has been killed. */
+    private static final long KILL_EXIT_WAIT_SECONDS = 30;
+    /** How long shutdown waits for the watchers to record their children's exits. */
+    private static final long SHUTDOWN_JOIN_MS = 10_000;
+    private static final String STALLED_ERROR = "Subprocess stalled (no heartbeat)";
+    private static final String SHUTDOWN_REASON = "Application shutdown";
 
     /** Shared device-agnostic placement (same base infra every subprocess uses). */
     private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
@@ -85,10 +98,10 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     private String trainingJobsDir;
 
     @Value("${kompile.training.subprocess.heap-size:4g}")
-    private String subprocessHeapSize;
+    String subprocessHeapSize;
 
     @Value("${kompile.training.subprocess.stale-timeout-ms:120000}")
-    private long staleTimeoutMs;
+    long staleTimeoutMs;
 
     private final ConcurrentHashMap<String, SubprocessHandle> activeProcesses = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, List<SseEmitter>> jobEmitters = new ConcurrentHashMap<>();
@@ -96,6 +109,14 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     private final ConcurrentHashMap<String, List<TrainingMetricsSnapshot>> jobMetrics = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, TrainingJobStatus> jobStatuses = new ConcurrentHashMap<>();
     private final AtomicLong jobCounter = new AtomicLong(0);
+    /** Orders spawns against shutdown, so no child can start after shutdown took its snapshot. */
+    private final Object lifecycleLock = new Object();
+    private volatile boolean shuttingDown;
+
+    /** Main class of the training child; a field so a test can run a fake child. */
+    String mainClass = "ai.kompile.staging.subprocess.TrainingSubprocessMain";
+    /** How long a child may run before it is killed as timed out. */
+    long maxRunMillis = TimeUnit.HOURS.toMillis(24);
 
     public TrainingSubprocessLauncher(ObjectMapper objectMapper,
                                        TrainingJobHistoryService historyService) {
@@ -206,8 +227,11 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
                 .build();
     }
 
-    private TrainingJobStatus launchSubprocess(TrainingSubprocessArgs args, String peftType) throws IOException {
+    TrainingJobStatus launchSubprocess(TrainingSubprocessArgs args, String peftType) throws IOException {
         String jobId = args.taskId();
+        if (shuttingDown) {
+            throw new LaunchRefusedException(jobId);
+        }
         Path argsFile = args.writeToTempFile();
 
         TrainingJobStatus status = TrainingJobStatus.builder()
@@ -230,23 +254,53 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         jobLogs.put(jobId, new CopyOnWriteArrayList<>());
         jobMetrics.put(jobId, new CopyOnWriteArrayList<>());
 
-        TrainingJobHistory.TrainingType historyType = TrainingJobHistory.TrainingType.valueOf(
-                args.trainingType() != null ? args.trainingType().toUpperCase(Locale.ROOT) : "FINETUNE");
-        historyService.createJob(jobId, historyType, args.modelId(), args.datasetId());
-        historyService.updateTrainingParameters(jobId, args.batchSize(), args.lrSchedule(),
-                args.warmupRatio(), args.maxGradNorm(), args.fp16(), args.bf16(),
-                peftType, args.seed());
+        SubprocessHandle handle;
+        try {
+            TrainingJobHistory.TrainingType historyType = TrainingJobHistory.TrainingType.valueOf(
+                    args.trainingType() != null ? args.trainingType().toUpperCase(Locale.ROOT) : "FINETUNE");
+            historyService.createJob(jobId, historyType, args.modelId(), args.datasetId());
+            historyService.updateTrainingParameters(jobId, args.batchSize(), args.lrSchedule(),
+                    args.warmupRatio(), args.maxGradNorm(), args.fp16(), args.bf16(),
+                    peftType, args.seed());
 
-        List<String> command = buildCommand(argsFile);
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectErrorStream(false);
-        propagateEnvironment(pb);
+            List<String> command = buildCommand(argsFile);
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(false);
+            propagateEnvironment(pb);
+            // Reports get a pipe of their own, which native output written to fd 1 can't reach
+            boolean wrapped = SubprocessProtocolChannel.apply(pb);
 
-        log.info("Launching {} subprocess: jobId={}, model={}, dataset={}",
-                args.trainingType(), jobId, args.modelId(), args.datasetId());
-        Process process = pb.start();
+            log.info("Launching {} subprocess: jobId={}, model={}, dataset={}",
+                    args.trainingType(), jobId, args.modelId(), args.datasetId());
+            synchronized (lifecycleLock) {
+                // Shutdown may have begun while the history row was written. A child spawned now
+                // would miss shutdown's snapshot, and nothing would ever stop it.
+                if (shuttingDown) {
+                    throw new LaunchRefusedException(jobId);
+                }
+                Process process = pb.start();
+                handle = new SubprocessHandle(process, jobId, argsFile, System.currentTimeMillis(),
+                        SubprocessProtocolChannel.stderrProtocol(wrapped, TrainingSubprocessMessage.MESSAGE_PREFIX,
+                                "training-" + jobId));
+                handle.logWriter = openLogWriter(jobId, pb, command, process);
+                activeProcesses.put(jobId, handle);
+            }
+        } catch (IOException | RuntimeException e) {
+            abandonLaunch(jobId, argsFile, e);
+            throw e;
+        }
 
-        SubprocessHandle handle = new SubprocessHandle(process, jobId, System.currentTimeMillis());
+        markRunning(handle);
+        startStdoutReader(handle);
+        startStderrReader(handle);
+        startCompletionWatcher(handle);
+
+        log.info("Training subprocess launched: jobId={}, pid={}", jobId, handle.process.pid());
+        return jobStatuses.get(jobId);
+    }
+
+    private SubprocessLogWriter openLogWriter(String jobId, ProcessBuilder pb, List<String> command,
+                                              Process process) {
         try {
             String workingDir = pb.directory() != null
                     ? pb.directory().getAbsolutePath()
@@ -254,20 +308,49 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
             SubprocessLogWriter logWriter = new SubprocessLogWriter("training", jobId, workingDir);
             logWriter.writeStart(new SubprocessLogWriter.SubprocessRunContext(
                     null, command, workingDir, process.pid(), subprocessHeapSize));
-            handle.logWriter = logWriter;
+            return logWriter;
         } catch (Exception e) {
             log.debug("Failed to initialise SubprocessLogWriter for training job {}: {}", jobId, e.getMessage());
+            return null;
         }
+    }
 
-        activeProcesses.put(jobId, handle);
-        historyService.markRunning(jobId);
-        updateJobStatus(jobId, "RUNNING");
-        startStdoutReader(jobId, process);
-        startStderrReader(jobId, process);
-        startCompletionWatcher(jobId, process);
+    /**
+     * Ends a launch that never produced a running child. Without this the job would stay QUEUED
+     * forever and its args file would stay in the temp dir.
+     */
+    private void abandonLaunch(String jobId, Path argsFile, Exception cause) {
+        deleteArgsFile(jobId, argsFile);
+        TrainingJobStatus status;
+        if (cause instanceof LaunchRefusedException) {
+            String reason = SHUTDOWN_REASON + " before start";
+            status = terminalStatus(jobId, "CANCELLED", null);
+            recordHistory(jobId, "refused launch", () -> historyService.markCancelled(jobId, reason));
+        } else {
+            String error = "Failed to start training subprocess: "
+                    + (cause.getMessage() != null ? cause.getMessage() : cause.toString());
+            status = terminalStatus(jobId, "FAILED", error);
+            recordHistory(jobId, "failed launch", () -> historyService.markFailed(jobId, error, cause,
+                    TrainingJobHistory.FailureReason.IO_ERROR));
+        }
+        jobStatuses.put(jobId, status);
+        emitToSse(jobId, "status", status);
+        completeEmitters(jobId);
+    }
 
-        log.info("Training subprocess launched: jobId={}, pid={}", jobId, process.pid());
-        return jobStatuses.get(jobId);
+    /** Moves a freshly spawned job to RUNNING, unless an outcome (an early cancel) came first. */
+    private void markRunning(SubprocessHandle handle) {
+        synchronized (handle) {
+            if (handle.verdict != null) {
+                return;
+            }
+            // Written under the handle's monitor, so it can never land after the job's outcome.
+            recordHistory(handle.jobId, "start", () -> historyService.markRunning(handle.jobId));
+            TrainingJobStatus current = jobStatuses.get(handle.jobId);
+            if (current != null && "QUEUED".equals(current.getStatus())) {
+                jobStatuses.put(handle.jobId, withState(current, "RUNNING", null));
+            }
+        }
     }
 
     private static boolean hasText(String value) {
@@ -281,28 +364,25 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     }
 
     /**
-     * Cancel a running training subprocess.
+     * Cancel a running training subprocess. Returns false when the job already has an outcome;
+     * its watcher then finishes the run.
      */
     public boolean cancelTraining(String jobId) {
         SubprocessHandle handle = activeProcesses.get(jobId);
         if (handle == null) return false;
 
-        log.info("Cancelling training subprocess: {}", jobId);
-        handle.process.destroyForcibly();
-        activeProcesses.remove(jobId);
-        historyService.markCancelled(jobId, "Cancelled by user");
-        updateJobStatus(jobId, "CANCELLED");
-        // Finalise the centralized log aggregation entry
-        if (handle.logWriter != null) {
-            try {
-                handle.logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
-                        "CANCELLED", null, "Cancelled by user", false, false));
-                handle.logWriter.close();
-            } catch (Exception ex) {
-                log.debug("SubprocessLogWriter close failed on cancel for {}: {}", jobId, ex.getMessage());
-            }
+        String reason = "Cancelled by user";
+        TrainingJobStatus cancelled = terminalStatus(jobId, "CANCELLED", null);
+        if (!claimVerdict(handle, cancelled, reason)) {
+            return false;
         }
-        completeEmitters(jobId);
+        log.info("Cancelling training subprocess: {}", jobId);
+        recordHistory(jobId, "cancellation", () -> historyService.markCancelled(jobId, reason));
+        emitToSse(jobId, "status", cancelled);
+        // Killed through its handle, which leaves the pipes open: what the child wrote before it died is still
+        // read and logged. The watcher sees the exit, then closes the log, deletes the args file and ends the
+        // SSE streams.
+        SubprocessSignals.kill(handle.process);
         return true;
     }
 
@@ -375,7 +455,7 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         command.addAll(placement.jvmFlags());
         command.add("-cp");
         command.add(classpath);
-        command.add("ai.kompile.staging.subprocess.TrainingSubprocessMain");
+        command.add(mainClass);
         command.add(argsFile.toString());
         return command;
     }
@@ -386,118 +466,220 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         placement.applyEnv(pb.environment());
     }
 
-    private void startStdoutReader(String jobId, Process process) {
+    private void startStdoutReader(SubprocessHandle handle) {
+        String jobId = handle.jobId;
         Thread reader = new Thread(() -> {
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(handle.process.getInputStream()))) {
                 String line;
                 while ((line = br.readLine()) != null) {
-                    if (line.startsWith(TrainingSubprocessMessage.MESSAGE_PREFIX)) {
-                        String json = line.substring(TrainingSubprocessMessage.MESSAGE_PREFIX.length());
+                    // A child started without the protocol channel shares this pipe with native code, which
+                    // writes to fd 1 beneath its System.setOut redirect, so a native message without a newline
+                    // can precede a report on the same line.
+                    int prefixAt = line.indexOf(TrainingSubprocessMessage.MESSAGE_PREFIX);
+                    if (prefixAt > 0) {
+                        noteOutput(handle, line.substring(0, prefixAt));
+                    }
+                    if (prefixAt >= 0) {
+                        String json = line.substring(prefixAt + TrainingSubprocessMessage.MESSAGE_PREFIX.length());
                         handleMessage(jobId, json);
                     } else {
-                        log.trace("[training-{}] stdout: {}", jobId, line);
+                        noteOutput(handle, line);
                     }
                     // Write to centralized log aggregation store
-                    final String finalLine = line;
-                    try {
-                        SubprocessHandle h = activeProcesses.get(jobId);
-                        if (h != null && h.logWriter != null) {
-                            h.logWriter.writeLine(AgentLogRecord.Stream.STDOUT, finalLine);
-                        }
-                    } catch (Exception ex) {
-                        log.debug("SubprocessLogWriter stdout write failed for {}: {}", jobId, ex.getMessage());
-                    }
+                    writeLogLine(handle, AgentLogRecord.Stream.STDOUT, line);
                 }
             } catch (Exception e) {
                 log.warn("Error reading training subprocess stdout for '{}'", jobId, e);
             }
         }, "training-stdout-" + jobId);
         reader.setDaemon(true);
+        handle.stdoutReader = reader;
         reader.start();
     }
 
-    private void startStderrReader(String jobId, Process process) {
+    private void startStderrReader(SubprocessHandle handle) {
+        String jobId = handle.jobId;
         Thread reader = new Thread(() -> {
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(handle.process.getErrorStream()))) {
                 String line;
                 while ((line = br.readLine()) != null) {
-                    log.debug("[training-{}] stderr: {}", jobId, line);
-                    // Detect OOM
-                    if (line.contains("OutOfMemoryError") || line.contains("Cannot allocate")) {
-                        historyService.markMemoryKilled(jobId, 100.0);
-                        updateJobStatus(jobId, "MEMORY_KILLED");
+                    // A child that writes its reports to fd 1 has them here, behind whatever else reached fd 1
+                    int prefixAt = handle.stderrProtocol.prefixIndex(line);
+                    if (prefixAt > 0) {
+                        noteError(handle, line.substring(0, prefixAt));
+                    }
+                    if (prefixAt >= 0) {
+                        String json = line.substring(prefixAt + TrainingSubprocessMessage.MESSAGE_PREFIX.length());
+                        handleMessage(jobId, json);
+                    } else {
+                        noteError(handle, line);
                     }
                     // Write to centralized log aggregation store
-                    final String finalLine = line;
-                    try {
-                        SubprocessHandle h = activeProcesses.get(jobId);
-                        if (h != null && h.logWriter != null) {
-                            h.logWriter.writeLine(AgentLogRecord.Stream.STDERR, finalLine);
-                        }
-                    } catch (Exception ex) {
-                        log.debug("SubprocessLogWriter stderr write failed for {}: {}", jobId, ex.getMessage());
-                    }
+                    writeLogLine(handle, AgentLogRecord.Stream.STDERR, line);
                 }
             } catch (Exception e) {
                 log.warn("Error reading training subprocess stderr for '{}'", jobId, e);
             }
         }, "training-stderr-" + jobId);
         reader.setDaemon(true);
+        handle.stderrReader = reader;
         reader.start();
     }
 
-    private void startCompletionWatcher(String jobId, Process process) {
-        Thread watcher = new Thread(() -> {
-            try {
-                boolean completed = process.waitFor(24, java.util.concurrent.TimeUnit.HOURS);
-                if (!completed) {
-                    log.warn("Training subprocess {} timed out after 24 hours, destroying", jobId);
-                    process.destroyForcibly();
-                }
-                int exitCode = process.exitValue();
-                log.info("Training subprocess {} exited with code {}", jobId, exitCode);
-                SubprocessHandle handle = activeProcesses.remove(jobId);
+    /** A line of stdout that is not a report. */
+    private static void noteOutput(SubprocessHandle handle, String line) {
+        // HotSpot prints its ExitOnOutOfMemoryError notice on fd 1: here for a child started without the
+        // protocol channel, on stderr otherwise.
+        noteOutOfMemory(handle, line);
+        log.trace("[training-{}] stdout: {}", handle.jobId, line);
+    }
 
-                String finalState = "COMPLETED";
-                String errorMessage = null;
-                boolean oomDetected = false;
+    /** A line of stderr that is not a report. */
+    private static void noteError(SubprocessHandle handle, String line) {
+        log.debug("[training-{}] stderr: {}", handle.jobId, line);
+        noteOutOfMemory(handle, line);
+    }
 
-                if (exitCode != 0) {
-                    TrainingJobStatus current = jobStatuses.get(jobId);
-                    if (current != null && !"COMPLETED".equals(current.getStatus())
-                            && !"CANCELLED".equals(current.getStatus())
-                            && !"MEMORY_KILLED".equals(current.getStatus())) {
-                        errorMessage = "Subprocess exited with code " + exitCode;
-                        historyService.markFailed(jobId, errorMessage,
-                                null, TrainingJobHistory.FailureReason.TRAINING_ERROR);
-                        updateJobStatus(jobId, "FAILED");
-                        finalState = "FAILED";
-                    } else if (current != null && "MEMORY_KILLED".equals(current.getStatus())) {
-                        finalState = "OOM";
-                        oomDetected = true;
-                    } else if (current != null && "CANCELLED".equals(current.getStatus())) {
-                        finalState = "CANCELLED";
-                    }
-                }
+    /**
+     * Out-of-memory evidence only. A line decides nothing on its own: the child may recover, or report
+     * its own failure. {@link #judgeExit} weighs it when the child exits without an outcome.
+     */
+    private static void noteOutOfMemory(SubprocessHandle handle, String line) {
+        if (line.contains("OutOfMemoryError") || line.contains("Cannot allocate")) {
+            handle.oomSeen = true;
+        }
+    }
 
-                // Finalise the centralized log aggregation entry
-                if (handle != null && handle.logWriter != null) {
-                    try {
-                        handle.logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
-                                finalState, exitCode, errorMessage, oomDetected, false));
-                        handle.logWriter.close();
-                    } catch (Exception ex) {
-                        log.debug("SubprocessLogWriter writeEnd failed for {}: {}", jobId, ex.getMessage());
-                    }
-                }
+    private static void writeLogLine(SubprocessHandle handle, AgentLogRecord.Stream stream, String line) {
+        SubprocessLogWriter writer = handle.logWriter;
+        if (writer == null) {
+            return;
+        }
+        try {
+            writer.writeLine(stream, line);
+        } catch (Exception ex) {
+            log.debug("SubprocessLogWriter {} write failed for {}: {}", stream, handle.jobId, ex.getMessage());
+        }
+    }
 
-                completeEmitters(jobId);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }, "training-watcher-" + jobId);
+    private void startCompletionWatcher(SubprocessHandle handle) {
+        Thread watcher = new Thread(() -> watch(handle), "training-watcher-" + handle.jobId);
         watcher.setDaemon(true);
+        handle.watcher = watcher;
         watcher.start();
+    }
+
+    /** Waits for the child to exit, gives the job an outcome if it has none yet, then ends the run. */
+    private void watch(SubprocessHandle handle) {
+        String jobId = handle.jobId;
+        Process process = handle.process;
+        Integer exitCode = null;
+        try {
+            if (!process.waitFor(maxRunMillis, TimeUnit.MILLISECONDS)) {
+                String error = "Subprocess timed out after " + formatLimit(maxRunMillis);
+                log.warn("Training subprocess {}: {}, destroying", jobId, error);
+                TrainingJobStatus failed = terminalStatus(jobId, "FAILED", error);
+                if (claimVerdict(handle, failed, error)) {
+                    recordHistory(jobId, "timeout", () -> historyService.markFailed(jobId, error, null,
+                            TrainingJobHistory.FailureReason.TIMEOUT));
+                    emitToSse(jobId, "status", failed);
+                }
+                SubprocessSignals.kill(process);
+                process.waitFor(KILL_EXIT_WAIT_SECONDS, TimeUnit.SECONDS);
+            }
+            if (process.isAlive()) {
+                log.warn("Training subprocess {} is still alive {}s after it was killed", jobId, KILL_EXIT_WAIT_SECONDS);
+            } else {
+                exitCode = process.exitValue();
+                log.info("Training subprocess {} exited with code {}", jobId, exitCode);
+            }
+            // Its last lines (a FAILED report, an out-of-memory notice) may still be in the pipes.
+            awaitOutputReaders(handle);
+            judgeExit(handle, exitCode);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException e) {
+            log.warn("Training subprocess watcher failed for {}", jobId, e);
+        } finally {
+            finalizeRun(handle, exitCode);
+        }
+    }
+
+    /** Waits, boundedly, for both readers to reach end of stream, so every line the child wrote is handled. */
+    private static void awaitOutputReaders(SubprocessHandle handle) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + OUTPUT_DRAIN_TIMEOUT_MS;
+        for (Thread reader : new Thread[] {handle.stdoutReader, handle.stderrReader}) {
+            if (reader == null) {
+                continue;
+            }
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining > 0) {
+                reader.join(remaining);
+            }
+            if (reader.isAlive()) {
+                // A grandchild can hold the pipe open after the child is gone.
+                log.warn("Output of training subprocess {} still open {} ms after its exit; judging without it",
+                        handle.jobId, OUTPUT_DRAIN_TIMEOUT_MS);
+                return;
+            }
+        }
+    }
+
+    /** Gives a job whose child exited without an outcome of its own the one its exit implies. */
+    private void judgeExit(SubprocessHandle handle, Integer exitCode) {
+        if (handle.verdict != null) {
+            return;
+        }
+        String jobId = handle.jobId;
+        boolean clean = exitCode != null && exitCode == 0;
+        if (!clean && handle.oomSeen) {
+            String error = "Subprocess ran out of memory (exit code " + exitCode + ")";
+            TrainingJobStatus killed = terminalStatus(jobId, "MEMORY_KILLED", error);
+            if (claimVerdict(handle, killed, error)) {
+                recordHistory(jobId, "memory kill", () -> historyService.markMemoryKilled(jobId, 100.0));
+                emitToSse(jobId, "status", killed);
+            }
+            return;
+        }
+        // Exit 0 without a COMPLETED report: no trained model was reported either.
+        String error = clean
+                ? "Subprocess exited without reporting completion"
+                : "Subprocess exited with code " + exitCode;
+        TrainingJobStatus failed = terminalStatus(jobId, "FAILED", error);
+        if (claimVerdict(handle, failed, error)) {
+            recordHistory(jobId, "exit", () -> historyService.markFailed(jobId, error, null,
+                    TrainingJobHistory.FailureReason.TRAINING_ERROR));
+            emitToSse(jobId, "status", failed);
+        }
+    }
+
+    /** Ends a run exactly once: unregisters it, closes its log, deletes its args file, ends its SSE streams. */
+    private void finalizeRun(SubprocessHandle handle, Integer exitCode) {
+        if (!handle.finalized.compareAndSet(false, true)) {
+            return;
+        }
+        String jobId = handle.jobId;
+        // Unregistered first: a message still in flight after this is dropped, not applied to an ended run.
+        activeProcesses.remove(jobId, handle);
+        TrainingJobStatus verdict = handle.verdict;
+        String outcome = verdict != null ? verdict.getStatus() : "FAILED";
+        // Finalise the centralized log aggregation entry
+        if (handle.logWriter != null) {
+            try {
+                String state = switch (outcome) {
+                    case "COMPLETED", "CANCELLED" -> outcome;
+                    case "MEMORY_KILLED" -> "OOM";
+                    default -> "FAILED";
+                };
+                handle.logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                        state, exitCode, handle.verdictReason, "MEMORY_KILLED".equals(outcome), false));
+                handle.logWriter.close();
+            } catch (Exception ex) {
+                log.debug("SubprocessLogWriter writeEnd failed for {}: {}", jobId, ex.getMessage());
+            }
+        }
+        deleteArgsFile(jobId, handle.argsFile);
+        completeEmitters(jobId);
     }
 
     private void handleMessage(String jobId, String json) {
@@ -554,8 +736,13 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     private void rejectTrainingMessage(String jobId, String phase, String reason) {
         String message = "Rejected training subprocess " + phase + " message: " + reason;
         log.warn("{}", message);
-        handleFailed(jobId, new TrainingSubprocessMessage.Failed(
+        boolean decided = handleFailed(jobId, new TrainingSubprocessMessage.Failed(
                 jobId, phase, message, "NON_FINITE_TRAINING_METRIC", null));
+        SubprocessHandle handle = activeProcesses.get(jobId);
+        if (decided && handle != null) {
+            // The job has failed; a child that kept training would only hold its GPU.
+            SubprocessSignals.kill(handle.process);
+        }
     }
 
     private void handleProgress(String jobId, TrainingSubprocessMessage.Progress p) {
@@ -565,34 +752,48 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
                 || rejectNonFinite(jobId, "PROGRESS", "overallProgress", p.overallProgress())) {
             return;
         }
-        TrainingJobStatus current = jobStatuses.get(jobId);
-        if (current == null) return;
+        SubprocessHandle handle = activeProcesses.get(jobId);
+        if (handle == null) {
+            log.debug("Dropping progress for ended training job {}", jobId);
+            return;
+        }
+        TrainingJobStatus updated;
+        synchronized (handle) {
+            // An outcome is final: progress still in flight must not reopen the job.
+            TrainingJobStatus current = jobStatuses.get(jobId);
+            if (handle.verdict != null || current == null) return;
 
-        TrainingJobStatus updated = TrainingJobStatus.builder()
-                .jobId(jobId)
-                .status("TRAINING")
-                .modelId(current.getModelId())
-                .datasetId(current.getDatasetId())
-                .currentEpoch(p.epoch())
-                .totalEpochs(p.totalEpochs())
-                .currentStep(p.step())
-                .totalSteps(current.getTotalSteps())
-                .loss(p.loss())
-                .learningRate(p.learningRate())
-                .epochProgress(p.epochProgress())
-                .overallProgress(p.overallProgress())
-                .metrics(current.getMetrics())
-                .startedAt(current.getStartedAt())
-                .elapsedMs(System.currentTimeMillis() - Instant.parse(current.getStartedAt()).toEpochMilli())
-                .build();
-        jobStatuses.put(jobId, updated);
+            updated = TrainingJobStatus.builder()
+                    .jobId(jobId)
+                    .status("TRAINING")
+                    .modelId(current.getModelId())
+                    .datasetId(current.getDatasetId())
+                    .currentEpoch(p.epoch())
+                    .totalEpochs(p.totalEpochs())
+                    .currentStep(p.step())
+                    .totalSteps(current.getTotalSteps())
+                    .loss(p.loss())
+                    .learningRate(p.learningRate())
+                    .epochProgress(p.epochProgress())
+                    .overallProgress(p.overallProgress())
+                    .metrics(current.getMetrics())
+                    .startedAt(current.getStartedAt())
+                    .elapsedMs(System.currentTimeMillis() - Instant.parse(current.getStartedAt()).toEpochMilli())
+                    .build();
+            jobStatuses.put(jobId, updated);
 
-        // Update persistent history periodically (every 50 steps to reduce DB writes)
-        if (p.step() % 50 == 0) {
-            historyService.updateProgress(jobId, p.epoch(), p.step(), p.loss(), p.learningRate());
+            // Update persistent history periodically (every 50 steps to reduce DB writes).
+            // Under the handle's monitor: the history save rewrites the whole row, so a progress
+            // save that landed after the outcome's would put the job back to RUNNING.
+            if (p.step() % 50 == 0) {
+                recordHistory(jobId, "progress", () -> historyService.updateProgress(
+                        jobId, p.epoch(), p.step(), p.loss(), p.learningRate()));
+            }
         }
 
-        emitToSse(jobId, "status", updated);
+        if (handle.verdict == null) {
+            emitToSse(jobId, "status", updated);
+        }
     }
 
     private void handleHeartbeat(String jobId, TrainingSubprocessMessage.Heartbeat h) {
@@ -606,6 +807,11 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         if (rejectNonFinite(jobId, "COMPLETED", "finalLoss", c.finalLoss())
                 || rejectNonFinite(jobId, "COMPLETED", "finalEvalLoss", c.finalEvalLoss())
                 || rejectNonFiniteMap(jobId, "COMPLETED", c.finalMetrics())) {
+            return;
+        }
+        SubprocessHandle handle = activeProcesses.get(jobId);
+        if (handle == null) {
+            log.debug("Dropping completion report for ended training job {}", jobId);
             return;
         }
         TrainingJobStatus current = jobStatuses.get(jobId);
@@ -628,26 +834,38 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
                 .elapsedMs(c.totalDurationMs())
                 .outputModelPath(c.outputPath())
                 .build();
-        jobStatuses.put(jobId, completed);
-        historyService.markCompleted(jobId, c.finalLoss(), c.finalEvalLoss(), c.totalSteps(), c.outputPath());
+        if (!claimVerdict(handle, completed, null)) {
+            log.info("Ignoring completion report for training job {}: already {}",
+                    jobId, handle.verdict.getStatus());
+            return;
+        }
+        recordHistory(jobId, "completion", () -> historyService.markCompleted(
+                jobId, c.finalLoss(), c.finalEvalLoss(), c.totalSteps(), c.outputPath()));
         emitToSse(jobId, "status", completed);
         log.info("Training subprocess completed: jobId={}, finalLoss={}", jobId, c.finalLoss());
     }
 
-    private void handleFailed(String jobId, TrainingSubprocessMessage.Failed f) {
-        TrainingJobStatus current = jobStatuses.get(jobId);
-        TrainingJobStatus failed = TrainingJobStatus.builder()
-                .jobId(jobId)
-                .status("FAILED")
-                .modelId(current != null ? current.getModelId() : "")
-                .datasetId(current != null ? current.getDatasetId() : "")
-                .startedAt(current != null ? current.getStartedAt() : Instant.now().toString())
-                .completedAt(Instant.now().toString())
-                .error(f.errorMessage())
-                .build();
-        jobStatuses.put(jobId, failed);
-        historyService.markFailed(jobId, f.errorMessage(), null, TrainingJobHistory.FailureReason.TRAINING_ERROR);
+    /**
+     * Fails the job with the child's own report, unless the job already has an outcome.
+     *
+     * @return true when this report became the job's outcome
+     */
+    private boolean handleFailed(String jobId, TrainingSubprocessMessage.Failed f) {
+        SubprocessHandle handle = activeProcesses.get(jobId);
+        if (handle == null) {
+            log.debug("Dropping failure report for ended training job {}: {}", jobId, f.errorMessage());
+            return false;
+        }
+        TrainingJobStatus failed = terminalStatus(jobId, "FAILED", f.errorMessage());
+        if (!claimVerdict(handle, failed, f.errorMessage())) {
+            log.info("Ignoring failure report for training job {}: already {}: {}",
+                    jobId, handle.verdict.getStatus(), f.errorMessage());
+            return false;
+        }
+        recordHistory(jobId, "failure", () -> historyService.markFailed(
+                jobId, f.errorMessage(), null, TrainingJobHistory.FailureReason.TRAINING_ERROR));
         emitToSse(jobId, "status", failed);
+        return true;
     }
 
     private void handleMetrics(String jobId, TrainingSubprocessMessage.MetricsUpdate m) {
@@ -732,27 +950,82 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
         }
     }
 
-    private void updateJobStatus(String jobId, String status) {
+    /** A copy of {@code current} in another state; keeps the progress the job had reached. */
+    private static TrainingJobStatus withState(TrainingJobStatus current, String state, String error) {
+        return TrainingJobStatus.builder()
+                .jobId(current.getJobId())
+                .status(state)
+                .modelId(current.getModelId())
+                .datasetId(current.getDatasetId())
+                .currentEpoch(current.getCurrentEpoch())
+                .totalEpochs(current.getTotalEpochs())
+                .currentStep(current.getCurrentStep())
+                .totalSteps(current.getTotalSteps())
+                .loss(current.getLoss())
+                .learningRate(current.getLearningRate())
+                .epochProgress(current.getEpochProgress())
+                .overallProgress(current.getOverallProgress())
+                .metrics(current.getMetrics())
+                .startedAt(current.getStartedAt())
+                .completedAt(current.getCompletedAt())
+                .elapsedMs(current.getElapsedMs())
+                .outputModelPath(current.getOutputModelPath())
+                .error(error)
+                .build();
+    }
+
+    /** The job's current status moved to a final state, stamped with when it ended and how long it ran. */
+    private TrainingJobStatus terminalStatus(String jobId, String state, String error) {
         TrainingJobStatus current = jobStatuses.get(jobId);
-        if (current != null) {
-            TrainingJobStatus updated = TrainingJobStatus.builder()
-                    .jobId(jobId)
-                    .status(status)
-                    .modelId(current.getModelId())
-                    .datasetId(current.getDatasetId())
-                    .currentEpoch(current.getCurrentEpoch())
-                    .totalEpochs(current.getTotalEpochs())
-                    .currentStep(current.getCurrentStep())
-                    .totalSteps(current.getTotalSteps())
-                    .loss(current.getLoss())
-                    .learningRate(current.getLearningRate())
-                    .epochProgress(current.getEpochProgress())
-                    .overallProgress(current.getOverallProgress())
-                    .metrics(current.getMetrics())
-                    .startedAt(current.getStartedAt())
-                    .build();
-            jobStatuses.put(jobId, updated);
+        TrainingJobStatus status = current != null
+                ? withState(current, state, error)
+                : TrainingJobStatus.builder().jobId(jobId).status(state).error(error).build();
+        Instant now = Instant.now();
+        status.setCompletedAt(now.toString());
+        if (status.getStartedAt() != null) {
+            status.setElapsedMs(now.toEpochMilli() - Instant.parse(status.getStartedAt()).toEpochMilli());
         }
+        return status;
+    }
+
+    /**
+     * Makes {@code status} the job's outcome unless it already has one. Exactly one caller wins, and
+     * only the winner writes history and tells SSE subscribers, so no job is reported twice.
+     *
+     * @param reason why the run ended, for the subprocess log; null for a completion
+     */
+    private boolean claimVerdict(SubprocessHandle handle, TrainingJobStatus status, String reason) {
+        synchronized (handle) {
+            if (handle.verdict != null) {
+                return false;
+            }
+            handle.verdict = status;
+            handle.verdictReason = reason;
+            jobStatuses.put(handle.jobId, status);
+            return true;
+        }
+    }
+
+    /** History is a record, not a gate: a failed write must never stop a kill or a cleanup. */
+    private static void recordHistory(String jobId, String what, Runnable write) {
+        try {
+            write.run();
+        } catch (RuntimeException e) {
+            log.warn("Could not record the {} of training job {} in history: {}", what, jobId, e.toString());
+        }
+    }
+
+    private static void deleteArgsFile(String jobId, Path argsFile) {
+        try {
+            Files.deleteIfExists(argsFile);
+        } catch (IOException e) {
+            log.debug("Could not delete the args file of training job {}: {}", jobId, e.getMessage());
+        }
+    }
+
+    private static String formatLimit(long millis) {
+        long hour = TimeUnit.HOURS.toMillis(1);
+        return millis % hour == 0 ? millis / hour + " hours" : millis + " ms";
     }
 
     private void emitToSse(String jobId, String eventName, Object data) {
@@ -797,40 +1070,60 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     @Scheduled(fixedDelayString = "${kompile.training.subprocess.stale-check-ms:30000}")
     public void checkForStaleProcesses() {
         long now = System.currentTimeMillis();
-        for (Map.Entry<String, SubprocessHandle> entry : activeProcesses.entrySet()) {
-            SubprocessHandle handle = entry.getValue();
-            if (now - handle.lastHeartbeatMs > staleTimeoutMs) {
-                log.warn("Training subprocess {} appears stale (no heartbeat for {}ms), force killing",
-                        entry.getKey(), now - handle.lastHeartbeatMs);
-                handle.process.destroyForcibly();
-                activeProcesses.remove(entry.getKey());
-                historyService.markFailed(entry.getKey(), "Subprocess stalled (no heartbeat)",
-                        null, TrainingJobHistory.FailureReason.TIMEOUT);
-                updateJobStatus(entry.getKey(), "FAILED");
-                completeEmitters(entry.getKey());
+        for (SubprocessHandle handle : activeProcesses.values()) {
+            long silentMs = now - handle.lastHeartbeatMs;
+            // A child that already exited is its watcher's to judge.
+            if (silentMs <= staleTimeoutMs || !handle.process.isAlive()) {
+                continue;
             }
+            log.warn("Training subprocess {} appears stale (no heartbeat for {}ms), force killing",
+                    handle.jobId, silentMs);
+            TrainingJobStatus failed = terminalStatus(handle.jobId, "FAILED", STALLED_ERROR);
+            if (claimVerdict(handle, failed, STALLED_ERROR)) {
+                recordHistory(handle.jobId, "stall", () -> historyService.markFailed(handle.jobId,
+                        STALLED_ERROR, null, TrainingJobHistory.FailureReason.TIMEOUT));
+                emitToSse(handle.jobId, "status", failed);
+            }
+            // Killed even when it already has an outcome: a hung child must not keep its GPU.
+            SubprocessSignals.kill(handle.process);
         }
     }
 
     @PreDestroy
     public void shutdown() {
-        log.info("Shutting down training subprocess launcher, cancelling {} active processes", activeProcesses.size());
-        for (Map.Entry<String, SubprocessHandle> entry : activeProcesses.entrySet()) {
-            SubprocessHandle handle = entry.getValue();
-            handle.process.destroyForcibly();
-            historyService.markCancelled(entry.getKey(), "Application shutdown");
-            // Finalise the centralized log aggregation entry
-            if (handle.logWriter != null) {
-                try {
-                    handle.logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
-                            "CANCELLED", null, "Application shutdown", false, false));
-                    handle.logWriter.close();
-                } catch (Exception ex) {
-                    log.debug("SubprocessLogWriter close failed on shutdown for {}: {}", entry.getKey(), ex.getMessage());
-                }
+        List<SubprocessHandle> handles;
+        synchronized (lifecycleLock) {
+            shuttingDown = true;
+            handles = new ArrayList<>(activeProcesses.values());
+        }
+        log.info("Shutting down training subprocess launcher, cancelling {} active processes", handles.size());
+        for (SubprocessHandle handle : handles) {
+            TrainingJobStatus cancelled = terminalStatus(handle.jobId, "CANCELLED", null);
+            if (claimVerdict(handle, cancelled, SHUTDOWN_REASON)) {
+                recordHistory(handle.jobId, "shutdown",
+                        () -> historyService.markCancelled(handle.jobId, SHUTDOWN_REASON));
+                emitToSse(handle.jobId, "status", cancelled);
+            }
+            SubprocessSignals.kill(handle.process);
+        }
+        // Each watcher records its child's exit; a run still open after the wait is ended here.
+        long deadline = System.currentTimeMillis() + SHUTDOWN_JOIN_MS;
+        for (SubprocessHandle handle : handles) {
+            long remaining = deadline - System.currentTimeMillis();
+            Thread watcher = handle.watcher;
+            if (watcher == null || remaining <= 0) {
+                continue;
+            }
+            try {
+                watcher.join(remaining);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             }
         }
-        activeProcesses.clear();
+        for (SubprocessHandle handle : handles) {
+            finalizeRun(handle, handle.process.isAlive() ? null : handle.process.exitValue());
+        }
     }
 
     /**
@@ -839,15 +1132,37 @@ public class TrainingSubprocessLauncher implements ai.kompile.core.staging.Train
     private static class SubprocessHandle {
         final Process process;
         final String jobId;
+        final Path argsFile;
         final long startTimeMs;
+        /** Finds the reports of a child that writes them to fd 1, which reaches stderr. */
+        final SubprocessProtocolChannel.StderrProtocol stderrProtocol;
+        final AtomicBoolean finalized = new AtomicBoolean();
         volatile long lastHeartbeatMs;
         volatile SubprocessLogWriter logWriter;
+        /** The job's outcome; set once, under this handle's monitor (see claimVerdict). */
+        volatile TrainingJobStatus verdict;
+        volatile String verdictReason;
+        /** The child printed an out-of-memory notice; weighed if it exits without an outcome. */
+        volatile boolean oomSeen;
+        volatile Thread stdoutReader;
+        volatile Thread stderrReader;
+        volatile Thread watcher;
 
-        SubprocessHandle(Process process, String jobId, long startTimeMs) {
+        SubprocessHandle(Process process, String jobId, Path argsFile, long startTimeMs,
+                         SubprocessProtocolChannel.StderrProtocol stderrProtocol) {
             this.process = process;
             this.jobId = jobId;
+            this.argsFile = argsFile;
             this.startTimeMs = startTimeMs;
+            this.stderrProtocol = stderrProtocol;
             this.lastHeartbeatMs = startTimeMs;
+        }
+    }
+
+    /** A launch that arrived after shutdown began; no child was started. */
+    private static final class LaunchRefusedException extends IllegalStateException {
+        LaunchRefusedException(String jobId) {
+            super("Training launcher is shutting down; job " + jobId + " was not started");
         }
     }
 }

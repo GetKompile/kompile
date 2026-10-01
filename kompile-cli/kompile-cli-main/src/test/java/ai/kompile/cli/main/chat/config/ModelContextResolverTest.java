@@ -40,10 +40,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Context-window resolution per chat lane: catalog-known models come from
+ * Context-window and image-input resolution per chat lane: catalog-known models come from
  * {@link ModelContextWindows}; unknown models on a loopback endpoint (a kompile-staged
- * GGUF behind the staging OpenAI facade) are probed via {@code /api/llm/status};
- * everything else falls back to the catalog default.
+ * GGUF behind the staging OpenAI facade), and every model Kompile's own serving child
+ * reports on, are probed via {@code /api/llm/status}; everything else falls back to the
+ * catalog default.
  */
 @ResourceLock(Resources.SYSTEM_PROPERTIES)
 class ModelContextResolverTest {
@@ -188,7 +189,8 @@ class ModelContextResolverTest {
     @Test
     void providerScopedMissStillUsesLocalServingProbe() throws Exception {
         useCatalog(adversarialCatalog(false));
-        ModelContextResolver resolver = new ModelContextResolver(fixedStatus(true, 4_096, 1_024));
+        ModelContextResolver resolver = new ModelContextResolver(
+                fixedStatus(true, 4_096, 1_024, "catalog-only-model"));
 
         assertEquals(new ModelContextResolver.ModelLimits(4_096, 1_024),
                 resolver.resolveLimits("kompile-local", "catalog-only-model", "http://localhost:8090/v1", 0, 0),
@@ -234,7 +236,8 @@ class ModelContextResolverTest {
     @Test
     void partialOverridesRetainLocalProbeForTheOtherLimit() throws Exception {
         useCatalog(adversarialCatalog(false));
-        ModelContextResolver resolver = new ModelContextResolver(fixedStatus(true, 16_384, 2_048));
+        ModelContextResolver resolver = new ModelContextResolver(
+                fixedStatus(true, 16_384, 2_048, "catalog-only-model"));
 
         assertEquals(new ModelContextResolver.ModelLimits(8_192, 2_048),
                 resolver.resolveLimits("kompile-local", "catalog-only-model", "http://localhost:8090/v1", 8_192, 0));
@@ -248,15 +251,99 @@ class ModelContextResolverTest {
 
     private static Function<URI, Optional<JsonNode>> fixedStatus(
             boolean loaded, int maxContextLength, int maxOutputTokens) {
+        return fixedStatus(loaded, maxContextLength, maxOutputTokens, "lfm2");
+    }
+
+    private static Function<URI, Optional<JsonNode>> fixedStatus(
+            boolean loaded, int maxContextLength, int maxOutputTokens, String modelId) {
+        return status("{\"loaded\":" + loaded + ",\"modelId\":\"" + modelId + "\",\"maxContextLength\":"
+                + maxContextLength + ",\"maxOutputTokens\":" + maxOutputTokens + "}");
+    }
+
+    private static Function<URI, Optional<JsonNode>> status(String json) {
         return uri -> {
             try {
-                return Optional.of(MAPPER.readTree(
-                        "{\"loaded\":" + loaded + ",\"modelId\":\"lfm2\",\"maxContextLength\":"
-                                + maxContextLength + ",\"maxOutputTokens\":" + maxOutputTokens + "}"));
+                return Optional.of(MAPPER.readTree(json));
             } catch (Exception e) {
                 return Optional.empty();
             }
         };
+    }
+
+    /** A kompile-local chat whose serving child listens on {@code port}. */
+    private static ChatConfig localConfig(String model, int port) {
+        ChatConfig config = new ChatConfig("kompile-local", null, model, "http://127.0.0.1:" + port + "/v1");
+        config.setAuthenticationMethod("none");
+        return config;
+    }
+
+    @Test
+    void kompileLocalStatusNamingAnotherModelIsIgnored() {
+        ModelContextResolver resolver = new ModelContextResolver(status(
+                "{\"loaded\":true,\"modelId\":\"other-model\",\"maxContextLength\":4096,"
+                        + "\"supportsImageInput\":true}"));
+        ChatConfig config = localConfig("staged-vlm", 41001);
+
+        assertEquals(new ModelContextResolver.ModelLimits(
+                        ModelContextWindows.DEFAULT_CONTEXT_WINDOW, ModelContextWindows.DEFAULT_MAX_OUTPUT_TOKENS),
+                resolver.resolveLimits(config, null),
+                "the port may belong to another serving child by now");
+        assertEquals(Optional.empty(), resolver.resolveImageInput(config, null));
+    }
+
+    @Test
+    void servingStatusAnswersImageInputBeforeTheCatalogs() {
+        ModelContextResolver vlm = new ModelContextResolver(status(
+                "{\"loaded\":true,\"modelId\":\"smolvlm\",\"maxContextLength\":8192,\"supportsImageInput\":true}"));
+        assertEquals(Optional.of(true), vlm.resolveImageInput(localConfig("smolvlm", 41002), null));
+
+        ModelContextResolver text = new ModelContextResolver(status(
+                "{\"loaded\":true,\"modelId\":\"smolvlm\",\"maxContextLength\":8192,\"supportsImageInput\":false}"));
+        assertEquals(Optional.of(false), text.resolveImageInput(localConfig("smolvlm", 41003), null));
+
+        ModelContextResolver silent = new ModelContextResolver(status(
+                "{\"loaded\":true,\"modelId\":\"gpt-4o\",\"maxContextLength\":8192}"));
+        assertEquals(Optional.of(true), silent.resolveImageInput(localConfig("gpt-4o", 41004), null),
+                "a status without the flag leaves the answer to the catalogs");
+    }
+
+    @Test
+    void kompileLocalServedStatusOutranksACatalogNameMatch() {
+        assertTrue(ModelContextWindows.isKnown("kompile-local", "llama3"), "fixture: the static table knows llama3");
+        ModelContextResolver resolver = new ModelContextResolver(status(
+                "{\"loaded\":true,\"modelId\":\"llama3\",\"maxContextLength\":4096,\"supportsImageInput\":true}"));
+        ChatConfig config = localConfig("llama3", 41005);
+
+        assertEquals(4_096, resolver.resolveLimits(config, null).contextWindow(),
+                "the child serves its own package, whatever the static table says about the name");
+        assertEquals(Optional.of(true), resolver.resolveImageInput(config, null));
+        assertEquals(ModelContextWindows.getContextWindow("custom", "llama3"),
+                resolver.resolveLimits("custom", "llama3", "http://127.0.0.1:41005/v1", 0, 0).contextWindow(),
+                "other loopback servers keep the catalog answer for names it knows");
+    }
+
+    @Test
+    void lastServedStatusAnswersWhileTheChildIsEvicted() {
+        Function<URI, Optional<JsonNode>> child = status("{\"loaded\":true,\"modelId\":\"smolvlm\","
+                + "\"maxContextLength\":8192,\"maxOutputTokens\":1024,\"supportsImageInput\":true}");
+        AtomicInteger probes = new AtomicInteger();
+        ModelContextResolver resolver = new ModelContextResolver(uri -> {
+            probes.incrementAndGet();
+            return uri.getPort() == 41006 ? child.apply(uri) : Optional.empty();
+        });
+        ChatConfig config = localConfig("smolvlm", 41006);
+        ModelContextResolver.ModelLimits served = new ModelContextResolver.ModelLimits(8_192, 1_024);
+        assertEquals(served, resolver.resolveLimits(config, null));
+
+        // Idle eviction stopped the child; the next one listens on another port.
+        config.setBaseUrl("http://127.0.0.1:41007/v1");
+        assertEquals(served, resolver.resolveLimits(config, null));
+        assertEquals(Optional.of(true), resolver.resolveImageInput(config, null));
+        assertEquals(2, probes.get(), "the dead port is probed once, then its miss is cached");
+
+        assertEquals(Optional.empty(),
+                new ModelContextResolver(uri -> Optional.empty()).resolveImageInput(config, null),
+                "without a served status nothing knows this model");
     }
 
     @Test
@@ -294,7 +381,8 @@ class ModelContextResolverTest {
 
     @Test
     void localServingProbeReturnsBothContextAndOutputLimits() {
-        ModelContextResolver resolver = new ModelContextResolver(fixedStatus(true, 16_384, 2_048));
+        ModelContextResolver resolver = new ModelContextResolver(
+                fixedStatus(true, 16_384, 2_048, "unknown-local-model"));
         ModelContextResolver.ModelLimits limits = resolver.resolveLimits(
                 "kompile-local", "unknown-local-model", "http://localhost:8090/v1", 0, 0);
         assertEquals(16_384, limits.contextWindow());

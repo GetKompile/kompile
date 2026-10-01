@@ -17,6 +17,7 @@ import ai.kompile.graph.reasoning.mebn.*;
 import ai.kompile.graph.reasoning.mebn.logic.*;
 import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
 import ai.kompile.graph.reasoning.domain.InferenceStep;
+import ai.kompile.graph.reasoning.domain.MTheoryStructure;
 import ai.kompile.graph.reasoning.domain.MpeResult;
 import ai.kompile.graph.reasoning.domain.SensitivityResult;
 import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
@@ -276,7 +277,11 @@ public class BayesianNetworkService {
         return queryWithMTheory(mTheory, evidence, typeHierarchy, null);
     }
 
-    protected BayesianInferenceResult queryWithMTheory(MTheory mTheory,
+    /**
+     * As {@link #queryWithMTheory(MTheory, Map, TypeHierarchy)}, but grounds the SSBN against the
+     * facts of one fact sheet ({@code null} = the whole graph).
+     */
+    public BayesianInferenceResult queryWithMTheory(MTheory mTheory,
                                                         Map<String, Integer> evidence,
                                                         TypeHierarchy typeHierarchy,
                                                         Long factSheetId) {
@@ -291,6 +296,7 @@ public class BayesianNetworkService {
 
         SSBNGenerator generator = new SSBNGenerator(mTheory, kb).typeHierarchy(typeHierarchy);
         BayesianNetwork network = generator.generate();
+        requireApplicableEvidence(evidence, network);
 
         if (network.size() == 0) {
             return BayesianInferenceResult.builder()
@@ -390,10 +396,12 @@ public class BayesianNetworkService {
      * from edge patterns, and run SSBN generation + variable elimination.</p>
      *
      * @param seedNodeIds KG node IDs to build the MTheory from
-     * @param evidence    map of grounded variable name → observed state index
+     * @param evidence    map of grounded variable name (a posterior key) → observed state index
      * @param maxDepth    maximum traversal depth
      * @param maxNodes    maximum nodes to discover
      * @return inference result with entity-specific posteriors
+     * @throws IllegalArgumentException when an evidence name is not a grounded variable or a
+     *                                  state is outside the variable's states
      */
     public BayesianInferenceResult queryMebnFromKg(Collection<String> seedNodeIds,
                                                       Map<String, Integer> evidence,
@@ -424,7 +432,8 @@ public class BayesianNetworkService {
      * <p>Scoping works by filtering nodes during BFS: any discovered node whose
      * {@code factSheetId} does not match the requested fact sheet is excluded from the
      * subgraph passed to the MEBN builder.  The seed node itself is always included
-     * regardless (the caller is responsible for supplying a node from the correct sheet).</p>
+     * regardless (the caller is responsible for supplying a node from the correct sheet). The
+     * SSBN's node and edge predicates read the same fact sheet.</p>
      */
     public BayesianInferenceResult queryMebnFromKg(Collection<String> seedNodeIds,
                                                       Map<String, Integer> evidence,
@@ -455,13 +464,14 @@ public class BayesianNetworkService {
         MTheory mTheory = builder.build(seedNodeIds);
 
         if (mTheory.getMFrags().isEmpty()) {
+            requireApplicableEvidence(evidence, new BayesianNetwork());
             return BayesianInferenceResult.builder()
                     .computedAt(Instant.now())
                     .computationTimeMs(System.currentTimeMillis() - startTime)
                     .build();
         }
 
-        return queryWithMTheory(mTheory, evidence, typeHierarchy);
+        return queryWithMTheory(mTheory, evidence, typeHierarchy, factSheetId);
     }
 
     private MTheory restrictManagedTheory(MTheory fullTheory,
@@ -548,6 +558,15 @@ public class BayesianNetworkService {
                 .maxNodes(maxNodes)
                 .withEmpiricalPriors(empiricalPriors)
                 .build(seedNodeIds);
+    }
+
+    /**
+     * The structure of {@link #buildMebnTheory}'s theory as plain data. The theory itself holds
+     * Java local distributions and cannot be serialized, so this is the form that crosses the
+     * graph-subprocess boundary.
+     */
+    public MTheoryStructure describeMebnTheory(Collection<String> seedNodeIds, int maxDepth, int maxNodes) {
+        return MTheoryStructure.of(buildMebnTheory(seedNodeIds, maxDepth, maxNodes));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -717,6 +736,37 @@ public class BayesianNetworkService {
             }
         }
         return meta;
+    }
+
+    /**
+     * Rejects MEBN evidence the network cannot apply. Variable elimination skips a name it does not
+     * know and zeroes every assignment for an out-of-range state, so either would come back looking
+     * like a conditioned answer. The names are the grounded variables, i.e. the posterior keys.
+     */
+    static void requireApplicableEvidence(Map<String, Integer> evidence, BayesianNetwork network) {
+        if (evidence == null || evidence.isEmpty()) return;
+        List<String> unknown = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : evidence.entrySet()) {
+            BayesianNode node = network.getNode(entry.getKey());
+            if (node == null) {
+                unknown.add(entry.getKey());
+                continue;
+            }
+            Integer state = entry.getValue();
+            int cardinality = node.getCardinality();
+            if (state == null || state < 0 || state >= cardinality) {
+                throw new IllegalArgumentException("MEBN evidence state for " + entry.getKey() + " must be "
+                        + (cardinality == 2 ? "0 or 1" : "between 0 and " + (cardinality - 1)) + ": " + state);
+            }
+        }
+        if (unknown.isEmpty()) return;
+        List<String> names = network.getNodes().stream().map(BayesianNode::getVariableName).sorted().toList();
+        List<String> shown = names.subList(0, Math.min(10, names.size()));
+        throw new IllegalArgumentException("Unknown MEBN evidence variable(s): " + String.join(", ", unknown) + ". "
+                + (names.isEmpty()
+                        ? "The network has no variables."
+                        : "Use names from posteriors, e.g. " + String.join(", ", shown)
+                                + (names.size() > shown.size() ? " (" + names.size() + " in total)." : ".")));
     }
 
     private Map<String, Integer> translateEvidence(BayesianNetwork network,

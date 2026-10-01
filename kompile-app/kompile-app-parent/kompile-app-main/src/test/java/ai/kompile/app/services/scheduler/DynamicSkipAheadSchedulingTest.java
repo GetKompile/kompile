@@ -35,13 +35,13 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -77,10 +77,10 @@ class DynamicSkipAheadSchedulingTest {
         configService = mock(ResourceSchedulerConfigService.class);
         when(configService.getConfiguration()).thenReturn(config);
 
-        when(gpuResourceManager.findBestDevice(anyString())).thenReturn(Optional.of(TEST_GPU));
-        when(gpuResourceManager.canFit(anyString(), any())).thenReturn(true);
+        gpuAdmits(() -> true);
         when(modelLifecycleManager.acquireGpuForJob(
-                anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class)))
+                anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class),
+                anyLong(), any()))
                 .thenReturn(TEST_GPU);
 
         scheduler = new ResourceAwareJobScheduler(
@@ -117,6 +117,13 @@ class DynamicSkipAheadSchedulingTest {
                 .build();
     }
 
+    /** The scheduler's GPU gate: while {@code fits} is false every GPU job is short of memory and waits. */
+    private void gpuAdmits(BooleanSupplier fits) {
+        when(modelLifecycleManager.admitJob(anyString(), anyLong(), any())).thenAnswer(inv ->
+                new ModelLifecycleManager.GpuAdmission(TEST_GPU, 2 * GB, List.of(),
+                        fits.getAsBoolean() ? null : "Insufficient GPU memory on Test GPU"));
+    }
+
     // ==================== Skip-ahead dispatch ====================
 
     @Nested
@@ -127,8 +134,7 @@ class DynamicSkipAheadSchedulingTest {
         @DisplayName("CPU job skips ahead of blocked GPU job when GPU unavailable")
         void cpuJobSkipsAheadOfBlockedGpuJob() throws Exception {
             // Make GPU unavailable
-            when(gpuResourceManager.canFit(anyString(), any())).thenReturn(false);
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(() -> false);
 
             // Submit high-priority GPU job — should be blocked
             AtomicBoolean gpuJobRan = new AtomicBoolean(false);
@@ -155,8 +161,7 @@ class DynamicSkipAheadSchedulingTest {
         @Test
         @DisplayName("Multiple CPU jobs skip ahead of multiple blocked GPU jobs")
         void multipleCpuJobsSkipAhead() throws Exception {
-            when(gpuResourceManager.canFit(anyString(), any())).thenReturn(false);
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(() -> false);
 
             // Submit two high-priority GPU jobs
             ScheduledJob gpu1 = gpuJob("gpu-1", "ingest", 90, ctx -> {});
@@ -187,9 +192,7 @@ class DynamicSkipAheadSchedulingTest {
         void gpuJobDispatchesWhenGpuFreed() throws Exception {
             // Initially block GPU
             AtomicBoolean gpuAvailable = new AtomicBoolean(false);
-            when(gpuResourceManager.canFit(anyString(), any()))
-                    .thenAnswer(inv -> gpuAvailable.get());
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(gpuAvailable::get);
 
             CountDownLatch gpuDone = new CountDownLatch(1);
             ScheduledJob gpuJ = gpuJob("gpu-1", "ingest", 90, ctx -> gpuDone.countDown());
@@ -217,8 +220,7 @@ class DynamicSkipAheadSchedulingTest {
         @Test
         @DisplayName("JOB_BLOCKED event emitted when GPU job is stuck")
         void blockedEventEmitted() throws Exception {
-            when(gpuResourceManager.canFit(anyString(), any())).thenReturn(false);
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(() -> false);
 
             ScheduledJob gpuJ = gpuJob("gpu-1", "ingest", 90, ctx -> {});
             scheduler.submit(gpuJ);
@@ -243,8 +245,7 @@ class DynamicSkipAheadSchedulingTest {
         @Test
         @DisplayName("JOB_SKIPPED_AHEAD event emitted when CPU job leapfrogs GPU job")
         void skippedAheadEventEmitted() throws Exception {
-            when(gpuResourceManager.canFit(anyString(), any())).thenReturn(false);
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(() -> false);
 
             // High-priority GPU job (blocked)
             ScheduledJob gpuJ = gpuJob("gpu-1", "ingest", 90, ctx -> {});
@@ -278,8 +279,7 @@ class DynamicSkipAheadSchedulingTest {
         @Test
         @DisplayName("JOB_REORDERED event emitted when dispatch order differs from priority order")
         void reorderedEventEmitted() throws Exception {
-            when(gpuResourceManager.canFit(anyString(), any())).thenReturn(false);
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(() -> false);
 
             ScheduledJob gpuJ = gpuJob("gpu-1", "ingest", 90, ctx -> {});
             scheduler.submit(gpuJ);
@@ -308,8 +308,7 @@ class DynamicSkipAheadSchedulingTest {
         @Test
         @DisplayName("JOB_BLOCKED event is not re-emitted for the same reason")
         void blockedEventNotDuplicated() throws Exception {
-            when(gpuResourceManager.canFit(anyString(), any())).thenReturn(false);
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(() -> false);
 
             ScheduledJob gpuJ = gpuJob("gpu-1", "ingest", 90, ctx -> {});
             scheduler.submit(gpuJ);
@@ -342,8 +341,7 @@ class DynamicSkipAheadSchedulingTest {
         @Test
         @DisplayName("Job view shows blocked reason when GPU unavailable")
         void jobViewShowsBlockedReason() throws Exception {
-            when(gpuResourceManager.canFit(anyString(), any())).thenReturn(false);
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(() -> false);
 
             ScheduledJob gpuJ = gpuJob("gpu-1", "ingest", 90, ctx -> {});
             scheduler.submit(gpuJ);
@@ -362,9 +360,7 @@ class DynamicSkipAheadSchedulingTest {
         @DisplayName("Blocked reason is cleared when job becomes dispatchable")
         void blockedReasonClearedOnDispatch() throws Exception {
             AtomicBoolean gpuAvailable = new AtomicBoolean(false);
-            when(gpuResourceManager.canFit(anyString(), any()))
-                    .thenAnswer(inv -> gpuAvailable.get());
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(gpuAvailable::get);
 
             CountDownLatch done = new CountDownLatch(1);
             ScheduledJob gpuJ = gpuJob("gpu-1", "ingest", 90, ctx -> done.countDown());
@@ -462,11 +458,10 @@ class DynamicSkipAheadSchedulingTest {
         void queuedGpuJobDispatchesAfterYield() throws Exception {
             // Track GPU usage: only one GPU job at a time
             AtomicBoolean gpuInUse = new AtomicBoolean(false);
-            when(gpuResourceManager.canFit(anyString(), any()))
-                    .thenAnswer(inv -> !gpuInUse.get());
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(() -> !gpuInUse.get());
             when(modelLifecycleManager.acquireGpuForJob(
-                    anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class)))
+                    anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class),
+                    anyLong(), any()))
                     .thenAnswer(inv -> {
                         gpuInUse.set(true);
                         return TEST_GPU;
@@ -667,8 +662,7 @@ class DynamicSkipAheadSchedulingTest {
         @Test
         @DisplayName("Queue snapshot shows blocked jobs with reasons")
         void queueSnapshotShowsBlockedReasons() throws Exception {
-            when(gpuResourceManager.canFit(anyString(), any())).thenReturn(false);
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(() -> false);
 
             ScheduledJob gpuJ = gpuJob("gpu-1", "ingest", 90, ctx -> {});
             scheduler.submit(gpuJ);
@@ -730,9 +724,7 @@ class DynamicSkipAheadSchedulingTest {
             AtomicInteger cpuOrder = new AtomicInteger(-1);
 
             AtomicBoolean gpuAvailable = new AtomicBoolean(false);
-            when(gpuResourceManager.canFit(anyString(), any()))
-                    .thenAnswer(inv -> gpuAvailable.get());
-            when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
+            gpuAdmits(gpuAvailable::get);
 
             ScheduledJob gpuJ = gpuJob("gpu-1", "ingest", 90, ctx ->
                     gpuOrder.set(executionOrder.getAndIncrement()));

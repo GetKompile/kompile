@@ -393,6 +393,33 @@ public final class UnifiedGraph implements ReasoningGraph {
         return Collections.unmodifiableMap(meta);
     }
 
+    /** Meta key prefix naming a relation type that a retraction removed edges of. */
+    public static final String RETRACTED_RELATION_TYPE_META_PREFIX = "vocabulary.retractedRelationType.";
+
+    /**
+     * Remember that a retraction removed edges of {@code type}. Retracting a type's last edge
+     * leaves the facts missing, not the vocabulary, so a later claim over it must not be told
+     * the predicate is unknown.
+     */
+    public UnifiedGraph recordRetractedRelationType(String type) {
+        if (type != null && !type.isBlank()) {
+            meta(RETRACTED_RELATION_TYPE_META_PREFIX + type.trim(), true);
+        }
+        return this;
+    }
+
+    /** Relation types, as stored, that retractions removed edges of. */
+    public Set<String> retractedRelationTypes() {
+        Set<String> types = new LinkedHashSet<>();
+        for (Map.Entry<String, Object> entry : meta.entrySet()) {
+            if (entry.getKey().startsWith(RETRACTED_RELATION_TYPE_META_PREFIX)
+                    && Boolean.TRUE.equals(entry.getValue())) {
+                types.add(entry.getKey().substring(RETRACTED_RELATION_TYPE_META_PREFIX.length()));
+            }
+        }
+        return types;
+    }
+
     /** The graph id from {@link UnifiedGraphFormat#META_GRAPH_ID}, or {@code null}. */
     public String graphId() {
         Object v = meta.get(UnifiedGraphFormat.META_GRAPH_ID);

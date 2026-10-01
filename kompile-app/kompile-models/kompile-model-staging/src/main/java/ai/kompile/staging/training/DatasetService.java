@@ -46,7 +46,7 @@ public class DatasetService {
     private static final Logger log = LoggerFactory.getLogger(DatasetService.class);
 
     @Value("${kompile.staging.datasets-dir:#{systemProperties['user.home'] + '/.kompile/datasets'}}")
-    private String datasetsDir;
+    String datasetsDir;
 
     private final ObjectMapper objectMapper;
 

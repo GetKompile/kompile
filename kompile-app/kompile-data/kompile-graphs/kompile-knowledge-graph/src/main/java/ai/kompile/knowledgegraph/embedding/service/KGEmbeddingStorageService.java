@@ -24,6 +24,7 @@ import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +32,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.*;
+import java.util.function.Function;
 
 /**
  * Service for storing and retrieving KG embeddings (TransE/RotatE) via the
@@ -69,11 +71,34 @@ public class KGEmbeddingStorageService {
      * @return Number of entities + relation types updated
      */
     public int storeEmbeddings(KGEmbeddingModel model, Long factSheetId, Long embeddingVersion) {
+        return storeVectors(model.getAllEntityEmbeddings(), model.getAllRelationEmbeddings(),
+                Function.identity(), model.getAlgorithm(), factSheetId, embeddingVersion);
+    }
+
+    /**
+     * Stores vectors read from the file an out-of-process training run writes, keyed the same way
+     * as a model's.
+     *
+     * @return Number of entities + relation types updated
+     */
+    public int storeEmbeddings(Map<String, float[]> entityVectors,
+                               Map<String, float[]> relationVectors,
+                               KGEmbeddingAlgorithm algorithm,
+                               Long factSheetId,
+                               Long embeddingVersion) {
+        return storeVectors(entityVectors != null ? entityVectors : Map.of(),
+                relationVectors != null ? relationVectors : Map.of(),
+                Nd4j::createFromArray, algorithm, factSheetId, embeddingVersion);
+    }
+
+    private <V> int storeVectors(Map<String, V> entityEmbeddings,
+                                 Map<String, V> relationEmbeddings,
+                                 Function<V, INDArray> toArray,
+                                 KGEmbeddingAlgorithm algorithm,
+                                 Long factSheetId,
+                                 Long embeddingVersion) {
         log.info("Storing embeddings for fact sheet {} (version {})", factSheetId, embeddingVersion);
 
-        Map<String, INDArray> entityEmbeddings = model.getAllEntityEmbeddings();
-        Map<String, INDArray> relationEmbeddings = model.getAllRelationEmbeddings();
-        KGEmbeddingAlgorithm algorithm = model.getAlgorithm();
         Instant now = Instant.now();
 
         int entitiesUpdated = 0;
@@ -88,18 +113,18 @@ public class KGEmbeddingStorageService {
             }
         }
 
-        for (Map.Entry<String, INDArray> entry : entityEmbeddings.entrySet()) {
+        for (Map.Entry<String, V> entry : entityEmbeddings.entrySet()) {
             GraphNode node = nodeByTitle.get(entry.getKey());
             if (node == null) continue;
             knowledgeGraphService.storeNodeKgEmbedding(
-                    node.getNodeId(), entry.getValue(), algorithm, embeddingVersion, now);
+                    node.getNodeId(), toArray.apply(entry.getValue()), algorithm, embeddingVersion, now);
             entitiesUpdated++;
         }
 
         // Relation embeddings are stored per EdgeType name (type-shared, one per relation).
-        for (Map.Entry<String, INDArray> entry : relationEmbeddings.entrySet()) {
+        for (Map.Entry<String, V> entry : relationEmbeddings.entrySet()) {
             knowledgeGraphService.storeEdgeTypeKgEmbedding(
-                    entry.getKey(), entry.getValue(), algorithm, embeddingVersion, factSheetId);
+                    entry.getKey(), toArray.apply(entry.getValue()), algorithm, embeddingVersion, factSheetId);
             relationsUpdated++;
         }
 

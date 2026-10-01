@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
-import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -34,9 +33,7 @@ class GraphMatrixSubprocessGenerationContextTest {
                 "kompile.graph.eager-rehydration-enabled", "false"));
         AnnotationConfigApplicationContext context = null;
         try {
-            Method createContext = GraphMatrixSubprocessMain.class.getDeclaredMethod("createContext");
-            createContext.setAccessible(true);
-            context = (AnnotationConfigApplicationContext) createContext.invoke(null);
+            context = GraphMatrixSubprocessMain.createContext();
 
             assertEquals(1, context.getBeansOfType(GraphGenerationCoordinator.class).size());
             assertTrue(context.getBean(KnowledgeGraphService.class).supportsGraphGenerations());
@@ -60,9 +57,7 @@ class GraphMatrixSubprocessGenerationContextTest {
                 "kompile.graph.eager-rehydration-enabled", "false"));
         AnnotationConfigApplicationContext context = null;
         try {
-            Method createContext = GraphMatrixSubprocessMain.class.getDeclaredMethod("createContext");
-            createContext.setAccessible(true);
-            context = (AnnotationConfigApplicationContext) createContext.invoke(null);
+            context = GraphMatrixSubprocessMain.createContext();
 
             assertTrue(context.getBeansOfType(GraphGenerationCoordinator.class).isEmpty());
             assertTrue(context.getBean(KnowledgeGraphService.class).getNode("missing").isEmpty());

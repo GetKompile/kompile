@@ -120,7 +120,7 @@ class SetupWizardProfilesTest {
 
     @Test
     void destinationIsTransientAndProfileReuseOffersTheSameChoice() throws Exception {
-        ChatConfig config = new ChatConfig("ollama", null, "model", null);
+        ChatConfig config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
         ChatProfiles.save(project, ChatProfiles.capture("local", config), false);
         ChatConfig reused = SetupWizard.selectProjectProfile(reader("y", "1", "1"), project, "standard").config();
         for (ChatConfig candidate : List.of(config, reused)) {
@@ -139,7 +139,7 @@ class SetupWizardProfilesTest {
 
     @Test
     void explicitWebSkipsDestinationAndOtherModesStayTerminal() {
-        ChatConfig config = new ChatConfig("ollama", null, "model", null);
+        ChatConfig config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
         assertEquals(SetupWizard.Destination.BROWSER,
                 SetupWizard.selectDestination(reader(), config, true, true));
         assertEquals(SetupWizard.Destination.TERMINAL,
@@ -156,7 +156,7 @@ class SetupWizardProfilesTest {
 
     @Test
     void browserRequiresSuccessfulPersistenceWhileTerminalRetainsFallback() throws Exception {
-        ChatConfig config = new ChatConfig("ollama", null, "model", null);
+        ChatConfig config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
         Path blocked = project.resolve("blocked");
         Files.writeString(blocked, "not a directory");
         assertThrows(java.io.IOException.class, () -> SetupWizard.saveConfiguration(config,

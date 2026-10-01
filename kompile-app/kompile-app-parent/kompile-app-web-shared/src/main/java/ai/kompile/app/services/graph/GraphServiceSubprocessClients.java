@@ -33,10 +33,12 @@ import ai.kompile.event.attribution.service.PslReasoningService;
 import ai.kompile.graph.reasoning.domain.AttributionQuery;
 import ai.kompile.graph.reasoning.domain.AttributionResult;
 import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
+import ai.kompile.graph.reasoning.domain.MTheoryStructure;
 import ai.kompile.graph.reasoning.domain.MpeResult;
 import ai.kompile.graph.reasoning.domain.PslInferenceResult;
 import ai.kompile.graph.reasoning.domain.SensitivityResult;
 import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.RelationalMTheoryArtifactCodec;
 import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
@@ -49,6 +51,7 @@ import ai.kompile.knowledgegraph.generation.GraphGenerationContext;
 import ai.kompile.knowledgegraph.generation.GraphGenerationJournal;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.service.MatrixGraphConstructor;
+import ai.kompile.knowledgegraph.service.BoundedKnowledgeGraphReader;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -70,6 +73,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -169,8 +173,6 @@ public class GraphServiceSubprocessClients {
 
         private static final Logger log = LoggerFactory.getLogger(SubprocessRpcBase.class);
         private static final Duration INVOKE_TIMEOUT = Duration.ofSeconds(120);
-        private static final long DEFAULT_MAX_REQUEST_BYTES = 8L * 1024 * 1024;
-        private static final long DEFAULT_MAX_RESPONSE_BYTES = 16L * 1024 * 1024;
 
         protected final String serviceFqcn;
         protected final GraphMatrixSubprocessLauncher launcher;
@@ -211,8 +213,7 @@ public class GraphServiceSubprocessClients {
                 }
                 req.set("args", argsNode);
                 byte[] reqBody = mapper.writeValueAsBytes(req);
-                long maxRequestBytes = positiveLongProperty(
-                        "kompile.graph.subprocess.max-request-bytes", DEFAULT_MAX_REQUEST_BYTES);
+                long maxRequestBytes = GraphMatrixSubprocessMain.maxRequestBytes();
                 if (reqBody.length > maxRequestBytes) {
                     throw new IllegalArgumentException("[subprocess-graph-rpc] request for "
                             + serviceFqcn + "." + method + " is " + reqBody.length
@@ -229,8 +230,7 @@ public class GraphServiceSubprocessClients {
                 HttpRequest http = httpBuilder.build();
 
                 HttpResponse<InputStream> resp = client().send(http, HttpResponse.BodyHandlers.ofInputStream());
-                long maxResponseBytes = positiveLongProperty(
-                        "kompile.graph.subprocess.max-response-bytes", DEFAULT_MAX_RESPONSE_BYTES);
+                long maxResponseBytes = GraphMatrixSubprocessMain.maxResponseBytes();
                 long responseLength = resp.headers().firstValueAsLong("Content-Length").orElse(-1L);
                 if (responseLength > maxResponseBytes) {
                     resp.body().close();
@@ -245,9 +245,21 @@ public class GraphServiceSubprocessClients {
 
                 if (!respNode.path("ok").asBoolean(true)) {
                     String code = respNode.path("code").asText("RPC_ERROR");
+                    String error = respNode.path("error").asText("unknown error");
+                    // Older subprocesses send no UNKNOWN_METHOD code, only the dispatcher's message.
+                    if ("UNKNOWN_METHOD".equals(code) || (error.startsWith("[graph-matrix] ")
+                            && (error.contains(": unknown method: ") || error.contains("unknown service FQCN: ")))) {
+                        throw new UnsupportedOperationException("[subprocess-graph-rpc] the graph subprocess"
+                                + " does not implement " + serviceFqcn + "." + method + "; it runs an older"
+                                + " build than this app. Restart or redeploy it so both run the same build ("
+                                + error + ")");
+                    }
+                    // The caller's mistake, as it would be in-process: controllers answer 400 with the message.
+                    if ("INVALID_ARGUMENT".equals(code)) {
+                        throw new IllegalArgumentException(error);
+                    }
                     throw new RuntimeException("[subprocess-graph-rpc] " + serviceFqcn + "." + method
-                            + " failed [" + code + "]: "
-                            + respNode.path("error").asText("unknown error"));
+                            + " failed [" + code + "]: " + error);
                 }
 
                 JsonNode resultNode = respNode.path("result");
@@ -376,17 +388,6 @@ public class GraphServiceSubprocessClients {
             return null;
         }
 
-        private static long positiveLongProperty(String name, long defaultValue) {
-            String value = System.getProperty(name);
-            if (value == null || value.isBlank()) return defaultValue;
-            try {
-                long parsed = Long.parseLong(value);
-                return parsed > 0 ? parsed : defaultValue;
-            } catch (NumberFormatException ignored) {
-                return defaultValue;
-            }
-        }
-
         private static final class LimitedInputStream extends InputStream {
             private final InputStream delegate;
             private final long limit;
@@ -470,7 +471,7 @@ public class GraphServiceSubprocessClients {
         private final JavaType typeMpeResult;
         private final JavaType typeSensitivityResult;
         private final JavaType typeMapStringObject;
-        private final JavaType typeMTheory;
+        private final JavaType typeMTheoryStructure;
 
         SubprocessBayesianNetworkServiceClient(GraphMatrixSubprocessLauncher launcher,
                                                ObjectMapper mapper,
@@ -483,7 +484,7 @@ public class GraphServiceSubprocessClients {
             this.typeMpeResult = tf.constructType(MpeResult.class);
             this.typeSensitivityResult = tf.constructType(SensitivityResult.class);
             this.typeMapStringObject = tf.constructMapType(Map.class, String.class, Object.class);
-            this.typeMTheory = tf.constructType(MTheory.class);
+            this.typeMTheoryStructure = tf.constructType(MTheoryStructure.class);
         }
 
         @Override
@@ -501,6 +502,17 @@ public class GraphServiceSubprocessClients {
                                                        TypeHierarchy typeHierarchy) {
             return rpc.rpc("queryMebnFromKg",
                     new Object[]{seedNodeIds, evidence, maxDepth, maxNodes, typeHierarchy},
+                    typeBayesianInferenceResult);
+        }
+
+        /** Grounds next to the store; the inherited body walks the graph with one RPC per node. */
+        @Override
+        public BayesianInferenceResult queryMebnFromKg(Collection<String> seedNodeIds,
+                                                       Map<String, Integer> evidence,
+                                                       int maxDepth, int maxNodes,
+                                                       TypeHierarchy typeHierarchy, Long factSheetId) {
+            return rpc.rpc("queryMebnFromKg",
+                    new Object[]{seedNodeIds, evidence, maxDepth, maxNodes, typeHierarchy, factSheetId},
                     typeBayesianInferenceResult);
         }
 
@@ -549,8 +561,53 @@ public class GraphServiceSubprocessClients {
         }
 
         @Override
+        public MTheoryStructure describeMebnTheory(Collection<String> seedNodeIds, int maxDepth, int maxNodes) {
+            return rpc.rpc("describeMebnTheory", new Object[]{seedNodeIds, maxDepth, maxNodes},
+                    typeMTheoryStructure);
+        }
+
+        /**
+         * A theory built from the graph holds Java local distributions, so it cannot be sent back
+         * from the subprocess, and building it here would walk the graph with one RPC per node.
+         */
+        @Override
         public MTheory buildMebnTheory(Collection<String> seedNodeIds, int maxDepth, int maxNodes) {
-            return rpc.rpc("buildMebnTheory", new Object[]{seedNodeIds, maxDepth, maxNodes}, typeMTheory);
+            throw new UnsupportedOperationException("A graph-built MEBN theory cannot cross the graph-subprocess "
+                    + "boundary; use describeMebnTheory for its structure or queryMebnFromKg to run inference");
+        }
+
+        @Override
+        public BayesianInferenceResult whatIfQuery(Collection<String> seedNodeIds,
+                                                   Map<String, Integer> hypotheticalEvidence,
+                                                   int maxDepth, int maxNodes) {
+            return rpc.rpc("whatIfQuery", new Object[]{seedNodeIds, hypotheticalEvidence, maxDepth, maxNodes},
+                    typeBayesianInferenceResult);
+        }
+
+        @Override
+        public Map<String, Object> getNetworkStatistics(Collection<String> seedNodeIds,
+                                                        int maxDepth, int maxNodes) {
+            return rpc.rpc("getNetworkStatistics", new Object[]{seedNodeIds, maxDepth, maxNodes},
+                    typeMapStringObject);
+        }
+
+        /**
+         * Sends a canonical relational-v1 theory to be grounded next to the store. Theories with
+         * Java local distributions cannot cross this boundary; never fall back to app-side
+         * grounding, which may make one graph RPC per context evaluation.
+         */
+        @Override
+        public BayesianInferenceResult queryWithMTheory(MTheory mTheory, Map<String, Integer> evidence,
+                                                        TypeHierarchy typeHierarchy, Long factSheetId) {
+            String theoryJson;
+            try {
+                theoryJson = RelationalMTheoryArtifactCodec.toJson(mTheory);
+            } catch (IllegalArgumentException notCanonical) {
+                throw new UnsupportedOperationException("Only canonical relational-v1 MEBN theories can cross "
+                        + "the graph-subprocess boundary; use queryMebnFromKg for graph-built theories", notCanonical);
+            }
+            return rpc.rpc("queryWithMTheory", new Object[]{theoryJson, evidence, typeHierarchy, factSheetId},
+                    typeBayesianInferenceResult);
         }
     }
 
@@ -619,7 +676,7 @@ public class GraphServiceSubprocessClients {
     // ══════════════════════════════════════════════════════════════════════════
 
     static final class SubprocessKnowledgeGraphServiceClient extends SubprocessRpcBase
-            implements KnowledgeGraphService {
+            implements KnowledgeGraphService, BoundedKnowledgeGraphReader {
 
         /** Items per page for whole-fact-sheet reads assembled over the paged RPCs.
          *  A single-response fetch is forbidden: one ~1GB getEdgesInFactSheet response
@@ -850,6 +907,49 @@ public class GraphServiceSubprocessClients {
         @Override
         public Optional<GraphNode> getNode(String nodeId) {
             return rpcOptional("getNode", new Object[]{nodeId}, GraphNode.class);
+        }
+
+        // ── Bounded reads, answered next to the store ─────────────────────────
+        // The subprocess replies with maps, not the interface records, so both records are built
+        // here by hand. A reply without a readable truncated flag counts as truncated.
+
+        @Override
+        public Optional<GraphNode> getNodeInScope(String nodeId, Long factSheetId) {
+            return rpcOptional("getNodeInScope", new Object[]{nodeId, factSheetId}, GraphNode.class);
+        }
+
+        @Override
+        public IncidentEdges getIncidentEdges(String nodeId, Long factSheetId, Direction direction, int maxEdges) {
+            JsonNode reply = rpcRaw("getIncidentEdges",
+                    new Object[]{nodeId, factSheetId, direction == null ? null : direction.name(), maxEdges});
+            return new IncidentEdges(replyList(reply, "edges", typeListGraphEdge),
+                    reply.path("truncated").asBoolean(true));
+        }
+
+        /** The whole traversal in one RPC, instead of the default's point read and incident read per node. */
+        @Override
+        public Neighborhood getNeighborhood(Long factSheetId, Collection<String> seedIds,
+                                            Collection<String> expansionSeedIds, int maxDepth, int maxNodes,
+                                            Direction direction, int maxEdges) {
+            JsonNode reply = rpcRaw("getNeighborhood", new Object[]{
+                    factSheetId,
+                    seedIds == null ? List.of() : new ArrayList<>(seedIds),
+                    expansionSeedIds == null ? List.of() : new ArrayList<>(expansionSeedIds),
+                    maxDepth, maxNodes, direction == null ? null : direction.name(), maxEdges});
+            return new Neighborhood(replyList(reply, "nodes", typeListGraphNode),
+                    replyList(reply, "edges", typeListGraphEdge),
+                    reply.path("truncated").asBoolean(true));
+        }
+
+        private <T> List<T> replyList(JsonNode reply, String field, JavaType listType) {
+            JsonNode items = reply.path(field);
+            if (!items.isArray()) return List.of();
+            try {
+                return mapper.convertValue(items, listType);
+            } catch (IllegalArgumentException e) {
+                throw new RuntimeException("[subprocess-graph-rpc] deserialize failed for "
+                        + serviceFqcn + " bounded read field " + field + ": " + e, e);
+            }
         }
 
         @Override

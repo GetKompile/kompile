@@ -15,15 +15,14 @@ import java.util.function.Supplier;
  * never written to the transcript.
  *
  * <p>Lifecycle: {@link #begin()} opens a request and returns its sequence
- * number; only the matching {@link #finish(long)} closes it. Text/usage
- * deltas attach to whatever request is currently active, so late events from
- * a finished turn are ignored and cannot pollute the next one.</p>
+ * number; only the matching {@link #finish(long)} closes it. Asynchronous
+ * producers capture {@link #sequence()} and pass it with text/usage updates,
+ * so late events cannot pollute a newer request.</p>
  *
- * <p>Token display rule: shown count is {@code max(exactOutput, chars/4)}.
- * Estimates stream in from generated text; provider usage deltas arrive at
- * model-call completion and are monotonic against the estimate, so the exact
- * figure simply overtakes it — no double counting, no per-call attribution.
- * The estimate flag is true only while the estimate still leads.</p>
+ * <p>Provider usage deltas arrive at model-call completion and replace that
+ * call's text estimate, even when the exact count is lower. Subsequent streamed
+ * text is estimated on top of the completed calls' exact output. This prevents
+ * a large reasoning-token count from hiding progress on the next call.</p>
  */
 public final class ForegroundRequestProgress {
 
@@ -50,6 +49,7 @@ public final class ForegroundRequestProgress {
     private long startMillis = 0;
     private long textChars = 0;
     private long exactOutput = 0;
+    private long incompleteOutput = 0;
 
     private LongSupplier clockMillis = System::currentTimeMillis;
     private Supplier<String> wordSupplier =
@@ -67,23 +67,53 @@ public final class ForegroundRequestProgress {
             startMillis = clockMillis.getAsLong();
             textChars = 0;
             exactOutput = 0;
+            incompleteOutput = 0;
             return seq;
         }
     }
 
-    /** Feed streamed generated text (visible model output) for the active request. */
-    public void recordTextDelta(String delta) {
-        if (delta == null || delta.isEmpty()) return;
+    /** Sequence to capture when installing asynchronous stream callbacks. */
+    public long sequence() {
         synchronized (lock) {
-            if (active) textChars += delta.length();
+            return seq;
         }
     }
 
-    /** Feed a provider-reported output-token delta for the active request. */
-    public void recordExactOutput(long outputDelta) {
-        if (outputDelta <= 0) return;
+    /** Feed streamed generated text for the current request. */
+    public void recordTextDelta(String delta) {
+        recordTextDelta(sequence(), delta);
+    }
+
+    public void recordTextDelta(long requestSeq, String delta) {
+        if (delta == null || delta.isEmpty()) return;
         synchronized (lock) {
-            if (active) exactOutput += outputDelta;
+            if (active && requestSeq == seq) textChars += delta.length();
+        }
+    }
+
+    /** Reconcile a completed model call's output usage with its text estimate. */
+    public void recordExactOutput(long outputDelta) {
+        recordExactOutput(sequence(), outputDelta);
+    }
+
+    public void recordExactOutput(long requestSeq, long outputDelta) {
+        if (outputDelta < 0) return;
+        synchronized (lock) {
+            if (active && requestSeq == seq) {
+                exactOutput += outputDelta;
+                textChars = 0;
+            }
+        }
+    }
+
+    /** Preserve a failed stream's text estimate and provider-reported lower bound. */
+    public void recordIncompleteOutput(long requestSeq, long outputLowerBound) {
+        synchronized (lock) {
+            if (active && requestSeq == seq) {
+                incompleteOutput += Math.max(Math.max(0, outputLowerBound),
+                        textChars / ESTIMATED_CHARS_PER_TOKEN);
+                textChars = 0;
+            }
         }
     }
 
@@ -108,9 +138,9 @@ public final class ForegroundRequestProgress {
             if (!active) return Snapshot.inactive();
             long now = clockMillis.getAsLong();
             long estimated = textChars / ESTIMATED_CHARS_PER_TOKEN;
-            boolean estimate = estimated > exactOutput;
+            boolean estimate = textChars > 0 || incompleteOutput > 0;
             return new Snapshot(true, word, Math.max(0, now - startMillis),
-                    Math.max(exactOutput, estimated), estimate);
+                    exactOutput + incompleteOutput + estimated, estimate);
         }
     }
 

@@ -18,6 +18,7 @@ package ai.kompile.core.loaders;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Contract for loaders that deliver original files (PDF, Office exports, images, ...) for
@@ -37,4 +38,18 @@ public interface FileDownloadingLoader {
      */
     List<Path> downloadTo(DocumentSourceDescriptor sourceDescriptor, Path destination)
             throws Exception;
+
+    /**
+     * Same as {@link #downloadTo(DocumentSourceDescriptor, Path)}, but reports each per-file
+     * failure message to {@code warnings} instead of only logging it, so a caller materializing
+     * a snapshot can surface partial failures to the user. The default delegates to the two-arg
+     * method, so existing implementations keep compiling unchanged; file-backed loaders override
+     * this to route their per-file catch blocks to {@code warnings} and to fail with the first
+     * failure when every file fails.
+     */
+    default List<Path> downloadTo(
+            DocumentSourceDescriptor sourceDescriptor, Path destination, Consumer<String> warnings)
+            throws Exception {
+        return downloadTo(sourceDescriptor, destination);
+    }
 }

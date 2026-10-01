@@ -9,11 +9,6 @@ import ai.kompile.channel.api.ChannelCredentialView;
 import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.app.AppClientMixin;
-import ai.kompile.cli.main.auth.CredentialStore;
-import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
-import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
-import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
-import ai.kompile.cli.main.auth.channel.ChannelControlPlaneClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -46,6 +41,7 @@ import java.util.concurrent.Callable;
         description = "Manage authenticated source and note-sync integrations.",
         subcommands = {
                 CommandLine.HelpCommand.class,
+                ErpAuthCommand.class,
                 AuthSourceCommand.Providers.class,
                 AuthSourceCommand.WebLogin.class,
                 AuthSourceCommand.OAuthStatus.class,
@@ -421,25 +417,21 @@ public final class AuthSourceCommand implements Callable<Integer> {
         List<String> secretStdin = new ArrayList<>();
 
         /**
+         * Credential logic (OAuth provider/metadata-key mapping, channel-connection bridging,
+         * local-store-then-control-plane token fill) lives in {@link SourceCredentialResolver},
+         * shared with the folder-local crawl registry's stored-credential resolution; this
+         * command delegates to it with no behavior change.
+         */
+        private final SourceCredentialResolver credentialResolver = new SourceCredentialResolver();
+
+        /**
          * Runtime credential bridge: resolves secrets plus non-secret connection settings from a
          * named channel connection (routed control plane) and maps them onto the loader contract
          * of the requested source type. Explicit --set / --secret-* values win because they are
          * applied afterwards.
          */
         private Map<String, Object> bridgeChannelCredentials(String type) {
-            if (fromChannelConnection == null || fromChannelConnection.isBlank()) {
-                return Map.of();
-            }
-            String name = fromChannelConnection.trim();
-            try {
-                ChannelControlPlaneClient channels = new ChannelControlPlaneClient("");
-                return mappedChannelCredentials(channels.credential(name), type);
-            } catch (Exception error) {
-                throw new IllegalArgumentException("Could not resolve credentials from channel connection '"
-                        + name + "': "
-                        + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()),
-                        error);
-            }
+            return credentialResolver.channelCredentials(fromChannelConnection, type);
         }
 
         /**
@@ -450,50 +442,7 @@ public final class AuthSourceCommand implements Callable<Integer> {
          * --secret-* input still wins because it is applied afterwards.
          */
         private void fillOAuthAccessToken(String type, Map<String, Object> bridged) {
-            String provider = oauthProviderFor(type);
-            if (provider == null) {
-                return;
-            }
-            // EMAIL/IMAP/POP3 use the token only with an explicit XOAUTH2 authMode.
-            if (type.equals("EMAIL") || type.equals("IMAP") || type.equals("POP3")) {
-                Object authMode = properties.get("authMode");
-                if (authMode == null || !authMode.toString().startsWith("OAUTH2")) {
-                    return;
-                }
-            }
-            try {
-                OAuthCredentialManager manager = new OAuthCredentialManager(
-                        CredentialStore.create(), new OAuthProviderRegistry());
-                OAuthProviderFlow.RequestAuth auth = manager.resolve(provider);
-                if (auth != null) {
-                    bridged.put("accessToken", auth.token());
-                    ai.kompile.cli.common.auth.ManagedCredential credential =
-                            CredentialStore.create().read(provider);
-                    for (String key : oauthMetadataKeysFor(type)) {
-                        Object value = credential == null ? null : credential.getMetadata(key);
-                        if (value instanceof String text && !text.isBlank()) {
-                            bridged.putIfAbsent(key, text);
-                        }
-                    }
-                    return;
-                }
-            } catch (Exception ignoredLocal) {
-                // No locally stored credential (or refresh failed); fall through to the app.
-            }
-            try {
-                SourceControlPlaneClient sources = new SourceControlPlaneClient(
-                        KompileHttpClient.routed());
-                JsonNode credential = sources.oauthCredential(provider);
-                if (credential.path("hasToken").asBoolean(false)) {
-                    bridged.put("accessToken", credential.path("accessToken").asText());
-                }
-                // hasToken=false: leave credentials empty so the loader's own
-                // "requires a connected Google OAuth account" error surfaces verbatim.
-            } catch (Exception ignored) {
-                // Control plane unreachable or not authenticated: local crawls still work when
-                // the user supplies explicit secrets; connectivity errors must not turn into
-                // spurious bridge failures for types that may not need OAuth at all.
-            }
+            credentialResolver.fillOAuthAccessToken(type, bridged, properties);
         }
 
         @Override public Integer call() {
@@ -775,58 +724,12 @@ public final class AuthSourceCommand implements Callable<Integer> {
      * Runtime credential bridge: resolves secrets plus non-secret connection settings from a named
      * channel connection and maps them onto the loader contract of the requested source type.
      * Explicit --set / --secret-* values always win because they are applied afterwards.
+     *
+     * <p>Delegates to {@link SourceCredentialResolver#mappedChannelCredentials}, shared with the
+     * folder-local crawl registry: no behavior change.
      */
     static Map<String, Object> mappedChannelCredentials(ChannelCredentialView credential, String type) {
-        String provider = credential.providerId();
-        Map<String, String> secrets = credential.secrets();
-        Map<String, Object> settings = credential.properties();
-        Map<String, Object> mapped = new LinkedHashMap<>();
-        switch (provider) {
-            case "slack" -> {
-                requireSupported(type, "SLACK", "SLACK_HISTORY");
-                copyIfPresent(secrets, "botToken", mapped, "slackToken");
-            }
-            case "discord" -> {
-                requireSupported(type, "DISCORD", "DISCORD_HISTORY");
-                copyIfPresent(secrets, "botToken", mapped, "botToken");
-            }
-            case "email" -> {
-                requireSupported(type, "EMAIL", "IMAP", "POP3");
-                copyIfPresent(secrets, "password", mapped, "password");
-                copyIfPresent(settings, "username", mapped, "username");
-                copyIfPresent(settings, "imapHost", mapped, "host");
-                copyIfPresent(settings, "imapPort", mapped, "port");
-                if (settings.containsKey("smtpHost") && !mapped.containsKey("host")) {
-                    copyIfPresent(settings, "smtpHost", mapped, "host");
-                }
-            }
-            default -> throw new IllegalArgumentException(
-                    "Channel provider '" + provider
-                            + "' has no crawl credential mapping (supported: slack, discord, email)");
-        }
-        if (mapped.isEmpty()) {
-            throw new IllegalArgumentException("Channel connection has no runtime credential for " + type);
-        }
-        return Map.copyOf(mapped);
-    }
-
-    private static void requireSupported(String type, String... supported) {
-        for (String candidate : supported) {
-            if (candidate.equals(type)) return;
-        }
-        throw new IllegalArgumentException("Source type " + type
-                + " does not match the channel connection provider (expected one of "
-                + String.join(", ", supported) + ")");
-    }
-
-    private static void copyIfPresent(
-            Map<String, ?> source, String from, Map<String, Object> target, String to) {
-        Object value = source.get(from);
-        if (value instanceof String text) {
-            if (!text.isBlank()) target.put(to, text.trim());
-        } else if (value != null) {
-            target.put(to, value);
-        }
+        return SourceCredentialResolver.mappedChannelCredentials(credential, type);
     }
 
     /**
@@ -835,25 +738,20 @@ public final class AuthSourceCommand implements Callable<Integer> {
      * crawls can bridge the locally connected token. Gmail/M365 mail presets are also honored
      * by the IMAP loader via the same accessToken key. Jira/Confluence additionally copy the
      * Atlassian cloudId from credential metadata when present.
+     *
+     * <p>Delegates to {@link SourceCredentialResolver#oauthProviderFor}: no behavior change.
      */
     static String oauthProviderFor(String sourceType) {
-        return switch (sourceType) {
-            case "GMAIL", "GDOCS", "GDRIVE", "GOOGLE_WORKSPACE" -> "google";
-            case "ONEDRIVE" -> "microsoft";
-            case "EMAIL", "IMAP", "POP3" -> "google"; // XOAUTH2 for Gmail-hosted mailboxes
-            case "NOTION" -> "notion";
-            case "REDDIT" -> "reddit";
-            case "JIRA", "CONFLUENCE" -> "atlassian";
-            default -> null;
-        };
+        return SourceCredentialResolver.oauthProviderFor(sourceType);
     }
 
-    /** Credential metadata keys copied into crawl properties alongside accessToken. */
-    static java.util.List<String> oauthMetadataKeysFor(String sourceType) {
-        return switch (sourceType) {
-            case "JIRA", "CONFLUENCE" -> java.util.List.of("cloudId");
-            default -> java.util.List.of();
-        };
+    /**
+     * Credential metadata keys copied into crawl properties alongside accessToken.
+     *
+     * <p>Delegates to {@link SourceCredentialResolver#oauthMetadataKeysFor}: no behavior change.
+     */
+    static List<String> oauthMetadataKeysFor(String sourceType) {
+        return SourceCredentialResolver.oauthMetadataKeysFor(sourceType);
     }
 
     private static String syncProvider(String provider) {
@@ -912,20 +810,9 @@ public final class AuthSourceCommand implements Callable<Integer> {
         return Map.copyOf(result);
     }
 
+    /** Delegates to {@link SourceCredentialResolver#sourceSecretFields}: no behavior change. */
     static Set<String> sourceSecretFields(String sourceType) {
-        return switch (sourceType) {
-            case "DISCORD", "DISCORD_HISTORY" -> Set.of("botToken");
-            case "SLACK", "SLACK_HISTORY" -> Set.of("slackToken");
-            case "CONFLUENCE" -> Set.of("apiToken", "accessToken");
-            case "JIRA" -> Set.of("apiToken", "accessToken");
-            case "REDDIT" -> Set.of("accessToken");
-            case "NOTION" -> Set.of("apiToken", "accessToken");
-            case "EMAIL", "IMAP", "POP3" -> Set.of("password", "accessToken");
-            case "SFTP", "SMB", "SQL" -> Set.of("password");
-            case "GMAIL", "GDOCS", "GDRIVE", "GOOGLE_WORKSPACE", "ONEDRIVE" -> Set.of("accessToken");
-            case "S3" -> Set.of("accessKey", "secretKey");
-            default -> Set.of();
-        };
+        return SourceCredentialResolver.sourceSecretFields(sourceType);
     }
 
     private static void requireAllowedSecret(Set<String> allowed, String name) {
@@ -944,12 +831,9 @@ public final class AuthSourceCommand implements Callable<Integer> {
         }
     }
 
+    /** Delegates to {@link SourceCredentialResolver#isSensitiveProperty}: no behavior change. */
     private static boolean isSensitiveProperty(String name) {
-        String normalized = name == null ? ""
-                : name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
-        return normalized.endsWith("password") || normalized.endsWith("token")
-                || normalized.endsWith("secret") || normalized.equals("accesskey")
-                || normalized.equals("secretkey") || normalized.equals("apikey");
+        return SourceCredentialResolver.isSensitiveProperty(name);
     }
 
     static Object parsePropertyValue(String raw) {

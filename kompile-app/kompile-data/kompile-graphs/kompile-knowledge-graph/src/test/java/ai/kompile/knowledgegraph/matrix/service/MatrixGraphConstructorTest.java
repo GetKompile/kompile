@@ -44,7 +44,6 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 
 import java.io.IOException;
-import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -108,7 +107,7 @@ class MatrixGraphConstructorTest {
                 ]
                 """;
 
-        assertFalse(isAgentErrorResponse(response));
+        assertFalse(constructor.isAgentErrorResponse(response));
     }
 
     @Test
@@ -117,13 +116,7 @@ class MatrixGraphConstructorTest {
         String response = "Warning: Basic terminal detected. Error when talking to Gemini API "
                 + "TerminalQuotaError: You have exhausted your capacity on this model.";
 
-        assertTrue(isAgentErrorResponse(response));
-    }
-
-    private boolean isAgentErrorResponse(String response) throws Exception {
-        Method method = MatrixGraphConstructor.class.getDeclaredMethod("isAgentErrorResponse", String.class);
-        method.setAccessible(true);
-        return (boolean) method.invoke(constructor, response);
+        assertTrue(constructor.isAgentErrorResponse(response));
     }
 
     // ── constructGraphFromDocs — basic entity/relationship extraction ──────────

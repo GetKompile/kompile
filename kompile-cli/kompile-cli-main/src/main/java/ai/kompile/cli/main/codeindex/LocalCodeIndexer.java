@@ -209,18 +209,34 @@ public class LocalCodeIndexer {
     }
 
     /**
-     * Index a directory with optional force re-index.
+     * Index a directory with optional force re-index. The patterns are an
+     * explicit scope request: the index records them as its scope.
      */
     public IndexResult index(Path rootDir, String projectId, String includes,
                              String excludes, boolean forceReindex,
                              PrintStream out) throws IOException {
+        return index(rootDir, projectId, includes, excludes, forceReindex, false, out);
+    }
+
+    /**
+     * Incremental maintenance pass within the scope the index's metadata
+     * records. The scope is read under the index write lock, so a scope another
+     * process recorded since this one last looked is the scope this pass keeps;
+     * only an explicit {@link #index} request changes it. Unreadable metadata
+     * rebuilds with the default scope.
+     */
+    public IndexResult refreshRecordedScope(Path rootDir, String projectId,
+                                            PrintStream out) throws IOException {
+        return index(rootDir, projectId, null, null, false, true, out);
+    }
+
+    private IndexResult index(Path rootDir, String projectId, String includes,
+                              String excludes, boolean forceReindex, boolean recordedScope,
+                              PrintStream out) throws IOException {
         Path absRoot = rootDir.toAbsolutePath().normalize();
         if (!Files.isDirectory(absRoot)) {
             throw new IOException("Not a directory: " + absRoot);
         }
-
-        Set<String> includeSet = parsePatterns(includes);
-        Set<String> excludeSet = parsePatterns(excludes);
 
         Path indexDir = getIndexDir(projectId);
         Files.createDirectories(indexDir);
@@ -238,22 +254,44 @@ public class LocalCodeIndexer {
                 migrateFromLegacy(store, projectId, absRoot, out);
                 out.println("Migration complete.");
             }
-            Map<String, Object> priorMetadata = store.loadMetadata();
+            // A crash can leave the JSON state empty. Read such a file as missing and rebuild:
+            // stale fingerprints would hide deleted files, and the full pass rewrites both.
+            List<String> unreadableState = new ArrayList<>();
+            Map<String, Object> priorMetadata;
+            try {
+                priorMetadata = store.loadMetadata();
+            } catch (IndexFileStore.UnreadableIndexStateException torn) {
+                priorMetadata = new LinkedHashMap<>();
+                unreadableState.add(IndexFileStore.METADATA_FILE);
+            }
+            // Read under the write lock, the recorded scope includes any explicit change
+            // another process committed since this one last looked at the index.
+            String scopeIncludes = recordedScope ? stringMetadata(priorMetadata.get("includePatterns")) : includes;
+            String scopeExcludes = recordedScope ? stringMetadata(priorMetadata.get("excludePatterns")) : excludes;
+            Set<String> includeSet = parsePatterns(scopeIncludes);
+            Set<String> excludeSet = parsePatterns(scopeExcludes);
+            Map<String, IndexFileStore.FileFingerprint> oldFingerprints;
+            try {
+                oldFingerprints = store.loadFingerprints();
+            } catch (IndexFileStore.UnreadableIndexStateException torn) {
+                oldFingerprints = new LinkedHashMap<>();
+                unreadableState.add(IndexFileStore.FINGERPRINTS_FILE);
+            }
             // The periodic background pass must check the DB even when source fingerprints are clean.
             // A marker survives crashes between SQLite commit and JSON publication.
-            Path pendingUpdate = indexDir.resolve("update.pending");
             IndexMaintenance.Result maintenance = IndexMaintenance.checkLocked(indexDir, priorMetadata, forceReindex);
-            forceReindex |= maintenance.reindexRequired() || Files.exists(pendingUpdate);
+            forceReindex |= maintenance.reindexRequired() || store.hasPendingUpdate() || !unreadableState.isEmpty();
             // Unchanged file fingerprints cannot validate relationships produced by an older parser.
             forceReindex |= !Integer.valueOf(RELATION_EXTRACTION_VERSION)
                     .equals(priorMetadata.get("relationExtractionVersion"));
 
             out.println("Indexing: " + absRoot + (forceReindex ? " (full re-index)" : " (incremental)"));
             out.println("Project: " + projectId);
-
-            // Load existing fingerprints
-            Map<String, IndexFileStore.FileFingerprint> oldFingerprints =
-                    store.loadFingerprints();
+            if (!unreadableState.isEmpty()) {
+                String torn = String.join(" and ", unreadableState) + " empty or unreadable (interrupted write)";
+                out.println("  Rebuilding: " + torn);
+                CodeIndexDiagnostics.alert("[code-index] " + indexDir + ": " + torn + "; rebuilding the index from source");
+            }
 
             // Collect current source files (walk captures mtime+size — no re-stat later)
             List<SourceFile> sourceFiles = collectSourceFiles(absRoot, includeSet, excludeSet);
@@ -310,8 +348,8 @@ public class LocalCodeIndexer {
             if (!forceReindex && toReparse.isEmpty() && deleted.isEmpty()) {
                 Map<String, Object> priorMeta = priorMetadata;
                 if (!priorMeta.isEmpty()) {
-                    String requestedIncludes = includes == null || includes.isBlank() ? null : includes;
-                    String requestedExcludes = excludes == null || excludes.isBlank() ? null : excludes;
+                    String requestedIncludes = scopeIncludes == null || scopeIncludes.isBlank() ? null : scopeIncludes;
+                    String requestedExcludes = scopeExcludes == null || scopeExcludes.isBlank() ? null : scopeExcludes;
                     boolean scopeChanged = !Objects.equals(requestedIncludes,
                             stringMetadata(priorMeta.get("includePatterns")))
                             || !Objects.equals(requestedExcludes,
@@ -424,7 +462,7 @@ public class LocalCodeIndexer {
             // running as strict phases, and peak memory stays bounded by the
             // in-flight files instead of the whole change set.
             List<String> writtenPaths = new ArrayList<>(toReparse.size());
-            Files.writeString(pendingUpdate, indexTimestamp);
+            store.markUpdatePending(indexTimestamp);
             try (IndexDatabase db = IndexDatabase.open(indexDir)) {
                 db.beginTransaction();
                 try {
@@ -554,10 +592,10 @@ public class LocalCodeIndexer {
             metadata.put("filesDeleted", deleted.size());
             metadata.put("filesReindexed", successfulReindexed);
             metadata.put("relationExtractionVersion", RELATION_EXTRACTION_VERSION);
-            if (includes != null && !includes.isBlank()) metadata.put("includePatterns", includes);
-            if (excludes != null && !excludes.isBlank()) metadata.put("excludePatterns", excludes);
+            if (scopeIncludes != null && !scopeIncludes.isBlank()) metadata.put("includePatterns", scopeIncludes);
+            if (scopeExcludes != null && !scopeExcludes.isBlank()) metadata.put("excludePatterns", scopeExcludes);
             store.saveMetadata(metadata);
-            Files.deleteIfExists(pendingUpdate);
+            store.clearUpdatePending();
             if (forceReindex) IndexMaintenance.invalidate(indexDir);
 
             out.println("  Processed " + toReparse.size() + " files, " +
@@ -661,15 +699,10 @@ public class LocalCodeIndexer {
 
     /**
      * Create a file watcher for this project that triggers incremental
-     * re-indexing when source files change.
+     * re-indexing, within the scope the index records, when source files change.
      */
     public IndexFileWatcher createWatcher(Path rootDir, String projectId, PrintStream out) {
         return new IndexFileWatcher(rootDir, projectId, this, out);
-    }
-
-    public IndexFileWatcher createWatcher(Path rootDir, String projectId,
-                                          String includes, String excludes, PrintStream out) {
-        return new IndexFileWatcher(rootDir, projectId, this, includes, excludes, out);
     }
 
     // -----------------------------------------------------------------------

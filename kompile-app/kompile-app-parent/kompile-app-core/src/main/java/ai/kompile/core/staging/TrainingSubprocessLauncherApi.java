@@ -17,8 +17,11 @@ package ai.kompile.core.staging;
 
 /**
  * API surface for the training subprocess launcher, used by kompile-app-main
- * to query job status without depending on the full staging implementation.
+ * to query and cancel jobs without depending on the full staging implementation.
  */
 public interface TrainingSubprocessLauncherApi {
     TrainingJobStatus getJobStatus(String jobId);
+
+    /** Stops a running training subprocess; false when it isn't running. */
+    boolean cancelTraining(String jobId);
 }

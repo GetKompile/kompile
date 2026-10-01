@@ -23,7 +23,6 @@ import ai.kompile.graph.reasoning.mebn.RandomVariable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -74,11 +73,9 @@ class MebnWeightPersistenceAdapterTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private MebnWeightPersistenceAdapter adapterFor(String dataDirPath) throws Exception {
+    private MebnWeightPersistenceAdapter adapterFor(String dataDirPath) {
         MebnWeightPersistenceAdapter adapter = new MebnWeightPersistenceAdapter();
-        Field f = MebnWeightPersistenceAdapter.class.getDeclaredField("dataDir");
-        f.setAccessible(true);
-        f.set(adapter, dataDirPath);
+        adapter.dataDir = dataDirPath;
         return adapter;
     }
 

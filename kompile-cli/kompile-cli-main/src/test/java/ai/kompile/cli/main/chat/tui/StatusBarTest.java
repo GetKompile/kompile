@@ -2,6 +2,8 @@ package ai.kompile.cli.main.chat.tui;
 
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
 import ai.kompile.cli.main.chat.ChatCompleter;
+import ai.kompile.cli.main.chat.ChatUiSession;
+import ai.kompile.cli.main.chat.ForegroundRequestProgress;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.utils.AnsiConstants;
@@ -18,6 +20,9 @@ class StatusBarTest {
 
     @AfterEach
     void clearActivity() {
+        // Close any progress window leaked by a failing assertion above:
+        // the legacy session is JVM-wide static state shared by every test here.
+        ChatUiSession.current().progress().finishAll();
         ChatCompleter.setActivity(null);
     }
 
@@ -174,6 +179,32 @@ class StatusBarTest {
             assertEquals("Assistant › first response", resumed.getTranscript());
             assertEquals("starting follow-up", resumed.getStatus());
         } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void legacySessionRendersProgressTailForActiveRequest() {
+        BackgroundProcessManager processes = new BackgroundProcessManager("status-bar-legacy-progress-test");
+        try {
+            StatusBar bar = new StatusBar(
+                    new BackgroundTaskManager(), processes, null, new TerminalRenderer(true));
+            ChatUiSession legacy = ChatUiSession.current();
+            ForegroundRequestProgress progress = legacy.progress();
+            progress.setWordSupplier(() -> "Kompiling");
+
+            progress.begin();
+            progress.recordTextDelta("x".repeat(240)); // 60 est tokens
+            ChatCompleter.setActivity("Thinking");
+
+            // The working word replaces the bare "Thinking" label while active.
+            String rendered = AnsiConstants.stripAnsi(bar.buildStatusContent(200));
+            assertTrue(rendered.contains("Kompiling"), rendered);
+            assertTrue(rendered.contains("~60"), rendered);
+            assertTrue(rendered.contains("tokens"), rendered);
+        } finally {
+            ChatUiSession.current().progress().finishAll();
+            ChatCompleter.setActivity(null);
             processes.close();
         }
     }

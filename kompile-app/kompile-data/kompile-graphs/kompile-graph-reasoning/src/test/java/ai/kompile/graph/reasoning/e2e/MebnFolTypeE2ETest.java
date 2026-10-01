@@ -81,7 +81,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       in the lib; the record constructor path covers structure/accessors adequately.</li>
  * </ul>
  */
-class MebnFolTypeE2ETest {
+public class MebnFolTypeE2ETest {
 
     // ─── shared helpers ────────────────────────────────────────────────────────────
 
@@ -101,7 +101,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("TypeHierarchy.fromGraph groups entities by type() — computed from UnifiedGraph")
-    void typeHierarchyMembershipFromUnifiedGraph() {
+    public void typeHierarchyMembershipFromUnifiedGraph() {
         UnifiedGraph g = new UnifiedGraph();
         g.addEntity("alice", "Person", "Alice");
         g.addEntity("bob",   "Person", "Bob");
@@ -127,7 +127,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("TypeRegistry isA: reflexive, transitive (Entity⊃Person⊃Employee), asymmetric")
-    void typeRegistryIsATransitiveAndAsymmetric() {
+    public void typeRegistryIsATransitiveAndAsymmetric() {
         // Hierarchy: Entity ← Person ← Employee
         TypeRegistry registry = new TypeRegistry()
                 .declare("Entity")
@@ -182,7 +182,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("entitiesOfType(type, true) includes subtype members; false returns only exact-type members")
-    void typeHierarchySubtypeEntityInclusion() {
+    public void typeHierarchySubtypeEntityInclusion() {
         TypeRegistry registry = new TypeRegistry()
                 .declare("Entity")
                 .declare("Person")
@@ -225,7 +225,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("RelationalMTheoryBuilder produces correct MFrag structure for one relation")
-    void relationalMTheoryBuilderFragmentStructure() {
+    public void relationalMTheoryBuilderFragmentStructure() {
         List<RelationDescriptor> rels = List.of(
                 new RelationDescriptor("KNOWS", "Person", "Person", 0.65,
                         List.of("alice", "bob"), List.of("alice", "bob")));
@@ -286,7 +286,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("SSBNGenerator produces BN nodes for entities and edges present in the graph")
-    void ssbNGroundingWithRelationalMTheoryYieldsBnNodes() {
+    public void ssbNGroundingWithRelationalMTheoryYieldsBnNodes() {
         // Graph: alice (Person) → bob (Person) via KNOWS
         MutableReasoningGraph g = smallGraph();
 
@@ -333,7 +333,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("InferredFactMaterializer: binary atoms → relations, unary atoms → attributes; INFERRED tag applied")
-    void inferredFactMaterializationBinaryAndUnary() {
+    public void inferredFactMaterializationBinaryAndUnary() {
         MutableReasoningGraph g = new MutableReasoningGraph();
         // pre-existing entity to verify non-clobber on upsert
         g.addEntity(GraphEntity.builder("alice").type("Person").label("Alice")
@@ -399,7 +399,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("RecursiveQueryEngine derives full transitive closure for a 3-hop chain a→b→c→d")
-    void recursiveQueryEngineTransitiveClosureThreeHop() {
+    public void recursiveQueryEngineTransitiveClosureThreeHop() {
         // EDB: edge(a,b), edge(b,c), edge(c,d)
         Map<String, List<List<String>>> edb = new HashMap<>();
         edb.put("edge", List.of(
@@ -460,7 +460,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("DerivationTree record: isLeaf, allAtomKeys, JSON serialization structure")
-    void derivationTreeConstructionAndAccessors() {
+    public void derivationTreeConstructionAndAccessors() {
         // Leaf nodes (observed facts, no children)
         DerivationTree leaf1 = new DerivationTree("Causes(a, b)", 0.9, null, "run-1", List.of());
         DerivationTree leaf2 = new DerivationTree("Causes(b, c)", 0.8, null, "run-1", List.of());
@@ -506,7 +506,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("MebnWeightLearner.learn reduces SSE toward target observations over 5 epochs")
-    void mebnWeightLearnerReducesSSE() {
+    public void mebnWeightLearnerReducesSSE() {
         MutableReasoningGraph g = new MutableReasoningGraph();
         g.addEntity(GraphEntity.builder("alice").type("Person").label("Alice").build());
         g.addEntity(GraphEntity.builder("bob").type("Person").label("Bob").build());
@@ -549,7 +549,7 @@ class MebnFolTypeE2ETest {
 
     @Test
     @DisplayName("UnifiedGraph round-trip: MTheory + TypeRegistry survive save→load; isA results match")
-    void modelPersistenceRoundTripPreservesReasoningFidelity() throws IOException {
+    public void modelPersistenceRoundTripPreservesReasoningFidelity() throws IOException {
         // ── Build the MTheory ─────────────────────────────────────────────────────
         List<RelationDescriptor> rels = List.of(
                 new RelationDescriptor("EMPLOYS", "Org", "Person", 0.8,

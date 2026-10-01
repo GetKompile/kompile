@@ -77,6 +77,12 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
 
     protected final Logger log = LoggerFactory.getLogger(getClass());
 
+    /**
+     * How long {@link #stop} waits for what a stopped child wrote on its way out to be read. Bounded,
+     * because a grandchild that inherited the pipes can hold them open.
+     */
+    static final long STOP_OUTPUT_DRAIN_MS = 2_000L;
+
     @Autowired(required = false)
     protected SubprocessRegistry subprocessRegistry;
 
@@ -84,14 +90,17 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
     protected SubprocessLogBus logBus;
 
     /** In-flight runs keyed by runId, so {@link #requestRestart}/{@link #stopAll} can reach them. */
-    private final ConcurrentHashMap<String, ManagedRun> activeRuns = new ConcurrentHashMap<>();
+    protected final ConcurrentHashMap<String, ManagedRun> activeRuns = new ConcurrentHashMap<>();
 
     /** Set when shutdown has begun; prevents requestRestart from spawning new threads after shutdown. */
     private final java.util.concurrent.atomic.AtomicBoolean shutdownStarted = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     // ── abstract / overridable configuration ──────────────────────────────────
 
-    /** Stable subprocess id, also the registry + restart-handler key (e.g. {@code "embedding"}). */
+    /**
+     * Stable subprocess id (e.g. {@code "embedding"}). {@link #startProcess} registers each run as
+     * {@code <id>-<runId>}, bound to a handler that restarts only that run.
+     */
     @Override
     public abstract String getSubprocessId();
 
@@ -111,8 +120,10 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
 
     /**
      * Prefix marking a structured-protocol line on the child's stdout
-     * (e.g. {@code "LEARNING_MSG:"}). When a stdout line starts with this, it is routed
-     * to the {@link StructuredLineHandler} instead of being published as a log line.
+     * (e.g. {@code "LEARNING_MSG:"}). When a stdout line carries this, the text after it is routed
+     * to the {@link StructuredLineHandler} instead of being published as a log line, and any native
+     * output in front of it on that line is published as a log line of its own. The child writes these
+     * lines to the stream {@link SubprocessProtocolChannel#open} gives it.
      * {@code null}/blank ⇒ the subprocess has no structured protocol; all stdout is logs.
      */
     protected String getStructuredMessagePrefix() {
@@ -418,46 +429,116 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
      */
     protected ManagedRun startProcess(String runId, String jobId, List<String> programArgs,
                                       StructuredLineHandler structuredHandler) throws IOException {
+        if (shutdownStarted.get()) {
+            throw new IllegalStateException("Subprocess '" + getSubprocessId() + "' launcher is shutting down");
+        }
         List<String> cmd = buildJvmCommand(programArgs);
         log.debug("[{}] launching: {}", getSubprocessId(), cmd);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(false); // keep stderr separate so we can stream it distinctly
         configureEnvironment(pb.environment());
+        String prefix = getStructuredMessagePrefix();
+        boolean wrapped = false;
+        if (prefix != null && !prefix.isBlank()) {
+            // Structured lines get a pipe of their own, which native output written to fd 1 can't reach
+            wrapped = SubprocessProtocolChannel.apply(pb);
+        } else {
+            pb.environment().remove(SubprocessProtocolChannel.ENV_PROTOCOL_FD);
+        }
         Process process = pb.start();
 
         String registryId = getSubprocessId() + "-" + runId;
-        if (subprocessRegistry != null) {
-            subprocessRegistry.register(registryId, process, getTypeLabel());
-            subprocessRegistry.registerRestartHandler(getSubprocessId(), this);
-        }
-
         ManagedRun run = new ManagedRun(runId, jobId, registryId, process);
-        activeRuns.put(runId, run);
-        publishLifecycle(runId, jobId, "Subprocess '" + getSubprocessId() + "' started (PID "
-                + process.pid() + ", heap " + getHeapMb() + "MB)");
+        try {
+            if (subprocessRegistry != null) {
+                // The RSS watchdog looks a handler up by the registry id, and restarts only the run it names
+                subprocessRegistry.register(registryId, process, getTypeLabel(), new RunRestartHandler(runId));
+            }
+            activeRuns.put(runId, run);
+            // Shutdown may have taken its snapshot of the active runs before this one joined them
+            if (shutdownStarted.get()) {
+                throw new IllegalStateException("Subprocess '" + getSubprocessId() + "' launcher is shutting down");
+            }
+            publishLifecycle(runId, jobId, "Subprocess '" + getSubprocessId() + "' started (PID "
+                    + process.pid() + ", heap " + getHeapMb() + "MB)");
 
-        run.stdoutThread = drain(process.getInputStream(), runId, jobId,
-                SubprocessLogEvent.Stream.STDOUT, structuredHandler, getSubprocessId() + "-stdout-" + runId);
-        run.stderrThread = drain(process.getErrorStream(), runId, jobId,
-                SubprocessLogEvent.Stream.STDERR, null, getSubprocessId() + "-stderr-" + runId);
+            run.stdoutThread = drain(process.getInputStream(), runId, jobId,
+                    SubprocessLogEvent.Stream.STDOUT, structuredHandler, null, getSubprocessId() + "-stdout-" + runId);
+            run.stderrThread = drain(process.getErrorStream(), runId, jobId,
+                    SubprocessLogEvent.Stream.STDERR, structuredHandler,
+                    SubprocessProtocolChannel.stderrProtocol(wrapped, prefix, getSubprocessId() + "-" + runId),
+                    getSubprocessId() + "-stderr-" + runId);
+        } catch (RuntimeException | Error e) {
+            // The caller gets no handle to this child, so nothing else would ever stop it
+            activeRuns.remove(runId, run);
+            process.destroyForcibly();
+            if (subprocessRegistry != null) {
+                subprocessRegistry.deregister(registryId);
+            }
+            throw e;
+        }
         return run;
     }
 
+    /**
+     * Wait until a run's output has been read to its end. A child can exit before its last
+     * structured line is read, so judge an exit only after this. Bounded, because a grandchild
+     * that inherited the pipes can hold them open after the child is gone.
+     *
+     * @return {@code false} if a reader was still reading at the deadline
+     */
+    protected boolean awaitOutputDrained(ManagedRun run, long timeoutMs) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
+        try {
+            for (Thread reader : new Thread[]{run.stdoutThread, run.stderrThread}) {
+                if (reader == null || reader == Thread.currentThread()) {
+                    continue;
+                }
+                long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                if (remainingMs > 0) {
+                    reader.join(remainingMs);
+                }
+                if (reader.isAlive()) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /**
+     * @param stderrProtocol for the stderr reader: finds the structured lines of a wrapped child that writes
+     *                       them to fd 1 ({@link SubprocessProtocolChannel.StderrProtocol}); {@code null} for stdout
+     */
     private Thread drain(InputStream stream, String runId, String jobId,
                          SubprocessLogEvent.Stream origin, StructuredLineHandler structuredHandler,
-                         String threadName) {
+                         SubprocessProtocolChannel.StderrProtocol stderrProtocol, String threadName) {
         String prefix = getStructuredMessagePrefix();
         Thread t = new Thread(() -> {
             try (BufferedReader br = new BufferedReader(
                     new InputStreamReader(stream, StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = br.readLine()) != null) {
-                    if (origin == SubprocessLogEvent.Stream.STDOUT
-                            && prefix != null && !prefix.isBlank() && line.startsWith(prefix)) {
+                    // libnd4j logs with printf straight to fd 1, beneath the child's System.setOut redirect, so a
+                    // native message without a newline can precede a structured line on the same line
+                    int prefixAt;
+                    if (origin == SubprocessLogEvent.Stream.STDOUT) {
+                        prefixAt = prefix != null && !prefix.isBlank() ? line.indexOf(prefix) : -1;
+                    } else {
+                        prefixAt = stderrProtocol != null ? stderrProtocol.prefixIndex(line) : -1;
+                    }
+                    if (prefixAt > 0) {
+                        String nativeText = line.substring(0, prefixAt);
+                        publishLog(runId, jobId, origin, inferLevel(nativeText), nativeText);
+                    }
+                    if (prefixAt >= 0) {
                         if (structuredHandler != null) {
                             try {
-                                structuredHandler.onStructured(line.substring(prefix.length()));
+                                structuredHandler.onStructured(line.substring(prefixAt + prefix.length()));
                             } catch (Exception ex) {
                                 log.debug("[{}] structured handler error: {}", getSubprocessId(), ex.toString());
                             }
@@ -488,7 +569,11 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
         }
     }
 
-    /** Forcibly stop one run. */
+    /**
+     * Forcibly stop one run: SIGTERM, then SIGKILL if it is still running 3 s later. The child is
+     * signalled through its handle, which leaves its pipes open, so what it writes on its way out is
+     * logged before the run is reported stopped. A caller that is interrupted does not wait for that.
+     */
     protected void stop(String runId, String reason) {
         ManagedRun run = activeRuns.remove(runId);
         if (run == null) {
@@ -497,15 +582,16 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
         if (run.process.isAlive()) {
             publishLifecycle(runId, run.jobId, "Stopping subprocess '" + getSubprocessId()
                     + "' (" + reason + ")");
-            run.process.destroy();
+            SubprocessSignals.terminate(run.process);
             try {
                 if (!run.process.waitFor(3, TimeUnit.SECONDS)) {
-                    run.process.destroyForcibly();
+                    SubprocessSignals.kill(run.process);
                 }
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
-                run.process.destroyForcibly();
+                SubprocessSignals.kill(run.process);
             }
+            awaitOutputDrained(run, STOP_OUTPUT_DRAIN_MS);
         }
         if (subprocessRegistry != null) {
             subprocessRegistry.deregister(run.registryId);
@@ -515,9 +601,19 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
 
     /** Forcibly stop every active run (used on shutdown / restart). */
     public void stopAll() {
+        stopAll("launcher shutdown");
+    }
+
+    /** Stop every active run, giving {@code reason} in each run's lifecycle events. */
+    protected void stopAll(String reason) {
         for (String runId : List.copyOf(activeRuns.keySet())) {
-            stop(runId, "launcher shutdown");
+            stop(runId, reason);
         }
+    }
+
+    /** Whether {@link #shutdown()} has begun. A launcher that respawns its child must stop respawning then. */
+    protected final boolean isShutdownStarted() {
+        return shutdownStarted.get();
     }
 
     @PreDestroy
@@ -549,8 +645,27 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
             }
             log.warn("[{}] restart requested: {} — destroying {} active run(s)",
                     getSubprocessId(), reason, activeRuns.size());
-            stopAll();
+            stopAll("restart: " + reason);
         }, getSubprocessId() + "-restart");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * Restart one run whose child a watchdog found over its limit. By default that run is stopped
+     * and nothing else is touched: a one-shot run's caller sees it fail, and the launcher's other
+     * runs go on. A launcher that keeps its child running overrides this to respawn it. Returns at
+     * once, like {@link #requestRestart}.
+     */
+    protected void restartRun(String runId, String reason) {
+        if (shutdownStarted.get()) {
+            log.debug("[{}] restart of run {} suppressed — launcher shutdown has started", getSubprocessId(), runId);
+            return;
+        }
+        Thread t = new Thread(() -> {
+            log.warn("[{}] restart requested for run {}: {} — stopping it", getSubprocessId(), runId, reason);
+            stop(runId, "restart: " + reason);
+        }, getSubprocessId() + "-restart-" + runId);
         t.setDaemon(true);
         t.start();
     }
@@ -615,6 +730,25 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
     @FunctionalInterface
     public interface StructuredLineHandler {
         void onStructured(String payloadJson);
+    }
+
+    /** Bound to one run's registry entry, so a restart requested there reaches only that run. */
+    private final class RunRestartHandler implements RestartableSubprocess {
+        private final String runId;
+
+        RunRestartHandler(String runId) {
+            this.runId = runId;
+        }
+
+        @Override
+        public String getSubprocessId() {
+            return ManagedSubprocessLauncher.this.getSubprocessId();
+        }
+
+        @Override
+        public void requestRestart(String reason) {
+            restartRun(runId, reason);
+        }
     }
 
     /** Handle to a started subprocess run. */

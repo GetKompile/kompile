@@ -148,6 +148,26 @@ class SystemActivityCoordinatorTest {
         }
     }
 
+    @Test
+    void releaseByProcessIsANoOpAfterClose() {
+        Path state = tempDir.resolve("system-state");
+        SystemActivityCoordinator coordinator = coordinator(state, "project-a", "session-a");
+
+        // No reserve()/attach(): ownedActivityIds stays empty, so close() takes its early-return
+        // branch and never calls withLock()/ensureStateDirectories() at all. That isolates the
+        // "closed" guard in releaseByProcess from close()'s own non-empty-ownership cleanup,
+        // which would otherwise have already deleted the activity file on its own and made the
+        // guard's removal unobservable here.
+        coordinator.close();
+
+        assertEquals(0, coordinator.releaseByProcess("proc-1"),
+                "a release that arrives after close() must be a quiet no-op");
+        assertFalse(Files.exists(state.resolve("activities")),
+                "a post-close release must not recreate the activities directory");
+        assertFalse(Files.exists(state.resolve(".activities.lock")),
+                "a post-close release must not recreate the lock file");
+    }
+
     private SystemActivityCoordinator coordinator(Path state, String project, String session) {
         return new SystemActivityCoordinator(state, tempDir.resolve(project), session,
                 JsonUtils.standardMapper(), ignored -> { });

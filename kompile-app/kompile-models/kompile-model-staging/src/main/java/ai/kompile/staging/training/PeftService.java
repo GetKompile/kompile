@@ -43,7 +43,7 @@ public class PeftService {
     private static final Logger log = LoggerFactory.getLogger(PeftService.class);
 
     @Value(StagingPropertyKeys.MODELS_DIR_VALUE)
-    private String modelsDir;
+    String modelsDir;
 
     /**
      * Get all available PEFT types with descriptions.

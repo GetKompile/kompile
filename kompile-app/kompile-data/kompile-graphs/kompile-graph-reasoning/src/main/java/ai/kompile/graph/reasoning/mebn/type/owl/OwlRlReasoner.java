@@ -23,12 +23,14 @@ import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.model.SimpleGraphRelation;
+import ai.kompile.graph.reasoning.query.PredicateNames;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -163,25 +165,27 @@ public final class OwlRlReasoner implements OwlReasoner {
         for (OwlObjectProperty prop : ontology.objectProperties().values()) {
             if (!prop.isTransitive()) continue;
             String propName = prop.localName();
+            PropertyMatcher matcher = new PropertyMatcher(prop);
             log.debug("prp-trp BFS for transitive property '{}'", propName);
 
             // For every entity that has at least one outgoing edge of this type,
             // compute the full reachable set via BFS and emit missing closure edges.
             for (var entity : graph.entities()) {
                 String sourceId = entity.id();
-                Set<String> directTargets = directTargets(graph, sourceId, propName);
+                Set<String> directTargets = directTargets(graph, sourceId, matcher);
                 if (directTargets.isEmpty()) continue;
 
-                Set<String> reachable = bfsReachable(graph, sourceId, propName);
+                // Closure edges take the graph's spelling of the property (a crawl's ANCESTOR_OF
+                // for the ontology's ancestorOf), so they line up with the edges they extend.
+                String graphSpelling = graphSpelling(graph, sourceId, matcher);
+                Set<String> reachable = bfsReachable(graph, sourceId, matcher);
                 // Emit edges for reachable nodes that are not already direct targets
                 for (String targetId : reachable) {
                     if (targetId.equals(sourceId)) continue; // skip self-loops unless reflexive
                     if (directTargets.contains(targetId)) continue; // already exists
-                    // Also skip if there is already an existing relation of this type
-                    if (hasEdgeOfType(graph, sourceId, targetId, propName)) continue;
 
                     String relId = "owl-trp-" + propName + "-" + sourceId + "-" + targetId;
-                    inferred.add(SimpleGraphRelation.directed(relId, sourceId, targetId, propName, 1.0));
+                    inferred.add(SimpleGraphRelation.directed(relId, sourceId, targetId, graphSpelling, 1.0));
                 }
             }
         }
@@ -190,11 +194,11 @@ public final class OwlRlReasoner implements OwlReasoner {
     }
 
     /**
-     * BFS from {@code startId} following only edges of {@code propType} (case-insensitive).
+     * BFS from {@code startId} following only edges that {@code matcher} accepts.
      * Returns all entities reachable from {@code startId} in one or more hops (excluding
      * {@code startId} itself unless there is a cycle back to it).
      */
-    private Set<String> bfsReachable(ReasoningGraph graph, String startId, String propType) {
+    private Set<String> bfsReachable(ReasoningGraph graph, String startId, PropertyMatcher matcher) {
         Set<String> visited = new HashSet<>();
         Deque<String> queue = new ArrayDeque<>();
         queue.add(startId);
@@ -203,7 +207,7 @@ public final class OwlRlReasoner implements OwlReasoner {
         while (!queue.isEmpty()) {
             String current = queue.poll();
             for (GraphRelation rel : graph.outgoing(current)) {
-                if (!propType.equalsIgnoreCase(rel.type())) continue;
+                if (!matcher.matches(rel.type())) continue;
                 String next = rel.targetId();
                 if (!visited.contains(next)) {
                     visited.add(next);
@@ -215,23 +219,46 @@ public final class OwlRlReasoner implements OwlReasoner {
         return visited;
     }
 
-    /** Direct targets of {@code sourceId} via edges of {@code propType}. */
-    private Set<String> directTargets(ReasoningGraph graph, String sourceId, String propType) {
+    /** Direct targets of {@code sourceId} via edges that {@code matcher} accepts. */
+    private Set<String> directTargets(ReasoningGraph graph, String sourceId, PropertyMatcher matcher) {
         Set<String> targets = new HashSet<>();
         for (GraphRelation rel : graph.outgoing(sourceId)) {
-            if (propType.equalsIgnoreCase(rel.type())) {
+            if (matcher.matches(rel.type())) {
                 targets.add(rel.targetId());
             }
         }
         return targets;
     }
 
-    /** Whether a directed edge of {@code type} already exists from {@code src} to {@code tgt}. */
-    private boolean hasEdgeOfType(ReasoningGraph graph, String src, String tgt, String type) {
-        for (GraphRelation rel : graph.outgoing(src)) {
-            if (tgt.equals(rel.targetId()) && type.equalsIgnoreCase(rel.type())) return true;
+    /** The type of {@code sourceId}'s first outgoing edge that {@code matcher} accepts. */
+    private static String graphSpelling(ReasoningGraph graph, String sourceId, PropertyMatcher matcher) {
+        for (GraphRelation rel : graph.outgoing(sourceId)) {
+            if (matcher.matches(rel.type())) return rel.type();
         }
-        return false;
+        return matcher.localName();
+    }
+
+    /**
+     * Which graph relation types name one ontology property ({@link #matchesProperty}), with the
+     * answer cached per type: a graph repeats a few types over many edges, and the BFS asks for
+     * every edge it walks.
+     */
+    private static final class PropertyMatcher {
+        private final OwlObjectProperty property;
+        private final Map<String, Boolean> matchesByType = new HashMap<>();
+
+        PropertyMatcher(OwlObjectProperty property) {
+            this.property = property;
+        }
+
+        boolean matches(String relationType) {
+            if (relationType == null) return false;
+            return matchesByType.computeIfAbsent(relationType, type -> matchesProperty(type, property));
+        }
+
+        String localName() {
+            return property.localName();
+        }
     }
 
     // ─── Working graph construction ───────────────────────────────────────────────
@@ -355,8 +382,12 @@ public final class OwlRlReasoner implements OwlReasoner {
     private void addDomainRangeTypeEntailments(ReasoningGraph graph,
                                                OwlOntology ontology,
                                                Map<String, Set<String>> candidateTypes) {
+        // A graph repeats a few relation types over many edges; resolve each type once.
+        Map<String, Set<OwlObjectProperty>> entailedByType = new HashMap<>();
         for (GraphRelation rel : graph.relations()) {
-            for (OwlObjectProperty prop : entailedProperties(rel.type(), ontology)) {
+            String type = rel.type() == null ? "" : rel.type();
+            for (OwlObjectProperty prop : entailedByType.computeIfAbsent(type,
+                    relationType -> entailedProperties(relationType, ontology))) {
                 if (prop.domainClassIri() != null) {
                     addCandidateType(candidateTypes, rel.sourceId(),
                             resolveClassIri(prop.domainClassIri(), ontology));
@@ -482,12 +513,19 @@ public final class OwlRlReasoner implements OwlReasoner {
         edges.computeIfAbsent(from, ignored -> new LinkedHashSet<>()).add(to);
     }
 
+    /**
+     * Whether a graph relation type names {@code prop}: its full IRI, or its local name in any
+     * spelling {@link PredicateNames} equates ({@code ancestorOf}, {@code ANCESTOR_OF},
+     * {@code ancestor-of}), bare or at the end of an IRI.
+     */
     private static boolean matchesProperty(String relationType, OwlObjectProperty prop) {
         if (relationType == null || relationType.isBlank()) return false;
         String normalized = relationType.trim();
-        return normalized.equals(prop.propertyIri())
-                || normalized.equalsIgnoreCase(prop.localName())
-                || rawLocalName(normalized).equalsIgnoreCase(prop.localName());
+        if (normalized.equals(prop.propertyIri())) return true;
+        String propertyKey = PredicateNames.key(prop.localName());
+        return !propertyKey.isEmpty()
+                && (propertyKey.equals(PredicateNames.key(normalized))
+                || propertyKey.equals(PredicateNames.key(rawLocalName(normalized))));
     }
 
     /**

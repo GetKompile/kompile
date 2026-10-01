@@ -14,10 +14,13 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -161,6 +164,27 @@ class WeightStoreTest {
             assertEquals(3, v3, "After restart, next version must be 3");
             assertEquals(3, storeB.latestVersion("prog"));
             assertEquals(List.of(1, 2, 3), storeB.versions("prog"));
+        }
+
+        @Test
+        @DisplayName("A programId the file name sanitizes (\"7:cascade\") keeps one version history across instances")
+        void sanitizedProgramIdContinuesAcrossInstances(@TempDir Path tmp) throws IOException {
+            FileWeightStore storeA = new FileWeightStore(tmp);
+            assertEquals(1, storeA.save("7:cascade", WEIGHTS_V1));
+            assertEquals(1, storeA.latestVersion("7_cascade"),
+                    "both spellings name the same files, so they share one history");
+            Path v1File = tmp.resolve("7_cascade.v1.json");
+            String v1Json = Files.readString(v1File);
+
+            // A fresh instance (a restart, or the learning subprocess) indexes the files by their
+            // sanitized name; the raw programId must still find them and continue after them.
+            FileWeightStore storeB = new FileWeightStore(tmp);
+            assertEquals(1, storeB.latestVersion("7:cascade"));
+            assertEquals(1.5, storeB.latest("7:cascade").orElseThrow().get("rule-A"), 1e-9);
+            assertEquals(2, storeB.save("7:cascade", WEIGHTS_V2), "the next save continues at v2");
+            assertEquals(v1Json, Files.readString(v1File), "v1 is not overwritten");
+            assertEquals(List.of(1, 2), storeB.versions("7:cascade"));
+            assertEquals(Set.of("7_cascade"), storeB.programIds());
         }
     }
 }

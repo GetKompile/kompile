@@ -17,6 +17,7 @@
 package ai.kompile.pipeline.serving.subprocess;
 
 import ai.kompile.app.config.NativeLibraryResolver;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol;
 import ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol.Message;
@@ -53,7 +54,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>This class follows the established subprocess pattern from IngestSubprocessMain
  * and TrainingSubprocessMain:</p>
  * <ol>
- *   <li>Redirect System.out to System.err so stdout remains protocol-only</li>
+ *   <li>Write protocol lines to the channel the launcher set up and redirect System.out to
+ *       System.err, so nothing else reaches the protocol stream</li>
  *   <li>Read PipelineServingSubprocessArgs from args[0] JSON file</li>
  *   <li>Deserialize and validate the pipeline</li>
  *   <li>Create its executor</li>
@@ -72,12 +74,13 @@ public class PipelineServingSubprocessMain {
     private static final Class<?> JAVACPP_LOADER_CLASS = org.bytedeco.javacpp.Loader.class;
     private static final String IMPORTER_CLASS_GRAPH_SCAN_RESOURCE = "sdx-classgraph-scan.json";
 
-    // Capture the real stdout BEFORE redirecting
-    private static final PrintStream ORIGINAL_STDOUT = System.out;
+    // Protocol messages go to the channel the launcher set up, which native output written to
+    // fd 1 can't reach, or to the original stdout when there is none. Opened BEFORE redirecting.
+    private static final PrintStream ORIGINAL_STDOUT = SubprocessProtocolChannel.open(System.out);
 
     static {
-        // Redirect System.out -> System.err so that all normal logging/prints
-        // go to stderr, leaving stdout exclusively for PIPELINE_RUNTIME: protocol lines.
+        // Redirect System.out -> System.err so that all normal logging/prints go to stderr,
+        // leaving the protocol stream exclusively for PIPELINE_RUNTIME: protocol lines.
         System.setOut(System.err);
     }
 
@@ -267,9 +270,7 @@ public class PipelineServingSubprocessMain {
                                                     "activeExecutions", executions.size())));
                     case PipelineRuntimeProtocol.RESET -> {
                         cancelAll(executions);
-                        PipelineExecutor replacement = pipeline(definitionRef.get(), mapper).createExecutor();
-                        PipelineExecutor previous = executorRef.getAndSet(replacement);
-                        previous.close();
+                        install(executorRef, pipeline(definitionRef.get(), mapper).createExecutor());
                         PipelineRuntimeProtocol.write(ORIGINAL_STDOUT,
                                 PipelineRuntimeProtocol.message(PipelineRuntimeProtocol.RESET_DONE,
                                         message.requestId(), definitionRef.get().getPipelineId(), Map.of()));
@@ -286,9 +287,7 @@ public class PipelineServingSubprocessMain {
                         Object value = message.payload().get("definition");
                         UnifiedPipelineDefinition loaded = mapper.convertValue(
                                 value, UnifiedPipelineDefinition.class);
-                        PipelineExecutor replacement = pipeline(loaded, mapper).createExecutor();
-                        PipelineExecutor previous = executorRef.getAndSet(replacement);
-                        previous.close();
+                        install(executorRef, pipeline(loaded, mapper).createExecutor());
                         definitionRef.set(loaded);
                         PipelineRuntimeProtocol.write(ORIGINAL_STDOUT,
                                 PipelineRuntimeProtocol.message(PipelineRuntimeProtocol.LOADED,
@@ -334,6 +333,12 @@ public class PipelineServingSubprocessMain {
     private static void cancelAll(ConcurrentHashMap<String, Future<?>> executions) {
         executions.values().forEach(future -> future.cancel(true));
         executions.clear();
+    }
+
+    /** Makes {@code replacement} current and closes the one it replaces, if any: UNLOAD leaves none. */
+    static <T extends AutoCloseable> void install(AtomicReference<T> current, T replacement) throws Exception {
+        T previous = current.getAndSet(replacement);
+        if (previous != null) previous.close();
     }
 
     static Map<String, Object> withDefinitionContext(

@@ -104,6 +104,11 @@ public final class ReasoningTrace implements Serializable {
         public Step {
             Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(conclusion, "conclusion");
+            // NaN is the "no signal" sentinel upstream; read it as no support, as clamp01 does,
+            // so the trace stays valid JSON and survives the codec.
+            if (Double.isNaN(confidence)) {
+                confidence = 0.0;
+            }
             if (confidence < 0.0 || confidence > 1.0) {
                 throw new IllegalArgumentException("confidence must be in [0,1], got " + confidence);
             }

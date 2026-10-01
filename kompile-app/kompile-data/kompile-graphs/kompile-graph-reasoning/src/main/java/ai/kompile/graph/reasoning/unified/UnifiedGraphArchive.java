@@ -430,7 +430,7 @@ public final class UnifiedGraphArchive implements AutoCloseable {
                     zip.getInputStream(propertyEntry), budget, propertyEntry.getName());
             CompactTopologyCodec.RecordCursor cursor = CompactTopologyCodec.openRecordCursor(
                     input, properties, topologyNodeCount, topologyTypeCount, baseLinkCount,
-                    DEFAULT_MAX_STRING_BYTES, limits.maxJsonlRowChars());
+                    DEFAULT_MAX_STRING_BYTES, limits.maxJsonlRowChars(), stableReference.scratchDirectory());
             return new ArchiveLinkCursor(cursor);
         } catch (IOException | RuntimeException failure) {
             input.close();
@@ -575,12 +575,7 @@ public final class UnifiedGraphArchive implements AutoCloseable {
         }
 
         UnifiedGraph graph = new UnifiedGraph();
-        Object rawMeta = manifest.get("meta");
-        if (rawMeta instanceof Map<?, ?> meta) {
-            for (Map.Entry<?, ?> entry : meta.entrySet()) {
-                if (entry.getKey() != null) graph.meta(String.valueOf(entry.getKey()), entry.getValue());
-            }
-        }
+        copyManifestMeta(graph);
         readSelectedEntities(visited, graph);
         for (Link link : selectedLinks.values()) {
             if (graph.entity(link.sourceId()).isEmpty() || graph.entity(link.targetId()).isEmpty()) continue;
@@ -720,7 +715,8 @@ public final class UnifiedGraphArchive implements AutoCloseable {
         if (entry == null || entry.getMethod() != ZipEntry.STORED) {
             throw new IOException("Compact adjacency index is absent or not ZIP STORED");
         }
-        Path staged = Files.createTempFile("kompile-kgraph-adjacency-", ".bin");
+        Path staged = Files.createTempFile(
+                stableReference.scratchDirectory(), "kompile-kgraph-adjacency-", ".bin");
         boolean retained = false;
         try (InputStream input = new UnifiedGraphReader.BudgetInputStream(
                      zip.getInputStream(entry),
@@ -803,6 +799,12 @@ public final class UnifiedGraphArchive implements AutoCloseable {
                 if (entry.getKey() != null) graph.meta(String.valueOf(entry.getKey()), entry.getValue());
             }
         }
+        // Same rule as UnifiedGraphMutationJournal.apply: stored models describe the pre-mutation
+        // topology, so a pending journal makes them stale until learning runs again.
+        if (!journal.isEmpty()) {
+            graph.meta("learning.reasoningStale", true).meta("learning.kgeStale", true);
+        }
+        journal.retractedRelationTypes().forEach(graph::recordRetractedRelationType);
     }
 
     private static void addVisited(

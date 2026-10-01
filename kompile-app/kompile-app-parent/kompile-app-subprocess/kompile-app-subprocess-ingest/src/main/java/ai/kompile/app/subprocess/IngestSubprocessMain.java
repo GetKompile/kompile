@@ -116,8 +116,9 @@ public class IngestSubprocessMain {
 
     public static void main(String[] args) {
         NativeLibraryResolver.bootstrapOrThrow();
-        // Capture original stdout for protocol messages
-        originalStdout = System.out;
+        // Protocol messages go to the channel the launcher set up, which native output written to
+        // fd 1 can't reach, or to the original stdout when there is none
+        originalStdout = SubprocessProtocolChannel.open(System.out);
 
         // Redirect System.out to stderr so logging doesn't interfere with protocol
         System.setOut(System.err);
@@ -356,7 +357,12 @@ public class IngestSubprocessMain {
             boolean isOomRelated = isOomRelated(e);
 
             if (reporter != null) {
-                reporter.reportFailed(phase, e);
+                if (isOomRelated) {
+                    // Reported as an OOM so the parent waits for the exit and retries with adjusted settings
+                    reporter.reportFailed(phase, e.getMessage(), OutOfMemoryError.class.getName(), getStackTrace(e));
+                } else {
+                    reporter.reportFailed(phase, e);
+                }
             }
 
             if (httpCallback != null && subprocessArgs != null) {

@@ -21,10 +21,13 @@ import ai.kompile.core.kgembedding.Triple;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
@@ -130,6 +133,50 @@ class MatrixKgEmbeddingGraphAdapterTest {
         // Node c had no embedding → no KGE metadata written.
         MatrixGraphNode c = graph.getNode("c").orElseThrow();
         assertNull(c.getMetadata().get(MatrixKgEmbeddingGraphAdapter.KGE_EMBEDDING_KEY));
+    }
+
+    @Test
+    void storeEmbeddingsFromTrainedVectorsWritesTheSameMetadata() {
+        int updated = adapter.storeEmbeddings(
+                Map.of("a", new float[]{1f, 2f, 3f}, "b", new float[]{4f, 5f, 6f}),
+                Map.of("RELATED_TO", new float[]{7f, 8f, 9f}),
+                KGEmbeddingAlgorithm.ROTATE, 1L, 99L);
+
+        assertEquals(2, updated, "two nodes have vectors; node c does not, and relation vectors have no home here");
+        verify(store).updateNode(eq("g1"), argThat(n -> "a".equals(n.getNodeId())));
+        verify(store).updateNode(eq("g1"), argThat(n -> "b".equals(n.getNodeId())));
+        verify(store, never()).updateNode(eq("g1"), argThat(n -> "c".equals(n.getNodeId())));
+
+        Map<String, Object> a = graph.getNode("a").orElseThrow().getMetadata();
+        assertEquals("1.0,2.0,3.0", a.get(MatrixKgEmbeddingGraphAdapter.KGE_EMBEDDING_KEY));
+        assertEquals("ROTATE", a.get(MatrixKgEmbeddingGraphAdapter.KGE_ALGORITHM_KEY));
+        assertEquals(99L, a.get(MatrixKgEmbeddingGraphAdapter.KGE_VERSION_KEY));
+        assertNull(graph.getNode("c").orElseThrow().getMetadata().get(MatrixKgEmbeddingGraphAdapter.KGE_EMBEDDING_KEY));
+    }
+
+    @Test
+    void storeEmbeddingsFromTrainedVectorsGoesThroughTheServiceInOneBatch() {
+        KnowledgeGraphService knowledgeGraphService = mock(KnowledgeGraphService.class);
+        when(knowledgeGraphService.updateNodeKgeMetadataBatch(anyList()))
+                .thenAnswer(inv -> ((List<?>) inv.getArgument(0)).size());
+        adapter.knowledgeGraphService = knowledgeGraphService;
+
+        int updated = adapter.storeEmbeddings(Map.of("a", new float[]{1f, 2f}), Map.of(),
+                KGEmbeddingAlgorithm.TRANSE, 1L, 5L);
+
+        assertEquals(1, updated);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<KnowledgeGraphService.NodeMetadataUpdate>> batch = ArgumentCaptor.forClass(List.class);
+        InOrder order = inOrder(knowledgeGraphService);
+        order.verify(knowledgeGraphService).awaitPendingEmbeddings();
+        order.verify(knowledgeGraphService).updateNodeKgeMetadataBatch(batch.capture());
+        order.verify(knowledgeGraphService).flushPendingNodes();
+        assertEquals(List.of(new KnowledgeGraphService.NodeMetadataUpdate("a", Map.of(
+                MatrixKgEmbeddingGraphAdapter.KGE_EMBEDDING_KEY, "1.0,2.0",
+                MatrixKgEmbeddingGraphAdapter.KGE_ALGORITHM_KEY, "TRANSE",
+                MatrixKgEmbeddingGraphAdapter.KGE_VERSION_KEY, 5L))), batch.getValue());
+        verify(store, never()).listGraphsByFactSheet(any());
+        verify(store, never()).updateNode(any(), any());
     }
 
     @Test

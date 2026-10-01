@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 /**
  * Service for managing available AI agent providers.
@@ -186,8 +187,14 @@ public class AgentRegistryService {
 
     /**
      * Parse help text to identify MCP-related command flags.
+     * <p>
+     * Only an option the help names whole counts. Gemini CLI's {@code --allowed-mcp-server-names}
+     * holds {@code -mcp-server}, but Gemini CLI has no {@code --mcp-server} option and exits on
+     * one; handed its server name, {@code --allowed-mcp-server-names} itself would turn off every
+     * MCP server the launch has. An agent that names neither flag gets this app's server another
+     * way, or not at all (see {@link AgentSubprocessExecutor#supportsMcpInjection}).
      */
-    private void parseMcpFlags(AgentProvider agent, String helpText) {
+    void parseMcpFlags(AgentProvider agent, String helpText) {
         String helpLower = helpText.toLowerCase();
 
         // Check for MCP server support - look for common patterns
@@ -206,59 +213,46 @@ public class AgentRegistryService {
         // authoritative. Clear any preset flag the binary doesn't actually advertise —
         // a stale preset (e.g. --mcp-server on claude, which has no such option)
         // would otherwise crash every spawn with "unknown option".
-        if (agent.getMcpServerFlag() != null && !helpText.contains(agent.getMcpServerFlag())) {
+        if (agent.getMcpServerFlag() != null && !advertisesOption(helpText, agent.getMcpServerFlag())) {
             agent.setMcpServerFlag(null);
         }
-        if (agent.getMcpConfigFlag() != null && !helpText.contains(agent.getMcpConfigFlag())) {
+        if (agent.getMcpConfigFlag() != null && !advertisesOption(helpText, agent.getMcpConfigFlag())) {
             agent.setMcpConfigFlag(null);
         }
 
-        // Parse for specific MCP flags based on common patterns
-        // Claude CLI patterns
-        if (helpText.contains("--mcp-server") || helpText.contains("-mcp-server")) {
+        if (advertisesOption(helpText, "--mcp-server")) {
             agent.setMcpServerFlag("--mcp-server");
         }
 
         // Look for MCP config file flag
-        if (helpText.contains("--mcp-config")) {
+        if (advertisesOption(helpText, "--mcp-config")) {
             agent.setMcpConfigFlag("--mcp-config");
         }
 
         // Look for allowed tools flag (some CLIs have this)
-        if (helpText.contains("--allowedTools") || helpText.contains("--allowed-tools")) {
-            agent.setMcpAllowToolsFlag(helpText.contains("--allowedTools") ? "--allowedTools" : "--allowed-tools");
-        }
-
-        // If we found MCP mention but no specific flags, try to extract them.
-        // Skipped when a config flag is already known: the loose regex below can latch
-        // onto unrelated flags (e.g. --mcp-debug) and poison the spawn command.
-        if (agent.getMcpServerFlag() == null && agent.getMcpConfigFlag() == null) {
-            // Try regex patterns to find MCP-related flags
-            java.util.regex.Pattern mcpPattern = java.util.regex.Pattern.compile(
-                    "(-{1,2}[a-zA-Z-]*mcp[a-zA-Z-]*)\\s",
-                    java.util.regex.Pattern.CASE_INSENSITIVE
-            );
-            java.util.regex.Matcher matcher = mcpPattern.matcher(helpText);
-
-            while (matcher.find()) {
-                String flag = matcher.group(1).trim();
-                if (flag.toLowerCase().contains("server") || flag.toLowerCase().contains("config")) {
-                    if (flag.toLowerCase().contains("server")) {
-                        agent.setMcpServerFlag(flag);
-                    } else if (flag.toLowerCase().contains("config")) {
-                        agent.setMcpConfigFlag(flag);
-                    }
-                } else if (agent.getMcpServerFlag() == null) {
-                    // Generic MCP flag
-                    agent.setMcpServerFlag(flag);
-                }
-            }
+        if (advertisesOption(helpText, "--allowedTools")) {
+            agent.setMcpAllowToolsFlag("--allowedTools");
+        } else if (advertisesOption(helpText, "--allowed-tools")) {
+            agent.setMcpAllowToolsFlag("--allowed-tools");
         }
 
         // Log what we found
         log.debug("Parsed MCP flags for '{}': supported={}, serverFlag={}, configFlag={}, allowToolsFlag={}",
                 agent.getName(), agent.isMcpSupported(),
                 agent.getMcpServerFlag(), agent.getMcpConfigFlag(), agent.getMcpAllowToolsFlag());
+    }
+
+    /**
+     * True when {@code helpText} names {@code option} whole — not as part of a longer option
+     * such as {@code --allowed-mcp-server-names}.
+     */
+    static boolean advertisesOption(String helpText, String option) {
+        if (helpText == null || option == null || option.isBlank()) {
+            return false;
+        }
+        return Pattern.compile("(?<![A-Za-z0-9_-])" + Pattern.quote(option) + "(?![A-Za-z0-9_-])")
+                .matcher(helpText)
+                .find();
     }
 
     /**

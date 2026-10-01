@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.codeindex.SpathParser.PathSegment;
 import ai.kompile.cli.main.codeindex.SpathParser.SegmentKind;
 import ai.kompile.cli.main.codeindex.SpathParser.SpathQuery;
@@ -17,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Tests for spath parsing and resolution.
  */
+@TemporaryUserHome
 class SpathTest {
 
     // -----------------------------------------------------------------------

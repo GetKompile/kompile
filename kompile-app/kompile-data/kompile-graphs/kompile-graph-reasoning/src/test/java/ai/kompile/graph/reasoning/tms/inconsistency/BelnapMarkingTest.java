@@ -382,4 +382,43 @@ class BelnapMarkingTest {
         assertTrue(pa.negated(), "DISPROVES_ prefix should mark atom as negated");
         assertEquals("STATE", pa.predicate(), "Predicate after stripping DISPROVES_ prefix");
     }
+
+    // ── Predicate spellings ───────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("A camelCase fact and its underscore negation are one atom → B")
+    void predicateSpellingsMarkOneAtom() {
+        List<Fact> facts = List.of(
+                hard("headquarteredIn(acme, paris)", 0.9),
+                hard("NOT_HEADQUARTERED_IN(acme, paris)", 0.9)
+        );
+        MarkingResult result = BelnapMarking.mark(facts);
+        assertEquals(Mark.B, result.markFor("HEADQUARTEREDIN|[acme, paris]"));
+        assertEquals(1, result.bCount());
+        assertEquals(1, result.byCanonicalAtom().size(), "both spellings share one canonical key");
+    }
+
+    @Test
+    @DisplayName("'~' negation, as FOL and PSL write it → B")
+    void tildeNegation() {
+        List<Fact> facts = List.of(
+                hard("State(alice)", 0.9),
+                hard("~State(alice)", 0.9)
+        );
+        MarkingResult result = BelnapMarking.mark(facts);
+        assertEquals(Mark.B, result.markFor("STATE|[alice]"));
+    }
+
+    @Test
+    @DisplayName("A functional predicate clashes across spellings")
+    void functionalClashAcrossSpellings() {
+        List<Fact> facts = List.of(
+                hard("hasCeo(acme, alice)", 0.9),
+                hard("HAS_CEO(acme, bob)", 0.9)
+        );
+        MarkingResult result = BelnapMarking.mark(facts);
+        assertEquals(Mark.B, result.markFor("HASCEO|[acme, alice]"));
+        assertEquals(Mark.B, result.markFor("HASCEO|[acme, bob]"));
+        assertEquals(2, result.bCount());
+    }
 }

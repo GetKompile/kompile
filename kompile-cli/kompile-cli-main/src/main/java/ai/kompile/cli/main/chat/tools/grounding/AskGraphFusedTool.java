@@ -55,10 +55,9 @@ public class AskGraphFusedTool implements CliTool {
 
     @Override
     public String description() {
-        return "Explain a target using the configured graph backend's evidence. Managed backends can "
-                + "fuse applicable reasoning engines; the local fallback reports retrieval-only evidence, "
-                + "not a fabricated fused confidence or multi-engine run. Optional chatModel.provider/modelId "
-                + "adds host-native interpretation, clearly separate from engine results.";
+        return "Explain a target from the graph backend's evidence. Managed backends fuse applicable reasoning "
+                + "engines; locally it reports retrieval-only evidence, never a fused confidence. Optional "
+                + "chatModel.provider/modelId adds host-native interpretation, clearly separate from engine results.";
     }
 
     @Override
@@ -92,6 +91,12 @@ public class AskGraphFusedTool implements CliTool {
 
     @Override
     public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.READ_ONLY; }
+
+    @Override
+    public String compactHint() {
+        return "Explain a target (atom key, entity id or question). Managed backends fuse all applicable reasoning "
+                + "engines; locally it returns retrieval evidence only, never a fused confidence.";
+    }
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {

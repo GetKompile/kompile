@@ -21,6 +21,21 @@ import java.util.Map;
 
 /** Knowledge graph operations over either the explicit REST service or the folder-local archive. */
 public class KnowledgeGraphTool implements CliTool {
+    // Every action a configured server accepts: each case of remote() plus extract, which stays host-side.
+    private static final List<String> REMOTE_ACTIONS = List.of(
+            "overview", "stats", "search_entity", "search_nodes", "find_by_topic", "related_docs", "source_context",
+            "entities_in_doc", "find_connected", "list_nodes", "get_node", "add_node", "delete_node", "list_edges",
+            "add_edge", "delete_edge", "traverse", "shortest_path", "algorithm", "communities", "hierarchy",
+            "ancestors", "source_chunks", "list_graphs", "create_graph", "delete_graph", "extract", "build_graph",
+            "report", "cypher", "list_builders", "start_job", "list_jobs", "job_status", "cancel_job", "job_logs",
+            "list_proposals", "accept_proposal", "reject_proposal", "manual_proposal", "get_config", "set_config",
+            "list_providers", "list_models", "capability_probe", "list_presets", "apply_preset", "owl_reasoning",
+            "ontology_conformance", "bind_ontology", "unbind_ontology", "opinions", "facts_by_tier", "graph_health",
+            "list_rules", "reactive_rules", "node_provenance", "list_pipelines", "reasoning_layers",
+            "list_fact_sheets", "get_fact_sheet", "get_active_fact_sheet", "create_fact_sheet",
+            "activate_fact_sheet", "create_snapshot", "list_snapshots", "restore_snapshot", "delete_snapshot",
+            "list_predicates");
+
     private final String baseUrl;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -50,15 +65,17 @@ public class KnowledgeGraphTool implements CliTool {
     }
 
     @Override public String compactHint() {
-        return "knowledge_graph: full KG operations. Local stdio defaults to and auto-initializes the current folder; start with action=overview or list_predicates and omit fact_sheet_id. "
-                + "list_fact_sheets inventories local crawl summaries; fact-sheet mutation and snapshot actions are remote/legacy workflows with explicit IDs. "
-                + "Required param: action=<action_name>.";
+        return "Graph search, CRUD, traversal, ontology, reports; the action enum lists this mode's actions. "
+                + "Locally uses the current folder: start with overview or list_predicates; snapshot restore needs a server.";
     }
 
     @Override public JsonNode parameterSchema() {
         ObjectNode s = objectMapper.createObjectNode().put("type", "object");
         ObjectNode p = s.putObject("properties");
-        string(p,"action","Action to perform (see tool description for full list)");
+        ArrayNode actions = p.putObject("action").put("type", "string")
+                .put("description", "Action to perform; the enum lists the actions this mode supports").putArray("enum");
+        (baseUrl == null || baseUrl.isBlank() ? LocalProjectGraphBackend.KNOWLEDGE_GRAPH_ACTIONS : REMOTE_ACTIONS)
+                .forEach(actions::add);
         String[] strings = {"node_id","edge_id","graph_id","query","entity_name","topic","node_type","relationship_type","document_id","source_id","title","external_id","item_description","metadata_json","from_node_id","to_node_id","edge_type","algorithm_name","text","agents","merge_strategy","entity_types","cypher_query","report_type","graph_name","parent_graph_id","ontology_type","job_id","builder_type","model_provider","model_name","thinking","custom_prompt","proposal_id","proposal_status","subject_name","subject_type","predicate_name","object_name","object_type","rejection_reason","schema_mode","preset_id","ontology_schema_id","method","tier","basis_type","name","snapshot_id","label","probe_operation"};
         for (String n : strings) string(p,n,n.replace('_',' '));
         for (String n : new String[]{"max_results","limit","depth","fact_sheet_id","ontology_version","timeout_seconds"}) integer(p,n,n);
@@ -176,21 +193,7 @@ public class KnowledgeGraphTool implements CliTool {
             case "restore_snapshot" -> snapshotRestore(p);
             case "delete_snapshot" -> snapshotDelete(p);
             case "list_predicates" -> listPredicates(p);
-            default -> ToolResult.error("Unknown action: " + a
-                    + ". Use one of: overview, stats, search_entity, search_nodes, find_by_topic, "
-                    + "related_docs, source_context, entities_in_doc, find_connected, list_nodes, "
-                    + "get_node, add_node, delete_node, list_edges, add_edge, delete_edge, traverse, "
-                    + "shortest_path, algorithm, communities, hierarchy, ancestors, source_chunks, "
-                    + "list_graphs, create_graph, delete_graph, extract, build_graph, report, cypher, "
-                    + "list_builders, start_job, list_jobs, job_status, cancel_job, job_logs, "
-                    + "list_proposals, accept_proposal, reject_proposal, manual_proposal, get_config, "
-                    + "set_config, list_providers, list_models, capability_probe, list_presets, "
-                    + "apply_preset, owl_reasoning, ontology_conformance, bind_ontology, "
-                    + "unbind_ontology, opinions, facts_by_tier, graph_health, list_rules, "
-                    + "reactive_rules, node_provenance, list_pipelines, reasoning_layers, "
-                    + "list_fact_sheets, get_fact_sheet, get_active_fact_sheet, create_fact_sheet, "
-                    + "activate_fact_sheet, create_snapshot, list_snapshots, restore_snapshot, "
-                    + "delete_snapshot, list_predicates");
+            default -> ToolResult.error("Unknown action: " + a + ". Use one of: " + String.join(", ", REMOTE_ACTIONS));
         };
     }
 

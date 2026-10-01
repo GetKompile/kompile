@@ -49,8 +49,49 @@ public final class UnifiedGraphReasoningLifecycle {
     public static final String MEBN_THEORY_JSON_ARTIFACT = "reasoning/mebn-theory.v1.json";
     public static final String MEBN_STRENGTHS_ARTIFACT = "reasoning/mebn-strengths.json";
     public static final String CONSENSUS_TARGETS_ARTIFACT = "reasoning/consensus-targets.bin";
+    /** Weight map holding each learned PSL rule weight, keyed like {@link #PSL_WEIGHTS_ARTIFACT}. */
+    public static final String PSL_WEIGHT_MAP = "pslWeights";
+    /** Weight map holding each learned MEBN strength, keyed like {@link #MEBN_STRENGTHS_ARTIFACT}. */
+    public static final String MEBN_STRENGTH_MAP = "mebnStrengths";
+    /**
+     * Graph meta flag set when the topology changed after the last learning pass, so the learned
+     * opinions, posteriors and weights no longer describe it. {@link #learn} clears it.
+     */
+    public static final String REASONING_STALE_META = "learning.reasoningStale";
+    /**
+     * Artifact holding the reasoning traces recorded against the graph. Traces are a record of past
+     * questions, not learned state: {@link #learn} never writes them, and a graph change does not
+     * make them stale.
+     */
+    public static final String TRACES_ARTIFACT = "reasoning/traces.json";
 
     private UnifiedGraphReasoningLifecycle() {
+    }
+
+    /**
+     * Whether artifact {@code name} is learned state that a graph change leaves describing the old
+     * graph: everything under {@code reasoning/} except {@link #TRACES_ARTIFACT}.
+     */
+    public static boolean isLearnedArtifact(String name) {
+        return name != null && name.startsWith("reasoning/") && !TRACES_ARTIFACT.equals(name);
+    }
+
+    /** Whether weight map {@code name} is one {@link #learn} writes. */
+    public static boolean isLearnedWeightMap(String name) {
+        return PSL_WEIGHT_MAP.equals(name) || MEBN_STRENGTH_MAP.equals(name);
+    }
+
+    /**
+     * Whether the graph carries learned reasoning state: a {@linkplain #isLearnedArtifact learned
+     * artifact}, an entity or relation opinion, or a {@linkplain #isLearnedWeightMap learned weight
+     * map}. Recorded traces and other weight maps do not count.
+     */
+    public static boolean hasLearnedState(UnifiedGraph graph) {
+        Objects.requireNonNull(graph, "graph");
+        return graph.artifacts().keySet().stream().anyMatch(UnifiedGraphReasoningLifecycle::isLearnedArtifact)
+                || !graph.entityOpinions().isEmpty()
+                || !graph.relationOpinions().isEmpty()
+                || graph.weightMaps().keySet().stream().anyMatch(UnifiedGraphReasoningLifecycle::isLearnedWeightMap);
     }
 
     /** Learning effort for one final corpus-wide graph pass. */
@@ -148,21 +189,25 @@ public final class UnifiedGraphReasoningLifecycle {
         HybridConsensusTrainer.Result learned = HybridConsensusTrainer.train(
                 graph, pslProgram, observed, plan);
 
+        String pslWeights = PslWeightLearningService.weightsToJson(learned.trainedProgram().rules());
+        String mebnStrengths = MebnWeightSerializer.strengthsToJson(mTheory);
         graph.putModel(FOL_PSL_PROGRAM_ARTIFACT, learned.trainedProgram());
-        graph.putArtifactText(PSL_WEIGHTS_ARTIFACT,
-                PslWeightLearningService.weightsToJson(learned.trainedProgram().rules()));
+        graph.putArtifactText(PSL_WEIGHTS_ARTIFACT, pslWeights);
         graph.putArtifactText(PSL_RULE_LEGEND_ARTIFACT, pslRuleLegend(graph));
         graph.putArtifactText(MEBN_THEORY_JSON_ARTIFACT,
                 RelationalMTheoryArtifactCodec.toJson(mTheory));
-        graph.putArtifactText(MEBN_STRENGTHS_ARTIFACT,
-                MebnWeightSerializer.strengthsToJson(mTheory));
+        graph.putArtifactText(MEBN_STRENGTHS_ARTIFACT, mebnStrengths);
         graph.putModel(CONSENSUS_TARGETS_ARTIFACT,
                 new LinkedHashMap<>(learned.consensusTargets()));
+        // The same weights as named maps, so readers that walk weightMaps() (graph queries, asset
+        // summaries, exports) see them without parsing the JSON artifacts.
+        graph.putWeightMap(PSL_WEIGHT_MAP, PslWeightLearningService.parseWeights(pslWeights));
+        graph.putWeightMap(MEBN_STRENGTH_MAP, MebnWeightSerializer.parseStrengths(mebnStrengths));
         // Project entity-state posteriors onto Subjective-Logic opinions so downstream consumers
         // (opinions, facts_by_tier, graph_reasoning_query) see trained beliefs without re-deriving
         // them from consensusTargets. Maps PSL constants back to entity ids via the builder.
         int opinionsProjected = 0;
-        java.util.LinkedHashSet<String> projectedEntityIds = new java.util.LinkedHashSet<>();
+        LinkedHashSet<String> projectedEntityIds = new LinkedHashSet<>();
         for (Map.Entry<String, Double> target : learned.consensusTargets().entrySet()) {
             String key = target.getKey();
             if (!key.startsWith(GraphPslProgramBuilder.STATE + "(") || !key.endsWith(")")) {
@@ -183,6 +228,19 @@ public final class UnifiedGraphReasoningLifecycle {
         // archive preserves JSON arrays losslessly; a legacy comma-delimited string remains only a
         // reader compatibility concern in the CLI audit guard.
         graph.meta("reasoningLearning.projectedEntityIds", List.copyOf(projectedEntityIds));
+        // Relations get the same projection. Consensus targets exist only for the relation types the
+        // bounded MTheory modeled, so relations of other types keep no opinion and readers fall back
+        // to their direct evidence.
+        int relationOpinionsProjected = 0;
+        for (GraphRelation relation : graph.relations()) {
+            Double truth = learned.consensusTargets().get(
+                    relationTargetKey(relation.type(), relation.sourceId(), relation.targetId()));
+            if (truth != null) {
+                graph.putRelationOpinion(relation.id(), Opinion.fromSoftTruth(clamp01(truth)));
+                relationOpinionsProjected++;
+            }
+        }
+        graph.meta("reasoningLearning.relationOpinionsProjected", relationOpinionsProjected);
         graph.meta("reasoningLearning.status", "COMPLETED")
                 .meta("reasoningLearning.folPsl", true)
                 .meta("reasoningLearning.mebn", learned.mebnTrained())
@@ -190,7 +248,8 @@ public final class UnifiedGraphReasoningLifecycle {
                 .meta("reasoningLearning.mebnFragments", mTheory.getMFrags().size())
                 .meta("reasoningLearning.observedTargets", observed.size())
                 .meta("reasoningLearning.modelsTrained", learned.modelsTrained())
-                .meta("reasoningLearning.consensusRounds", learned.rounds());
+                .meta("reasoningLearning.consensusRounds", learned.rounds())
+                .meta(REASONING_STALE_META, false);
 
         return new Summary(true, !learned.trainedProgram().rules().isEmpty(),
                 learned.mebnTrained(), learned.trainedProgram().rules().size(),
@@ -244,8 +303,9 @@ public final class UnifiedGraphReasoningLifecycle {
             if (source == null || target == null) {
                 continue;
             }
+            // Confidence alone, as in relationTruths: producers set weight equal to it.
             grouped.computeIfAbsent(relationName, ignored -> new RelationAccumulator())
-                    .add(source, target, clamp01(relation.weight() * relation.confidence()));
+                    .add(source, target, clamp01(relation.confidence()));
         }
 
         List<RelationDescriptor> descriptors = new ArrayList<>();
@@ -261,14 +321,26 @@ public final class UnifiedGraphReasoningLifecycle {
                 "portable-" + sanitizeIdentifier(graph.graphId(), "graph"), descriptors);
     }
 
+    /**
+     * The observed truth of each stored relation is its recorded confidence. Weight is not
+     * multiplied in: producers set it equal to the confidence, so the product would train on c².
+     */
     private static Map<String, Double> relationTruths(UnifiedGraph graph) {
         Map<String, Double> truths = new LinkedHashMap<>();
         for (GraphRelation relation : graph.relations()) {
-            String relationName = sanitizeIdentifier(relation.type(), "relation");
-            String key = relationName + "(" + relation.sourceId() + "," + relation.targetId() + ")";
-            truths.merge(key, clamp01(relation.weight() * relation.confidence()), Math::max);
+            String key = relationTargetKey(relation.type(), relation.sourceId(), relation.targetId());
+            truths.merge(key, clamp01(relation.confidence()), Math::max);
         }
         return truths;
+    }
+
+    /**
+     * Key under which {@link #CONSENSUS_TARGETS_ARTIFACT} stores the learned truth of a stored
+     * relation. Readers build it from the relation they matched, not from a caller's spelling of
+     * the predicate, so a lookup finds the target however the question was phrased.
+     */
+    public static String relationTargetKey(String relationType, String sourceId, String targetId) {
+        return sanitizeIdentifier(relationType, "relation") + "(" + sourceId + "," + targetId + ")";
     }
 
     private static String sanitizeIdentifier(String raw, String fallback) {

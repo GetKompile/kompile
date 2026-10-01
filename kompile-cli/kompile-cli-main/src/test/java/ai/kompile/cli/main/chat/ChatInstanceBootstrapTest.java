@@ -144,6 +144,19 @@ class ChatInstanceBootstrapTest {
     }
 
     @Test
+    void workspaceModeReachesTheChatServer(@TempDir Path tempDir) throws Exception {
+        Path lib = Files.createDirectories(tempDir.resolve("lib"));
+        Files.writeString(lib.resolve("kompile-chat.jar"), "test");
+        ComponentRegistry registry = new ComponentRegistry();
+        registry.setInstallBaseDir(tempDir.toFile());
+        CapturingServiceManager services = new CapturingServiceManager(false);
+        ChatInstanceBootstrap.ensureReady("http://127.0.0.1:9181", 7, registry, services,
+                tempDir.toFile(), true, false, null, true);
+        assertTrue(services.jvmArgs.contains("-Dkompile.chat.handoff.mode=workspace"));
+        assertTrue(services.jvmArgs.contains("-Dkompile.chat.handoff.config-scope=project"));
+    }
+
+    @Test
     void webNativeTierFailsExplicitly(@TempDir Path tempDir) throws Exception {
         Path bin = Files.createDirectories(tempDir.resolve("bin"));
         File nativeChat = Files.writeString(bin.resolve("kompile-chat"), "native").toFile();

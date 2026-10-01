@@ -121,7 +121,7 @@ public class EnforcerCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--judge-mode"}, description = "Judge backend mode: auto, remote, local, auto-server")
     String judgeMode;
 
-    @CommandLine.Option(names = {"--judge-provider"}, description = "Judge provider override, e.g. anthropic, openai, ollama")
+    @CommandLine.Option(names = {"--judge-provider"}, description = "Judge provider override, e.g. anthropic, openai, gemini")
     String judgeProvider;
 
     @CommandLine.Option(names = {"--judge-model"}, description = "Judge model override")

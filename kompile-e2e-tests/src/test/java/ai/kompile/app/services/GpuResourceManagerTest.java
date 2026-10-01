@@ -106,15 +106,6 @@ class GpuResourceManagerTest {
             assertThrows(UnsupportedOperationException.class, () ->
                     devices.add(GpuDevice.local(2, 2, "Test", ONE_GB)));
         }
-
-        @Test
-        @DisplayName("should update CUDA runtime index")
-        void updateCudaRuntimeIndex() {
-            manager.setCudaRuntimeIndex(0, 5);
-            Optional<GpuDevice> device = manager.getDeviceByCudaRuntimeIndex(5);
-            assertTrue(device.isPresent());
-            assertEquals("RTX 4090", device.get().name());
-        }
     }
 
     // ==================== Reservation Management ====================
@@ -374,7 +365,7 @@ class GpuResourceManagerTest {
             List<String> candidates = manager.findEvictionCandidates("vlm", GPU_4090);
 
             assertFalse(candidates.isEmpty());
-            // Should suggest evicting embedding (priority 10) first, then ingest (priority 50)
+            // Should suggest evicting embedding (priority 10) — the ingest job's row is never evictable
             assertEquals("embedding", candidates.get(0));
         }
 

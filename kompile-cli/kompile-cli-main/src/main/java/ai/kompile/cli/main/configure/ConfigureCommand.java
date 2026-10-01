@@ -376,7 +376,7 @@ public class ConfigureCommand implements Callable<Integer> {
                         "cli - force an authenticated CLI agent judge",
                         "remote - use a cloud or OpenAI-compatible judge API",
                         "local - use in-process local model classes when available",
-                        "auto-server - use a running kompile or Ollama server"
+                        "auto-server - use a running kompile-model-staging server"
                 );
                 int selected = selectNumbered(reader, modes, false);
                 if (selected < 0) return 1;
@@ -394,7 +394,7 @@ public class ConfigureCommand implements Callable<Integer> {
                 config.setJudgeModel(model == null || model.isBlank() ? null : model.trim());
 
                 if ("remote".equals(mode)) {
-                    String provider = prompt(reader, "  Judge provider (anthropic/openai/gemini/ollama/kompile): ");
+                    String provider = prompt(reader, "  Judge provider (anthropic/openai/gemini/kompile): ");
                     config.setJudgeProvider(provider == null || provider.isBlank() ? null : provider.trim());
                     String baseUrl = prompt(reader, "  Judge base URL (blank for provider default): ");
                     config.setJudgeBaseUrl(baseUrl == null || baseUrl.isBlank() ? null : baseUrl.trim());
@@ -406,9 +406,9 @@ public class ConfigureCommand implements Callable<Integer> {
                     String quant = prompt(reader, "  Local quantization (blank for default): ");
                     config.setJudgeLocalQuant(quant == null || quant.isBlank() ? null : quant.trim());
                 } else if ("auto-server".equals(mode)) {
-                    String serverType = prompt(reader, "  Server type (kompile/ollama, blank for kompile): ");
-                    config.setJudgeServerType(serverType == null || serverType.isBlank() ? null : serverType.trim());
-                    String port = prompt(reader, "  Server port (blank for default): ");
+                    // kompile-model-staging is the only auto-server backend; clear any stale type.
+                    config.setJudgeServerType(null);
+                    String port = prompt(reader, "  kompile-model-staging port (blank for default): ");
                     if (port != null && !port.isBlank()) config.setJudgeServerPort(Integer.parseInt(port.trim()));
                 }
 

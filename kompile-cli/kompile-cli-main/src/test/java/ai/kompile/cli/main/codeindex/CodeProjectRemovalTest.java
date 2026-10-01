@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.project.KompileProjectStore;
@@ -14,6 +15,7 @@ import java.util.Comparator;
 import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class CodeProjectRemovalTest {
     @TempDir Path root;
 

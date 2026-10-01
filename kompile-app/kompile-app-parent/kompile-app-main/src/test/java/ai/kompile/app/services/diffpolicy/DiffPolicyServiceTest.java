@@ -22,7 +22,6 @@ import ai.kompile.core.llm.chat.LLMChat;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -47,11 +46,9 @@ class DiffPolicyServiceTest {
     private DiffPolicyService policy;
 
     @BeforeEach
-    @SuppressWarnings("unchecked")
     void setUp() {
-        DiffIndexService diffIndex = new DiffIndexService();
-        Map<String, DiffIndexEntry> entries =
-                (Map<String, DiffIndexEntry>) ReflectionTestUtils.getField(diffIndex, "entries");
+        SeededDiffIndex diffIndex = new SeededDiffIndex();
+        Map<String, DiffIndexEntry> entries = diffIndex.entries();
         entries.clear();
         // A secret-file edit (only the path detector should fire).
         putDiff(entries, "secret1", "claude-code", "/proj/.env",
@@ -63,8 +60,7 @@ class DiffPolicyServiceTest {
         putDiff(entries, "clean1", "claude-code", "/proj/src/Foo.java",
                 "--- a/proj/src/Foo.java\n+++ b/proj/src/Foo.java\n@@ -1 +1,2 @@\n class Foo {}\n+// note\n");
 
-        policy = new DiffPolicyService(diffIndex);
-        ReflectionTestUtils.setField(policy, "policyDir", policyDir);
+        policy = new DiffPolicyService(diffIndex, policyDir);
         policy.saveRules(
                 List.of(PathRule.builder().glob("**/*.env").severity("critical").description("Edit to a secret file").build()),
                 "BAN_DIFF: System.exit(");
@@ -188,5 +184,11 @@ class DiffPolicyServiceTest {
                 .filePath(filePath).toolName("Edit").diffType("edit")
                 .unifiedDiff(unifiedDiff).timestamp("2026-01-01T00:00:00Z")
                 .linesAdded(1).linesRemoved(0).build());
+    }
+
+    private static final class SeededDiffIndex extends DiffIndexService {
+        Map<String, DiffIndexEntry> entries() {
+            return entries;
+        }
     }
 }

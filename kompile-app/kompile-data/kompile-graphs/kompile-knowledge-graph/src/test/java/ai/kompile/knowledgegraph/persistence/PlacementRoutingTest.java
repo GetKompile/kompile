@@ -22,7 +22,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -156,39 +155,32 @@ class PlacementRoutingTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private FileModelArtifactBackend fileBackend(String dataDirPath) throws Exception {
+    private FileModelArtifactBackend fileBackend(String dataDirPath) {
         FileModelArtifactBackend backend = new FileModelArtifactBackend();
-        setField(backend, FileModelArtifactBackend.class, "dataDir", dataDirPath);
+        backend.dataDir = dataDirPath;
         return backend;
     }
 
-    private EmbeddingModelPersistenceService embeddingService(String dataDirPath) throws Exception {
+    private EmbeddingModelPersistenceService embeddingService(String dataDirPath) {
         FileModelArtifactBackend fileBackend = fileBackend(dataDirPath);
         ModelArtifactRouter router = new ModelArtifactRouter(List.of(fileBackend));
 
         EmbeddingModelPersistenceService service = new EmbeddingModelPersistenceService(
                 new ObjectMapper(), router);
-        setField(service, EmbeddingModelPersistenceService.class, "dataDir", dataDirPath);
-        setField(service, EmbeddingModelPersistenceService.class, "stagingUrl", "");
+        service.dataDir = dataDirPath;
+        service.stagingUrl = "";
         return service;
     }
 
-    private EmbeddingTablePersistenceAdapter embeddingAdapter(String dataDirPath) throws Exception {
+    private EmbeddingTablePersistenceAdapter embeddingAdapter(String dataDirPath) {
         EmbeddingTablePersistenceAdapter adapter = new EmbeddingTablePersistenceAdapter();
-        setField(adapter, EmbeddingTablePersistenceAdapter.class, "dataDir", dataDirPath);
+        adapter.dataDir = dataDirPath;
         return adapter;
     }
 
-    private TypeRegistryPersistenceAdapter typeRegistryAdapter(String dataDirPath) throws Exception {
+    private TypeRegistryPersistenceAdapter typeRegistryAdapter(String dataDirPath) {
         TypeRegistryPersistenceAdapter adapter = new TypeRegistryPersistenceAdapter();
-        setField(adapter, TypeRegistryPersistenceAdapter.class, "dataDir", dataDirPath);
+        adapter.dataDir = dataDirPath;
         return adapter;
-    }
-
-    private static void setField(Object target, Class<?> clazz, String fieldName, String value)
-            throws Exception {
-        Field f = clazz.getDeclaredField(fieldName);
-        f.setAccessible(true);
-        f.set(target, value);
     }
 }

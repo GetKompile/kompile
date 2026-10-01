@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.codeindex;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class IndexDatabaseRecoveryTest {
     @TempDir Path temp;
     private final String project = "index-recovery-test-" + UUID.randomUUID();
@@ -256,14 +258,14 @@ class IndexDatabaseRecoveryTest {
             sql(db, "INSERT INTO entities_fts(entities_fts) VALUES('delete-all')");
         }
         IndexMaintenance.invalidate(dir);
-        assertTrue(IndexAutoRefresher.refresh(indexer, project, 0, null, null).successful());
+        assertTrue(IndexAutoRefresher.refresh(indexer, project, 0).successful());
         assertTrue(IndexMaintenance.status(project).contains("REPAIRED"));
         try (var db = IndexDatabase.open(dir)) { assertFalse(db.checkAndRepair()); }
         // Only this test's DB, with all connections closed; no live user database is touched.
         Files.delete(dir.resolve("index.db"));
         Files.deleteIfExists(dir.resolve("index.db-wal"));
         Files.deleteIfExists(dir.resolve("index.db-shm"));
-        assertTrue(IndexAutoRefresher.refresh(indexer, project, 0, null, null).successful());
+        assertTrue(IndexAutoRefresher.refresh(indexer, project, 0).successful());
         try (var db = IndexDatabase.open(dir)) {
             assertEquals(relations, count(db, "relations"));
             assertFalse(db.search("Alpha", "CLASS", 10).isEmpty());

@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.*;
 
 import java.io.ByteArrayOutputStream;
@@ -21,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * {@code @BeforeAll} setup. The project has multiple files with imports,
  * inheritance, duplicate methods, and dead exports to exercise each analyzer.</p>
  */
+@TemporaryUserHome
 class CodeAnalysisIntegrationTest {
 
     private static Path tempDir;

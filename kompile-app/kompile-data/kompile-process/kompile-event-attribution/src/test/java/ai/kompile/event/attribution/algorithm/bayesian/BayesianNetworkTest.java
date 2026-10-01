@@ -148,10 +148,11 @@ class BayesianNetworkTest {
     @Test
     void noisyOr_causalStrength_combinesWeightConfidenceType() {
         double strength = NoisyOrCpt.computeCausalStrength(0.8, 0.9, 1.0);
-        assertEquals(0.72, strength, 1e-9); // 0.8 * 0.9 * 1.0
+        assertEquals(0.8, strength, 1e-9); // min(0.8, 0.9) * 1.0
 
+        // A score stored in both fields is read once: 0.5 * 0.3, not 0.5 * 0.5 * 0.3.
         double weakStrength = NoisyOrCpt.computeCausalStrength(0.5, 0.5, 0.3);
-        assertEquals(0.075, weakStrength, 1e-9); // 0.5 * 0.5 * 0.3
+        assertEquals(0.15, weakStrength, 1e-9);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

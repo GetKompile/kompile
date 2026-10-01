@@ -8,6 +8,7 @@ import ai.kompile.app.subprocess.BackendConfigurable;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.subprocess.SubprocessPlacementSupport;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
 import ai.kompile.cli.common.util.JavaRuntimeLocator;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
@@ -20,8 +21,10 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -60,14 +63,18 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
             ProcessBuilder builder = new ProcessBuilder(command);
             builder.redirectErrorStream(false);
             propagateEnvironment(builder.environment());
+            // Protocol messages get a pipe of their own, which native output written to fd 1 can't reach
+            boolean wrapped = SubprocessProtocolChannel.apply(builder);
             process = builder.start();
             UnifiedPipelineDefinition.ServingConfig serving = definition.getServing() != null
                     ? definition.getServing()
                     : UnifiedPipelineDefinition.ServingConfig.builder().build();
-            session = new PipelineRuntimeSession(definition, process, command, serving.getHeapSize());
+            session = newSession(definition, process, command, serving.getHeapSize(), wrapped);
             session.awaitReady(Duration.ofMillis(READY_TIMEOUT_MS));
             return session;
-        } catch (Exception failure) {
+        } catch (Throwable failure) {
+            // Throwable, not Exception: an Error here (e.g. no native thread left for the
+            // session's reader threads) would otherwise leave the started child running.
             if (session != null) session.close();
             else stopChild(process);
             throw failure;
@@ -76,12 +83,18 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
         }
     }
 
+    /** Test seam: the session that takes ownership of a started child. */
+    PipelineRuntimeSession newSession(UnifiedPipelineDefinition definition, Process process,
+                                      List<String> command, String heapSize, boolean wrapped) {
+        return new PipelineRuntimeSession(definition, process, command, heapSize, wrapped);
+    }
+
     private PipelineServingSubprocessArgs buildArgs(UnifiedPipelineDefinition definition)
             throws Exception {
         return new PipelineServingSubprocessArgs(objectMapper.writeValueAsString(definition));
     }
 
-    private List<String> buildCommand(UnifiedPipelineDefinition definition, Path argsFile)
+    List<String> buildCommand(UnifiedPipelineDefinition definition, Path argsFile)
             throws IOException {
         LauncherArtifact launcher = resolveLauncher();
         UnifiedPipelineDefinition.ServingConfig serving = definition.getServing() != null
@@ -89,28 +102,37 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
                 : UnifiedPipelineDefinition.ServingConfig.builder().build();
         List<String> command = new ArrayList<>();
         if (launcher.nativeExecutable()) {
+            // A GraalVM native image consumes -Xmx and -D before main() but rejects HotSpot -XX
+            // flags, so it gets the same heap, properties and device placement without them.
             command.add(launcher.path().toString());
+            addRuntimeFlags(command, serving);
         } else {
             command.add(JavaRuntimeLocator.javaExecutable());
-            command.add("-Xmx" + serving.getHeapSize());
             command.add("-XX:+UseG1GC");
             command.add("-XX:MaxGCPauseMillis=200");
             command.add("-XX:+ExitOnOutOfMemoryError");
-            command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
-            var properties = System.getProperties();
-            for (String prefix : FORWARDED_PROPERTY_PREFIXES) {
-                for (String key : properties.stringPropertyNames()) {
-                    if (key.startsWith(prefix)) {
-                        command.add("-D" + key + "=" + properties.getProperty(key));
-                    }
-                }
-            }
-            command.addAll(placement.jvmFlags());
+            addRuntimeFlags(command, serving);
             command.add("-jar");
             command.add(launcher.path().toString());
         }
         command.add(argsFile.toAbsolutePath().normalize().toString());
         return command;
+    }
+
+    /** Heap cap, forwarded ND4J/JavaCPP properties and device placement, shared by both forms. */
+    private void addRuntimeFlags(List<String> command, UnifiedPipelineDefinition.ServingConfig serving) {
+        String heapSize = serving.getHeapSize();
+        if (heapSize != null && !heapSize.isBlank()) command.add("-Xmx" + heapSize.trim());
+        command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
+        var properties = System.getProperties();
+        for (String prefix : FORWARDED_PROPERTY_PREFIXES) {
+            for (String key : properties.stringPropertyNames()) {
+                if (key.startsWith(prefix)) {
+                    command.add("-D" + key + "=" + properties.getProperty(key));
+                }
+            }
+        }
+        command.addAll(placement.jvmFlags());
     }
 
     private LauncherArtifact resolveLauncher() throws IOException {
@@ -152,7 +174,7 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
 
         List<Path> jars = new ArrayList<>();
         addDistributionCandidates(jars, "kompile-pipeline-serving-exec.jar", "lib");
-        Path developmentJar = findDevelopmentExecJar();
+        Path developmentJar = findDevelopmentExecJar(Path.of(System.getProperty("user.dir", ".")));
         if (developmentJar != null) jars.add(developmentJar);
         for (Path candidate : jars) {
             if (Files.isRegularFile(candidate)) return new LauncherArtifact(candidate, false);
@@ -175,21 +197,36 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
         candidates.add(Path.of(System.getProperty("user.home"), ".kompile", directory, name));
     }
 
-    private Path findDevelopmentExecJar() {
-        Path cursor = Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
+    /**
+     * The newest {@code *-exec.jar} in the serving module's {@code target/}, searching up from
+     * {@code start}. A version bump built without {@code clean} leaves the old jar beside the new
+     * one, and a directory lists its files in no useful order.
+     */
+    static Path findDevelopmentExecJar(Path start) {
+        Path cursor = start.toAbsolutePath().normalize();
         for (int i = 0; i < 8 && cursor != null; i++, cursor = cursor.getParent()) {
             Path target = cursor.resolve("kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/target");
             if (!Files.isDirectory(target)) continue;
             try (var files = Files.list(target)) {
                 Path match = files.filter(Files::isRegularFile)
                         .filter(path -> path.getFileName().toString().endsWith("-exec.jar"))
-                        .findFirst().orElse(null);
+                        .max(Comparator.comparing(PipelineSubprocessLauncher::modifiedTime)
+                                .thenComparing(path -> path.getFileName().toString()))
+                        .orElse(null);
                 if (match != null) return match.toAbsolutePath().normalize();
             } catch (IOException ignored) {
                 // Continue toward the workspace root.
             }
         }
         return null;
+    }
+
+    private static FileTime modifiedTime(Path path) {
+        try {
+            return Files.getLastModifiedTime(path);
+        } catch (IOException unreadable) {
+            return FileTime.fromMillis(0L); // removed or unreadable since it was listed: never the newest
+        }
     }
 
     private void propagateEnvironment(Map<String, String> environment) {
@@ -206,6 +243,8 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
 
     private static void stopChild(Process process) {
         if (process == null || !process.isAlive()) return;
+        // Process.destroy(), not a handle signal: nothing reads this child's pipes, and closing
+        // them keeps a full, unread pipe from holding the child up while it shuts down.
         process.destroy();
         try {
             if (!process.waitFor(5, TimeUnit.SECONDS)) process.destroyForcibly();

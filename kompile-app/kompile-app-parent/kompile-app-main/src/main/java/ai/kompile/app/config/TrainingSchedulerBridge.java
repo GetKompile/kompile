@@ -32,7 +32,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.event.EventListener;
 
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Bridges training jobs from kompile-model-staging through the ResourceAwareJobScheduler.
@@ -48,6 +50,9 @@ import java.util.concurrent.TimeUnit;
 public class TrainingSchedulerBridge {
 
     private static final Logger log = LoggerFactory.getLogger(TrainingSchedulerBridge.class);
+
+    /** How long a tracking job waits for its training run before cancelling it. */
+    private static final long TRACKING_TIMEOUT_MS = TimeUnit.HOURS.toMillis(24);
 
     @Autowired
     private ResourceAwareJobScheduler scheduler;
@@ -78,30 +83,7 @@ public class TrainingSchedulerBridge {
                 .jobType("training")
                 .description("Training: " + modelId)
                 .resourceProfile(JobResourceProfiles.TRAINING)
-                .executor(ctx -> {
-                    long deadline = System.currentTimeMillis() + TimeUnit.HOURS.toMillis(24);
-                    while (System.currentTimeMillis() < deadline) {
-                        TrainingJobStatus status = getTrainingStatus(jobId, event.isSubprocess());
-                        if (status == null) {
-                            log.warn("Training job {} status is null, treating as completed", jobId);
-                            break;
-                        }
-                        String s = status.getStatus();
-                        if ("COMPLETED".equalsIgnoreCase(s) || "FAILED".equalsIgnoreCase(s)
-                                || "CANCELLED".equalsIgnoreCase(s)) {
-                            if ("FAILED".equalsIgnoreCase(s)) {
-                                throw new RuntimeException("Training failed: " + jobId);
-                            }
-                            break;
-                        }
-                        try {
-                            Thread.sleep(2000);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new RuntimeException("Training tracking interrupted", e);
-                        }
-                    }
-                })
+                .executor(ctx -> trackTraining(ctx, jobId, event.isSubprocess(), TRACKING_TIMEOUT_MS))
                 .priority(30)
                 .build();
 
@@ -115,6 +97,55 @@ public class TrainingSchedulerBridge {
         boolean requiresGpu = profile.phaseRequiresGpu(event.getToPhase());
         long gpuMem = profile.gpuMemoryForPhase(event.getToPhase());
         scheduler.reportPhaseTransition(event.getJobId(), event.getToPhase(), requiresGpu, gpuMem);
+    }
+
+    /**
+     * Polls a training run until it is terminal. A scheduler cancel, an interrupt or the deadline
+     * cancels the run and throws, so the tracking job never ends as completed while its run goes on.
+     */
+    void trackTraining(ScheduledJob.JobExecutionContext ctx, String jobId, boolean subprocess, long timeoutMs)
+            throws TimeoutException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (ctx.isCancellationRequested()) {
+                cancelTraining(jobId, subprocess);
+                throw new CancellationException("Training tracking cancelled: " + jobId);
+            }
+            TrainingJobStatus status = getTrainingStatus(jobId, subprocess);
+            if (status == null) {
+                log.warn("Training job {} status is null, treating as completed", jobId);
+                return;
+            }
+            String s = status.getStatus();
+            if ("COMPLETED".equalsIgnoreCase(s)) {
+                return;
+            }
+            if ("FAILED".equalsIgnoreCase(s)) {
+                throw new RuntimeException("Training failed: " + jobId);
+            }
+            if ("CANCELLED".equalsIgnoreCase(s)) {
+                throw new CancellationException("Training cancelled: " + jobId);
+            }
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                cancelTraining(jobId, subprocess);
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Training tracking interrupted", e);
+            }
+        }
+        cancelTraining(jobId, subprocess);
+        throw new TimeoutException("Training " + jobId + " did not finish within " + timeoutMs + "ms");
+    }
+
+    private void cancelTraining(String jobId, boolean subprocess) {
+        boolean cancelled = false;
+        if (subprocess && trainingLauncher != null) {
+            cancelled = trainingLauncher.cancelTraining(jobId);
+        } else if (trainingService != null) {
+            cancelled = trainingService.cancelJob(jobId);
+        }
+        log.info("Training job {} cancelled with its tracking job: {}", jobId, cancelled);
     }
 
     private TrainingJobStatus getTrainingStatus(String jobId, boolean subprocess) {

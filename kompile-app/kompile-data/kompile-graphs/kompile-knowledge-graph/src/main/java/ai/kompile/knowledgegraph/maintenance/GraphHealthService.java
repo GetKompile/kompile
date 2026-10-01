@@ -73,7 +73,7 @@ public class GraphHealthService {
      * {@code ~/.kompile/graph-health}.
      */
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    String dataDir;
 
     private final KnowledgeGraphService knowledgeGraphService;
     private final ObjectProvider<GraphConformanceChecker> conformanceCheckerProvider;

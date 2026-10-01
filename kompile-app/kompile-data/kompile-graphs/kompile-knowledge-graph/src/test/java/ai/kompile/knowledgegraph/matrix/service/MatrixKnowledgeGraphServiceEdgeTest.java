@@ -18,6 +18,7 @@ package ai.kompile.knowledgegraph.matrix.service;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
+import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.service.BoundedKnowledgeGraphReader;
@@ -238,5 +239,30 @@ class MatrixKnowledgeGraphServiceEdgeTest {
         when(graphStore.getNode("factsheet_42", "cold")).thenReturn(Optional.of(cold));
 
         assertEquals("Cold", service.getNode("cold").orElseThrow().getTitle());
+    }
+
+    @Test
+    void factSheetSearchRanksExactIdAndTitleHitsBeforeSubstringHits() {
+        when(graphStore.getAllNodes("factsheet_42")).thenReturn(List.of(
+                entity("entity_holdings", "Acme Holdings", 42L),
+                entity("entity_labs", "Acme Labs", 42L),
+                entity("entity_elsewhere", "Acme", 7L),
+                entity("entity_acme", " ACME ", 42L),
+                entity("entity_parent", "Parent Co", 42L)));
+
+        assertEquals(List.of("entity_acme", "entity_holdings"), nodeIds(service.searchNodesInFactSheet(42L, "Acme", 2)),
+                "the named node outranks substring hits the scan met first; other fact sheets stay out");
+        assertEquals(List.of("entity_parent"), nodeIds(service.searchNodesInFactSheet(42L, "Entity_Parent", 5)),
+                "an exact node id is found even though no title or description contains it");
+        assertEquals(List.of("entity_labs"), nodeIds(service.searchNodesInFactSheet(42L, "labs", 5)),
+                "the external id matches exactly and the same node is not listed twice");
+    }
+
+    private static MatrixGraphNode entity(String nodeId, String title, Long factSheetId) {
+        return MatrixGraphNode.builder().nodeId(nodeId).nodeType("ENTITY").title(title).factSheetId(factSheetId).build();
+    }
+
+    private static List<String> nodeIds(List<GraphNode> nodes) {
+        return nodes.stream().map(GraphNode::getNodeId).toList();
     }
 }

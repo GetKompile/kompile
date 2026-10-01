@@ -46,9 +46,6 @@ public class TerminalConfig {
     private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 
-    private static final Path CONFIG_FILE =
-            KompileHome.configDirectory().toPath().resolve("terminal.json");
-
     private String terminalCommand;
     private String terminalArgs;
 
@@ -57,11 +54,12 @@ public class TerminalConfig {
      */
     public static TerminalConfig load() {
         TerminalConfig config = new TerminalConfig();
-        if (!Files.exists(CONFIG_FILE)) {
+        Path configFile = configFile();
+        if (!Files.exists(configFile)) {
             return config;
         }
         try {
-            String content = Files.readString(CONFIG_FILE, StandardCharsets.UTF_8);
+            String content = Files.readString(configFile, StandardCharsets.UTF_8);
             ObjectNode root = (ObjectNode) MAPPER.readTree(content);
             config.terminalCommand = root.path("terminalCommand").asText(null);
             String args = root.path("terminalArgs").asText(null);
@@ -76,12 +74,13 @@ public class TerminalConfig {
      * Save terminal config to disk.
      */
     public void save() {
+        Path configFile = configFile();
         try {
-            Files.createDirectories(CONFIG_FILE.getParent());
+            Files.createDirectories(configFile.getParent());
             ObjectNode root = MAPPER.createObjectNode();
             if (terminalCommand != null) root.put("terminalCommand", terminalCommand);
             if (terminalArgs != null) root.put("terminalArgs", terminalArgs);
-            Files.writeString(CONFIG_FILE, MAPPER.writeValueAsString(root), StandardCharsets.UTF_8);
+            Files.writeString(configFile, MAPPER.writeValueAsString(root), StandardCharsets.UTF_8);
         } catch (IOException e) {
             System.err.println("Warning: Could not save terminal config: " + e.getMessage());
         }
@@ -92,5 +91,10 @@ public class TerminalConfig {
      */
     public boolean isConfigured() {
         return terminalCommand != null && !terminalCommand.isBlank();
+    }
+
+    /** {@code terminal.json} in the config directory current when the config is loaded or saved. */
+    static Path configFile() {
+        return KompileHome.configDirectory().toPath().resolve("terminal.json");
     }
 }

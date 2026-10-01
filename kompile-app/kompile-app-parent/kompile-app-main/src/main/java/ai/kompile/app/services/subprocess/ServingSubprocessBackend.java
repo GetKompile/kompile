@@ -52,7 +52,7 @@ public class ServingSubprocessBackend implements LocalServingBackend {
 
     /** Optional: absent in contexts where the serving launcher bean isn't present. */
     @Autowired(required = false)
-    private ServingSubprocessLauncher launcher;
+    ServingSubprocessLauncher launcher;
 
     /**
      * Returns {@code true} when the serving subprocess is running AND has a model

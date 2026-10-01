@@ -43,8 +43,8 @@ public final class FileContextTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Get notes + bounded code/KGraph context for file_path. Read-only; missing/stale indexes "
-                + "are reported explicitly and no index/model work is started.";
+        return "Before grepping for a file's usages: what file_path declares, what depends on it, notes. "
+                + "Read-only, never indexes; no project_id needed - auto-resolves from the working directory.";
     }
 
     @Override

@@ -8,16 +8,21 @@ package ai.kompile.cli.main.chat.tools.grounding;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.springframework.http.HttpMethod;
@@ -40,21 +45,35 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
+@TemporaryUserHome
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class CrawlDocumentsToolTest {
     @TempDir
     Path tempDir;
 
     private ObjectMapper mapper;
     private ToolContext context;
+    private String previousAdmissionMode;
 
     @BeforeEach
     void setUp() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
         mapper = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("crawler").enabledTools(Set.of("*")).build();
         PermissionService permissions = new PermissionService();
         permissions.setUserOverride("crawl_documents", PermissionService.PermissionLevel.ALLOW);
         context = new ToolContext("crawl-test", agent, permissions, tempDir,
                 new ToolRegistry(mapper));
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
     }
 
     @Test
@@ -77,6 +96,17 @@ class CrawlDocumentsToolTest {
         assertTrue(schema.path("properties").has("config"));
         assertTrue(schema.path("properties").path("documents").path("items")
                 .path("properties").has("pipelineId"));
+        JsonNode documentItemSchema = schema.path("properties").path("documents").path("items");
+        assertTrue(documentItemSchema.path("oneOf").isMissingNode(),
+                "path/url must not be a required oneOf: connector sourceTypes omit both");
+        JsonNode sourceTypeSchema = documentItemSchema.path("properties").path("sourceType");
+        assertTrue(sourceTypeSchema.path("description").asText().contains("WEB_CRAWL"));
+        assertTrue(sourceTypeSchema.path("description").asText().contains("NOTION"));
+        assertTrue(sourceTypeSchema.path("description").asText().contains("SLACK_HISTORY"));
+        assertTrue(documentItemSchema.path("properties").path("path").path("description").asText()
+                .contains("Omittable"));
+        assertTrue(documentItemSchema.path("properties").path("url").path("description").asText()
+                .contains("Omittable"));
         assertTrue(schema.path("properties").path("dryRun").path("description").asText()
                 .contains("effectiveRequest"));
         assertTrue(schema.path("properties").path("pipelines").path("items").path("properties")
@@ -328,6 +358,40 @@ class CrawlDocumentsToolTest {
         assertEquals("***REDACTED***",
                 metadata.path("sources").get(0).path("properties").path("apiToken").asText());
         assertFalse(result.getMetadata().toString().contains("runtime-secret"));
+        server.verify();
+    }
+
+    @Test
+    void managedValidationAcceptsConnectorDocumentWithoutPathOrUrlWhenIdentityPropertiesExist()
+            throws Exception {
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.createServer(restTemplate);
+        CrawlDocumentsTool tool = new CrawlDocumentsTool(
+                new GroundingBackendClient("http://crawl", restTemplate), mapper);
+        server.expect(requestTo("http://crawl/api/unified-crawl/start"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(request -> {
+                    JsonNode body = mapper.readTree(((MockClientHttpRequest) request).getBodyAsString());
+                    JsonNode source = body.path("sources").get(0);
+                    assertEquals("SLACK_HISTORY", source.path("sourceType").asText());
+                    assertTrue(source.path("pathOrUrl").isNull());
+                    assertEquals("general", source.path("properties")
+                            .path("fromChannelConnection").asText());
+                })
+                .andRespond(withSuccess("""
+                        {"jobId":"slack-1","status":"QUEUED","factSheetId":9,"sourceCount":1}
+                        """, MediaType.APPLICATION_JSON));
+
+        ObjectNode request = mapper.createObjectNode();
+        request.putObject("knowledgeBase").put("id", 9);
+        request.putArray("documents").addObject()
+                .put("sourceType", "SLACK_HISTORY")
+                .putObject("properties").put("fromChannelConnection", "general");
+
+        ToolResult result = tool.execute(request, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals("slack-1", result.getMetadata().get("jobId"));
         server.verify();
     }
 

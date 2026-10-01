@@ -167,7 +167,9 @@ public class KbGroundingTool {
         try {
             String source = input.source() == null || input.source().isBlank()
                     ? "agent-chat" : input.source().trim();
-            Fact fact = Fact.soft(input.atom().trim(), value, "agent:" + source);
+            // Land on the stored spelling of the predicate, so verify and query see the assert.
+            Fact fact = Fact.soft(groundingService.resolveAtomKey(input.factSheetId(), input.atom()),
+                    value, "agent:" + source);
 
             KbGroundingService.AssertResult result = groundingService.assertFact(input.factSheetId(), fact);
 
@@ -307,11 +309,12 @@ public class KbGroundingTool {
 
         try {
             String mode = (input.mode() == null || input.mode().isBlank()) ? "retract" : input.mode().trim();
+            String atomKey = groundingService.resolveAtomKey(input.factSheetId(), input.atomKey());
             KbGroundingService.RetractResult retractResult;
             if ("revise".equalsIgnoreCase(mode)) {
-                retractResult = groundingService.retractAndRevise(input.factSheetId(), input.atomKey().trim());
+                retractResult = groundingService.retractAndRevise(input.factSheetId(), atomKey);
             } else {
-                retractResult = groundingService.retractFact(input.factSheetId(), input.atomKey().trim());
+                retractResult = groundingService.retractFact(input.factSheetId(), atomKey);
             }
 
             String status = retractResult.found() ? "RETRACTED" : "NOT_FOUND";
@@ -319,7 +322,7 @@ public class KbGroundingTool {
 
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("status", status);
-            out.put("atomKey", input.atomKey().trim());
+            out.put("atomKey", atomKey);
             out.put("mode", mode.toLowerCase());
             out.put("dependentAtomsUnsupported",
                     revision.unsupportedAtoms() != null ? List.copyOf(revision.unsupportedAtoms()) : List.of());

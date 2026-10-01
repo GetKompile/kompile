@@ -24,7 +24,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -66,10 +65,10 @@ class BetaEvidenceAccumulationTest {
     private final List<Object> events = new ArrayList<>();
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         groundingService = new KbGroundingService();
         promotionTracker = new FactPromotionTracker(events::add);
-        setField(promotionTracker, "dataDir", tempDir.toString());
+        promotionTracker.dataDir = tempDir.toString();
 
         FileBackedWeightStore fileStore = new FileBackedWeightStore(tempDir.toString());
 
@@ -82,7 +81,7 @@ class BetaEvidenceAccumulationTest {
                 fileStore,
                 null);      // no MEBN adapter
 
-        setField(orchestrator, "dataDir", tempDir.toString());
+        orchestrator.dataDir = tempDir.toString();
 
         // Wire the promotion tracker (mirrors Spring @Autowired field)
         orchestrator.promotionTracker = promotionTracker;
@@ -167,12 +166,7 @@ class BetaEvidenceAccumulationTest {
             promotionTracker.checkPromotion(FS_ID + 1, atomKey, Double.NaN, 0.5, "r" + i, trust);
         }
 
-        double evidencePos;
-        try {
-            evidencePos = getEvidencePos(FS_ID + 1, atomKey);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        double evidencePos = getEvidencePos(FS_ID + 1, atomKey);
         assertEquals(n * trust, evidencePos, 1e-9,
                 "evidencePos must equal " + n + " × trustDefault = " + (n * trust));
     }
@@ -206,39 +200,13 @@ class BetaEvidenceAccumulationTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────────
 
-    /**
-     * Retrieve the cumulative {@code evidencePos} for the given atom via reflection on
-     * the inner {@code PromotionState} class (which is private-static in FactPromotionTracker).
-     */
-    private double getEvidencePos(long factSheetId, String atomKey) throws Exception {
-        Field stateMapField = FactPromotionTracker.class.getDeclaredField("stateMap");
-        stateMapField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        ConcurrentHashMap<Long, ConcurrentHashMap<String, Object>> outerMap =
-                (ConcurrentHashMap<Long, ConcurrentHashMap<String, Object>>) stateMapField.get(promotionTracker);
-        ConcurrentHashMap<String, Object> sheetMap = outerMap.get(factSheetId);
+    /** Reads the cumulative {@code evidencePos} the tracker holds for the given atom. */
+    private double getEvidencePos(long factSheetId, String atomKey) {
+        ConcurrentHashMap<String, FactPromotionTracker.PromotionState> sheetMap =
+                promotionTracker.stateMap.get(factSheetId);
         assertNotNull(sheetMap, "No stateMap entry for factSheetId=" + factSheetId);
-        Object state = sheetMap.get(atomKey);
+        FactPromotionTracker.PromotionState state = sheetMap.get(atomKey);
         assertNotNull(state, "No stateMap entry for atomKey=" + atomKey);
-        Field epField = state.getClass().getDeclaredField("evidencePos");
-        epField.setAccessible(true);
-        return (double) epField.get(state);
-    }
-
-    private void setField(Object target, String name, Object value) throws Exception {
-        Field f = findField(target.getClass(), name);
-        f.setAccessible(true);
-        f.set(target, value);
-    }
-
-    private Field findField(Class<?> clazz, String name) throws NoSuchFieldException {
-        while (clazz != null) {
-            try {
-                return clazz.getDeclaredField(name);
-            } catch (NoSuchFieldException e) {
-                clazz = clazz.getSuperclass();
-            }
-        }
-        throw new NoSuchFieldException(name);
+        return state.evidencePos;
     }
 }

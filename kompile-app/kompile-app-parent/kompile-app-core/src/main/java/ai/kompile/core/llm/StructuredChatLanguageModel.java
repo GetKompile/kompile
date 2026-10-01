@@ -27,6 +27,13 @@ import java.util.Map;
  */
 public interface StructuredChatLanguageModel {
 
+    /**
+     * Most inline images one request may carry, counted across every message. Local vision
+     * serving refuses more, since each image is a full vision-encoder pass held in device
+     * memory, and chat clients drop the oldest images to stay within it.
+     */
+    int MAX_INLINE_IMAGES_PER_REQUEST = 8;
+
     enum ToolDefinitionFormat {
         STANDARD,
         FLAT
@@ -45,13 +52,22 @@ public interface StructuredChatLanguageModel {
         NONE
     }
 
-    record Message(String role, String content) {
+    /**
+     * One conversation message. {@code images} belong to this message and render before its
+     * text, so a multi-turn conversation keeps every image in the turn that sent it.
+     */
+    record Message(String role, String content, List<InlineImage> images) {
         public Message {
             role = role == null ? "" : role.trim();
             content = content == null ? "" : content;
+            images = images == null ? List.of() : List.copyOf(images);
             if (role.isBlank()) {
                 throw new IllegalArgumentException("message role must not be blank");
             }
+        }
+
+        public Message(String role, String content) {
+            this(role, content, List.of());
         }
     }
 
@@ -98,8 +114,10 @@ public interface StructuredChatLanguageModel {
     }
 
     /**
-     * One structured chat request. {@code images} are inline images for the latest
-     * user turn; they default to empty and all legacy constructors stay intact.
+     * One structured chat request. Images normally ride on the {@link Message} that sent
+     * them; the request-level {@code images} are the older wire shape, meaning "images for
+     * the latest user turn", and adapters attach them to the last user message. Both default
+     * to empty and all legacy constructors stay intact.
      */
     record Request(
             List<Message> messages,
@@ -164,9 +182,18 @@ public interface StructuredChatLanguageModel {
                     ToolCallFormat.MODEL, ToolChoice.AUTO, Map.of());
         }
 
-        /** True when this turn carries inline images. */
+        /** True when any message, or the request itself, carries inline images. */
         public boolean hasImages() {
-            return !images.isEmpty();
+            return imageCount() > 0;
+        }
+
+        /** Every inline image in the conversation, message-level and request-level. */
+        public int imageCount() {
+            int count = images.size();
+            for (Message message : messages) {
+                count += message.images().size();
+            }
+            return count;
         }
     }
 
@@ -216,6 +243,17 @@ public interface StructuredChatLanguageModel {
                 List<ToolCall> toolCalls,
                 List<String> parseErrors) {
             this(rawText, content, "", List.of(), toolCalls, parseErrors);
+        }
+    }
+
+    /**
+     * Thrown when a request carries images and the loaded model has no vision path. The serving
+     * endpoint maps only this type to {@code errorKind=IMAGE_INPUT_UNSUPPORTED}, so an unrelated
+     * {@link UnsupportedOperationException} deep in a backend is never reported as a vision gap.
+     */
+    final class ImageInputUnsupportedException extends UnsupportedOperationException {
+        public ImageInputUnsupportedException(String message) {
+            super(message);
         }
     }
 

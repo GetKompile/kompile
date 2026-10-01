@@ -1593,11 +1593,11 @@
           </button>
         </div>
         <input #fileInput type="file" class="attachment-input"
-          accept="image/*,.pdf,.txt,.md,.markdown,.json,.jsonl,.csv,.tsv,.xml,.yaml,.yml,.log,.properties,.ini,.java,.kt,.py,.ts,.tsx,.js,.jsx,.html,.css,.scss,.sql,.sh,.c,.cc,.cpp,.cu,.cuh,.h,.hpp,.rs,.go,.toml,.gradle"
+          accept=".png,.jpg,.jpeg,.gif,.webp,.svg,.pdf,.txt,.md,.markdown,.json,.jsonl,.csv,.tsv,.xml,.yaml,.yml,.log,.properties,.ini,.java,.kt,.py,.ts,.tsx,.js,.jsx,.html,.css,.scss,.sql,.sh,.c,.cc,.cpp,.cu,.cuh,.h,.hpp,.rs,.go,.toml,.gradle"
           multiple (change)="onFileSelected($event)" data-testid="attachment-input">
         <button type="button" class="attach-btn" (click)="onAttachClick()"
           [disabled]="isLoading || isStreaming || !selectedAgent"
-          title="Attach images, PDFs, or text files (8 files, 20 MiB total)"
+          title="Attach PNG, JPEG, GIF or WebP images, PDFs, or text files (8 files, 5 MiB each, 20 MiB total)"
           aria-label="Attach files" data-testid="attach-btn">📎</button>
         <textarea [ngModel]="userInput" (ngModelChange)="onUserInputChange($event)" [ngModelOptions]="{standalone: true}"
           placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : (isStreaming ? (liveControlsReady ? 'Queue a follow-up, or type / for live commands' : 'Queue a message — it sends when the run finishes') : 'Type your message...') }}"

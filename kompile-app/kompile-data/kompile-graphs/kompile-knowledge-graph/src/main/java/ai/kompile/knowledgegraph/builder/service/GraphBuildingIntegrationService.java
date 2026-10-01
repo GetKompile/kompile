@@ -68,7 +68,7 @@ public class GraphBuildingIntegrationService {
 
     // Track running jobs for cancellation
     private final ConcurrentHashMap<String, Boolean> cancelledJobs = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Thread> runningJobs = new ConcurrentHashMap<>();
+    ConcurrentHashMap<String, Thread> runningJobs = new ConcurrentHashMap<>();
 
     /**
      * Trigger graph building asynchronously for a fact sheet's indexed chunks.

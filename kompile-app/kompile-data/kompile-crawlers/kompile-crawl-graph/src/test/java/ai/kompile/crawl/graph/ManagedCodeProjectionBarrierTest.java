@@ -6,7 +6,6 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.crawl.graph.UnifiedCrawlSource;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -22,7 +21,7 @@ class ManagedCodeProjectionBarrierTest {
     void usesResolvedFactSheetAndDeduplicatesProjects() {
         UnifiedCrawlGraphServiceImpl service = new UnifiedCrawlGraphServiceImpl();
         ManagedCodeProjectionCallback callback = mock(ManagedCodeProjectionCallback.class);
-        ReflectionTestUtils.setField(service, "managedCodeProjectionCallback", callback);
+        service.managedCodeProjectionCallback = callback;
         UnifiedCrawlJob job = job(42L, managed("app"), managed("app"), managed("library"));
 
         service.awaitManagedCodeProjection(job);
@@ -34,7 +33,7 @@ class ManagedCodeProjectionBarrierTest {
     void ordinarySourcesDoNotRequireCallback() {
         UnifiedCrawlGraphServiceImpl service = new UnifiedCrawlGraphServiceImpl();
         ManagedCodeProjectionCallback callback = mock(ManagedCodeProjectionCallback.class);
-        ReflectionTestUtils.setField(service, "managedCodeProjectionCallback", callback);
+        service.managedCodeProjectionCallback = callback;
         UnifiedCrawlSource source = UnifiedCrawlSource.builder()
                 .sourceType(DocumentSourceDescriptor.SourceType.DIRECTORY)
                 .pathOrUrl("/docs").build();

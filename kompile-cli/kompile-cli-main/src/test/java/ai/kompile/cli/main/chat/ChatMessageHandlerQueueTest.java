@@ -3,6 +3,7 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.CliTool;
@@ -14,12 +15,14 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -1580,6 +1583,283 @@ class ChatMessageHandlerQueueTest {
             serverExecutor.shutdownNow();
             processes.close();
             ChatCompleter.setActivity(null);
+        }
+    }
+
+    @Test
+    void escapeHoldsAutomaticMessagesBehindTypedInput() throws Exception {
+        try (RecordingProvider provider = new RecordingProvider()) {
+            ChatRepl repl = new ChatRepl(
+                    null, null, "escape-hold-" + System.nanoTime(), false, "default", false,
+                    new ChatConfig("custom", null, "escape-hold-test", provider.url()));
+            ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+            MessageQueue queue = field(repl, "messageQueue", MessageQueue.class);
+            BackgroundProcessManager processes = field(
+                    repl, "processManager", BackgroundProcessManager.class);
+            try {
+                field(repl, "agenticLoop", AgenticChatLoop.class).setPerformanceHarness(null);
+                queue.clear();
+                handler.handleChatMessage("hold-first");
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
+                handler.handleExternalMessage("[System process completion] hold-event");
+                assertTrue(handler.handleUserFeedback("hold-feedback", false));
+                handler.handleChatMessage("hold-typed");
+                assertEquals(1, queue.size(), "typed input waits in the queue while the turn runs");
+
+                assertTrue(handler.requestCancel(), "Escape should stop the active turn");
+                assertTrue(awaitCondition(() -> provider.bodies.size() >= 2, 10, TimeUnit.SECONDS),
+                        () -> "the typed message was not sent after Escape\n" + activeTurnStack(handler));
+                String afterEscape = provider.bodies.get(1);
+                assertTrue(afterEscape.contains("hold-typed"),
+                        "the first turn after Escape must be the one the user typed");
+                assertFalse(afterEscape.contains("hold-event"),
+                        "a process event must not answer Escape ahead of typed input");
+                assertFalse(afterEscape.contains("hold-feedback"),
+                        "judge feedback must not answer Escape ahead of typed input");
+
+                assertTrue(awaitCondition(() -> provider.laterBodyContains("hold-event")
+                                && provider.laterBodyContains("hold-feedback")
+                                && !repl.isLlmBusy(), 10, TimeUnit.SECONDS),
+                        () -> "held automatic messages were not delivered with the next turn\n"
+                                + activeTurnStack(handler));
+            } finally {
+                queue.clear();
+                handler.shutdown();
+                processes.close();
+                ChatCompleter.setActivity(null);
+            }
+        }
+    }
+
+    @Test
+    void escapeWithNothingTypedStartsNoTurn() throws Exception {
+        try (RecordingProvider provider = new RecordingProvider()) {
+            ChatRepl repl = new ChatRepl(
+                    null, null, "escape-idle-" + System.nanoTime(), false, "default", false,
+                    new ChatConfig("custom", null, "escape-idle-test", provider.url()));
+            ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+            MessageQueue queue = field(repl, "messageQueue", MessageQueue.class);
+            BackgroundProcessManager processes = field(
+                    repl, "processManager", BackgroundProcessManager.class);
+            AtomicReference<?> owner = field(handler, "activeDispatchThread", AtomicReference.class);
+            String event = "[System process completion] idle-event";
+            try {
+                field(repl, "agenticLoop", AgenticChatLoop.class).setPerformanceHarness(null);
+                queue.clear();
+                handler.handleChatMessage("idle-first");
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
+                handler.handleExternalMessage(event);
+
+                assertTrue(handler.requestCancel(), "Escape should stop the active turn");
+                assertTrue(awaitCondition(() -> owner.get() == null && !repl.isLlmBusy(),
+                                10, TimeUnit.SECONDS),
+                        () -> "the stopped turn did not release\n" + activeTurnStack(handler));
+                // The release and any successor it starts share this lock.
+                synchronized (field(handler, "turnDispatchLock", Object.class)) {
+                    assertFalse(repl.isLlmBusy(), "Escape must not be answered by a new turn");
+                    assertEquals(1, provider.bodies.size(), "no model request may follow Escape");
+                    assertTrue(field(handler, "mandatoryExternalMessages", Collection.class)
+                            .contains(event), "the process event must be held, not dropped");
+                }
+
+                handler.handleChatMessage("idle-next");
+                assertTrue(awaitCondition(() -> provider.bodies.size() >= 2, 10, TimeUnit.SECONDS),
+                        () -> "the next typed message was not sent\n" + activeTurnStack(handler));
+                String next = provider.bodies.get(1);
+                assertTrue(next.contains("idle-next"));
+                assertFalse(next.contains("idle-event"),
+                        "the held event follows the user's next message, not ahead of it");
+                assertTrue(awaitCondition(() -> provider.laterBodyContains("idle-event")
+                                && !repl.isLlmBusy(), 10, TimeUnit.SECONDS),
+                        () -> "the held event was not delivered with the next turn\n"
+                                + activeTurnStack(handler));
+            } finally {
+                queue.clear();
+                handler.shutdown();
+                processes.close();
+                ChatCompleter.setActivity(null);
+            }
+        }
+    }
+
+    @Test
+    void secondEscapeDoesNotInterruptTheStoppingTurn() throws Exception {
+        ChatRepl repl = new ChatRepl(
+                null, null, "second-escape-" + System.nanoTime(), false, "default", false,
+                new ChatConfig("custom", null, "queue-test", "http://127.0.0.1:1"));
+        ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+        BackgroundProcessManager processes = field(
+                repl, "processManager", BackgroundProcessManager.class);
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch finishCleanup = new CountDownLatch(1);
+        AtomicBoolean cleanupFinished = new AtomicBoolean();
+        AtomicBoolean cleanupInterrupted = new AtomicBoolean();
+        try {
+            assertTrue(handler.dispatchMaintenanceTurn(() -> {
+                running.countDown();
+                try {
+                    new CountDownLatch(1).await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException stopped) {
+                    // Stands in for the history writes a stopping turn still makes.
+                    cleanupStarted.countDown();
+                    try {
+                        cleanupFinished.set(finishCleanup.await(5, TimeUnit.SECONDS));
+                    } catch (InterruptedException again) {
+                        cleanupInterrupted.set(true);
+                    }
+                }
+            }, "second-escape-test"));
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+
+            assertTrue(handler.requestCancel(), "the first Escape stops the turn");
+            assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS),
+                    "the first Escape did not interrupt the turn owner");
+            assertTrue(handler.requestCancel(), "a second Escape is still accepted");
+            finishCleanup.countDown();
+
+            assertTrue(awaitCondition(() -> !repl.isLlmBusy(), 5, TimeUnit.SECONDS),
+                    () -> "the stopped turn did not release\n" + activeTurnStack(handler));
+            assertFalse(cleanupInterrupted.get(),
+                    "a second Escape must not interrupt the stopping turn's cleanup");
+            assertTrue(cleanupFinished.get(), "the stopping turn's cleanup did not finish");
+        } finally {
+            finishCleanup.countDown();
+            handler.shutdown();
+            processes.close();
+            ChatCompleter.setActivity(null);
+        }
+    }
+
+    @Test
+    void turnClaudeStartedByItselfRunsFirstAfterEscape() throws Exception {
+        String followUp = "[Claude Code follow-up f1: a turn Claude Code started by itself]";
+        assertTrue(DirectLlmClient.isProviderFollowUp(followUp), "the follow-up marker format changed");
+        try (RecordingProvider provider = new RecordingProvider()) {
+            ChatRepl repl = new ChatRepl(
+                    null, null, "escape-follow-up-" + System.nanoTime(), false, "default", false,
+                    new ChatConfig("custom", null, "escape-follow-up-test", provider.url()));
+            ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+            MessageQueue queue = field(repl, "messageQueue", MessageQueue.class);
+            BackgroundProcessManager processes = field(
+                    repl, "processManager", BackgroundProcessManager.class);
+            ChatHistory history = field(repl, "chatHistory", ChatHistory.class);
+            try {
+                field(repl, "agenticLoop", AgenticChatLoop.class).setPerformanceHarness(null);
+                history.open("(local)", "default", false);
+                queue.clear();
+                handler.handleChatMessage("follow-first");
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
+                handler.handleChatMessage("typed while Claude worked");
+                handler.handleExternalMessage(followUp);
+                assertEquals(1, queue.size());
+
+                assertTrue(handler.requestCancel(), "Escape should stop the active turn");
+                assertTrue(awaitCondition(() -> provider.laterBodyContains("typed while Claude worked")
+                                && !repl.isLlmBusy(), 10, TimeUnit.SECONDS),
+                        () -> "the typed message was not sent after the follow-up\n"
+                                + activeTurnStack(handler));
+                String transcript = history.readTranscript();
+                int shown = transcript.indexOf("[system] " + followUp);
+                int typed = transcript.indexOf("> typed while Claude worked");
+                assertTrue(shown >= 0, () -> "the follow-up turn was never shown\n" + transcript);
+                assertTrue(typed > shown,
+                        () -> "the turn Claude Code already started must be shown first\n" + transcript);
+            } finally {
+                queue.clear();
+                handler.shutdown();
+                processes.close();
+                ChatCompleter.setActivity(null);
+            }
+        }
+    }
+
+    @Test
+    void restartRecordsItsOwnStopLabel() throws Exception {
+        try (RecordingProvider provider = new RecordingProvider()) {
+            ChatRepl repl = new ChatRepl(
+                    null, null, "restart-stop-" + System.nanoTime(), false, "default", false,
+                    new ChatConfig("custom", null, "restart-stop-test", provider.url()));
+            ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+            BackgroundProcessManager processes = field(
+                    repl, "processManager", BackgroundProcessManager.class);
+            ChatHistory history = field(repl, "chatHistory", ChatHistory.class);
+            try {
+                field(repl, "agenticLoop", AgenticChatLoop.class).setPerformanceHarness(null);
+                history.open("(local)", "default", false);
+                handler.handleChatMessage("restart-first");
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
+
+                // What ChatRepl does after /restart, before closing the session.
+                handler.noteSessionRestarting();
+                handler.shutdown();
+                assertTrue(awaitCondition(() -> !repl.isLlmBusy(), 5, TimeUnit.SECONDS),
+                        () -> "the restarted session's turn did not release\n"
+                                + activeTurnStack(handler));
+                String transcript = history.readTranscript();
+                assertTrue(transcript.contains("Stopped: session restarting"), transcript);
+                assertFalse(transcript.contains(AgenticChatLoop.DEFAULT_STOP_LABEL),
+                        () -> "a restart must not read as the user's Escape\n" + transcript);
+            } finally {
+                handler.shutdown();
+                processes.close();
+                ChatCompleter.setActivity(null);
+            }
+        }
+    }
+
+    /** A model endpoint that holds its first request until closed and answers the rest with "ok". */
+    private static final class RecordingProvider implements AutoCloseable {
+        final CountDownLatch firstRequest = new CountDownLatch(1);
+        final List<String> bodies = new CopyOnWriteArrayList<>();
+        private final CountDownLatch releaseFirst = new CountDownLatch(1);
+        private final AtomicInteger requests = new AtomicInteger();
+        private final ExecutorService executor = Executors.newCachedThreadPool();
+        private final HttpServer server;
+
+        RecordingProvider() throws IOException {
+            server = HttpServer.create(new InetSocketAddress(0), 0);
+            server.setExecutor(executor);
+            server.createContext("/", exchange -> {
+                String requestBody = new String(
+                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                int requestNumber = requests.incrementAndGet();
+                bodies.add(requestBody);
+                try {
+                    if (requestNumber == 1) {
+                        firstRequest.countDown();
+                        releaseFirst.await(30, TimeUnit.SECONDS);
+                    }
+                    byte[] body = ("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},"
+                            + "\"finish_reason\":null}]}\n\n"
+                            + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                            + "data: [DONE]\n\n").getBytes(StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+                    exchange.sendResponseHeaders(200, body.length);
+                    exchange.getResponseBody().write(body);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    exchange.close();
+                }
+            });
+            server.start();
+        }
+
+        String url() {
+            return "http://127.0.0.1:" + server.getAddress().getPort();
+        }
+
+        /** True when a request after the held first one carried the text. */
+        boolean laterBodyContains(String text) {
+            return bodies.stream().skip(1).anyMatch(body -> body.contains(text));
+        }
+
+        @Override
+        public void close() {
+            releaseFirst.countDown();
+            server.stop(0);
+            executor.shutdownNow();
         }
     }
 

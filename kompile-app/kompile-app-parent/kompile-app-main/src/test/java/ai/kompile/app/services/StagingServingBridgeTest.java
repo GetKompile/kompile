@@ -26,7 +26,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 import java.net.URI;
@@ -73,9 +72,9 @@ class StagingServingBridgeTest {
     @BeforeEach
     void setUp() {
         bridge = new StagingServingBridge();
-        ReflectionTestUtils.setField(bridge, "launcher", launcher);
-        ReflectionTestUtils.setField(bridge, "kbConfigManager", kbConfigManager);
-        ReflectionTestUtils.setField(bridge, "stagingUrl", "http://localhost:8090");
+        bridge.launcher = launcher;
+        bridge.kbConfigManager = kbConfigManager;
+        bridge.stagingUrl = "http://localhost:8090";
     }
 
     private KbConfig configWith(boolean servingAutoLoadEnabled) {
@@ -127,9 +126,9 @@ class StagingServingBridgeTest {
         when(kbConfigManager.current()).thenReturn(configWith(true));
         // Simulate: currentModelId is null and staging returns null (no active LLM)
         StagingServingBridge testBridge = new BridgeWithMockHttp("{\"active\":{}}");
-        ReflectionTestUtils.setField(testBridge, "launcher", launcher);
-        ReflectionTestUtils.setField(testBridge, "kbConfigManager", kbConfigManager);
-        ReflectionTestUtils.setField(testBridge, "stagingUrl", "http://localhost:8090");
+        testBridge.launcher = launcher;
+        testBridge.kbConfigManager = kbConfigManager;
+        testBridge.stagingUrl = "http://localhost:8090";
         // currentModelId stays null — matches staging null → no change
         testBridge.poll();
         verifyNoInteractions(launcher);
@@ -140,14 +139,14 @@ class StagingServingBridgeTest {
         when(kbConfigManager.current()).thenReturn(configWith(true));
         when(launcher.isRunning()).thenReturn(false);
         StagingServingBridge testBridge = new BridgeWithMockHttp(activeResponse("my-llm"));
-        ReflectionTestUtils.setField(testBridge, "launcher", launcher);
-        ReflectionTestUtils.setField(testBridge, "kbConfigManager", kbConfigManager);
-        ReflectionTestUtils.setField(testBridge, "currentModelId", "my-llm");
+        testBridge.launcher = launcher;
+        testBridge.kbConfigManager = kbConfigManager;
+        testBridge.currentModelId = "my-llm";
 
         testBridge.poll();
 
         verify(launcher).loadModel("my-llm", "/tmp/test-model.sdz", null);
-        assertEquals("my-llm", ReflectionTestUtils.getField(testBridge, "currentModelId"));
+        assertEquals("my-llm", testBridge.currentModelId);
     }
 
     @Test
@@ -155,9 +154,9 @@ class StagingServingBridgeTest {
         when(kbConfigManager.current()).thenReturn(configWith(true));
         when(launcher.isRunning()).thenReturn(true);
         StagingServingBridge testBridge = new BridgeWithMockHttp(activeResponse("my-llm"));
-        ReflectionTestUtils.setField(testBridge, "launcher", launcher);
-        ReflectionTestUtils.setField(testBridge, "kbConfigManager", kbConfigManager);
-        ReflectionTestUtils.setField(testBridge, "currentModelId", "my-llm");
+        testBridge.launcher = launcher;
+        testBridge.kbConfigManager = kbConfigManager;
+        testBridge.currentModelId = "my-llm";
 
         testBridge.poll();
 
@@ -172,10 +171,10 @@ class StagingServingBridgeTest {
         when(kbConfigManager.current()).thenReturn(configWith(true));
         // Pretend: last known = "my-llm", staging now has nothing
         StagingServingBridge testBridge = new BridgeWithMockHttp("{\"active\":{}}");
-        ReflectionTestUtils.setField(testBridge, "launcher", launcher);
-        ReflectionTestUtils.setField(testBridge, "kbConfigManager", kbConfigManager);
-        ReflectionTestUtils.setField(testBridge, "stagingUrl", "http://localhost:8090");
-        ReflectionTestUtils.setField(testBridge, "currentModelId", "my-llm");
+        testBridge.launcher = launcher;
+        testBridge.kbConfigManager = kbConfigManager;
+        testBridge.stagingUrl = "http://localhost:8090";
+        testBridge.currentModelId = "my-llm";
 
         testBridge.poll();
 
@@ -190,10 +189,7 @@ class StagingServingBridgeTest {
         String previous = System.getProperty("kompile.llm.cache.dir");
         try {
             System.setProperty("kompile.llm.cache.dir", cacheDir.toString());
-            java.lang.reflect.Method method = StagingServingBridge.class.getDeclaredMethod("llmCacheDir");
-            method.setAccessible(true);
-
-            assertEquals(cacheDir, method.invoke(null));
+            assertEquals(cacheDir, StagingServingBridge.llmCacheDir());
         } finally {
             if (previous == null) {
                 System.clearProperty("kompile.llm.cache.dir");
@@ -238,7 +234,7 @@ class StagingServingBridgeTest {
 
         BridgeWithMockHttp(String fixedBody) {
             this.fixedBody = fixedBody;
-            ReflectionTestUtils.setField(this, "stagingUrl", "http://localhost:8090");
+            stagingUrl = "http://localhost:8090";
         }
 
         @Override

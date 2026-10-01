@@ -27,7 +27,6 @@ import ai.kompile.app.services.scheduler.JobResourceProfile;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ai.kompile.app.services.cluster.CrawlWorkerRegistry;
 import ai.kompile.app.services.cluster.WorkerCapabilities;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -81,7 +80,7 @@ class DistributedCrawlCoordinatorTest {
         // (the live cluster size) rather than the min(sources, 4) = 4 fallback.
         CrawlWorkerRegistry registry = mock(CrawlWorkerRegistry.class);
         when(registry.liveWorkers(anyLong())).thenReturn(List.of(crawlWorker("w1"), crawlWorker("w2")));
-        ReflectionTestUtils.setField(coordinator, "workerRegistry", registry);
+        coordinator.workerRegistry = registry;
 
         List<UnifiedCrawlSource> sources = List.of(
                 UnifiedCrawlSource.builder().label("A").pathOrUrl("a").build(),

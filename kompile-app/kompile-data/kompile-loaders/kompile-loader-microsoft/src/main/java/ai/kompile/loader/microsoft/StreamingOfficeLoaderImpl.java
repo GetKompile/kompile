@@ -21,7 +21,12 @@ import ai.kompile.core.loaders.LargeDocumentInfo;
 import ai.kompile.core.loaders.StreamingDocumentLoader;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xslf.usermodel.XMLSlideShow;
+import org.apache.poi.xslf.usermodel.XSLFShape;
 import org.apache.poi.xslf.usermodel.XSLFSlide;
+import org.apache.poi.xslf.usermodel.XSLFTable;
+import org.apache.poi.xslf.usermodel.XSLFTableCell;
+import org.apache.poi.xslf.usermodel.XSLFTableRow;
+import org.apache.poi.xslf.usermodel.XSLFTextShape;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
@@ -406,16 +411,32 @@ public class StreamingOfficeLoaderImpl extends MicrosoftOfficeLoaderImpl impleme
                     content.append("\n\n");
 
                     // Use slide extractor pattern
-                    slide.getShapes().forEach(shape -> {
-                        if (shape instanceof org.apache.poi.xslf.usermodel.XSLFTextShape) {
-                            org.apache.poi.xslf.usermodel.XSLFTextShape textShape =
-                                (org.apache.poi.xslf.usermodel.XSLFTextShape) shape;
+                    for (XSLFShape shape : slide.getShapes()) {
+                        if (shape instanceof XSLFTable table) {
+                            // XSLFTable is a graphic frame, not an XSLFTextShape - handled
+                            // separately so table cell text is not silently dropped.
+                            for (XSLFTableRow row : table.getRows()) {
+                                StringBuilder rowText = new StringBuilder();
+                                for (XSLFTableCell cell : row.getCells()) {
+                                    String cellText = cell.getText();
+                                    if (cellText != null && !cellText.isBlank()) {
+                                        if (rowText.length() > 0) {
+                                            rowText.append("\t");
+                                        }
+                                        rowText.append(cellText.trim());
+                                    }
+                                }
+                                if (rowText.length() > 0) {
+                                    content.append(rowText).append("\n");
+                                }
+                            }
+                        } else if (shape instanceof XSLFTextShape textShape) {
                             String text = textShape.getText();
                             if (text != null && !text.trim().isEmpty()) {
                                 content.append(text).append("\n");
                             }
                         }
-                    });
+                    }
 
                     currentSlide++;
 
@@ -466,7 +487,7 @@ public class StreamingOfficeLoaderImpl extends MicrosoftOfficeLoaderImpl impleme
                 return cell.getStringCellValue();
             case NUMERIC:
                 if (DateUtil.isCellDateFormatted(cell)) {
-                    return cell.getDateCellValue().toString();
+                    return ExcelCellDates.format(cell);
                 } else {
                     return String.valueOf(cell.getNumericCellValue());
                 }

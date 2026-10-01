@@ -5,6 +5,8 @@
  */
 package ai.kompile.knowledgegraph.unified;
 
+import ai.kompile.graph.reasoning.confidence.Opinion;
+import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
@@ -14,6 +16,7 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.reasoning.GraphToFactStoreProjector;
 import ai.kompile.knowledgegraph.service.BoundedKnowledgeGraphReader;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -21,16 +24,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.test.util.ReflectionTestUtils;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -78,8 +86,7 @@ class UnifiedGraphBridgeTest {
 
     @Test
     void boundedNeighborhoodUsesPointAndAdjacencyReadsWithoutWholeScopeEnumeration() {
-        KnowledgeGraphService storage = mock(KnowledgeGraphService.class,
-                withSettings().extraInterfaces(BoundedKnowledgeGraphReader.class));
+        KnowledgeGraphService storage = boundedStore();
         BoundedKnowledgeGraphReader boundedStorage = (BoundedKnowledgeGraphReader) storage;
         UnifiedGraphBridge boundedBridge = new UnifiedGraphBridge(storage);
         GraphNode a = GraphNode.builder().nodeId("a").externalId("a")
@@ -106,8 +113,7 @@ class UnifiedGraphBridgeTest {
 
     @Test
     void boundedNeighborhoodUsesScopedIncomingReadsAndHardEdgeBudget() {
-        KnowledgeGraphService storage = mock(KnowledgeGraphService.class,
-                withSettings().extraInterfaces(BoundedKnowledgeGraphReader.class));
+        KnowledgeGraphService storage = boundedStore();
         BoundedKnowledgeGraphReader boundedStorage = (BoundedKnowledgeGraphReader) storage;
         UnifiedGraphBridge boundedBridge = new UnifiedGraphBridge(storage);
         GraphNode a = GraphNode.builder().nodeId("a").externalId("a")
@@ -131,6 +137,42 @@ class UnifiedGraphBridgeTest {
         assertEquals(true, result.meta().get("truncated"));
         verify(storage, never()).getNode(anyString());
         verify(storage, never()).getEdgesInFactSheet(anyLong());
+    }
+
+    @Test
+    void aStoreThatAnswersTheWholeNeighborhoodIsAskedOnce() {
+        KnowledgeGraphService storage = mock(KnowledgeGraphService.class,
+                withSettings().extraInterfaces(BoundedKnowledgeGraphReader.class));
+        BoundedKnowledgeGraphReader boundedStorage = (BoundedKnowledgeGraphReader) storage;
+        GraphNode a = entityNode("a");
+        GraphNode b = entityNode("b");
+        when(boundedStorage.getNeighborhood(7L, List.of("a"), List.of("a"), 1, 10,
+                BoundedKnowledgeGraphReader.Direction.BOTH, 100))
+                .thenReturn(new BoundedKnowledgeGraphReader.Neighborhood(
+                        List.of(a, b), List.of(edge("a-b", a, b, "CALLS")), true));
+
+        UnifiedGraph bounded = new UnifiedGraphBridge(storage).exportNeighborhood(7L, List.of("a"), 1, 10);
+
+        assertEquals(2, bounded.entityCount());
+        assertEquals(1, bounded.relationCount());
+        assertEquals(true, bounded.meta().get("truncated"));
+        verify(boundedStorage, never()).getNodeInScope(anyString(), any());
+        verify(boundedStorage, never()).getIncidentEdges(anyString(), any(), any(), anyInt());
+    }
+
+    @Test
+    void aStoreWithoutBoundedReadsYieldsOnlyTheSeedsMarkedTruncated() {
+        when(graphService.getNode("a")).thenReturn(Optional.of(entityNode("a")));
+        when(graphService.getNode("b")).thenReturn(Optional.of(
+                GraphNode.builder().nodeId("b").nodeType(NodeLevel.ENTITY).factSheetId(8L).build()));
+
+        UnifiedGraph bounded = bridge.exportNeighborhood(7L, List.of("a", "b"), 1, 10);
+
+        assertEquals(1, bounded.entityCount(), "a node from another fact sheet is out of scope");
+        assertEquals(0, bounded.relationCount());
+        assertEquals(true, bounded.meta().get("truncated"),
+                "without bounded adjacency reads the neighborhood is never presented as complete");
+        verify(graphService, never()).getEdgesInFactSheet(anyLong());
     }
 
     @Test
@@ -219,7 +261,7 @@ class UnifiedGraphBridgeTest {
         });
         when(graphService.createEdgesBatch(anyList())).thenReturn(0);
         UnifiedGraphArtifactContributor contributor = mock(UnifiedGraphArtifactContributor.class);
-        ReflectionTestUtils.setField(bridge, "artifactContributors", List.of(contributor));
+        bridge.artifactContributors = List.of(contributor);
 
         IllegalStateException failure = assertThrows(IllegalStateException.class,
                 () -> bridge.importGraph(imported, 7L));
@@ -237,12 +279,12 @@ class UnifiedGraphBridgeTest {
         UnifiedGraphImportTargetValidator targetValidator = (id, graph) -> {
             throw new IllegalArgumentException("missing destination");
         };
-        ReflectionTestUtils.setField(bridge, "importTargetValidators", List.of(targetValidator));
+        bridge.importTargetValidators = List.of(targetValidator);
 
         assertThrows(IllegalArgumentException.class, () -> bridge.importGraph(imported, 7L));
         verify(graphService, never()).deleteByFactSheetId(anyLong());
 
-        ReflectionTestUtils.setField(bridge, "importTargetValidators", List.of());
+        bridge.importTargetValidators = List.of();
         AtomicBoolean applied = new AtomicBoolean();
         UnifiedGraphArtifactImporter importer = new UnifiedGraphArtifactImporter() {
             @Override
@@ -256,7 +298,7 @@ class UnifiedGraphBridgeTest {
                 return 0;
             }
         };
-        ReflectionTestUtils.setField(bridge, "artifactImporters", List.of(importer));
+        bridge.artifactImporters = List.of(importer);
 
         assertThrows(IllegalArgumentException.class, () -> bridge.importGraph(imported, 7L));
         assertFalse(applied.get());
@@ -332,7 +374,7 @@ class UnifiedGraphBridgeTest {
         List<String> events = new java.util.ArrayList<>();
         UnifiedGraphArtifactImporter first = preparedImporter("a", events, false);
         UnifiedGraphArtifactImporter second = preparedImporter("b", events, true);
-        ReflectionTestUtils.setField(bridge, "artifactImporters", List.of(first, second));
+        bridge.artifactImporters = List.of(first, second);
 
         assertThrows(IllegalStateException.class, () -> bridge.importGraph(imported, 7L));
 
@@ -389,8 +431,8 @@ class UnifiedGraphBridgeTest {
             }
         };
         ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
-        ReflectionTestUtils.setField(bridge, "artifactImporters", List.of(importer));
-        ReflectionTestUtils.setField(bridge, "eventPublisher", publisher);
+        bridge.artifactImporters = List.of(importer);
+        bridge.eventPublisher = publisher;
 
         assertThrows(IllegalStateException.class, () -> bridge.importGraphs(List.of(
                 new UnifiedGraphBridge.ImportScope(firstGraph, 7L),
@@ -406,10 +448,9 @@ class UnifiedGraphBridgeTest {
     void batchPreflightsEveryScopeBeforeMutation() {
         UnifiedGraph first = new UnifiedGraph().factSheetId(7L);
         UnifiedGraph second = new UnifiedGraph().factSheetId(8L);
-        ReflectionTestUtils.setField(bridge, "importTargetValidators",
-                List.of((UnifiedGraphImportTargetValidator) (id, graph) -> {
-                    if (id == 8L) throw new IllegalArgumentException("missing destination");
-                }));
+        bridge.importTargetValidators = List.of((id, graph) -> {
+            if (id == 8L) throw new IllegalArgumentException("missing destination");
+        });
 
         assertThrows(IllegalArgumentException.class, () -> bridge.importGraphs(List.of(
                 new UnifiedGraphBridge.ImportScope(first, 7L),
@@ -424,7 +465,7 @@ class UnifiedGraphBridgeTest {
         when(graphService.createNodesBatch(anyList(), eq(7L))).thenReturn(List.of());
         when(graphService.createEdgesBatch(anyList())).thenReturn(0);
         UnifiedGraphImportJournal journal = mock(UnifiedGraphImportJournal.class);
-        ReflectionTestUtils.setField(bridge, "importJournal", journal);
+        bridge.importJournal = journal;
 
         bridge.importGraph(graph, 7L);
 
@@ -433,6 +474,283 @@ class UnifiedGraphBridgeTest {
         order.verify(journal).start(anyString(), anyList());
         order.verify(journal).markApplying(anyString());
         order.verify(journal).complete(anyString(), eq(UnifiedGraphImportJournal.Phase.COMMITTED));
+    }
+
+    @Test
+    void boundedNeighborhoodCarriesStoredOpinionsForMaterializedIdsOnly() {
+        KnowledgeGraphService storage = boundedStore();
+        BoundedKnowledgeGraphReader boundedStorage = (BoundedKnowledgeGraphReader) storage;
+        UnifiedGraphBridge boundedBridge = new UnifiedGraphBridge(storage);
+        UnifiedGraphAnalysisAssetStore store = UnifiedGraphAnalysisAssetStore.inMemory();
+        boundedBridge.analysisAssets = store;
+        GraphNode a = entityNode("a");
+        GraphNode b = entityNode("b");
+        when(boundedStorage.getNodeInScope("a", 7L)).thenReturn(Optional.of(a));
+        when(boundedStorage.getNodeInScope("b", 7L)).thenReturn(Optional.of(b));
+        when(boundedStorage.getIncidentEdges("a", 7L,
+                BoundedKnowledgeGraphReader.Direction.BOTH, 100))
+                .thenReturn(new BoundedKnowledgeGraphReader.IncidentEdges(
+                        List.of(edge("a-b", a, b, "CALLS")), false));
+        Opinion relationOpinion = Opinion.fromSoftTruth(0.2);
+        Opinion entityOpinion = Opinion.fromSoftTruth(0.9);
+        store.put(7L, new UnifiedGraph()
+                .putRelationOpinion("a-b", relationOpinion)
+                .putRelationOpinion("c-d", Opinion.fromSoftTruth(0.7))
+                .putEntityOpinion("a", entityOpinion)
+                .meta(UnifiedGraphReasoningLifecycle.REASONING_STALE_META, true));
+
+        UnifiedGraph bounded = boundedBridge.exportNeighborhood(7L, List.of("a"), 1, 10);
+
+        assertEquals(Map.of("a-b", relationOpinion), bounded.relationOpinions(),
+                "opinions for relations outside the neighborhood stay in the store");
+        assertEquals(entityOpinion, bounded.entityOpinion("a"));
+        assertNull(bounded.entityOpinion("b"));
+        assertEquals(true, bounded.meta().get(UnifiedGraphReasoningLifecycle.REASONING_STALE_META));
+        verify(storage, never()).getEdgesInFactSheet(anyLong());
+    }
+
+    @Test
+    void publishOverlaysLearnedOpinionsOnACopyKeyedLikeTheExport() {
+        UnifiedGraphAnalysisAssetStore store = UnifiedGraphAnalysisAssetStore.inMemory();
+        GraphToFactStoreProjector projector = mock(GraphToFactStoreProjector.class);
+        bridge.analysisAssets = store;
+        bridge.factStoreProjector = projector;
+        GraphNode a = entityNode("a");
+        GraphNode b = entityNode("b");
+        GraphEdge learned = edge("a-b", a, b, "CALLS");
+        GraphEdge unlearned = edge("b-a", b, a, "USES");
+        GraphEdge withoutId = edge(null, a, b, "OWNS");
+        when(graphService.getNodesByTypeInFactSheet(7L, NodeLevel.ENTITY)).thenReturn(List.of(a, b));
+        when(graphService.getEdgesInFactSheet(7L)).thenReturn(List.of(learned, unlearned, withoutId));
+        when(projector.learnedPosterior(eq(7L), same(learned))).thenReturn(OptionalDouble.of(0.25));
+        when(projector.learnedPosterior(eq(7L), same(unlearned))).thenReturn(OptionalDouble.empty());
+        when(projector.learnedPosterior(eq(7L), same(withoutId))).thenReturn(OptionalDouble.of(1.7));
+        double[] embedding = {0.1, 0.2, 0.3};
+        Opinion carried = Opinion.fromSoftTruth(0.8);
+        UnifiedGraph previous = new UnifiedGraph()
+                .addEntity(GraphEntity.builder("a").type("ENTITY").label("A").embedding(embedding).build())
+                .addEntity(GraphEntity.builder("b").type("ENTITY").label("B").build())
+                .addRelation(GraphRelation.builder("b-a", "b", "a").type("USES").build())
+                .putRelationOpinion("b-a", carried)
+                .putWeightMap("pslWeights", Map.of("rule", 0.5))
+                .meta(UnifiedGraphReasoningLifecycle.REASONING_STALE_META, true);
+        store.put(7L, previous);
+
+        assertEquals(2, bridge.publishLearnedRelationOpinions(7L));
+
+        UnifiedGraph stored = store.get(7L).orElseThrow();
+        assertNotSame(previous, stored, "readers hold the stored graph without locks, so it is replaced, not mutated");
+        assertEquals(Map.of("b-a", carried), previous.relationOpinions());
+        assertEquals(true, previous.meta().get(UnifiedGraphReasoningLifecycle.REASONING_STALE_META));
+        assertEquals(Opinion.fromSoftTruth(0.25), stored.relationOpinion("a-b"));
+        assertEquals(carried, stored.relationOpinion("b-a"), "an edge without a posterior keeps its opinion");
+        assertEquals(false, stored.meta().get(UnifiedGraphReasoningLifecycle.REASONING_STALE_META));
+        assertEquals(Map.of("rule", 0.5), stored.weightMap("pslWeights"));
+
+        UnifiedGraph exported = bridge.export(7L);
+        assertArrayEquals(embedding, exported.entity("a").orElseThrow().embedding(),
+                "the full export still falls back to the stored embedding");
+        assertEquals(Opinion.fromSoftTruth(0.25), exported.relationOpinion("a-b"));
+        GraphRelation owns = exported.relations().stream()
+                .filter(relation -> "OWNS".equals(relation.type())).findFirst().orElseThrow();
+        assertEquals(Opinion.fromSoftTruth(1.0), exported.relationOpinion(owns.id()),
+                "an edge without a stored id is keyed by the export's stable id, posterior clamped to [0,1]");
+    }
+
+    @Test
+    void publishStartsAScopedGraphAndNeverReplacesTheStoreWhenNothingWasLearned() {
+        UnifiedGraphAnalysisAssetStore store = UnifiedGraphAnalysisAssetStore.inMemory();
+        GraphToFactStoreProjector projector = mock(GraphToFactStoreProjector.class);
+        bridge.analysisAssets = store;
+        bridge.factStoreProjector = projector;
+        GraphEdge learned = edge("a-b", entityNode("a"), entityNode("b"), "CALLS");
+        when(graphService.getEdgesInFactSheet(7L)).thenReturn(List.of(learned));
+        when(projector.learnedPosterior(eq(7L), same(learned)))
+                .thenReturn(OptionalDouble.empty(), OptionalDouble.of(0.6), OptionalDouble.empty());
+
+        assertEquals(0, bridge.publishLearnedRelationOpinions(7L));
+        assertTrue(store.get(7L).isEmpty());
+
+        assertEquals(1, bridge.publishLearnedRelationOpinions(7L));
+        UnifiedGraph stored = store.get(7L).orElseThrow();
+        assertEquals("factsheet_7", stored.graphId());
+        assertEquals(Long.valueOf(7L), stored.factSheetId());
+        assertEquals(Opinion.fromSoftTruth(0.6), stored.relationOpinion("a-b"));
+        assertEquals(false, stored.meta().get(UnifiedGraphReasoningLifecycle.REASONING_STALE_META));
+
+        assertEquals(0, bridge.publishLearnedRelationOpinions(7L));
+        assertSame(stored, store.get(7L).orElseThrow(), "a derivation with no posteriors leaves the store as it was");
+    }
+
+    @Test
+    void opinionsTheCrawlProcessPublishesReachAnotherProcessOnTheNextRead(@TempDir Path assets) {
+        GraphToFactStoreProjector projector = mock(GraphToFactStoreProjector.class);
+        bridge.analysisAssets = new UnifiedGraphAnalysisAssetStore(assets);
+        bridge.factStoreProjector = projector;
+        GraphNode a = entityNode("a");
+        GraphNode b = entityNode("b");
+        GraphEdge learned = edge("a-b", a, b, "CALLS");
+        when(graphService.getEdgesInFactSheet(7L)).thenReturn(List.of(learned));
+        when(projector.learnedPosterior(eq(7L), same(learned)))
+                .thenReturn(OptionalDouble.of(0.25), OptionalDouble.of(0.9));
+
+        KnowledgeGraphService chatStorage = boundedStore();
+        BoundedKnowledgeGraphReader boundedChatStorage = (BoundedKnowledgeGraphReader) chatStorage;
+        UnifiedGraphBridge chatBridge = new UnifiedGraphBridge(chatStorage);
+        chatBridge.analysisAssets = new UnifiedGraphAnalysisAssetStore(assets);
+        when(boundedChatStorage.getNodeInScope("a", 7L)).thenReturn(Optional.of(a));
+        when(boundedChatStorage.getNodeInScope("b", 7L)).thenReturn(Optional.of(b));
+        when(boundedChatStorage.getIncidentEdges("a", 7L,
+                BoundedKnowledgeGraphReader.Direction.BOTH, 100))
+                .thenReturn(new BoundedKnowledgeGraphReader.IncidentEdges(List.of(learned), false));
+        assertTrue(chatBridge.exportNeighborhood(7L, List.of("a"), 1, 10).relationOpinions().isEmpty());
+
+        assertEquals(1, bridge.publishLearnedRelationOpinions(7L));
+        UnifiedGraph afterFirst = chatBridge.exportNeighborhood(7L, List.of("a"), 1, 10);
+        assertEquals(Opinion.fromSoftTruth(0.25), afterFirst.relationOpinion("a-b"));
+        assertEquals(false, afterFirst.meta().get(UnifiedGraphReasoningLifecycle.REASONING_STALE_META));
+
+        assertEquals(1, bridge.publishLearnedRelationOpinions(7L));
+        assertEquals(Opinion.fromSoftTruth(0.9),
+                chatBridge.exportNeighborhood(7L, List.of("a"), 1, 10).relationOpinion("a-b"),
+                "a republish replaces what the other process already loaded");
+    }
+
+    @Test
+    void exactSeedIdInScopeIsKeptWithoutSearch() {
+        KnowledgeGraphService storage = mock(KnowledgeGraphService.class,
+                withSettings().extraInterfaces(BoundedKnowledgeGraphReader.class));
+        BoundedKnowledgeGraphReader boundedStorage = (BoundedKnowledgeGraphReader) storage;
+        when(boundedStorage.getNodeInScope("person-1", 7L)).thenReturn(Optional.of(entityNode("person-1")));
+
+        assertEquals(List.of("person-1"), new UnifiedGraphBridge(storage).resolveSeedIds(7L, "person-1"));
+        verify(storage, never()).searchNodesInFactSheet(any(), any(), anyInt());
+        verify(storage, never()).searchNodes(any(), any(), anyInt());
+    }
+
+    @Test
+    void seedNameExpandsToTheFactSheetSearchHits() {
+        when(graphService.searchNodesInFactSheet(7L, "Jordan Lee", 5))
+                .thenReturn(List.of(entityNode("person-1"), entityNode("org-2")));
+
+        assertEquals(List.of("person-1", "org-2"), bridge.resolveSeedIds(7L, "Jordan Lee"));
+        verify(graphService).getNode("Jordan Lee");
+        verify(graphService, never()).searchNodes(any(), any(), anyInt());
+    }
+
+    @Test
+    void seedResolutionHonoursTheCandidateLimit() {
+        when(graphService.searchNodesInFactSheet(7L, "Jordan", 5)).thenReturn(List.of(
+                entityNode("n1"), entityNode("n1"), entityNode("n2"), entityNode("n3"),
+                entityNode("n4"), entityNode("n5"), entityNode("n6")));
+
+        assertEquals(List.of("n1", "n2", "n3", "n4", "n5"), bridge.resolveSeedIds(7L, "Jordan"),
+                "a store that over-returns is still capped, and duplicates take no slot");
+    }
+
+    @Test
+    void blankSeedInputResolvesToNothing() {
+        assertEquals(List.of(), bridge.resolveSeedIds(7L, null));
+        assertEquals(List.of(), bridge.resolveSeedIds(7L, "   "));
+        verifyNoInteractions(graphService);
+    }
+
+    @Test
+    void seedNameWithoutFactSheetSearchesTheGlobalScope() {
+        when(graphService.searchNodes("Jordan Lee", null, 5)).thenReturn(List.of(entityNode("person-1")));
+
+        assertEquals(List.of("person-1"), bridge.resolveSeedIds(null, "Jordan Lee"));
+        verify(graphService, never()).searchNodesInFactSheet(any(), any(), anyInt());
+    }
+
+    @Test
+    void exportArtifactsReadsOnlyTheRequestedArtifactsAndRunsOnlyTheirOwners() {
+        UnifiedGraphAnalysisAssetStore store = UnifiedGraphAnalysisAssetStore.inMemory();
+        bridge.analysisAssets = store;
+        store.put(7L, new UnifiedGraph()
+                .putArtifactText("reasoning/traces.json", "stored traces")
+                .putArtifactText("process/reasoning-traces/v1/a.json", "stored process trace")
+                .putArtifactText("schema/other.json", "stored schema"));
+        List<Long> ownerCalls = new ArrayList<>();
+        ArtifactOwner owner = new ArtifactOwner(Set.of("reasoning/traces.json"), (factSheetId, graph) -> {
+            ownerCalls.add(factSheetId);
+            graph.putArtifactText("reasoning/traces.json", "live traces");
+            graph.putArtifactText("reasoning/unrequested.json", "unrequested");
+        });
+        ArtifactOwner unrelated = new ArtifactOwner(Set.of("schema/"), (factSheetId, graph) -> {
+            throw new AssertionError("an owner of no requested artifact must not run");
+        });
+        UnifiedGraphArtifactContributor undeclared = (factSheetId, graph) -> {
+            throw new AssertionError("a contributor that declares no artifacts must not run");
+        };
+        bridge.artifactContributors = List.of(owner, unrelated, undeclared);
+
+        Map<String, byte[]> artifacts = bridge.exportArtifacts(7L,
+                List.of("reasoning/traces.json", "process/reasoning-traces/"));
+
+        assertEquals(List.of("process/reasoning-traces/v1/a.json", "reasoning/traces.json"),
+                List.copyOf(artifacts.keySet()), "only the requested names, in name order");
+        assertEquals("live traces", text(artifacts.get("reasoning/traces.json")),
+                "what the owner contributes overrides the stored copy");
+        assertEquals("stored process trace", text(artifacts.get("process/reasoning-traces/v1/a.json")));
+        assertEquals(List.of(7L), ownerCalls);
+        assertTrue(bridge.exportArtifacts(7L, List.of()).isEmpty());
+        assertEquals(List.of(7L), ownerCalls, "nothing requested runs no contributor");
+        verifyNoInteractions(graphService);
+    }
+
+    @Test
+    void exportArtifactsSurfacesAFailingOwner() {
+        ArtifactOwner owner = new ArtifactOwner(Set.of("reasoning/"), (factSheetId, graph) -> {
+            throw new IllegalArgumentException("broken trace store");
+        });
+        bridge.artifactContributors = List.of(owner);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> bridge.exportArtifacts(7L, List.of("reasoning/traces.json")));
+
+        assertTrue(failure.getMessage().contains(ArtifactOwner.class.getName()));
+        assertEquals("broken trace store", failure.getCause().getMessage());
+    }
+
+    private static String text(byte[] data) {
+        return new String(data, StandardCharsets.UTF_8);
+    }
+
+    /** A contributor that declares, as an importer, the artifacts it owns. */
+    private record ArtifactOwner(Set<String> managedArtifactPrefixes, UnifiedGraphArtifactContributor body)
+            implements UnifiedGraphArtifactContributor, UnifiedGraphArtifactImporter {
+
+        @Override
+        public void contribute(Long factSheetId, UnifiedGraph graph) {
+            body.contribute(factSheetId, graph);
+        }
+
+        @Override
+        public int importArtifacts(Long factSheetId, UnifiedGraph graph) {
+            return 0;
+        }
+    }
+
+    /** A bounded-store mock whose traversal is the interface default, so the point and incident stubs drive it. */
+    private static KnowledgeGraphService boundedStore() {
+        KnowledgeGraphService storage = mock(KnowledgeGraphService.class,
+                withSettings().extraInterfaces(BoundedKnowledgeGraphReader.class));
+        lenient().when(((BoundedKnowledgeGraphReader) storage).getNeighborhood(
+                        any(), any(), any(), anyInt(), anyInt(), any(), anyInt()))
+                .thenCallRealMethod();
+        return storage;
+    }
+
+    private static GraphNode entityNode(String id) {
+        return GraphNode.builder().nodeId(id).externalId(id)
+                .nodeType(NodeLevel.ENTITY).title(id.toUpperCase()).factSheetId(7L).build();
+    }
+
+    private static GraphEdge edge(String id, GraphNode source, GraphNode target, String relationType) {
+        return GraphEdge.builder().edgeId(id).sourceNode(source).targetNode(target)
+                .sourceNodeId(source.getNodeId()).targetNodeId(target.getNodeId())
+                .edgeType(EdgeType.USER_DEFINED).relationType(relationType).weight(1.0).build();
     }
 
     private static UnifiedGraphArtifactImporter preparedImporter(

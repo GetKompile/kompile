@@ -20,8 +20,10 @@ package ai.kompile.app.subprocess;
  * A managed subprocess that can be restarted by the general watchdog.
  *
  * <p>Launchers that manage a long-lived child process implement this interface
- * and self-register with {@link SubprocessRegistry#registerRestartHandler} on
- * start so the parent-side {@code SubprocessRssWatchdog} can trigger a restart
+ * and self-register on start, either with {@link SubprocessRegistry#registerRestartHandler}
+ * under the id they registered the child with, or bound to the child's entry through
+ * {@link SubprocessRegistry#register(String, Process, String, RestartableSubprocess)},
+ * so the parent-side {@code SubprocessRssWatchdog} can trigger a restart
  * for <em>any</em> subprocess that exceeds the configured RSS threshold — without
  * hard-coding knowledge of individual launcher types.</p>
  *
@@ -31,8 +33,10 @@ package ai.kompile.app.subprocess;
 public interface RestartableSubprocess {
 
     /**
-     * Return the stable registry id used when this subprocess was registered via
-     * {@link SubprocessRegistry#register(String, Process, String)}.
+     * Return the stable subprocess id. A launcher that registers its child under exactly this id
+     * may register itself with {@link SubprocessRegistry#registerRestartHandler} under it; one
+     * that registers each run under its own id ({@code <id>-<runId>}) binds a handler for that
+     * run to the run's entry.
      *
      * @return non-null, non-blank subprocess id (e.g. {@code "embedding"}, {@code "serving"})
      */

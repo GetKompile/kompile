@@ -64,6 +64,22 @@ class ClaimNeighborhoodInconsistencyTest {
     }
 
     @Test
+    @DisplayName("Facts spelling the claim's predicate differently are in its neighbourhood")
+    void neighbourhoodMatchesPredicateSpellings() {
+        List<Fact> allFacts = List.of(
+                hard("WORKS_AT(bob, beta)", 0.9),    // shares no argument: only the predicate relates it
+                hard("~worksAt(bob, beta)", 0.9),
+                hard("State(zeus)", 0.9)
+        );
+
+        InconsistencyReport report = ClaimNeighborhoodInconsistency.assess(
+                "worksAt(alice, acme)", allFacts, 1);
+
+        assertEquals(1, report.bCount(), "WORKS_AT(bob, beta) and its negation are in the neighbourhood");
+        assertFalse(report.claimIsContested());
+    }
+
+    @Test
     @DisplayName("E15-spec: unrelated facts (no predicate or arg match) are excluded from neighbourhood")
     void unrelatedFactsExcluded() {
         List<Fact> allFacts = List.of(

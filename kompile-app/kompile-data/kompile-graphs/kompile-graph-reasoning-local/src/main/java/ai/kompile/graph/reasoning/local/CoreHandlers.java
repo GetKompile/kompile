@@ -16,7 +16,13 @@
 package ai.kompile.graph.reasoning.local;
 
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
+import ai.kompile.graph.reasoning.quantitative.ModelRetrieval;
+import ai.kompile.graph.reasoning.quantitative.QuantitativeQuery;
+import ai.kompile.graph.reasoning.quantitative.QuantitativeRule;
+import ai.kompile.graph.reasoning.quantitative.QuantitativeScenarioEngine;
+import ai.kompile.graph.reasoning.quantitative.ScenarioResult;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
+import ai.kompile.graph.reasoning.query.QuantitativeRequestParser;
 import ai.kompile.graph.reasoning.unified.Dtype;
 import ai.kompile.graph.reasoning.unified.MiniJson;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -25,6 +31,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,21 +58,19 @@ import java.util.Objects;
  *   <li>{@code maxDepth}, {@code topK} — integers</li>
  *   <li>{@code queryText} / {@code question} — free text for SEARCH / FACTS / RELATIONS etc.</li>
  *   <li>{@code structural} — PSL or BAYESIAN (for RANK)</li>
+ *   <li>{@code quantitative} — object, or the same object as a JSON string, required by MODELS,
+ *       CALCULATE, SCENARIO and SOLVE_TARGET and rejected by every other operation; see
+ *       {@link QuantitativeRequestParser}</li>
  * </ul>
  * <p>Output mirrors the server's {@link GraphQueryEngine.Result} serialization:
  * {@code status}, {@code intent}, {@code summary}, {@code entities[]}, {@code relations[]},
- * {@code path[]}, {@code capabilities[]}, {@code guidance[]}, {@code data}, {@code trace}.</p>
+ * {@code path[]}, {@code capabilities[]}, {@code guidance[]}, {@code data}, {@code trace}.
+ * Quantitative results in {@code data} are projected to maps without their nested traces,
+ * which repeat {@code trace}.</p>
  */
 public final class CoreHandlers {
 
-    private static final List<GraphQueryEngine.Capability> QUERY_CAPABILITIES =
-            GraphQueryEngine.capabilityContract().stream()
-                    .filter(capability -> switch (GraphQueryEngine.Intent.valueOf(capability.intent())) {
-                        case MODELS, CALCULATE, SCENARIO, SOLVE_TARGET -> false;
-                        default -> true;
-                    })
-                    .toList();
-    private static final List<String> QUERY_OPERATIONS = QUERY_CAPABILITIES.stream()
+    private static final List<String> QUERY_OPERATIONS = GraphQueryEngine.capabilityContract().stream()
             .map(GraphQueryEngine.Capability::intent)
             .toList();
 
@@ -108,7 +113,7 @@ public final class CoreHandlers {
                         "Execute a reasoning query against the loaded graph. Use operation=CAPABILITIES " +
                         "to discover supported operations and required fields. When operation is omitted, " +
                         "question/queryText executes SEARCH and an empty request returns CAPABILITIES. Supports: " +
-                        String.join(", ", QUERY_OPERATIONS) + ".",
+                        String.join(", ", QUERY_OPERATIONS) + ". " + QuantitativeRequestParser.guidance(),
                         List.of(),
                         buildQuerySchema()),
                 (session, args) -> core.handleQuery(session, args));
@@ -175,11 +180,6 @@ public final class CoreHandlers {
         } catch (IllegalArgumentException e) {
             return error(e.getMessage());
         }
-        if (!QUERY_OPERATIONS.contains(intent.name())) {
-            return error("operation " + intent
-                    + " is not supported by the local graph query transport. "
-                    + "Use operation=CAPABILITIES.");
-        }
 
         // Parse direction
         GraphQueryEngine.Direction direction;
@@ -208,6 +208,14 @@ public final class CoreHandlers {
         String entityId = blankToNull(str(args, "entityId"));
         String targetId = blankToNull(str(args, "targetId"));
 
+        QuantitativeQuery quantitative;
+        try {
+            quantitative = QuantitativeRequestParser.parse(
+                    intent, args.get(QuantitativeRequestParser.FIELD), topK, null);
+        } catch (IllegalArgumentException e) {
+            return error(e.getMessage());
+        }
+
         GraphQueryEngine.Query query = new GraphQueryEngine.Query(
                 intent,
                 entityId,
@@ -218,17 +226,10 @@ public final class CoreHandlers {
                 topK,
                 null,         // queryEmbedding — local callers don't supply vectors via JSON
                 structural,
-                queryText);
+                queryText,
+                quantitative);
 
-        GraphQueryEngine.Result result = engine.query(session.graph(), query);
-        if (intent == GraphQueryEngine.Intent.CAPABILITIES) {
-            result = new GraphQueryEngine.Result(
-                    result.status(), result.intent(),
-                    "Supports the local read-only graph query contract.",
-                    result.entities(), result.relations(), result.path(), QUERY_CAPABILITIES,
-                    result.guidance(), result.data(), result.resolutions(), result.trace());
-        }
-        return serializeResult(result);
+        return serializeResult(engine.query(session.graph(), query));
     }
 
     private String handleCatalog(LocalReasoningSession session, Map<String, Object> args) {
@@ -336,15 +337,117 @@ public final class CoreHandlers {
 
         // data (arbitrary extra data from the engine)
         if (r.data() != null && !r.data().isEmpty()) {
-            out.put("data", r.data());
+            Map<String, Object> data = new LinkedHashMap<>();
+            r.data().forEach((key, value) -> data.put(key, dataValue(value)));
+            out.put("data", data);
         }
 
-        // trace (simplified — full trace serialization is for inference handlers to extend)
+        // trace, nested as an object like the rest of the result rather than a JSON string
         if (r.trace() != null) {
-            out.put("trace", r.trace().toJson());
+            out.put("trace", MiniJson.parse(r.trace().toJson()));
         }
 
         return MiniJson.write(out);
+    }
+
+    /**
+     * MODELS, CALCULATE, SCENARIO and SOLVE_TARGET put records in {@code data}, which MiniJson
+     * would write as their toString(). Project them, without reflection, to maps keyed by the
+     * record component names the Jackson transports emit. Nested traces repeat the result's
+     * {@code trace} and are left out, as is the query embedding JSON callers never send.
+     */
+    private static Object dataValue(Object value) {
+        if (value instanceof Collection<?> items) {
+            List<Object> out = new ArrayList<>(items.size());
+            items.forEach(item -> out.add(dataValue(item)));
+            return out;
+        }
+        if (value instanceof ModelRetrieval r) {
+            return fields("status", r.status(), "query", dataValue(r.query()),
+                    "candidates", dataValue(r.candidates()), "plan", dataValue(r.plan()),
+                    "gaps", dataValue(r.gaps()), "resolutions", r.resolutions());
+        }
+        if (value instanceof ModelRetrieval.ModelMatch m) {
+            return fields("rule", dataValue(m.rule()), "outputLabel", m.outputLabel(),
+                    "scores", dataValue(m.scores()), "compatible", m.compatible(),
+                    "rejectionReasons", m.rejectionReasons());
+        }
+        if (value instanceof ModelRetrieval.ScoreBreakdown s) {
+            return fields("outputMatch", s.outputMatch(), "dimensionMatch", s.dimensionMatch(),
+                    "unitMatch", s.unitMatch(), "temporalMatch", s.temporalMatch(),
+                    "provenance", s.provenance(), "hybrid", s.hybrid(), "total", s.total());
+        }
+        if (value instanceof ModelRetrieval.Plan p) {
+            return fields("targetEntityId", p.targetEntityId(), "rules", dataValue(p.rules()),
+                    "leafEntityIds", p.leafEntityIds(), "interventions", dataValue(p.interventions()),
+                    "goalControlEntityId", p.goalControlEntityId(),
+                    "goalControlCandidateIds", p.goalControlCandidateIds());
+        }
+        if (value instanceof ModelRetrieval.ResolvedIntervention i) {
+            return fields("entityId", i.entityId(), "operation", i.operation(), "value", i.value(),
+                    "requestedTarget", i.requestedTarget());
+        }
+        if (value instanceof ModelRetrieval.Gap g) {
+            return fields("code", g.code(), "entityId", g.entityId(), "message", g.message(),
+                    "details", g.details());
+        }
+        if (value instanceof QuantitativeRule r) {
+            return fields("id", r.id(), "sourceEntityId", r.sourceEntityId(), "kind", r.kind(),
+                    "outputEntityId", r.outputEntityId(), "inputs", dataValue(r.inputs()),
+                    "expression", r.expression(), "engineId", r.engineId(), "unit", r.unit(),
+                    "dimensions", r.dimensions(), "confidence", r.confidence(),
+                    "validationScore", r.validationScore(), "attributes", r.attributes());
+        }
+        if (value instanceof QuantitativeRule.Input i) {
+            return fields("alias", i.alias(), "entityId", i.entityId(), "required", i.required());
+        }
+        if (value instanceof QuantitativeQuery q) {
+            return fields("mode", q.mode(), "target", dataValue(q.target()),
+                    "interventions", dataValue(q.interventions()), "dimensions", q.dimensions(),
+                    "asOf", q.asOf(), "topK", q.topK(), "goal", dataValue(q.goal()));
+        }
+        if (value instanceof QuantitativeQuery.MeasureSelector s) {
+            return fields("entityId", s.entityId(), "text", s.text(), "type", s.type(),
+                    "unit", s.unit(), "dimensions", s.dimensions());
+        }
+        if (value instanceof QuantitativeQuery.Intervention i) {
+            return fields("target", dataValue(i.target()), "operation", i.operation(),
+                    "value", i.value());
+        }
+        if (value instanceof QuantitativeQuery.Goal g) {
+            return fields("control", dataValue(g.control()), "targetValue", g.targetValue(),
+                    "minimum", g.minimum(), "maximum", g.maximum(), "tolerance", g.tolerance(),
+                    "maxIterations", g.maxIterations());
+        }
+        if (value instanceof ScenarioResult s) {
+            return fields("status", s.status(), "targetEntityId", s.targetEntityId(),
+                    "baselineValue", s.baselineValue(), "scenarioValue", s.scenarioValue(),
+                    "delta", s.delta(), "baselineValues", s.baselineValues(),
+                    "scenarioValues", s.scenarioValues(), "warnings", s.warnings());
+        }
+        if (value instanceof QuantitativeScenarioEngine.GoalSeekResult g) {
+            return fields("status", g.status(), "controlEntityId", g.controlEntityId(),
+                    "controlValue", g.controlValue(), "targetValue", g.targetValue(),
+                    "achievedValue", g.achievedValue(), "iterations", g.iterations(),
+                    "warnings", g.warnings(), "scenario", dataValue(g.scenario()),
+                    "alternatives", dataValue(g.alternatives()));
+        }
+        if (value instanceof QuantitativeScenarioEngine.GoalSeekResult.Alternative a) {
+            return fields("controlEntityId", a.controlEntityId(), "controlLabel", a.controlLabel(),
+                    "status", a.status(), "baselineControlValue", a.baselineControlValue(),
+                    "controlValue", a.controlValue(), "achievedValue", a.achievedValue(),
+                    "iterations", a.iterations());
+        }
+        return value;
+    }
+
+    /** Ordered map from alternating keys and values. Enums and instants write as strings. */
+    private static Map<String, Object> fields(Object... keysAndValues) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (int i = 0; i < keysAndValues.length; i += 2) {
+            out.put((String) keysAndValues[i], keysAndValues[i + 1]);
+        }
+        return out;
     }
 
     // ── Parsing helpers ──────────────────────────────────────────────────────
@@ -503,6 +606,7 @@ public final class CoreHandlers {
         props.put("structural", enumProp(
                 "Structural reasoner for RANK.",
                 List.of("PSL","BAYESIAN")));
+        props.put(QuantitativeRequestParser.FIELD, QuantitativeRequestParser.jsonSchema());
         return props;
     }
 }

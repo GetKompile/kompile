@@ -26,7 +26,6 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlRequest.PartitionStrategy;
 import ai.kompile.core.crawl.graph.UnifiedCrawlSource;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 import java.util.List;
@@ -73,9 +72,9 @@ class PartitionLossReaperTest {
         DistributedCrawlCoordinator coordinator =
                 new DistributedCrawlCoordinator(List.of(delegate), cfgService, new ObjectMapper());
         CrawlWorkerRegistry registry = mock(CrawlWorkerRegistry.class);
-        ReflectionTestUtils.setField(coordinator, "workerRegistry", registry);
+        coordinator.workerRegistry = registry;
         PartitionLossReaper reaper = new PartitionLossReaper(coordinator, cfgService);
-        ReflectionTestUtils.setField(reaper, "registry", registry);
+        reaper.registry = registry;
         return new Fixture(coordinator, reaper, delegate, registry);
     }
 

@@ -42,7 +42,7 @@ import java.util.List;
 public class FileModelArtifactBackend implements ModelArtifactBackend {
 
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    String dataDir;
 
     // ── ModelArtifactBackend ──────────────────────────────────────────────────
 

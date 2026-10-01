@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.mcp;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.roles.BuiltInRoles;
 import ai.kompile.cli.main.chat.tools.DynamicToolManager;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
@@ -38,6 +39,7 @@ import picocli.CommandLine;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -111,6 +113,34 @@ class McpStdioCommandTest {
             java.nio.file.Files.createDirectory(blockedSink);
             assertThrows(java.io.IOException.class,
                     () -> McpStdioCommand.requireWritableLogFile(blockedSink));
+        } finally {
+            if (previousHome == null) {
+                System.clearProperty("user.home");
+            } else {
+                System.setProperty("user.home", previousHome);
+            }
+        }
+    }
+
+    @Test
+    @ResourceLock("user.home")
+    void shutdownDeletesTheDelegatedAgentsPromptFile(@TempDir Path tempDir) {
+        String previousHome = System.getProperty("user.home");
+        try {
+            System.setProperty("user.home", tempDir.toString());
+            SystemPromptManager prompt =
+                    SystemPromptManager.withSection(null, "Delegated agent instructions");
+            List<String> args = prompt.getExtraArgs("claude");
+            assertEquals("--append-system-prompt-file", args.get(0));
+            Path promptFile = Path.of(args.get(1));
+            assertTrue(promptFile.startsWith(tempDir.resolve(".kompile/tmp")));
+            assertTrue(Files.isRegularFile(promptFile));
+
+            McpStdioCommand command = new McpStdioCommand();
+            command.subagentSystemPrompt = prompt;
+            command.releaseOnShutdown();
+
+            assertFalse(Files.exists(promptFile));
         } finally {
             if (previousHome == null) {
                 System.clearProperty("user.home");

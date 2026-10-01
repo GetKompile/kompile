@@ -33,7 +33,6 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.springframework.ai.document.Document;
 
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -45,7 +44,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -1001,7 +999,7 @@ class VectorStoreMatrixGraphStoreTest {
      *       {@code "metadata"} map containing all the application-level fields.  This is
      *       exactly the structure that {@link AnseriniVectorStoreImpl#listVectorDocuments}
      *       produces.</li>
-     *   <li>Clear the in-memory {@code graphCache} via reflection to simulate a fresh JVM.</li>
+     *   <li>Clear the in-memory {@code graphCache} to simulate a fresh JVM.</li>
      *   <li>Configure the mock to return the captured documents from {@code listVectorDocuments}.</li>
      *   <li>Load the graph and assert that nodes and edges are non-empty and correct.</li>
      * </ol>
@@ -1061,12 +1059,7 @@ class VectorStoreMatrixGraphStoreTest {
         }
 
         // ── Phase 4: simulate JVM restart by clearing the in-memory cache ──────
-        Field cacheField = VectorStoreMatrixGraphStore.class.getDeclaredField("graphCache");
-        cacheField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        ConcurrentHashMap<String, AdjacencyMatrixGraph> cache =
-                (ConcurrentHashMap<String, AdjacencyMatrixGraph>) cacheField.get(store);
-        cache.clear(); // ← this is what a JVM restart does
+        store.graphCache.clear(); // ← this is what a JVM restart does
 
         // ── Phase 5: configure mock to serve the captured docs ────────────────
         when(vectorStore.listVectorDocuments(anyInt(), anyInt())).thenReturn(vsListDocs);
@@ -1169,12 +1162,7 @@ class VectorStoreMatrixGraphStoreTest {
         }
 
         // ── Phase 4: simulate restart ─────────────────────────────────────────
-        Field cacheField = VectorStoreMatrixGraphStore.class.getDeclaredField("graphCache");
-        cacheField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        ConcurrentHashMap<String, AdjacencyMatrixGraph> cache =
-                (ConcurrentHashMap<String, AdjacencyMatrixGraph>) cacheField.get(store);
-        cache.clear();
+        store.graphCache.clear();
 
         // ── Phase 5: mock listVectorDocuments ─────────────────────────────────
         when(vectorStore.listVectorDocuments(anyInt(), anyInt())).thenReturn(vsListDocs);
@@ -1399,14 +1387,9 @@ class VectorStoreMatrixGraphStoreTest {
         }
     }
 
-    /** Clears the in-memory graphCache via reflection to simulate a JVM restart. */
-    private void clearCache() throws Exception {
-        Field cacheField = VectorStoreMatrixGraphStore.class.getDeclaredField("graphCache");
-        cacheField.setAccessible(true);
-        @SuppressWarnings("unchecked")
-        ConcurrentHashMap<String, AdjacencyMatrixGraph> cache =
-                (ConcurrentHashMap<String, AdjacencyMatrixGraph>) cacheField.get(store);
-        cache.clear();
+    /** Clears the in-memory graphCache to simulate a JVM restart. */
+    private void clearCache() {
+        store.graphCache.clear();
     }
 
     // ─── Bounded-memory streaming: cross-graph isolation ─────────────────────
@@ -1527,10 +1510,7 @@ class VectorStoreMatrixGraphStoreTest {
         // Build a store with the counting stub and inject the small page size.
         VectorStoreMatrixGraphStore countingStoreImpl =
                 new VectorStoreMatrixGraphStore(countingStore, om);
-        // Inject vectorScanPageSize = TEST_PAGE_SIZE via reflection
-        Field pageSizeField = VectorStoreMatrixGraphStore.class.getDeclaredField("vectorScanPageSize");
-        pageSizeField.setAccessible(true);
-        pageSizeField.set(countingStoreImpl, TEST_PAGE_SIZE);
+        countingStoreImpl.vectorScanPageSize = TEST_PAGE_SIZE;
 
         // ── Load graphA and assert only A's nodes come back ──────────────────
         Optional<AdjacencyMatrixGraph> graphAOpt = countingStoreImpl.loadGraph("graphA");

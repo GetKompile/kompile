@@ -237,6 +237,37 @@ class ClaudeCliClientTest {
     }
 
     @Test
+    void attachedImagesGoToClaudeCodeAsImageBlocksAheadOfTheText() throws Exception {
+        FakeClaudeCode fake = fake();
+        DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+                "/tmp/page.png", "image/png", true, "cGFnZQ==", null);
+        DirectLlmClient.AttachmentInput notes = new DirectLlmClient.AttachmentInput(
+                "/tmp/notes.txt", "text/plain", false, null, "margin notes");
+
+        try (ClaudeCliClient client = client(fake)) {
+            assertEquals("ok", client.send("sonnet", null, false, null, "describe it", "",
+                    List.of(image, notes), null, null));
+        }
+        JsonNode content = null;
+        for (JsonNode input : fake.inputs()) {
+            if ("user".equals(input.path("type").asText())) {
+                content = input.path("message").path("content");
+            }
+        }
+        assertNotNull(content);
+        assertTrue(content.isArray(), "a turn with attachments sends content blocks: " + content);
+        assertEquals(3, content.size(), content.toString());
+        JsonNode source = content.get(0).path("source");
+        assertEquals("image", content.get(0).path("type").asText());
+        assertEquals("base64", source.path("type").asText());
+        assertEquals("image/png", source.path("media_type").asText());
+        assertEquals("cGFnZQ==", source.path("data").asText());
+        assertEquals("[File: /tmp/notes.txt]\nmargin notes", content.get(1).path("text").asText());
+        assertEquals("text", content.get(2).path("type").asText());
+        assertEquals("describe it", content.get(2).path("text").asText());
+    }
+
+    @Test
     void jvmShutdownStopsTheLiveSessionAndDeletesItsInstructionsFile() throws Exception {
         // The claude child is started directly via ProcessBuilder.start(), so it
         // is never tracked by ProcessManager's own shutdown hook (which only

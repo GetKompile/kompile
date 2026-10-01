@@ -16,6 +16,7 @@
 
 package ai.kompile.loader.excel.graph;
 
+import ai.kompile.loader.excel.ExcelCellDates;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.AreaReference;
 import org.apache.poi.ss.util.CellReference;
@@ -247,10 +248,9 @@ public class ExcelFormulaGraphExtractor {
                 break;
             case NUMERIC:
                 double numeric = cell.getNumericCellValue();
-                builder.cellType(DateUtil.isCellDateFormatted(cell) ? "DATE" : "NUMERIC");
-                builder.displayValue(DateUtil.isCellDateFormatted(cell)
-                        ? cell.getDateCellValue().toString()
-                        : formatNumeric(numeric));
+                boolean numericIsDate = isDateFormatted(cell);
+                builder.cellType(numericIsDate ? "DATE" : "NUMERIC");
+                builder.displayValue(numericIsDate ? ExcelCellDates.format(cell) : formatNumeric(numeric));
                 builder.rawValue(numeric);
                 break;
             case BOOLEAN:
@@ -302,10 +302,14 @@ public class ExcelFormulaGraphExtractor {
     private FormulaEvaluation evaluateFormula(Cell cell) {
         try {
             if (evaluator != null) {
-                CellValue value = evaluator.evaluate(cell);
-                if (value != null) {
-                    return formulaEvaluation(value);
-                }
+                // evaluateFormulaCell (not evaluate) so the freshly computed result is written
+                // back onto the cell itself, not just returned as a detached CellValue.
+                // ExcelCellDates.format(cell) and cachedFormulaEvaluation(cell) below both read
+                // straight off the Cell (that's how ExcelCellDates resolves 1904 windowing and
+                // formula-cache transparently), so a cell that was never previously
+                // evaluated/saved would otherwise still report its stale pre-evaluation cache
+                // (typically 0.0) instead of the value just computed.
+                evaluator.evaluateFormulaCell(cell);
             }
             return cachedFormulaEvaluation(cell);
         } catch (Exception e) {
@@ -316,32 +320,14 @@ public class ExcelFormulaGraphExtractor {
         }
     }
 
-    private FormulaEvaluation formulaEvaluation(CellValue value) {
-        return switch (value.getCellType()) {
-            case STRING -> new FormulaEvaluation(
-                    "STRING", value.getStringValue(), null, value.getStringValue(), null);
-            case NUMERIC -> new FormulaEvaluation(
-                    "NUMERIC", value.getNumberValue(), value.getNumberValue(),
-                    formatNumeric(value.getNumberValue()), null);
-            case BOOLEAN -> new FormulaEvaluation(
-                    "BOOLEAN", value.getBooleanValue(), null,
-                    String.valueOf(value.getBooleanValue()), null);
-            case ERROR -> {
-                String error = formulaError(value.getErrorValue());
-                yield new FormulaEvaluation("ERROR", error, null, error, error);
-            }
-            case BLANK -> new FormulaEvaluation("BLANK", null, null, "", null);
-            default -> new FormulaEvaluation("UNKNOWN", null, null, "", null);
-        };
-    }
-
     private FormulaEvaluation cachedFormulaEvaluation(Cell cell) {
         return switch (cell.getCachedFormulaResultType()) {
             case STRING -> new FormulaEvaluation(
                     "STRING", cell.getStringCellValue(), null, cell.getStringCellValue(), null);
             case NUMERIC -> new FormulaEvaluation(
                     "NUMERIC", cell.getNumericCellValue(), cell.getNumericCellValue(),
-                    formatNumeric(cell.getNumericCellValue()), null);
+                    isDateFormatted(cell) ? ExcelCellDates.format(cell) : formatNumeric(cell.getNumericCellValue()),
+                    null);
             case BOOLEAN -> new FormulaEvaluation(
                     "BOOLEAN", cell.getBooleanCellValue(), null,
                     String.valueOf(cell.getBooleanCellValue()), null);
@@ -375,6 +361,19 @@ public class ExcelFormulaGraphExtractor {
             return String.valueOf((long) value);
         }
         return String.valueOf(value);
+    }
+
+    /**
+     * {@link DateUtil#isCellDateFormatted(Cell)} reads the cell's numeric value, which throws
+     * for a FORMULA cell whose cached/evaluated result type isn't numeric; treat that as
+     * "not a date" instead of propagating.
+     */
+    private boolean isDateFormatted(Cell cell) {
+        try {
+            return DateUtil.isCellDateFormatted(cell);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /**

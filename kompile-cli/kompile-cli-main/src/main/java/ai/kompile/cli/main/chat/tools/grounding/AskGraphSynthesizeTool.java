@@ -24,7 +24,7 @@ import java.util.Map;
 /**
  * MCP tool: {@code ask_graph_synthesize} (WP12d)
  *
- * <p>Synthesize ranked answers to a question against the production knowledge base via
+ * <p>Synthesize ranked answers to a question against a configured server's knowledge base via
  * {@code POST /api/kb-grounding/synthesize}. Each candidate entity is scored by fusing calibrated
  * signals — retrieval, ontology type, and (when the query implies a relation) KB verification and
  * calibrated KGE plausibility — into a likelihood with a re-checkable operator-tree trace. Prefer this
@@ -51,12 +51,8 @@ public class AskGraphSynthesizeTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Local mode returns unverified lexical candidates (retrievalScore, recordedConfidence); use ask_graph_verify for facts. "
-                + "Managed backends: ask a natural-language question and get ranked grounded answers from the knowledge base. "
-                + "query = plain English, e.g. 'who leads Acme?' or 'which companies are based in London?'. "
-                + "Returns candidates ranked by likelihood [0,1]; KB-contradicted answers are demoted automatically. "
-                + "expectedType optional — narrow to a specific entity class, e.g. 'person', 'organization', 'place'. "
-                + "Use this instead of guessing when the answer should come from the graph.";
+        return "Answer a plain-English question from the KB. Locally returns unverified lexical candidates only, "
+                + "so confirm each with ask_graph_verify. expectedType narrows the class (person, organization).";
     }
 
     @Override

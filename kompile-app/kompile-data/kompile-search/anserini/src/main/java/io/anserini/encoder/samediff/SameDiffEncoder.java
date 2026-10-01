@@ -838,11 +838,11 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
     /**
      * Compute a fingerprint string for a model file plus runtime settings that affect
-     * the serialized optimized SameDiff graph. Package-private for unit testing.
+     * the serialized optimized SameDiff graph.
      *
      * @throws IOException if the file cannot be stat-ed
      */
-    static String computeSourceFingerprint(Path path) throws IOException {
+    public static String computeSourceFingerprint(Path path) throws IOException {
         return Files.size(path) + "," + Files.getLastModifiedTime(path).toMillis()
                 + "," + computeOptimizationRuntimeFingerprint();
     }

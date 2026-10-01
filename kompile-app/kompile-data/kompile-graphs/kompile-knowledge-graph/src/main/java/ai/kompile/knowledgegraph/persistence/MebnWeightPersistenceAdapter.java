@@ -42,7 +42,7 @@ public class MebnWeightPersistenceAdapter {
     public static final String THEORY_ARTIFACT_FILE = "mebn-theory.v1.json";
 
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    protected String dataDir;
 
     /**
      * Serialize the edge strengths of {@code theory} and write them to

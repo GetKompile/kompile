@@ -38,10 +38,10 @@ public class GraphSnapshotService {
     private final UnifiedGraphBridge bridge;
 
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    String dataDir;
 
     @Value("${kompile.graph.snapshots.max-per-sheet:20}")
-    private int maxPerSheet;
+    int maxPerSheet;
 
     public GraphSnapshotService(UnifiedGraphBridge bridge) {
         this.bridge = bridge;

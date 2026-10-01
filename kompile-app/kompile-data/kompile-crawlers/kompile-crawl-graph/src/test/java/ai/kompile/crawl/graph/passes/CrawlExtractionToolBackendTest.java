@@ -412,14 +412,15 @@ class CrawlExtractionToolBackendTest {
                 properties.path("operation").path("enum"),
                 MAPPER.getTypeFactory().constructCollectionType(List.class, String.class));
 
-        assertEquals(GraphReasoningQueryService.queryRequestOperations(), operations);
+        assertEquals(GraphReasoningQueryService.nonQuantitativeOperations(), operations);
         assertTrue(operations.containsAll(List.of(
                 "SCHEMA", "SEARCH", "FACTS", "SIMILAR", "VERIFY", "WHY", "RANK")));
         assertFalse(operations.contains("CALCULATE"));
         assertFalse(operations.contains("SCENARIO"));
         assertFalse(operations.contains("SOLVE_TARGET"));
         String operationGuide = properties.path("operation").path("description").asText();
-        assertEquals(GraphReasoningQueryService.queryRequestOperationGuide(), operationGuide);
+        assertEquals(GraphReasoningQueryService.nonQuantitativeOperationGuide(), operationGuide);
+        assertFalse(operationGuide.contains("quantitative"));
         assertTrue(operationGuide.contains("SEARCH(queryText)"));
         assertTrue(operationGuide.contains("SIMILAR(entityId)"));
         assertTrue(operationGuide.contains(
@@ -1631,6 +1632,28 @@ class CrawlExtractionToolBackendTest {
         assertTrue(capabilities.path("ok").asBoolean(), capabilities::toString);
         assertEquals(0, schema.path("graphEntities").asInt());
         assertEquals(0, capabilities.path("graphEntities").asInt());
+    }
+
+    @Test
+    void formulaOperationsAreRejectedAndUnlistedDuringExtraction() throws Exception {
+        CrawlExtractionToolBackend backend = backend(corpus(), null, new UnifiedGraph());
+
+        JsonNode rejected = execute(backend, CrawlExtractionToolBackend.GRAPH_REASONING_QUERY,
+                """
+                {"operation":"calculate","quantitative":{"target":{"text":"Total"}}}
+                """);
+        assertFalse(rejected.path("ok").asBoolean());
+        assertEquals("unsupported_graph_operation", rejected.path("error").asText());
+        assertTrue(rejected.path("detail").asText().startsWith("CALCULATE "), rejected::toString);
+
+        JsonNode capabilities = execute(backend, CrawlExtractionToolBackend.GRAPH_REASONING_QUERY,
+                "{\"operation\":\"CAPABILITIES\"}");
+        List<String> listed = new ArrayList<>();
+        capabilities.path("result").path("capabilities")
+                .forEach(capability -> listed.add(capability.path("intent").asText()));
+        assertEquals(GraphReasoningQueryService.nonQuantitativeOperations(), listed);
+        assertFalse(capabilities.path("result").path("guidance").toString().contains("quantitative"),
+                capabilities::toString);
     }
 
     @Test

@@ -474,6 +474,18 @@ class TerminalRendererTest {
         assertTrue(output.contains("10000"));
     }
 
+    @Test
+    void testRenderProviderCompactionNotice() {
+        String output = renderer.renderProviderCompactionNotice("Claude Code", "auto", 150000);
+        assertTrue(output.contains("context compacted by Claude Code (auto) · 150000 tokens before"),
+                output);
+
+        String bare = renderer.renderProviderCompactionNotice("Claude Code", "", 0);
+        assertTrue(bare.contains("context compacted by Claude Code ───"), bare);
+        assertFalse(bare.contains("("), bare);
+        assertFalse(bare.contains("tokens before"), bare);
+    }
+
     // ========================================================================
     // ANSI formatting helpers (no-ANSI mode)
     // ========================================================================

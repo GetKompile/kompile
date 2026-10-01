@@ -11,6 +11,7 @@ import ai.kompile.project.KompileProjectStore;
 import ai.kompile.pipeline.serving.definition.ChatPipelineComposition;
 import ai.kompile.pipeline.serving.definition.PipelineDefinitionValidator;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
+import ai.kompile.utils.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -335,12 +336,16 @@ public final class ChatModelPipelineRunner {
         int dpi = intOption(pipeline, "pdfRenderDpi", DEFAULT_PDF_DPI, 72, 300);
         List<String> outputs = new ArrayList<>();
 
-        try (PDDocument pdf = Loader.loadPDF(file.toFile())) {
+        // Under GraalVM native image PDFBox is never touched: PDDocument's static initializer, like
+        // any BufferedImage/ImageIO use, loads libawt, whose JNI_OnLoad aborts the whole process
+        // (see LocalDocumentLoaderRegistry#load). Poppler counts and renders the pages there instead.
+        try (PDDocument pdf = NativeImageInfo.isRunningInNativeImage() ? null : Loader.loadPDF(file.toFile())) {
             PdfPageSelection selectionPlan = selectPdfPages(
-                    pdf.getNumberOfPages(), maxPages, pageRangeOption(pipeline));
+                    pdf == null ? LocalDocumentLoaderRegistry.pdfPageCountWithPdfinfo(file) : pdf.getNumberOfPages(),
+                    maxPages, pageRangeOption(pipeline));
             List<Integer> selectedPages = selectionPlan.pageNumbers();
             int selectedPageCount = selectedPages.size();
-            PDFRenderer renderer = new PDFRenderer(pdf);
+            PDFRenderer renderer = pdf == null ? null : new PDFRenderer(pdf);
             for (int start = 0; start < selectedPageCount; start += batchSize) {
                 int end = Math.min(selectedPageCount, start + batchSize);
                 int pageStart = selectedPages.get(start);
@@ -349,17 +354,11 @@ public final class ChatModelPipelineRunner {
                 List<DirectLlmClient.AttachmentInput> attachments = new ArrayList<>(end - start);
                 for (int cursor = start; cursor < end; cursor++) {
                     int pageNumber = selectedPages.get(cursor);
-                    BufferedImage rendered = renderer.renderImageWithDPI(pageNumber - 1, dpi, ImageType.RGB);
-                    try (ByteArrayOutputStream encoded = new ByteArrayOutputStream()) {
-                        if (!ImageIO.write(rendered, "png", encoded)) {
-                            throw new IOException("No PNG encoder is available for rendered PDF pages");
-                        }
-                        attachments.add(imageAttachment(
-                                file.getFileName() + "#page-" + pageNumber + ".png",
-                                "image/png", encoded.toByteArray(), pipeline));
-                    } finally {
-                        rendered.flush();
-                    }
+                    byte[] png = renderer == null
+                            ? LocalDocumentLoaderRegistry.renderPdfPageWithPdftoppm(file, pageNumber, dpi)
+                            : renderPdfPagePng(renderer, pageNumber, dpi);
+                    attachments.add(imageAttachment(
+                            file.getFileName() + "#page-" + pageNumber + ".png", "image/png", png, pipeline));
                 }
 
                 int progressPercent = Math.max(1, Math.round(start * 100.0f / selectedPageCount));
@@ -392,6 +391,26 @@ public final class ChatModelPipelineRunner {
 
         String result = String.join("\n\n", outputs).strip();
         return result;
+    }
+
+    private static byte[] renderPdfPagePng(PDFRenderer renderer, int pageNumber, int dpi) throws IOException {
+        BufferedImage rendered = renderer.renderImageWithDPI(pageNumber - 1, dpi, ImageType.RGB);
+        try (ByteArrayOutputStream encoded = new ByteArrayOutputStream()) {
+            if (!ImageIO.write(rendered, "png", encoded)) {
+                throw new IOException("No PNG encoder is available for rendered PDF pages");
+            }
+            return encoded.toByteArray();
+        } finally {
+            rendered.flush();
+        }
+    }
+
+    /** Page count without PDFBox under native image, where it would abort the process (see extractPdf). */
+    private static int pdfPageCount(Path file) throws IOException {
+        if (NativeImageInfo.isRunningInNativeImage()) return LocalDocumentLoaderRegistry.pdfPageCountWithPdfinfo(file);
+        try (PDDocument pdf = Loader.loadPDF(file.toFile())) {
+            return pdf.getNumberOfPages();
+        }
     }
 
     private static PdfPageSelection selectPdfPages(int totalPages, int maxPages,
@@ -560,16 +579,14 @@ public final class ChatModelPipelineRunner {
             selection.requireSupported("json_schema");
         Map<String, Object> preview = new LinkedHashMap<>(selection.preview());
         if (document != null && mediaKind(document) == MediaKind.PDF) {
-            try (PDDocument pdf = Loader.loadPDF(document.toFile())) {
-                int maxPages = intOption(pipeline, "maxPages", DEFAULT_MAX_PAGES, 1, Integer.MAX_VALUE);
-                PdfPageSelection selectionPlan = selectPdfPages(
-                        pdf.getNumberOfPages(), maxPages, pageRangeOption(pipeline));
-                preview.put("inputKind", "pdf");
-                preview.put("totalPages", selectionPlan.totalPages());
-                preview.put("selectedPageCount", selectionPlan.pageNumbers().size());
-                preview.put("selectedPageRange", formatPageRange(selectionPlan.pageNumbers()));
-                preview.put("maxPages", maxPages);
-            }
+            int maxPages = intOption(pipeline, "maxPages", DEFAULT_MAX_PAGES, 1, Integer.MAX_VALUE);
+            PdfPageSelection selectionPlan = selectPdfPages(
+                    pdfPageCount(document), maxPages, pageRangeOption(pipeline));
+            preview.put("inputKind", "pdf");
+            preview.put("totalPages", selectionPlan.totalPages());
+            preview.put("selectedPageCount", selectionPlan.pageNumbers().size());
+            preview.put("selectedPageRange", formatPageRange(selectionPlan.pageNumbers()));
+            preview.put("maxPages", maxPages);
         }
         return Map.copyOf(preview);
     }
@@ -625,6 +642,13 @@ public final class ChatModelPipelineRunner {
         String mimeType = suppliedMimeType == null ? "application/octet-stream" : suppliedMimeType;
         byte[] encoded = bytes;
         if (!DIRECT_IMAGE_TYPES.contains(mimeType.toLowerCase(Locale.ROOT))) {
+            if (NativeImageInfo.isRunningInNativeImage()) {
+                // ImageIO decoding loads libawt, which aborts a native-image process outright (see
+                // LocalDocumentLoaderRegistry#load); fail this one document instead.
+                throw new IOException("Unsupported image format " + mimeType + " for " + name
+                        + ". The native CLI sends PNG, JPEG, GIF, and WebP images as-is and cannot convert "
+                        + "other formats; convert the image to one of those first.");
+            }
             BufferedImage image = ImageIO.read(new java.io.ByteArrayInputStream(bytes));
             if (image == null) {
                 throw new IOException("Unsupported image format " + mimeType + " for " + name

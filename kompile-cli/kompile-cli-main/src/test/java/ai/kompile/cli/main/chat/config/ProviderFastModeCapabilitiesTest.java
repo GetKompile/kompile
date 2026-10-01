@@ -36,7 +36,7 @@ class ProviderFastModeCapabilitiesTest {
         assertEquals(List.of("off", "on"), SetupWizard.fastModeOptions("openai-codex", "gpt-5.5"));
         assertEquals(List.of("off", "on"), SetupWizard.fastModeOptions("anthropic", "claude-opus-5"));
         assertEquals(List.of("off", "on"), SetupWizard.fastModeOptions("anthropic", "claude-opus-5-5"));
-        for (String provider : List.of("custom", "gemini", "openrouter", "github-copilot", "ollama", "opencode")) {
+        for (String provider : List.of("custom", "gemini", "openrouter", "github-copilot", "opencode")) {
             assertTrue(SetupWizard.fastModeOptions(provider, "gpt-5.5").isEmpty());
             assertTrue(SetupWizard.fastModeOptions(provider, "claude-opus-5").isEmpty());
         }

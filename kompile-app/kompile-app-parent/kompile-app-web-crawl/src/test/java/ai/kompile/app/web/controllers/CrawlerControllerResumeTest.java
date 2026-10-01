@@ -19,7 +19,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
-import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -50,12 +49,10 @@ class CrawlerControllerResumeTest {
     private CrawlerController controller;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         controller = new CrawlerController(crawlerService, documentIngestService, messagingTemplate);
-        // Inject the optional crawlJobPersistenceService via reflection
-        Field field = CrawlerController.class.getDeclaredField("crawlJobPersistenceService");
-        field.setAccessible(true);
-        field.set(controller, crawlJobPersistenceService);
+        // The optional persistence service is field-injected, not a constructor argument
+        controller.crawlJobPersistenceService = crawlJobPersistenceService;
     }
 
     @Nested

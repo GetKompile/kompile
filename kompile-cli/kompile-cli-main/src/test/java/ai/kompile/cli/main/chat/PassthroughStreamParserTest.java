@@ -1071,6 +1071,87 @@ class PassthroughStreamParserTest {
         }
     }
 
+    @Nested
+    class VendorUsageAccounting {
+        @Test
+        void claudeResultKeepsDisjointCacheBucketsAndIgnoresMessageCopies() {
+            String usage = """
+                    {"input_tokens":50,"output_tokens":20,"cache_read_input_tokens":1000,
+                     "cache_creation_input_tokens":200}
+                    """;
+            assertTrue(parser.parseClaudeLineMulti("{\"type\":\"stream_event\",\"event\":{"
+                    + "\"type\":\"message_start\",\"message\":{\"usage\":" + usage + "}}}").isEmpty());
+            assertTrue(parser.parseClaudeLineMulti("{\"type\":\"assistant\",\"message\":{"
+                    + "\"content\":[],\"usage\":" + usage + "}}").isEmpty());
+            var events = parser.parseClaudeLineMulti("{\"type\":\"result\",\"total_cost_usd\":0.12,"
+                    + "\"usage\":" + usage + ",\"modelUsage\":{\"model\":{\"inputTokens\":50}}}");
+            assertEquals(1, events.size());
+            TurnComplete result = assertInstanceOf(TurnComplete.class, events.get(0));
+            assertEquals(new TurnComplete(0, 0.12, 0, 50, 20, 1000, 200), result);
+        }
+
+        @Test
+        void geminiReadsFlatStatsWithoutAddingPerModelCopies() {
+            TurnComplete result = assertInstanceOf(TurnComplete.class, parser.parseGeminiLine("""
+                    {"type":"result","stats":{"duration_ms":42,"input_tokens":1200,
+                     "output_tokens":75,"cached":1000,"input":200,"total_tokens":1275,
+                     "models":{"gemini":{"input_tokens":1200,"output_tokens":75,"cached":1000}}}}
+                    """));
+            assertEquals(new TurnComplete(42, 0, 0, 200, 75, 1000, 0), result);
+        }
+
+        @Test
+        void qwenAnthropicShapedUsageStillHasInclusiveInput() {
+            // Qwen computeUsageFromMetrics uses totalPromptTokens, unlike Anthropic.
+            TurnComplete result = assertInstanceOf(TurnComplete.class, parser.parseGeminiLine("""
+                    {"type":"result","subtype":"success","duration_ms":80,"num_turns":2,
+                     "usage":{"input_tokens":1200,"output_tokens":75,"cache_read_input_tokens":1000},
+                     "modelUsage":{"qwen":{"inputTokens":1200,"outputTokens":75}}}
+                    """));
+            assertEquals(new TurnComplete(80, 0, 2, 200, 75, 1000, 0), result);
+        }
+
+        @Test
+        void legacyGeminiUsageRemainsSupportedAndMissingUsageStaysZero() {
+            TurnComplete result = assertInstanceOf(TurnComplete.class, parser.parseGeminiLine("""
+                    {"type":"result","stats":{"usage":{"prompt_tokens":1200,"candidates_tokens":75,
+                     "prompt_tokens_details":{"cached_content_token_count":1000}}}}
+                    """));
+            assertEquals(new TurnComplete(0, 0, 0, 200, 75, 1000, 0), result);
+            assertEquals(new TurnComplete(0, 0, 0), parser.parseGeminiLine("{\"type\":\"result\"}"));
+        }
+
+        @Test
+        void piCountsAssistantMessageEndNotPartialOrTurnAndAgentCopies() {
+            String message = """
+                    {"role":"assistant","content":[{"type":"text","text":"done"}],
+                     "usage":{"input":20,"output":75,"cacheRead":1000,"cacheWrite":200,
+                     "reasoning":50,"totalTokens":1295}}
+                    """;
+            assertNull(parser.parsePiLine("{\"type\":\"message_update\",\"assistantMessageEvent\":{"
+                    + "\"type\":\"done\",\"message\":" + message + "}}"));
+            assertEquals(new TokenUsage(20, 75, 1000, 200),
+                    parser.parsePiLine("{\"type\":\"message_end\",\"message\":" + message + "}"));
+            assertNull(parser.parsePiLine("{\"type\":\"turn_end\",\"message\":" + message + "}"));
+            assertNull(parser.parsePiLine("{\"type\":\"agent_end\",\"messages\":[" + message + "]}"));
+            assertNull(parser.parsePiLine("""
+                    {"type":"message_end","message":{"role":"toolResult","usage":{"input":999}}}
+                    """));
+        }
+
+        @Test
+        void openCodeStepIsCountedOnceByIdNotByEqualTokenValues() {
+            String step = """
+                    {"type":"step_finish","sessionID":"s1","part":{"id":"p1",
+                     "tokens":{"input":20,"output":75,"reasoning":50,"cache":{"read":1000,"write":200}}}}
+                    """;
+            assertEquals(new TokenUsage(20, 75, 1000, 200), parser.parseOpenCodeLine(step));
+            assertTrue(parser.parseOpenCodeLineMulti(step).isEmpty());
+            assertEquals(List.of(new TokenUsage(20, 75, 1000, 200)),
+                    parser.parseOpenCodeLineMulti(step.replace("p1", "p2")));
+        }
+    }
+
     // ===================================================================
     // Codex delta accumulation (stateful)
     // ===================================================================

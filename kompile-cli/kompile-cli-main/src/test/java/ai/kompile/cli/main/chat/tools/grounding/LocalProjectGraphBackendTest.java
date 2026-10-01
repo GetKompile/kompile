@@ -7,6 +7,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.GraphBayesTool;
 import ai.kompile.cli.main.chat.tools.GraphEmbeddingsTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
@@ -24,6 +25,7 @@ import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.mebn.RelationalMTheoryArtifactCodec;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.query.GraphQueryEngine;
 import ai.kompile.graph.reasoning.unified.Dtype;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.graph.reasoning.unified.VectorLayer;
@@ -49,11 +51,15 @@ import java.time.Duration;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -67,6 +73,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Synthetic tiny corpora exercise graph behavior here; crawl admission is covered separately and
  * is disabled for this fixture so host load cannot make these graph assertions nondeterministic.
  */
+@TemporaryUserHome
 @ResourceLock(Resources.SYSTEM_PROPERTIES)
 class LocalProjectGraphBackendTest {
     @TempDir
@@ -113,17 +120,18 @@ class LocalProjectGraphBackendTest {
         List<String> operationNames = new java.util.ArrayList<>();
         result.path("capabilities").forEach(capability ->
                 operationNames.add(capability.path("intent").asText()));
-        assertEquals(List.of(
-                "CAPABILITIES", "OVERVIEW", "SCHEMA", "SEARCH", "RELATIONS",
-                "DESCRIBE", "NEIGHBORS", "PATH", "TIMELINE", "FACTS", "SIMILAR",
-                "VERIFY", "WHY", "WHY_NOT", "RANK", "ASSETS", "ARTIFACT"),
+        assertEquals(GraphQueryEngine.capabilityContract().stream()
+                        .map(GraphQueryEngine.Capability::intent).toList(),
                 operationNames);
 
-        for (String blocked : List.of("MODELS", "CALCULATE", "SCENARIO", "SOLVE_TARGET")) {
-            ObjectNode request = mapper.createObjectNode().put("operation", blocked);
+        for (String formula : List.of("MODELS", "CALCULATE", "SCENARIO", "SOLVE_TARGET")) {
+            assertTrue(operationNames.contains(formula), formula);
+            ObjectNode request = mapper.createObjectNode().put("operation", formula);
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> backend.reasoningQuery(request, context));
-            assertTrue(failure.getMessage().contains("not supported"), failure.getMessage());
+            assertTrue(failure.getMessage().startsWith(formula + " requires quantitative."),
+                    failure.getMessage());
+            assertTrue(failure.getMessage().contains("Example: quantitative={"), failure.getMessage());
         }
 
         ObjectNode normalizedIntent = mapper.createObjectNode()
@@ -140,6 +148,57 @@ class LocalProjectGraphBackendTest {
                 .put("direction", "forward");
         assertEquals("NEIGHBORS",
                 backend.reasoningQuery(directionAlias, context).path("intent").asText());
+    }
+
+    @Test
+    void localReasoningQueryEvaluatesGraphFormulasWithoutChangingTheGraph() throws Exception {
+        Path graphPath = projectRoot.resolve("data/crawls/formula-kb/graph.kgraph");
+        Files.createDirectories(graphPath.getParent());
+        formulaGraph().graphId("local:test:formula-kb").save(graphPath);
+        LocalProjectGraphBackend backend = new LocalProjectGraphBackend(mapper);
+
+        ObjectNode calculate = mapper.createObjectNode()
+                .put("operation", "calculate")
+                .put("knowledgeBase", "formula-kb");
+        calculate.putObject("quantitative").putObject("target").put("text", "Total");
+        JsonNode calculated = backend.reasoningQuery(calculate, context);
+        assertEquals("OK", calculated.path("status").asText(), calculated.path("summary").asText());
+        assertEquals("Calculated a3 = 30.0.", calculated.path("summary").asText());
+
+        // Some MCP clients send nested objects as JSON strings; both forms parse the same way.
+        ObjectNode scenario = mapper.createObjectNode()
+                .put("operation", "SCENARIO")
+                .put("knowledgeBase", "formula-kb")
+                .put("quantitative", "{\"target\":{\"entityId\":\"a3\"},\"interventions\":"
+                        + "[{\"target\":{\"entityId\":\"a1\"},\"operation\":\"SCALE\",\"value\":-0.5}]}");
+        JsonNode scenarioResult = backend.reasoningQuery(scenario, context);
+        assertEquals("OK", scenarioResult.path("status").asText(), scenarioResult.path("summary").asText());
+        JsonNode values = scenarioResult.path("data").path("scenario");
+        assertEquals(30.0, values.path("baselineValue").asDouble(), 1.0e-9, values.toString());
+        assertEquals(25.0, values.path("scenarioValue").asDouble(), 1.0e-9, values.toString());
+
+        Object stored = UnifiedGraph.load(graphPath).entity("a1").orElseThrow().attributes().get("value");
+        assertEquals(10.0, ((Number) stored).doubleValue(), 1.0e-12, "a scenario must not rewrite its inputs");
+    }
+
+    private static UnifiedGraph formulaGraph() {
+        return new UnifiedGraph()
+                .addEntity(cell("a1", "Sheet1!A1", "Input A", 10.0))
+                .addEntity(cell("a2", "Sheet1!A2", "Input B", 20.0))
+                .addEntity(GraphEntity.builder("a3")
+                        .type("FORMULA_CELL").label("Total")
+                        .attribute("cell_reference", "Sheet1!A3")
+                        .attribute("formula", "SUM(Sheet1!A1:Sheet1!A2)")
+                        .attribute("displayValue", "30")
+                        .attribute("validated", true)
+                        .build())
+                .addRelation(GraphRelation.builder("d1", "a3", "a1").type("DEPENDS_ON").build())
+                .addRelation(GraphRelation.builder("d2", "a3", "a2").type("DEPENDS_ON").build());
+    }
+
+    private static GraphEntity cell(String id, String reference, String label, double value) {
+        return GraphEntity.builder(id).type("CELL").label(label)
+                .attribute("cell_reference", reference).attribute("value", value).build();
     }
 
     @Test
@@ -248,6 +307,132 @@ class LocalProjectGraphBackendTest {
         UnifiedGraph graph = UnifiedGraph.load(
                 projectRoot.resolve("data/crawls/kb-44/graph.kgraph"));
         assertEquals("SKIPPED_BY_CONFIGURATION", graph.meta().get("enrichment.status"));
+    }
+
+    @Test
+    void crawlThatSkipsLearningMarksLearnedAssetsCarriedFromThePreviousGraphStale() throws Exception {
+        Path docs = projectRoot.resolve("stale-learning-docs");
+        Files.createDirectories(docs);
+        Files.writeString(docs.resolve("note.md"),
+                "# Note\nThe silver compass points toward the northern archive.\n",
+                StandardCharsets.UTF_8);
+        ObjectNode request = mapper.createObjectNode()
+                .put("async", false)
+                .put("strictSteps", true);
+        request.putArray("documents").addObject().put("path", "stale-learning-docs");
+        request.putObject("knowledgeBase").put("id", 45);
+        request.putArray("steps").add("LEARNING");
+        request.putObject("embeddingTraining").put("enabled", false);
+        request.putObject("reasoningLearning").put("enabled", false);
+        Path graphPath = projectRoot.resolve("data/crawls/kb-45/graph.kgraph");
+
+        ToolResult first = new CrawlDocumentsTool((String) null, mapper).execute(request.deepCopy(), context);
+        assertFalse(first.isError(), first.getOutput());
+        UnifiedGraph graph = UnifiedGraph.load(graphPath);
+        // Nothing was ever learned, so nothing is stale.
+        assertNull(graph.meta().get("learning.reasoningStale"));
+        assertNull(graph.meta().get("learning.kgeStale"));
+
+        // Stand in for an earlier crawl whose learning pass did run, then change the corpus.
+        graph.putModel(UnifiedGraphReasoningLifecycle.CONSENSUS_TARGETS_ARTIFACT,
+                new HashMap<>(Map.of("MENTIONS(a,b)", 0.9)));
+        graph.putArtifactText("models/kge.json", "{\"algorithm\":\"TRANSE\",\"embeddingDim\":2}");
+        graph.saveCompact(graphPath);
+        Files.writeString(docs.resolve("note.md"),
+                "# Note\nThe silver compass points toward the northern archive.\n"
+                        + "The archive keeps a brass sextant.\n",
+                StandardCharsets.UTF_8);
+
+        ToolResult second = new CrawlDocumentsTool((String) null, mapper).execute(request.deepCopy(), context);
+        assertFalse(second.isError(), second.getOutput());
+        graph = UnifiedGraph.load(graphPath);
+        assertNotNull(graph.artifact(UnifiedGraphReasoningLifecycle.CONSENSUS_TARGETS_ARTIFACT));
+        assertEquals(true, graph.meta().get("learning.reasoningStale"), graph.meta().toString());
+        assertEquals(true, graph.meta().get("learning.kgeStale"), graph.meta().toString());
+    }
+
+    @Test
+    void crawlThatSkipsLearningDoesNotCountRecordedTracesAsLearnedState() throws Exception {
+        Path docs = projectRoot.resolve("traces-only-docs");
+        Files.createDirectories(docs);
+        Files.writeString(docs.resolve("note.md"),
+                "# Note\nThe silver compass points toward the northern archive.\n",
+                StandardCharsets.UTF_8);
+        ObjectNode request = mapper.createObjectNode()
+                .put("async", false)
+                .put("strictSteps", true);
+        request.putArray("documents").addObject().put("path", "traces-only-docs");
+        request.putObject("knowledgeBase").put("id", 47);
+        request.putArray("steps").add("LEARNING");
+        request.putObject("embeddingTraining").put("enabled", false);
+        request.putObject("reasoningLearning").put("enabled", false);
+        Path graphPath = projectRoot.resolve("data/crawls/kb-47/graph.kgraph");
+
+        ToolResult first = new CrawlDocumentsTool((String) null, mapper).execute(request.deepCopy(), context);
+        assertFalse(first.isError(), first.getOutput());
+        UnifiedGraph graph = UnifiedGraph.load(graphPath);
+        // Traces an agent recorded and an analyst's weight map: neither is learned state.
+        graph.putArtifactText(UnifiedGraphReasoningLifecycle.TRACES_ARTIFACT, "[{\"question\":\"where\"}]");
+        graph.putWeightMap("analystPriors", Map.of("archive", 0.5));
+        graph.saveCompact(graphPath);
+        Files.writeString(docs.resolve("note.md"),
+                "# Note\nThe silver compass points toward the northern archive.\n"
+                        + "The archive keeps a brass sextant.\n",
+                StandardCharsets.UTF_8);
+
+        ToolResult second = new CrawlDocumentsTool((String) null, mapper).execute(request.deepCopy(), context);
+        assertFalse(second.isError(), second.getOutput());
+        graph = UnifiedGraph.load(graphPath);
+        assertEquals("[{\"question\":\"where\"}]",
+                graph.artifactText(UnifiedGraphReasoningLifecycle.TRACES_ARTIFACT));
+        assertEquals(Map.of("archive", 0.5), graph.weightMap("analystPriors"));
+        assertNull(graph.meta().get("learning.reasoningStale"), graph.meta().toString());
+    }
+
+    @Test
+    void embeddingTrainingFollowsTheSameStepPlanAsReasoningLearning() throws Exception {
+        Path docs = projectRoot.resolve("kge-step-plan-docs");
+        Files.createDirectories(docs);
+        Files.writeString(docs.resolve("retained.md"),
+                "# Retained\nThe aurora compass points toward the northern archive.\n",
+                StandardCharsets.UTF_8);
+        Files.writeString(docs.resolve("related.md"),
+                "# Related\nThe northern archive catalogs the silver beacon.\n",
+                StandardCharsets.UTF_8);
+        ObjectNode request = mapper.createObjectNode().put("async", false);
+        request.putArray("documents").addObject().put("path", "kge-step-plan-docs");
+        request.putObject("knowledgeBase").put("id", 46);
+        request.putArray("steps").add("MARKDOWN_EXTRACTION");
+        request.putObject("embeddingTraining")
+                .put("enabled", true)
+                .put("algorithm", "TRANSE")
+                .put("embeddingDim", 4)
+                .put("epochs", 1);
+        Path graphPath = projectRoot.resolve("data/crawls/kb-46/graph.kgraph");
+
+        ToolResult first = new CrawlDocumentsTool((String) null, mapper).execute(request.deepCopy(), context);
+
+        // The selection leaves out LEARNING, so neither learner runs, even with KGE configured on.
+        assertFalse(first.isError(), first.getOutput());
+        assertEquals(false, first.getMetadata().get("enrichmentRequested"), first.getMetadata().toString());
+        assertNull(first.getMetadata().get("embeddingAlgorithm"), first.getMetadata().toString());
+        UnifiedGraph graph = UnifiedGraph.load(graphPath);
+        assertTrue(graph.relationCount() > 0);
+        assertFalse(graph.vectorLayers().containsKey(LocalProjectGraphBackend.ENTITY_LAYER));
+        assertNull(graph.artifact(LocalProjectGraphBackend.MODEL_ARTIFACT));
+
+        // A learned weight map carried from an earlier graph no longer describes the new corpus.
+        graph.putWeightMap(UnifiedGraphReasoningLifecycle.PSL_WEIGHT_MAP, Map.of("rule-0", 0.5));
+        graph.saveCompact(graphPath);
+        Files.writeString(docs.resolve("related.md"),
+                "# Related\nThe northern archive catalogs the silver beacon and a brass sextant.\n",
+                StandardCharsets.UTF_8);
+
+        ToolResult second = new CrawlDocumentsTool((String) null, mapper).execute(request.deepCopy(), context);
+        assertFalse(second.isError(), second.getOutput());
+        graph = UnifiedGraph.load(graphPath);
+        assertEquals(Map.of("rule-0", 0.5), graph.weightMap(UnifiedGraphReasoningLifecycle.PSL_WEIGHT_MAP));
+        assertEquals(true, graph.meta().get("learning.reasoningStale"), graph.meta().toString());
     }
 
     @Test
@@ -445,6 +630,10 @@ class LocalProjectGraphBackendTest {
         assertEquals(CrawlOntology.contentFingerprint(secondArtifact.schema()),
                 secondArtifact.fingerprint());
         assertMatchingEntityFingerprint(graphPath, "NEW_ENTITY", secondArtifact.fingerprint());
+
+        assertTrue(structuredPrompts.stream().noneMatch(
+                        prompt -> prompt.contains("TYPE-SCHEMA REPAIR REQUIRED")),
+                "fixture responses must pass schema validation without repair retries or the grounded fallback");
     }
 
     @Test
@@ -571,9 +760,15 @@ class LocalProjectGraphBackendTest {
             }
         }
         if (schemaProperty(schema, "nodeTypes")) {
-            boolean persisted = prompt.contains(
-                    "Only add missing node types; never repeat or redefine these frozen node types")
-                    && prompt.contains("OLD_ENTITY");
+            // CorpusSchemaUnifier seeds the ontology with a trusted baseline, so the frozen
+            // node-type header below is present in EVERY prompt from the very first call
+            // onward. "persisted" must therefore check only inside that frozen block, not the
+            // whole prompt text: this same (first) crawl's own batch proposes OLD_ENTITY too,
+            // and that proposal gets echoed back into later untrusted-batch-proposal review
+            // text, which would otherwise make the whole-prompt check fire one crawl too early.
+            boolean persisted = frozenBlockLists(prompt,
+                    "Only add missing node types; never repeat or redefine these frozen node types",
+                    "OLD_ENTITY");
             // The corpus-wide consolidation pass accepts only label/parentType;
             // the per-batch discovery pass additionally requires 1-2 evidence
             // spans whose sourceId is a submitted window (s1, s2, ...) and whose
@@ -592,12 +787,36 @@ class LocalProjectGraphBackendTest {
                     "evidence", List.of(Map.of("sourceId", "s1", "quote", quote)));
             return mapper.writeValueAsString(Map.of("nodeTypes", List.of(proposal)));
         }
+        if (schemaProperty(schema, "witnesses")) {
+            // Evidence-first relationship witness discovery (one call per batch): a single
+            // observation anchored by an exact-substring quote from the cited window.
+            // RelationshipWitnessAccumulator never checks subject/predicateText/object against
+            // the source text, only that the quote is an exact substring of the cited window
+            // and every field is present, non-blank, and within its bounded length.
+            String windowContent = firstSubmittedWindow(prompt);
+            String quote = windowContent.length() > 60
+                    ? windowContent.substring(0, 60) : windowContent;
+            Map<String, Object> witness = Map.of(
+                    "sourceId", "s1",
+                    "subject", "Subject",
+                    "predicateText", "relates to",
+                    "object", "Object",
+                    "quote", quote,
+                    "qualifier", "");
+            return mapper.writeValueAsString(Map.of("witnesses", List.of(witness)));
+        }
         if (schemaProperty(schema, "relationshipTypes")) {
-            boolean persisted = prompt.contains(
-                    "Only add missing relationship types; never repeat or redefine these frozen relationship types")
-                    && prompt.contains("OLD_REL");
-            List<Map<String, String>> values = persisted ? List.of() : List.of(
-                    Map.of("type", "OLD_REL", "connectionFamily", "REFERENCE"));
+            // Same frozen-block-only check as the nodeTypes branch above: OLD_REL counts as
+            // persisted only when the frozen relationship-type block lists it.
+            boolean persisted = frozenBlockLists(prompt,
+                    "Only add missing relationship types; never repeat or redefine these frozen relationship types",
+                    "OLD_REL");
+            // Consolidation now must cite the witness(es) backing each proposed type; the ids
+            // are host-assigned content hashes (unpredictable), so read back whichever ones the
+            // prompt's "CHECKED RELATIONSHIP OBSERVATIONS" block actually cited.
+            List<Map<String, Object>> values = persisted ? List.of() : List.of(
+                    Map.of("type", "OLD_REL", "connectionFamily", "REFERENCE",
+                            "witnessIds", citedWitnessIds(prompt)));
             return mapper.writeValueAsString(Map.of("relationshipTypes", values));
         }
         if (schemaProperty(schema, "classifications")) {
@@ -615,6 +834,21 @@ class LocalProjectGraphBackendTest {
     private static boolean schemaProperty(Map<String, Object> schema, String property) {
         Object properties = schema == null ? null : schema.get("properties");
         return properties instanceof Map<?, ?> values && values.containsKey(property);
+    }
+
+    /**
+     * True only when {@code label} is listed inside the prompt's frozen/established-types block
+     * introduced by {@code header} - not merely echoed elsewhere in the same prompt (e.g. this
+     * crawl's own untrusted batch proposals). The block runs
+     * from the header to the next blank line: CorpusSchemaPromptBuilder#appendEstablishedTypes
+     * writes the header, then pretty-printed JSON, then a blank line.
+     */
+    private static boolean frozenBlockLists(String prompt, String header, String label) {
+        int start = prompt.indexOf(header);
+        if (start < 0) return false;
+        int end = prompt.indexOf("\n\n", start);
+        String block = end < 0 ? prompt.substring(start) : prompt.substring(start, end);
+        return block.contains(label);
     }
 
     /** Read s1's content from the prompt's UNTRUSTED_CORPUS_PASSAGES_JSON block. */
@@ -635,6 +869,21 @@ class LocalProjectGraphBackendTest {
         } catch (Exception brokenPrompt) {
             throw new AssertionError("native fixture could not read submitted windows", brokenPrompt);
         }
+    }
+
+    /**
+     * Every witnessId the consolidation prompt cited for reuse, read back from its "CHECKED
+     * RELATIONSHIP OBSERVATIONS" JSON block. CorpusSchemaPromptBuilder serializes that block with
+     * a pretty printer, so this scans the raw text for the quoted key rather than assuming a
+     * single-line layout.
+     */
+    private static List<String> citedWitnessIds(String prompt) {
+        List<String> ids = new ArrayList<>();
+        Matcher matcher = Pattern.compile("\"witnessId\"\\s*:\\s*\"([^\"]+)\"").matcher(prompt);
+        while (matcher.find()) {
+            ids.add(matcher.group(1));
+        }
+        return ids;
     }
 
     private static String nativeFacts(String entityType) {
@@ -857,7 +1106,7 @@ class LocalProjectGraphBackendTest {
         assertFalse(result.path("inferenceInvoked").asBoolean(true));
         assertEquals("lexical + stored entity prior",
                 result.path("data").path("scoreBasis").asText());
-        assertEquals("clamp01(weight * confidence)",
+        assertEquals("clamp01(min(weight, confidence))",
                 result.path("data").path("storedPrior").asText());
         assertFalse(result.path("data").path("inferenceInvoked").asBoolean(true));
         assertEquals("service", result.path("entities").get(0).path("id").asText());
@@ -896,6 +1145,47 @@ class LocalProjectGraphBackendTest {
 
         assertTrue(backend.executeOfflineTool("ask_graph_explain_fused",
                 mapper.createObjectNode(), context).isError());
+    }
+
+    @Test
+    void localGraphReasonIsALookupThatVerifiesFactsAndDescribesEntities() throws Exception {
+        Path graphPath = projectRoot.resolve("data/crawls/reason-lookup/graph.kgraph");
+        Files.createDirectories(graphPath.getParent());
+        new UnifiedGraph().graphId("local:test:reason-lookup")
+                .addEntity("alice", "PERSON", "Alice")
+                .addEntity("acme", "ORGANIZATION", "Acme")
+                .addRelation(GraphRelation.builder("alice-acme", "alice", "acme")
+                        .type("WORKS_FOR").confidence(0.9).directed(true).build())
+                .save(graphPath);
+        GraphReasonTool tool = new GraphReasonTool((String) null, mapper);
+
+        ToolResult fact = tool.execute(mapper.createObjectNode()
+                .put("target", "WORKS_FOR(alice, acme)")
+                .put("knowledgeBase", "reason-lookup"), context);
+        assertFalse(fact.isError(), fact.getOutput());
+        assertEquals("project-local", fact.getMetadata().get("backend"));
+        assertEquals("VERIFY", fact.getMetadata().get("operation"));
+        assertEquals("SUPPORTED", fact.getMetadata().get("verdict"), fact.getOutput());
+        assertTrue(fact.getOutput().contains("no new inference was run"), fact.getOutput());
+        assertTrue(fact.getOutput().contains("WORKS_FOR"), fact.getOutput());
+
+        ToolResult entity = tool.execute(mapper.createObjectNode()
+                .put("target", "Alice")
+                .put("knowledgeBase", "reason-lookup"), context);
+        assertFalse(entity.isError(), entity.getOutput());
+        assertEquals("DESCRIBE", entity.getMetadata().get("operation"));
+        assertEquals("OK", entity.getMetadata().get("verdict"), entity.getOutput());
+
+        // A causal target needs a server; locally the rest is verified and the output says so.
+        ToolResult causal = tool.execute(mapper.createObjectNode()
+                .put("target", "causal:WORKS_FOR(alice, acme)")
+                .put("knowledgeBase", "reason-lookup"), context);
+        assertFalse(causal.isError(), causal.getOutput());
+        assertEquals("VERIFY", causal.getMetadata().get("operation"));
+        assertEquals("SUPPORTED", causal.getMetadata().get("verdict"), causal.getOutput());
+        assertTrue(causal.getOutput().contains("Causal attribution needs a configured Kompile server URL"),
+                causal.getOutput());
+        assertTrue(causal.getOutput().contains("was verified instead"), causal.getOutput());
     }
 
     @Test
@@ -1127,6 +1417,9 @@ class LocalProjectGraphBackendTest {
         assertTrue(firstGraph.relationCount() >= 5);
         assertNotNull(firstGraph.artifact(LocalProjectGraphBackend.MODEL_ARTIFACT));
         assertTrue(firstGraph.vectorLayers().containsKey(LocalProjectGraphBackend.ENTITY_LAYER));
+        // Learning also writes its relation-level results and weights where readers look for them.
+        assertFalse(firstGraph.relationOpinions().isEmpty());
+        assertFalse(firstGraph.weightMap(UnifiedGraphReasoningLifecycle.PSL_WEIGHT_MAP).isEmpty());
         MTheory learnedTheory = UnifiedGraphReasoningLifecycle.learnedMTheory(firstGraph);
         assertNotNull(learnedTheory);
         String scopedEntityId = learnedTheory.getEntityTypes().stream()
@@ -1151,6 +1444,43 @@ class LocalProjectGraphBackendTest {
         assertFalse(boundedMebnResult.isError(), boundedMebnResult.getOutput());
         assertEquals(1, ((Number) boundedMebnResult.getMetadata().get("scopedEntityCount")).intValue());
         assertTrue(((Number) boundedMebnResult.getMetadata().get("totalVariables")).intValue() <= 1);
+        // Nothing is observed, so the result says so and every posterior is its prior.
+        JsonNode boundedMebnJson = mapper.readTree(boundedMebnResult.getOutput());
+        assertFalse(boundedMebnJson.path("evidenceApplied").asBoolean(true), boundedMebnJson.toString());
+        assertEquals(boundedMebnJson.path("priors"), boundedMebnJson.path("posteriors"));
+        assertTrue(boundedMebnJson.path("note").asText().contains("No evidence was applied"),
+                boundedMebnJson.toString());
+
+        // Evidence conditions the posteriors while the priors stay unconditioned; a name outside
+        // the network is refused rather than silently ignored.
+        ObjectNode observedMebn = mapper.createObjectNode();
+        observedMebn.put("nodeId", scopedEntityId);
+        observedMebn.put("factSheetId", 41);
+        JsonNode unconditioned = mapper.readTree(new LocalProjectGraphBackend(mapper)
+                .executeOfflineTool("ask_graph_mebn", observedMebn, context).getOutput());
+        assertFalse(unconditioned.path("posteriors").isEmpty(), unconditioned.toString());
+        String observed = unconditioned.path("posteriors").fieldNames().next();
+        // Observe the less likely state, so the posterior has to move.
+        boolean observedState = unconditioned.path("posteriors").path(observed).asDouble() < 0.5;
+        observedMebn.putObject("evidence").put(observed, observedState);
+        ToolResult conditioned = new LocalProjectGraphBackend(mapper)
+                .executeOfflineTool("ask_graph_mebn", observedMebn, context);
+        assertFalse(conditioned.isError(), conditioned.getOutput());
+        assertEquals(true, conditioned.getMetadata().get("evidenceApplied"));
+        JsonNode conditionedJson = mapper.readTree(conditioned.getOutput());
+        assertEquals(observedState ? 1.0 : 0.0,
+                conditionedJson.path("posteriors").path(observed).asDouble(), 1e-12);
+        assertEquals(unconditioned.path("posteriors"), conditionedJson.path("priors"));
+        assertEquals(observedState ? 1 : 0, conditionedJson.path("evidence").path(observed).asInt(-1));
+        assertTrue(conditionedJson.path("note").asText().contains("conditioned on the evidence"),
+                conditionedJson.toString());
+
+        observedMebn.putObject("evidence").put("notAVariable(x)", true);
+        ToolResult unknownEvidence = new LocalProjectGraphBackend(mapper)
+                .executeOfflineTool("ask_graph_mebn", observedMebn, context);
+        assertTrue(unknownEvidence.isError(), unknownEvidence.getOutput());
+        assertTrue(unknownEvidence.getOutput().contains("notAVariable(x)"), unknownEvidence.getOutput());
+        assertTrue(unknownEvidence.getOutput().contains(observed), unknownEvidence.getOutput());
 
         ObjectNode query = mapper.createObjectNode();
         query.put("operation", "SEARCH");
@@ -1180,6 +1510,8 @@ class LocalProjectGraphBackendTest {
                 .execute(reason, context);
         assertFalse(reasonResult.isError(), reasonResult.getOutput());
         assertEquals("project-local", reasonResult.getMetadata().get("backend"));
+        assertEquals("DESCRIBE", reasonResult.getMetadata().get("operation"));
+        assertTrue(reasonResult.getOutput().contains("no new inference was run"), reasonResult.getOutput());
 
         ObjectNode jobs = mapper.createObjectNode();
         jobs.put("action", "jobs");

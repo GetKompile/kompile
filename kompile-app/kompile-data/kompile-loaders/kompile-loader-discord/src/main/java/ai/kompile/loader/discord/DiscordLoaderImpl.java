@@ -26,6 +26,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -48,9 +50,14 @@ import java.util.function.Consumer;
  *   <li>{@code includeThreads} - Whether to crawl threads (default true)</li>
  *   <li>{@code includeAttachments} - Whether to include attachment metadata (default true)</li>
  *   <li>{@code daysBack} - Number of days of history to fetch (default 30)</li>
- *   <li>{@code maxMessages} - Max messages per channel (default 0 = unlimited)</li>
+ *   <li>{@code maxMessages} - TOTAL max messages across all channels and threads (default 0 = unlimited)</li>
  *   <li>{@code startDate} - ISO date to start from (overrides daysBack)</li>
  *   <li>{@code endDate} - ISO date to end at</li>
+ *   <li>{@code since} - ISO-8601 instant lower bound; combined with startDate/daysBack using
+ *       whichever bound is later</li>
+ *   <li>{@code attachmentDirectory} - when set, attachment originals are saved under it and
+ *       described via {@code "attachments"} message metadata instead of being downloaded per-run</li>
+ *   <li>{@code maxAttachmentBytes} - skip saving an attachment larger than this (default 25MB)</li>
  * </ul>
  */
 @Slf4j
@@ -98,13 +105,23 @@ public class DiscordLoaderImpl implements DocumentLoader {
         boolean includeAttachments = boolVal(meta.get("includeAttachments"), true);
         int maxMessages = MapUtils.toInt(meta.get("maxMessages"), 0);
         int daysBack = MapUtils.toInt(meta.get("daysBack"), 30);
+        Path attachmentDirectory = resolveAttachmentDirectory(meta);
+        long maxAttachmentBytes = MapUtils.toLong(meta.get("maxAttachmentBytes"),
+                DiscordAttachmentStorage.DEFAULT_MAX_ATTACHMENT_BYTES);
 
-        // Calculate time bounds
+        // Calculate time bounds. B4/B7/C3: computeEffectiveSince resolves "since" folded with
+        // startDate/daysBack, using whichever bound is later. Message pagination (afterSnowflake,
+        // via computeAfterSnowflake) and archived-thread discovery below share this one
+        // resolution — using the raw "since" alone for thread discovery would mean a server with
+        // no explicit "since" (the common case) pages through every archived thread ever created,
+        // one request per thread, only to have every one of its messages filtered out by the
+        // default 30-day daysBack bound.
+        Instant effectiveSince = computeEffectiveSince(meta, daysBack);
         String afterSnowflake = computeAfterSnowflake(meta, daysBack);
         String beforeSnowflake = computeBeforeSnowflake(meta);
 
         Duration rateLimitDelay = Duration.ofMillis(MapUtils.toInt(meta.get("rateLimitDelayMs"), 500));
-        DiscordApiService api = new DiscordApiService(botToken, rateLimitDelay);
+        DiscordApiService api = createApiService(botToken, rateLimitDelay);
 
         Guild guild = api.getGuild(guildId);
         log.info("Loading Discord server: {} ({})", guild.name(), guild.id());
@@ -128,13 +145,47 @@ public class DiscordLoaderImpl implements DocumentLoader {
         List<Channel> targetChannels = filterTargetChannels(channels, meta);
         log.info("Found {} text channels to load", targetChannels.size());
 
+        Set<String> targetChannelIds = new HashSet<>();
+        for (Channel ch : targetChannels) targetChannelIds.add(ch.id());
+
         // Collect threads if requested
         List<Channel> threads = new ArrayList<>();
         if (includeThreads) {
-            threads.addAll(api.getActiveThreads(guildId));
+            // B3: the guild-wide active-threads endpoint returns threads from every channel in
+            // the guild, not just the ones targeted by channelIds — keep only threads parented
+            // under a targeted channel. B2: a guild-wide failure here must only drop active
+            // threads, not abort the whole load.
+            try {
+                for (Channel candidate : api.getActiveThreads(guildId)) {
+                    if (candidate.parentId() != null && targetChannelIds.contains(candidate.parentId())) {
+                        threads.add(candidate);
+                    }
+                }
+            } catch (DiscordForbiddenException e) {
+                log.debug("Skipping active-thread discovery for guild {} (no access): {}", guildId, e.getMessage());
+            } catch (Exception e) {
+                log.warn("Failed to list active threads for guild {}: {}", guildId, e.getMessage());
+            }
             for (Channel ch : targetChannels) {
-                threads.addAll(api.getArchivedPublicThreads(ch.id()));
-                threads.addAll(api.getArchivedPrivateThreads(ch.id()));
+                // B2: archived-thread discovery is per-channel. Discord 403s
+                // /threads/archived/public for a channel missing READ_MESSAGE_HISTORY or
+                // VIEW_CHANNEL, and the guild channel list can include such channels — one
+                // inaccessible channel must only drop that channel's threads, never abort the
+                // whole load before any messages are fetched.
+                try {
+                    threads.addAll(api.getArchivedPublicThreads(ch.id(), effectiveSince));
+                } catch (DiscordForbiddenException e) {
+                    log.debug("Skipping archived public threads for #{} (no access): {}", ch.name(), e.getMessage());
+                } catch (Exception e) {
+                    log.warn("Failed to list archived public threads for #{}: {}", ch.name(), e.getMessage());
+                }
+                try {
+                    threads.addAll(api.getArchivedPrivateThreads(ch.id(), effectiveSince));
+                } catch (DiscordForbiddenException e) {
+                    log.debug("Skipping archived private threads for #{} (no access): {}", ch.name(), e.getMessage());
+                } catch (Exception e) {
+                    log.warn("Failed to list archived private threads for #{}: {}", ch.name(), e.getMessage());
+                }
             }
             log.info("Found {} threads to load", threads.size());
         }
@@ -143,35 +194,90 @@ public class DiscordLoaderImpl implements DocumentLoader {
         int totalChannels = targetChannels.size() + threads.size();
         int processedChannels = 0;
 
+        // B6: maxMessages is a TOTAL cap across channels and threads, not a per-channel cap.
+        // <= 0 means unlimited, in which case remainingBudget is never consulted and 0 keeps
+        // being passed through as "unlimited" to each fetch.
+        boolean unlimited = maxMessages <= 0;
+        int remainingBudget = maxMessages;
+
+        // B2: isolate failures per channel (403 is a skip, not a failure); only abort loading if
+        // every targeted channel that wasn't access-skipped also failed.
+        int channelAttempts = 0;
+        int channelFailures = 0;
+        Exception firstChannelFailure = null;
+
         // Load messages from each channel
         for (Channel channel : targetChannels) {
             if (Thread.currentThread().isInterrupted()) break;
+            if (!unlimited && remainingBudget <= 0) break;
             processedChannels++;
             int pct = 10 + (80 * processedChannels / Math.max(totalChannels, 1));
             notifyProgress(progressCallback, "Loading messages", pct,
                     "Channel: #" + channel.name() + " (" + processedChannels + "/" + totalChannels + ")");
 
-            List<Message> messages = api.getChannelMessages(channel.id(), maxMessages, afterSnowflake, beforeSnowflake);
+            int fetchLimit = unlimited ? 0 : remainingBudget;
+            List<Message> messages;
+            try {
+                messages = api.getChannelMessages(channel.id(), fetchLimit, afterSnowflake, beforeSnowflake);
+            } catch (DiscordForbiddenException e) {
+                log.warn("Skipping #{} (no access): {}", channel.name(), e.getMessage());
+                continue;
+            } catch (Exception e) {
+                channelAttempts++;
+                channelFailures++;
+                if (firstChannelFailure == null) firstChannelFailure = e;
+                log.warn("Failed to load messages from #{}: {}", channel.name(), e.getMessage());
+                continue;
+            }
+            channelAttempts++;
             log.info("Loaded {} messages from #{}", messages.size(), channel.name());
+            if (!unlimited) remainingBudget -= messages.size();
 
             for (Message msg : messages) {
-                documents.add(convertMessageToDocument(msg, channel, guild, sourceDescriptor, includeAttachments, roleMap));
+                Document doc = convertMessageToDocument(msg, channel, guild, sourceDescriptor, includeAttachments, roleMap);
+                if (includeAttachments && attachmentDirectory != null
+                        && msg.attachments() != null && !msg.attachments().isEmpty()) {
+                    applyAttachmentStorage(api, doc, msg, attachmentDirectory, maxAttachmentBytes);
+                }
+                documents.add(doc);
             }
+        }
+
+        if (channelAttempts > 0 && channelFailures == channelAttempts) {
+            throw new IOException("All " + channelAttempts + " targeted Discord channel(s) failed",
+                    firstChannelFailure);
         }
 
         // Load messages from threads
         for (Channel thread : threads) {
             if (Thread.currentThread().isInterrupted()) break;
+            if (!unlimited && remainingBudget <= 0) break;
             processedChannels++;
             int pct = 10 + (80 * processedChannels / Math.max(totalChannels, 1));
             notifyProgress(progressCallback, "Loading threads", pct,
                     "Thread: " + thread.name() + " (" + processedChannels + "/" + totalChannels + ")");
 
-            List<Message> messages = api.getChannelMessages(thread.id(), maxMessages, afterSnowflake, beforeSnowflake);
+            int fetchLimit = unlimited ? 0 : remainingBudget;
+            List<Message> messages;
+            try {
+                messages = api.getChannelMessages(thread.id(), fetchLimit, afterSnowflake, beforeSnowflake);
+            } catch (DiscordForbiddenException e) {
+                log.warn("Skipping thread '{}' (no access): {}", thread.name(), e.getMessage());
+                continue;
+            } catch (Exception e) {
+                log.warn("Failed to load messages from thread '{}': {}", thread.name(), e.getMessage());
+                continue;
+            }
             log.info("Loaded {} messages from thread '{}'", messages.size(), thread.name());
+            if (!unlimited) remainingBudget -= messages.size();
 
             for (Message msg : messages) {
-                documents.add(convertMessageToDocument(msg, thread, guild, sourceDescriptor, includeAttachments, roleMap));
+                Document doc = convertMessageToDocument(msg, thread, guild, sourceDescriptor, includeAttachments, roleMap);
+                if (includeAttachments && attachmentDirectory != null
+                        && msg.attachments() != null && !msg.attachments().isEmpty()) {
+                    applyAttachmentStorage(api, doc, msg, attachmentDirectory, maxAttachmentBytes);
+                }
+                documents.add(doc);
             }
         }
 
@@ -179,6 +285,15 @@ public class DiscordLoaderImpl implements DocumentLoader {
                 "Loaded " + documents.size() + " messages from " + guild.name());
         log.info("Discord loading complete: {} documents from server '{}'", documents.size(), guild.name());
         return documents;
+    }
+
+    /**
+     * Test seam: overridden by tests to point the internal {@link DiscordApiService} at a fake
+     * HTTP server instead of the real Discord API, the same pattern {@link DiscordApiService}
+     * itself uses for its own tests.
+     */
+    DiscordApiService createApiService(String botToken, Duration rateLimitDelay) {
+        return new DiscordApiService(botToken, rateLimitDelay);
     }
 
     private Document convertMessageToDocument(Message msg, Channel channel, Guild guild,
@@ -227,8 +342,8 @@ public class DiscordLoaderImpl implements DocumentLoader {
         Document doc = new Document(content.toString());
         Map<String, Object> metadata = doc.getMetadata();
 
-        // Core identifiers
-        String sourcePath = "discord:" + guild.id() + "/" + channel.id() + "/" + msg.id();
+        // Core identifiers (C1: "discord://<guildId>/<channelId>/<messageId>")
+        String sourcePath = "discord://" + guild.id() + "/" + channel.id() + "/" + msg.id();
         metadata.put(GraphConstants.META_SOURCE, sourcePath);
         metadata.put(GraphConstants.META_SOURCE_PATH, sourcePath);
         metadata.put(GraphConstants.META_SOURCE_TYPE, sourceDescriptor.getType().name());
@@ -416,6 +531,30 @@ public class DiscordLoaderImpl implements DocumentLoader {
         return doc;
     }
 
+    /**
+     * C4/B5: when an attachmentDirectory is configured, downloads and saves each attachment's
+     * original bytes under it (content-addressed by the message's source_path) and records an
+     * {@code "attachments"} metadata entry describing what was saved or skipped. No separate
+     * attachment Document is produced and no text is extracted in this mode.
+     */
+    private void applyAttachmentStorage(DiscordApiService api, Document doc, Message msg,
+                                         Path attachmentDirectory, long maxAttachmentBytes) {
+        String sourcePath = (String) doc.getMetadata().get(GraphConstants.META_SOURCE_PATH);
+        String messageKey = DiscordAttachmentStorage.messageKey(sourcePath);
+        Set<String> usedFileNames = new HashSet<>();
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (Attachment att : msg.attachments()) {
+            entries.add(DiscordAttachmentStorage.save(
+                    api, att, attachmentDirectory, messageKey, maxAttachmentBytes, usedFileNames));
+        }
+        doc.getMetadata().put("attachments", entries);
+    }
+
+    private static Path resolveAttachmentDirectory(Map<String, Object> meta) {
+        String dir = str(meta.get("attachmentDirectory"));
+        return dir != null && !dir.isEmpty() ? Path.of(dir) : null;
+    }
+
     private List<Channel> filterTargetChannels(List<Channel> allChannels, Map<String, Object> meta) {
         String channelIdsStr = str(meta.get("channelIds"));
 
@@ -435,8 +574,31 @@ public class DiscordLoaderImpl implements DocumentLoader {
 
     /**
      * Compute a Discord snowflake ID that represents a point in time for "after" filtering.
+     *
+     * <p>B7/C3: also folds in the {@code "since"} metadata bound (if present), using whichever of
+     * {@code since} and the startDate/daysBack-derived instant is later — matching the shared
+     * "later of the two" contract for combining an explicit since bound with another configured
+     * start bound.
+     *
+     * @return a snowflake strictly after the resolved start time, or {@code null} if there is no
+     *         meaningful lower bound — either neither bound could be parsed, or the later of the
+     *         two falls at or before the Discord epoch, which would otherwise yield a negative
+     *         (and therefore enormous, once read as unsigned) snowflake that filters out every
+     *         message
      */
-    private String computeAfterSnowflake(Map<String, Object> meta, int defaultDaysBack) {
+    static String computeAfterSnowflake(Map<String, Object> meta, int defaultDaysBack) {
+        return snowflakeFrom(computeEffectiveSince(meta, defaultDaysBack));
+    }
+
+    /**
+     * Resolves the effective lower time bound: whichever of {@code since} and the
+     * startDate/daysBack-derived instant is later. Shared by {@link #computeAfterSnowflake}
+     * (message pagination) and archived-thread discovery in {@link #load} (B4) so a server with
+     * no explicit {@code since} bound doesn't page through a channel's entire archived-thread
+     * history only to discard every one of those threads' messages against the default daysBack
+     * bound.
+     */
+    static Instant computeEffectiveSince(Map<String, Object> meta, int defaultDaysBack) {
         String startDate = str(meta.get("startDate"));
         Instant startInstant;
         if (startDate != null && !startDate.isEmpty()) {
@@ -444,9 +606,23 @@ public class DiscordLoaderImpl implements DocumentLoader {
         } else {
             startInstant = Instant.now().minus(Duration.ofDays(defaultDaysBack));
         }
-        if (startInstant == null) return null;
-        long snowflake = (startInstant.toEpochMilli() - DiscordModels.DISCORD_EPOCH) << 22;
+
+        Instant sinceInstant = parseDate(str(meta.get("since")));
+        return laterOf(startInstant, sinceInstant);
+    }
+
+    private static String snowflakeFrom(Instant effectiveInstant) {
+        if (effectiveInstant == null) return null;
+        long epochMillis = effectiveInstant.toEpochMilli();
+        if (epochMillis <= DiscordModels.DISCORD_EPOCH) return null;
+        long snowflake = (epochMillis - DiscordModels.DISCORD_EPOCH) << 22;
         return Long.toUnsignedString(snowflake);
+    }
+
+    private static Instant laterOf(Instant a, Instant b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        return a.isAfter(b) ? a : b;
     }
 
     private String computeBeforeSnowflake(Map<String, Object> meta) {
@@ -458,7 +634,8 @@ public class DiscordLoaderImpl implements DocumentLoader {
         return Long.toUnsignedString(snowflake);
     }
 
-    private Instant parseDate(String dateStr) {
+    private static Instant parseDate(String dateStr) {
+        if (dateStr == null || dateStr.isEmpty()) return null;
         try {
             return OffsetDateTime.parse(dateStr).toInstant();
         } catch (DateTimeParseException e1) {

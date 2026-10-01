@@ -80,9 +80,6 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     private static final int MAX_FOLDER_FILES = 100;
     private static final int MAX_FOLDER_CONTEXT_CHARS = 64 * 1024;
     private static final int MAX_TOOL_DETAIL_BYTES = 64 * 1024;
-    private static final int SESSION_LOCK_STRIPES = 64;
-    private static final Set<String> ATTACHMENT_UNSUPPORTED_PROVIDERS = Set.of(
-            "kompile-local", "opencode", "pi");
 
     private final ObjectMapper mapper;
     private final LauncherResolver launcherResolver;
@@ -92,7 +89,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     private final FolderContextResolver folderContextResolver;
     private final Map<String, ActiveRun> activeRuns = new ConcurrentHashMap<>();
     private final Map<String, HarnessReplayBuffer> replays = new ConcurrentHashMap<>();
-    private final ReentrantLock[] sessionLocks = createSessionLocks();
+    private final Map<String, SessionLock> sessionLocks = new LinkedHashMap<>();
     private final Map<Path, CachedCapabilities> capabilityCache = new ConcurrentHashMap<>();
 
     @Autowired
@@ -439,8 +436,9 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             throw new IllegalArgumentException(invalid.getMessage(), invalid);
         }
         String harnessSessionId = harnessSessionId(workDir, browserSessionId);
-        ReentrantLock sessionLock = sessionLock(harnessSessionId);
+        SessionLock sessionLock = reserveSessionLock(harnessSessionId);
         if (!sessionLock.tryLock()) {
+            releaseSessionLock(harnessSessionId, sessionLock);
             return gateOutcome(false, "A chat run is in progress; approve the gate from its live controls,"
                     + " or again when it ends.");
         }
@@ -499,7 +497,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         } finally {
             join(outReader, 500L);
             join(errReader, 500L);
-            sessionLock.unlock();
+            releaseSessionLock(harnessSessionId, sessionLock);
         }
     }
 
@@ -538,7 +536,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         String runId = active.runId;
         HarnessEventSink sink = active.sink;
         PreparedAttachments prepared = PreparedAttachments.empty();
-        ReentrantLock sessionLock = null;
+        SessionLock sessionLock = null;
         String harnessSessionId = null;
         Thread stderrReader = null;
         StringBuffer diagnostics = new StringBuffer();
@@ -551,7 +549,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             Path workDir = resolveWorkingDirectory(request.getWorkingDirectory());
             harnessSessionId = harnessSessionId(workDir, browserSessionId(request));
             active.sessionId = harnessSessionId;
-            sessionLock = sessionLock(harnessSessionId);
+            sessionLock = reserveSessionLock(harnessSessionId);
             sessionLock.lockInterruptibly();
             if (active.cancelled.get()) {
                 emitTerminal(active, "cancelled", Map.of("processId", runId, "content", ""));
@@ -668,9 +666,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             if (stderrReader != null) join(stderrReader, 2_000L);
             activeRuns.remove(runId, active);
             prepared.close();
-            if (sessionLock != null && sessionLock.isHeldByCurrentThread()) {
-                sessionLock.unlock();
-            }
+            if (sessionLock != null) releaseSessionLock(harnessSessionId, sessionLock);
         }
     }
 
@@ -982,17 +978,12 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         return result;
     }
 
+    /** The CLI's report is the one attachment signal: its client knows each route's media format. */
     private JsonNode normalizeCapabilities(JsonNode raw) {
         if (raw == null || !raw.isObject()) {
             return unavailableCapabilities("Kompile CLI returned an invalid capability document");
         }
-        ObjectNode normalized = ((ObjectNode) raw).deepCopy();
-        String provider = normalized.path("provider").asText("")
-                .trim().toLowerCase(java.util.Locale.ROOT);
-        if (ATTACHMENT_UNSUPPORTED_PROVIDERS.contains(provider)) {
-            normalized.put("attachmentsSupported", false);
-        }
-        return normalized;
+        return ((ObjectNode) raw).deepCopy();
     }
 
     static List<String> resolveLauncher() throws IOException {
@@ -1219,6 +1210,11 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
 
     private static Path resolveWorkingDirectory(String configured) throws IOException {
         Path handoffDirectory = WebChatContext.workingDirectory();
+        if (WebChatContext.workspace()) {
+            if (handoffDirectory == null) throw new IOException("Workspace mode requires a CLI web launch context");
+            String directory = configured == null || configured.isBlank() ? handoffDirectory.toString() : configured;
+            return new ai.kompile.cli.common.ChatWorkspaceStore().resolveRegisteredDirectory(directory);
+        }
         Path projectRoot = handoffDirectory != null ? handoffDirectory
                 : KompileHome.resolvedProjectDirectory().toPath().toAbsolutePath().normalize();
         if (!Files.isDirectory(projectRoot)) {
@@ -1325,18 +1321,26 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
 
     static int configuredMaxConcurrentRuns() {
         int configured = Integer.getInteger(
-                "kompile.web.chat.harness.maxConcurrent", DEFAULT_MAX_CONCURRENT_RUNS);
+                "kompile.web.chat.harness.maxConcurrent", WebChatContext.workspace() ? 4 : DEFAULT_MAX_CONCURRENT_RUNS);
         return Math.max(1, Math.min(MAX_ALLOWED_CONCURRENT_RUNS, configured));
     }
 
-    private static ReentrantLock[] createSessionLocks() {
-        ReentrantLock[] locks = new ReentrantLock[SESSION_LOCK_STRIPES];
-        for (int i = 0; i < locks.length; i++) locks[i] = new ReentrantLock();
-        return locks;
+    // Count holders AND waiters so eviction cannot create a second lock for an active session.
+    private static final class SessionLock extends ReentrantLock { int users; }
+
+    private SessionLock reserveSessionLock(String sessionId) {
+        synchronized (sessionLocks) {
+            SessionLock lock = sessionLocks.computeIfAbsent(sessionId, ignored -> new SessionLock());
+            lock.users++;
+            return lock;
+        }
     }
 
-    private ReentrantLock sessionLock(String sessionId) {
-        return sessionLocks[Math.floorMod(sessionId.hashCode(), sessionLocks.length)];
+    private void releaseSessionLock(String sessionId, SessionLock lock) {
+        if (lock.isHeldByCurrentThread()) lock.unlock();
+        synchronized (sessionLocks) {
+            if (--lock.users == 0) sessionLocks.remove(sessionId, lock);
+        }
     }
 
     private static ThreadFactory daemonFactory(String prefix) {

@@ -23,7 +23,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.ResponseEntity;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -49,8 +48,7 @@ class GitDiffControllerTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        GitDiffService service = new GitDiffService();
-        ReflectionTestUtils.setField(service, "configuredRoot", repo.toString());
+        GitDiffService service = new RootedGitDiffService(repo);
         controller = new GitDiffController(service);
 
         git("init");
@@ -115,6 +113,12 @@ class GitDiffControllerTest {
         }
         if (p.exitValue() != 0) {
             throw new IllegalStateException("git " + String.join(" ", args) + " failed:\n" + out);
+        }
+    }
+
+    private static final class RootedGitDiffService extends GitDiffService {
+        RootedGitDiffService(Path root) {
+            configuredRoot = root.toString();
         }
     }
 }

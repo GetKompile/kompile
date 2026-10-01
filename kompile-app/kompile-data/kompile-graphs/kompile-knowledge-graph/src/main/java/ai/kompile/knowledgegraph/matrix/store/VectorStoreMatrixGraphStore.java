@@ -87,7 +87,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     /**
      * In-memory cache of loaded graphs.
      */
-    private final Map<String, AdjacencyMatrixGraph> graphCache = new ConcurrentHashMap<>();
+    final Map<String, AdjacencyMatrixGraph> graphCache = new ConcurrentHashMap<>();
     private final Map<String, GenerationPointer> generationPointers = new ConcurrentHashMap<>();
     private final Set<String> generationGraphs = ConcurrentHashMap.newKeySet();
 
@@ -121,7 +121,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
      * {@code application.properties}.</p>
      */
     @Value("${kompile.graph.vector-scan-page-size:2000}")
-    private int vectorScanPageSize = 2000;
+    int vectorScanPageSize = 2000;
     @Value("${kompile.graph.max-incident-edges:100000}")
     private int maxIncidentEdges = 100_000;
 

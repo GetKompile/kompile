@@ -54,27 +54,37 @@ public final class IndexAutoRefresher {
      *         {@code null} (fresh index, throttled, missing, or failed).
      */
     public static String maybeRefresh(LocalCodeIndexer indexer, String projectId) {
-        return refresh(indexer, projectId, DEFAULT_MIN_INTERVAL_MS, null, null).note();
+        return refresh(indexer, projectId, DEFAULT_MIN_INTERVAL_MS).note();
     }
 
     /**
      * Variant with an explicit throttle interval (test seam; pass 0 to force).
      */
     static String maybeRefresh(LocalCodeIndexer indexer, String projectId, long minIntervalMs) {
-        return refresh(indexer, projectId, minIntervalMs, null, null).note();
-    }
-
-    static String maybeRefresh(LocalCodeIndexer indexer, String projectId, long minIntervalMs,
-                               String includes, String excludes) {
-        return refresh(indexer, projectId, minIntervalMs, includes, excludes).note();
+        return refresh(indexer, projectId, minIntervalMs).note();
     }
 
     static RefreshOutcome refresh(LocalCodeIndexer indexer, String projectId) {
-        return refresh(indexer, projectId, DEFAULT_MIN_INTERVAL_MS, null, null);
+        return refresh(indexer, projectId, DEFAULT_MIN_INTERVAL_MS);
     }
 
+    static RefreshOutcome refresh(LocalCodeIndexer indexer, String projectId, long minIntervalMs) {
+        return refresh(indexer, projectId, minIntervalMs, null);
+    }
+
+    /**
+     * The pass keeps the scope the index records
+     * ({@link LocalCodeIndexer#refreshRecordedScope}): a refresh never changes
+     * an index's scope, whichever process last set it.
+     *
+     * @param knownRoot the project root as the caller already knows it, or
+     *        {@code null}. Only consulted when metadata.json is unreadable (a
+     *        crash between write and fsync leaves it empty): the index pass
+     *        rebuilds the metadata from scratch, but the root it needs was
+     *        recorded only in the torn file.
+     */
     static RefreshOutcome refresh(LocalCodeIndexer indexer, String projectId, long minIntervalMs,
-                                  String includes, String excludes) {
+                                  Path knownRoot) {
         if (indexer == null || projectId == null || projectId.isBlank()) return NO_CHANGE;
         try {
             if (!Files.isDirectory(LocalCodeIndexer.getIndexDir(projectId))) return NO_CHANGE;
@@ -89,20 +99,21 @@ public final class IndexAutoRefresher {
                 return NO_CHANGE;
             }
 
-            Map<String, Object> stats = indexer.getStats(projectId);
+            Map<String, Object> stats;
+            try {
+                stats = indexer.getStats(projectId);
+            } catch (IndexFileStore.UnreadableIndexStateException torn) {
+                if (knownRoot == null) throw torn;
+                stats = Map.of("rootPath", knownRoot.toString());
+            }
             Object rootPath = stats == null ? null : stats.get("rootPath");
             if (rootPath == null) return NO_CHANGE;
             Path root = Path.of(rootPath.toString());
             if (!Files.isDirectory(root)) return NO_CHANGE;
-            String effectiveIncludes = includes != null
-                    ? includes : stringValue(stats.get("includePatterns"));
-            String effectiveExcludes = excludes != null
-                    ? excludes : stringValue(stats.get("excludePatterns"));
 
             PrintStream silent = new PrintStream(OutputStream.nullOutputStream(), false,
                     StandardCharsets.UTF_8);
-            LocalCodeIndexer.IndexResult result =
-                    indexer.index(root, projectId, effectiveIncludes, effectiveExcludes, silent);
+            LocalCodeIndexer.IndexResult result = indexer.refreshRecordedScope(root, projectId, silent);
 
             int attempted = Math.max(0, result.filesProcessed() - result.filesSkipped());
             int failed = Math.min(attempted, Math.max(0, result.errors()));
@@ -131,10 +142,6 @@ public final class IndexAutoRefresher {
 
     record RefreshOutcome(String note, boolean successful,
                           boolean changed, boolean fileFailures) { }
-
-    private static String stringValue(Object value) {
-        return value == null || value.toString().isBlank() ? null : value.toString();
-    }
 
     private static boolean isExpectedContention(Throwable error) {
         for (Throwable current = error; current != null; current = current.getCause()) {

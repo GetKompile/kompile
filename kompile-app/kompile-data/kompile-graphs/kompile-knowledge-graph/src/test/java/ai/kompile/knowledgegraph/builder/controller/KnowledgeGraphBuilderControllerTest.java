@@ -24,7 +24,6 @@ import ai.kompile.knowledgegraph.builder.service.ExtractionJobService;
 import ai.kompile.knowledgegraph.builder.service.GraphBuilderRegistry;
 import ai.kompile.knowledgegraph.builder.service.GraphBuildingIntegrationService;
 import ai.kompile.core.retrievers.RetrievedDoc;
-import org.springframework.test.util.ReflectionTestUtils;
 import ai.kompile.knowledgegraph.builder.storage.GraphStorageRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -146,7 +145,7 @@ class KnowledgeGraphBuilderControllerTest {
 
     @Test
     void startJob_successDispatchesExactRequest() {
-        ReflectionTestUtils.setField(controller, "integrationService", integrationService);
+        controller.integrationService = integrationService;
         when(builderRegistry.hasBuilder("llm")).thenReturn(true);
         when(jobService.hasRunningJob(1L)).thenReturn(false);
         ExtractionJob job = stubJob("job-1", 1L);
@@ -194,7 +193,7 @@ class KnowledgeGraphBuilderControllerTest {
 
     @Test
     void startJobWithoutSourcesFailsBeforeCreatingJob() {
-        ReflectionTestUtils.setField(controller, "integrationService", integrationService);
+        controller.integrationService = integrationService;
         when(builderRegistry.hasBuilder("llm")).thenReturn(true);
         var request = new KnowledgeGraphBuilderController.StartJobRequest(1L, "llm", null, null);
         assertEquals(HttpStatus.BAD_REQUEST, controller.startJob(request).getStatusCode());
@@ -204,7 +203,7 @@ class KnowledgeGraphBuilderControllerTest {
 
     @Test
     void rejectedDispatchFailsCreatedJobInsteadOfLeavingItPending() {
-        ReflectionTestUtils.setField(controller, "integrationService", integrationService);
+        controller.integrationService = integrationService;
         when(builderRegistry.hasBuilder("llm")).thenReturn(true);
         var job = stubJob("rejected-job", 1L);
         when(jobService.createJob(any(), any(), any())).thenReturn(job);
@@ -258,7 +257,7 @@ class KnowledgeGraphBuilderControllerTest {
 
     @Test
     void cancelJob_success() {
-        ReflectionTestUtils.setField(controller, "integrationService", integrationService);
+        controller.integrationService = integrationService;
         ExtractionJob job = stubJob("job-1", 1L);
         job.setStatus(ExtractionJob.JobStatus.CANCELLED);
         when(jobService.cancelJob("job-1")).thenReturn(job);

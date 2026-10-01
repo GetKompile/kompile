@@ -73,6 +73,39 @@ class AsciiRendererTest {
         }
 
         @Test
+        void panelNeverExceedsTerminalWidthEvenWithAnUnbreakableToken() {
+            // A single token with no internal whitespace — an absolute file path or a long
+            // local-model identifier, exactly what "/stats" (Session Summary) prints for the
+            // transcript/metrics paths and, in local mode, the provider/model line — longer
+            // than the panel's content budget used to be appended whole by wrapText(), so
+            // panel() had nothing left to pad away: that row (and its right border) ended up
+            // wider than the terminal instead of wrapping like the rest of the panel.
+            String unbreakableToken = "/home/user/.kompile/conversations/" + "x".repeat(120) + ".txt";
+            String panel = renderer.panel("Session Summary", "Transcript: " + unbreakableToken);
+
+            for (String line : panel.split("\n")) {
+                int visibleLength = AsciiRenderer.stripAnsi(line).length();
+                assertTrue(visibleLength <= 100,
+                        "panel row must never exceed the 100-column terminal width, was "
+                                + visibleLength + ": [" + line + "]");
+            }
+        }
+
+        @Test
+        void wrapTextHardBreaksATokenLongerThanMaxWidth() {
+            String longToken = "a".repeat(250);
+            List<String> lines = AsciiRenderer.wrapText(longToken, 96);
+
+            for (String line : lines) {
+                assertTrue(line.length() <= 96,
+                        "wrapText must never emit a line longer than maxWidth, was "
+                                + line.length() + ": [" + line + "]");
+            }
+            // Hard-breaking must not drop or duplicate any characters.
+            assertEquals(longToken, String.join("", lines));
+        }
+
+        @Test
         void panelMultilineBody() {
             String panel = renderer.panel("Title", "Line 1\nLine 2\nLine 3");
             assertTrue(panel.contains("Line 1"));

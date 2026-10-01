@@ -53,7 +53,7 @@ public class GitDiffService {
     private static final Pattern DELETIONS = Pattern.compile("(\\d+) deletions?\\(-\\)");
 
     @Value("${kompile.project.root:}")
-    private String configuredRoot;
+    protected String configuredRoot;
 
     /** Result of a git subprocess: exit code plus raw (untrimmed) combined output. */
     private record GitResult(int exitCode, String output) {

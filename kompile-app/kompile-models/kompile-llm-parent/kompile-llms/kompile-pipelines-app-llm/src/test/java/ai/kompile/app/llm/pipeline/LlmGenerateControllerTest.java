@@ -1,8 +1,10 @@
 package ai.kompile.app.llm.pipeline;
 
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.ResponseEntity;
@@ -249,6 +251,81 @@ class LlmGenerateControllerTest {
         assertOkWithErrorFinishReason(response);
         verify(languageModel, never()).generateResponse(any(), any());
         verify(languageModel, never()).generateResponse(any(), any(), anyInt());
+    }
+
+    // ── Inline images ─────────────────────────────────────────────────────────
+
+    @Test
+    void structuredChatKeepsEachImageOnTheMessageThatSentIt() {
+        when(languageModel.isLoaded()).thenReturn(true);
+        when(languageModel.generateChat(any(StructuredChatLanguageModel.Request.class), eq(256)))
+                .thenReturn(new StructuredChatLanguageModel.Response(
+                        "an invoice", "an invoice", "", List.of(), List.of(), List.of()));
+
+        // The CLI's local-serving wire shape: images ride on their message, no data: prefix.
+        ResponseEntity<Map<String, Object>> response = controller.chat(Map.of(
+                "request", Map.of(
+                        "messages", List.of(
+                                Map.of("role", "system", "content", "read documents"),
+                                Map.of("role", "user", "content", "what is this?",
+                                        "images", List.of(Map.of(
+                                                "mimeType", "image/jpeg",
+                                                "base64Data", "/9j/4AAQ")))),
+                        "tools", List.of(),
+                        "addGenerationPrompt", true,
+                        "toolDefinitionFormat", "STANDARD",
+                        "toolCallFormat", "NATIVE",
+                        "toolChoice", "NONE"),
+                "maxTokens", 256));
+
+        assertEquals("completed", response.getBody().get("finishReason"));
+        assertEquals("an invoice", response.getBody().get("content"));
+        ArgumentCaptor<StructuredChatLanguageModel.Request> captor =
+                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
+        verify(languageModel).generateChat(captor.capture(), eq(256));
+        StructuredChatLanguageModel.Request parsed = captor.getValue();
+        assertEquals(1, parsed.imageCount());
+        assertTrue(parsed.images().isEmpty(), "no request-level images on this wire shape");
+        assertTrue(parsed.messages().get(0).images().isEmpty());
+        StructuredChatLanguageModel.InlineImage image = parsed.messages().get(1).images().get(0);
+        assertEquals("image/jpeg", image.mimeType());
+        assertEquals("/9j/4AAQ", image.base64Data());
+        assertEquals(StructuredChatLanguageModel.ToolChoice.NONE, parsed.toolChoice());
+    }
+
+    @Test
+    void textOnlyModelImageRefusalSurfacesAsImageInputUnsupported() {
+        when(languageModel.isLoaded()).thenReturn(true);
+        when(languageModel.generateChat(any(StructuredChatLanguageModel.Request.class), eq(64)))
+                .thenThrow(new StructuredChatLanguageModel.ImageInputUnsupportedException(
+                        "Loaded local model 'lfm' is text-only"));
+        Map<String, Object> correlation = Map.of("transportRequestId", "request-7");
+
+        ResponseEntity<Map<String, Object>> response = controller.chat(Map.of(
+                "request", Map.of("messages", List.of(Map.of(
+                        "role", "user", "content", "what is this?",
+                        "images", List.of(Map.of("mimeType", "image/png", "base64Data", "iVBORw0K"))))),
+                "maxTokens", 64,
+                "correlation", correlation));
+
+        assertOkWithErrorFinishReason(response);
+        assertEquals("IMAGE_INPUT_UNSUPPORTED", response.getBody().get("errorKind"));
+        assertTrue(((String) response.getBody().get("finishReason")).contains("text-only"));
+        assertEquals(correlation, response.getBody().get("correlation"));
+    }
+
+    @Test
+    void otherUnsupportedOperationsStayGenericBackendFailures() {
+        when(languageModel.isLoaded()).thenReturn(true);
+        when(languageModel.generateChat(any(StructuredChatLanguageModel.Request.class), eq(64)))
+                .thenThrow(new UnsupportedOperationException("tool choice REQUIRED not supported"));
+
+        ResponseEntity<Map<String, Object>> response = controller.chat(Map.of(
+                "request", Map.of("messages", List.of(Map.of("role", "user", "content", "hi"))),
+                "maxTokens", 64));
+
+        assertOkWithErrorFinishReason(response);
+        assertFalse(response.getBody().containsKey("errorKind"));
     }
 
     // ── Generation failure ────────────────────────────────────────────────────

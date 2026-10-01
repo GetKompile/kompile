@@ -25,7 +25,6 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -93,8 +92,8 @@ class CrawlClusterJobRunnerIntegrationTest {
 
     private CrawlClusterJobRunner runnerWith(UnifiedCrawlService svc) {
         CrawlClusterJobRunner runner = new CrawlClusterJobRunner();
-        ReflectionTestUtils.setField(runner, "unifiedCrawlService", svc);
-        ReflectionTestUtils.setField(runner, "objectMapper", new ObjectMapper().findAndRegisterModules());
+        runner.unifiedCrawlService = svc;
+        runner.objectMapper = new ObjectMapper().findAndRegisterModules();
         return runner;
     }
 
@@ -137,7 +136,7 @@ class CrawlClusterJobRunnerIntegrationTest {
                         .message("PROMPT/RESPONSE A").build()));
 
         CrawlClusterJobRunner runner = runnerWith(svc);
-        ReflectionTestUtils.setField(runner, "jobLogService", jls);
+        runner.jobLogService = jls;
 
         runner.run(new ClusterJobSubmission(
                 "job-3", "crawl", "test", "crawl", false,

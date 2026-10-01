@@ -6,7 +6,9 @@
 package ai.kompile.graph.reasoning.unified;
 
 import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
+import ai.kompile.graph.reasoning.query.PredicateNames;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -190,6 +192,7 @@ public final class UnifiedGraphArchiveQueryEngine {
             UnifiedGraphArchive archive, GraphQueryEngine.Query query) throws IOException {
         int limit = bounded(query.topK(), 20, 200);
         Set<String> types = normalizedTypes(query.relationTypes());
+        Map<String, String> typeKeys = new HashMap<>();
         String text = blank(query.queryText()) ? null : query.queryText().toLowerCase(Locale.ROOT);
         Map<String, String> labels = loadLabels(archive);
         Comparator<ScoredLink> best = Comparator.comparingDouble(ScoredLink::score).reversed()
@@ -198,9 +201,10 @@ public final class UnifiedGraphArchiveQueryEngine {
         try (UnifiedGraphArchive.LinkCursor cursor = archive.openLinks()) {
             UnifiedGraphArchive.Link link;
             while ((link = cursor.next()) != null) {
-                if (!types.isEmpty() && !types.contains(normalizePredicate(link.type()))) continue;
+                if (!types.isEmpty() && !types.contains(typeKey(typeKeys, link.type()))) continue;
                 if (text != null && !linkSearchText(link, labels).contains(text)) continue;
-                offer(top, new ScoredLink(link, link.weight() * link.confidence()), limit, best);
+                offer(top, new ScoredLink(link, GraphRelation.strength(link.weight(), link.confidence())),
+                        limit, best);
             }
         }
         List<GraphQueryEngine.RelationView> views = sorted(top, best).stream()
@@ -214,6 +218,7 @@ public final class UnifiedGraphArchiveQueryEngine {
             UnifiedGraphArchive archive, GraphQueryEngine.Query query) throws IOException {
         int limit = bounded(query.topK(), 50, 500);
         Set<String> types = normalizedTypes(query.relationTypes());
+        Map<String, String> typeKeys = new HashMap<>();
         Comparator<TimedLink> best = Comparator.comparing((TimedLink item) -> item.link().timestamp())
                 .thenComparing(item -> item.link().id());
         PriorityQueue<TimedLink> top = worstFirst(best);
@@ -221,7 +226,7 @@ public final class UnifiedGraphArchiveQueryEngine {
             UnifiedGraphArchive.Link link;
             while ((link = cursor.next()) != null) {
                 if (link.timestamp() == null) continue;
-                if (!types.isEmpty() && !types.contains(normalizePredicate(link.type()))) continue;
+                if (!types.isEmpty() && !types.contains(typeKey(typeKeys, link.type()))) continue;
                 offer(top, new TimedLink(link), limit, best);
             }
         }
@@ -255,13 +260,15 @@ public final class UnifiedGraphArchiveQueryEngine {
             }
         }
         Map<String, String> labels = filter == null ? Map.of() : loadLabels(archive);
+        Map<String, String> typeKeys = new HashMap<>();
+        Map<String, String> canonicalTypes = new HashMap<>();
         try (UnifiedGraphArchive.LinkCursor cursor = archive.openLinks()) {
             UnifiedGraphArchive.Link link;
             while ((link = cursor.next()) != null) {
-                if (!types.isEmpty() && !types.contains(normalizePredicate(link.type()))) continue;
-                String atom = normalizePredicate(link.type()) + "(" + link.sourceId() + ","
-                        + link.targetId() + ")";
+                if (!types.isEmpty() && !types.contains(typeKey(typeKeys, link.type()))) continue;
+                String atom = storedPredicate(link.type()) + "(" + link.sourceId() + "," + link.targetId() + ")";
                 if (filter == null || atom.toLowerCase(Locale.ROOT).contains(filter)
+                        || canonical(canonicalTypes, link.type()).toLowerCase(Locale.ROOT).contains(filter)
                         || linkSearchText(link, labels).contains(filter)) {
                     offer(top, new FactCandidate(atom, "relation", link.confidence(), link.id()),
                             limit, best);
@@ -494,7 +501,7 @@ public final class UnifiedGraphArchiveQueryEngine {
         double[] outgoing = new double[nodes];
         index.forEachCore((ordinal, from, to, type, weight, confidence, directed) -> {
             if (replacedBaseOrdinals[ordinal]) return;
-            double edgeWeight = Math.max(1.0e-12, Math.abs(weight * confidence));
+            double edgeWeight = transitionWeight(weight, confidence);
             outgoing[from] += edgeWeight;
             if (!directed && to != from) outgoing[to] += edgeWeight;
         });
@@ -528,7 +535,7 @@ public final class UnifiedGraphArchiveQueryEngine {
             double[] target = next;
             index.forEachCore((ordinal, from, to, type, weight, confidence, directed) -> {
                 if (replacedBaseOrdinals[ordinal]) return;
-                double edgeWeight = Math.max(1.0e-12, Math.abs(weight * confidence));
+                double edgeWeight = transitionWeight(weight, confidence);
                 target[to] += DAMPING * current[from] * edgeWeight / outgoing[from];
                 if (!directed && to != from) {
                     target[from] += DAMPING * current[to] * edgeWeight / outgoing[to];
@@ -561,6 +568,11 @@ public final class UnifiedGraphArchiveQueryEngine {
         }
     }
 
+    /** A link's PageRank mass: the magnitude of its strength, floored so no link carries none. */
+    private static double transitionWeight(double weight, double confidence) {
+        return Math.max(1.0e-12, GraphRelation.strength(Math.abs(weight), Math.abs(confidence)));
+    }
+
     private static Integer ordinal(
             CompactAdjacencyCodec.Index index, Map<String, Integer> extras, String id) {
         Integer base = index.nodeOrdinal(id);
@@ -576,7 +588,7 @@ public final class UnifiedGraphArchiveQueryEngine {
         Integer source = ordinal(index, extras, link.sourceId());
         Integer target = ordinal(index, extras, link.targetId());
         if (source == null || target == null) throw new IOException("Journal relation endpoint is missing");
-        double weight = Math.max(1.0e-12, Math.abs(link.weight() * link.confidence())) * sign;
+        double weight = transitionWeight(link.weight(), link.confidence()) * sign;
         outgoing[source] += weight;
         if (!link.directed() && !source.equals(target)) outgoing[target] += weight;
     }
@@ -592,7 +604,7 @@ public final class UnifiedGraphArchiveQueryEngine {
         Integer source = ordinal(index, extras, link.sourceId());
         Integer target = ordinal(index, extras, link.targetId());
         if (source == null || target == null) throw new IOException("Journal relation endpoint is missing");
-        double weight = Math.max(1.0e-12, Math.abs(link.weight() * link.confidence()));
+        double weight = transitionWeight(link.weight(), link.confidence());
         if (outgoing[source] > 0.0) {
             targetScores[target] += damping * current[source] * weight / outgoing[source];
         }
@@ -792,13 +804,23 @@ public final class UnifiedGraphArchiveQueryEngine {
     private static Set<String> normalizedTypes(List<String> values) {
         if (values == null || values.isEmpty()) return Set.of();
         Set<String> result = new LinkedHashSet<>();
-        for (String value : values) if (!blank(value)) result.add(normalizePredicate(value));
+        for (String value : values) if (!blank(value)) result.add(PredicateNames.key(value));
         return result;
     }
 
-    private static String normalizePredicate(String value) {
-        if (value == null) return "";
-        return value.trim().replace('-', '_').replace(' ', '_').toLowerCase(Locale.ROOT);
+    /** Relation types repeat across millions of links; key each distinct spelling once. */
+    private static String typeKey(Map<String, String> cache, String type) {
+        return cache.computeIfAbsent(type, PredicateNames::key);
+    }
+
+    /** Relation types repeat across millions of links; canonicalize each distinct spelling once. */
+    private static String canonical(Map<String, String> cache, String type) {
+        return cache.computeIfAbsent(type, PredicateNames::canonical);
+    }
+
+    /** Fact atoms show a relation type as stored; {@link #typeKey} only decides what matches. */
+    private static String storedPredicate(String type) {
+        return type == null ? "" : type.trim();
     }
 
     private static double cosine(double[] left, double[] right) {

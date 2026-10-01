@@ -17,10 +17,7 @@ package ai.kompile.knowledgegraph.embedding.impl;
 
 import org.junit.jupiter.api.Test;
 import org.nd4j.linalg.api.memory.MemoryWorkspace;
-import org.nd4j.linalg.api.memory.conf.WorkspaceConfiguration;
 import org.nd4j.linalg.factory.Nd4j;
-
-import java.lang.reflect.Field;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
@@ -43,14 +40,9 @@ class WorkspaceConfigActivationTest {
 
     @Test
     void rotateBatchWorkspaceActivates() {
-        assertActivates(RotatEModel.class, "ROTATE_BATCH_WS_CONFIG", "ROTATE_BATCH_TEST");
-    }
-
-    private void assertActivates(Class<?> owner, String fieldName, String wsName) {
+        String wsName = "ROTATE_BATCH_TEST";
         assertDoesNotThrow(() -> {
-            Field f = owner.getDeclaredField(fieldName);
-            f.setAccessible(true);
-            WorkspaceConfiguration cfg = (WorkspaceConfiguration) f.get(null);
+            var cfg = RotatEModel.ROTATE_BATCH_WS_CONFIG;
             try (MemoryWorkspace ws = Nd4j.getWorkspaceManager().getAndActivateWorkspace(cfg, wsName)) {
                 Nd4j.create(64, 64).addi(1.0); // exercise an allocation inside the workspace
             }

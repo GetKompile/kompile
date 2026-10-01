@@ -20,6 +20,7 @@ import ai.kompile.cli.common.chat.sources.ChatSessionSummary;
 import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
 import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
@@ -610,11 +611,11 @@ public class ResumeCommand implements Callable<Integer> {
                         : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
                 // Pre-configure Claude Code hooks BEFORE injection/launch
                 if (agent.toLowerCase(Locale.ROOT).contains("claude")) {
-                    ai.kompile.cli.main.chat.mcp.McpToolInjection.ensureHooksPreConfigured(agentWorkingDir);
+                    McpToolInjection.ensureHooksPreConfigured(agentWorkingDir);
                 }
                 try {
                     String sseUrl = resolveMcpUrl();
-                    injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                    injectedSettingsFile = McpToolInjection.injectTools(
                             agentWorkingDir, agent, sseUrl);
                     if (injectedSettingsFile != null) {
                         String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
@@ -647,6 +648,7 @@ public class ResumeCommand implements Callable<Integer> {
                 // races with slow tool init; 60s provides headroom.
                 // See: https://github.com/anthropics/claude-code/issues/36060
                 pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
+                McpToolInjection.applyLaunchEnvironment(pb.environment(), injectedSettingsFile);
                 pb.inheritIO();
                 Process process = pb.start();
                 try {
@@ -660,7 +662,7 @@ public class ResumeCommand implements Callable<Integer> {
                 }
             } finally {
                 // Restore original settings to prevent pollution
-                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+                McpToolInjection.removeTools(injectedSettingsFile);
             }
 
             System.out.println();
@@ -701,7 +703,7 @@ public class ResumeCommand implements Callable<Integer> {
             if (injectTools) {
                 try {
                     String sseUrl = resolveMcpUrl();
-                    injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                    injectedSettingsFile = McpToolInjection.injectTools(
                             workingDir, normalizedAgent, sseUrl);
                 } catch (IOException e) {
                     System.err.println(YELLOW + "Warning: Could not inject MCP tools: "
@@ -720,6 +722,7 @@ public class ResumeCommand implements Callable<Integer> {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(workingDir.toFile());
             pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
+            McpToolInjection.applyLaunchEnvironment(pb.environment(), injectedSettingsFile);
             pb.inheritIO();
             Process process = pb.start();
             try {
@@ -734,7 +737,7 @@ public class ResumeCommand implements Callable<Integer> {
             System.err.println("Error resuming " + normalizedAgent + " session: " + e.getMessage());
             return 1;
         } finally {
-            ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+            McpToolInjection.removeTools(injectedSettingsFile);
         }
     }
 
@@ -752,7 +755,7 @@ public class ResumeCommand implements Callable<Integer> {
             if (injectTools) {
                 try {
                     String sseUrl = resolveMcpUrl();
-                    injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                    injectedSettingsFile = McpToolInjection.injectTools(
                             workingDir, "pi", sseUrl);
                     if (injectedSettingsFile != null) {
                         System.out.println(GREEN + "Kompile tools injected" + RESET
@@ -766,7 +769,7 @@ public class ResumeCommand implements Callable<Integer> {
             List<String> cmd = new ArrayList<>();
             cmd.add("pi");
             if (injectTools) {
-                cmd.addAll(ai.kompile.cli.main.chat.mcp.McpToolInjection.commandLineOverrides(
+                cmd.addAll(McpToolInjection.commandLineOverrides(
                         workingDir, "pi"));
             }
             cmd.add("--session");
@@ -795,7 +798,7 @@ public class ResumeCommand implements Callable<Integer> {
                     Thread.currentThread().interrupt();
                 }
             } finally {
-                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+                McpToolInjection.removeTools(injectedSettingsFile);
             }
             return exitCode;
         } catch (Exception e) {
@@ -839,7 +842,7 @@ public class ResumeCommand implements Callable<Integer> {
             if (injectTools) {
                 try {
                     String sseUrl = resolveMcpUrl();
-                    injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                    injectedSettingsFile = McpToolInjection.injectTools(
                             workingDir, "opencode", sseUrl);
                     if (injectedSettingsFile != null) {
                         String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
@@ -866,6 +869,7 @@ public class ResumeCommand implements Callable<Integer> {
                 ProcessBuilder pb = new ProcessBuilder(cmd);
                 pb.directory(workingDir.toFile());
                 pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
+                McpToolInjection.applyLaunchEnvironment(pb.environment(), injectedSettingsFile);
                 pb.inheritIO();
                 Process process = pb.start();
                 try {
@@ -878,7 +882,7 @@ public class ResumeCommand implements Callable<Integer> {
                     Thread.currentThread().interrupt();
                 }
             } finally {
-                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+                McpToolInjection.removeTools(injectedSettingsFile);
             }
 
             System.out.println();
@@ -951,7 +955,7 @@ public class ResumeCommand implements Callable<Integer> {
         cmd.add(resumeParts[0]);
         if (injectedSettingsFile != null) {
             try {
-                cmd.addAll(ai.kompile.cli.main.chat.mcp.McpToolInjection.commandLineOverrides(
+                cmd.addAll(McpToolInjection.commandLineOverrides(
                         exportResult.getWorkingDirectory() != null
                                 ? exportResult.getWorkingDirectory() : Path.of(System.getProperty("user.dir")),
                         agent, injectedSettingsFile));

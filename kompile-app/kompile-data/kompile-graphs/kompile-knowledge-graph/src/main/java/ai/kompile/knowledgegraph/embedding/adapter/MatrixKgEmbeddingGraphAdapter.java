@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.embedding.adapter;
 
+import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import ai.kompile.core.kgembedding.KGEmbeddingModel;
 import ai.kompile.core.kgembedding.Triple;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
@@ -36,6 +37,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
  * Live-store {@link KgEmbeddingGraphAdapter} backed by the vector/matrix graph store. This is what
@@ -92,7 +94,7 @@ public class MatrixKgEmbeddingGraphAdapter implements KgEmbeddingGraphAdapter {
      * for nodes whose factSheetId is set at the node level (not the container graph level).
      */
     @Autowired(required = false)
-    private KnowledgeGraphService knowledgeGraphService;
+    KnowledgeGraphService knowledgeGraphService;
 
     @Autowired
     public MatrixKgEmbeddingGraphAdapter(MatrixGraphStore store) {
@@ -261,7 +263,34 @@ public class MatrixKgEmbeddingGraphAdapter implements KgEmbeddingGraphAdapter {
             return 0;
         }
         String algorithm = model.getAlgorithm() != null ? model.getAlgorithm().name() : "UNKNOWN";
+        return storeEntityEmbeddings(entityEmbeddings, MatrixKgEmbeddingGraphAdapter::encode,
+                algorithm, factSheetId, version);
+    }
 
+    /**
+     * The same write for vectors read from the file an out-of-process training run writes. Relation
+     * vectors are not stored: this store has no clean home for them yet (see the note at the end of
+     * the entity write).
+     */
+    @Override
+    public int storeEmbeddings(Map<String, float[]> entityVectors,
+                               Map<String, float[]> relationVectors,
+                               KGEmbeddingAlgorithm algorithm,
+                               Long factSheetId,
+                               Long version) {
+        if (entityVectors == null || entityVectors.isEmpty()) {
+            return 0;
+        }
+        String algorithmName = algorithm != null ? algorithm.name() : "UNKNOWN";
+        return storeEntityEmbeddings(entityVectors, MatrixKgEmbeddingGraphAdapter::encode,
+                algorithmName, factSheetId, version);
+    }
+
+    private <V> int storeEntityEmbeddings(Map<String, V> entityEmbeddings,
+                                          Function<V, String> encoder,
+                                          String algorithm,
+                                          Long factSheetId,
+                                          Long version) {
         // [FIX-2] When seam is wired, use it exclusively — never fall through to store.listGraphsByFactSheet
         if (knowledgeGraphService != null) {
             int updated = 0;
@@ -275,12 +304,12 @@ public class MatrixKgEmbeddingGraphAdapter implements KgEmbeddingGraphAdapter {
 
                 // Step 2: Build the batch update list (one entry per entity, NO per-node RPC yet)
                 List<KnowledgeGraphService.NodeMetadataUpdate> updates = new ArrayList<>(entityEmbeddings.size());
-                for (Map.Entry<String, INDArray> entry : entityEmbeddings.entrySet()) {
+                for (Map.Entry<String, V> entry : entityEmbeddings.entrySet()) {
                     String nodeId = entry.getKey();
-                    INDArray vec = entry.getValue();
+                    V vec = entry.getValue();
                     if (vec == null) continue;
                     Map<String, Object> kgeMeta = new HashMap<>();
-                    kgeMeta.put(KGE_EMBEDDING_KEY, encode(vec));
+                    kgeMeta.put(KGE_EMBEDDING_KEY, encoder.apply(vec));
                     kgeMeta.put(KGE_ALGORITHM_KEY, algorithm);
                     kgeMeta.put(KGE_VERSION_KEY, version);
                     updates.add(new KnowledgeGraphService.NodeMetadataUpdate(nodeId, kgeMeta));
@@ -320,7 +349,7 @@ public class MatrixKgEmbeddingGraphAdapter implements KgEmbeddingGraphAdapter {
                 continue;
             }
             for (String nodeId : new ArrayList<>(graph.getNodeById().keySet())) {
-                INDArray vec = entityEmbeddings.get(nodeId);
+                V vec = entityEmbeddings.get(nodeId);
                 if (vec == null) {
                     continue;
                 }
@@ -331,7 +360,7 @@ public class MatrixKgEmbeddingGraphAdapter implements KgEmbeddingGraphAdapter {
                 if (node.getMetadata() == null) {
                     node.setMetadata(new HashMap<>());
                 }
-                node.getMetadata().put(KGE_EMBEDDING_KEY, encode(vec));
+                node.getMetadata().put(KGE_EMBEDDING_KEY, encoder.apply(vec));
                 node.getMetadata().put(KGE_ALGORITHM_KEY, algorithm);
                 node.getMetadata().put(KGE_VERSION_KEY, version);
                 store.updateNode(graphId, node);
@@ -355,7 +384,14 @@ public class MatrixKgEmbeddingGraphAdapter implements KgEmbeddingGraphAdapter {
 
     /** Serializes a vector to a comma-separated string for lossless round-trip through node metadata JSON. */
     static String encode(INDArray vec) {
-        float[] values = vec.toFloatVector();
+        // One bulk host read. A view is copied first: its buffer can hold elements that are not its own.
+        INDArray dense = vec.isView() || vec.offset() != 0 || vec.data().length() != vec.length()
+                ? vec.dup() : vec;
+        return encode(dense.data().asFloat());
+    }
+
+    /** The same encoding for a vector already on the host, such as one read from a training output file. */
+    static String encode(float[] values) {
         StringBuilder sb = new StringBuilder(values.length * 8);
         for (int i = 0; i < values.length; i++) {
             if (i > 0) {

@@ -46,6 +46,7 @@ public final class ChatUiSession implements AutoCloseable {
     volatile boolean activityTerminal;
     long interruptionVersion; // guarded by this session's monitor
     volatile Consumer<String> activityListener;
+    private final ForegroundRequestProgress progress = new ForegroundRequestProgress();
 
     public ChatUiSession() {
         this(false);
@@ -67,6 +68,9 @@ public final class ChatUiSession implements AutoCloseable {
     boolean usesLegacyOutput() { return legacy; }
     public String getActivity() { return closed ? null : activityLabel; }
     public boolean isActivityTerminal() { return !closed && activityTerminal; }
+
+    /** Request-scoped working-word/token/elapsed progress for the active foreground request. */
+    public ForegroundRequestProgress progress() { return closed ? null : progress; }
 
     public Binding bind() {
         if (closed) throw new IllegalStateException("Chat UI session is closed");
@@ -115,6 +119,7 @@ public final class ChatUiSession implements AutoCloseable {
     public synchronized void close() {
         if (legacy || closed) return;
         closed = true;
+        progress.finishAll();
         try (Binding ignored = new Binding(this)) {
             ChatCompleter.clearTerminalRef(lineReaderRef);
         }

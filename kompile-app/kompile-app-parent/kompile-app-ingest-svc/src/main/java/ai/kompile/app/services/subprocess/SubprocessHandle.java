@@ -17,6 +17,7 @@
 package ai.kompile.app.services.subprocess;
 
 import ai.kompile.app.subprocess.SubprocessMessage;
+import ai.kompile.app.subprocess.SubprocessSignals;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -57,6 +58,9 @@ public class SubprocessHandle {
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private final AtomicBoolean oomDetected = new AtomicBoolean(false);
     private final AtomicBoolean gpuOomDetected = new AtomicBoolean(false);
+
+    // The failure message the subprocess reported before it exited, if any
+    private volatile String reportedError;
 
     private volatile Instant lastHeartbeat;
     private volatile String currentPhase = "STARTING";
@@ -280,6 +284,20 @@ public class SubprocessHandle {
     }
 
     /**
+     * Record the failure message the subprocess reported before exiting.
+     */
+    public void setReportedError(String errorMessage) {
+        this.reportedError = errorMessage;
+    }
+
+    /**
+     * Get the failure message the subprocess reported, or null if it reported none.
+     */
+    public String getReportedError() {
+        return reportedError;
+    }
+
+    /**
      * Get the result future.
      */
     public CompletableFuture<SubprocessResult> getResultFuture() {
@@ -310,8 +328,8 @@ public class SubprocessHandle {
             return;
         }
 
-        // First, try graceful shutdown via SIGTERM
-        process.destroy();
+        // First, try graceful shutdown via SIGTERM. The readers still get what the child wrote before it
+        SubprocessSignals.terminate(process);
 
         try {
             // Wait for process to terminate
@@ -320,14 +338,14 @@ public class SubprocessHandle {
             if (!terminated && process.isAlive()) {
                 // Force kill if graceful shutdown failed
                 logger.warn("Process {} did not terminate gracefully, forcing shutdown", taskId);
-                process.destroyForcibly();
+                SubprocessSignals.kill(process);
                 process.waitFor(FORCE_KILL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             }
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             logger.warn("Interrupted while cancelling subprocess {}", taskId);
-            process.destroyForcibly();
+            SubprocessSignals.kill(process);
         }
 
         // Interrupt stream readers

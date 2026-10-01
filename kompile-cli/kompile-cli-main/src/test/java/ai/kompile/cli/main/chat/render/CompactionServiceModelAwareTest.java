@@ -9,6 +9,7 @@
  */
 package ai.kompile.cli.main.chat.render;
 
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.context.ConversationLedger;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -154,6 +155,18 @@ class CompactionServiceModelAwareTest {
     }
 
     @Test
+    void configuredSmallOutputCeilingIsNeverRaisedByTheWireFloor() {
+        CompactionService service = new CompactionService(mapper, 8_192);
+        for (int ceiling : new int[]{1, 128, 256, 512, 1_024}) {
+            service.configure(true, 0.85d, ceiling, 0);
+            assertEquals(ceiling, service.wireMaxOutputTokens());
+            assertEquals(ceiling, service.wireMaxOutputTokens(100));
+            assertEquals(ceiling, service.wireMaxOutputTokens(8_192),
+                    "the estimate floor must not exceed the configured output ceiling");
+        }
+    }
+
+    @Test
     void oversizedCatalogOutputLimitCannotMoveTheTrigger() {
         CompactionService service = new CompactionService(mapper, 1_050_000);
         for (int outputLimit : new int[]{1_050_000, Integer.MAX_VALUE}) {
@@ -257,6 +270,21 @@ class CompactionServiceModelAwareTest {
         assertFalse(digest.contains(ConversationLedger.SUMMARY_MARKER.strip()));
         assertTrue(digest.contains("Note: " + "n".repeat(400) + "…"), "other notes are still clipped");
         assertTrue(digest.contains("User: Which variant ships CUDA?"));
+    }
+
+    @Test
+    void attachmentsCountTowardTheEstimate() {
+        CompactionService service = new CompactionService(mapper, 8_192);
+        CompactionService.Attachment image = new CompactionService.Attachment(
+                "report.png", "image/png", true, "a".repeat(64), 10);
+        CompactionService.Attachment notes = new CompactionService.Attachment(
+                "notes.txt", "text/plain", false, "b".repeat(64), 10);
+
+        assertEquals(1 + DirectLlmClient.IMAGE_TOKEN_ESTIMATE, service.estimateTokens(List.of(
+                CompactionService.ConversationEntry.user("abcd", List.of(image)))));
+        assertEquals(1 + 3, service.estimateTokens(List.of(
+                        CompactionService.ConversationEntry.user("abcd", List.of(notes)))),
+                "a text file is sent as text, at chars/4");
     }
 
     @Test

@@ -246,6 +246,20 @@ class DirectLlmClientConnectivityTest {
     }
 
     @Test
+    void kompileServingPromptLengthRefusalsAreClassifiedAsContextOverflow() {
+        // The local serving child answers 200 with DL4J's message in finishReason.
+        assertTrue(DirectLlmClient.isContextOverflowFailure(0,
+                "error: Prompt length 9123 exhausts the model context window 8192"));
+        assertTrue(DirectLlmClient.isContextOverflowFailure(0,
+                "error: Prompt length 9123 exceeds fixed KV/context capacity 8192"));
+        assertTrue(DirectLlmClient.isContextOverflowFailure(0,
+                "error: Prompt length 5000 exceeds maxPrefillLength=4096; fixed-buffer prefill "
+                        + "cannot truncate input."));
+        assertFalse(DirectLlmClient.isContextOverflowFailure(0,
+                "error: Prompt length 812 tokens; generation failed: CUDA error 700"));
+    }
+
+    @Test
     void inputExceedsContextWindowPhrasingIsClassifiedAsContextOverflow() {
         // Observed across OpenAI-compatible backends: the overflow signal and
         // the context-window mention arrive in reverse word order from the

@@ -72,13 +72,13 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
     private final RestTemplate restTemplate;
 
     /** NodeExecutor that handles JAVASCRIPT (GraalVM) — resolved at init from Spring context. */
-    private NodeExecutor scriptingExecutor;
+    NodeExecutor scriptingExecutor;
 
     /** NodeExecutor that handles PYTHON (Python4J / CPython) — resolved at init from Spring context. */
-    private NodeExecutor pythonExecutor;
+    NodeExecutor pythonExecutor;
 
     /** NodeExecutor that handles EXCEL — resolved at init from Spring context. */
-    private NodeExecutor excelExecutor;
+    NodeExecutor excelExecutor;
 
     /** NodeExecutor that handles CAMEL_ROUTE — resolved at init from Spring context. */
     private NodeExecutor camelExecutor;
@@ -94,7 +94,7 @@ public class StepExecutionDispatcherImpl implements StepExecutionDispatcher, Sma
 
     /** Knowledge graph service — optional, used for resolving Excel graphs from node IDs. */
     @Autowired(required = false)
-    private KnowledgeGraphService knowledgeGraphService;
+    KnowledgeGraphService knowledgeGraphService;
 
     /** toolName → ToolEntry (bean + method + metadata) */
     private final Map<String, ToolEntry> toolRegistry = new ConcurrentHashMap<>();

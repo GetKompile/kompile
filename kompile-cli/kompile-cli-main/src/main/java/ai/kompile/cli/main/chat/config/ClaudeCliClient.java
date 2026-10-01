@@ -494,6 +494,22 @@ final class ClaudeCliClient implements AutoCloseable {
                 String userMessage, String restoredConversation,
                 Consumer<String> output,
                 ActivityListener activityListener) throws Exception {
+        return send(model, effort, fastMode, systemPrompt, userMessage, restoredConversation,
+                List.of(), output, activityListener);
+    }
+
+    /**
+     * Send one turn with attachments. The stream-json user message carries the
+     * Messages API content shape, so images go as base64 image blocks and text files
+     * as text blocks ahead of the turn's text, exactly as the Anthropic route sends them.
+     *
+     * @param attachments this turn's images and text files; empty sends plain text
+     */
+    String send(String model, String effort, boolean fastMode, String systemPrompt,
+                String userMessage, String restoredConversation,
+                List<DirectLlmClient.AttachmentInput> attachments,
+                Consumer<String> output,
+                ActivityListener activityListener) throws Exception {
         synchronized (turnLock) {
             if (closed) {
                 throw new TurnNotStartedException("Claude CLI chat transport is closed");
@@ -527,7 +543,8 @@ final class ClaudeCliClient implements AutoCloseable {
             settings.addAll(running.applySettings(model,
                     turnEffort(running, model, effort), fastMode));
             Turn turn = new Turn(UUID.randomUUID().toString(), null, running);
-            running.submit(turn, composeTurn(userMessage, updatedInstructions, restoredConversation));
+            running.submit(turn, composeTurn(userMessage, updatedInstructions, restoredConversation),
+                    attachments);
             TurnOutcome outcome = consume(turn, output, activityListener, settings);
             return finishTurn(turn, outcome, activityListener, instructionsDigest, compactionsBefore);
         }
@@ -1736,7 +1753,7 @@ final class ClaudeCliClient implements AutoCloseable {
         }
 
         /** Write a message; the events Claude Code answers it with go to its turn. */
-        void submit(Turn turn, String text) {
+        void submit(Turn turn, String text, List<DirectLlmClient.AttachmentInput> attachments) {
             synchronized (this) {
                 if (exited) {
                     turn.events.add(new ProcessEnded(exitCode));
@@ -1751,7 +1768,11 @@ final class ClaudeCliClient implements AutoCloseable {
             message.put("type", "user");
             ObjectNode body = message.putObject("message");
             body.put("role", "user");
-            body.put("content", text);
+            if (attachments == null || attachments.isEmpty()) {
+                body.put("content", text);
+            } else {
+                body.set("content", DirectLlmClient.anthropicContent(mapper, text, attachments));
+            }
             message.putNull("parent_tool_use_id");
             message.put("session_id", currentSessionId());
             message.put("uuid", turn.uuid);

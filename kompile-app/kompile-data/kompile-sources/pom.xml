@@ -17,6 +17,7 @@
         <module>kompile-oauth2-client</module>
         <module>kompile-source-confluence</module>
         <module>kompile-source-jira</module>
+        <module>kompile-source-erp</module>
         <module>kompile-source-slack</module>
         <module>kompile-source-gdrive</module>
         <module>kompile-source-onedrive</module>

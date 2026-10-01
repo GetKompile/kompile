@@ -10,6 +10,14 @@ public final class WebChatContext {
     public static final String WORKING_DIRECTORY = "kompile.chat.handoff.working-directory";
     public static final String CONFIG_SCOPE = "kompile.chat.handoff.config-scope";
     public static final String WORKFLOW = "kompile.chat.handoff.workflow";
+    public static final String MODE = "kompile.chat.handoff.mode";
+
+    public static boolean workspace() {
+        String mode = System.getProperty(MODE, "single");
+        if (!mode.equals("single") && !mode.equals("workspace"))
+            throw new IllegalStateException("Invalid web chat launch mode: " + mode);
+        return mode.equals("workspace");
+    }
 
     private WebChatContext() { }
 
@@ -49,6 +57,13 @@ public final class WebChatContext {
             if (!validWorkflow(workflow)) throw new IllegalArgumentException("Invalid workflow team name for web chat");
             arguments.add("-D" + WORKFLOW + "=" + workflow.strip());
         }
+        return List.copyOf(arguments);
+    }
+
+    public static List<String> jvmArguments(Path directory, boolean global, String workflow, boolean workspace)
+            throws IOException {
+        List<String> arguments = new ArrayList<>(jvmArguments(directory, global, workflow));
+        if (workspace) arguments.add("-D" + MODE + "=workspace");
         return List.copyOf(arguments);
     }
 

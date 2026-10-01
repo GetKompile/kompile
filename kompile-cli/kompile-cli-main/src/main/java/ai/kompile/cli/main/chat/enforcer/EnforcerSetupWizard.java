@@ -428,13 +428,12 @@ public class EnforcerSetupWizard {
                 "Anthropic (Claude)",
                 "OpenAI",
                 "Google Gemini",
-                "Ollama (local)",
                 "Use harness-config.json defaults"
         );
-        String[] providerKeys = {"anthropic", "openai", "gemini", "ollama", null};
+        String[] providerKeys = {"anthropic", "openai", "gemini", null};
 
         int selected = selectNumbered(reader, "Judge provider:", providers);
-        if (selected < 0 || selected == 4) {
+        if (selected < 0 || providerKeys[selected] == null) {
             // Use defaults
             System.out.println();
             return;
@@ -442,11 +441,9 @@ public class EnforcerSetupWizard {
 
         config.setJudgeProvider(providerKeys[selected]);
 
-        if (!"ollama".equals(providerKeys[selected])) {
-            String apiKey = promptText(reader, "  Judge API key (or Enter to use env variable): ");
-            if (apiKey != null && !apiKey.isBlank()) {
-                config.setJudgeApiKey(apiKey.trim());
-            }
+        String apiKey = promptText(reader, "  Judge API key (or Enter to use env variable): ");
+        if (apiKey != null && !apiKey.isBlank()) {
+            config.setJudgeApiKey(apiKey.trim());
         }
 
         String model = promptText(reader, "  Judge model (or Enter for default): ");

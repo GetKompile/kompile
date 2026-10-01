@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
@@ -34,6 +36,7 @@ import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -45,10 +48,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Tests for {@link IndexAutoRefresher}: a throttled incremental re-index pass
  * that keeps read actions in sync with the working tree.
  *
- * <p>Follows the existing codeindex test convention: indexes into the real
- * {@code ~/.kompile/code-index} under a unique throwaway project id, cleaned
- * up in {@code @AfterAll}.</p>
+ * <p>Indexes into a temporary home's {@code ~/.kompile/code-index} under a
+ * unique throwaway project id, cleaned up in {@code @AfterAll}.</p>
  */
+@TemporaryUserHome
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class IndexAutoRefresherTest {
 
@@ -211,11 +214,130 @@ class IndexAutoRefresherTest {
         try (IndexLockManager.LockToken ignored = IndexLockManager.acquireWriteLock(
                 PROJECT_ID, LocalCodeIndexer.getIndexDir(PROJECT_ID))) {
             IndexAutoRefresher.RefreshOutcome outcome =
-                    IndexAutoRefresher.refresh(indexer, PROJECT_ID, 0, null, null);
+                    IndexAutoRefresher.refresh(indexer, PROJECT_ID, 0);
             assertFalse(outcome.successful());
             assertTrue(alerts.isEmpty(), "routine lock contention must stay out of the alert lane");
         } finally {
             cleanup.run();
+        }
+    }
+
+    @Test
+    @Order(9)
+    void tornMetadataIsRebuiltFromTheRootTheCallerKnows() throws Exception {
+        String tornProjectId = PROJECT_ID + "-torn";
+        Path tornRoot = Files.createTempDirectory("auto-refresher-torn").toAbsolutePath().normalize();
+        List<String> alerts = new ArrayList<>();
+        Runnable cleanup = CodeIndexDiagnostics.installAlertSink(alerts::add);
+        try {
+            Files.writeString(tornRoot.resolve("Alpha.java"), "final class Alpha {}\n");
+            indexer.index(tornRoot, tornProjectId, null, null, silent());
+            // What a crash between the write and its fsync leaves behind.
+            Files.write(LocalCodeIndexer.getIndexDir(tornProjectId).resolve("metadata.json"), new byte[0]);
+            Files.writeString(tornRoot.resolve("Beta.java"), "final class Beta {}\n");
+
+            IndexAutoRefresher.RefreshOutcome blind =
+                    IndexAutoRefresher.refresh(indexer, tornProjectId, 0);
+            assertFalse(blind.successful(), "only the torn file recorded the root");
+            assertTrue(alerts.stream().anyMatch(alert -> alert.contains("auto-refresh skipped")), alerts.toString());
+
+            IndexAutoRefresher.RefreshOutcome outcome =
+                    IndexAutoRefresher.refresh(indexer, tornProjectId, 0, tornRoot);
+            assertTrue(outcome.successful(), alerts.toString());
+            assertTrue(outcome.changed());
+            assertEquals(tornRoot.toString(), indexer.getStats(tornProjectId).get("rootPath"));
+            assertFalse(indexer.search(tornProjectId, "Alpha", null, 10).isEmpty());
+            assertFalse(indexer.search(tornProjectId, "Beta", null, 10).isEmpty());
+        } finally {
+            cleanup.run();
+            deleteRecursively(LocalCodeIndexer.getIndexDir(tornProjectId));
+            deleteRecursively(tornRoot);
+        }
+    }
+
+    @Test
+    @Order(10)
+    void knownRootDoesNotOverrideReadableMetadata() throws Exception {
+        Path elsewhere = Files.createTempDirectory("auto-refresher-elsewhere").toAbsolutePath().normalize();
+        try {
+            Files.writeString(elsewhere.resolve("Stranger.java"), "final class Stranger {}\n");
+            Files.writeString(projectDir.resolve("Delta.java"), "final class Delta {}\n");
+
+            IndexAutoRefresher.RefreshOutcome outcome =
+                    IndexAutoRefresher.refresh(indexer, PROJECT_ID, 0, elsewhere);
+
+            assertTrue(outcome.successful());
+            assertEquals(projectDir.toAbsolutePath().normalize().toString(),
+                    indexer.getStats(PROJECT_ID).get("rootPath"));
+            assertFalse(indexer.search(PROJECT_ID, "Delta", null, 10).isEmpty());
+            assertTrue(indexer.search(PROJECT_ID, "Stranger", null, 10).isEmpty());
+        } finally {
+            deleteRecursively(elsewhere);
+        }
+    }
+
+    @Test
+    @Order(11)
+    void refreshWaitingOnTheIndexLockKeepsTheScopeCommittedMeanwhile() throws Exception {
+        String raceProjectId = PROJECT_ID + "-race";
+        Path raceRoot = Files.createTempDirectory("auto-refresher-race").toAbsolutePath().normalize();
+        Path indexDir = LocalCodeIndexer.getIndexDir(raceProjectId);
+        try {
+            Files.writeString(raceRoot.resolve("Alpha.java"), "final class Alpha {}\n");
+            Files.writeString(raceRoot.resolve("kestrel.py"), "class Kestrel:\n    pass\n");
+            indexer.index(raceRoot, raceProjectId, "*.java", null, silent());
+            assertTrue(indexer.search(raceProjectId, "Kestrel", null, 10).isEmpty());
+
+            AtomicReference<IndexAutoRefresher.RefreshOutcome> outcome = new AtomicReference<>();
+            Thread refresher = new Thread(() -> outcome.set(IndexAutoRefresher.refresh(indexer, raceProjectId, 0)));
+            try (IndexLockManager.LockToken ignored = IndexLockManager.acquireWriteLock(raceProjectId, indexDir)) {
+                refresher.start();
+                // getStats takes no index lock, so the only wait the refresh can be queued in
+                // is the index write lock, after it has read the metadata the old code trusted.
+                long deadline = System.currentTimeMillis() + 10_000;
+                while (!IndexLockManager.lockFor(raceProjectId).hasQueuedThread(refresher)) {
+                    assertTrue(System.currentTimeMillis() < deadline, "the refresh never reached the index lock");
+                    Thread.sleep(10);
+                }
+                // While it waits, another process commits an explicit widening to the default scope.
+                IndexFileStore store = new IndexFileStore(indexDir, JsonUtils.standardMapper());
+                Map<String, Object> metadata = store.loadMetadata();
+                metadata.remove("includePatterns");
+                store.saveMetadata(metadata);
+            }
+            refresher.join(30_000);
+
+            assertNotNull(outcome.get(), "the refresh did not finish");
+            assertTrue(outcome.get().successful());
+            assertNull(indexer.getStats(raceProjectId).get("includePatterns"));
+            assertFalse(indexer.search(raceProjectId, "Kestrel", null, 10).isEmpty());
+        } finally {
+            deleteRecursively(indexDir);
+            deleteRecursively(raceRoot);
+        }
+    }
+
+    @Test
+    @Order(12)
+    void tornMetadataRebuildsANarrowedIndexWithTheDefaultScope() throws Exception {
+        String tornProjectId = PROJECT_ID + "-torn-scope";
+        Path tornRoot = Files.createTempDirectory("auto-refresher-torn-scope").toAbsolutePath().normalize();
+        try {
+            Files.writeString(tornRoot.resolve("Alpha.java"), "final class Alpha {}\n");
+            Files.writeString(tornRoot.resolve("kestrel.py"), "class Kestrel:\n    pass\n");
+            indexer.index(tornRoot, tornProjectId, "*.java", null, silent());
+            assertTrue(indexer.search(tornProjectId, "Kestrel", null, 10).isEmpty());
+            // The torn file was the only record of the narrowed scope.
+            Files.write(LocalCodeIndexer.getIndexDir(tornProjectId).resolve("metadata.json"), new byte[0]);
+
+            indexer.refreshRecordedScope(tornRoot, tornProjectId, silent());
+
+            assertNull(indexer.getStats(tornProjectId).get("includePatterns"));
+            assertFalse(indexer.search(tornProjectId, "Alpha", null, 10).isEmpty());
+            assertFalse(indexer.search(tornProjectId, "Kestrel", null, 10).isEmpty());
+        } finally {
+            deleteRecursively(LocalCodeIndexer.getIndexDir(tornProjectId));
+            deleteRecursively(tornRoot);
         }
     }
 }

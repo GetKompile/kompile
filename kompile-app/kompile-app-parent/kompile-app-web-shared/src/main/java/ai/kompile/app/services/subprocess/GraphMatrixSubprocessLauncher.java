@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.services.subprocess;
 
+import ai.kompile.app.subprocess.GraphMatrixSubprocessMain;
 import ai.kompile.app.subprocess.ManagedSubprocessLauncher;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -120,7 +121,7 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
     private boolean generationAuthority;
 
     private final AtomicReference<ManagedRun> run = new AtomicReference<>();
-    private final AtomicBoolean restarting = new AtomicBoolean(false);
+    final AtomicBoolean restarting = new AtomicBoolean(false);
 
     // ── ManagedSubprocessLauncher configuration ───────────────────────────────
 
@@ -189,6 +190,14 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
         }
         args.add("-Dkompile.graph.generations.subprocess-authority=" + generationAuthority);
         args.add("-Dkompile.graph.generations.enabled=" + generationAuthority);
+        // The RPC limits the app's client reads, so the child enforces the same ones. The base
+        // launcher forwards only the ND4J/JavaCPP families, not these.
+        for (String key : GraphMatrixSubprocessMain.RPC_LIMIT_PROPERTIES) {
+            String value = System.getProperty(key);
+            if (value != null && !value.isBlank()) {
+                args.add("-D" + key + "=" + value.trim());
+            }
+        }
         return args;
     }
 
@@ -275,19 +284,33 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
             log.info("[graph-matrix] persistent subprocess started on port {} (heap {} MB) — owns the in-heap matrix",
                     bindPort, getHeapMb());
         } catch (Exception e) {
-            log.error("[graph-matrix] failed to start persistent subprocess: {}", e.getMessage(), e);
+            if (isShutdownStarted()) {
+                log.info("[graph-matrix] not started — launcher shutdown has started");
+            } else {
+                log.error("[graph-matrix] failed to start persistent subprocess: {}", e.getMessage(), e);
+            }
         }
+    }
+
+    /** Its one run is the persistent child, so restarting the run respawns it. */
+    @Override
+    protected void restartRun(String runId, String reason) {
+        requestRestart(reason);
     }
 
     @Override
     public void requestRestart(String reason) {
+        if (isShutdownStarted()) {
+            log.debug("[graph-matrix] restart suppressed — launcher shutdown has started");
+            return;
+        }
         if (!restarting.compareAndSet(false, true)) return;
         Thread thread = new Thread(() -> {
             try {
                 log.warn("[graph-matrix] restart requested: {}", reason);
-                stopAll();
+                stopAll("restart: " + reason);
                 run.set(null);
-                for (int attempt = 1; attempt <= 3 && !isRunning(); attempt++) {
+                for (int attempt = 1; attempt <= 3 && !isRunning() && !isShutdownStarted(); attempt++) {
                     try {
                         Thread.sleep(attempt * 500L);
                     } catch (InterruptedException interrupted) {
@@ -296,7 +319,13 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
                     }
                     start();
                 }
-                if (!isRunning()) log.error("[graph-matrix] restart failed after 3 attempts");
+                if (!isRunning()) {
+                    if (isShutdownStarted()) {
+                        log.info("[graph-matrix] restart abandoned — launcher shutdown has started");
+                    } else {
+                        log.error("[graph-matrix] restart failed after 3 attempts");
+                    }
+                }
             } finally {
                 restarting.set(false);
             }

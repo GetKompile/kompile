@@ -87,20 +87,26 @@ public final class PslWeightLearningService {
 
     /**
      * Re-inject persisted weights — the {@code ruleDisplay → weight} map produced by {@link #parseWeights}
-     * — onto a freshly built program's rules, matched by rule display ({@link PslRule#toString()}), and
-     * return the re-weighted program. This is the load counterpart to {@link #weightsToJson}: it warm-starts
-     * a new program with previously learned weights so a later {@link #updateOnBatch} or {@link #learn}
-     * <em>continues</em> training instead of restarting from scratch. Rules with no persisted entry keep
-     * their current weight.
+     * — onto a freshly built program's rules and return the re-weighted program. This is the load
+     * counterpart to {@link #weightsToJson}: it warm-starts a new program with previously learned weights
+     * so a later {@link #updateOnBatch} or {@link #learn} <em>continues</em> training instead of restarting
+     * from scratch. Rules with no persisted entry keep their current weight.
+     *
+     * <p>Rules are matched by {@link PslRule#signature()}, not by the full display: a persisted key embeds
+     * the weight the rule had when it was saved, while a rebuilt program carries its default weight, so an
+     * exact display match would never find a learned rule again. Structurally identical rules share one
+     * signature and receive the same weight (the last persisted entry wins).</p>
      *
      * @param program          the program to re-weight (rule structure preserved)
      * @param weightsByDisplay  learned weights keyed by {@link PslRule#toString()} display
      * @return a copy of the program with matching rules' weights replaced
      */
     public static PslProgram applyWeights(PslProgram program, Map<String, Double> weightsByDisplay) {
+        Map<String, Double> weightsBySignature = new LinkedHashMap<>();
+        weightsByDisplay.forEach((display, w) -> weightsBySignature.put(PslRule.withoutWeight(display), w));
         List<PslRule> updated = new ArrayList<>(program.rules().size());
         for (PslRule r : program.rules()) {
-            Double w = weightsByDisplay.get(r.toString());
+            Double w = weightsBySignature.get(r.signature());
             updated.add(w == null ? r
                     : new PslRule(w, r.hard(), r.squared(), r.body(), r.head(), r.distinct()));
         }

@@ -2,7 +2,6 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
-import com.sun.net.httpserver.HttpServer;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.junit.jupiter.api.Test;
@@ -13,15 +12,12 @@ import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
 
 import java.lang.reflect.Proxy;
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -36,60 +32,53 @@ class JudgeDefaultsWizardTest {
         assertFalse(Files.exists(JudgeDefaults.configPath(ChatConfig.Scope.PROJECT, project)));
     }
 
-    @Test void wizardSavesSelectedModelAndMinimumWithoutMutatingMainChat() throws Exception {
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        AtomicInteger requests = new AtomicInteger();
-        AtomicReference<String> authorization = new AtomicReference<>();
-        server.createContext("/api/tags", exchange -> {
-            requests.incrementAndGet();
-            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
-            byte[] response = """
-                    {"models":[{"model":"judge-model","thinking":{"variants":[
-                      {"value":"high","label":"High"},
-                      {"value":"minimal","label":"Minimal"}]}}]}
-                    """.getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, response.length);
-            try (var output = exchange.getResponseBody()) { output.write(response); }
-        });
-        server.start();
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void wizardSavesSelectedModelAndMinimumWithoutMutatingMainChat() throws Exception {
+        Path shim = codexShim(project);
         String originalHome = System.getProperty("user.home");
+        String originalExecutable = System.getProperty("kompile.codex.executable");
         System.setProperty("user.home", project.resolve("home").toString());
+        System.setProperty("kompile.codex.executable", shim.toString());
+        ModelDiscoveryHttp.clearCache();
         try {
-            String endpoint = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1";
-            // Credential-free local discovery exercises live metadata without bypassing origin guards.
-            ChatConfig chat = new ChatConfig("ollama", null, "main-model", endpoint);
+            storeCodexLogin();
+            // The main chat's own login drives live discovery; the judge must not rewrite the chat settings.
+            ChatConfig chat = new ChatConfig("openai-codex", null, "main-model", null);
             chat.setThinking("high");
-            JudgeDefaultsWizard.configure(reader("yes", "ollama", "create", "judge-model", "", "quick", "yes", ""),
+            JudgeDefaultsWizard.configure(reader("yes", "openai", "create", "native-judge-model", "", "quick", "yes", ""),
                     ChatConfig.Scope.GLOBAL, project, chat);
-            assertEquals(new JudgeDefaults.Selection("judge-model", "minimal", "ollama"),
-                    JudgeDefaults.configured("ollama", project));
-            assertEquals("quick", ChatProfiles.activeJudge(project, "ollama").name());
+            assertEquals(new JudgeDefaults.Selection("native-judge-model", "minimal", "openai-codex"),
+                    JudgeDefaults.configured("openai-codex", project));
+            assertEquals("quick", ChatProfiles.activeJudge(project, "openai-codex").name());
             assertFalse(Files.exists(ChatProfiles.path(project.resolve("home"))));
             assertFalse(Files.exists(JudgeDefaults.configPath(ChatConfig.Scope.GLOBAL, project)));
-            assertEquals(1, requests.get(), "reuse discovery metadata for thinking instead of fetching again");
-            assertNull(authorization.get());
+            assertEquals(1, Files.readAllLines(launches(project)).size(),
+                    "reuse discovery metadata for thinking instead of fetching again");
+            assertFalse(Files.readString(ChatProfiles.path(project)).contains("fixture-access-token"));
+            assertEquals("openai-codex", chat.getProvider());
             assertEquals("main-model", chat.getModel());
             assertEquals("high", chat.getThinking());
-            assertEquals(endpoint, chat.getBaseUrl());
+            assertNull(chat.getBaseUrl());
 
-            var review = ChatProfiles.captureJudge("review", "ollama", "review-model", null);
+            var review = ChatProfiles.captureJudge("review", "openai-codex", "review-model", null);
             ChatProfiles.save(project, review, false);
-            ChatProfiles.activateJudge(project, "ollama", "review");
-            JudgeDefaultsWizard.configure(reader("yes", "ollama", "create", "judge-model", "high", "quick", "no", ""),
+            ChatProfiles.activateJudge(project, "openai-codex", "review");
+            JudgeDefaultsWizard.configure(reader("yes", "openai", "create", "native-judge-model", "high", "quick", "no", ""),
                     ChatConfig.Scope.PROJECT, project, chat);
             assertEquals("minimal", ChatProfiles.list(project, "judge").stream()
                     .filter(p -> p.name().equals("quick")).findFirst().orElseThrow().thinking());
-            assertEquals(review, ChatProfiles.activeJudge(project, "ollama"));
-            JudgeDefaultsWizard.configure(reader("yes", "ollama", "create", "judge-model", "high", "quick", "yes", "no", ""),
+            assertEquals(review, ChatProfiles.activeJudge(project, "openai-codex"));
+            JudgeDefaultsWizard.configure(reader("yes", "openai", "create", "native-judge-model", "high", "quick", "yes", "no", ""),
                     ChatConfig.Scope.PROJECT, project, chat);
             assertEquals("high", ChatProfiles.list(project, "judge").stream()
                     .filter(p -> p.name().equals("quick")).findFirst().orElseThrow().thinking());
-            assertEquals(review, ChatProfiles.activeJudge(project, "ollama"), "replacement must not switch active profiles");
+            assertEquals(review, ChatProfiles.activeJudge(project, "openai-codex"), "replacement must not switch active profiles");
         } finally {
-            server.stop(0);
-            ModelDiscoveryHttp.clearCache();
+            if (originalExecutable == null) System.clearProperty("kompile.codex.executable");
+            else System.setProperty("kompile.codex.executable", originalExecutable);
             System.setProperty("user.home", originalHome);
+            ModelDiscoveryHttp.clearCache();
         }
     }
 
@@ -115,12 +104,12 @@ class JudgeDefaultsWizardTest {
         assertEquals(List.of(chat), ChatProfiles.list(project, "standard"));
     }
 
-    @Test
-    @DisabledOnOs(OS.WINDOWS)
-    void passthroughWizardUsesCodexCatalogWithoutAnApiKeyOrDirectChatEndpoint() throws Exception {
-        Path shim = project.resolve("codex-fixture");
+    /** A codex app-server stand-in that logs each launch and lists one model with high and minimal reasoning. */
+    private static Path codexShim(Path directory) throws Exception {
+        Path shim = directory.resolve("codex-fixture");
         Files.writeString(shim, """
                 #!/bin/sh
+                echo launch >> 'LAUNCHES'
                 read initialize
                 printf '%s\\n' '{"id":1,"result":{"userAgent":"fixture-codex/next"}}'
                 read initialized
@@ -134,16 +123,31 @@ class JudgeDefaultsWizardTest {
                 printf '%s\\n' '{"id":3,"result":{"account":{"type":"chatgpt","planType":"plus"}}}'
                 read models
                 printf '%s\\n' '{"id":4,"result":{"data":[{"id":"native-judge-model","supportedReasoningEfforts":[{"reasoningEffort":"high"},{"reasoningEffort":"minimal"}]}],"nextCursor":null}}'
-                """, StandardCharsets.UTF_8);
+                """.replace("LAUNCHES", launches(directory).toString()), StandardCharsets.UTF_8);
         assertTrue(shim.toFile().setExecutable(true));
+        return shim;
+    }
+
+    private static Path launches(Path directory) {
+        return directory.resolve("codex-launches");
+    }
+
+    private static void storeCodexLogin() throws Exception {
+        CredentialStore.create().put("openai-codex", ManagedCredential.oauth(
+                "fixture-access-token", "fixture-refresh", System.currentTimeMillis() + 3_600_000,
+                Map.of("accountId", "fixture-account")));
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void passthroughWizardUsesCodexCatalogWithoutAnApiKeyOrDirectChatEndpoint() throws Exception {
+        Path shim = codexShim(project);
         String originalHome = System.getProperty("user.home");
         String originalExecutable = System.getProperty("kompile.codex.executable");
         System.setProperty("user.home", project.resolve("home").toString());
         System.setProperty("kompile.codex.executable", shim.toString());
         try {
-            CredentialStore.create().put("openai-codex", ManagedCredential.oauth(
-                    "fixture-access-token", "fixture-refresh", System.currentTimeMillis() + 3_600_000,
-                    Map.of("accountId", "fixture-account")));
+            storeCodexLogin();
             ChatConfig chat = new ChatConfig(null, null, "main-model", "http://unused.invalid");
             chat.setChatMode("passthrough");
             chat.setPassthroughAgent("codex");

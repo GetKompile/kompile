@@ -139,7 +139,7 @@ class PslReasoningServiceTest {
         Map<String, Object> stats = service.programStatistics(List.of("a"), 3, 100);
 
         assertEquals(3, ((Number) stats.get("nodes")).intValue());
-        assertEquals(4, ((Number) stats.get("rules")).intValue()); // propagation + abduction + 2 prior
+        assertEquals(5, ((Number) stats.get("rules")).intValue()); // propagation + abduction + conflict + 2 prior
         assertTrue(((Number) stats.get("groundRules")).intValue() > 0);
     }
 }

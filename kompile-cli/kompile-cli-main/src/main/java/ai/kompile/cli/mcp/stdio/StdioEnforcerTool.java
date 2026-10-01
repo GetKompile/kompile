@@ -94,7 +94,7 @@ public class StdioEnforcerTool {
                 .put("description", "Optional judge backend mode override: auto, remote, local, auto-server.");
         props.putObject("judge_provider")
                 .put("type", "string")
-                .put("description", "Optional judge provider override, e.g. anthropic, openai, ollama.");
+                .put("description", "Optional judge provider override, e.g. anthropic, openai, gemini.");
         props.putObject("judge_model")
                 .put("type", "string")
                 .put("description", "Optional judge model override.");

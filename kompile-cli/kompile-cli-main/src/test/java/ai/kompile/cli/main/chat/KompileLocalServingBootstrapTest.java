@@ -2,10 +2,12 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+// The installed-model scan also reads ~/.cache model roots; keep it off the developer's real home.
+@TemporaryUserHome
 class KompileLocalServingBootstrapTest {
 
     @TempDir
@@ -350,6 +354,110 @@ class KompileLocalServingBootstrapTest {
                         properties, Map.of()));
 
         assertTrue(error.getMessage().contains("not an executable file"));
+    }
+
+    // ── Vision-language packages ──
+
+    @Test
+    void visionLanguagePackageIsServedAsItsDirectoryWithItsOwnTokenizer() throws Exception {
+        Path pkg = visionPackage(tempDir.resolve("smoldocling-256m"));
+
+        KompileLocalServingBootstrap.ResolvedModel byDirectory =
+                KompileLocalServingBootstrap.resolveLocalModel(pkg, null);
+        KompileLocalServingBootstrap.ResolvedModel byPart =
+                KompileLocalServingBootstrap.resolveLocalModel(
+                        pkg.resolve("decoder_model_merged.onnx"), "smol");
+
+        assertEquals("smoldocling-256m", byDirectory.modelId());
+        assertEquals(pkg, byDirectory.modelPath());
+        assertEquals(pkg.resolve("tokenizer.json"), byDirectory.tokenizerPath());
+        assertEquals("smol", byPart.modelId());
+        assertEquals(pkg, byPart.modelPath(),
+                "a part names its package, never a text model of its own");
+    }
+
+    @Test
+    void installedVisionLanguagePackageResolvesByItsName() throws Exception {
+        Path home = tempDir.resolve("home");
+        Path pkg = visionPackage(home.resolve("models").resolve("vlm").resolve("smoldocling-256m"));
+
+        KompileLocalServingBootstrap.ResolvedModel resolved =
+                KompileLocalServingBootstrap.resolveModel(
+                        "SmolDocling-256M", tempDir.resolve("dist"), home, Map.of());
+
+        assertEquals("SmolDocling-256M", resolved.modelId());
+        assertEquals(pkg, resolved.modelPath());
+        assertEquals(pkg.resolve("tokenizer.json"), resolved.tokenizerPath());
+    }
+
+    @Test
+    void aPackageWithoutItsOwnTokenizerFailsInsteadOfBorrowingOne() throws Exception {
+        Path home = tempDir.resolve("home");
+        Path pkg = visionPackage(home.resolve("models").resolve("vlm").resolve("smoldocling-256m"));
+        Files.delete(pkg.resolve("tokenizer.json"));
+        Path packaged = home.resolve("models").resolve("tokenizers")
+                .resolve("smoldocling-256m").resolve("tokenizer.json");
+        Files.createDirectories(packaged.getParent());
+        Files.writeString(packaged, "{}");
+
+        IOException error = assertThrows(IOException.class,
+                () -> KompileLocalServingBootstrap.resolveModel(
+                        "smoldocling-256m", tempDir.resolve("dist"), home, Map.of()));
+
+        assertTrue(error.getMessage().contains(pkg + " has no tokenizer.json"), error.getMessage());
+    }
+
+    @Test
+    void stagingNeverConvertsAPackagePartIntoATextModel() throws Exception {
+        Path pkg = visionPackage(tempDir.resolve("smoldocling-256m"));
+        KompileLocalServingBootstrap.ResolvedModel part = new KompileLocalServingBootstrap.ResolvedModel(
+                "smol", pkg.resolve("decoder_model_merged.onnx"), null);
+
+        KompileLocalServingBootstrap.ResolvedModel staged =
+                KompileLocalServingBootstrap.ensureStagedModel(
+                        part, tempDir.resolve("dist"), new Properties(), Map.of(), Map.of());
+
+        assertEquals(part, staged);
+        try (var files = Files.list(pkg)) {
+            assertTrue(files.noneMatch(path -> path.getFileName().toString().endsWith(".sdz")),
+                    "nothing was staged beside the package parts");
+        }
+    }
+
+    @Test
+    void projectModelNamingAPackagePartServesThePackageWithItsOwnTokenizer() throws Exception {
+        Path pkg = visionPackage(tempDir.resolve("project-vlm"));
+        Path elsewhere = Files.writeString(tempDir.resolve("other-tokenizer.json"), "{}");
+
+        KompileLocalServingBootstrap.ResolvedModel resolved =
+                KompileLocalServingBootstrap.resolveProjectModel(
+                        "project-vlm", pkg.resolve("vision_encoder.onnx"), elsewhere);
+
+        assertEquals("project-vlm", resolved.modelId());
+        assertEquals(pkg, resolved.modelPath());
+        assertEquals(pkg.resolve("tokenizer.json"), resolved.tokenizerPath(),
+                "the package loader reads its own tokenizer, so that is the one reported");
+    }
+
+    @Test
+    void aTextModelBesideVisionPartsStaysATextModel() throws Exception {
+        Path pkg = visionPackage(tempDir.resolve("mixed"));
+        Path text = Files.writeString(pkg.resolve("model.sdz"), "text model");
+
+        KompileLocalServingBootstrap.ResolvedModel resolved =
+                KompileLocalServingBootstrap.resolveLocalModel(text, "text");
+
+        assertEquals(text, resolved.modelPath());
+    }
+
+    /** A SmolDocling-shaped ONNX package: vision encoder, merged decoder, embed tokens, tokenizer. */
+    private static Path visionPackage(Path directory) throws Exception {
+        Files.createDirectories(directory);
+        for (String part : List.of("vision_encoder.onnx", "decoder_model_merged.onnx",
+                "embed_tokens.onnx", "tokenizer.json")) {
+            Files.writeString(directory.resolve(part), "{}");
+        }
+        return directory.toAbsolutePath().normalize();
     }
 
     private Path executable(Path path) throws Exception {

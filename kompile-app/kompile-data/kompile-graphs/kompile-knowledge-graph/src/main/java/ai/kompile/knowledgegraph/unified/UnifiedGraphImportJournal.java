@@ -53,7 +53,7 @@ public class UnifiedGraphImportJournal {
     }
 
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    String dataDir;
 
     private final Map<String, Manifest> active = new LinkedHashMap<>();
     private final Set<Long> blockedFactSheets = new LinkedHashSet<>();

@@ -286,6 +286,20 @@ public class LlmModelController {
         response.put("loadingModelId", languageModel.getLoadingModelId());
         response.put("loadElapsedMs", languageModel.getLoadElapsedMs());
         response.put("loadingPhase", languageModel.getLoadingPhase());
+        // Chat clients gate image attachments on this: true only when the loaded model is a
+        // vision-language package, so text-only models reject images before the request.
+        response.put("supportsImageInput", languageModel.supportsImageInput());
+        int maxContextLength = languageModel.getMaxContextLength();
+        if (maxContextLength > 0) {
+            // Omitted when unknown, so a client falls back to its own default window.
+            response.put("maxContextLength", maxContextLength);
+        }
+        response.put("inflightGenerations", languageModel.getInflightGenerationCount());
+        if (languageModel.getInflightGenerationCount() > 0) {
+            // Live generation in progress: refresh DSP state right now so the phase
+            // and Triton compile counters describe THIS generation, not the last load.
+            languageModel.pollDspPhaseNow();
+        }
         response.put("dspPlanPhase", languageModel.getDspPlanPhase());
         response.put("dspFrozenCount", languageModel.getDspFrozenCount());
         response.put("dspPlanReport", languageModel.getDspPlanReport());

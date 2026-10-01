@@ -16,22 +16,53 @@
 
 package ai.kompile.app.services;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
+
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for {@link StagingServerLifecycleService}.
  * Tests status checking and result DTOs without actually starting processes.
+ * The service looks for kompile-model-staging under {@code <user.dir>/staging} and
+ * {@code <user.home>/.kompile/components}, so every test points both properties at empty
+ * temporary directories. With no install to find, {@code startServer} fails before it
+ * launches a server, writes {@code data/logs/subprocess-classpath.txt} or registers in
+ * {@code ~/.kompile/instances}.
  */
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class StagingServerLifecycleServiceTest {
+
+    @TempDir
+    Path temporaryHome;
+
+    @TempDir
+    Path temporaryWorkingDir;
+
+    private String originalUserHome;
+    private String originalUserDir;
 
     private StagingServerLifecycleService service;
 
     @BeforeEach
     void setUp() {
+        originalUserHome = System.getProperty("user.home");
+        originalUserDir = System.getProperty("user.dir");
+        System.setProperty("user.home", temporaryHome.toString());
+        System.setProperty("user.dir", temporaryWorkingDir.toString());
         service = new StagingServerLifecycleService();
+    }
+
+    @AfterEach
+    void restoreSystemProperties() {
+        System.setProperty("user.home", originalUserHome);
+        System.setProperty("user.dir", originalUserDir);
     }
 
     @Test
@@ -40,8 +71,8 @@ class StagingServerLifecycleServiceTest {
         StagingServerLifecycleService.StagingServerStatus status = service.getStatus(59999);
         assertNotNull(status);
         assertEquals("kompile-model-staging", status.getComponentId());
-        // Should be stopped or not_installed (depending on whether JAR exists)
-        assertTrue(status.getStatus().equals("stopped") || status.getStatus().equals("not_installed"));
+        // Nothing is installed in the temporary home or working directory
+        assertEquals("not_installed", status.getStatus());
         assertNull(status.getUrl());
     }
 
@@ -118,14 +149,11 @@ class StagingServerLifecycleServiceTest {
         // Start on a port where nothing is running, with no JAR installed
         // This tests the "not installed" path
         StagingServerLifecycleService.StartResult result = service.startServer(59997);
-        // If the JAR doesn't exist in ~/.kompile/components/, it should fail
-        // (depends on local machine state, but the error message path is tested)
+        // Neither temporary directory holds an install, so it must fail without launching anything
         assertNotNull(result);
-        if (!result.isSuccess()) {
-            assertTrue(result.getMessage().contains("not found") ||
-                    result.getMessage().contains("not installed") ||
-                    result.getMessage().contains("Failed"));
-        }
+        assertFalse(result.isSuccess());
+        assertTrue(result.getMessage().contains("kompile-model-staging not found"));
+        assertNull(result.getPid());
     }
 
     @Test

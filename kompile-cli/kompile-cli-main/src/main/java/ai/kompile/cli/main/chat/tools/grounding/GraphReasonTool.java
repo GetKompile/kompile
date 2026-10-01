@@ -23,17 +23,22 @@ import java.util.Map;
 /**
  * MCP tool: {@code graph_reason}
  *
- * <p>Unified, algorithm-agnostic reasoning facade over the knowledge graph.
- * Wraps {@code POST /api/explain} and lets the server auto-route to the correct
- * reasoning engine based on the shape of the {@code target}:</p>
+ * <p>One-call explanation of an entity or fact. With a remote server URL it wraps
+ * {@code POST /api/explain}, and the server picks the reasoning approach from the shape of
+ * the {@code target}:</p>
  * <ul>
  *   <li>Bare entity id (e.g. {@code "Alice Smith"}) → structural + semantic analysis</li>
  *   <li>Fact / predicate form (e.g. {@code "isEmployedBy(Alice, Acme)"}) → KB derivation trace</li>
  *   <li>{@code causal:<target>} prefix → causal attribution chains</li>
  * </ul>
  *
+ * <p>Without one, {@link LocalProjectGraphBackend#reason} answers from the folder's graph with
+ * a {@code graph_reasoning_query} lookup: a fact becomes VERIFY, anything else DESCRIBE, and the
+ * output is that query's evidence, labelled learned scores and trace. Nothing is inferred or
+ * re-scored locally, and a {@code causal:} prefix is reported and dropped.</p>
+ *
  * <p>The LLM is never exposed to the internal reasoning engine names (MEBN, PSL, SSBN,
- * GROUNDING, HYBRID, CAUSAL). The formatted output translates everything into plain English:
+ * GROUNDING, HYBRID, CAUSAL). The remote output translates everything into plain English:
  * confidence → words, derivation tree → readable trace, evidence → bulleted list,
  * activated rules → reasoning steps.</p>
  *
@@ -64,16 +69,23 @@ public class GraphReasonTool implements CliTool {
     public String id() { return "graph_reason"; }
 
     @Override
+    public String compactHint() {
+        return "Explain one entity or fact: predicate(subject, object) is verified, else described. "
+                + "Returns verdict, evidence, trace. Locally a lookup: stored graph, no new inference.";
+    }
+
+    @Override
     public String description() {
-        return "Ask the knowledge graph to explain or justify an entity, fact, or claim. " +
-                "Returns a plain-English answer with a confidence level " +
-                "(well-supported / likely / uncertain / weakly supported / unsupported), " +
-                "the supporting evidence with sources, and a step-by-step reasoning trace. " +
-                "The system automatically selects the best reasoning approach for your query — " +
-                "no knowledge of the underlying reasoning engine is required. " +
-                "Use when you need traceable evidence behind a fact, want to understand why " +
-                "the knowledge base believes something, or need to audit a claim. " +
+        return "Explain or check one entity or fact in the knowledge graph. " +
+                "A fact written as predicate(subject, object) is verified; anything else is described as an entity. " +
+                "Returns the evidence-based verdict, the supporting evidence and the reasoning trace. " +
                 "Runs against the project-local graph unless a remote URL is explicitly configured. " +
+                "Locally it is a lookup: it reads the stored graph and the last learning pass " +
+                "(learning runs during crawls), runs no new inference and never changes confidences; " +
+                "each evidence relation shows its confidence, attributes and any learned score, labelled learnedScore. " +
+                "Use graph_reasoning_query for paths, WHY/WHY_NOT and the other operations. " +
+                "A configured remote server picks the explanation approach, adds a confidence level in words " +
+                "and also answers 'causal:<event>' targets. " +
                 "Optional chatModel.provider/modelId adds host-native interpretation without changing engine evidence or verdicts.";
     }
 
@@ -86,17 +98,18 @@ public class GraphReasonTool implements CliTool {
 
         props.putObject("target")
                 .put("type", "string")
-                .put("description", "The entity, fact, or claim to explain or justify. " +
-                        "Examples: an entity name or id ('Alice Smith', 'node_42'), " +
-                        "a fact to check ('isEmployedBy(Alice, Acme)'), " +
-                        "or an event to trace causes for ('causal:revenue_decline_q3'). " +
-                        "The system auto-detects the best reasoning approach.");
+                .put("description", "The entity or fact to explain. " +
+                        "A fact 'predicate(subject, object)' such as 'isEmployedBy(Alice, Acme)' is verified; " +
+                        "anything else ('Alice Smith', 'node_42') is described as an entity. " +
+                        "'causal:<event>' (e.g. 'causal:revenue_decline_q3') gets causal attribution only from " +
+                        "a configured remote server; locally the rest of the target is verified or described.");
         props.putObject("factSheetId")
                 .put("type", "integer")
                 .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
         props.putObject("depth")
                 .put("type", "integer")
-                .put("description", "How many reasoning steps deep to trace. Default: 3. Maximum: 5.")
+                .put("description", "Remote server only: how many reasoning steps deep to trace. " +
+                        "Default: 3. Maximum: 5. The project-local lookup ignores it.")
                 .put("default", 3);
 
         schema.putArray("required").add("target");

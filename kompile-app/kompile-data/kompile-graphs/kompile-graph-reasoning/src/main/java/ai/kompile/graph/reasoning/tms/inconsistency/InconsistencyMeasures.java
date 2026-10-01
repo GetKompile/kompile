@@ -247,13 +247,13 @@ public final class InconsistencyMeasures {
         List<ConflictPair> result = new ArrayList<>();
 
         // ── Kind B: negated-pair conflicts ────────────────────────────────────────────────
-        // Group strong-evidence facts by (predicate, args); pairs with one negated + one not.
+        // Group strong-evidence facts by (predicate key, args); pairs with one negated + one not.
         Map<String, List<Integer>> byGroundAtom = new HashMap<>();
         for (int i = 0; i < n; i++) {
             Fact f = safeList.get(i);
             if (f.value() < evidenceThreshold) continue;
             BelnapMarking.ParsedAtom pa = parsed[i];
-            String bucketKey = pa.predicate() + "|" + pa.args();
+            String bucketKey = pa.canonicalKey();
             byGroundAtom.computeIfAbsent(bucketKey, k -> new ArrayList<>()).add(i);
         }
         for (List<Integer> group : byGroundAtom.values()) {
@@ -287,7 +287,7 @@ public final class InconsistencyMeasures {
             if (pa.negated()) continue;
             if (pa.args().isEmpty()) continue;
             if (!ContradictionDetector.isFunctionalPredicate(pa.predicate())) continue;
-            String bucketKey = pa.predicate() + "|" + pa.args().get(0);
+            String bucketKey = pa.predicateKey() + "|" + pa.args().get(0);
             byFuncSubject.computeIfAbsent(bucketKey, k -> new ArrayList<>()).add(i);
         }
         for (List<Integer> group : byFuncSubject.values()) {

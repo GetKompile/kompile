@@ -252,6 +252,41 @@ class CrossDocumentRelationExtractorTest {
     }
 
     @Test
+    void resolvesDocumentNodeViaSourcePathWhenSourceIsASharedConstant() {
+        // Slack-shaped metadata: "source" is a constant shared by every message from the loader,
+        // but "source_path" is unique per message. DOCUMENT nodes are always created keyed by
+        // source_path (CrawlDocumentTracker.META_KEYS_SOURCE_PATH prefers source_path over
+        // source), so documentSourcePath must prefer it too -- otherwise it looks up the literal
+        // string "slack", which never matches a real node, and the document is silently dropped.
+        Map<String, Object> meta1 = new HashMap<>();
+        meta1.put("fileName", "forecast_v1.xlsx");
+        meta1.put("source", "slack");
+        meta1.put("source_path", "slack://channel/C1/message/100");
+        Document v1 = new Document("content of forecast_v1.xlsx", meta1);
+
+        Map<String, Object> meta2 = new HashMap<>();
+        meta2.put("fileName", "forecast_v2.xlsx");
+        meta2.put("source", "slack");
+        meta2.put("source_path", "slack://channel/C1/message/101");
+        Document v2 = new Document("content of forecast_v2.xlsx", meta2);
+
+        // Only the real, distinct source_path values resolve to nodes; the shared "source"
+        // value "slack" intentionally has no stub, matching production where no DOCUMENT node
+        // is ever created with that literal externalId.
+        stubNodeLookup("slack://channel/C1/message/100", "node-v1");
+        stubNodeLookup("slack://channel/C1/message/101", "node-v2");
+
+        int result = extractor.extractRelations(List.of(v1, v2), 1L);
+
+        assertTrue(result >= 1,
+                "Should resolve both documents via source_path and create a VERSION_OF edge");
+        verify(knowledgeGraphService, atLeastOnce()).createEdgeWithMetadata(
+                anyString(), anyString(), eq(EdgeType.USER_DEFINED),
+                anyDouble(), eq("VERSION_OF"),
+                anyString(), contains("VERSION_OF"), any(EdgeProvenance.class), anyLong());
+    }
+
+    @Test
     void allEdgesUseUserDefinedType() {
         Document v1 = makeDoc("report_v1.xlsx", null);
         Document v2 = makeDoc("report_v2.xlsx", null);

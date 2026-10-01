@@ -11,17 +11,23 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
@@ -37,6 +43,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 /**
@@ -44,6 +52,8 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
  * the live knowledge graph as a {@code .kgraph} file. HTTP is intercepted with
  * {@code MockRestServiceServer}; no server runs.
  */
+@TemporaryUserHome
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class GraphExportToolTest {
 
     @TempDir
@@ -51,15 +61,27 @@ class GraphExportToolTest {
 
     private ObjectMapper om;
     private ToolContext ctx;
+    private String previousAdmissionMode;
 
     @BeforeEach
     void setUp() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
         om = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("coder").enabledTools(Set.of("*")).build();
         PermissionService perms = new PermissionService();
         perms.setUserOverride("graph_export", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
         ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
     }
 
     @Test
@@ -151,6 +173,59 @@ class GraphExportToolTest {
 
         assertFalse(result.isError(), result.getOutput());
         assertArrayEquals(pngBytes, Files.readAllBytes(outFile));
+        mockServer.verify();
+    }
+
+    @Test
+    void rejectedExportReportsTheServerMessageAndWritesNoFile() throws Exception {
+        RestTemplate rt = new RestTemplate();
+        MockRestServiceServer mockServer = MockRestServiceServer.createServer(rt);
+        GroundingBackendClient client = new GroundingBackendClient("http://localhost", rt);
+        GraphExportTool tool = new GraphExportTool(client, om);
+
+        mockServer.expect(requestTo("http://localhost/api/graph/unified/export?format=kgraph&factSheetId=999"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.BAD_REQUEST)
+                        .body("{\"error\":\"Bad request\",\"message\":\"Unknown fact sheet 999\"}")
+                        .contentType(MediaType.APPLICATION_JSON));
+
+        Path outFile = tempDir.resolve("rejected.kgraph");
+        ObjectNode params = om.createObjectNode();
+        params.put("path", outFile.toString());
+        params.put("factSheetId", 999);
+
+        ToolResult result = tool.execute(params, ctx);
+
+        assertTrue(result.isError());
+        assertEquals("graph_export failed (HTTP 400): Unknown fact sheet 999", result.getOutput());
+        assertFalse(Files.exists(outFile), "an error body must never be saved as a graph");
+        mockServer.verify();
+    }
+
+    @Test
+    void serverErrorLeavesAnExistingFileUntouched() throws Exception {
+        RestTemplate rt = new RestTemplate();
+        MockRestServiceServer mockServer = MockRestServiceServer.createServer(rt);
+        GroundingBackendClient client = new GroundingBackendClient("http://localhost", rt);
+        GraphExportTool tool = new GraphExportTool(client, om);
+
+        mockServer.expect(requestTo("http://localhost/api/graph/unified/export?format=kgraph"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withServerError()
+                        .body("export worker crashed")
+                        .contentType(MediaType.TEXT_PLAIN));
+
+        Path outFile = tempDir.resolve("previous.kgraph");
+        byte[] previous = new byte[]{7, 7, 7};
+        Files.write(outFile, previous);
+        ObjectNode params = om.createObjectNode();
+        params.put("path", outFile.toString());
+
+        ToolResult result = tool.execute(params, ctx);
+
+        assertTrue(result.isError());
+        assertEquals("graph_export failed (HTTP 500): export worker crashed", result.getOutput());
+        assertArrayEquals(previous, Files.readAllBytes(outFile), "the earlier export must survive a failed one");
         mockServer.verify();
     }
 }

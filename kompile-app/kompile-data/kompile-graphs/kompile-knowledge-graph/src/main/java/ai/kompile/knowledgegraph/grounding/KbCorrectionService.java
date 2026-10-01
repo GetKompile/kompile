@@ -65,7 +65,7 @@ public class KbCorrectionService {
 
     @Nullable
     @Value("${kompile.data.dir:#{null}}")
-    private String dataDir;
+    protected String dataDir;
 
     /**
      * Kompile-managed KB config — supplies the learning-enabled flag. Null in plain-Java

@@ -261,6 +261,7 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
         orchestrator.extractGraphFromDocuments(
                 corpus, extractionConfig, graph, job, extractionPool, persistedSchemaSeed);
 
+        llmDispatcher.throwIfServingFailed();
         boolean failed = job.getErrorCount().get() > 0
                 || job.getGraphExtractionParseFailures().get() > 0;
         job.getStatus().set(failed

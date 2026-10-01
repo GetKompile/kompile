@@ -109,6 +109,15 @@ public class SetupWizard {
         }
     }
 
+    /**
+     * Whether this vendor/method pair is Anthropic's Claude Code route. Claude Code
+     * owns that login, so the route never offers, stores, mints, refreshes or signs
+     * in a Kompile credential: the chat passes straight through to Claude Code.
+     */
+    public static boolean isClaudeCodeRoute(String vendor, AuthMethod method) {
+        return method != null && ChatConfig.isClaudeCliNative(vendor, method.configValue());
+    }
+
     /** Select or create a named account without changing the vendor's global selection. */
     public static AuthenticationSelection authenticateSession(LineReader reader, String vendor, AuthMethod method) {
         return authenticateSession(reader, vendor, method, null);
@@ -118,8 +127,9 @@ public class SetupWizard {
             java.util.function.BiConsumer<String, List<String>> pageRenderer) {
         String provider = resolveProviderForAuth(vendor, method);
         if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
-        if (method == AuthMethod.OAUTH && "anthropic".equalsIgnoreCase(vendor)) {
-            return claudeCodeRouteSelection(reader, provider, method);
+        if (isClaudeCodeRoute(vendor, method)) {
+            // No credential menu and no sign-in: Claude Code owns this login.
+            return new AuthenticationSelection(provider, method, null);
         }
         if (method == AuthMethod.NATIVE) {
             // Native CLI credentials are owned by the provider CLI and are
@@ -175,7 +185,7 @@ public class SetupWizard {
 
     private static final List<String> STANDARD_RUNTIME_OPTIONS = List.of(
             "Kompile local model — start the packaged first-party serving subprocess (no full Kompile instance)",
-            "External local endpoint — Ollama or OpenAI-compatible (no Kompile instance)",
+            "External local endpoint — OpenAI-compatible (no Kompile instance)",
             "Direct model provider — cloud API (no Kompile instance)",
             "Kompile instance — connect to one or start the installed kompile-chat service"
     );
@@ -462,8 +472,7 @@ public class SetupWizard {
                     return null;
                 }
 
-                boolean claudeCliRoute = "anthropic".equalsIgnoreCase(provider)
-                        && providerSelection.authMethod() == AuthMethod.OAUTH;
+                boolean claudeCliRoute = isClaudeCodeRoute(provider, providerSelection.authMethod());
                 if (claudeCliRoute) {
                     // Flow: auth status → not logged in = indicator + stop;
                     // logged in → Claude Code's own catalog → pick one → pick
@@ -1152,24 +1161,20 @@ public class SetupWizard {
         if (vendor == null || vendor.isBlank()) {
             throw new IllegalArgumentException("Vendor is required");
         }
+        if (isClaudeCodeRoute(vendor, authMethod)) {
+            // Claude Code route (claude -p stream-json turns): no Kompile OAuth flow
+            // or stored credential backs it; the chat passes through to Claude Code.
+            return vendor;
+        }
         return switch (authMethod) {
             case NONE -> vendor;
             case NATIVE -> {
-                // Anthropic takes the claude-CLI route (claude -p stream-json turns);
-                // authenticate() verifies the Claude Code login with `claude auth
-                // status`. Other vendors keep the registry gate.
-                if (!NativeCliAuth.isSupported(vendor)
-                        && !"anthropic".equalsIgnoreCase(vendor)) {
+                if (!NativeCliAuth.isSupported(vendor)) {
                     throw new IllegalArgumentException(vendor + " does not support native CLI authentication");
                 }
                 yield vendor;
             }
             case OAUTH -> {
-                if ("anthropic".equalsIgnoreCase(vendor)) {
-                    // Anthropic OAuth = the user's Claude Code login. Claude Code
-                    // owns that credential; authenticate() verifies it is signed in.
-                    yield vendor;
-                }
                 String oauthProvider = oauthProviderForVendor(vendor);
                 if (oauthProvider == null) {
                     throw new IllegalArgumentException(vendor + " does not support OAuth");
@@ -1376,10 +1381,11 @@ public class SetupWizard {
         if (authMethod == AuthMethod.NONE) {
             return new AuthenticationSelection(provider, authMethod, null);
         }
+        if (isClaudeCodeRoute(vendor, authMethod)) {
+            // No credential menu and no sign-in: Claude Code owns this login.
+            return new AuthenticationSelection(provider, authMethod, null);
+        }
         if (authMethod == AuthMethod.NATIVE) {
-            if ("anthropic".equalsIgnoreCase(vendor)) {
-                return claudeCodeRouteSelection(reader, provider, authMethod);
-            }
             int exitCode = NativeCliAuth.login(provider);
             if (exitCode != 0) {
                 System.err.println("  Native authentication failed for " + vendorLabel(vendor)
@@ -1387,9 +1393,6 @@ public class SetupWizard {
                 return null;
             }
             return new AuthenticationSelection(provider, authMethod, null);
-        }
-        if (authMethod == AuthMethod.OAUTH && "anthropic".equalsIgnoreCase(vendor)) {
-            return claudeCodeRouteSelection(reader, provider, authMethod);
         }
         if (!selectManagedCredential(reader, provider, authMethod, pageRenderer)) {
             return null;
@@ -1424,34 +1427,6 @@ public class SetupWizard {
             System.err.println("  Could not save API key to managed credential storage: " + e.getMessage());
             return null;
         }
-    }
-
-    /**
-     * The Claude Code route has no Kompile credential to pick: the user's Claude
-     * Code login is the credential. Verify it with `claude auth status` and say
-     * which login the route uses. When Claude Code is not signed in, run its
-     * sign-in here (a link that opens on any device, then the code the page
-     * shows); with still no login, stop here instead of starting a chat on a
-     * route that cannot authenticate.
-     */
-    private static AuthenticationSelection claudeCodeRouteSelection(LineReader reader, String provider,
-                                                                    AuthMethod method) {
-        LiveModelDiscovery.ClaudeCodeLogin login;
-        try {
-            login = ClaudeCodeSignIn.ensureSignedIn(new WizardOAuthInteraction(reader));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            System.out.println("  → " + YELLOW + "Claude Code sign-in was interrupted." + RESET);
-            return null;
-        }
-        if (!login.loggedIn()) {
-            System.out.println("  → " + YELLOW + "Claude Code is still not signed in, so its route cannot be used."
-                    + RESET);
-            System.out.println("  Or choose Anthropic's API key authentication to use an API key.");
-            return null;
-        }
-        System.out.println(GREEN + "  ✓ " + login.describe() + RESET);
-        return new AuthenticationSelection(provider, method, null);
     }
 
     private static ProviderSelection selectStandardProvider(LineReader reader) {
@@ -1541,10 +1516,11 @@ public class SetupWizard {
         if ("custom".equalsIgnoreCase(vendor)) {
             return List.of(AuthMethod.NONE, AuthMethod.API_KEY);
         }
-        if ("anthropic".equalsIgnoreCase(vendor)) {
+        if (ChatConfig.isClaudeCliNativeProvider(vendor)) {
             // One vendor, two auth routes (mirrors the OpenAI pattern):
-            // the Claude Code login and direct API-key HTTP. Kompile does NOT
-            // manage the Claude Code credential; it only verifies the login.
+            // OAuth / subscription through Claude Code and direct API-key HTTP.
+            // Kompile never manages or signs in the Claude Code credential; the
+            // OAuth route passes the chat straight through to Claude Code.
             return List.of(AuthMethod.OAUTH, AuthMethod.API_KEY);
         }
         if (NativeCliAuth.isSupported(vendor)) {
@@ -1592,9 +1568,6 @@ public class SetupWizard {
     }
 
     public static String authMethodLabel(String vendor, AuthMethod authMethod) {
-        if (authMethod == AuthMethod.OAUTH && ChatConfig.isClaudeCliNativeProvider(vendor)) {
-            return "Claude Code login (the claude CLI's own sign-in)";
-        }
         if (authMethod == AuthMethod.API_KEY) {
             ChatProvider provider = ChatProviderRegistry.find(vendor);
             String label = provider == null ? null : provider.apiKeyAuthLabel();
@@ -2116,11 +2089,6 @@ public class SetupWizard {
             System.out.println("  Default: " + DIM + defaultUrl + RESET);
             System.out.println("  " + DIM + "(The CLI will connect via MCP SSE to this instance)" + RESET);
             return promptWithDefault(reader, "  URL (Enter to use default): ", defaultUrl);
-        }
-
-        if ("ollama".equals(provider)) {
-            System.out.println("  Default Ollama URL: " + DIM + defaultUrl + RESET);
-            return promptWithDefault(reader, "  Custom URL (Enter to use default): ", defaultUrl);
         }
 
         if ("custom".equals(provider)) {

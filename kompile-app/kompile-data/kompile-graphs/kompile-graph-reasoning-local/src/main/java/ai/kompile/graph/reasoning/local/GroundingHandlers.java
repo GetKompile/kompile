@@ -300,7 +300,8 @@ public final class GroundingHandlers {
             "ask_graph_explain",
             entry("ask_graph_explain",
                 "Build the derivation tree for an atom to explain HOW it was inferred. " +
-                "Returns verdict, confidence, the derivation tree as JSON, evidence atoms, " +
+                "Returns verdict, confidence, derivationTree (nested atom/confidence/rule/source/children " +
+                "nodes), evidence atoms, " +
                 "and activated rules. Inference mode is always GROUNDING locally. " +
                 "The derivation tree is populated from the inferred fact store + JustificationIndex; " +
                 "if no inference has been run the tree will show a leaf node (confidence 0.0).",
@@ -366,8 +367,9 @@ public final class GroundingHandlers {
             return error("Explain verify failed: " + e.getMessage());
         }
 
-        // Build derivation tree — needs justification index; use empty-index sentinel if null
-        String derivationTreeJson = null;
+        // Build derivation tree — needs justification index; use empty-index sentinel if null.
+        // Nested as an object like the rest of the result rather than a JSON string.
+        Object derivationTree;
         List<String> evidence = new ArrayList<>();
         List<String> activatedRules = new ArrayList<>();
 
@@ -375,23 +377,21 @@ public final class GroundingHandlers {
         if (index != null) {
             try {
                 DerivationTree tree = DerivationTree.build(target, kb.inferredFactStore(), index, depth);
-                derivationTreeJson = tree.toJson();
+                derivationTree = MiniJson.parse(tree.toJson());
                 // Collect leaf evidence atoms and activated rules from the tree
                 for (String key : tree.allAtomKeys()) {
                     if (!key.equals(target)) evidence.add(key);
                 }
                 collectRules(tree, activatedRules);
             } catch (Exception e) {
-                derivationTreeJson = "{\"atom\":\"" + escapeJson(target) +
-                        "\",\"confidence\":0.0,\"children\":[]}";
+                derivationTree = derivationLeaf(target, 0.0);
             }
         } else {
             // No inference run yet — single leaf from observed fact store
             double conf = 0.0;
             boolean observed = kb.factStore().factFor(target).isPresent();
             if (observed) conf = kb.factStore().factFor(target).get().value();
-            derivationTreeJson = "{\"atom\":\"" + escapeJson(target) + "\",\"confidence\":" + conf +
-                    ",\"children\":[]}";
+            derivationTree = derivationLeaf(target, conf);
         }
 
         // Evidence from verify result
@@ -403,7 +403,7 @@ public final class GroundingHandlers {
         out.put("verdict", verifyResult.status().name());
         out.put("confidence", verifyResult.confidence());
         out.put("inferenceMode", "GROUNDING");
-        out.put("derivationTreeJson", derivationTreeJson);
+        out.put("derivationTree", derivationTree);
         out.put("evidence", evidence.stream()
                 .map(e -> {
                     Map<String, Object> m = new LinkedHashMap<>();
@@ -660,10 +660,13 @@ public final class GroundingHandlers {
         return 1 + childMax;
     }
 
-    private static String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"")
-                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+    /** A childless derivation node, in the same shape as {@link DerivationTree#toJson()}. */
+    private static Map<String, Object> derivationLeaf(String atom, double confidence) {
+        Map<String, Object> leaf = new LinkedHashMap<>();
+        leaf.put("atom", atom);
+        leaf.put("confidence", confidence);
+        leaf.put("children", List.of());
+        return leaf;
     }
 
     // ── Arg-map access helpers ───────────────────────────────────────────────

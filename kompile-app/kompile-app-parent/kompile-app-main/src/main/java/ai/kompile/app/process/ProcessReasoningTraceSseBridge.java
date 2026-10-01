@@ -29,7 +29,7 @@ public class ProcessReasoningTraceSseBridge {
     @EventListener
     public void onProcessReasoningTrace(ProcessReasoningTraceEvent event) {
         if (event.getTrace() != null) {
-            traceStore.storeTrace(event.getTrace());
+            traceStore.storeTrace(event.getFactSheetId(), event.getTrace());
         }
     }
 }

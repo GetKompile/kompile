@@ -18,6 +18,7 @@ package ai.kompile.app.services.subprocess;
 
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.app.subprocess.SubprocessMessage;
+import ai.kompile.app.subprocess.SubprocessSignals;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -207,14 +208,14 @@ public class VectorPopulationHandle {
     public void cancel() {
         if (cancelled.getAndSet(true))
             return;
-        process.destroy();
+        SubprocessSignals.terminate(process);
         try {
             if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
-                process.destroyForcibly();
+                SubprocessSignals.kill(process);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            process.destroyForcibly();
+            SubprocessSignals.kill(process);
         }
     }
 

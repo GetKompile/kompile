@@ -172,7 +172,7 @@ class GroundingHandlersTest {
         assertTrue(r.containsKey("verdict"),           "Must have verdict: " + json);
         assertTrue(r.containsKey("confidence"),        "Must have confidence: " + json);
         assertTrue(r.containsKey("inferenceMode"),     "Must have inferenceMode: " + json);
-        assertTrue(r.containsKey("derivationTreeJson"),"Must have derivationTreeJson: " + json);
+        assertTrue(r.containsKey("derivationTree"),    "Must have derivationTree: " + json);
         assertTrue(r.containsKey("evidence"),          "Must have evidence: " + json);
         assertTrue(r.containsKey("activatedRules"),    "Must have activatedRules: " + json);
         assertEquals("GROUNDING", r.get("inferenceMode"),
@@ -187,15 +187,14 @@ class GroundingHandlersTest {
     }
 
     @Test
-    void explainDerivationTreeJsonIsValidJson() {
+    void explainDerivationTreeIsANestedObjectNotAJsonString() {
         String json = dispatcher.dispatch(session, "ask_graph_explain",
                 "{\"target\":\"KNOWS(alice, bob)\"}");
         Map<String, Object> r = parse(json);
-        String treeJson = (String) r.get("derivationTreeJson");
-        assertNotNull(treeJson, "derivationTreeJson must not be null");
-        // Parse the tree JSON to verify it is valid
-        Object treeObj = MiniJson.parse(treeJson);
-        assertNotNull(treeObj, "derivationTreeJson must be valid JSON: " + treeJson);
+        assertTrue(r.get("derivationTree") instanceof Map<?, ?>, "derivationTree must be an object: " + json);
+        Map<?, ?> tree = (Map<?, ?>) r.get("derivationTree");
+        assertEquals("KNOWS(alice, bob)", tree.get("atom"), json);
+        assertTrue(tree.get("children") instanceof List<?>, json);
     }
 
     // ── graph_reason ─────────────────────────────────────────────────────────

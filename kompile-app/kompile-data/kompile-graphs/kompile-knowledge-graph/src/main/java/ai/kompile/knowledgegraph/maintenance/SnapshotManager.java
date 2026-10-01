@@ -60,16 +60,16 @@ public class SnapshotManager {
     private static final String LEGACY_EMBEDDING_SUFFIX = ".embeddings.bin";
 
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    String dataDir;
 
     private final UnifiedGraphBridge bridge;
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     @Autowired(required = false)
-    private GraphIOService graphIOService;
+    GraphIOService graphIOService;
 
     @Autowired(required = false)
-    private KnowledgeGraphService knowledgeGraphService;
+    KnowledgeGraphService knowledgeGraphService;
 
     @Autowired(required = false)
     private GraphEmbeddingSidecar embeddingSidecar;

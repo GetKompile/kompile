@@ -12,13 +12,16 @@ package ai.kompile.graph.reasoning.learning;
 import ai.kompile.graph.reasoning.fol.MebnInferenceService;
 import ai.kompile.graph.reasoning.mebn.MFrag;
 import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.RandomVariable;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 
 /**
@@ -145,7 +148,8 @@ public final class MebnWeightLearner {
      *       {@code ∂p_c/∂s_{ij} = p_{parent_j} * (1 - p_c) / (1 - s_{ij} * p_{parent_j} + ε)}</li>
      *   <li>MSE gradient: {@code 2 * mean_k[(p_c_k - target_k) * ∂p_c_k/∂s_{ij}]}</li>
      * </ol>
-     * where the mean is over batch observations whose key matches the child RV prefix.</p>
+     * where the mean is over batch observations that ground the child RV and wire a parent to it
+     * ({@link Edge#parentKeyFor}).</p>
      *
      * @param edge      the edge being differentiated
      * @param s         current strength of this edge (from the theory)
@@ -156,26 +160,21 @@ public final class MebnWeightLearner {
     double analyticGradient(Edge edge, double s,
                             Map<String, Double> posteriors,
                             Map<String, Double> batch) {
-        String childPrefix  = edge.child();
-        String parentPrefix = edge.parent();
-
         double gradSum = 0.0;
         int count = 0;
 
         for (Map.Entry<String, Double> obs : batch.entrySet()) {
             String obsKey = obs.getKey();
-            // Match grounded child RV names — e.g. obs key "effect(alice)" starts with "effect"
-            if (!obsKey.startsWith(childPrefix)) {
+            // Only groundings of the child RV: "effect(alice)" for child "effect", never "effective(alice)".
+            Optional<String> parentKey = edge.parentKeyFor(obsKey);
+            if (parentKey.isEmpty()) {
                 continue;
             }
             double target  = obs.getValue();
             double pChild  = posteriors.getOrDefault(obsKey, 0.5);
 
-            // Derive corresponding grounded parent key from the child key.
-            // Convention: replace the child prefix with the parent prefix.
-            // e.g. "effect(alice)" → "cause(alice)"
-            String parentKey = parentPrefix + obsKey.substring(childPrefix.length());
-            double pParent = posteriors.getOrDefault(parentKey, 0.5);
+            // The parent the SSBN wired to this grounding: "effect(alice)" → "cause(alice)".
+            double pParent = posteriors.getOrDefault(parentKey.get(), 0.5);
 
             // ∂p_c/∂s = p_parent * (1 - p_c) / (1 - s * p_parent + ε)
             double denom = 1.0 - s * pParent + NOISY_OR_DENOM_EPS;
@@ -243,5 +242,63 @@ public final class MebnWeightLearner {
 
     /** A learnable edge: its home MFrag and the parent→child RV names. */
     public record Edge(MFrag mfrag, String parent, String child) {
+
+        /**
+         * The parent grounding the SSBN wires to {@code groundedChildKey}: each of the parent's
+         * arg-vars takes the entity the child's grounding bound to the same arg-var, as
+         * {@code SSBNGenerator} binds them once per MFrag instance ({@code effect(alice)} →
+         * {@code cause(alice)}; a {@code RelationalMTheoryBuilder} relation {@code worksFor(alice,acme)}
+         * → {@code isRelevant(alice)}).
+         *
+         * <p>Empty when the key is not a grounding of the child at its arity (a longer RV name that
+         * starts with the child's, {@code effective(alice)} for {@code effect}, or the wrong argument
+         * count), when the MFrag does not declare the child or the parent, or when a parent arg-var is
+         * not one of the child's — the SSBN then grounds that parent once per entity, and one
+         * posterior cannot stand for them.</p>
+         */
+        public Optional<String> parentKeyFor(String groundedChildKey) {
+            RandomVariable childRv = mfrag.findVariable(child).orElse(null);
+            RandomVariable parentRv = mfrag.findVariable(parent).orElse(null);
+            if (childRv == null || parentRv == null) {
+                return Optional.empty();
+            }
+            List<String> childArgs = groundingArgs(childRv, groundedChildKey);
+            if (childArgs == null) {
+                return Optional.empty();
+            }
+            List<String> childArgVars = childRv.getArgVars();
+            List<String> parentArgs = new ArrayList<>(parentRv.getArity());
+            for (String argVar : parentRv.getArgVars()) {
+                int position = childArgVars.indexOf(argVar);
+                if (position < 0) {
+                    return Optional.empty();
+                }
+                parentArgs.add(childArgs.get(position));
+            }
+            return Optional.of(parentRv.ground(parentArgs));
+        }
+
+        /**
+         * The entity ids {@code rv.ground} wrote into {@code groundedKey}, or {@code null} when the
+         * key is not a grounding of {@code rv}. {@code ground} joins ids with {@code ','} and escapes
+         * nothing, so an id containing a comma cannot be read back — the argument count no longer
+         * matches the arity and the key is rejected. An empty id names no entity.
+         */
+        private static List<String> groundingArgs(RandomVariable rv, String groundedKey) {
+            String name = rv.getName();
+            int arity = rv.getArity();
+            if (arity == 0) {
+                return groundedKey.equals(name) ? List.of() : null;
+            }
+            if (!groundedKey.startsWith(name)
+                    || groundedKey.length() < name.length() + 2
+                    || groundedKey.charAt(name.length()) != '('
+                    || !groundedKey.endsWith(")")) {
+                return null;
+            }
+            List<String> args = Arrays.asList(
+                    groundedKey.substring(name.length() + 1, groundedKey.length() - 1).split(",", -1));
+            return args.size() == arity && !args.contains("") ? args : null;
+        }
     }
 }

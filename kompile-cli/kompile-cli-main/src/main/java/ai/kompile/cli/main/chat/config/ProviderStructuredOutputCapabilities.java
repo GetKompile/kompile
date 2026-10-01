@@ -54,7 +54,7 @@ public record ProviderStructuredOutputCapabilities(
     public static ProviderStructuredOutputCapabilities forProvider(String providerId) {
         String provider = providerId == null ? "" : providerId.trim().toLowerCase(Locale.ROOT);
         return switch (provider) {
-            case "openai", "zai", "groq", "xai", "ollama", "openrouter" ->
+            case "openai", "zai", "groq", "xai", "openrouter" ->
                     CACHE.computeIfAbsent(provider, ProviderStructuredOutputCapabilities::load);
             default -> none();
         };

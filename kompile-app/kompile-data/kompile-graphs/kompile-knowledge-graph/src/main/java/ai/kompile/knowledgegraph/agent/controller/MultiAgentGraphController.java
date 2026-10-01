@@ -73,14 +73,14 @@ public class MultiAgentGraphController {
 
     /** Optional — some deployments may not have the knowledge graph module active. */
     @Autowired(required = false)
-    private KnowledgeGraphService knowledgeGraphService;
+    KnowledgeGraphService knowledgeGraphService;
 
     /** Optional — registry of LLM providers for extraction. */
     @Autowired(required = false)
-    private ExtractionLlmServiceRegistry llmServiceRegistry;
+    ExtractionLlmServiceRegistry llmServiceRegistry;
 
     @Autowired(required = false)
-    private ExtractionJobService jobService;
+    ExtractionJobService jobService;
 
     @Autowired
     public MultiAgentGraphController(

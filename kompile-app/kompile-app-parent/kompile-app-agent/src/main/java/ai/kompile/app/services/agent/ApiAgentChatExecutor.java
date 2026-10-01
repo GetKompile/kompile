@@ -73,7 +73,7 @@ public class ApiAgentChatExecutor {
     // Real context budget per lane (staging metadata for local models, catalogs otherwise);
     // used to clamp max_tokens so a request never asks for more generation than the window holds.
     @Autowired(required = false)
-    private ChatContextBudgetService contextBudgetService;
+    ChatContextBudgetService contextBudgetService;
 
     public ApiAgentChatExecutor(ModelCapabilityService modelCapabilityService) {
         this.modelCapabilityService = modelCapabilityService;
@@ -369,7 +369,7 @@ public class ApiAgentChatExecutor {
         return null;
     }
 
-    private String buildOpenAiRequest(AgentProvider agent, AgentChatRequest request, String augmentedPrompt) {
+    String buildOpenAiRequest(AgentProvider agent, AgentChatRequest request, String augmentedPrompt) {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("model", agent.getModelName());
         root.put("stream", true);

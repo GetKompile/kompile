@@ -20,6 +20,9 @@ import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.app.ontology.OntologySchemaEnrichmentService;
 import ai.kompile.app.services.SingleSourceCrawlPreviewService;
 import ai.kompile.app.services.SingleSourceCrawlStarter;
+import ai.kompile.app.services.scheduler.JobResourceProfiles;
+import ai.kompile.app.services.scheduler.ResourceAwareJobScheduler;
+import ai.kompile.app.services.scheduler.ScheduledJob;
 import ai.kompile.app.web.dto.ontology.OwlClassificationResponse;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
@@ -34,23 +37,29 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockMultipartFile;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -63,9 +72,9 @@ class UnifiedCrawlControllerTest {
         OntologySchemaEnrichmentService schema = mock(OntologySchemaEnrichmentService.class);
         OwlClassificationResponse expected = response();
         when(schema.generateSchemaAndTypes(7L)).thenReturn(expected);
-        setSchemaEnrichmentService(controller, schema);
+        controller.schemaEnrichmentService = schema;
 
-        OwlClassificationResponse result = invokeSchemaHistoryHook(controller, "ENRICHMENT", 7L);
+        OwlClassificationResponse result = controller.runSchemaEnrichmentForHistoryRerun("ENRICHMENT", 7L);
 
         assertSame(expected, result);
         verify(schema).generateSchemaAndTypes(7L);
@@ -75,28 +84,12 @@ class UnifiedCrawlControllerTest {
     void historyRerunDoesNotRunSchemaEnrichmentForStandaloneReasoningSteps() throws Exception {
         UnifiedCrawlController controller = new UnifiedCrawlController(mock(UnifiedCrawlService.class));
         OntologySchemaEnrichmentService schema = mock(OntologySchemaEnrichmentService.class);
-        setSchemaEnrichmentService(controller, schema);
+        controller.schemaEnrichmentService = schema;
 
-        OwlClassificationResponse result = invokeSchemaHistoryHook(controller, "DERIVATION", 7L);
+        OwlClassificationResponse result = controller.runSchemaEnrichmentForHistoryRerun("DERIVATION", 7L);
 
         assertNull(result);
         verifyNoInteractions(schema);
-    }
-
-    private static void setSchemaEnrichmentService(UnifiedCrawlController controller,
-                                                   OntologySchemaEnrichmentService service) throws Exception {
-        Field field = UnifiedCrawlController.class.getDeclaredField("schemaEnrichmentService");
-        field.setAccessible(true);
-        field.set(controller, service);
-    }
-
-    private static OwlClassificationResponse invokeSchemaHistoryHook(UnifiedCrawlController controller,
-                                                                     String step,
-                                                                     Long factSheetId) throws Exception {
-        Method method = UnifiedCrawlController.class.getDeclaredMethod(
-                "runSchemaEnrichmentForHistoryRerun", String.class, Long.class);
-        method.setAccessible(true);
-        return (OwlClassificationResponse) method.invoke(controller, step, factSheetId);
     }
 
     private static OwlClassificationResponse response() {
@@ -133,12 +126,6 @@ class UnifiedCrawlControllerTest {
                 dryRun, steps, null, null, null, modelName, llmProvider, waitTimeoutSeconds);
     }
 
-    private static void setField(UnifiedCrawlController controller, String name, Object value) throws Exception {
-        Field field = UnifiedCrawlController.class.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(controller, value);
-    }
-
     @Test
     void singleSource_rejectsBothOrNeitherInputs() {
         UnifiedCrawlController controller = new UnifiedCrawlController(mock(UnifiedCrawlService.class));
@@ -156,7 +143,7 @@ class UnifiedCrawlControllerTest {
     void singleSourceDry_delegatesToPreviewAndMapsUnifiedResponse() throws Exception {
         UnifiedCrawlController controller = new UnifiedCrawlController(mock(UnifiedCrawlService.class));
         SingleSourceCrawlPreviewService preview = mock(SingleSourceCrawlPreviewService.class);
-        setField(controller, "singleSourceCrawlPreviewService", preview);
+        controller.singleSourceCrawlPreviewService = preview;
 
         GraphExtractionPreviewService.PreviewResponse graph = new GraphExtractionPreviewService.PreviewResponse(
                 true, true, true, true, "COMPLETED", 1, 0, 2, 1, "test-model",
@@ -222,7 +209,7 @@ class UnifiedCrawlControllerTest {
                         List.of(), List.of(), 120L);
         when(starter.start(anyString(), any(UnifiedCrawlSource.class),
                 any(SingleSourceCrawlStarter.SingleSourceCrawlOptions.class))).thenReturn(result);
-        setField(controller, "singleSourceCrawlStarter", starter);
+        controller.singleSourceCrawlStarter = starter;
 
         ResponseEntity<?> response = controller.runSingleSource(
                 runRequest("/tmp/doc.md", null, false, List.of("GRAPH_EXTRACTION"), 7));
@@ -258,7 +245,7 @@ class UnifiedCrawlControllerTest {
         when(starter.start(anyString(), any(UnifiedCrawlSource.class),
                 any(SingleSourceCrawlStarter.SingleSourceCrawlOptions.class)))
                 .thenThrow(new IllegalStateException("Unified crawl queue is full; try again later"));
-        setField(controller, "singleSourceCrawlStarter", starter);
+        controller.singleSourceCrawlStarter = starter;
 
         ResponseEntity<?> response = controller.runSingleSource(
                 runRequest("/tmp/doc.md", null, false, null, 5));
@@ -280,9 +267,9 @@ class UnifiedCrawlControllerTest {
                 FactSheet.builder().id(91L).name("Planning").build()));
 
         UnifiedCrawlController controller = new UnifiedCrawlController(crawlService);
-        setField(controller, "objectMapper", new ObjectMapper());
-        setField(controller, "factSheetService", factSheetService);
-        setField(controller, "uploadsPath", tempDir);
+        controller.objectMapper = new ObjectMapper();
+        controller.factSheetService = factSheetService;
+        controller.uploadsPath = tempDir;
 
         MockMultipartFile file = new MockMultipartFile(
                 "files", "budget.txt", "text/plain", "budget".getBytes());
@@ -312,8 +299,8 @@ class UnifiedCrawlControllerTest {
                         "job-txt", "PENDING", null, 1, true, true,
                         Boolean.FALSE, Boolean.TRUE, Map.of(), List.of(),
                         0, 0, Map.of(), Map.of(), 0, 0, 0, List.of(), List.of(), 5L));
-        setField(controller, "singleSourceCrawlStarter", starter);
-        setField(controller, "uploadsPath", tempDir);
+        controller.singleSourceCrawlStarter = starter;
+        controller.uploadsPath = tempDir;
 
         SingleSourceCrawlStarter.SingleSourceRunRequest request =
                 new SingleSourceCrawlStarter.SingleSourceRunRequest(
@@ -331,5 +318,157 @@ class UnifiedCrawlControllerTest {
         assertTrue(written.startsWith(tempDir), "inline content must land under uploadsPath");
         assertTrue(written.getFileName().toString().endsWith(".txt"));
         assertEquals("Alice works at Acme Corp.", Files.readString(written));
+    }
+
+    // ---- Scheduled crawl executor: a cancel must reach the crawl, and only a finished crawl succeeds ----
+
+    private static UnifiedCrawlService crawlServiceStarting(UnifiedCrawlJob.Status status) {
+        UnifiedCrawlService crawlService = mock(UnifiedCrawlService.class);
+        when(crawlService.startJob(any())).thenReturn(UnifiedCrawlJob.builder()
+                .jobId("crawl-internal")
+                .status(new AtomicReference<>(status))
+                .build());
+        when(crawlService.cancelJob("crawl-internal")).thenReturn(true);
+        return crawlService;
+    }
+
+    private static UnifiedCrawlRequest scheduledRequest() {
+        return UnifiedCrawlRequest.builder().name("Scheduled crawl").factSheetId(3L).build();
+    }
+
+    private static ScheduledJob.JobExecutionContext context(String jobId, boolean cancellationRequested) {
+        return new ScheduledJob.JobExecutionContext(jobId, JobResourceProfiles.UNIFIED_CRAWL,
+                (id, phase, gpu, bytes) -> { }, null, new AtomicBoolean(cancellationRequested));
+    }
+
+    /** Starts a crawl through the (mock) scheduler and returns the job the controller submitted. */
+    private static ScheduledJob submitScheduledCrawl(UnifiedCrawlController controller) {
+        ResourceAwareJobScheduler scheduler = mock(ResourceAwareJobScheduler.class);
+        controller.resourceScheduler = scheduler;
+        assertEquals(200, controller.startJob(scheduledRequest()).getStatusCode().value());
+        ArgumentCaptor<ScheduledJob> captor = ArgumentCaptor.forClass(ScheduledJob.class);
+        verify(scheduler).submit(captor.capture());
+        return captor.getValue();
+    }
+
+    @Test
+    void scheduledCrawl_cancelRequestCancelsTheCrawlAndThrows() throws Exception {
+        UnifiedCrawlService crawlService = crawlServiceStarting(UnifiedCrawlJob.Status.RUNNING);
+        ScheduledJob job = submitScheduledCrawl(new UnifiedCrawlController(crawlService));
+
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> assertThrows(CancellationException.class,
+                () -> job.getExecutor().execute(context(job.getJobId(), true))));
+        verify(crawlService).cancelJob("crawl-internal");
+    }
+
+    @Test
+    void scheduledCrawl_interruptCancelsTheCrawlAndThrows() throws Exception {
+        UnifiedCrawlService crawlService = crawlServiceStarting(UnifiedCrawlJob.Status.RUNNING);
+        ScheduledJob job = submitScheduledCrawl(new UnifiedCrawlController(crawlService));
+
+        // The scheduler's cancel interrupts the thread running the executor
+        Thread.currentThread().interrupt();
+        try {
+            assertThrows(InterruptedException.class,
+                    () -> job.getExecutor().execute(context(job.getJobId(), false)));
+        } finally {
+            Thread.interrupted();
+        }
+        verify(crawlService).cancelJob("crawl-internal");
+    }
+
+    @Test
+    void scheduledCrawl_timeoutCancelsTheCrawlAndFailsTheJob() {
+        UnifiedCrawlService crawlService = crawlServiceStarting(UnifiedCrawlJob.Status.RUNNING);
+        UnifiedCrawlController controller = new UnifiedCrawlController(crawlService);
+
+        assertThrows(TimeoutException.class, () -> controller.runScheduledCrawl(
+                context("crawl-sched", false), scheduledRequest(), "Scheduled crawl", 0L));
+        verify(crawlService).cancelJob("crawl-internal");
+    }
+
+    @Test
+    void scheduledCrawl_crawlCancelledOutsideTheSchedulerIsNotASuccess() throws Exception {
+        UnifiedCrawlService crawlService = crawlServiceStarting(UnifiedCrawlJob.Status.CANCELLED);
+        ScheduledJob job = submitScheduledCrawl(new UnifiedCrawlController(crawlService));
+
+        assertThrows(CancellationException.class,
+                () -> job.getExecutor().execute(context(job.getJobId(), false)));
+    }
+
+    @Test
+    void scheduledCrawl_completedPendingGraphFinishesTheJob() throws Exception {
+        UnifiedCrawlService crawlService = crawlServiceStarting(UnifiedCrawlJob.Status.COMPLETED_PENDING_GRAPH);
+        ScheduledJob job = submitScheduledCrawl(new UnifiedCrawlController(crawlService));
+
+        assertTimeoutPreemptively(Duration.ofSeconds(10),
+                () -> job.getExecutor().execute(context(job.getJobId(), false)));
+        verify(crawlService, never()).cancelJob(anyString());
+    }
+
+    // ---- Scheduled crawl executor: the scheduler hears the declared phase a reported phase stands for ----
+
+    private static final long VECTOR_INDEXING_GPU_BYTES = 5L * 1024 * 1024 * 1024;
+
+    private static UnifiedCrawlJob runningCrawl(String phase) {
+        return UnifiedCrawlJob.builder()
+                .jobId("crawl-internal")
+                .status(new AtomicReference<>(UnifiedCrawlJob.Status.RUNNING))
+                .currentPhase(new AtomicReference<>(phase))
+                .build();
+    }
+
+    private static UnifiedCrawlService crawlServiceStarting(UnifiedCrawlJob crawl) {
+        UnifiedCrawlService crawlService = mock(UnifiedCrawlService.class);
+        when(crawlService.startJob(any())).thenReturn(crawl);
+        when(crawlService.cancelJob("crawl-internal")).thenReturn(true);
+        return crawlService;
+    }
+
+    /** A context whose phase callback records each transition, then lets {@code next} move the crawl on. */
+    private static ScheduledJob.JobExecutionContext recordingContext(List<String> transitions, Runnable next) {
+        return new ScheduledJob.JobExecutionContext("crawl-sched", JobResourceProfiles.UNIFIED_CRAWL,
+                (id, phase, gpu, bytes) -> {
+                    transitions.add(phase + " gpu=" + gpu + " bytes=" + bytes);
+                    next.run();
+                }, null, new AtomicBoolean(false));
+    }
+
+    @Test
+    void scheduledCrawl_forwardsTheDeclaredPhaseAReportedPhaseStandsFor() {
+        UnifiedCrawlJob crawl = runningCrawl("EMBEDDING");
+        UnifiedCrawlController controller = new UnifiedCrawlController(crawlServiceStarting(crawl));
+        List<String> transitions = new ArrayList<>();
+        // Vector indexing, then a decomposed extraction pass, then the crawl completes
+        ScheduledJob.JobExecutionContext ctx = recordingContext(transitions, () -> {
+            if (transitions.size() == 1) {
+                crawl.getCurrentPhase().set("GRAPH_EXTRACTION_RELATIONS");
+            } else {
+                crawl.getStatus().set(UnifiedCrawlJob.Status.COMPLETED);
+            }
+        });
+
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> controller.runScheduledCrawl(
+                ctx, scheduledRequest(), "Scheduled crawl", 60_000L));
+        assertEquals(List.of(
+                "VECTOR_INDEXING gpu=true bytes=" + VECTOR_INDEXING_GPU_BYTES,
+                "GRAPH_EXTRACTION gpu=false bytes=0"), transitions);
+    }
+
+    /** A crawl sets an end marker such as PARTITION_COMPLETE before its status flips; it is never forwarded. */
+    @Test
+    void scheduledCrawl_neverForwardsAnEndMarker() {
+        UnifiedCrawlJob crawl = runningCrawl("GRAPH_PREP");
+        UnifiedCrawlService crawlService = crawlServiceStarting(crawl);
+        UnifiedCrawlController controller = new UnifiedCrawlController(crawlService);
+        List<String> transitions = new ArrayList<>();
+        // The crawl reports PARTITION_COMPLETE and stays RUNNING until the deadline: two more polls see it
+        ScheduledJob.JobExecutionContext ctx = recordingContext(transitions,
+                () -> crawl.getCurrentPhase().set("PARTITION_COMPLETE"));
+
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> assertThrows(TimeoutException.class,
+                () -> controller.runScheduledCrawl(ctx, scheduledRequest(), "Scheduled crawl", 2_500L)));
+        assertEquals(List.of("GRAPH_PREP gpu=false bytes=0"), transitions);
+        verify(crawlService).cancelJob("crawl-internal");
     }
 }

@@ -268,7 +268,7 @@ public class KbGroundingAuditController {
      * {@link InferredFactRow#getProvenanceJson()}. Returns {@code null} when the key is absent
      * (fact is still valid / unbounded).
      */
-    private static Long extractValidTo(@Nullable InferredFactRow dbRow) {
+    static Long extractValidTo(@Nullable InferredFactRow dbRow) {
         if (dbRow == null || dbRow.getProvenanceJson() == null) {
             return null;
         }
@@ -309,7 +309,7 @@ public class KbGroundingAuditController {
      *       (treating null validTo as +∞ and null validFrom as −∞).</li>
      * </ul>
      */
-    private static boolean matchesTemporalFilter(
+    static boolean matchesTemporalFilter(
             @Nullable Long rowValidFrom,
             @Nullable Long rowValidTo,
             @Nullable Long filterFrom,

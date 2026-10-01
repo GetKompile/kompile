@@ -28,6 +28,25 @@ class WebChatContextTest {
                 () -> WebChatContext.jvmArguments(directory, false, "t".repeat(257)));
     }
 
+    @Test void workspaceIsExplicitAndDoesNotChangeSingleChatArguments() throws Exception {
+        var single = WebChatContext.jvmArguments(directory, false, null);
+        var workspace = WebChatContext.jvmArguments(directory, false, null, true);
+        assertEquals(single.size() + 1, workspace.size());
+        assertEquals("-D" + WebChatContext.MODE + "=workspace", workspace.get(workspace.size() - 1));
+        String previous = System.getProperty(WebChatContext.MODE);
+        try {
+            System.clearProperty(WebChatContext.MODE);
+            assertEquals(false, WebChatContext.workspace());
+            System.setProperty(WebChatContext.MODE, "workspace");
+            assertEquals(true, WebChatContext.workspace());
+            System.setProperty(WebChatContext.MODE, "bad");
+            assertThrows(IllegalStateException.class, WebChatContext::workspace);
+        } finally {
+            if (previous == null) System.clearProperty(WebChatContext.MODE);
+            else System.setProperty(WebChatContext.MODE, previous);
+        }
+    }
+
     @Test
     void theServerReadsTheTeamNewSessionsStartWith() {
         String previous = System.getProperty(WebChatContext.WORKFLOW);

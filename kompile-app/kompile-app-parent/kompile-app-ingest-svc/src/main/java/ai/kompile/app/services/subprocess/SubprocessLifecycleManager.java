@@ -42,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -86,6 +87,9 @@ public class SubprocessLifecycleManager {
     private QuadConsumer<String, String, Integer, String> broadcastProgressCallback;
     /** Broadcast with stats map */
     private PentaConsumer<String, String, Integer, String, Map<String, Object>> broadcastProgressWithStatsCallback;
+
+    /** Attempts the stall watchdog killed in order to restart them: their exit doesn't end the task. */
+    private final Set<VectorPopulationHandle> restartingHandles = ConcurrentHashMap.newKeySet();
 
     @FunctionalInterface
     public interface QuadConsumer<A, B, C, D> {
@@ -145,15 +149,20 @@ public class SubprocessLifecycleManager {
      * Handle process completion (exit code interpretation and optional restart).
      */
     public void handleCompletion(VectorPopulationHandle handle, int exitCode) {
-        if (handle.getResultFuture().isDone()) {
+        // The stall watchdog killed this attempt and has already scheduled its restart
+        if (restartingHandles.remove(handle) || handle.getResultFuture().isDone()) {
             return;
         }
 
         if (exitCode == 0) {
             String errorMessage = "Process exited successfully (0) but no completion message was received";
+            if (!handle.getResultFuture().complete(VectorPopulationResult.failure(
+                    handle.getTaskId(), handle.getCurrentPhase(), errorMessage))) {
+                logger.warn("Vector population subprocess {} exited with code 0 after its attempt had already ended; "
+                        + "not reporting it again", handle.getTaskId());
+                return;
+            }
             logger.error("Vector population subprocess {}: {}", handle.getTaskId(), errorMessage);
-            handle.getResultFuture().complete(VectorPopulationResult.failure(
-                    handle.getTaskId(), handle.getCurrentPhase(), errorMessage));
 
             if (progressTracker != null) {
                 progressTracker.failTask(handle.getTaskId(),
@@ -193,6 +202,7 @@ public class SubprocessLifecycleManager {
                 if (restartManager != null && !handle.isCancelled()) {
                     if (restartManager.shouldRestart(handle.getTaskId(), reason)) {
                         logger.info("=== SCHEDULING RESTART for task {} (reason: {}) ===", handle.getTaskId(), reason);
+                        closeSubprocessLog(handle, "RESTARTING", exitCode, errorMessage, isOomKilled, false);
                         scheduleRestart(handle, exitCode, false, reason, errorMessage);
                         return;
                     } else {
@@ -227,6 +237,7 @@ public class SubprocessLifecycleManager {
                     FailureReason reason = FailureReason.OOM_KILLED;
                     if (restartManager.shouldRestart(handle.getTaskId(), reason)) {
                         logger.info("=== SCHEDULING RESTART for task {} (OOM killed) ===", handle.getTaskId());
+                        closeSubprocessLog(handle, "RESTARTING", exitCode, errorMessage, true, false);
                         scheduleRestart(handle, exitCode, true, reason, errorMessage);
                         return;
                     } else {
@@ -247,6 +258,13 @@ public class SubprocessLifecycleManager {
                 errorMessage = "Process exited with code " + exitCode;
             }
 
+            if (!handle.getResultFuture().complete(VectorPopulationResult.failure(
+                    handle.getTaskId(), handle.getCurrentPhase(), errorMessage))) {
+                logger.warn("Vector population subprocess {} exited with code {} after its attempt had already ended; "
+                        + "not reporting it again", handle.getTaskId(), exitCode);
+                return;
+            }
+
             if (isNativeCrash) {
                 logger.error("NATIVE CRASH in vector population subprocess {} during phase {}: {} (exit code {}). " +
                         "The parent process is unaffected due to subprocess isolation.",
@@ -255,9 +273,6 @@ public class SubprocessLifecycleManager {
                 logger.error("Vector population subprocess {} failed: {} (exit code {})",
                         handle.getTaskId(), errorMessage, exitCode);
             }
-
-            handle.getResultFuture().complete(VectorPopulationResult.failure(
-                    handle.getTaskId(), handle.getCurrentPhase(), errorMessage));
 
             String uiMessage = isNativeCrash
                     ? "Native crash in embedding/indexing - see logs for details"
@@ -586,6 +601,12 @@ public class SubprocessLifecycleManager {
      */
     public void executeRestart(VectorPopulationHandle oldHandle, RestartConfig restartConfig) {
         String taskId = oldHandle.getTaskId();
+        if (oldHandle.getResultFuture().isDone()) {
+            // Cancelled (or otherwise ended) while the restart was pending
+            restartingHandles.remove(oldHandle);
+            logger.info("Task {} ended before restart attempt {}; not restarting", taskId, restartConfig.attemptNumber());
+            return;
+        }
         String fileName = buildTaskDisplayName(oldHandle.getVectorIndexPath());
 
         logger.info("=== EXECUTING RESTART for task {} ===", taskId);
@@ -682,16 +703,16 @@ public class SubprocessLifecycleManager {
                     restartManager.recordRestartAttempt(taskId, false);
 
                     if (restartManager.shouldRestart(taskId, FailureReason.UNKNOWN)) {
-                        VectorPopulationHandle currentHandle = activeProcesses != null ? activeProcesses.get(taskId) : null;
-                        if (currentHandle != null) {
-                            scheduleRestart(currentHandle, -1, false, FailureReason.UNKNOWN, ex.getMessage());
-                        }
+                        // The failed launch registered no attempt: retry from the attempt the task waits on
+                        scheduleRestart(oldHandle, -1, false, FailureReason.UNKNOWN, ex.getMessage());
                     } else {
                         handleRestartExhausted(oldHandle, restartConfig.attemptNumber(), ex.getMessage());
                     }
                 } else if (!result.success()) {
                     logger.info("Restart attempt {} for task {} completed but task failed: {}",
                             restartConfig.attemptNumber(), taskId, result.errorMessage());
+                    // The caller waits on the first attempt's future — this attempt's result is the task's
+                    oldHandle.getResultFuture().complete(result);
                 } else {
                     logger.info("Restart attempt {} for task {} succeeded!", restartConfig.attemptNumber(), taskId);
                     restartManager.recordRestartAttempt(taskId, true);
@@ -726,6 +747,12 @@ public class SubprocessLifecycleManager {
      */
     public void handleRestartExhausted(VectorPopulationHandle handle, int totalAttempts, String finalError) {
         String taskId = handle.getTaskId();
+        String errorMessage = String.format("All %d restart attempts failed: %s", totalAttempts, finalError);
+        if (!handle.getResultFuture().complete(VectorPopulationResult.failure(taskId, handle.getCurrentPhase(), errorMessage))) {
+            logger.info("Task {} had already ended when its restarts ran out; not reporting it again", taskId);
+            restartManager.clearRestartState(taskId);
+            return;
+        }
         String fileName = buildTaskDisplayName(handle.getVectorIndexPath());
         long totalTime = Duration.between(handle.getStartTime(), Instant.now()).toMillis();
 
@@ -734,9 +761,6 @@ public class SubprocessLifecycleManager {
         if (ingestEventService != null) {
             ingestEventService.logRestartFailed(taskId, fileName, totalAttempts, totalTime, finalError);
         }
-
-        String errorMessage = String.format("All %d restart attempts failed: %s", totalAttempts, finalError);
-        handle.getResultFuture().complete(VectorPopulationResult.failure(taskId, handle.getCurrentPhase(), errorMessage));
 
         if (progressTracker != null) {
             progressTracker.failTask(taskId, statsConverter.mapPhaseToEnum(handle.getCurrentPhase()), errorMessage);
@@ -800,7 +824,9 @@ public class SubprocessLifecycleManager {
         Duration restartThreshold = Duration.ofSeconds(restartSeconds);
 
         for (VectorPopulationHandle handle : activeProcesses.values()) {
-            if (!handle.isAlive() || handle.isCancelled()) {
+            // An attempt with its verdict is not stalled: after COMPLETED the child closes its pipeline,
+            // still sending heartbeats but no progress
+            if (!handle.isAlive() || handle.isCancelled() || handle.getResultFuture().isDone()) {
                 continue;
             }
 
@@ -821,6 +847,8 @@ public class SubprocessLifecycleManager {
                     if (restartManager.shouldRestart(handle.getTaskId(), reason)) {
                         logger.info("Attempting restart for stalled subprocess {} (no progress for {}s)",
                                 handle.getTaskId(), sinceProgress.getSeconds());
+                        restartingHandles.add(handle);
+                        closeSubprocessLog(handle, "RESTARTING", null, errorMessage, false, false);
                         handle.cancel();
                         scheduleStallRestart(handle, reason, errorMessage);
                         if (warnedTaskIds != null) warnedTaskIds.remove(handle.getTaskId());
@@ -828,18 +856,9 @@ public class SubprocessLifecycleManager {
                     }
                 }
 
-                handle.cancel();
-
-                if (progressTracker != null) {
-                    progressTracker.failTask(handle.getTaskId(),
-                            statsConverter.mapPhaseToEnum(handle.getCurrentPhase()), errorMessage);
+                if (endAttemptBeforeKill(handle, errorMessage)) {
+                    handle.cancel();
                 }
-                if (ingestProgressTracker != null) {
-                    String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
-                    IngestPhase ingestPhase = statsConverter.mapPhaseToIngestPhase(handle.getCurrentPhase());
-                    ingestProgressTracker.failTask(handle.getTaskId(), displayName, ingestPhase, errorMessage);
-                }
-                broadcastProgress(handle.getTaskId(), "FAILED", 0, errorMessage);
                 if (warnedTaskIds != null) warnedTaskIds.remove(handle.getTaskId());
                 continue;
             }
@@ -882,7 +901,14 @@ public class SubprocessLifecycleManager {
         Duration staleThreshold = Duration.ofSeconds(staleSeconds);
 
         for (VectorPopulationHandle handle : activeProcesses.values()) {
-            if (handle.isAlive() && handle.isStale(staleThreshold)) {
+            // One already being stopped (a cancel, a stall restart) has its exit handled there
+            if (handle.isAlive() && !handle.isCancelled() && handle.isStale(staleThreshold)) {
+                if (handle.getResultFuture().isDone()) {
+                    logger.warn("Vector population subprocess {} is still running after its attempt ended, "
+                            + "with no heartbeat for {} seconds; stopping it", handle.getTaskId(), staleSeconds);
+                    handle.cancel();
+                    continue;
+                }
                 logger.warn(
                         "Vector population subprocess {} appears stuck (no heartbeat for {} seconds)",
                         handle.getTaskId(), staleSeconds);
@@ -893,30 +919,45 @@ public class SubprocessLifecycleManager {
                     SubprocessRestartManager.FailureReason reason = SubprocessRestartManager.FailureReason.STALLED_NO_HEARTBEAT;
                     if (restartManager.shouldRestart(handle.getTaskId(), reason)) {
                         logger.info("Attempting restart for stalled subprocess {} (no heartbeat)", handle.getTaskId());
+                        restartingHandles.add(handle);
+                        closeSubprocessLog(handle, "RESTARTING", null, errorMessage, false, false);
                         handle.cancel();
                         scheduleStallRestart(handle, reason, errorMessage);
                         continue;
                     }
                 }
 
-                handle.cancel();
-
-                if (progressTracker != null) {
-                    progressTracker.failTask(handle.getTaskId(),
-                            statsConverter.mapPhaseToEnum(handle.getCurrentPhase()), errorMessage);
+                if (endAttemptBeforeKill(handle, errorMessage)) {
+                    handle.cancel();
                 }
-                if (ingestProgressTracker != null) {
-                    String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
-                    IngestPhase ingestPhase = statsConverter.mapPhaseToIngestPhase(handle.getCurrentPhase());
-                    ingestProgressTracker.failTask(handle.getTaskId(), displayName, ingestPhase, errorMessage);
-                }
-
-                broadcastProgress(handle.getTaskId(), "FAILED", 0, errorMessage);
             }
         }
     }
 
     // ---- private helpers ----
+
+    /**
+     * Give a stuck attempt its verdict before it is killed, so its exit is not reported again. False if it
+     * already had one — it is then left to the next check.
+     */
+    private boolean endAttemptBeforeKill(VectorPopulationHandle handle, String errorMessage) {
+        String taskId = handle.getTaskId();
+        if (!handle.getResultFuture().complete(
+                VectorPopulationResult.failure(taskId, handle.getCurrentPhase(), errorMessage))) {
+            return false;
+        }
+        closeSubprocessLog(handle, "PROCESS_STUCK", null, errorMessage, false, false);
+        if (progressTracker != null) {
+            progressTracker.failTask(taskId, statsConverter.mapPhaseToEnum(handle.getCurrentPhase()), errorMessage);
+        }
+        if (ingestProgressTracker != null) {
+            String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
+            IngestPhase ingestPhase = statsConverter.mapPhaseToIngestPhase(handle.getCurrentPhase());
+            ingestProgressTracker.failTask(taskId, displayName, ingestPhase, errorMessage);
+        }
+        broadcastProgress(taskId, "FAILED", 0, errorMessage);
+        return true;
+    }
 
     private int getEffectiveStaleThresholdSeconds() {
         if (subprocessConfigService != null) {

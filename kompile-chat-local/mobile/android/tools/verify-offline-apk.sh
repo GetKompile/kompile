@@ -708,15 +708,23 @@ done
 MODEL_PREPARATION_CONNECTION_CODE=$("$APKANALYZER" dex code \
   --class ai.kompile.chat.local.android.model.SdxModelPreparationConnection "$APK") ||
   fail "cannot decompile SDX model preparation service connection"
+MODEL_PREPARATION_BINDING_CODE=$("$APKANALYZER" dex code \
+  --class 'ai.kompile.chat.local.android.model.SdxModelPreparationConnection$Companion' "$APK") ||
+  fail "cannot decompile SDX model preparation binding factory"
+for contract in 'bindService' 'SdxModelPreparationService'; do
+  grep -Fq "$contract" <<<"$MODEL_PREPARATION_BINDING_CODE" ||
+    fail "SDX model preparation binding factory is missing contract: $contract"
+done
 for contract in \
-  'bindService' \
+  'unbindService' \
   'linkToDeath' \
   'unlinkToDeath' \
-  'SdxModelPreparationService' \
   'sdx-importer-replies'; do
   grep -Fq "$contract" <<<"$MODEL_PREPARATION_CONNECTION_CODE" ||
     fail "SDX model preparation connection is missing bound-service contract: $contract"
 done
+! grep -Fq 'stopService(' <<<"$MODEL_PREPARATION_CONNECTION_CODE" ||
+  fail "SDX model preparation connection must not stop another request's service"
 for forbidden_path in acquireUnstableContentProviderClient ContentProviderClient; do
   ! grep -Fq "$forbidden_path" <<<"$MODEL_PREPARATION_CLIENT_CODE$MODEL_PREPARATION_CONNECTION_CODE" ||
     fail "SDX model preparation still contains the obsolete provider path: $forbidden_path"

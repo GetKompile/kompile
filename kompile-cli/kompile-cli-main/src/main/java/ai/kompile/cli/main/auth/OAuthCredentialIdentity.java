@@ -27,11 +27,6 @@ public final class OAuthCredentialIdentity {
                 previous == null ? Map.of() : previous.getMetadata());
         addClaims(provider, claims(text(response, "id_token")), metadata);
         addClaims(provider, claims(text(response, "access_token")), metadata);
-        if ("anthropic".equalsIgnoreCase(provider)) {
-            put(metadata, "accountId", text(response.path("account"), "uuid"));
-            put(metadata, "email", text(response.path("account"), "email_address"));
-            put(metadata, "organizationId", text(response.path("organization"), "uuid"));
-        }
         put(metadata, "scope", text(response, "scope"));
         return metadata;
     }

@@ -80,7 +80,7 @@ public class TrainingCheckpointStore {
     private static final String CHECKPOINT_FILENAME = "training-checkpoint.json";
 
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    String dataDir;
 
     // ── Public record ─────────────────────────────────────────────────────────
 

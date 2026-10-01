@@ -175,7 +175,7 @@ public class ModelLifecycleManager implements SmartLifecycle {
     private final Map<String, ManagedService> managedServices = new ConcurrentHashMap<>();
 
     /** Track which services were evicted by which acquirer, so we can restore them on release */
-    private final Map<String, List<String>> evictedByAcquirer = new ConcurrentHashMap<>();
+    final Map<String, List<String>> evictedByAcquirer = new ConcurrentHashMap<>();
 
     /** Serialization lock for acquire/release operations */
     private final ReentrantLock acquisitionLock = new ReentrantLock();
@@ -217,6 +217,40 @@ public class ModelLifecycleManager implements SmartLifecycle {
     public enum HoldLifetime {
         BOUNDED,
         LONG_LIVED
+    }
+
+    /**
+     * The outcome of {@link #admitJob}: the device a job would run on, the bytes it would reserve there
+     * (its cap, clamped to the device), and the services to evict first. {@code blockReason} is set when
+     * the device can't make room right now (the job should wait); {@code device} is null only when there
+     * is no GPU at all.
+     */
+    public record GpuAdmission(GpuDevice device, long reservedBytes, List<String> toEvict, String blockReason) {
+        public boolean admitted() {
+            return device != null && blockReason == null;
+        }
+
+        public boolean shortfall() {
+            return device != null && blockReason != null;
+        }
+
+        public boolean unavailable() {
+            return device == null;
+        }
+    }
+
+    /**
+     * A job's GPU acquisition failed only because its device lacks memory right now (including losing
+     * a race after admission). The job can wait and retry; any other acquisition failure is final.
+     */
+    public static class GpuShortfallException extends IllegalStateException {
+        public GpuShortfallException(String message) {
+            super(message);
+        }
+
+        public GpuShortfallException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     /** Active GPU holds keyed by jobId */
@@ -444,8 +478,9 @@ public class ModelLifecycleManager implements SmartLifecycle {
                 return targetDevice;
             }
 
-            // Step 3: Find eviction candidates
-            List<String> toEvict = gpuResourceManager.findEvictionCandidates(serviceType, targetDevice);
+            // Step 3: Find eviction candidates (only a running managed service's own row can be freed)
+            List<String> toEvict = gpuResourceManager.findEvictionCandidates(serviceType, targetDevice,
+                    gpuResourceManager.getMemoryBudget(serviceType), this::isEvictable);
             if (toEvict.isEmpty()) {
                 throw new IllegalStateException(String.format(
                         "Cannot accommodate '%s' on %s. Need %dMB, available %dMB, " +
@@ -469,11 +504,16 @@ public class ModelLifecycleManager implements SmartLifecycle {
                 }
             }
 
-            evictedByAcquirer.put(serviceType, actuallyEvicted);
-
-            // Step 5: Create reservation
-            gpuResourceManager.reserve(serviceType, targetDevice,
-                    gpuResourceManager.getMemoryBudget(serviceType));
+            // Step 5: Create reservation. If it still doesn't fit (a failed eviction), bring back what
+            // was evicted before failing — nothing else would.
+            try {
+                gpuResourceManager.reserve(serviceType, targetDevice,
+                        gpuResourceManager.getMemoryBudget(serviceType));
+            } catch (IllegalStateException e) {
+                restoreServices(serviceType, actuallyEvicted);
+                throw e;
+            }
+            recordEvictions(serviceType, actuallyEvicted);
 
             log.info("=== GPU ACQUISITION COMPLETE: '{}' reserved {}MB on {} (evicted: {}) ===",
                     serviceType,
@@ -501,13 +541,7 @@ public class ModelLifecycleManager implements SmartLifecycle {
             gpuResourceManager.release(serviceType);
 
             // Step 2: Restore previously evicted services
-            List<String> evicted = evictedByAcquirer.remove(serviceType);
-            if (evicted != null && !evicted.isEmpty()) {
-                log.info("Restoring {} previously evicted service(s): {}", evicted.size(), evicted);
-                for (String evictedService : evicted) {
-                    restoreService(evictedService);
-                }
-            }
+            restoreEvictedBy(serviceType);
 
             log.info("=== GPU RELEASE COMPLETE: '{}' ===", serviceType);
 
@@ -561,6 +595,24 @@ public class ModelLifecycleManager implements SmartLifecycle {
      */
     public GpuDevice acquireGpuForJob(String jobId, String serviceType, String description,
                                       HoldLifetime lifetime) {
+        return acquireGpuForJob(jobId, serviceType, description, lifetime, 0L, null);
+    }
+
+    /**
+     * Acquire GPU resources for a job whose child may use up to {@code capBytes}. Reserves that cap,
+     * clamped to the chosen device's total (see {@link #admitJob}); the caller bounds the child to the
+     * same number, so what is reserved is what the child may use.
+     *
+     * @param capBytes the most GPU memory the job's child may use; {@code <= 0} means the service's budget
+     * @param preferredDevice the device to acquire on (e.g. the job's own device when re-acquiring for a
+     *                        phase), or null to choose one
+     * @return the GPU device that was reserved
+     * @throws GpuShortfallException if the device can't make room right now — the job may wait and retry
+     * @throws IllegalStateException if there is no GPU at all or the manager is not running
+     */
+    public GpuDevice acquireGpuForJob(String jobId, String serviceType, String description,
+                                      HoldLifetime lifetime, long capBytes, GpuDevice preferredDevice) {
+        Objects.requireNonNull(lifetime, "lifetime");
         if (!running.get()) {
             throw new IllegalStateException(
                     "ModelLifecycleManager is not running — cannot acquire GPU for job '" + jobId + "'");
@@ -571,39 +623,32 @@ public class ModelLifecycleManager implements SmartLifecycle {
             log.info("=== GPU JOB ACQUIRE: jobId='{}', service='{}', desc='{}' ===",
                     jobId, serviceType, description);
 
-            // Step 1: Determine target device
-            GpuDevice targetDevice = resolveTargetDevice(serviceType, null);
-            if (targetDevice == null) {
+            // Step 1: Admission — the target device, what to reserve there, and what to evict
+            GpuAdmission admission = admitJob(serviceType, capBytes, preferredDevice);
+            if (admission.unavailable()) {
                 throw new IllegalStateException(
                         "No GPU device available for service '" + serviceType + "' (job '" + jobId + "'). " +
                         "Check nvidia-smi and device routing configuration.");
             }
+            if (admission.shortfall()) {
+                throw new GpuShortfallException(String.format("Cannot accommodate '%s' (job '%s'): %s",
+                        serviceType, jobId, admission.blockReason()));
+            }
+            GpuDevice targetDevice = admission.device();
+            long reservedBytes = admission.reservedBytes();
 
-            long budget = gpuResourceManager.getMemoryBudget(serviceType);
-
-            log.info("Target device for job '{}' ({}): {} (available: {}MB, budget: {}MB)",
+            log.info("Target device for job '{}' ({}): {} (available: {}MB, reserving: {}MB)",
                     jobId, serviceType, targetDevice.name(),
                     gpuResourceManager.getAvailableMemory(targetDevice) / (1024 * 1024),
-                    budget / (1024 * 1024));
+                    reservedBytes / (1024 * 1024));
 
-            // Step 2: Check if we fit without eviction
-            if (!gpuResourceManager.canFit(serviceType, targetDevice)) {
-                // Step 3: Find eviction candidates
-                List<String> toEvict = gpuResourceManager.findEvictionCandidates(serviceType, targetDevice);
-                if (toEvict.isEmpty()) {
-                    throw new IllegalStateException(String.format(
-                            "Cannot accommodate '%s' (job '%s') on %s. Need %dMB, available %dMB, " +
-                            "and no lower-priority services to evict.",
-                            serviceType, jobId, targetDevice.name(),
-                            budget / (1024 * 1024),
-                            gpuResourceManager.getAvailableMemory(targetDevice) / (1024 * 1024)));
-                }
-
+            // Step 2: Evict what admission picked (nothing when the job fits as-is)
+            List<String> toEvict = admission.toEvict();
+            List<String> actuallyEvicted = new ArrayList<>();
+            if (!toEvict.isEmpty()) {
                 log.info("Job '{}' ({}) requires eviction of {} service(s): {}",
                         jobId, serviceType, toEvict.size(), toEvict);
 
-                // Step 4: Evict each service
-                List<String> actuallyEvicted = new ArrayList<>();
                 for (String evictTarget : toEvict) {
                     boolean evicted = evictService(evictTarget, serviceType);
                     if (evicted) {
@@ -613,29 +658,117 @@ public class ModelLifecycleManager implements SmartLifecycle {
                                 evictTarget, jobId);
                     }
                 }
-
-                evictedByAcquirer.put(jobId, actuallyEvicted);
             }
 
-            // Step 5: Create reservation keyed by jobId (not serviceType)
-            gpuResourceManager.reserveWithId(jobId, serviceType, targetDevice, budget);
+            // Step 3: Create reservation keyed by jobId (not serviceType). If it still doesn't fit (a
+            // failed eviction, a lost race), bring back what was evicted before failing — nothing else would.
+            try {
+                gpuResourceManager.reserveWithId(jobId, serviceType, targetDevice, reservedBytes);
+            } catch (IllegalStateException e) {
+                restoreServices(jobId, actuallyEvicted);
+                throw new GpuShortfallException(e.getMessage(), e);
+            }
+            recordEvictions(jobId, actuallyEvicted);
 
-            // Step 6: Record the job hold
+            // Step 4: Record the job hold
             JobGpuHold hold = new JobGpuHold(jobId, serviceType, targetDevice,
-                    Instant.now(), description, Objects.requireNonNull(lifetime, "lifetime"));
+                    Instant.now(), description, lifetime);
             activeJobHolds.put(jobId, hold);
 
             log.info("=== GPU JOB ACQUIRE COMPLETE: jobId='{}', service='{}', device='{}', " +
                             "reserved {}MB (active job holds: {}) ===",
                     jobId, serviceType, targetDevice.name(),
-                    budget / (1024 * 1024), activeJobHolds.size());
+                    reservedBytes / (1024 * 1024), activeJobHolds.size());
 
             // Publish GPU acquired event
             publishEvent(GpuLifecycleEvent.gpuAcquired(this, jobId, serviceType, targetDevice,
-                    budget / (1024 * 1024)));
+                    reservedBytes / (1024 * 1024)));
 
             return targetDevice;
 
+        } finally {
+            acquisitionLock.unlock();
+        }
+    }
+
+    /**
+     * Admission for a GPU job — the one check shared by the scheduler's dispatch gate and
+     * {@link #acquireGpuForJob}. A job reserves what its child may actually use: {@code capBytes} (the
+     * service's budget when {@code <= 0}), clamped to the chosen device's total.
+     *
+     * <p>Device choice: an explicit device ({@code preferred}, else device routing) wins. Otherwise,
+     * among the devices whose total holds the whole cap, the one where it fits now with the most
+     * available memory, else the one with the most available plus evictable memory. Only when no
+     * device's total holds the cap does the job get the largest device, with the cap clamped to it.</p>
+     *
+     * <p>Not locked: from the gate it is advisory, and {@link #acquireGpuForJob} calls it under the
+     * acquisition lock.</p>
+     */
+    public GpuAdmission admitJob(String serviceType, long capBytes, GpuDevice preferred) {
+        long cap = capBytes > 0 ? capBytes : gpuResourceManager.getMemoryBudget(serviceType);
+        GpuDevice device = resolveExplicitDevice(serviceType, preferred);
+        if (device == null) {
+            device = chooseDeviceForCap(serviceType, cap);
+        }
+        if (device == null) {
+            return new GpuAdmission(null, 0L, List.of(), "No GPU device available");
+        }
+
+        long bytes = clampToDevice(cap, device);
+        long available = gpuResourceManager.getAvailableMemory(device);
+        if (bytes <= available) {
+            return new GpuAdmission(device, bytes, List.of(), null);
+        }
+        List<String> toEvict = gpuResourceManager.findEvictionCandidates(serviceType, device, bytes,
+                this::isEvictable);
+        if (!toEvict.isEmpty()) {
+            return new GpuAdmission(device, bytes, toEvict, null);
+        }
+        return new GpuAdmission(device, bytes, List.of(), String.format(
+                "Insufficient GPU memory on %s for '%s': need %dMB, available %dMB, evictable %dMB",
+                device.name(), serviceType, bytes / (1024 * 1024), Math.max(0L, available) / (1024 * 1024),
+                gpuResourceManager.getEvictableMemory(serviceType, device, this::isEvictable) / (1024 * 1024)));
+    }
+
+    private GpuDevice chooseDeviceForCap(String serviceType, long cap) {
+        List<GpuDevice> holdsCap = gpuResourceManager.getDevices().stream()
+                .filter(d -> d.totalMemoryBytes() >= cap)
+                .toList();
+        if (holdsCap.isEmpty()) {
+            return gpuResourceManager.getLargestDevice().orElse(null);
+        }
+        Optional<GpuDevice> fitsNow = holdsCap.stream()
+                .filter(d -> gpuResourceManager.getAvailableMemory(d) >= cap)
+                .max(Comparator.comparingLong(gpuResourceManager::getAvailableMemory));
+        return fitsNow.orElseGet(() -> holdsCap.stream()
+                .max(Comparator.comparingLong(d -> gpuResourceManager.getAvailableMemory(d)
+                        + gpuResourceManager.getEvictableMemory(serviceType, d, this::isEvictable)))
+                .orElseThrow());
+    }
+
+    /**
+     * A job's cap limited to what {@code device} physically has — both the bytes the job reserves
+     * there and the bound its child runs under.
+     */
+    public static long clampToDevice(long capBytes, GpuDevice device) {
+        return Math.min(capBytes, device.totalMemoryBytes());
+    }
+
+    /**
+     * Record a job's GPU hold WITHOUT the availability check, for a GPU phase that must run on the
+     * job's device although the ledger says it doesn't fit there (the child already runs on it). The
+     * row over-commits the device — see {@link GpuResourceManager#reserveOverCommit}.
+     */
+    public void recordOverCommitHold(String jobId, String serviceType, GpuDevice device, long bytes,
+                                     String description, HoldLifetime lifetime) {
+        Objects.requireNonNull(lifetime, "lifetime");
+        acquisitionLock.lock();
+        try {
+            gpuResourceManager.reserveOverCommit(jobId, serviceType, device, bytes);
+            activeJobHolds.put(jobId, new JobGpuHold(jobId, serviceType, device, Instant.now(),
+                    description, lifetime));
+            publishEvent(GpuLifecycleEvent.gpuAcquired(this, jobId, serviceType, device,
+                    bytes / (1024 * 1024)));
         } finally {
             acquisitionLock.unlock();
         }
@@ -655,10 +788,12 @@ public class ModelLifecycleManager implements SmartLifecycle {
             JobGpuHold hold = activeJobHolds.remove(jobId);
             if (hold == null) {
                 log.debug("No GPU hold found for job '{}' — already released or never acquired", jobId);
+                // Services evicted for this job still come back, even though it holds nothing now
+                restoreEvictedBy(jobId);
                 return;
             }
 
-            long heldMs = java.time.Duration.between(hold.acquiredAt(), Instant.now()).toMillis();
+            long heldMs = Duration.between(hold.acquiredAt(), Instant.now()).toMillis();
             log.info("=== GPU JOB RELEASE: jobId='{}', service='{}', device='{}', heldFor={}ms ===",
                     jobId, hold.serviceType(), hold.device().name(), heldMs);
 
@@ -670,14 +805,7 @@ public class ModelLifecycleManager implements SmartLifecycle {
                     hold.device(), heldMs));
 
             // Restore previously evicted services for this job
-            List<String> evicted = evictedByAcquirer.remove(jobId);
-            if (evicted != null && !evicted.isEmpty()) {
-                log.info("Restoring {} previously evicted service(s) for job '{}': {}",
-                        evicted.size(), jobId, evicted);
-                for (String evictedService : evicted) {
-                    restoreService(evictedService);
-                }
-            }
+            restoreEvictedBy(jobId);
 
             log.info("GPU released for job '{}' (remaining job holds: {})",
                     jobId, activeJobHolds.size());
@@ -703,7 +831,12 @@ public class ModelLifecycleManager implements SmartLifecycle {
     // ==================== Service Lifecycle Operations ====================
 
     /**
-     * Evict a service — suspend its subprocess and release its GPU reservation(s).
+     * Evict a service — suspend its subprocess and release its GPU reservation.
+     *
+     * <p>Only a registered managed service that is running can be evicted, and only its own
+     * (singleton) row is released: rows of jobs with the same service type belong to children that
+     * nothing here suspends. A service that can't be suspended keeps its row — its memory is still in
+     * use.</p>
      *
      * @param targetService the service to evict
      * @param requester the service requesting the eviction (for logging)
@@ -714,25 +847,29 @@ public class ModelLifecycleManager implements SmartLifecycle {
 
         ManagedService service = managedServices.get(targetService);
         if (service == null) {
-            log.warn("No managed service registered for '{}' — releasing reservation(s) only", targetService);
-            gpuResourceManager.releaseAllForService(targetService);
-            return true;
+            log.warn("No managed service registered for '{}' — not evictable, keeping its reservation",
+                    targetService);
+            return false;
         }
 
         if (!service.isRunning()) {
-            log.info("Service '{}' is not running — releasing reservation(s) only", targetService);
-            gpuResourceManager.releaseAllForService(targetService);
-            return true;
+            log.warn("Service '{}' is not running — not evictable, keeping its reservation", targetService);
+            return false;
         }
 
         // Suspend the service (this should stop the subprocess and set a preemption flag)
         String reason = String.format("Preempted by higher-priority service '%s'", requester);
-        boolean suspended = service.suspend(reason);
+        boolean suspended;
+        try {
+            suspended = service.suspend(reason);
+        } catch (RuntimeException e) {
+            log.error("FAILED to suspend service '{}' — keeping its reservation", targetService, e);
+            return false;
+        }
 
         if (!suspended) {
-            log.error("FAILED to suspend service '{}'. The service may still be using GPU memory.", targetService);
-            // Release the reservations anyway — the subprocess might have crashed
-            gpuResourceManager.releaseAllForService(targetService);
+            log.error("FAILED to suspend service '{}'. The service may still be using GPU memory — " +
+                    "keeping its reservation.", targetService);
             return false;
         }
 
@@ -743,11 +880,10 @@ public class ModelLifecycleManager implements SmartLifecycle {
                     "GPU memory may not be fully released.", targetService, evictionTimeoutSeconds);
         }
 
-        // Release all reservations for this service type
-        int released = gpuResourceManager.releaseAllForService(targetService);
+        // Release the service's own reservation
+        gpuResourceManager.release(targetService);
 
-        log.info("Service '{}' evicted successfully (stopped={}, reservationsReleased={})",
-                targetService, stopped, released);
+        log.info("Service '{}' evicted successfully (stopped={})", targetService, stopped);
 
         // Publish service evicted event
         publishEvent(GpuLifecycleEvent.serviceEvicted(this, targetService, requester));
@@ -774,15 +910,24 @@ public class ModelLifecycleManager implements SmartLifecycle {
 
         // Determine device for the restored service
         GpuDevice device = resolveTargetDevice(serviceType, null);
-        if (device != null && gpuResourceManager.canFit(serviceType, device)) {
-            // Reserve GPU memory before resuming
-            try {
-                gpuResourceManager.reserve(serviceType, device,
-                        gpuResourceManager.getMemoryBudget(serviceType));
-            } catch (IllegalStateException e) {
-                log.warn("Cannot reserve GPU memory for restored service '{}'",
-                        serviceType, e);
-                // Resume anyway — the service may fall back to CPU or use less memory
+        if (device != null) {
+            long budget = gpuResourceManager.getMemoryBudget(serviceType);
+            boolean reserved = false;
+            if (gpuResourceManager.canFit(serviceType, device)) {
+                // Reserve GPU memory before resuming
+                try {
+                    reserved = gpuResourceManager.reserve(serviceType, device, budget);
+                } catch (IllegalStateException e) {
+                    log.debug("Reservation for restored service '{}' lost a race: {}", serviceType, e.getMessage());
+                }
+            }
+            if (!reserved) {
+                // Resume anyway — the service may fall back to CPU or use less memory — but the ledger
+                // still records what it may use, so no later admission counts that memory as free
+                log.warn("Cannot reserve {}MB for restored service '{}' on {} — resuming it anyway " +
+                                "with an over-committed reservation",
+                        budget / (1024 * 1024), serviceType, device.name());
+                gpuResourceManager.reserveOverCommit(serviceType, serviceType, device, budget);
             }
         }
 
@@ -795,6 +940,49 @@ public class ModelLifecycleManager implements SmartLifecycle {
             // Release the reservation if resume failed
             gpuResourceManager.release(serviceType);
         }
+    }
+
+    /** Restore every service evicted for {@code acquirerId} (a service type or a jobId). */
+    private void restoreEvictedBy(String acquirerId) {
+        restoreServices(acquirerId, evictedByAcquirer.remove(acquirerId));
+    }
+
+    /** Restore services evicted for {@code acquirerId}; one failed restore doesn't stop the others. */
+    private void restoreServices(String acquirerId, List<String> evicted) {
+        if (evicted == null || evicted.isEmpty()) {
+            return;
+        }
+        log.info("Restoring {} service(s) evicted for '{}': {}", evicted.size(), acquirerId, evicted);
+        for (String evictedService : evicted) {
+            try {
+                restoreService(evictedService);
+            } catch (RuntimeException e) {
+                log.error("Failed to restore service '{}' (evicted for '{}')", evictedService, acquirerId, e);
+            }
+        }
+    }
+
+    /** Remember what {@code acquirerId} evicted, so its release restores it. */
+    private void recordEvictions(String acquirerId, List<String> evicted) {
+        if (!evicted.isEmpty()) {
+            evictedByAcquirer.merge(acquirerId, evicted, (prior, added) -> {
+                List<String> all = new ArrayList<>(prior);
+                all.addAll(added);
+                return all;
+            });
+        }
+    }
+
+    /**
+     * Whether eviction may free {@code reservation}: only the singleton row of a registered managed
+     * service that is running — suspending that service is what frees the memory.
+     */
+    private boolean isEvictable(GpuResourceManager.GpuReservation reservation) {
+        if (!GpuResourceManager.isSingletonRow(reservation)) {
+            return false;
+        }
+        ManagedService service = managedServices.get(reservation.serviceType());
+        return service != null && service.isRunning();
     }
 
     /**
@@ -823,6 +1011,22 @@ public class ModelLifecycleManager implements SmartLifecycle {
      * Checks device routing config first, then falls back to auto-selection.
      */
     private GpuDevice resolveTargetDevice(String serviceType, GpuDevice preferred) {
+        GpuDevice explicit = resolveExplicitDevice(serviceType, preferred);
+        if (explicit != null) {
+            return explicit;
+        }
+
+        // Auto-select: use findBestDevice from GPU resource manager
+        return gpuResourceManager.findBestDevice(serviceType, this::isEvictable).orElse(
+                // Ultimate fallback: largest device
+                gpuResourceManager.getLargestDevice().orElse(null));
+    }
+
+    /**
+     * The device a service is explicitly placed on: {@code preferred}, else the device routing
+     * config's device, else null (auto-select).
+     */
+    private GpuDevice resolveExplicitDevice(String serviceType, GpuDevice preferred) {
         // Use explicit preference if provided
         if (preferred != null) {
             return preferred;
@@ -842,11 +1046,7 @@ public class ModelLifecycleManager implements SmartLifecycle {
                 }
             }
         }
-
-        // Auto-select: use findBestDevice from GPU resource manager
-        return gpuResourceManager.findBestDevice(serviceType).orElse(
-                // Ultimate fallback: largest device
-                gpuResourceManager.getLargestDevice().orElse(null));
+        return null;
     }
 
     // ==================== Status ====================

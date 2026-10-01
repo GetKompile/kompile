@@ -218,6 +218,38 @@ public record PslRule(double weight, boolean hard, boolean squared,
         return parts;
     }
 
+    /**
+     * This rule's display ({@link #toString()}) without its {@code "weight: "} prefix — the rule's
+     * structure alone. Persisted weight maps are keyed by the display, which embeds the weight the
+     * rule had when it was saved; matching on the signature is what lets a learned weight find the
+     * same rule again after the program is rebuilt with its default weight.
+     */
+    public String signature() {
+        return withoutWeight(toString());
+    }
+
+    /**
+     * Strip the {@code "weight: "} prefix from a rule display, leaving its {@link #signature()}.
+     * Mirrors {@link #parse}: a hard rule (trailing {@code '.'}) has no weight prefix, and text
+     * before the first {@code ':'} counts as a weight only if it is a number.
+     */
+    public static String withoutWeight(String display) {
+        String s = display.trim();
+        if (s.endsWith(".")) {
+            return s;
+        }
+        int colon = s.indexOf(':');
+        if (colon > 0) {
+            try {
+                Double.parseDouble(s.substring(0, colon).trim());
+                return s.substring(colon + 1).trim();
+            } catch (NumberFormatException ignored) {
+                // no numeric weight prefix; the ':' belongs to the rule text
+            }
+        }
+        return s;
+    }
+
     /** All atoms (body then head), used by grounding. */
     public List<PslAtom> allAtoms() {
         List<PslAtom> all = new ArrayList<>(body.size() + head.size());

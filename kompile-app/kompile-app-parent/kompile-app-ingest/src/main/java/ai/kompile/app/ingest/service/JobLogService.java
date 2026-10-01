@@ -110,7 +110,7 @@ public class JobLogService {
     }
 
     @Value("${kompile.ingest.job-log.enabled:true}")
-    private boolean enabled;
+    boolean enabled;
 
     @Value("${kompile.ingest.job-log.retention-days:7}")
     private int retentionDays;

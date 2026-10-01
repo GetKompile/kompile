@@ -29,6 +29,7 @@ import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
 import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import ai.kompile.cli.main.util.OSResolver;
 import ai.kompile.modelmanager.KompileModelManager;
+import ai.kompile.modelmanager.vlm.VisionLanguagePackageLayout;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -52,6 +53,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
@@ -224,6 +226,11 @@ public final class KompileLocalServingBootstrap {
         if (modelPath == null || !Files.exists(modelPath)) {
             throw new IOException("Resolved project model does not exist: " + modelPath);
         }
+        Optional<Path> visionPackage = VisionLanguagePackageLayout.packageDirectory(modelPath);
+        if (visionPackage.isPresent()) {
+            // The package's own tokenizer.json is the one its loader reads.
+            return resolveVisionLanguagePackage(visionPackage.get(), modelId);
+        }
         ResolvedModel resolved = Files.isDirectory(modelPath)
                 ? resolveLocalModel(modelPath, modelId)
                 : new ResolvedModel(
@@ -321,6 +328,11 @@ public final class KompileLocalServingBootstrap {
             Map<String, String> environment,
             Map<String, Object> runtimeOptions) throws BootstrapException {
         Path modelPath = model.modelPath();
+        // A vision-language package is served whole. Converting one of its parts (the decoder
+        // ONNX, say) would serve a text-only fragment of it instead.
+        if (VisionLanguagePackageLayout.packageDirectory(modelPath).isPresent()) {
+            return model;
+        }
         String name = modelPath.getFileName().toString().toLowerCase(Locale.ROOT);
         // Any convertible SOURCE format (gguf/ggml, safetensors, onnx, tensorflow/keras)
         // gets staged to canonical SDZ. Already-canonical artifacts pass through.
@@ -1262,8 +1274,9 @@ public final class KompileLocalServingBootstrap {
         for (Path root : roots) {
             if (!Files.isDirectory(root)) continue;
             try (var files = Files.walk(root, 3)) {
-                files.filter(Files::isRegularFile)
-                        .filter(KompileLocalServingBootstrap::isSupportedModelFile)
+                files.filter(path -> Files.isRegularFile(path)
+                                ? isSupportedModelFile(path)
+                                : VisionLanguagePackageLayout.isPackageDirectory(path))
                         .filter(path -> matchesModel(
                                 normalizeName(path.getFileName().toString()),
                                 normalizedRequest))
@@ -1275,7 +1288,8 @@ public final class KompileLocalServingBootstrap {
 
         if (matches.isEmpty()) {
             throw new IOException("No installed Kompile chat model matches '" + requested
-                    + "'. Put a .gguf or .sdz model under ~/.kompile/models, register one "
+                    + "'. Put a .gguf or .sdz model (or a vision-language package directory) "
+                    + "under ~/.kompile/models, register one "
                     + "in the current project (model_runtime), set " + MODEL_ENV + ", "
                     + "or use a HuggingFace id like Qwen/Qwen2.5-0.5B-Instruct-GGUF.");
         }
@@ -1344,6 +1358,10 @@ public final class KompileLocalServingBootstrap {
             Path kompileHome,
             Map<String, String> environment) throws IOException {
         Path normalized = candidate.toAbsolutePath().normalize();
+        Optional<Path> visionPackage = VisionLanguagePackageLayout.packageDirectory(normalized);
+        if (visionPackage.isPresent()) {
+            return resolveVisionLanguagePackage(visionPackage.get(), modelId);
+        }
         Path model = normalized;
         if (Files.isDirectory(normalized)) {
             try (var files = Files.list(normalized)) {
@@ -1374,6 +1392,24 @@ public final class KompileLocalServingBootstrap {
                     + "or " + TOKENIZER_ENV + ".");
         }
         return new ResolvedModel(identity, model, tokenizer);
+    }
+
+    /**
+     * A vision-language package is served as its directory: the serving child loads the vision
+     * encoder, decoder and the package's own {@code tokenizer.json} together as one image+text
+     * chat model. The loader reads that tokenizer from the directory, so neither
+     * {@link #TOKENIZER_ENV} nor a packaged tokenizer stands in for a missing one.
+     */
+    private static ResolvedModel resolveVisionLanguagePackage(Path directory, String modelId)
+            throws IOException {
+        Path tokenizer = directory.resolve(VisionLanguagePackageLayout.TOKENIZER);
+        if (!Files.isRegularFile(tokenizer)) {
+            throw new IOException("Vision-language package " + directory + " has no "
+                    + VisionLanguagePackageLayout.TOKENIZER);
+        }
+        String identity = modelId == null || modelId.isBlank()
+                ? directory.getFileName().toString() : modelId;
+        return new ResolvedModel(identity, directory, tokenizer);
     }
 
     private static Path resolveTokenizer(

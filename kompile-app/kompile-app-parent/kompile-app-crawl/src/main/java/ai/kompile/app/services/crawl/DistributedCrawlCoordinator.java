@@ -98,21 +98,21 @@ public class DistributedCrawlCoordinator {
 
     /** Optional: live cluster view, so partitioning spreads across the actual workers (capability-aware). */
     @Autowired(required = false)
-    private CrawlWorkerRegistry workerRegistry;
+    CrawlWorkerRegistry workerRegistry;
     @Autowired(required = false)
     private KnowledgeGraphService knowledgeGraphService;
 
     /** Optional: republishes merged per-worker progress as CrawlProgressEvents so the unified SSE +
      *  step monitor render a distributed crawl as one live job (Phase C). Null in unit tests → no-op. */
     @Autowired(required = false)
-    private ApplicationEventPublisher eventPublisher;
+    protected ApplicationEventPublisher eventPublisher;
 
     @Autowired(required = false)
-    private DistributedCrawlAggregator aggregator;
+    protected DistributedCrawlAggregator aggregator;
 
     /** Optional: durable session persistence + crash recovery (Phase 1). Null in unit tests → in-memory only. */
     @Autowired(required = false)
-    private DistributedCrawlSessionStore sessionStore;
+    DistributedCrawlSessionStore sessionStore;
 
     private final ConcurrentMap<String, Long> lastPersistMs = new ConcurrentHashMap<>();
     private static final long PROGRESS_PERSIST_THROTTLE_MS = 30_000L;

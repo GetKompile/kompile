@@ -91,6 +91,7 @@ public final class SystemActivityCoordinator implements AutoCloseable {
     private final ObjectMapper mapper;
     private final Consumer<String> warningSink;
     private final Set<String> ownedActivityIds = ConcurrentHashMap.newKeySet();
+    private volatile boolean closed = false;
 
     public SystemActivityCoordinator(Path stateRoot, Path projectRoot, String sessionId,
                                      ObjectMapper mapper, Consumer<String> warningSink) {
@@ -196,6 +197,7 @@ public final class SystemActivityCoordinator implements AutoCloseable {
 
     /** Release an attached background process after its owning process manager observes exit. */
     public int releaseByProcess(String processId) {
+        if (closed) return 0;
         String wanted = blankToNull(processId);
         if (wanted == null) return 0;
         return releaseMatching(activity -> sessionId.equals(activity.getSessionId())
@@ -241,8 +243,8 @@ public final class SystemActivityCoordinator implements AutoCloseable {
 
     @Override
     public void close() {
-        if (ownedActivityIds.isEmpty()) return;
         try {
+            if (ownedActivityIds.isEmpty()) return;
             withLock(() -> {
                 if (Files.isDirectory(activitiesDir)) {
                     try (DirectoryStream<Path> stream = Files.newDirectoryStream(
@@ -265,6 +267,12 @@ public final class SystemActivityCoordinator implements AutoCloseable {
             });
         } catch (Exception e) {
             warn("Could not release system activities during shutdown: " + safeMessage(e));
+        } finally {
+            // Set even on the empty-ownership early return, so a releaseByProcess call
+            // that arrives after close() (e.g. from a captureOutputAndWait publication
+            // that was in flight when the owning manager closed) cannot recreate this
+            // coordinator's state directory or lock file on an interrupted thread.
+            closed = true;
         }
     }
 

@@ -15,7 +15,11 @@
  */
 package ai.kompile.graph.reasoning.local;
 
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.SimpleGraphEntity;
+import ai.kompile.graph.reasoning.query.GraphQueryEngine;
+import ai.kompile.graph.reasoning.query.QuantitativeRequestParser;
 import ai.kompile.graph.reasoning.unified.MiniJson;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import org.junit.jupiter.api.BeforeAll;
@@ -34,8 +38,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * End-to-end tests: build a small {@link UnifiedGraph} programmatically, open it via
  * {@link LocalReasoningSession}, dispatch {@code graph_reasoning_query} for SEARCH, DESCRIBE,
- * NEIGHBORS, OVERVIEW, and CAPABILITIES through {@link LocalToolDispatcher}, and assert on
- * the parsed JSON responses.
+ * NEIGHBORS, OVERVIEW, CAPABILITIES and the formula operations through
+ * {@link LocalToolDispatcher}, and assert on the parsed JSON responses.
  */
 class LocalReasoningSessionQueryTest {
 
@@ -95,7 +99,7 @@ class LocalReasoningSessionQueryTest {
     }
 
     @Test
-    void capabilitiesReturnsCapabilitiesList() {
+    void capabilitiesReturnsTheWholeEngineContract() {
         String json = dispatcher.dispatch(session, "graph_reasoning_query",
                 "{\"operation\":\"CAPABILITIES\"}");
         Map<String, Object> r = parseResult(json);
@@ -103,9 +107,103 @@ class LocalReasoningSessionQueryTest {
         assertTrue(r.containsKey("capabilities"));
         @SuppressWarnings("unchecked")
         List<Object> caps = (List<Object>) r.get("capabilities");
-        assertEquals(17, caps.size());
-        assertTrue(caps.stream().map(value -> (Map<?, ?>) value)
-                .noneMatch(capability -> "CALCULATE".equals(capability.get("intent"))));
+        assertEquals(operations(), caps.stream()
+                .map(value -> ((Map<?, ?>) value).get("intent"))
+                .toList());
+        assertTrue(((List<?>) r.get("guidance")).contains(QuantitativeRequestParser.guidance()), json);
+    }
+
+    @Test
+    void catalogPublishesEveryOperationAndTheQuantitativeObject() {
+        LocalToolCatalog.Entry entry = dispatcher.catalog().entries().stream()
+                .filter(candidate -> candidate.name().equals("graph_reasoning_query"))
+                .findFirst()
+                .orElseThrow();
+        Map<?, ?> properties = (Map<?, ?>) entry.parameters().get("properties");
+
+        assertEquals(operations(), ((Map<?, ?>) properties.get("operation")).get("enum"));
+        assertEquals(QuantitativeRequestParser.jsonSchema(),
+                properties.get(QuantitativeRequestParser.FIELD));
+        assertTrue(entry.description().contains(
+                QuantitativeRequestParser.example(GraphQueryEngine.Intent.SCENARIO)), entry.description());
+    }
+
+    // ── Formula operations ──────────────────────────────────────────────────────
+
+    @Test
+    void formulaOperationsEvaluateTheGraphWithoutChangingIt(@TempDir Path td) throws IOException {
+        Path file = td.resolve("formula.kgraph");
+        new UnifiedGraph()
+                .addEntity(cell("a1", "Sheet1!A1", "Input A", 10.0))
+                .addEntity(cell("a2", "Sheet1!A2", "Input B", 20.0))
+                .addEntity(GraphEntity.builder("a3")
+                        .type("FORMULA_CELL").label("Total")
+                        .attribute("cell_reference", "Sheet1!A3")
+                        .attribute("formula", "SUM(Sheet1!A1:Sheet1!A2)")
+                        .attribute("displayValue", "30")
+                        .attribute("validated", true)
+                        .build())
+                .addRelation(GraphRelation.builder("d1", "a3", "a1").type("DEPENDS_ON").build())
+                .addRelation(GraphRelation.builder("d2", "a3", "a2").type("DEPENDS_ON").build())
+                .save(file);
+
+        try (LocalReasoningSession formulas = LocalReasoningSession.open(file)) {
+            String calculateJson = dispatcher.dispatch(formulas, "graph_reasoning_query",
+                    "{\"operation\":\"calculate\",\"quantitative\":{\"target\":{\"text\":\"Total\"}}}");
+            Map<String, Object> calculated = parseResult(calculateJson);
+            assertEquals("OK", calculated.get("status"), calculateJson);
+            assertEquals("Calculated a3 = 30.0.", calculated.get("summary"));
+            Map<?, ?> retrieval = (Map<?, ?>) data(calculated).get("retrieval");
+            assertEquals("READY", retrieval.get("status"), calculateJson);
+            assertEquals("a3", ((Map<?, ?>) retrieval.get("plan")).get("targetEntityId"), calculateJson);
+
+            // A JSON-string spec parses like an object. SCALE -0.5 halves a1.
+            String scenarioJson = dispatcher.dispatch(formulas, "graph_reasoning_query",
+                    "{\"operation\":\"SCENARIO\",\"quantitative\":\"{\\\"target\\\":{\\\"entityId\\\":\\\"a3\\\"},"
+                            + "\\\"interventions\\\":[{\\\"target\\\":{\\\"entityId\\\":\\\"a1\\\"},"
+                            + "\\\"operation\\\":\\\"SCALE\\\",\\\"value\\\":-0.5}]}\"}");
+            Map<String, Object> scenario = parseResult(scenarioJson);
+            assertEquals("OK", scenario.get("status"), scenarioJson);
+            Map<?, ?> values = (Map<?, ?>) data(scenario).get("scenario");
+            assertEquals("COMPLETED", values.get("status"), scenarioJson);
+            assertEquals(30.0, ((Number) values.get("baselineValue")).doubleValue(), 1.0e-9, scenarioJson);
+            assertEquals(25.0, ((Number) values.get("scenarioValue")).doubleValue(), 1.0e-9, scenarioJson);
+            assertFalse(values.containsKey("trace"), "nested traces repeat the top-level trace");
+            Map<?, ?> trace = assertInstanceOf(Map.class, scenario.get("trace"), scenarioJson);
+            assertEquals("CALCULATION", trace.get("kind"), scenarioJson);
+            assertInstanceOf(List.class, trace.get("premises"), scenarioJson);
+
+            String solveJson = dispatcher.dispatch(formulas, "graph_reasoning_query",
+                    "{\"operation\":\"SOLVE_TARGET\",\"quantitative\":{\"target\":{\"entityId\":\"a3\"},"
+                            + "\"goal\":{\"control\":{\"entityId\":\"a1\"},\"targetValue\":50,"
+                            + "\"minimum\":0,\"maximum\":100}}}");
+            Map<?, ?> goalSeek = (Map<?, ?>) data(parseResult(solveJson)).get("goalSeek");
+            assertEquals("SOLVED", goalSeek.get("status"), solveJson);
+            assertEquals(30.0, ((Number) goalSeek.get("controlValue")).doubleValue(), 1.0e-4, solveJson);
+
+            Object stored = formulas.graph().entity("a1").orElseThrow().attributes().get("value");
+            assertEquals(10.0, ((Number) stored).doubleValue(), 1.0e-12,
+                    "a scenario or goal seek must not rewrite its inputs");
+        }
+    }
+
+    @Test
+    void formulaOperationsNameTheMissingSpecAndOtherOperationsRejectOne() {
+        for (String operation : List.of("MODELS", "CALCULATE", "SCENARIO", "SOLVE_TARGET")) {
+            String json = dispatcher.dispatch(session, "graph_reasoning_query",
+                    "{\"operation\":\"" + operation + "\"}");
+            Map<String, Object> result = parseResult(json);
+            assertEquals("ERROR", result.get("status"), json);
+            String message = (String) result.get("message");
+            assertTrue(message.startsWith(operation + " requires quantitative."), message);
+            assertTrue(message.contains("Example: quantitative={"), message);
+        }
+
+        String json = dispatcher.dispatch(session, "graph_reasoning_query",
+                "{\"operation\":\"SEARCH\",\"queryText\":\"Alice\",\"quantitative\":{\"target\":\"Total\"}}");
+        Map<String, Object> stray = parseResult(json);
+        assertEquals("ERROR", stray.get("status"), json);
+        assertTrue(((String) stray.get("message")).startsWith("quantitative only applies to "), json);
     }
 
     @Test
@@ -245,6 +343,23 @@ class LocalReasoningSessionQueryTest {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private static List<String> operations() {
+        return GraphQueryEngine.capabilityContract().stream()
+                .map(GraphQueryEngine.Capability::intent)
+                .toList();
+    }
+
+    private static Map<?, ?> data(Map<String, Object> result) {
+        Object data = result.get("data");
+        assertInstanceOf(Map.class, data, String.valueOf(result));
+        return (Map<?, ?>) data;
+    }
+
+    private static GraphEntity cell(String id, String reference, String label, double value) {
+        return GraphEntity.builder(id).type("CELL").label(label)
+                .attribute("cell_reference", reference).attribute("value", value).build();
+    }
 
     @SuppressWarnings("unchecked")
     private static Map<String, Object> parseResult(String json) {

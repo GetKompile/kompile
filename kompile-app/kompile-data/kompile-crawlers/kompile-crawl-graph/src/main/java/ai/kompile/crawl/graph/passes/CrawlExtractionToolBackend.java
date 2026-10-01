@@ -31,6 +31,7 @@ import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
 import ai.kompile.crawl.graph.CrawlOntology;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
+import ai.kompile.graph.reasoning.query.QuantitativeRequestParser;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.unified.GraphReasoningQueryService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -883,7 +884,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 ? objectSchema(Map.ofEntries(
                         Map.entry("operation", Map.of(
                                 "type", "string",
-                                "enum", GraphReasoningQueryService.queryRequestOperations())),
+                                "enum", GraphReasoningQueryService.nonQuantitativeOperations())),
                         Map.entry("entityId", Map.of("type", "string")),
                         Map.entry("targetId", Map.of("type", "string")),
                         Map.entry("relationTypes", arraySchema(Map.of("type", "string"))),
@@ -894,8 +895,8 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 : objectSchema(Map.ofEntries(
                         Map.entry("operation", Map.of(
                                 "type", "string",
-                                "enum", GraphReasoningQueryService.queryRequestOperations(),
-                                "description", GraphReasoningQueryService.queryRequestOperationGuide())),
+                                "enum", GraphReasoningQueryService.nonQuantitativeOperations(),
+                                "description", GraphReasoningQueryService.nonQuantitativeOperationGuide())),
                         Map.entry("entityId", stringSchema(
                                 "Existing graph entity id or a name/phrase for ranked resolution.")),
                         Map.entry("targetId", stringSchema(
@@ -2095,8 +2096,20 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     }
 
     private ToolExecution graphQuery(JsonNode args) {
-        if ("SCHEMA".equalsIgnoreCase(text(args, "operation", ""))) {
+        String operation = text(args, "operation", "").trim().toUpperCase(Locale.ROOT)
+                .replace('-', '_').replace(' ', '_');
+        if ("SCHEMA".equals(operation)) {
             return ontologySchema();
+        }
+        // Formula evaluation reads a finished graph; extraction only inspects the one it is building.
+        if (QuantitativeRequestParser.quantitativeIntents().stream()
+                .anyMatch(intent -> intent.name().equals(operation))) {
+            return ToolExecution.continuing(json(Map.of(
+                    "ok", false,
+                    "error", "unsupported_graph_operation",
+                    "detail", operation + " evaluates graph formulas and is not available while "
+                            + "extracting a source.",
+                    "operations", GraphReasoningQueryService.nonQuantitativeOperations())));
         }
         if (reasoningService == null) {
             return ToolExecution.continuing(json(Map.of(
@@ -2124,7 +2137,8 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                             raw.queryText(),
                             raw.question());
             UnifiedGraph graph = graphSnapshot();
-            GraphQueryEngine.Result result = reasoningService.execute(graph, request);
+            GraphQueryEngine.Result result = extractionCapabilities(
+                    reasoningService.execute(graph, request));
 
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("ok", result.status() != GraphQueryEngine.Status.INVALID
@@ -2140,6 +2154,24 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                     "detail", message(e),
                     "guidance", "Call graph_reasoning_query with operation=CAPABILITIES.")));
         }
+    }
+
+    /** CAPABILITIES lists only the operations this tool runs, matching its operation enum. */
+    private static GraphQueryEngine.Result extractionCapabilities(GraphQueryEngine.Result result) {
+        if (result.intent() != GraphQueryEngine.Intent.CAPABILITIES) {
+            return result;
+        }
+        Set<String> operations = Set.copyOf(GraphReasoningQueryService.nonQuantitativeOperations());
+        return new GraphQueryEngine.Result(result.status(), result.intent(),
+                "Supports complete read access to the graph being extracted.",
+                result.entities(), result.relations(), result.path(),
+                result.capabilities().stream()
+                        .filter(capability -> operations.contains(capability.intent()))
+                        .toList(),
+                result.guidance().stream()
+                        .filter(line -> !line.equals(QuantitativeRequestParser.guidance()))
+                        .toList(),
+                result.data(), result.resolutions(), result.trace());
     }
 
     private ToolExecution submitTypedEntities(JsonNode args, String sourceText) {

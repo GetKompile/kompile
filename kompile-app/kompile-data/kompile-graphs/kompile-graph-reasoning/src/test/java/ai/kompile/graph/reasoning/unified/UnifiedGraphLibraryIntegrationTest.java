@@ -23,6 +23,8 @@ import ai.kompile.graph.reasoning.embedding.Embeddings;
 import ai.kompile.graph.reasoning.embedding.learn.EmbeddingConfig;
 import ai.kompile.graph.reasoning.embedding.learn.EmbeddingTable;
 import ai.kompile.graph.reasoning.embedding.learn.Node2VecLearner;
+import ai.kompile.graph.reasoning.learning.MebnWeightSerializer;
+import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
 import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
 import ai.kompile.graph.reasoning.mebn.type.TypeRegistry;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
@@ -42,6 +44,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -100,6 +103,28 @@ class UnifiedGraphLibraryIntegrationTest {
         assertEquals(6, summary.observedTargetCount());
         assertNotNull(graph.artifactText(UnifiedGraphReasoningLifecycle.MEBN_THEORY_JSON_ARTIFACT));
         assertNotNull(UnifiedGraphReasoningLifecycle.learnedMTheory(graph));
+    }
+
+    @Test
+    void reasoningLifecycleWritesRelationOpinionsAndWeightMapsAndClearsTheStaleFlag() {
+        UnifiedGraph graph = fixture();
+        graph.meta(UnifiedGraphReasoningLifecycle.REASONING_STALE_META, true);
+
+        UnifiedGraphReasoningLifecycle.learn(
+                graph, new UnifiedGraphReasoningLifecycle.Config(true, 1, 1, 1, 0.35, 2));
+
+        for (String relationId : List.of("r1", "r2", "r3")) {
+            assertNotNull(graph.relationOpinion(relationId), relationId);
+        }
+        assertEquals(3, graph.meta().get("reasoningLearning.relationOpinionsProjected"));
+        assertFalse(graph.weightMap(UnifiedGraphReasoningLifecycle.PSL_WEIGHT_MAP).isEmpty());
+        assertEquals(PslWeightLearningService.parseWeights(
+                        graph.artifactText(UnifiedGraphReasoningLifecycle.PSL_WEIGHTS_ARTIFACT)),
+                graph.weightMap(UnifiedGraphReasoningLifecycle.PSL_WEIGHT_MAP));
+        assertEquals(MebnWeightSerializer.parseStrengths(
+                        graph.artifactText(UnifiedGraphReasoningLifecycle.MEBN_STRENGTHS_ARTIFACT)),
+                graph.weightMap(UnifiedGraphReasoningLifecycle.MEBN_STRENGTH_MAP));
+        assertEquals(Boolean.FALSE, graph.meta().get(UnifiedGraphReasoningLifecycle.REASONING_STALE_META));
     }
 
     @Test

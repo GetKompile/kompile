@@ -7,17 +7,24 @@ package ai.kompile.cli.main.chat.context;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.main.chat.render.CompactionService;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -32,6 +39,10 @@ import java.util.Objects;
  * <p>A provider that keeps its own session (the Claude Code CLI) is recorded in a
  * sidecar file with the ledger version it has seen. A later process continues that
  * session only while the ledger is still at that version.</p>
+ *
+ * <p>Files sent with a user turn are stored once, by SHA-256, in a directory beside
+ * the ledger; the event records only the reference. A later process can therefore
+ * resend an image from an earlier turn.</p>
  */
 public final class ConversationLedger {
 
@@ -45,6 +56,9 @@ public final class ConversationLedger {
     private CompactionCheckpoint checkpoint;
     private Path stateFile;
     private Path nativeSessionFile;
+    private Path attachmentDirectory;
+    /** Attachment bytes with no file: the ledger is unbound, or the write failed. */
+    private final Map<String, byte[]> unpersistedAttachments = new HashMap<>();
     private NativeSession nativeSession;
     private String sessionId;
 
@@ -69,6 +83,7 @@ public final class ConversationLedger {
         stateFile = KompileHome.homeDirectory().toPath()
                 .resolve("conversations").resolve(safeFileName + ".context.json");
         nativeSessionFile = stateFile.resolveSibling(safeFileName + ".native-session.json");
+        attachmentDirectory = stateFile.resolveSibling(safeFileName + ".attachments");
         load();
     }
 
@@ -80,7 +95,7 @@ public final class ConversationLedger {
         Objects.requireNonNull(entry, "entry");
         Event event = new Event(
                 nextSequence++, entry.type, entry.role, entry.content,
-                entry.toolName, entry.toolCallId, Instant.now());
+                entry.toolName, entry.toolCallId, Instant.now(), entry.attachments);
         events.add(event);
         version++;
         if (!persist()) {
@@ -231,6 +246,89 @@ public final class ConversationLedger {
         }
     }
 
+    /**
+     * Store a user-turn attachment's bytes so the turn can be resent after a restart.
+     * Call before appending the event that references it. When the ledger is unbound,
+     * or the write fails, the bytes stay in memory for this process.
+     */
+    public synchronized CompactionService.Attachment storeAttachment(
+            String path, String mimeType, boolean image, byte[] data) {
+        Objects.requireNonNull(data, "data");
+        String digest = sha256(data);
+        CompactionService.Attachment attachment = new CompactionService.Attachment(
+                path, mimeType, image, digest, data.length);
+        if (attachmentDirectory == null) {
+            unpersistedAttachments.put(digest, data.clone());
+            return attachment;
+        }
+        Path blob = attachmentDirectory.resolve(digest);
+        // A damaged blob is rewritten: attaching the image again is what repairs it.
+        if (holds(blob, digest)) return attachment;
+        try {
+            Files.createDirectories(attachmentDirectory);
+            Path temporary = Files.createTempFile(attachmentDirectory, digest, ".tmp");
+            try {
+                Files.write(temporary, data);
+                try {
+                    Files.move(temporary, blob,
+                            StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException ignored) {
+                    Files.move(temporary, blob, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+        } catch (IOException e) {
+            System.err.println("Warning: Could not save attachment " + path
+                    + " for later turns: " + e.getMessage());
+            unpersistedAttachments.put(digest, data.clone());
+        }
+        return attachment;
+    }
+
+    /**
+     * The bytes stored for an attachment, or null when they are gone or no longer
+     * match their digest.
+     */
+    public synchronized byte[] readAttachment(CompactionService.Attachment attachment) {
+        if (attachment == null || attachment.digest() == null
+                || !attachment.digest().matches("[0-9a-f]{64}")) {
+            return null;
+        }
+        byte[] held = unpersistedAttachments.get(attachment.digest());
+        if (held != null) return held.clone();
+        if (attachmentDirectory == null) return null;
+        try {
+            byte[] data = Files.readAllBytes(attachmentDirectory.resolve(attachment.digest()));
+            if (sha256(data).equals(attachment.digest())) return data;
+            System.err.println("Warning: Saved attachment " + attachment.path()
+                    + " is damaged; it will not be resent");
+        } catch (NoSuchFileException ignored) {
+            // Removed outside Kompile; the caller reports it as unavailable.
+        } catch (IOException e) {
+            System.err.println("Warning: Could not read saved attachment "
+                    + attachment.path() + ": " + e.getMessage());
+        }
+        return null;
+    }
+
+    private static boolean holds(Path blob, String digest) {
+        try {
+            return Files.isRegularFile(blob) && sha256(Files.readAllBytes(blob)).equals(digest);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static String sha256(byte[] data) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
+    }
+
     /** Replace imported legacy context only when no durable ledger exists. */
     public synchronized void importLegacyTurns(
             List<ai.kompile.cli.main.chat.ChatHistory.Turn> turns) {
@@ -252,6 +350,7 @@ public final class ConversationLedger {
 
     private void load() {
         events.clear();
+        unpersistedAttachments.clear();
         checkpoint = null;
         version = 0L;
         nextSequence = 1L;
@@ -321,11 +420,19 @@ public final class ConversationLedger {
             String content,
             String toolName,
             String toolCallId,
-            Instant createdAt) {
+            Instant createdAt,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY)
+            List<CompactionService.Attachment> attachments) {
+
+        public Event {
+            // Ledgers written before attachments were recorded have no such field.
+            attachments = attachments == null ? List.of()
+                    : attachments.stream().filter(Objects::nonNull).toList();
+        }
 
         public CompactionService.ConversationEntry toEntry() {
             return new CompactionService.ConversationEntry(
-                    type, role, content, toolName, toolCallId);
+                    type, role, content, toolName, toolCallId, attachments);
         }
     }
 

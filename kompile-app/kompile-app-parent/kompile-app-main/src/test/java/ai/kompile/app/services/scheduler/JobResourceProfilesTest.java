@@ -1,9 +1,13 @@
 package ai.kompile.app.services.scheduler;
 
+import ai.kompile.crawl.graph.CrawlPipelineStepRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -52,14 +56,21 @@ class JobResourceProfilesTest {
     void unifiedCrawlHasPhaseBreakdown() {
         JobResourceProfile unified = JobResourceProfiles.UNIFIED_CRAWL;
         assertTrue(unified.hasPhaseBreakdown());
-        assertEquals(11, unified.phaseProfiles().size());
+        assertEquals(16, unified.phaseProfiles().size());
+        // Dispatch places a job by its first phase, so a crawl waiting for its slot holds no GPU
+        assertEquals("QUEUED", unified.phaseProfiles().get(0).phaseName());
 
-        // CPU-only early phases
+        // CPU-only phases
+        assertFalse(unified.phaseRequiresGpu("QUEUED"));
         assertFalse(unified.phaseRequiresGpu("LOADING"));
+        assertFalse(unified.phaseRequiresGpu("DISCOVERING"));
         assertFalse(unified.phaseRequiresGpu("CONVERTING"));
+        assertFalse(unified.phaseRequiresGpu("PREPROCESSING"));
         assertFalse(unified.phaseRequiresGpu("ROUTING"));
+        assertFalse(unified.phaseRequiresGpu("GRAPH_PREP"));
         assertFalse(unified.phaseRequiresGpu("CHUNKING"));
         assertFalse(unified.phaseRequiresGpu("GRAPH_EXTRACTION"));
+        assertFalse(unified.phaseRequiresGpu("SURFACING"));
         assertFalse(unified.phaseRequiresGpu("ENTITY_PARTITIONS"));
         assertFalse(unified.phaseRequiresGpu("ENRICHMENT"));
         assertFalse(unified.phaseRequiresGpu("LEARNING"));
@@ -84,9 +95,47 @@ class JobResourceProfilesTest {
         assertEquals(0, unified.gpuMemoryForPhase("ENTITY_PARTITIONS"));
         assertEquals(5 * GB, unified.gpuMemoryForPhase("VECTOR_INDEXING"));
 
+        // Exactly the phases a crawl resolves to: every pipeline step, plus QUEUED and LEARNING
+        Set<String> workPhases = new HashSet<>(CrawlPipelineStepRegistry.NON_STEP_WORK_PHASES);
+        CrawlPipelineStepRegistry.all().forEach(step -> workPhases.add(step.id()));
+        List<String> declared = unified.phaseProfiles().stream()
+                .map(JobResourceProfile.PhaseResourceProfile::phaseName).toList();
+        assertEquals(workPhases, new HashSet<>(declared));
+        assertEquals(workPhases.size(), declared.size(), "a phase is declared twice: " + declared);
+
         // The fallback itself, so the assertions above are known to be reading real entries.
         assertEquals(unified.peakGpuMemoryBytes(), unified.gpuMemoryForPhase("NO_SUCH_PHASE"));
         assertTrue(unified.phaseRequiresGpu("NO_SUCH_PHASE"));
+    }
+
+    /**
+     * A crawl's reported phase reaches the scheduler through {@link CrawlPipelineStepRegistry#workPhase}:
+     * vector indexing's EMBEDDING and INDEXING get its GPU budget, a decomposed extraction pass gets its
+     * step's (none), and an end marker is never looked up. Each resolved name must be declared: the job
+     * default equals VECTOR_INDEXING's budget, so an alias left unresolved would still pass the budget checks.
+     */
+    @Test
+    void reportedUnifiedCrawlPhasesResolveToDeclaredBudgets() {
+        JobResourceProfile unified = JobResourceProfiles.UNIFIED_CRAWL;
+        List<String> declared = unified.phaseProfiles().stream()
+                .map(JobResourceProfile.PhaseResourceProfile::phaseName).toList();
+
+        for (String phase : List.of("EMBEDDING", "INDEXING")) {
+            String resolved = CrawlPipelineStepRegistry.workPhase(phase);
+            assertTrue(declared.contains(resolved), phase + " resolves to undeclared " + resolved);
+            assertTrue(unified.phaseRequiresGpu(resolved), phase);
+            assertEquals(5 * GB, unified.gpuMemoryForPhase(resolved), phase);
+        }
+        for (String phase : List.of("GRAPH_EXTRACTION_ENTITIES", "GRAPH_EXTRACTION_RELATIONS",
+                "ENTITY_PARTITIONS_ENTITIES", "ENTITY_PARTITIONS_RELATIONS")) {
+            String resolved = CrawlPipelineStepRegistry.workPhase(phase);
+            assertTrue(declared.contains(resolved), phase + " resolves to undeclared " + resolved);
+            assertFalse(unified.phaseRequiresGpu(resolved), phase);
+            assertEquals(0, unified.gpuMemoryForPhase(resolved), phase);
+        }
+        for (String phase : CrawlPipelineStepRegistry.NON_WORK_PHASES) {
+            assertNull(CrawlPipelineStepRegistry.workPhase(phase), phase);
+        }
     }
 
     @Test

@@ -52,8 +52,9 @@ public class AskGraphAssertTool implements CliTool {
     @Override
     public String description() {
         return "Assert a new fact into the knowledge base from agent output. " +
+                "Locally stores it in the current folder's KB and invalidates learned state, with no " +
+                "contradiction check or cascade. " +
                 "The fact is attributed to the calling agent session (provenance). " +
-                "Locally stores the fact and invalidates learned state, without contradiction-checking or an automatic cascade. " +
                 "On managed backends, contradiction-checking (TMS) runs synchronously before returning. " +
                 "Background re-reasoning cascades asynchronously — the 'stale' meta " +
                 "flag in subsequent verify/query calls will be true until the cascade " +
@@ -101,6 +102,12 @@ public class AskGraphAssertTool implements CliTool {
 
     @Override
     public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.WRITE; }
+
+    @Override
+    public String compactHint() {
+        return "Add a fact: atom='worksFor(Alice, Acme)', value 1.0 = true, 0.0 = refuted. Locally saved to the "
+                + "current folder's KB with no contradiction check; learned scores are withheld until learning reruns.";
+    }
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {

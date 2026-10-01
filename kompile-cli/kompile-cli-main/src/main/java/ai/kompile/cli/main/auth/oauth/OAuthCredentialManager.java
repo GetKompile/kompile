@@ -338,7 +338,12 @@ public final class OAuthCredentialManager {
 
     private void revoke(String providerId, ManagedCredential credential) throws IOException {
         if (credential.isOAuth()) {
-            OAuthProviderFlow flow = registry.require(providerId);
+            OAuthProviderFlow flow = registry.find(providerId).orElse(null);
+            if (flow == null) {
+                // No Kompile flow issued this token (e.g. a legacy Anthropic sign-in,
+                // whose login Claude Code owns), so logout only deletes the local copy.
+                return;
+            }
             OAuthCredentialLifecycle.revoke(credential, (accessToken, refreshToken) -> {
                 try {
                     return flow.revoke(accessToken, refreshToken);

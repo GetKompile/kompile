@@ -18,6 +18,7 @@ import ai.kompile.graph.reasoning.fol.grounding.PlattCalibrator;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.query.PredicateNames;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,10 +30,13 @@ import java.util.Objects;
  *
  * <h3>Evidence channels (in assessment order)</h3>
  * <ol>
- *   <li><b>DIRECT_EDGE</b>: any relation in the graph from subject→object whose type matches
- *       the predicate (case-insensitive). Weight/confidence becomes the item probability.</li>
- *   <li><b>Verifier signals</b>: {@link DefaultKbVerifier} is run against the canonical atom key
- *       {@code PREDICATE(subject, object)}. SUPPORTED → DATALOG_PROOF or PSL supporting item;
+ *   <li><b>DIRECT_EDGE</b>: any relation in the graph from subject→object whose type names the
+ *       predicate's relation: equal ignoring case, or {@link PredicateNames#same} (so
+ *       {@code works_for} matches {@code worksFor}). Weight/confidence becomes the item
+ *       probability.</li>
+ *   <li><b>Verifier signals</b>: {@link DefaultKbVerifier} is run against the atom key the stores
+ *       hold the claim under: {@code PREDICATE(subject, object)}, or the no-space
+ *       {@code PREDICATE(subject,object)} agents assert. SUPPORTED → DATALOG_PROOF or PSL supporting item;
  *       REFUTED → FUNCTIONAL_CONFLICT or NEGATED_ATOM refuting item. Evidence lists from
  *       {@link VerifyResult} become the item provenance.</li>
  *   <li><b>PATH</b>: {@link KnowledgeLinkerScorer} when no direct edge exists. Path score is
@@ -131,7 +135,7 @@ public final class DossierBuilder {
         // ── 1. DIRECT_EDGE ─────────────────────────────────────────────────────
         boolean hasDirectEdge = false;
         for (GraphRelation rel : graph.outgoing(subject)) {
-            if (predicate.equalsIgnoreCase(rel.type()) && object.equals(rel.targetId())) {
+            if (namesRelation(predicate, rel.type()) && object.equals(rel.targetId())) {
                 // Use weight as the edge probability: weight carries the user-supplied strength
                 // (e.g. 0.9 from addRelation(..., 0.9)). confidence() is reserved for
                 // meta-level certainty and defaults to 1.0 in the convenience addRelation API.
@@ -147,7 +151,7 @@ public final class DossierBuilder {
         }
         // Also check undirected incoming edges
         for (GraphRelation rel : graph.incoming(subject)) {
-            if (!rel.directed() && predicate.equalsIgnoreCase(rel.type())
+            if (!rel.directed() && namesRelation(predicate, rel.type())
                     && object.equals(rel.sourceId())) {
                 double prob = Math.max(0.0, Math.min(1.0, rel.weight()));
                 supporting.add(new DossierItem(
@@ -161,7 +165,7 @@ public final class DossierBuilder {
         }
 
         // ── 2. Verifier signals ────────────────────────────────────────────────
-        String atomKey = canonicalAtomKey(predicate, subject, object);
+        String atomKey = heldAtomKey(predicate, subject, object, facts, inferred);
         VerifyResult verifyResult = new DefaultKbVerifier(inferred, facts).verify(atomKey);
 
         switch (verifyResult.status()) {
@@ -241,10 +245,8 @@ public final class DossierBuilder {
         // ── 6. Fusion ─────────────────────────────────────────────────────────
         double fusedScore = fuse(supporting, refuting, weights);
 
-        // Build canonical claim atom string
-        String claimAtom = canonicalAtomKey(predicate, subject, object);
-
-        return new ClaimDossier(claimAtom, subject, predicate, object,
+        // The claim atom is the key the verifier ran against, so the dossier names the stored atom
+        return new ClaimDossier(atomKey, subject, predicate, object,
                 supporting, refuting, fusedScore);
     }
 
@@ -299,6 +301,30 @@ public final class DossierBuilder {
      */
     static String canonicalAtomKey(String predicate, String subject, String object) {
         return predicate + "(" + subject + ", " + object + ")";
+    }
+
+    /**
+     * The key the stores hold this claim under, checked the way {@link DefaultKbVerifier} looks it
+     * up (the atom, its {@code ~} negation, or an observed fact): {@link #canonicalAtomKey}, then
+     * the no-space {@code predicate(subject,object)} agents are taught to assert. The canonical key
+     * when neither is held.
+     */
+    static String heldAtomKey(String predicate, String subject, String object,
+                              FactStore facts, InferredFactStore inferred) {
+        String canonical = canonicalAtomKey(predicate, subject, object);
+        for (String key : List.of(canonical, predicate + "(" + subject + "," + object + ")")) {
+            if (inferred.latest(key).isPresent() || inferred.latest("~" + key).isPresent()
+                    || facts.factFor(key).isPresent()) {
+                return key;
+            }
+        }
+        return canonical;
+    }
+
+    /** Whether an edge type names the claim's relation: equal ignoring case, or {@link PredicateNames#same}. */
+    private static boolean namesRelation(String predicate, String edgeType) {
+        return edgeType != null
+                && (predicate.equalsIgnoreCase(edgeType) || PredicateNames.same(predicate, edgeType));
     }
 
     /**

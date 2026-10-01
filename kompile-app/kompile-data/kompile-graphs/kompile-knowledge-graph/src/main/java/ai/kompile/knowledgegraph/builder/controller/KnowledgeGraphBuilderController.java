@@ -46,7 +46,7 @@ public class KnowledgeGraphBuilderController {
     private final ExtractionJobService jobService;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private ai.kompile.knowledgegraph.builder.service.GraphBuildingIntegrationService integrationService;
+    ai.kompile.knowledgegraph.builder.service.GraphBuildingIntegrationService integrationService;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private ai.kompile.knowledgegraph.service.KnowledgeGraphService knowledgeGraphService;
 

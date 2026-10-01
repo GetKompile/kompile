@@ -23,7 +23,9 @@ import ai.kompile.app.subprocess.SubprocessBackendResolver;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.subprocess.SubprocessPlacementSupport;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
 import ai.kompile.app.subprocess.SubprocessRegistry;
+import ai.kompile.app.subprocess.SubprocessSignals;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
@@ -46,6 +48,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -53,6 +56,7 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.UUID;
 import java.util.Locale;
 import java.util.regex.Matcher;
@@ -82,8 +86,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     private static final Logger logger = LoggerFactory.getLogger(EmbeddingSubprocessLauncher.class);
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
-    // Subprocess state
-    private volatile Process process;
+    // Subprocess state. process is package-private so tests can hand crash handling a specific
+    // generation of the child.
+    volatile Process process;
     private volatile BufferedReader processStdout;
     private volatile BufferedWriter processStdin;
     private volatile Thread outputReaderThread;
@@ -93,14 +98,18 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     // so we must never synchronize on the field itself.
     private final Object stdinLock = new Object();
 
-    // Request/response correlation
-    private final ConcurrentHashMap<String, CompletableFuture<EmbeddingSubprocessMessage>> pendingRequests = new ConcurrentHashMap<>();
+    // Package-private so tests can pause delivery after the reader removes a response's future.
+    final ConcurrentHashMap<String, CompletableFuture<EmbeddingSubprocessMessage>> pendingRequests = new ConcurrentHashMap<>();
 
     // State tracking
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
-    private static final int DEVICE_ERROR_EXIT_CODE = 78; // must match EmbeddingSubprocessMain.DEVICE_ERROR_EXIT_CODE
-    /** Set when the embedding lane has encountered an unrecoverable device-level CUDA error. */
+    /**
+     * The child's exit code for a device-level CUDA error (error 700, an allocation failure cascade).
+     * Its CUDA context is unusable, but a new process gets a new one, so the crash is restartable.
+     */
+    public static final int DEVICE_ERROR_EXIT_CODE = EmbeddingSubprocessMain.DEVICE_ERROR_EXIT_CODE;
+    /** Set when the child died and this launcher will not restart it; a successful start() clears it. */
     private final AtomicBoolean laneUnavailable = new AtomicBoolean(false);
     private final AtomicLong lastHeartbeat = new AtomicLong(0);
     private volatile String currentModelId;
@@ -122,6 +131,26 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     private volatile String currentTaskId = null;
     private volatile String currentFileName = null;
     private volatile RestartPolicyCallback restartPolicyCallback = null;
+    /** The request that last loaded a model successfully; a restart reloads with exactly this. */
+    private volatile EmbeddingSubprocessMessage.LoadModelRequest lastLoadRequest;
+
+    // Crash handling runs once per child. Several detectors can report the same death (reader EOF
+    // or IOException, health monitor, stdin write failure, the sendRequest pre-check, the watchdog);
+    // the first to claim the child under this lock handles it and the rest are ignored.
+    private final Object crashClaimLock = new Object();
+    private Process crashClaimedProcess;
+    /**
+     * How long crash handling waits for a child that still looks alive to be reaped. A dying
+     * child's pipes close before the kernel reports its exit, so the output reader's EOF or a failed
+     * stdin write can arrive while {@link Process#isAlive()} is still true.
+     */
+    private static final long EXIT_REAP_GRACE_MS = 2_000;
+    /**
+     * How long stop and crash handling wait for the output readers to take what a child wrote on
+     * its way out. Bounded, because a child the kill could not end, or a grandchild that inherited
+     * its pipes, can hold them open.
+     */
+    private static final long OUTPUT_DRAIN_MS = 3_000;
 
     // Configuration
     private final String javaHome;
@@ -178,7 +207,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     private Consumer<EmbeddingSubprocessMessage.BatchResizeNotice> batchResizeCallback;
 
     // Health monitoring
-    private ScheduledExecutorService healthMonitor;
+    // visible for testing (EmbeddingSubprocessCrashLifecycleTest)
+    ScheduledExecutorService healthMonitor;
 
     /**
      * Tool mode for subprocess debugging - MUTUALLY EXCLUSIVE.
@@ -1155,8 +1185,10 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     /**
      * Request a restart of the embedding subprocess from the parent-side watchdog.
      *
-     * <p>Stores the external-crash reason and fires {@link #triggerExternalCrash(String)}
-     * on a daemon thread so the watchdog's scheduler thread is never blocked.
+     * <p>Stores the external-crash reason and fires {@link #triggerExternalCrash(Process, String)}
+     * on a daemon thread so the watchdog's scheduler thread is never blocked. The child is captured
+     * when the request arrives: if crash handling replaces it before that thread runs, the
+     * replacement is left alone.
      *
      * @param reason human-readable explanation from the watchdog (e.g. "RSS 18432 MB exceeds limit")
      */
@@ -1164,7 +1196,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     public void requestRestart(String reason) {
         logger.warn("Watchdog-triggered restart requested for embedding subprocess: {}", reason);
         lastCrashReason = reason;
-        Thread t = new Thread(() -> triggerExternalCrash(reason), "embedding-watchdog-restart");
+        Process target = this.process;
+        Thread t = new Thread(() -> triggerExternalCrash(target, reason), "embedding-watchdog-restart");
         t.setDaemon(true);
         t.start();
     }
@@ -1172,28 +1205,27 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     /**
      * Entry point for external (watchdog-initiated) crash handling.
      *
-     * <p>Forcibly destroys the current process (if still alive) so that the existing
-     * {@link #handleSubprocessCrash()} path picks it up naturally — reusing all
-     * backoff, model-reload, and event-history logic already wired there.
+     * <p>Forcibly destroys {@code target} if it is still alive, then reports it to
+     * {@link #handleSubprocessCrash(Process)}, reusing the backoff, model-reload and event-history
+     * logic wired there. The output reader sees the same death as EOF; whichever report claims the
+     * child first handles it and the other is ignored.
      *
+     * <p>Not synchronized: crash handling sleeps the restart backoff and joins the model reload,
+     * and holding the launcher monitor that long would block {@link #stop()}.
+     *
+     * @param target the child the watchdog asked to restart
      * @param reason diagnostic reason string stored before calling this method
      */
-    private synchronized void triggerExternalCrash(String reason) {
+    private void triggerExternalCrash(Process target, String reason) {
         if (shuttingDown.get()) {
             logger.debug("Watchdog restart suppressed — launcher is shutting down");
             return;
         }
-        Process p = this.process;
-        if (p != null && p.isAlive()) {
-            logger.warn("Watchdog killing embedding subprocess PID={} (reason: {})", p.pid(), reason);
-            p.destroyForcibly();
+        if (target != null && target.isAlive()) {
+            logger.warn("Watchdog killing embedding subprocess PID={} (reason: {})", target.pid(), reason);
+            forceTerminate(target, "watchdog restart");
         }
-        // handleSubprocessCrash() will be invoked by the output-reader thread detecting EOF,
-        // which is the normal crash-detection path.  Calling it here too would double-restart.
-        // If the process was already dead when we arrived, fire it directly.
-        if (p == null || !p.isAlive()) {
-            handleSubprocessCrash();
-        }
+        handleSubprocessCrash(target);
     }
 
     private EmbeddingSubprocessLauncher(Builder builder) {
@@ -1511,6 +1543,17 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         pb.environment().putAll(environment);
         if (localModelOnly) {
             restrictToLocalModelSources(pb.environment());
+        } else {
+            // The staging API key goes through the child's environment, never argv: argv is readable
+            // by every local user (ps, /proc/<pid>/cmdline), and the command is logged and written to
+            // the run log. /proc/<pid>/environ is readable by the owner only. Removing an inherited
+            // value keeps the child's key equal to the one this process resolved.
+            String stagingApiKey = AnseriniEncoderFactory.getStagingApiKey();
+            if (stagingApiKey != null && !stagingApiKey.isBlank()) {
+                pb.environment().put("KOMPILE_STAGING_API_KEY", stagingApiKey);
+            } else {
+                pb.environment().remove("KOMPILE_STAGING_API_KEY");
+            }
         }
 
         // Early native per-device memory bound (SD_MAX_DEVICE_BYTES). The matching physical ND4J cap
@@ -1577,58 +1620,109 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         logger.info("OMP/BLAS thread cap for embedding subprocess: {} (override via -Dkompile.embedding.subprocess.ompThreads)",
                 ompThreads);
 
-        process = pb.start();
-
-        // Register with centralized subprocess registry for orphan protection and watchdog restart
-        if (subprocessRegistry != null) {
-            subprocessRegistry.register("embedding", process, "embedding");
-            subprocessRegistry.registerRestartHandler(getSubprocessId(), this);
+        // Responses get a pipe of their own, which native output written to fd 1 can't reach
+        boolean wrapped = SubprocessProtocolChannel.apply(pb);
+        SubprocessProtocolChannel.StderrProtocol stderrProtocol = SubprocessProtocolChannel.stderrProtocol(
+                wrapped, EmbeddingSubprocessMessage.MESSAGE_PREFIX, "embedding");
+        Process spawned = pb.start();
+        // Publish the child and its stdin together: a sender holding stdinLock sees either the old
+        // pair or the new one, never the new child with the old child's stdin.
+        synchronized (stdinLock) {
+            process = spawned;
+            processStdin = new BufferedWriter(new OutputStreamWriter(spawned.getOutputStream()));
         }
 
-        // Initialise per-run log writer (non-fatal if it fails)
-        String logRunId = currentTaskId != null ? currentTaskId : UUID.randomUUID().toString();
+        ScheduledExecutorService monitor = null;
         try {
-            String workDir = pb.directory() != null ? pb.directory().getAbsolutePath() : System.getProperty("user.dir");
-            SubprocessLogWriter slw = new SubprocessLogWriter("embedding", logRunId, workDir);
-            slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
-                    currentTaskId,
-                    command,
-                    workDir,
-                    process.pid(),
-                    maxHeapMb + "m"));
-            subprocessLogWriter = slw;
-        } catch (Exception _logEx) {
-            logger.debug("SubprocessLogWriter init failed (non-fatal): {}", _logEx.getMessage());
+            // Register with centralized subprocess registry for orphan protection and watchdog restart
+            if (subprocessRegistry != null) {
+                subprocessRegistry.register("embedding", spawned, "embedding");
+                subprocessRegistry.registerRestartHandler(getSubprocessId(), this);
+            }
+
+            // Initialise per-run log writer (non-fatal if it fails)
+            String logRunId = currentTaskId != null ? currentTaskId : UUID.randomUUID().toString();
+            try {
+                String workDir = pb.directory() != null ? pb.directory().getAbsolutePath() : System.getProperty("user.dir");
+                SubprocessLogWriter slw = new SubprocessLogWriter("embedding", logRunId, workDir);
+                slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                        currentTaskId,
+                        command,
+                        workDir,
+                        spawned.pid(),
+                        maxHeapMb + "m"));
+                subprocessLogWriter = slw;
+            } catch (Exception _logEx) {
+                logger.debug("SubprocessLogWriter init failed (non-fatal): {}", _logEx.getMessage());
+            }
+
+            // Set up I/O. The readers are bound to this child, so a late EOF from it is never
+            // mistaken for the death of a child started after it.
+            BufferedReader stdout = new BufferedReader(new InputStreamReader(spawned.getInputStream()));
+            processStdout = stdout;
+
+            // Start output reader thread
+            outputReaderThread = new Thread(() -> readOutput(stdout, spawned), "embedding-subprocess-reader");
+            outputReaderThread.setDaemon(true);
+            outputReaderThread.start();
+
+            // Start error reader thread (for logging)
+            errorReaderThread = new Thread(() -> readError(spawned, stderrProtocol), "embedding-subprocess-error");
+            errorReaderThread.setDaemon(true);
+            errorReaderThread.start();
+
+            // Start health monitor, retiring the previous child's. shutdown(), not shutdownNow(): a
+            // restart can run on that monitor's own thread (checkHealth -> crash handling), and an
+            // interrupt must never land mid-write (see stop()).
+            if (healthMonitor != null) {
+                healthMonitor.shutdown();
+            }
+            monitor = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "embedding-health-monitor");
+                t.setDaemon(true);
+                return t;
+            });
+            healthMonitor = monitor;
+
+            monitor.scheduleAtFixedRate(this::checkHealth, 30, 30, TimeUnit.SECONDS);
+
+            lastHeartbeat.set(System.currentTimeMillis());
+            synchronized (crashClaimLock) {
+                // A detector may already have claimed this child: the watchdog can target it as soon
+                // as it is published. That crash handler owns the running flag; setting it here would
+                // make the handler's start() return "already running" over a dead child.
+                if (crashClaimedProcess != spawned) {
+                    running.set(true);
+                    laneUnavailable.set(false);
+                }
+            }
+        } catch (Throwable e) {
+            abandonFailedStart(spawned, monitor, e);
+            throw e;
         }
-
-        // Set up I/O
-        processStdout = new BufferedReader(new InputStreamReader(process.getInputStream()));
-        processStdin = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()));
-
-        // Start output reader thread
-        outputReaderThread = new Thread(this::readOutput, "embedding-subprocess-reader");
-        outputReaderThread.setDaemon(true);
-        outputReaderThread.start();
-
-        // Start error reader thread (for logging)
-        errorReaderThread = new Thread(this::readError, "embedding-subprocess-error");
-        errorReaderThread.setDaemon(true);
-        errorReaderThread.start();
-
-        // Start health monitor
-        healthMonitor = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "embedding-health-monitor");
-            t.setDaemon(true);
-            return t;
-        });
-
-        healthMonitor.scheduleAtFixedRate(this::checkHealth, 30, 30, TimeUnit.SECONDS);
-
-        lastHeartbeat.set(System.currentTimeMillis());
-        running.set(true);
 
         logger.info("Embedding subprocess started (PID: {})",
-                process.pid());
+                spawned.pid());
+    }
+
+    /**
+     * Undo a start() that failed after the child was spawned. Otherwise the child keeps running
+     * with nothing reading its pipes, holding its device memory, and no detector ever reports it.
+     */
+    private void abandonFailedStart(Process spawned, ScheduledExecutorService monitor, Throwable cause) {
+        synchronized (crashClaimLock) {
+            crashClaimedProcess = spawned;
+        }
+        if (monitor != null) {
+            monitor.shutdown();
+        }
+        forceTerminate(spawned, "start failed");
+        if (subprocessRegistry != null) {
+            subprocessRegistry.deregister("embedding");
+        }
+        finaliseSubprocessLog("FAILED", null, cause.getMessage());
+        logger.error("Embedding subprocess PID {} abandoned: start failed after spawn: {}",
+                spawned.pid(), cause.toString());
     }
 
     /**
@@ -1666,7 +1760,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     /**
      * Build the command for launching the subprocess based on launch mode.
      */
-    private List<String> buildCommand() {
+    // visible for testing (EmbeddingSubprocessNativeCommandTest)
+    List<String> buildCommand() {
         List<String> command = new ArrayList<>();
 
         // Add debug tool prefix if enabled (e.g., valgrind, compute-sanitizer)
@@ -1694,6 +1789,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
             logger.info("Using native executable mode: {}", effectiveNativePath);
             command.add(effectiveNativePath);
+            command.addAll(nativeSelfExecFlags());
             command.add(subprocessTypeFlag + "embedding");
         } else {
             // JVM classpath mode
@@ -1743,7 +1839,13 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
             try {
                 Path subprocessTempDir = Path.of(System.getProperty("java.io.tmpdir"), "kompile-embedding-subprocess");
                 Files.createDirectories(subprocessTempDir);
-                command.add("-Dorg.bytedeco.javacpp.cachedir=" + subprocessTempDir.toAbsolutePath());
+                // A cachedir the parent already set (NativeLibraryResolver points it at the resolved
+                // native lib dir) is forwarded with the other parent properties below, and the child
+                // uses that one. This directory is the default for a parent without one.
+                String parentCacheDir = System.getProperty("org.bytedeco.javacpp.cachedir");
+                if (parentCacheDir == null || parentCacheDir.isBlank()) {
+                    command.add("-Dorg.bytedeco.javacpp.cachedir=" + subprocessTempDir.toAbsolutePath());
+                }
                 command.add("-Djava.io.tmpdir=" + subprocessTempDir.toAbsolutePath());
                 logger.info("Subprocess using temp directory: {}", subprocessTempDir);
             } catch (IOException e) {
@@ -1814,34 +1916,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
             boolean gpuRequested = placement.effectiveBackend() == BackendPreference.GPU;
             SubprocessBackendResolver.augmentClasspathForBackend(backendCpEntries, gpuRequested, "EMBEDDING");
             String childClasspath = String.join(File.pathSeparator, backendCpEntries);
-            String[] propertyPrefixes = {
-                "org.nd4j.",           // All ND4J properties
-                "org.bytedeco.",       // All JavaCPP/Bytedeco properties
-                "nd4j.",               // ND4J environment properties
-                "ai.djl.",             // DJL properties if used
-                "onnxruntime.",        // ONNX Runtime properties if used
-                "cuda.",               // CUDA properties if used
-                "cudnn.",              // cuDNN properties if used
-                "openblas.",           // OpenBLAS properties if used
-                "mkl.",                // MKL properties if used
-            };
 
             command.add("-Dorg.bytedeco.javacpp.logger.debug=" + subprocDebug);
-            for (String key : System.getProperties().stringPropertyNames()) {
-                if ("org.bytedeco.javacpp.logger.debug".equals(key)) {
-                    continue;
-                }
-                for (String prefix : propertyPrefixes) {
-                    if (key.startsWith(prefix)) {
-                        String value = System.getProperty(key);
-                        if (value != null && !value.isBlank()) {
-                            command.add("-D" + key + "=" + value);
-                            logger.debug("Passing property to subprocess: {}={}", key, value);
-                        }
-                        break;
-                    }
-                }
-            }
+            command.addAll(forwardedParentProperties(System.getProperties(), command));
 
             // Emit the backend-isolated path last so it overrides the unfiltered parent value.
             // Backend-first ordering also avoids stale same-SONAME LLVM/MLIR links in common
@@ -1864,25 +1941,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 logger.debug("Added -Dnd4j.backend.memory.fallback=true to embedding subprocess command");
             }
 
-            if (!localModelOnly) {
-                // Managed deployments may resolve models through staging or a loaded archive.
-                String stagingUrl = AnseriniEncoderFactory.getStagingUrl();
-                String stagingApiKey = AnseriniEncoderFactory.getStagingApiKey();
-                java.nio.file.Path archivePath = AnseriniEncoderFactory.getLoadedArchivePath();
-
-                if (stagingUrl != null && !stagingUrl.isBlank()) {
-                    command.add("-Dkompile.staging.url=" + stagingUrl);
-                    logger.info("Passing staging URL to subprocess: {}", stagingUrl);
-                }
-                if (stagingApiKey != null && !stagingApiKey.isBlank()) {
-                    command.add("-Dkompile.staging.apiKey=" + stagingApiKey);
-                    logger.info("Passing staging API key to subprocess");
-                }
-                if (archivePath != null) {
-                    command.add("-Dkompile.models.archivePath=" + archivePath.toAbsolutePath());
-                    logger.info("Passing archive path to subprocess: {}", archivePath);
-                }
-            }
+            command.addAll(modelSourceFlags());
 
             // Classpath
             command.add("-cp");
@@ -1893,6 +1952,119 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         }
 
         return command;
+    }
+
+    /** Prefixes of the parent system properties a JVM child inherits. */
+    private static final String[] FORWARDED_PROPERTY_PREFIXES = {
+        "org.nd4j.",           // All ND4J properties
+        "org.bytedeco.",       // All JavaCPP/Bytedeco properties
+        "nd4j.",               // ND4J environment properties
+        "ai.djl.",             // DJL properties if used
+        "onnxruntime.",        // ONNX Runtime properties if used
+        "cuda.",               // CUDA properties if used
+        "cudnn.",              // cuDNN properties if used
+        "openblas.",           // OpenBLAS properties if used
+        "mkl.",                // MKL properties if used
+    };
+
+    /**
+     * The parent's ND4J, JavaCPP and native-library system properties as {@code -D} flags for a JVM
+     * child, except the keys {@code command} already sets. The JVM child keeps the last duplicate
+     * {@code -D}, and these flags follow the launcher's JavaCPP caps and ND4J environment values, so a
+     * forwarded parent value used to replace them: a parent {@code maxbytes} lifted this child's
+     * off-heap cap. As in {@code ManagedSubprocessLauncher}, the subprocess's own values win.
+     */
+    // visible for testing (EmbeddingSubprocessJvmCommandTest)
+    static List<String> forwardedParentProperties(Properties parent, List<String> command) {
+        Set<String> alreadySet = new HashSet<>();
+        for (String arg : command) {
+            if (arg.startsWith("-D")) {
+                int equals = arg.indexOf('=');
+                alreadySet.add(equals < 0 ? arg.substring(2) : arg.substring(2, equals));
+            }
+        }
+        List<String> flags = new ArrayList<>();
+        for (String key : parent.stringPropertyNames()) {
+            if (alreadySet.contains(key)) {
+                continue;
+            }
+            for (String prefix : FORWARDED_PROPERTY_PREFIXES) {
+                if (key.startsWith(prefix)) {
+                    String value = parent.getProperty(key);
+                    if (value != null && !value.isBlank()) {
+                        flags.add("-D" + key + "=" + value);
+                        logger.debug("Passing property to subprocess: {}={}", key, value);
+                    }
+                    break;
+                }
+            }
+        }
+        return flags;
+    }
+
+    /**
+     * Runtime flags for a native (GraalVM) child, mirroring
+     * {@code ManagedSubprocessLauncher.buildNativeSelfExecCommand}: a native binary accepts
+     * {@code -Xmx} and {@code -D} but rejects HotSpot {@code -XX:} flags, and has no classpath.
+     * Without them the native child ran on its build-time defaults: no heap or JavaCPP caps, and no
+     * scheduler placement, so on a multi-GPU box it ignored its assigned device and memory bound.
+     * The last duplicate {@code -D} wins, so values that must beat a forwarded parent property come
+     * after it.
+     */
+    // visible for testing (EmbeddingSubprocessNativeCommandTest)
+    List<String> nativeSelfExecFlags() {
+        boolean subprocDebug = Boolean.getBoolean("kompile.embedding.subprocess.nd4j.debug");
+        List<String> flags = new ArrayList<>();
+        flags.add("-Xmx" + maxHeapMb + "m");
+        flags.addAll(SubprocessEnvironmentPropagator.buildSystemPropertyFlags());
+        flags.add("-Dfile.encoding=UTF-8");
+        flags.add("-Dorg.bytedeco.javacpp.maxbytes=" + maxPhysicalMb + "m");
+        flags.add("-Dorg.bytedeco.javacpp.maxphysicalbytes=" + resolveSystemPhysicalCeilingMb(maxPhysicalMb) + "m");
+        flags.add("-Dorg.bytedeco.javacpp.logger.debug=" + subprocDebug);
+        // Forced off as on the JVM path: the parent's Nd4jStartup turns both on, and per-op native
+        // tracing costs seconds per embed.
+        flags.add("-Dnd4j.environment.verbose=false");
+        flags.add("-Dnd4j.environment.debug=" + subprocDebug);
+        Integer drMaxThreads = this.deviceRoutingMaxThreads;
+        Integer drMaxMasterThreads = this.deviceRoutingMaxMasterThreads;
+        if (drMaxThreads != null) {
+            flags.add("-Dnd4j.environment.maxThreads=" + drMaxThreads);
+        }
+        if (drMaxMasterThreads != null) {
+            flags.add("-Dnd4j.environment.maxMasterThreads=" + drMaxMasterThreads);
+        }
+        // Scheduler placement after the forwarded properties, so it wins over any parent value.
+        flags.addAll(placement.jvmFlags());
+        if (System.getProperty("nd4j.backend.memory.fallback") == null) {
+            flags.add("-Dnd4j.backend.memory.fallback=true");
+        }
+        flags.addAll(modelSourceFlags());
+        return flags;
+    }
+
+    /**
+     * Where a managed child may resolve models: the staging URL and a loaded archive. Empty when the
+     * child is restricted to local models. The staging API key is never a flag; {@link #start()}
+     * passes it through the child's environment.
+     */
+    // visible for testing (EmbeddingSubprocessNativeCommandTest)
+    List<String> modelSourceFlags() {
+        if (localModelOnly) {
+            return List.of();
+        }
+        // Managed deployments may resolve models through staging or a loaded archive.
+        List<String> flags = new ArrayList<>();
+        String stagingUrl = AnseriniEncoderFactory.getStagingUrl();
+        Path archivePath = AnseriniEncoderFactory.getLoadedArchivePath();
+        if (stagingUrl != null && !stagingUrl.isBlank()) {
+            flags.add("-Dkompile.staging.url=" + stagingUrl);
+            logger.info("Passing staging URL to subprocess: {}", stagingUrl);
+        }
+        if (archivePath != null) {
+            flags.add("-Dkompile.models.archivePath=" + archivePath.toAbsolutePath());
+            logger.info("Passing archive path to subprocess: {}", archivePath);
+        }
+        return flags;
     }
 
     /**
@@ -2022,31 +2194,26 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
             healthMonitor.shutdownNow();
         }
 
-        // Close I/O streams. With the process already terminated above, this drives the reader
-        // threads' readLine() to EOF / "Stream closed" so they exit on their own.
-        if (processStdin != null) {
-            try { processStdin.close(); } catch (Exception ignored) {}
-            processStdin = null;
-        }
-        if (processStdout != null) {
-            try { processStdout.close(); } catch (Exception ignored) {}
-            processStdout = null;
-        }
-
+        // Let the readers take what the child wrote before it exited or was killed: the response
+        // to a request that is still pending, its last error lines. Its pipes end once it is gone,
+        // so this is short; it is bounded because a child the kill could not end, or a grandchild
+        // that inherited the pipes, keeps them open.
+        //
+        // The streams are not closed here. The JDK closes them once the child is reaped. A close
+        // would drop the lines the readers have not reached, and it waits behind a reader or writer
+        // blocked on a pipe that stays open (BufferedReader.close() takes the lock readLine()
+        // holds), which would hang this synchronized method, and app shutdown with it.
+        //
         // Do NOT interrupt the reader threads. They persist subprocess output to H2 via logCallback;
         // a Thread.interrupt() landing while a reader is mid-write throws ClosedByInterruptException
         // on H2's NIO FileChannel and closes the ENTIRE application database ("database has been
-        // closed"). The stream close above already breaks the read loop, so we just join (bounded)
-        // and let each reader finish its current line cleanly. They are daemon threads, so a
-        // straggler can never block JVM shutdown.
-        Thread out = outputReaderThread;
-        if (out != null) {
-            try { out.join(3000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+        // closed"). A reader still blocked when the wait ends is a daemon thread, so it can never
+        // block JVM shutdown.
+        if (!awaitOutputDrained(OUTPUT_DRAIN_MS)) {
+            logger.warn("Embedding subprocess output readers still running {} ms into stop", OUTPUT_DRAIN_MS);
         }
-        Thread err = errorReaderThread;
-        if (err != null) {
-            try { err.join(3000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-        }
+        processStdin = null;
+        processStdout = null;
 
         // Complete any pending requests with error
         for (Map.Entry<String, CompletableFuture<EmbeddingSubprocessMessage>> entry : pendingRequests.entrySet()) {
@@ -2091,13 +2258,17 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         environment.remove("KOMPILE_MODELS_ARCHIVE_PATH");
     }
 
-    /** Returns true if the embedding lane was permanently disabled due to a device-level CUDA error. */
+    /**
+     * True when the child died and this launcher will not restart it: the restart policy declined,
+     * or the restart could not start a new child. A later successful {@link #start()} clears it.
+     */
     public boolean isLaneUnavailable() { return laneUnavailable.get(); }
 
     private void stopAndKillCurrentProcess() {
         Process p = this.process;
         if (p != null && p.isAlive()) {
-            p.destroy();
+            // SIGTERM alone, keeping the pipes open for the readers (see forceTerminate)
+            SubprocessSignals.terminate(p);
             try {
                 if (!p.waitFor(5, TimeUnit.SECONDS)) {
                     forceTerminate(p, "termination timeout");
@@ -2117,7 +2288,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     private void forceTerminate(Process target, String reason) {
         if (target == null || !target.isAlive()) return;
         try {
-            target.destroyForcibly();
+            // SIGKILL alone: Process.destroyForcibly() also closes this side of the child's pipes,
+            // and the readers would lose what it wrote before it died.
+            SubprocessSignals.kill(target);
             if (!target.waitFor(5, TimeUnit.SECONDS)) {
                 logger.error("Embedding subprocess remains alive after forced termination ({})", reason);
             }
@@ -2128,6 +2301,35 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         } catch (Exception e) {
             logger.error("Failed to force embedding subprocess termination ({}): {}", reason,
                     e.getMessage());
+        }
+    }
+
+    /**
+     * Wait up to {@code timeoutMs} in all for the current child's output readers to reach the end
+     * of its pipes. Never interrupts them (see {@link #stop()}).
+     *
+     * @return whether both readers finished
+     */
+    private boolean awaitOutputDrained(long timeoutMs) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
+        try {
+            for (Thread reader : new Thread[] {outputReaderThread, errorReaderThread}) {
+                // Crash handling can run on the output reader itself, after its end of output
+                if (reader == null || reader == Thread.currentThread()) {
+                    continue;
+                }
+                long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                if (remainingMs > 0) {
+                    reader.join(remainingMs);
+                }
+                if (reader.isAlive()) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
@@ -2174,14 +2376,24 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         logger.info("LoadModel request {}: using timeout {}ms (loadModelTimeoutMs={}, requestTimeoutMs={})",
                 requestId, effectiveTimeoutMs, loadModelTimeoutMs, requestTimeoutMs);
 
-        return sendRequest(request, requestId, effectiveTimeoutMs)
+        Process recipient = process;
+        return sendRequest(request, requestId, effectiveTimeoutMs, recipient)
             .thenApply(msg -> {
                 if (msg instanceof EmbeddingSubprocessMessage.LoadModelResponse resp) {
                     if (resp.success()) {
-                        currentModelId = resp.modelId();
-                        currentDimensions = resp.dimensions();
-                        encoderType = resp.encoderType();
-                        modelLoaded = true;
+                        // Do not take the launcher monitor: stop() holds it while readers drain.
+                        // Use the same lock as child publication so a detached response cannot
+                        // overwrite a successor or restore loaded state after shutdown.
+                        synchronized (stdinLock) {
+                            if (process == recipient && !shuttingDown.get()) {
+                                currentModelId = resp.modelId();
+                                currentDimensions = resp.dimensions();
+                                encoderType = resp.encoderType();
+                                // Retain a drained response for crash replay even if this child just died.
+                                modelLoaded = running.get() && recipient.isAlive();
+                                lastLoadRequest = request;
+                            }
+                        }
                     }
                     return resp;
                 }
@@ -2357,10 +2569,20 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
      */
     private CompletableFuture<EmbeddingSubprocessMessage> sendRequest(
             EmbeddingSubprocessMessage request, String requestId, long effectiveTimeoutMs) {
+        return sendRequest(request, requestId, effectiveTimeoutMs, process);
+    }
+
+    private CompletableFuture<EmbeddingSubprocessMessage> sendRequest(
+            EmbeddingSubprocessMessage request, String requestId, long effectiveTimeoutMs, Process recipient) {
+        if (recipient == null || process != recipient) {
+            return CompletableFuture.failedFuture(new IOException("Subprocess changed before request could be sent"));
+        }
 
         if (laneUnavailable.get()) {
-            return CompletableFuture.failedFuture(
-                new IllegalStateException("Embedding lane unavailable: device-level CUDA error was encountered; subprocess will not be restarted"));
+            String lastCrash = lastCrashReason;
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Embedding lane unavailable: the subprocess died and will not be restarted. Last crash: "
+                            + (lastCrash == null ? "unknown" : lastCrash.lines().findFirst().orElse(lastCrash))));
         }
 
         if (!running.get()) {
@@ -2370,10 +2592,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
         // Early check: if the process object is dead but running flag is still set,
         // trigger crash handling before trying to send the message.
-        if (process != null && !process.isAlive() && !shuttingDown.get()) {
+        Process current = recipient;
+        if (!current.isAlive() && !shuttingDown.get()) {
             logger.warn("Subprocess process is dead but running flag was still set. " +
                     "Triggering crash handling before request {}", requestId);
-            handleSubprocessCrash();
+            handleSubprocessCrash(current);
             return CompletableFuture.failedFuture(
                 new IOException("Subprocess process was dead - crash handling triggered. " +
                         "Retry after subprocess restarts."));
@@ -2383,7 +2606,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         pendingRequests.put(requestId, future);
 
         try {
-            sendMessage(request);
+            sendMessage(request, recipient);
 
             // Apply timeout only if configured (> 0), otherwise wait indefinitely
             if (effectiveTimeoutMs > 0) {
@@ -2413,6 +2636,10 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
      * "Stream closed" errors when the subprocess has already exited.
      */
     private void sendMessage(EmbeddingSubprocessMessage message) throws IOException {
+        sendMessage(message, process);
+    }
+
+    private void sendMessage(EmbeddingSubprocessMessage message, Process recipient) throws IOException {
         if (processStdin == null) {
             throw new IOException("Subprocess stdin not available");
         }
@@ -2420,11 +2647,12 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         // Check if the process is still alive before attempting to write.
         // This prevents "Stream closed" / NullOutputStream errors when the
         // subprocess has died but running flag hasn't been updated yet.
-        if (process == null || !process.isAlive()) {
+        Process current = process;
+        if (current == null || !current.isAlive()) {
             String exitInfo = "";
-            if (process != null) {
+            if (current != null) {
                 try {
-                    exitInfo = " (exit code: " + process.exitValue() + ")";
+                    exitInfo = " (exit code: " + current.exitValue() + ")";
                 } catch (IllegalThreadStateException e) {
                     // Process still running after all - race condition, proceed
                 }
@@ -2434,25 +2662,40 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         }
 
         String json = OBJECT_MAPPER.writeValueAsString(message);
+        Process writingTo;
+        IOException writeFailure = null;
+        boolean aliveAfterFailure = false;
         synchronized (stdinLock) {
-            // Double-check after acquiring lock since process may have died while waiting
-            if (process == null || !process.isAlive()) {
+            // Double-check after acquiring lock since process may have died while waiting.
+            // start() publishes the child and its stdin together under this lock.
+            writingTo = process;
+            BufferedWriter stdin = processStdin;
+            if (recipient == null || writingTo != recipient) {
+                throw new IOException("Subprocess changed while waiting to send message");
+            }
+            if (!writingTo.isAlive() || stdin == null) {
                 throw new IOException("Subprocess process died while waiting to send message");
             }
             try {
-                processStdin.write(json);
-                processStdin.newLine();
-                processStdin.flush();
+                stdin.write(json);
+                stdin.newLine();
+                stdin.flush();
             } catch (IOException e) {
-                // The process likely died between our check and the write.
-                // Trigger crash handling so the subprocess can be restarted.
-                logger.error("Failed to write to subprocess stdin (process alive: {}): {}",
-                        process != null && process.isAlive(), e.getMessage());
-                if (!shuttingDown.get()) {
-                    handleSubprocessCrash();
-                }
-                throw new IOException("Subprocess communication failed - process may have crashed: " + e.getMessage(), e);
+                writeFailure = e;
+                aliveAfterFailure = writingTo.isAlive();
             }
+        }
+        if (writeFailure != null) {
+            // The process likely died between our check and the write. Trigger crash handling so
+            // the subprocess can be restarted, outside stdinLock: a restart calls start(), which
+            // needs the launcher monitor, while stop() holds that monitor and waits for stdinLock.
+            logger.error("Failed to write to subprocess stdin (process alive: {}): {}",
+                    aliveAfterFailure, writeFailure.getMessage());
+            if (!shuttingDown.get()) {
+                handleSubprocessCrash(writingTo);
+            }
+            throw new IOException("Subprocess communication failed - process may have crashed: "
+                    + writeFailure.getMessage(), writeFailure);
         }
     }
 
@@ -2482,130 +2725,110 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     }
 
     /**
-     * Read output from subprocess.
+     * Read output from one child. Bound to that child, so its EOF reports that child's death only.
      */
-    private void readOutput() {
+    private void readOutput(BufferedReader stdout, Process child) {
         String line;
         boolean streamEnded = false;
         try {
-            while (!Thread.currentThread().isInterrupted() && processStdout != null) {
-                line = processStdout.readLine();
+            while (!Thread.currentThread().isInterrupted()) {
+                line = stdout.readLine();
                 if (line == null) {
                     streamEnded = true;
                     break; // Stream closed
                 }
 
-                // Check for protocol message
-                if (line.startsWith(EmbeddingSubprocessMessage.MESSAGE_PREFIX)) {
-                    String json = line.substring(EmbeddingSubprocessMessage.MESSAGE_PREFIX.length());
-                    try {
-                        EmbeddingSubprocessMessage message = OBJECT_MAPPER.readValue(json, EmbeddingSubprocessMessage.class);
-                        handleMessage(message);
-                    } catch (Exception e) {
-                        logger.error("Failed to parse subprocess message: {}", json, e);
-                    }
+                // Check for protocol message. libnd4j logs with printf straight to fd 1, beneath the
+                // child's System.setOut redirect, so a native message without a newline can precede
+                // one on the same line when the child's protocol pipe is its fd 1.
+                int prefixAt = line.indexOf(EmbeddingSubprocessMessage.MESSAGE_PREFIX);
+                if (prefixAt > 0) {
+                    forwardStdoutLine(line.substring(0, prefixAt));
+                }
+                if (prefixAt >= 0) {
+                    dispatchProtocolJson(line.substring(prefixAt + EmbeddingSubprocessMessage.MESSAGE_PREFIX.length()));
                 } else {
-                    // Regular stdout line - forward to logCallback for database persistence.
-                    // Demote routine lines to DEBUG to avoid double-INFO flooding (the structured
-                    // EmbeddingSubprocessMessage.Log messages in handleLog() already surface
-                    // real INFO/WARN/ERROR lines via the JSON protocol path).
-                    // Only promote to WARN/ERROR when the line content indicates a real problem.
-                    // Classify by the line's real logger level, not message-body substrings.
-                    String level = determineLogLevel(line);
-                    if ("ERROR".equals(level)) {
-                        logger.warn("[subprocess:stdout] {}", line);
-                    } else {
-                        logger.debug("[subprocess:stdout] {}", line);
-                    }
-                    if (logCallback != null) {
-                        EmbeddingSubprocessMessage.Log logMsg = new EmbeddingSubprocessMessage.Log(
-                                level, "stdout", line, System.currentTimeMillis());
-                        persistLogSafely(logMsg);
-                    }
-                    // Write to central log file (non-fatal)
-                    try {
-                        SubprocessLogWriter slw = subprocessLogWriter;
-                        if (slw != null) {
-                            slw.writeLine(AgentLogRecord.Stream.STDOUT, line);
-                        }
-                    } catch (Exception _logEx) {
-                        logger.debug("SubprocessLogWriter stdout write failed: {}", _logEx.getMessage());
-                    }
+                    forwardStdoutLine(line);
                 }
             }
         } catch (IOException e) {
             if (!shuttingDown.get()) {
                 logger.error("Error reading subprocess output: {}", e.getMessage());
-                handleSubprocessCrash();
+                handleSubprocessCrash(child);
             }
         }
 
         if (streamEnded && !shuttingDown.get() && running.get()) {
             logger.error("Subprocess stdout closed unexpectedly while launcher was running");
-            handleSubprocessCrash();
+            handleSubprocessCrash(child);
         }
 
         logger.info("Output reader thread exiting");
     }
 
+    /** Decode and handle one protocol message; one that fails is logged, and reading goes on. */
+    private void dispatchProtocolJson(String json) {
+        try {
+            EmbeddingSubprocessMessage message = OBJECT_MAPPER.readValue(json, EmbeddingSubprocessMessage.class);
+            handleMessage(message);
+        } catch (Exception e) {
+            logger.error("Failed to parse subprocess message: {}", json, e);
+        }
+    }
+
+    /** Forward a regular stdout line to logCallback for database persistence and to the central log. */
+    private void forwardStdoutLine(String line) {
+        // Demote routine lines to DEBUG to avoid double-INFO flooding (the structured
+        // EmbeddingSubprocessMessage.Log messages in handleLog() already surface
+        // real INFO/WARN/ERROR lines via the JSON protocol path).
+        // Only promote to WARN/ERROR when the line content indicates a real problem.
+        // Classify by the line's real logger level, not message-body substrings.
+        String level = determineLogLevel(line);
+        if ("ERROR".equals(level)) {
+            logger.warn("[subprocess:stdout] {}", line);
+        } else {
+            logger.debug("[subprocess:stdout] {}", line);
+        }
+        if (logCallback != null) {
+            EmbeddingSubprocessMessage.Log logMsg = new EmbeddingSubprocessMessage.Log(
+                    level, "stdout", line, System.currentTimeMillis());
+            persistLogSafely(logMsg);
+        }
+        // Write to central log file (non-fatal)
+        try {
+            SubprocessLogWriter slw = subprocessLogWriter;
+            if (slw != null) {
+                slw.writeLine(AgentLogRecord.Stream.STDOUT, line);
+            }
+        } catch (Exception _logEx) {
+            logger.debug("SubprocessLogWriter stdout write failed: {}", _logEx.getMessage());
+        }
+    }
+
     /**
-     * Read error stream from subprocess (logging).
+     * Read error stream from one child (logging). A wrapped child's fd 1 is this pipe too, so it
+     * carries the native output that reaches fd 1, and the responses of a child that writes them
+     * there ({@link SubprocessProtocolChannel.StderrProtocol}).
      */
-    private void readError() {
+    private void readError(Process child, SubprocessProtocolChannel.StderrProtocol stderrProtocol) {
         try (BufferedReader errorReader = new BufferedReader(
-                new InputStreamReader(process.getErrorStream()))) {
+                new InputStreamReader(child.getErrorStream()))) {
             String line;
             while (!Thread.currentThread().isInterrupted()) {
                 line = errorReader.readLine();
                 if (line == null) {
                     break;
                 }
-                // Route subprocess stderr at the appropriate level to avoid double-INFO spam.
-                // Structured EmbeddingSubprocessMessage.Log messages (forwarded via JSON on
-                // stdout) already surface real INFO/WARN/ERROR via handleLog(). Raw stderr
-                // lines are demoted to DEBUG unless they indicate an actual error condition.
-                // Classify by the line's real logger level (not message-body substrings):
-                // benign diagnostics whose text mentions "error" (e.g. the tokenizer
-                // printing document text "...formula errors") must not surface as ERROR.
-                String level = determineLogLevel(line);
-                boolean isErrorLine = "ERROR".equals(level);
-                if (isErrorLine) {
-                    logger.warn("[subprocess:stderr] {}", line);
+                // A child that writes its responses to fd 1 has them here, behind whatever else
+                // reached fd 1
+                int prefixAt = stderrProtocol.prefixIndex(line);
+                if (prefixAt > 0) {
+                    handleStderrLine(line.substring(0, prefixAt));
+                }
+                if (prefixAt >= 0) {
+                    dispatchProtocolJson(line.substring(prefixAt + EmbeddingSubprocessMessage.MESSAGE_PREFIX.length()));
                 } else {
-                    logger.debug("[subprocess:stderr] {}", line);
-                }
-
-                // Forward to logCallback so it gets persisted to the database
-                if (logCallback != null) {
-                    EmbeddingSubprocessMessage.Log logMsg = new EmbeddingSubprocessMessage.Log(
-                            level, "stderr", line, System.currentTimeMillis());
-                    persistLogSafely(logMsg);
-                }
-                // Write to central log file (non-fatal)
-                try {
-                    SubprocessLogWriter slw = subprocessLogWriter;
-                    if (slw != null) {
-                        slw.writeLine(AgentLogRecord.Stream.STDERR, line);
-                    }
-                } catch (Exception _logEx) {
-                    logger.debug("SubprocessLogWriter stderr write failed: {}", _logEx.getMessage());
-                }
-
-                // Track recent error lines for crash diagnostics. Gate on the real ERROR
-                // level (which already covers stack traces / OOM / use-after-free) so the
-                // ring buffer isn't polluted by benign document text mentioning "error".
-                if (isErrorLine) {
-                    trackRecentError(line);
-                }
-
-                // Detect critical ND4J memory corruption errors that indicate model failure
-                // USE-AFTER-FREE means constants in the SameDiff model were garbage collected
-                // and the model is now producing garbage output - it cannot be recovered
-                if (line.contains("USE-AFTER-FREE DETECTED") ||
-                        line.contains("ND4JIllegalStateException") && line.contains("pointer-like value")) {
-                    logger.error("CRITICAL: Detected ND4J memory corruption in subprocess. " +
-                            "Model constants were garbage collected. Model must be reloaded.");
-                    handleCriticalMemoryError(line);
+                    handleStderrLine(line);
                 }
             }
         } catch (IOException e) {
@@ -2615,6 +2838,57 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         }
 
         logger.info("Error reader thread exiting");
+    }
+
+    /** Log, persist and scan one stderr line that is not a protocol message. */
+    private void handleStderrLine(String line) {
+        // Route subprocess stderr at the appropriate level to avoid double-INFO spam.
+        // Structured EmbeddingSubprocessMessage.Log messages (forwarded via JSON on
+        // stdout) already surface real INFO/WARN/ERROR via handleLog(). Raw stderr
+        // lines are demoted to DEBUG unless they indicate an actual error condition.
+        // Classify by the line's real logger level (not message-body substrings):
+        // benign diagnostics whose text mentions "error" (e.g. the tokenizer
+        // printing document text "...formula errors") must not surface as ERROR.
+        String level = determineLogLevel(line);
+        boolean isErrorLine = "ERROR".equals(level);
+        if (isErrorLine) {
+            logger.warn("[subprocess:stderr] {}", line);
+        } else {
+            logger.debug("[subprocess:stderr] {}", line);
+        }
+
+        // Forward to logCallback so it gets persisted to the database
+        if (logCallback != null) {
+            EmbeddingSubprocessMessage.Log logMsg = new EmbeddingSubprocessMessage.Log(
+                    level, "stderr", line, System.currentTimeMillis());
+            persistLogSafely(logMsg);
+        }
+        // Write to central log file (non-fatal)
+        try {
+            SubprocessLogWriter slw = subprocessLogWriter;
+            if (slw != null) {
+                slw.writeLine(AgentLogRecord.Stream.STDERR, line);
+            }
+        } catch (Exception _logEx) {
+            logger.debug("SubprocessLogWriter stderr write failed: {}", _logEx.getMessage());
+        }
+
+        // Track recent error lines for crash diagnostics. Gate on the real ERROR
+        // level (which already covers stack traces / OOM / use-after-free) so the
+        // ring buffer isn't polluted by benign document text mentioning "error".
+        if (isErrorLine) {
+            trackRecentError(line);
+        }
+
+        // Detect critical ND4J memory corruption errors that indicate model failure
+        // USE-AFTER-FREE means constants in the SameDiff model were garbage collected
+        // and the model is now producing garbage output - it cannot be recovered
+        if (line.contains("USE-AFTER-FREE DETECTED") ||
+                line.contains("ND4JIllegalStateException") && line.contains("pointer-like value")) {
+            logger.error("CRITICAL: Detected ND4J memory corruption in subprocess. " +
+                    "Model constants were garbage collected. Model must be reloaded.");
+            handleCriticalMemoryError(line);
+        }
     }
 
     /**
@@ -2843,15 +3117,17 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     /**
      * Check subprocess health.
      */
-    private void checkHealth() {
+    // visible for testing (EmbeddingSubprocessCrashLifecycleTest)
+    void checkHealth() {
         if (!running.get() || shuttingDown.get()) {
             return;
         }
 
         // Check if process is alive
-        if (process == null || !process.isAlive()) {
+        Process p = process;
+        if (p == null || !p.isAlive()) {
             logger.error("Subprocess process is not alive!");
-            handleSubprocessCrash();
+            handleSubprocessCrash(p);
             return;
         }
 
@@ -2862,54 +3138,80 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
             if (now - lastHb > heartbeatTimeoutMs) {
                 logger.error("Subprocess heartbeat timeout! Last heartbeat: {}ms ago",
                         now - lastHb);
-                handleSubprocessCrash();
+                handleSubprocessCrash(p);
             }
         }
     }
 
     /**
-     * Handle subprocess crash - capture details and attempt restart with tracking.
+     * Claim the crash of {@code crashed} for handling: true only for the current child, and only
+     * once per child.
      */
-    private void handleSubprocessCrash() {
+    // visible for testing (EmbeddingSubprocessCrashLifecycleTest)
+    boolean claimCrash(Process crashed) {
+        synchronized (crashClaimLock) {
+            if (crashed == null || crashed != process || crashed == crashClaimedProcess) {
+                return false;
+            }
+            crashClaimedProcess = crashed;
+            return true;
+        }
+    }
+
+    /**
+     * Handle the death or hang of one child - capture details and attempt restart with tracking.
+     *
+     * <p>Each detector (the output reader's EOF or IOException, the health monitor, a failed stdin
+     * write, the sendRequest pre-check, the watchdog) passes the child it saw. Only the first report
+     * for the current child is handled; a report about a child that is already handled or replaced
+     * is ignored. Otherwise one death restarts the lane twice, and a late report about an old child
+     * restarts a healthy new one.
+     */
+    // visible for testing (EmbeddingSubprocessCrashLifecycleTest)
+    void handleSubprocessCrash(Process crashed) {
         if (shuttingDown.get()) {
             return;
         }
+        if (!claimCrash(crashed)) {
+            logger.debug("Ignoring crash report for a subprocess generation that is already handled or replaced");
+            return;
+        }
 
-        // Build detailed crash reason
-        String crashReason = buildCrashReason();
-        lastCrashReason = crashReason;
+        // Without this wait an exiting child's code (DEVICE_ERROR, a native crash) reads as -1 and
+        // its crash is reported as a heartbeat stall.
+        awaitReap(crashed);
 
-        // Get exit code for categorization
+        // How the child was found, read once and before the kill below: the exit code for
+        // categorization and the crash reason must not report the kill's own exit
+        boolean unresponsive = crashed.isAlive();
         int exitCode = -1;
-        if (process != null && !process.isAlive()) {
+        if (!unresponsive) {
             try {
-                exitCode = process.exitValue();
+                exitCode = crashed.exitValue();
             } catch (Exception e) {
                 // Process state unknown
             }
         }
 
-        // Device-level CUDA error — mark lane permanently unavailable, no restart.
-        if (exitCode == DEVICE_ERROR_EXIT_CODE) {
-            logger.error("[EmbeddingLauncher] Subprocess exited with DEVICE_ERROR (code {}): CUDA context was " +
-                    "poisoned (error 700 or allocation failure cascade). Marking embedding lane as permanently " +
-                    "unavailable — will NOT restart.", DEVICE_ERROR_EXIT_CODE);
-            laneUnavailable.set(true);
-            RuntimeException laneDeadEx = new RuntimeException(
-                    "Embedding lane unavailable: subprocess exited with DEVICE_ERROR (CUDA context poisoned)");
-            for (CompletableFuture<EmbeddingSubprocessMessage> future : pendingRequests.values()) {
-                future.completeExceptionally(laneDeadEx);
-            }
-            pendingRequests.clear();
-            running.set(false);
-            modelLoaded = false;
-            if (crashCallback != null) {
-                crashCallback.accept(laneDeadEx);
-            }
-            finaliseSubprocessLog("DEVICE_ERROR", exitCode, laneDeadEx.getMessage());
-            return; // no restart
+        // A hung child still holds its device memory and its registry slot. Kill it before the
+        // restart: the registry kills an old child only once the new one has spawned, and a
+        // launcher without a registry never killed it at all.
+        if (unresponsive) {
+            forceTerminate(crashed, "unresponsive before restart");
         }
 
+        // Let the readers take what the child wrote before it died. A response it sent completes
+        // its request instead of failing with the pending ones below, and its last error lines
+        // reach the crash reason and the crash file.
+        awaitOutputDrained(OUTPUT_DRAIN_MS);
+
+        // Build detailed crash reason
+        String crashReason = buildCrashReason(crashed, unresponsive);
+        lastCrashReason = crashReason;
+
+        // A device error (exit 78) takes the same path as any crash: the restart policy decides.
+        // Its CUDA context died with the child, and a new child gets a new one on whichever
+        // device dl4j picks for it.
         logger.error("Subprocess crashed (exit code {}): {}", exitCode, crashReason);
 
         // Persist crash diagnostics to disk unconditionally — a native SIGABRT can
@@ -2919,7 +3221,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         persistCrashDiagnostics(exitCode, crashReason);
 
         // Finalise central log writer on crash
-        finaliseSubprocessLog("CRASHED", exitCode == -1 ? null : exitCode, crashReason);
+        finaliseSubprocessLog(exitCode == DEVICE_ERROR_EXIT_CODE ? "DEVICE_ERROR" : "CRASHED",
+                exitCode == -1 ? null : exitCode, crashReason);
 
         // Fail all pending requests with detailed error
         RuntimeException crashException = new RuntimeException("Subprocess crashed: " + crashReason);
@@ -2933,7 +3236,12 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
         // Notify crash callback with detailed error
         if (crashCallback != null) {
-            crashCallback.accept(crashException);
+            try {
+                crashCallback.accept(crashException);
+            } catch (RuntimeException e) {
+                // An observer must not strand a generation whose crash has already been claimed.
+                logger.warn("Failed to notify embedding crash observer", e);
+            }
         }
 
         // Increment restart attempt counter
@@ -2946,13 +3254,26 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         // Use restart policy callback if available (use empty taskId if none set)
         String effectiveTaskId = currentTaskId != null ? currentTaskId : "subprocess-" + currentModelId;
         if (restartPolicyCallback != null) {
-            restartConfig = restartPolicyCallback.shouldRestart(effectiveTaskId, exitCode, crashReason, restartAttempts);
-            shouldAttemptRestart = restartConfig != null;
+            try {
+                restartConfig = restartPolicyCallback.shouldRestart(effectiveTaskId, exitCode, crashReason, restartAttempts);
+                shouldAttemptRestart = restartConfig != null;
+            } catch (RuntimeException e) {
+                // Fail closed, but take the same retirement path as an explicit policy decline.
+                logger.warn("Embedding restart policy failed; retiring the crashed lane", e);
+                shouldAttemptRestart = false;
+            }
         }
 
         if (!shouldAttemptRestart) {
             logger.warn("Not attempting restart: attempt {} exceeds max {} or policy declined",
                     restartAttempts, maxRestartAttempts);
+            if (!retireWithoutRestart(crashed)) {
+                // stop() or a replacement owns the lane now, so restarts for it are not over. A policy
+                // told otherwise gives up on it: the model's pauses restarts until a manual resume,
+                // which would also keep a preempted lane down once the preemption ends.
+                logger.info("Crashed embedding subprocess was already stopped or replaced; not reporting restarts exhausted");
+                return;
+            }
 
             // Notify policy callback that restarts are exhausted
             if (restartPolicyCallback != null) {
@@ -2962,6 +3283,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                     logger.warn("Failed to notify restart exhausted: {}", e.getMessage());
                 }
             }
+            // After the notification: a policy that pauses restarts there has paused them before
+            // an owner that sees this flag goes looking for a new lane.
+            markLaneGaveUp(crashed);
             return;
         }
 
@@ -2987,7 +3311,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
             }
         }
 
-        // Attempt restart with backoff
+        // Retain the generation we reload: its failure must not retire a newer replacement.
+        Process restarted = null;
         try {
             Thread.sleep(backoffMs);
             // Re-check shuttingDown AFTER the backoff sleep — stop() may have been called while we slept.
@@ -2995,8 +3320,26 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 logger.info("[EmbeddingLauncher] Restart suppressed: shutdown was initiated during backoff sleep");
                 return;
             }
-            recentErrors.clear(); // Clear errors before restart
-            start();
+            synchronized (this) {
+                // A crash observer, policy callback or caller may have brought the lane back while
+                // this handler waited. start() is a no-op then: do not adopt that healthy child as
+                // this handler's replacement, reload it, or retire it if the extra load fails.
+                if (shuttingDown.get() || process != crashed || running.get()) {
+                    return;
+                }
+                recentErrors.clear(); // Clear only the generation this handler still owns
+                boolean started = false;
+                try {
+                    start();
+                    restarted = process;
+                    started = true;
+                } finally {
+                    if (!started) {
+                        // Nothing restarts the lane after this: say so, or it stays down unnoticed
+                        markLaneGaveUp(null);
+                    }
+                }
+            }
             // Final re-check: if shutdown started while start() was running, stop the new process.
             if (shuttingDown.get()) {
                 logger.warn("[EmbeddingLauncher] Shutdown detected immediately after subprocess restart — stopping new process");
@@ -3004,7 +3347,25 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 return;
             }
 
-            // Notify policy callback of successful restart (subprocess is running)
+            // Reload with the caller's batch plan and model config, not fixed sizes.
+            EmbeddingSubprocessMessage.LoadModelRequest reload = lastLoadRequest;
+            EmbeddingSubprocessMessage.LoadModelResponse loaded = null;
+            if (reload != null) {
+                logger.info("Reloading model after restart: {}", reload.modelId());
+                loaded = loadModel(reload.modelId(), reload.optimalBatchSize(), reload.maxBatchSize(),
+                        reload.absoluteMaxBatchSize(), reload.modelConfig()).join();
+            } else if (currentModelId != null) {
+                // Known only from a heartbeat, so the load parameters are unknown.
+                logger.info("Reloading model after restart: {}", currentModelId);
+                loaded = loadModel(currentModelId, 32, 64).join();
+            }
+            if (loaded != null && !loaded.success()) {
+                throw new IllegalStateException("Model reload rejected: " + loaded.error());
+            }
+            if (shuttingDown.get() || process != restarted || !running.get()) {
+                return;
+            }
+            // A successful spawn alone is not recovery: the requested model must be loaded first.
             if (restartPolicyCallback != null) {
                 try {
                     restartPolicyCallback.onRestartSuccess(effectiveTaskId, restartAttempts);
@@ -3013,19 +3374,89 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 }
             }
 
-            // Reload model if one was loaded
-            if (currentModelId != null) {
-                logger.info("Reloading model after restart: {}", currentModelId);
-                loadModel(currentModelId, 32, 64).join();
-            }
-
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             logger.warn("Restart backoff interrupted, aborting restart");
             return;
         } catch (Exception e) {
             logger.error("Failed to restart subprocess: {}", e.getMessage());
+            if (restarted != null && retireFailedReload(restarted, e)) {
+                String reloadFailure = "Model reload after restart failed: " + e.getMessage();
+                lastCrashReason = reloadFailure;
+                if (restartPolicyCallback != null) {
+                    try {
+                        restartPolicyCallback.onRestartExhausted(effectiveTaskId, restartAttempts, reloadFailure);
+                    } catch (Exception notificationError) {
+                        logger.warn("Failed to notify restart exhausted: {}", notificationError.getMessage());
+                    }
+                }
+                markLaneGaveUp(restarted);
+            }
         }
+    }
+
+    /** Retire only the failed reload's generation, unless its own crash handler already owns it. */
+    private synchronized boolean retireFailedReload(Process expected, Exception failure) {
+        if (process != expected || shuttingDown.get() || !claimCrash(expected)) {
+            return false;
+        }
+        running.set(false);
+        modelLoaded = false;
+        forceTerminate(expected, "model reload failed");
+        for (CompletableFuture<EmbeddingSubprocessMessage> pending : pendingRequests.values()) {
+            pending.completeExceptionally(failure);
+        }
+        pendingRequests.clear();
+        finaliseSubprocessLog("FAILED", expected.isAlive() ? null : expected.exitValue(), failure.getMessage());
+        return retireWithoutRestart(expected);
+    }
+
+    /** Wait up to {@link #EXIT_REAP_GRACE_MS} for a child that still looks alive to be reaped. */
+    private static void awaitReap(Process child) {
+        if (!child.isAlive()) {
+            return;
+        }
+        try {
+            child.waitFor(EXIT_REAP_GRACE_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Retire a child that will not be restarted: stop its health monitor and drop its registry
+     * entry, as {@link #stop()} does. Otherwise an idle monitor thread and a dead entry remain until
+     * the next {@code stop()}. Does nothing if a {@code start()} has already replaced the child, or
+     * once {@code stop()} has run: stop() retired the child itself, and by now the registry id may
+     * belong to the launcher that replaced this one.
+     *
+     * @return whether the child still held the lane, i.e. whether it was retired here
+     */
+    private synchronized boolean retireWithoutRestart(Process crashed) {
+        if (process != crashed || shuttingDown.get()) {
+            return false;
+        }
+        // shutdown(), not shutdownNow(): this can run on the monitor's own thread (checkHealth).
+        if (healthMonitor != null) {
+            healthMonitor.shutdown();
+        }
+        if (subprocessRegistry != null) {
+            subprocessRegistry.deregister("embedding");
+        }
+        return true;
+    }
+
+    /**
+     * Record that the lane is down for good: its child died and nothing will restart it. Only while
+     * {@code expected} is still the current child (any child when null), none is running, and
+     * stop() has not run: a replacement or a stop owns the lane instead.
+     */
+    private synchronized void markLaneGaveUp(Process expected) {
+        if ((expected != null && process != expected) || running.get() || shuttingDown.get()) {
+            return;
+        }
+        laneUnavailable.set(true);
+        logger.error("Embedding lane is down: the subprocess died and will not be restarted");
     }
 
     /**
@@ -3033,6 +3464,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
      */
     private String categorizeFailureReason(int exitCode) {
         return switch (exitCode) {
+            case DEVICE_ERROR_EXIT_CODE -> "DEVICE_ERROR";
             case 137 -> "OOM_KILLED";
             case 134, 136, 139 -> "NATIVE_CRASH";
             case 130, 143 -> "CANCELLED";
@@ -3045,15 +3477,17 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
     /**
      * Build a detailed crash reason including exit code and recent errors.
+     *
+     * @param unresponsive whether crash handling found the child still running, before its kill
      */
-    private String buildCrashReason() {
+    private String buildCrashReason(Process crashed, boolean unresponsive) {
         StringBuilder sb = new StringBuilder();
 
         // Check exit code if process exited
-        if (process != null) {
+        if (crashed != null) {
             try {
-                if (!process.isAlive()) {
-                    int exitCode = process.exitValue();
+                if (!unresponsive) {
+                    int exitCode = crashed.exitValue();
                     sb.append("Exit code: ").append(exitCode);
                     sb.append(interpretExitCode(exitCode));
                 } else {
@@ -3112,6 +3546,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         return switch (exitCode) {
             case 0 -> " (normal exit)";
             case 1 -> " (general error)";
+            case DEVICE_ERROR_EXIT_CODE -> " (device error: CUDA context poisoned, e.g. error 700; a new process gets a new context)";
             case 137 -> " (killed by SIGKILL - likely OOM killer)";
             case 139 -> " (segmentation fault - native library crash)";
             case 143 -> " (killed by SIGTERM)";

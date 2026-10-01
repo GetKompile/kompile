@@ -20,6 +20,7 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -81,9 +82,9 @@ public final class UnifiedGraphMutationJournal {
         Path lock = lockPath(archive);
         if (lock.getParent() != null) Files.createDirectories(lock.getParent());
         try (FileChannel lockChannel = FileChannel.open(lock,
-                java.nio.file.StandardOpenOption.CREATE,
-                java.nio.file.StandardOpenOption.READ,
-                java.nio.file.StandardOpenOption.WRITE);
+                StandardOpenOption.CREATE,
+                StandardOpenOption.READ,
+                StandardOpenOption.WRITE);
              FileLock journalLock = lockChannel.lock(0L, Long.MAX_VALUE, true);
              RandomAccessFile file = new RandomAccessFile(journal.toFile(), "r")) {
             if (!journalLock.isValid()) throw new IOException("Could not lock KGraph mutation journal");
@@ -97,8 +98,22 @@ public final class UnifiedGraphMutationJournal {
             Collection<? extends GraphEntity> newEntities,
             UnifiedGraphArchive.Link asserted,
             UnifiedGraphArchive.Link previousLogicalValue) throws IOException {
+        return appendAssertion(archive, newEntities, asserted, previousLogicalValue, List.of());
+    }
+
+    /**
+     * Append one assertion transaction that also tombstones {@code replaced}, the currently visible
+     * relations the assertion supersedes, so a replacement is never half-applied.
+     */
+    public static AppendResult appendAssertion(
+            Path archive,
+            Collection<? extends GraphEntity> newEntities,
+            UnifiedGraphArchive.Link asserted,
+            UnifiedGraphArchive.Link previousLogicalValue,
+            Collection<UnifiedGraphArchive.Link> replaced) throws IOException {
         Objects.requireNonNull(asserted, "asserted");
         Collection<? extends GraphEntity> entities = newEntities == null ? List.of() : newEntities;
+        Collection<UnifiedGraphArchive.Link> superseded = replaced == null ? List.of() : replaced;
         return append(archive, snapshot -> {
             List<Object> entityRows = new ArrayList<>();
             for (GraphEntity entity : entities) {
@@ -109,6 +124,10 @@ public final class UnifiedGraphMutationJournal {
                         "basePresent", basePresent,
                         "value", entityMap(entity)));
             }
+            List<Object> relationRows = new ArrayList<>();
+            for (UnifiedGraphArchive.Link current : superseded) {
+                if (!current.id().equals(asserted.id())) relationRows.add(tombstone(snapshot, current));
+            }
             RelationState prior = snapshot.relationStates().get(asserted.id());
             boolean basePresent = prior != null ? prior.basePresent() : previousLogicalValue != null;
             UnifiedGraphArchive.Link baseLink = prior != null ? prior.baseLink() : previousLogicalValue;
@@ -117,7 +136,8 @@ public final class UnifiedGraphMutationJournal {
             relation.put("basePresent", basePresent);
             if (baseLink != null) relation.put("base", linkMap(baseLink));
             relation.put("value", linkMap(asserted));
-            return transaction(entityRows, List.of(relation));
+            relationRows.add(relation);
+            return transaction(entityRows, relationRows);
         });
     }
 
@@ -132,18 +152,23 @@ public final class UnifiedGraphMutationJournal {
         return append(archive, snapshot -> {
             List<Object> relationRows = new ArrayList<>();
             for (UnifiedGraphArchive.Link current : links) {
-                RelationState prior = snapshot.relationStates().get(current.id());
-                boolean basePresent = prior == null || prior.basePresent();
-                UnifiedGraphArchive.Link baseLink = prior != null ? prior.baseLink() : current;
-                Map<String, Object> relation = new LinkedHashMap<>();
-                relation.put("id", current.id());
-                relation.put("basePresent", basePresent);
-                if (baseLink != null) relation.put("base", linkMap(baseLink));
-                relation.put("value", null);
-                relationRows.add(relation);
+                relationRows.add(tombstone(snapshot, current));
             }
             return transaction(List.of(), relationRows);
         });
+    }
+
+    /** The journal row that removes a currently visible relation. */
+    private static Map<String, Object> tombstone(Snapshot snapshot, UnifiedGraphArchive.Link current) {
+        RelationState prior = snapshot.relationStates().get(current.id());
+        boolean basePresent = prior == null || prior.basePresent();
+        UnifiedGraphArchive.Link baseLink = prior != null ? prior.baseLink() : current;
+        Map<String, Object> relation = new LinkedHashMap<>();
+        relation.put("id", current.id());
+        relation.put("basePresent", basePresent);
+        if (baseLink != null) relation.put("base", linkMap(baseLink));
+        relation.put("value", null);
+        return relation;
     }
 
     private static Map<String, Object> transaction(List<Object> entities, List<Object> relations) {
@@ -165,7 +190,7 @@ public final class UnifiedGraphMutationJournal {
         Path lock = lockPath(archive);
         if (journal.getParent() != null) Files.createDirectories(journal.getParent());
         try (FileChannel lockChannel = FileChannel.open(lock,
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
              FileLock journalLock = lockChannel.lock();
              RandomAccessFile file = new RandomAccessFile(journal.toFile(), "rw")) {
             if (!journalLock.isValid()) throw new IOException("Could not lock KGraph mutation journal");
@@ -219,6 +244,7 @@ public final class UnifiedGraphMutationJournal {
         }
         Map<String, EntityState> entities = new LinkedHashMap<>();
         Map<String, RelationState> relations = new LinkedHashMap<>();
+        Set<String> retractedTypes = new LinkedHashSet<>();
         long lastSequence = 0L;
         int records = 0;
         while (file.getFilePointer() < length) {
@@ -249,12 +275,12 @@ public final class UnifiedGraphMutationJournal {
                 throw new IOException("KGraph mutation journal sequence is not contiguous");
             }
             applyEntities(transaction.get("entities"), entities);
-            applyRelations(transaction.get("relations"), relations);
+            applyRelations(transaction.get("relations"), relations, retractedTypes);
             lastSequence = sequence;
             records++;
             if (records > MAX_RECORDS) throw new IOException("KGraph mutation journal exceeds record limit");
         }
-        return new Snapshot(entities, relations, records, lastSequence);
+        return new Snapshot(entities, relations, retractedTypes, records, lastSequence);
     }
 
     private static void applyEntities(Object raw, Map<String, EntityState> states) throws IOException {
@@ -270,7 +296,8 @@ public final class UnifiedGraphMutationJournal {
         }
     }
 
-    private static void applyRelations(Object raw, Map<String, RelationState> states) throws IOException {
+    private static void applyRelations(
+            Object raw, Map<String, RelationState> states, Set<String> retractedTypes) throws IOException {
         if (!(raw instanceof List<?> rows)) throw new IOException("Journal relations must be an array");
         for (Object row : rows) {
             Map<String, Object> value = object(row, "relation mutation");
@@ -285,6 +312,11 @@ public final class UnifiedGraphMutationJournal {
             if (!id.equals(current == null ? id : current.id()) || basePresent && base == null) {
                 throw new IOException("Journal relation baseline is inconsistent for " + id);
             }
+            UnifiedGraphArchive.Link removed = current != null ? null
+                    : prior != null && prior.current() != null ? prior.current() : base;
+            if (removed != null && removed.type() != null && !removed.type().isBlank()) {
+                retractedTypes.add(removed.type().trim());
+            }
             states.put(id, new RelationState(id, basePresent, base, current));
         }
     }
@@ -295,7 +327,7 @@ public final class UnifiedGraphMutationJournal {
         if (!Files.isRegularFile(journal) || Files.size(journal) <= HEADER_BYTES) return false;
         Path lock = lockPath(archive);
         try (FileChannel lockChannel = FileChannel.open(lock,
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
              FileLock journalLock = lockChannel.lock()) {
             if (!journalLock.isValid()) throw new IOException("Could not lock KGraph mutation journal");
             if (!Files.isRegularFile(journal) || Files.size(journal) <= HEADER_BYTES) return false;
@@ -319,11 +351,16 @@ public final class UnifiedGraphMutationJournal {
                     if (link.opinion() != null) additions.putRelationOpinion(link.id(), link.opinion());
                 }
                 Set<String> mutated = snapshot.relationStates().keySet();
+                Map<String, Object> meta = new LinkedHashMap<>();
+                meta.put("mutationJournal.compactedAt", Instant.now().toString());
+                meta.put("mutationJournal.compactedRecords", snapshot.recordCount());
+                meta.put("learning.reasoningStale", true);
+                meta.put("learning.kgeStale", true);
+                for (String type : snapshot.retractedRelationTypes()) {
+                    meta.put(UnifiedGraph.RETRACTED_RELATION_TYPE_META_PREFIX + type, true);
+                }
                 UnifiedGraphArchiveEditor.rewrite(archive, archive, additions, null,
-                        link -> !mutated.contains(link.id()),
-                        Map.of("mutationJournal.compactedAt", Instant.now().toString(),
-                                "mutationJournal.compactedRecords", snapshot.recordCount(),
-                                "learning.reasoningStale", true, "learning.kgeStale", true));
+                        link -> !mutated.contains(link.id()), meta);
                 Files.deleteIfExists(stagedJournal);
                 compacted = true;
                 return true;
@@ -352,6 +389,7 @@ public final class UnifiedGraphMutationJournal {
         if (!snapshot.isEmpty()) {
             graph.meta("learning.reasoningStale", true).meta("learning.kgeStale", true);
         }
+        snapshot.retractedRelationTypes().forEach(graph::recordRetractedRelationType);
         snapshot.entityStates().values().forEach(state -> graph.addEntity(state.current()));
         for (RelationState state : snapshot.relationStates().values()) {
             GraphRelation previous = graph.relation(state.id()).orElse(null);
@@ -525,9 +563,10 @@ public final class UnifiedGraphMutationJournal {
     }
 
     public static final class Snapshot {
-        private static final Snapshot EMPTY = new Snapshot(Map.of(), Map.of(), 0, 0L);
+        private static final Snapshot EMPTY = new Snapshot(Map.of(), Map.of(), Set.of(), 0, 0L);
         private final Map<String, EntityState> entities;
         private final Map<String, RelationState> relations;
+        private final Set<String> retractedRelationTypes;
         private final Map<String, List<UnifiedGraphArchive.Link>> outgoing;
         private final Map<String, List<UnifiedGraphArchive.Link>> incoming;
         private final int recordCount;
@@ -536,10 +575,12 @@ public final class UnifiedGraphMutationJournal {
         private Snapshot(
                 Map<String, EntityState> entities,
                 Map<String, RelationState> relations,
+                Set<String> retractedRelationTypes,
                 int recordCount,
                 long lastSequence) {
             this.entities = Collections.unmodifiableMap(new LinkedHashMap<>(entities));
             this.relations = Collections.unmodifiableMap(new LinkedHashMap<>(relations));
+            this.retractedRelationTypes = Collections.unmodifiableSet(new LinkedHashSet<>(retractedRelationTypes));
             Map<String, List<UnifiedGraphArchive.Link>> out = new LinkedHashMap<>();
             Map<String, List<UnifiedGraphArchive.Link>> in = new LinkedHashMap<>();
             for (RelationState state : relations.values()) {
@@ -571,6 +612,8 @@ public final class UnifiedGraphMutationJournal {
         public long lastSequence() { return lastSequence; }
         public Map<String, EntityState> entityStates() { return entities; }
         public Map<String, RelationState> relationStates() { return relations; }
+        /** Stored types of every relation a journal transaction retracted, in journal order. */
+        public Set<String> retractedRelationTypes() { return retractedRelationTypes; }
         public int entityDelta() {
             return (int) entities.values().stream().filter(state -> !state.basePresent()).count();
         }

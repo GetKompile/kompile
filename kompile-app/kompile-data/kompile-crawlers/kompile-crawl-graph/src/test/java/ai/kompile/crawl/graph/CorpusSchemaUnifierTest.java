@@ -2607,7 +2607,7 @@ class CorpusSchemaUnifierTest {
     }
 
     @Test
-    void classificationSampleFailureFallsBackToDiscoveryOnlyPath() {
+    void classificationSampleTimeoutStopsDiscovery() {
         CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-bootstrap-failure");
@@ -2641,17 +2641,16 @@ class CorpusSchemaUnifierTest {
         logger.addAppender(appender);
         logger.setLevel(Level.WARN);
         try {
-            GraphSchema schema = new CorpusSchemaUnifier().unify(
-                    Map.of("window", "An observation was recorded by an astronomer."),
-                    new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
-                    null, job, "snapshot-bootstrap-failure", dispatcher);
-
-            // Discovery-only path unchanged: OBSERVATION still freezes normally.
-            assertEquals("ACTIVITY", schema.getNodeTypeMap().get("OBSERVATION").getParentType());
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> new CorpusSchemaUnifier().unify(
+                            Map.of("window", "An observation was recorded by an astronomer."),
+                            new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                            null, job, "snapshot-bootstrap-failure", dispatcher));
+            assertTrue(failure.getMessage().contains("classification sample backend timed out"));
             assertTrue(appender.list.stream().map(ILoggingEvent::getFormattedMessage)
-                    .anyMatch(message -> message.contains("continuing with schema discovery only")),
-                    "the non-fatal classification failure must be logged");
-            verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(
+                    .anyMatch(message -> message.contains("stopping schema prepass")),
+                    "the fatal classification failure must be logged");
+            verify(dispatcher, times(1)).promptStructuredWithCapacityFallback(
                     any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
                     any(CrawlLlmDispatcher.LlmCallScope.class));
         } finally {

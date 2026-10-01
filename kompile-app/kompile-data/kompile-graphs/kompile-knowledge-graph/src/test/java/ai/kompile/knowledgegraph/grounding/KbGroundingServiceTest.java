@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.grounding;
 
+import ai.kompile.graph.reasoning.claims.ClaimDossier;
 import ai.kompile.graph.reasoning.fol.Fact;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.grounding.ConjunctiveQueryEngine;
@@ -22,14 +23,15 @@ import ai.kompile.graph.reasoning.fol.grounding.DerivationTree;
 import ai.kompile.graph.reasoning.fol.grounding.QueryBinding;
 import ai.kompile.graph.reasoning.fol.grounding.VerifyResult;
 import ai.kompile.graph.reasoning.psl.PslProgram;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -281,5 +283,206 @@ class KbGroundingServiceTest {
         assertNotNull(enriched.deepWhyNotReport(),
                 "registered grounding rules should enable deep why-not completion search");
         assertEquals("ancestor(alice, bob)", enriched.deepWhyNotReport().claimAtom());
+    }
+
+    // ── predicate spelling ───────────────────────────────────────────────────────
+
+    private static final long SPELLING_FS = FS_ID + 2000;
+
+    private void seed(long sheet, String... atoms) {
+        List<InferredFact> facts = new ArrayList<>();
+        for (String atom : atoms) {
+            facts.add(InferredFact.of(atom, 0.9, List.of(), List.of(), "run-spelling", 1L));
+        }
+        service.seedInferredFacts(sheet, facts);
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: a key held as given comes back unchanged")
+    void resolveAtomKey_heldKey_unchanged() {
+        seed(SPELLING_FS, "works_for(alice, acme)");
+
+        assertEquals("works_for(alice, acme)", service.resolveAtomKey(SPELLING_FS, "works_for(alice, acme)"));
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: camelCase request finds the stored snake_case atom, spaced or not")
+    void resolveAtomKey_camelCase_findsStoredSnakeCase() {
+        seed(SPELLING_FS, "works_for(alice, acme)");
+
+        assertEquals("works_for(alice, acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(alice, acme)"));
+        assertEquals("works_for(alice, acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(alice,acme)"));
+        assertEquals(VerifyResult.Status.SUPPORTED, service.verify(SPELLING_FS,
+                service.resolveAtomKey(SPELLING_FS, "WORKS_FOR(alice,acme)")).status());
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: a spaced request finds an atom asserted without the space")
+    void resolveAtomKey_spacedRequest_findsNoSpaceAssert() {
+        service.assertFact(SPELLING_FS, Fact.observed("trusts(alice,bob)", "agent"));
+
+        assertEquals("trusts(alice,bob)", service.resolveAtomKey(SPELLING_FS, "trusts(alice, bob)"));
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: a negated request resolves through the positive atom")
+    void resolveAtomKey_negated_resolvesThroughPositiveAtom() {
+        seed(SPELLING_FS, "works_for(alice, acme)");
+
+        assertEquals("~works_for(alice, acme)", service.resolveAtomKey(SPELLING_FS, "~worksFor(alice, acme)"));
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: an unheld atom takes the most-used matching spelling, args as given")
+    void resolveAtomKey_unheldAtom_takesMostUsedSpelling() {
+        seed(SPELLING_FS, "works_for(alice, acme)", "works_for(bob, acme)", "WORKS_FOR(carol, acme)");
+
+        assertEquals("works_for(dave,acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(dave,acme)"));
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: a case-only difference beats a same-name spelling with more atoms")
+    void resolveAtomKey_caseOnlyDifference_beatsMoreAtoms() {
+        seed(SPELLING_FS, "worksfor(alice, acme)", "works_for(bob, acme)", "works_for(carol, acme)");
+
+        assertEquals("worksfor(dave, acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(dave, acme)"));
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: a snake_case request finds the projector's lowercased atom")
+    void resolveAtomKey_snakeCaseRequest_findsLowercasedAtom() {
+        // The projector lowercases relation types, so WORKS_FOR is stored as worksfor.
+        seed(SPELLING_FS, "worksfor(alice, acme)");
+
+        assertEquals("worksfor(alice, acme)", service.resolveAtomKey(SPELLING_FS, "works_for(alice, acme)"));
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: a spelling written after a lookup is seen by the next lookup")
+    void resolveAtomKey_spellingWrittenAfterLookup_isSeen() {
+        seed(SPELLING_FS, "works_for(alice, acme)");
+        assertEquals("works_for(dave,acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(dave,acme)"));
+
+        // An observed assert: the case-only spelling now beats works_for.
+        service.assertFact(SPELLING_FS, Fact.observed("worksfor(bob,acme)", "agent"));
+        assertEquals("worksfor(dave,acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(dave,acme)"));
+
+        // A seeded inferred atom: the requested spelling itself is now stored, so it is kept.
+        seed(SPELLING_FS, "worksFor(carol, acme)");
+        assertEquals("worksFor(dave,acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(dave,acme)"));
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: a retracted spelling is no longer offered")
+    void resolveAtomKey_retractedSpelling_notOffered() {
+        seed(SPELLING_FS, "works_for(alice, acme)");
+        service.assertFact(SPELLING_FS, Fact.observed("worksfor(bob,acme)", "agent"));
+        assertEquals("worksfor(dave,acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(dave,acme)"));
+
+        service.retractFact(SPELLING_FS, "worksfor(bob,acme)");
+
+        assertEquals("works_for(dave,acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(dave,acme)"));
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: after a state reset no old spelling is offered")
+    void resolveAtomKey_afterReset_noOldSpelling() {
+        seed(SPELLING_FS, "works_for(alice, acme)");
+        assertEquals("works_for(dave,acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(dave,acme)"));
+
+        service.resetState(SPELLING_FS);
+
+        assertEquals("worksFor(dave,acme)", service.resolveAtomKey(SPELLING_FS, "worksFor(dave,acme)"));
+    }
+
+    @Test
+    @DisplayName("resolveAtomKey: an unknown predicate or a non-atom comes back unchanged (trimmed)")
+    void resolveAtomKey_unknownPredicate_unchanged() {
+        seed(SPELLING_FS, "works_for(alice, acme)");
+
+        assertEquals("neverSeen(a,b)", service.resolveAtomKey(SPELLING_FS, " neverSeen(a,b) "));
+        assertEquals("alice", service.resolveAtomKey(SPELLING_FS, "  alice "));
+    }
+
+    @Test
+    void publicReadApisResolveModelSpellingAndArgumentSpacing() {
+        seed(SPELLING_FS, "worksfor(alice,acme)");
+        String requested = "WORKS_FOR(alice, acme)";
+
+        assertEquals(VerifyResult.Status.SUPPORTED, service.verify(SPELLING_FS, requested).status());
+        assertEquals(VerifyResult.Status.SUPPORTED, service.verify(SPELLING_FS, requested, 0.8).status());
+        assertEquals(VerifyResult.Status.UNKNOWN, service.verify(SPELLING_FS, requested, 0.95).status());
+        assertEquals(0.9, service.latestValue(SPELLING_FS, requested).orElseThrow(), 1e-9);
+        assertEquals(service.explain(SPELLING_FS, "worksfor(alice,acme)", 3),
+                service.explain(SPELLING_FS, requested, 3));
+        assertEquals(VerifyResult.Status.UNKNOWN, service.verify(SPELLING_FS + 1, requested).status());
+        assertEquals(VerifyResult.Status.UNKNOWN,
+                service.verify(SPELLING_FS, "WORKS_FOR(Alice, acme)").status(),
+                "Predicate spelling must not fold entity identifiers");
+    }
+
+    @Test
+    void queryIncludesEveryEquivalentSpellingBucket() {
+        seed(SPELLING_FS, "works_for(alice, acme)", "worksFor(bob, acme)", "WORKSFOR(carol, acme)");
+        List<QueryBinding> bindings = service.query(SPELLING_FS, List.of(
+                new ConjunctiveQueryEngine.AtomPattern("works_for", List.of("?p", "acme"))), 50);
+        assertEquals(3, bindings.size());
+        assertEquals(3, bindings.stream().map(QueryBinding::bindings).distinct().count());
+    }
+
+    @Test
+    @DisplayName("query: a camelCase conjunct binds against snake_case atoms")
+    void query_camelCaseConjunct_bindsSnakeCaseAtoms() {
+        seed(SPELLING_FS, "works_for(alice, acme)", "works_for(bob, acme)");
+
+        List<QueryBinding> bindings = service.query(SPELLING_FS, List.of(
+                new ConjunctiveQueryEngine.AtomPattern("worksFor", List.of("?p", "acme"))), 50);
+
+        assertEquals(2, bindings.size(), "both works_for atoms should bind: " + bindings);
+    }
+
+    @Test
+    @DisplayName("query: a snake_case conjunct binds against camelCase atoms")
+    void query_snakeCaseConjunct_bindsCamelCaseAtoms() {
+        // The engine's index keys are lowercased ("worksfor"), so matching must read the facts' own
+        // spelling to see the hump.
+        seed(SPELLING_FS, "worksFor(alice, acme)");
+
+        List<QueryBinding> bindings = service.query(SPELLING_FS, List.of(
+                new ConjunctiveQueryEngine.AtomPattern("works_for", List.of("?p", "acme"))), 50);
+
+        assertEquals(1, bindings.size(), "worksFor atom should bind: " + bindings);
+    }
+
+    @Test
+    @DisplayName("assessClaim: a camelCase predicate is assessed under the stored spelling")
+    void assessClaim_camelCasePredicate_usesStoredSpelling() {
+        seed(SPELLING_FS, "works_for(alice, acme)");
+
+        ClaimDossier dossier = service.assessClaim(SPELLING_FS, new UnifiedGraph(), "alice", "worksFor", "acme");
+
+        assertEquals("works_for(alice, acme)", dossier.claimAtom());
+        assertFalse(dossier.supporting().isEmpty(), "verifier channel should support the stored atom");
+    }
+
+    @Test
+    @DisplayName("assessClaim: a predicate with no held atom is assessed as given")
+    void assessClaim_unheldPredicate_assessedAsGiven() {
+        seed(SPELLING_FS, "works_for(alice, acme)");
+
+        ClaimDossier dossier = service.assessClaim(SPELLING_FS, new UnifiedGraph(), "bob", "worksFor", "acme");
+
+        assertEquals("worksFor(bob, acme)", dossier.claimAtom());
+    }
+
+    @Test
+    @DisplayName("assessClaim: an atom asserted without the space is verified")
+    void assessClaim_noSpaceAssert_isVerified() {
+        service.assertFact(SPELLING_FS, Fact.observed("trusts(alice,bob)", "agent"));
+
+        ClaimDossier dossier = service.assessClaim(SPELLING_FS, new UnifiedGraph(), "alice", "trusts", "bob");
+
+        assertEquals("trusts(alice,bob)", dossier.claimAtom());
+        assertFalse(dossier.supporting().isEmpty(), "verifier channel should support the asserted atom");
     }
 }

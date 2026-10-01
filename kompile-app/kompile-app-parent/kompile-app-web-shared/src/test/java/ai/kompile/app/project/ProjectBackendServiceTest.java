@@ -16,7 +16,6 @@ import ai.kompile.project.KompileProjectInitRequest;
 import ai.kompile.project.KompileProjectStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.file.Path;
@@ -154,7 +153,7 @@ class ProjectBackendServiceTest {
                 .name("Research").isActive(false).build();
         when(factSheets.getAllSheets()).thenReturn(List.of(sheet));
         when(factSheets.ensurePortableId(sheet)).thenReturn(sheet);
-        ReflectionTestUtils.setField(service, "factSheetService", factSheets);
+        service.factSheetService = factSheets;
 
         service.exportProjectCatalogs(tempDir);
 
@@ -167,7 +166,7 @@ class ProjectBackendServiceTest {
     private ProjectBackendService projectService(CodeProjectRepository repository,
                                                  CodebaseIndexer indexer) {
         ProjectBackendService service = new ProjectBackendService(repository, indexer);
-        ReflectionTestUtils.setField(service, "configuredRoot", tempDir.toString());
+        service.configuredRoot = tempDir.toString();
         KompileProjectInitRequest init = new KompileProjectInitRequest();
         init.setName("graph-project");
         service.init(init);

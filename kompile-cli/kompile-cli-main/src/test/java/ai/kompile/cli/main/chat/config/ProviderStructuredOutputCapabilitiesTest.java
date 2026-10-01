@@ -14,7 +14,7 @@ class ProviderStructuredOutputCapabilitiesTest {
 
     @Test
     void documentedChatCompletionsProvidersDeclareJsonSchema() {
-        for (String provider : new String[] {"zai", "openai", "groq", "xai", "ollama", "openrouter"}) {
+        for (String provider : new String[] {"zai", "openai", "groq", "xai", "openrouter"}) {
             ProviderStructuredOutputCapabilities caps = ProviderStructuredOutputCapabilities.forProvider(provider);
             assertTrue(caps.supportsJsonSchema(), provider + " must declare documented json_schema support");
             assertTrue(caps.sourceUrl().startsWith("https://"), provider + " source must be https");
@@ -27,7 +27,7 @@ class ProviderStructuredOutputCapabilitiesTest {
         // Z.AI documents response_format.type as text|json_object only; json_schema must
         // never be sent there (it yields prose instead of JSON on glm-5.3-flash).
         assertTrue(ProviderStructuredOutputCapabilities.forProvider("zai").isJsonObjectOnly());
-        for (String provider : new String[] {"openai", "groq", "xai", "ollama", "openrouter"}) {
+        for (String provider : new String[] {"openai", "groq", "xai", "openrouter"}) {
             assertFalse(ProviderStructuredOutputCapabilities.forProvider(provider).isJsonObjectOnly(),
                     provider + " documents native json_schema and must not be forced into object mode");
         }

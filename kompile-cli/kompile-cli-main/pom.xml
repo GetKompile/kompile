@@ -267,6 +267,7 @@
             <version>${project.version}</version>
         </dependency>
         <!-- Explicit source loaders used by the non-Spring project-local crawl runtime. -->
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-source-erp</artifactId><version>${project.version}</version></dependency>
         <dependency><groupId>ai.kompile</groupId><artifactId>kompile-source-jira</artifactId><version>${project.version}</version></dependency>
         <dependency><groupId>ai.kompile</groupId><artifactId>kompile-source-reddit</artifactId><version>${project.version}</version></dependency>
         <dependency><groupId>ai.kompile</groupId><artifactId>kompile-source-notion</artifactId><version>${project.version}</version></dependency>
@@ -279,6 +280,19 @@
         <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-gdrive</artifactId><version>${project.version}</version></dependency>
         <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-google-workspace</artifactId><version>${project.version}</version></dependency>
         <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-onedrive</artifactId><version>${project.version}</version></dependency>
+        <!-- Local file formats (eml/mbox/msg, doc/docx/ppt/pptx) and the deterministic email graph extractor. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-mail</artifactId>
+            <version>${project.version}</version>
+            <exclusions>
+                <!-- Bundles the jakarta.mail API with the Angus implementation, duplicating the
+                     jakarta.mail-api + angus-mail pair kompile-loader-email-imap already provides. -->
+                <exclusion><groupId>org.eclipse.angus</groupId><artifactId>jakarta.mail</artifactId></exclusion>
+            </exclusions>
+        </dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-microsoft</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-email-inbox</artifactId><version>${project.version}</version></dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-crawl-graph</artifactId>
@@ -535,8 +549,13 @@
                                 <buildArg>-H:IncludeResources=org/jline/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/org/jline/.*</buildArg>
                                 <buildArg>-H:IncludeResources=build-scripts/.*\.sh</buildArg>
+                                <!-- The default image carries only the standard charsets: POI's StringUtil needs
+                                     cp1252 to initialize at all, and mail/HTML loaders decode legacy charsets. -->
+                                <buildArg>-H:+AddAllCharsets</buildArg>
                                 <!-- Bulk-register lsp4j protocol POJOs for gson reflective (de)serialization. -->
                                 <buildArg>--features=ai.kompile.cli.main.lsp.graal.Lsp4jFeature</buildArg>
+                                <!-- Bulk-register POI's XMLBeans schema types, which XMLBeans loads reflectively. -->
+                                <buildArg>--features=ai.kompile.cli.main.project.graal.PoiOoxmlFeature</buildArg>
                             </buildArgs>
                         </configuration>
                     </plugin>

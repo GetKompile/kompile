@@ -49,7 +49,7 @@ public class AbliterationService {
     private static final Logger log = LoggerFactory.getLogger(AbliterationService.class);
 
     @Value(StagingPropertyKeys.MODELS_DIR_VALUE)
-    private String modelsDir;
+    String modelsDir;
 
     /**
      * Apply abliteration to a model and write a deployable artifact manifest.

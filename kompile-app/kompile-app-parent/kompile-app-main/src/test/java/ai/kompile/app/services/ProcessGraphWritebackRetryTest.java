@@ -397,95 +397,37 @@ class ProcessGraphWritebackRetryTest {
      *
      * <p>We invoke onStepCompleted which internally runs attempt 1 and schedules
      * retries. Since the scheduler is daemon-threaded and we need synchronous control,
-     * we instead call the internal performStepWrite method via reflection, driving
+     * we instead call the internal performStepWrite method directly, driving
      * the retry loop manually up to MAX_RETRY_ATTEMPTS+1 times.</p>
      */
-    private void driveAllAttempts(WorkflowRun run, StepExecution step) throws Exception {
+    private void driveAllAttempts(WorkflowRun run, StepExecution step) {
         // Attempt 1 (inline in onStepCompleted) → throws → schedules retry
         assertDoesNotThrow(() -> service.onStepCompleted(run, step));
         // The scheduler will eventually fire retries. For the dead-letter test we
         // need deterministic control, so we also call the dead-letter path directly
         // by repeating the action after the inline attempt count is exhausted.
-        // We simulate all retry rounds by driving executeWithRetry directly:
-        var method = ProcessGraphWritebackService.class.getDeclaredMethod(
-                "executeWithRetry",
-                Runnable.class,
-                java.util.function.Supplier.class,
-                String.class,
-                int.class);
-        method.setAccessible(true);
-
-        // Round out remaining retry attempts synchronously
+        // We simulate all retry rounds by driving executeWithRetry directly,
+        // rounding out the remaining attempts synchronously.
         for (int attempt = 2; attempt <= ProcessGraphWritebackService.MAX_RETRY_ATTEMPTS + 1; attempt++) {
-            final int a = attempt;
-            final StepExecution finalStep = step;
-            final WorkflowRun finalRun = run;
-            method.invoke(service,
-                    (Runnable) () -> {
-                        try {
-                            var pw = ProcessGraphWritebackService.class.getDeclaredMethod(
-                                    "performStepWrite",
-                                    WorkflowRun.class, StepExecution.class);
-                            pw.setAccessible(true);
-                            pw.invoke(service, finalRun, finalStep);
-                        } catch (Exception ex) {
-                            throw new RuntimeException(ex.getCause() != null ? ex.getCause() : ex);
-                        }
-                    },
-                    (java.util.function.Supplier<?>) () -> {
-                        try {
-                            var build = ProcessGraphWritebackService.class.getDeclaredMethod(
-                                    "buildStepDeadLetter", WorkflowRun.class, StepExecution.class);
-                            build.setAccessible(true);
-                            return build.invoke(service, finalRun, finalStep);
-                        } catch (Exception ex) {
-                            return null;
-                        }
-                    },
+            service.executeWithRetry(
+                    () -> service.performStepWrite(run, step),
+                    () -> service.buildStepDeadLetter(run, step),
                     "step-exec:" + run.getId() + "/" + step.getStepId(),
-                    a);
+                    attempt);
         }
     }
 
     /**
      * Same as driveAllAttempts but for RUN_COMPLETED.
      */
-    private void driveAllRunAttempts(WorkflowRun run) throws Exception {
+    private void driveAllRunAttempts(WorkflowRun run) {
         assertDoesNotThrow(() -> service.onRunCompleted(run));
-        var method = ProcessGraphWritebackService.class.getDeclaredMethod(
-                "executeWithRetry",
-                Runnable.class,
-                java.util.function.Supplier.class,
-                String.class,
-                int.class);
-        method.setAccessible(true);
-
         for (int attempt = 2; attempt <= ProcessGraphWritebackService.MAX_RETRY_ATTEMPTS + 1; attempt++) {
-            final int a = attempt;
-            final WorkflowRun finalRun = run;
-            method.invoke(service,
-                    (Runnable) () -> {
-                        try {
-                            var pw = ProcessGraphWritebackService.class.getDeclaredMethod(
-                                    "performRunWrite", WorkflowRun.class);
-                            pw.setAccessible(true);
-                            pw.invoke(service, finalRun);
-                        } catch (Exception ex) {
-                            throw new RuntimeException(ex.getCause() != null ? ex.getCause() : ex);
-                        }
-                    },
-                    (java.util.function.Supplier<?>) () -> {
-                        try {
-                            var build = ProcessGraphWritebackService.class.getDeclaredMethod(
-                                    "buildRunDeadLetter", WorkflowRun.class);
-                            build.setAccessible(true);
-                            return build.invoke(service, finalRun);
-                        } catch (Exception ex) {
-                            return null;
-                        }
-                    },
+            service.executeWithRetry(
+                    () -> service.performRunWrite(run),
+                    () -> service.buildRunDeadLetter(run),
                     "process-run:" + run.getId(),
-                    a);
+                    attempt);
         }
     }
 }

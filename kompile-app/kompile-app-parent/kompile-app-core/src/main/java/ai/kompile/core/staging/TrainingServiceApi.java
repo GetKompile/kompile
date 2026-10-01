@@ -16,9 +16,12 @@
 package ai.kompile.core.staging;
 
 /**
- * Read-only API surface of the training service, used by kompile-app-main
- * to query training job status without depending on the full staging implementation.
+ * API surface of the training service, used by kompile-app-main to query and cancel
+ * training jobs without depending on the full staging implementation.
  */
 public interface TrainingServiceApi {
     TrainingJobStatus getJob(String jobId);
+
+    /** Requests cancellation of a training job; false when it can't be cancelled. */
+    boolean cancelJob(String jobId);
 }

@@ -67,6 +67,12 @@ public class DocumentSourceDescriptor {
         GDRIVE,           // Represents Google Drive files/folders accessed via Google OAuth
         ONEDRIVE,         // Represents Microsoft OneDrive files/folders accessed via Microsoft OAuth
         GOOGLE_WORKSPACE, // Represents Google Workspace (Gmail, Drive, Docs, Calendar)
+        SAP_NETWEAVER,    // Read-only SAP NetWeaver Gateway entity collections (HTTP, not RFC)
+        ODATA,            // Read-only OData 4 entity collections
+        DYNAMICS365,      // Dynamics 365 Finance & Operations OData (not Dataverse)
+        NETSUITE,         // NetSuite REST record collection/detail reads
+        ODOO,             // Odoo 19 JSON-2 fixed search_read operation
+        SALESFORCE,       // Salesforce REST query/queryMore reads
         S3,               // Represents an AWS S3 bucket or prefix
         SFTP,             // Represents files accessible via SFTP
         SQL,              // Represents a SQL database query or table

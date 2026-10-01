@@ -29,7 +29,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -58,7 +57,7 @@ import static org.mockito.Mockito.*;
  * <p>Injectable {@code modelIdSource} / {@code modelInfoSource} suppliers (package-private
  * fields) replace the {@link ai.kompile.embedding.anserini.AnseriniEncoderFactory} static
  * calls so no static-mocking infrastructure is required.  {@code REGISTRY_BASE} is reset
- * to the per-test {@link TempDir} via {@link ReflectionTestUtils}.
+ * to the per-test {@link TempDir} directly.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -81,7 +80,7 @@ class EncoderGraphPreWarmServiceTest {
     @BeforeEach
     void setUp() {
         service = new EncoderGraphPreWarmService();
-        ReflectionTestUtils.setField(service, "launcher", launcher);
+        service.launcher = launcher;
 
         // Redirect REGISTRY_BASE to the temp dir so resolveModelPath finds real files
         originalRegistryBase = EncoderGraphPreWarmService.REGISTRY_BASE;
@@ -278,8 +277,7 @@ class EncoderGraphPreWarmServiceTest {
                 "schedulePreWarm must be safe when no launcher is wired");
     }
 
-    private static String cacheFingerprint(Path modelFile) {
-        return ReflectionTestUtils.invokeMethod(
-                SameDiffEncoder.class, "computeSourceFingerprint", modelFile);
+    private static String cacheFingerprint(Path modelFile) throws IOException {
+        return SameDiffEncoder.computeSourceFingerprint(modelFile);
     }
 }

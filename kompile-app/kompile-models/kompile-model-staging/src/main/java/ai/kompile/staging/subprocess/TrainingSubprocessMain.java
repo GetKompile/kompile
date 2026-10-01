@@ -17,6 +17,7 @@
 package ai.kompile.staging.subprocess;
 
 import ai.kompile.app.config.NativeLibraryResolver;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.staging.training.TranscriptJsonlDatasetSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -59,7 +60,8 @@ import java.util.*;
  * 1. Reads TrainingSubprocessArgs from a JSON file
  * 2. Initializes ND4J environment
  * 3. Dispatches to the appropriate training implementation based on trainingType
- * 4. Reports progress via STDOUT JSON with TRAINING_MSG: prefix
+ * 4. Reports progress as TRAINING_MSG:-prefixed JSON lines on the protocol channel its launcher set up
+ *    (stdout when there is none)
  *
  * Uses direct SameDiff/ND4J APIs (no reflection) since nd4j-native is on the classpath.
  *
@@ -94,7 +96,7 @@ public class TrainingSubprocessMain {
     private static final Map<String, DatasetView> DATASET_CACHE = new HashMap<>();
     private static final Map<String, Integer> DATASET_CURSORS = new HashMap<>();
 
-    private static PrintStream originalStdout;
+    private static PrintStream protocolOut;
     private static volatile TrainingSubprocessArgs currentArgs;
     private static volatile Tokenizer trainingTokenizer;
 
@@ -104,7 +106,8 @@ public class TrainingSubprocessMain {
 
     public static void main(String[] args) {
         NativeLibraryResolver.bootstrapOrThrow();
-        originalStdout = System.out;
+        // Reports go to the protocol channel; System.out, like native output on fd 1, goes to stderr
+        protocolOut = SubprocessProtocolChannel.open(System.out);
         System.setOut(System.err);
 
         if (args.length < 1) {
@@ -127,7 +130,7 @@ public class TrainingSubprocessMain {
             logger.info("Training subprocess started for taskId={}, type={}, model={}",
                     trainingArgs.taskId(), trainingArgs.trainingType(), trainingArgs.modelId());
 
-            reporter = new TrainingSubprocessProgressReporter(trainingArgs.taskId(), originalStdout);
+            reporter = new TrainingSubprocessProgressReporter(trainingArgs.taskId(), protocolOut);
             reporter.startHeartbeat();
             reporter.reportLog("INFO", "Training subprocess started");
             reporter.reportPhaseTransition(null, "INITIALIZING", 0);
@@ -151,8 +154,8 @@ public class TrainingSubprocessMain {
                     String taskId = trainingArgs != null ? trainingArgs.taskId() : "unknown";
                     TrainingSubprocessMessage.Failed failed = TrainingSubprocessMessage.failed(taskId, "STARTUP", e);
                     String json = OBJECT_MAPPER.writeValueAsString(failed);
-                    originalStdout.println(TrainingSubprocessMessage.MESSAGE_PREFIX + json);
-                    originalStdout.flush();
+                    protocolOut.println(TrainingSubprocessMessage.MESSAGE_PREFIX + json);
+                    protocolOut.flush();
                 } catch (Exception ex) {
                     System.err.println("FATAL: Failed to report error: " + ex.getMessage());
                 }
@@ -283,7 +286,7 @@ public class TrainingSubprocessMain {
     }
 
     @SuppressWarnings("unchecked")
-    private static LoraConfig buildLoraConfig(Map<String, Object> peftConfig) {
+    static LoraConfig buildLoraConfig(Map<String, Object> peftConfig) {
         String peftType = getStringFromConfig(peftConfig, "peftType", "LORA").toUpperCase(Locale.ROOT);
         String nestedKey = "QLORA".equals(peftType) ? "qloraConfig" : "loraConfig";
         Map<String, Object> options = nestedMap(peftConfig, nestedKey);
@@ -1284,7 +1287,7 @@ public class TrainingSubprocessMain {
         return inputs;
     }
 
-    private static long[] validateDistillationCompatibility(
+    static long[] validateDistillationCompatibility(
             SameDiff teacher,
             SameDiff student,
             TrainingSubprocessArgs args,
@@ -1389,7 +1392,7 @@ public class TrainingSubprocessMain {
     }
 
     @SuppressWarnings("unchecked")
-    private static DatasetView resolveAndLoadDataset(String datasetId) {
+    static DatasetView resolveAndLoadDataset(String datasetId) {
         try {
             Path directPath = Paths.get(datasetId).toAbsolutePath().normalize();
             Map<String, Object> meta = new LinkedHashMap<>();
@@ -1864,7 +1867,7 @@ public class TrainingSubprocessMain {
         return DataType.FLOAT;
     }
 
-    private static void fillArray(INDArray array, String variableName, List<TrainingSample> batch, boolean input) {
+    static void fillArray(INDArray array, String variableName, List<TrainingSample> batch, boolean input) {
         long batchSize = Math.max(1, array.size(0));
         long rowWidth = Math.max(1, array.length() / batchSize);
         INDArray flat = array.ravel();
@@ -2083,12 +2086,12 @@ public class TrainingSubprocessMain {
         return value != null ? String.valueOf(value) : null;
     }
 
-    private record DatasetView(String id, Path datasetRoot, Path dataFile, String format, String task,
-                               Map<String, Object> meta, List<TrainingSample> samples) {}
+    record DatasetView(String id, Path datasetRoot, Path dataFile, String format, String task,
+                       Map<String, Object> meta, List<TrainingSample> samples) {}
 
-    private record TrainingSample(Object inputValue, Object labelValue, Object chosenValue,
-                                  Object rejectedValue, Object scoreValue,
-                                  Map<String, Object> fields) {}
+    record TrainingSample(Object inputValue, Object labelValue, Object chosenValue,
+                          Object rejectedValue, Object scoreValue,
+                          Map<String, Object> fields) {}
 
     private static IllegalStateException missingTrainingModel(String mode, TrainingSubprocessArgs args) {
         return new IllegalStateException("No SameDiff model available for " + mode + " training: " + args.modelId());
@@ -2101,12 +2104,12 @@ public class TrainingSubprocessMain {
         return new UnsupportedOperationException(mode + " training requires a datasetId or dataset file path; datasetId=" + datasetId);
     }
 
-    private static Path writeTrainingArtifactManifest(TrainingSubprocessArgs args,
-                                                      String processType,
-                                                      String outputPath,
-                                                      String modelFileName,
-                                                      Map<String, Double> finalMetrics,
-                                                      Map<String, Object> processConfig) throws Exception {
+    static Path writeTrainingArtifactManifest(TrainingSubprocessArgs args,
+                                              String processType,
+                                              String outputPath,
+                                              String modelFileName,
+                                              Map<String, Double> finalMetrics,
+                                              Map<String, Object> processConfig) throws Exception {
         Path outputDir = Paths.get(outputPath).toAbsolutePath().normalize();
         Files.createDirectories(outputDir);
 

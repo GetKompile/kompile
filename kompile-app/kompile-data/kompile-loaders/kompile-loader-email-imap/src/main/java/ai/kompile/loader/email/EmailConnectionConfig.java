@@ -21,7 +21,9 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 
 /**
@@ -33,6 +35,18 @@ import java.util.List;
 @AllArgsConstructor
 @Builder
 public class EmailConnectionConfig {
+
+    /**
+     * Default total message cap applied when the descriptor doesn't specify one (or specifies
+     * a value {@code <= 0}, which means "no explicit cap" — the loader's own default applies).
+     */
+    public static final int DEFAULT_MESSAGE_LIMIT = 1000;
+
+    /**
+     * Default per-attachment size cap (bytes) above which an attachment is skipped instead of
+     * saved, matching the shared {@code attachmentDirectory} contract used by every loader.
+     */
+    public static final long DEFAULT_MAX_ATTACHMENT_BYTES = 26_214_400L;
 
     /**
      * Email protocol to use for connection.
@@ -130,10 +144,33 @@ public class EmailConnectionConfig {
     private LocalDateTime endDate;
 
     /**
+     * Only fetch emails timestamped at or after this instant (the "since" contract shared by
+     * every crawl loader). When both this and {@link #startDate} are set, the later of the two
+     * wins — see {@link #getEffectiveSinceInstant()}.
+     */
+    private Instant since;
+
+    /**
      * Maximum number of messages to fetch (0 = no limit).
      */
     @Builder.Default
-    private int messageLimit = 1000;
+    private int messageLimit = DEFAULT_MESSAGE_LIMIT;
+
+    /**
+     * Absolute directory to save attachment bytes into (the shared "attachmentDirectory"
+     * contract). When set and {@link #includeAttachments} is true, attachments are written to
+     * {@code <attachmentDirectory>/<messageKey>/<fileName>} instead of being emitted as separate
+     * Documents. Null/blank means the server-ingestion path: attachments continue to be emitted
+     * as separate Documents.
+     */
+    private String attachmentDirectory;
+
+    /**
+     * Per-attachment size cap (bytes) applied only in {@code attachmentDirectory} mode; larger
+     * attachments are skipped (recorded, not saved).
+     */
+    @Builder.Default
+    private long maxAttachmentBytes = DEFAULT_MAX_ATTACHMENT_BYTES;
 
     /**
      * Whether to include email attachments.
@@ -172,6 +209,24 @@ public class EmailConnectionConfig {
         } else {
             return (security == Security.SSL || security == Security.TLS) ? 995 : 110;
         }
+    }
+
+    /**
+     * Resolves the effective "since" instant: the later of the explicit {@link #since} (the
+     * shared crawl "since" contract) and {@link #startDate}, when both are present. Returns
+     * {@code null} when neither bound is configured.
+     */
+    public Instant getEffectiveSinceInstant() {
+        Instant startInstant = startDate != null
+                ? startDate.atZone(ZoneId.systemDefault()).toInstant()
+                : null;
+        if (since == null) {
+            return startInstant;
+        }
+        if (startInstant == null) {
+            return since;
+        }
+        return since.isAfter(startInstant) ? since : startInstant;
     }
 
     /**

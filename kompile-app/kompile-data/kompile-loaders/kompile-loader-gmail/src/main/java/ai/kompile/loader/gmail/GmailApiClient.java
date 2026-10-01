@@ -40,15 +40,26 @@ import java.util.List;
 @Slf4j
 public class GmailApiClient {
 
-    private static final String GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
+    private static final String DEFAULT_GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final int MAX_RETRIES = 3;
 
     private final String accessToken;
+    private final String baseUrl;
     private final HttpClient httpClient;
 
     public GmailApiClient(String accessToken) {
+        this(accessToken, DEFAULT_GMAIL_API);
+    }
+
+    /**
+     * Package-private overload allowing tests to point this client at an in-process fake HTTP
+     * server instead of the real Gmail API, per the shared "in-process fake servers only, never
+     * real ... endpoints" test rule.
+     */
+    GmailApiClient(String accessToken, String baseUrl) {
         this.accessToken = accessToken;
+        this.baseUrl = baseUrl;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .build();
@@ -64,7 +75,7 @@ public class GmailApiClient {
         int batchSize = Math.min(maxResults, 500);
 
         while (ids.size() < maxResults) {
-            StringBuilder url = new StringBuilder(GMAIL_API)
+            StringBuilder url = new StringBuilder(baseUrl)
                     .append("/messages?maxResults=").append(batchSize);
             if (query != null && !query.isBlank()) {
                 url.append("&q=").append(URLEncoder.encode(query, StandardCharsets.UTF_8));
@@ -98,14 +109,14 @@ public class GmailApiClient {
      * Fetches a full message by ID (format=full).
      */
     public JsonNode getMessage(String messageId) throws IOException, InterruptedException {
-        return getJson(GMAIL_API + "/messages/" + messageId + "?format=full");
+        return getJson(baseUrl + "/messages/" + messageId + "?format=full");
     }
 
     /**
      * Fetches message metadata only (format=metadata), with threading and date headers.
      */
     public JsonNode getMessageMetadata(String messageId) throws IOException, InterruptedException {
-        return getJson(GMAIL_API + "/messages/" + messageId
+        return getJson(baseUrl + "/messages/" + messageId
                 + "?format=metadata&metadataHeaders=From&metadataHeaders=To"
                 + "&metadataHeaders=Subject&metadataHeaders=Date"
                 + "&metadataHeaders=Message-ID&metadataHeaders=In-Reply-To"
@@ -119,7 +130,7 @@ public class GmailApiClient {
      * Returns the raw bytes (base64url-decoded).
      */
     public byte[] getAttachment(String messageId, String attachmentId) throws IOException, InterruptedException {
-        JsonNode response = getJson(GMAIL_API + "/messages/" + messageId
+        JsonNode response = getJson(baseUrl + "/messages/" + messageId
                 + "/attachments/" + attachmentId);
         String data = response.get("data").asText();
         return Base64.getUrlDecoder().decode(data);
@@ -129,7 +140,7 @@ public class GmailApiClient {
      * Lists all labels for the authenticated user.
      */
     public List<JsonNode> listLabels() throws IOException, InterruptedException {
-        JsonNode response = getJson(GMAIL_API + "/labels");
+        JsonNode response = getJson(baseUrl + "/labels");
         JsonNode labels = response.get("labels");
         List<JsonNode> result = new ArrayList<>();
         if (labels != null && labels.isArray()) {
@@ -147,7 +158,7 @@ public class GmailApiClient {
         int batchSize = Math.min(maxResults, 500);
 
         while (threads.size() < maxResults) {
-            StringBuilder url = new StringBuilder(GMAIL_API)
+            StringBuilder url = new StringBuilder(baseUrl)
                     .append("/threads?maxResults=").append(batchSize);
             if (query != null && !query.isBlank()) {
                 url.append("&q=").append(URLEncoder.encode(query, StandardCharsets.UTF_8));
@@ -181,14 +192,14 @@ public class GmailApiClient {
      * Fetches a full thread (all messages in the thread).
      */
     public JsonNode getThread(String threadId) throws IOException, InterruptedException {
-        return getJson(GMAIL_API + "/threads/" + threadId + "?format=full");
+        return getJson(baseUrl + "/threads/" + threadId + "?format=full");
     }
 
     /**
      * Gets the user's Gmail profile (email address, messages total, threads total, history ID).
      */
     public JsonNode getProfile() throws IOException, InterruptedException {
-        return getJson(GMAIL_API + "/profile");
+        return getJson(baseUrl + "/profile");
     }
 
     /**
@@ -196,7 +207,7 @@ public class GmailApiClient {
      * Used for incremental sync — returns added/deleted message IDs.
      */
     public JsonNode listHistory(String startHistoryId, int maxResults) throws IOException, InterruptedException {
-        StringBuilder url = new StringBuilder(GMAIL_API)
+        StringBuilder url = new StringBuilder(baseUrl)
                 .append("/history?startHistoryId=").append(startHistoryId)
                 .append("&maxResults=").append(Math.min(maxResults, 500));
         return getJson(url.toString());

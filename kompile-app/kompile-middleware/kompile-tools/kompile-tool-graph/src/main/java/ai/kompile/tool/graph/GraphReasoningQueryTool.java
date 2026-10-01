@@ -16,6 +16,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Single, self-describing query tool for common graph reasoning questions.
@@ -40,6 +41,8 @@ public class GraphReasoningQueryTool {
      * @param queryEmbedding optional vector for semantic+structural RANK
      * @param structural PSL or BAYESIAN, default PSL
      * @param queryText search text, relation text filter, asset selector, vector-layer name, or artifact name
+     * @param question natural-language alias for queryText
+     * @param quantitative target, interventions, and goal for MODELS, CALCULATE, SCENARIO, and SOLVE_TARGET
      */
     public record QueryInput(
             @ToolParam(description = "Fact-sheet graph scope; null selects the current/default graph", required = false)
@@ -65,14 +68,30 @@ public class GraphReasoningQueryTool {
             @ToolParam(description = "Search/filter text, vector-layer or weight-map selector, relation id, global vector key, or artifact name", required = false)
             String queryText,
             @ToolParam(description = "Natural-language alias for queryText; queryText wins when both are present", required = false)
-            String question) {
+            String question,
+            @ToolParam(description = "Required object for MODELS, CALCULATE, SCENARIO, and SOLVE_TARGET: "
+                    + "{\"target\":{\"text\":\"Gross Margin\"}}, plus for SCENARIO \"interventions\":"
+                    + "[{\"target\":{\"text\":\"Sales\"},\"operation\":\"SCALE\",\"value\":0.1}] "
+                    + "(operation SET, ADD, or SCALE; SCALE is a fraction, -0.16 means -16%), or for "
+                    + "SOLVE_TARGET \"goal\":{\"control\":{\"text\":\"Sales\"},\"targetValue\":0.5,"
+                    + "\"minimum\":0,\"maximum\":1000}. Selectors take entityId, text, or type; optional "
+                    + "dimensions, asOf, and topK narrow the model.", required = false)
+            Map<String, Object> quantitative) {
+
+        public QueryInput(
+                Long factSheetId, String operation, String entityId, String targetId,
+                String direction, List<String> relationTypes, Integer maxDepth, Integer topK,
+                List<Double> queryEmbedding, String structural, String queryText, String question) {
+            this(factSheetId, operation, entityId, targetId, direction, relationTypes,
+                    maxDepth, topK, queryEmbedding, structural, queryText, question, null);
+        }
 
         public QueryInput(
                 Long factSheetId, String operation, String entityId, String targetId,
                 String direction, List<String> relationTypes, Integer maxDepth, Integer topK,
                 List<Double> queryEmbedding, String structural, String queryText) {
             this(factSheetId, operation, entityId, targetId, direction, relationTypes,
-                    maxDepth, topK, queryEmbedding, structural, queryText, null);
+                    maxDepth, topK, queryEmbedding, structural, queryText, null, null);
         }
     }
 
@@ -86,9 +105,11 @@ public class GraphReasoningQueryTool {
                   + "Use CAPABILITIES when unsure. Omit operation with queryText for SEARCH, or omit "
                   + "both for CAPABILITIES. Operations: CAPABILITIES, OVERVIEW, SCHEMA, SEARCH, "
                   + "RELATIONS, DESCRIBE, NEIGHBORS, PATH, TIMELINE, FACTS, SIMILAR, VERIFY, WHY, "
-                  + "WHY_NOT, RANK, ASSETS, ARTIFACT. Entity fields accept ids or names and resolve "
-                  + "automatically. Responses contain ranked results, resolution candidates, evidence, "
-                  + "recovery guidance, and a canonical reasoning trace.")
+                  + "WHY_NOT, RANK, ASSETS, ARTIFACT, MODELS, CALCULATE, SCENARIO, SOLVE_TARGET. "
+                  + "MODELS, CALCULATE, SCENARIO, and SOLVE_TARGET evaluate graph-resident formulas from "
+                  + "the quantitative object without changing the graph. Entity fields accept ids or "
+                  + "names and resolve automatically. Responses contain ranked results, resolution "
+                  + "candidates, evidence, recovery guidance, and a canonical reasoning trace.")
     public GraphQueryEngine.Result query(QueryInput input) {
         if (input == null) {
             return GraphReasoningQueryService.invalid("query input is required");
@@ -105,6 +126,7 @@ public class GraphReasoningQueryTool {
                 input.queryEmbedding(),
                 input.structural(),
                 input.queryText(),
-                input.question()));
+                input.question(),
+                input.quantitative()));
     }
 }

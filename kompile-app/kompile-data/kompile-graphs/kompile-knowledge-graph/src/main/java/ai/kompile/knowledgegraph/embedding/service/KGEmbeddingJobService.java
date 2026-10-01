@@ -28,6 +28,8 @@ import ai.kompile.knowledgegraph.embedding.impl.SameDiffKgeModel;
 import ai.kompile.knowledgegraph.embedding.impl.TransEModel;
 import ai.kompile.knowledgegraph.embedding.repository.KGEmbeddingJobRepository;
 import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,6 +70,11 @@ public class KGEmbeddingJobService {
 
     private static final Logger log = LoggerFactory.getLogger(KGEmbeddingJobService.class);
 
+    /** The file an out-of-process run trains into: {"entities":{id:[...]},"relations":{type:[...]}}. */
+    private static final TypeReference<Map<String, Map<String, float[]>>> TRAINED_VECTORS =
+            new TypeReference<>() {};
+    private static final ObjectMapper TRAINED_VECTORS_READER = new ObjectMapper();
+
     private KGEmbeddingJobRepository jobRepository;
     private KGEmbeddingStorageService storageService;
     private SimpMessagingTemplate messagingTemplate;
@@ -93,7 +100,7 @@ public class KGEmbeddingJobService {
      * the job falls back to the JPA {@link KGEmbeddingStorageService} directly.
      */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private List<KgEmbeddingGraphAdapter> graphAdapters;
+    List<KgEmbeddingGraphAdapter> graphAdapters;
 
     /**
      * Optional serialization gate for heavy in-memory model operations. When present (app-main
@@ -105,14 +112,13 @@ public class KGEmbeddingJobService {
     private HeavyMemoryCoordinator heavyMemoryCoordinator;
 
     /**
-     * Optional out-of-process KGE training executor. When present and enabled
-     * ({@code kompile.learning.subprocess.enabled=true}) the expensive
+     * Optional out-of-process KGE training executor. When present, the expensive
      * {@code model.train()} call is delegated to a separate JVM so that an OOM
      * there cannot kill the main app. When absent the existing in-JVM path is
      * used unchanged. Injected field-style from {@code kompile-app-main}.
      */
     @Autowired(required = false)
-    private KgeTrainingExecutor kgeTrainingExecutor;
+    KgeTrainingExecutor kgeTrainingExecutor;
 
     /**
      * Optional managed-config service; when absent, {@code useSameDiffKge} defaults to {@code false}
@@ -272,21 +278,17 @@ public class KGEmbeddingJobService {
 
                 Long version = System.currentTimeMillis();
                 if (oopResult.success()) {
-                    if (adapter != null) {
-                        adapter.storeEmbeddings(oopResult.model(), factSheetId, version);
-                    } else {
-                        storageService.storeEmbeddings(oopResult.model(), factSheetId, version);
-                    }
+                    storeOutOfProcessResult(oopResult, adapter, algorithm, factSheetId, version);
                     kgeJob.setStatus(JobStatus.COMPLETED);
                     kgeJob.setEmbeddingVersion(version);
-                    kgeJob.setEntitiesEmbedded(oopResult.model().getEntityCount());
-                    kgeJob.setRelationsEmbedded(oopResult.model().getRelationCount());
+                    kgeJob.setEntitiesEmbedded(oopResult.entityCount());
+                    kgeJob.setRelationsEmbedded(oopResult.relationCount());
                     kgeJob.setCurrentLoss(oopResult.finalLoss());
                     if (eventPublisher != null) {
                         try {
                             Path kgeArtifact = writeKgeCheckpointStub(factSheetId, version,
-                                    oopResult.model().getEntityCount(),
-                                    oopResult.model().getRelationCount(),
+                                    oopResult.entityCount(),
+                                    oopResult.relationCount(),
                                     oopResult.finalLoss());
                             eventPublisher.publishEvent(
                                     new ModelTrainedEvent(this, "kge", factSheetId, kgeArtifact, "kge-embedding"));
@@ -424,8 +426,8 @@ public class KGEmbeddingJobService {
             }
 
             // ── out-of-process path ────────────────────────────────────────────────
-            // When the out-of-process executor is wired (kompile.learning.subprocess.enabled=true)
-            // delegate training to a separate JVM so that an OOM there cannot kill the main app.
+            // When the out-of-process executor is wired, delegate training to a separate JVM so
+            // that an OOM there cannot kill the main app.
             if (kgeTrainingExecutor != null) {
                 log.info("Delegating KGE training for job {} to out-of-process executor", jobId);
                 // Warm-start: load prior embeddings and pass them to the executor so the subprocess
@@ -447,22 +449,18 @@ public class KGEmbeddingJobService {
 
                 Long version = System.currentTimeMillis();
                 if (oopResult.success()) {
-                    if (adapter != null) {
-                        adapter.storeEmbeddings(oopResult.model(), factSheetId, version);
-                    } else {
-                        storageService.storeEmbeddings(oopResult.model(), factSheetId, version);
-                    }
+                    storeOutOfProcessResult(oopResult, adapter, algorithm, factSheetId, version);
                     job.setStatus(JobStatus.COMPLETED);
                     job.setEmbeddingVersion(version);
-                    job.setEntitiesEmbedded(oopResult.model().getEntityCount());
-                    job.setRelationsEmbedded(oopResult.model().getRelationCount());
+                    job.setEntitiesEmbedded(oopResult.entityCount());
+                    job.setRelationsEmbedded(oopResult.relationCount());
                     job.setCurrentLoss(oopResult.finalLoss());
 
                     if (eventPublisher != null) {
                         try {
                             Path kgeArtifact = writeKgeCheckpointStub(factSheetId, version,
-                                    oopResult.model().getEntityCount(),
-                                    oopResult.model().getRelationCount(),
+                                    oopResult.entityCount(),
+                                    oopResult.relationCount(),
                                     oopResult.finalLoss());
                             eventPublisher.publishEvent(
                                     new ModelTrainedEvent(this, "kge", factSheetId, kgeArtifact, "kge-embedding"));
@@ -750,6 +748,48 @@ public class KGEmbeddingJobService {
             }
         }
         return byPriority.get(0);
+    }
+
+    /**
+     * Writes an out-of-process run's vectors back to the store its triples came from. The run hands
+     * back either a model or the file it trained into. The file is this job's to delete once read,
+     * whether or not the write succeeds.
+     */
+    private void storeOutOfProcessResult(KgeTrainingResult result,
+                                         KgEmbeddingGraphAdapter adapter,
+                                         KGEmbeddingAlgorithm algorithm,
+                                         Long factSheetId,
+                                         Long version) throws IOException {
+        if (result.model() != null) {
+            if (adapter != null) {
+                adapter.storeEmbeddings(result.model(), factSheetId, version);
+            } else {
+                storageService.storeEmbeddings(result.model(), factSheetId, version);
+            }
+            return;
+        }
+        if (!result.hasSerializedEmbeddings()) {
+            throw new IllegalStateException("Out-of-process KGE training reported success without any embeddings");
+        }
+        Path file = result.serializedEmbeddingsPath();
+        try {
+            Map<String, Map<String, float[]>> trained = TRAINED_VECTORS_READER.readValue(file.toFile(), TRAINED_VECTORS);
+            Map<String, float[]> entities = trained != null && trained.get("entities") != null
+                    ? trained.get("entities") : Map.of();
+            Map<String, float[]> relations = trained != null && trained.get("relations") != null
+                    ? trained.get("relations") : Map.of();
+            if (adapter != null) {
+                adapter.storeEmbeddings(entities, relations, algorithm, factSheetId, version);
+            } else {
+                storageService.storeEmbeddings(entities, relations, algorithm, factSheetId, version);
+            }
+        } finally {
+            try {
+                Files.deleteIfExists(file);
+            } catch (IOException e) {
+                log.warn("Could not delete KGE training output {}: {}", file, e.getMessage());
+            }
+        }
     }
 
     private void sendProgressUpdate(String jobId, TrainingProgress progress) {

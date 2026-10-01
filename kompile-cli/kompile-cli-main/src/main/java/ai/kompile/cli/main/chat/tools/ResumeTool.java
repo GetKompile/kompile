@@ -31,6 +31,7 @@ import ai.kompile.cli.main.chat.SessionRegistry;
 import ai.kompile.cli.main.chat.format.ConversationExporter;
 import ai.kompile.cli.main.chat.format.ConversationFormatter;
 import ai.kompile.cli.main.chat.format.ConversationReader;
+import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
@@ -2617,8 +2618,8 @@ public class ResumeTool implements CliTool {
                         agentCommand, agent, true, effectiveWorkDir);
             }
 
-            // Configure MCP tools before launching. Codex and Claude Code receive
-            // invocation-local config so concurrent resumes never race through a shared file.
+            // Configure MCP tools before launching. Codex, Claude Code, Qwen Code and OpenCode
+            // receive invocation-local config so concurrent resumes never race through a shared file.
             String sseUrl = resolveResumeMcpSseUrl(agent);
             try {
                 injectedSettingsFile = configureNativeResumeMcp(
@@ -2640,6 +2641,7 @@ public class ResumeTool implements CliTool {
             ProcessBuilder pb = new ProcessBuilder(agentCommand);
             pb.directory(effectiveWorkDir.toFile());
             pb.inheritIO();
+            McpToolInjection.applyLaunchEnvironment(pb.environment(), injectedSettingsFile);
             Process process = pb.start();
 
             boolean interrupted = false;
@@ -2656,7 +2658,7 @@ public class ResumeTool implements CliTool {
                 Thread.currentThread().interrupt();
             } finally {
                 // Always clean up MCP tools
-                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+                McpToolInjection.removeTools(injectedSettingsFile);
             }
 
             // Clean up terminal state after agent exits
@@ -2690,7 +2692,7 @@ public class ResumeTool implements CliTool {
             }
         } catch (Exception e) {
             // Clean up MCP tools on error path too
-            ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+            McpToolInjection.removeTools(injectedSettingsFile);
 
             String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             boolean restored = !terminalClosed || restoreTerminalAfterLaunchFailure();
@@ -2914,7 +2916,7 @@ public class ResumeTool implements CliTool {
                     : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
             String sseUrl = resolveResumeMcpSseUrl(agent);
             try {
-                injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                injectedSettingsFile = McpToolInjection.injectTools(
                         agentWorkingDir, agent, sseUrl);
             } catch (Exception e) {
                 terminal.writer().println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
@@ -2934,6 +2936,7 @@ public class ResumeTool implements CliTool {
                 pb.directory(exportResult.getWorkingDirectory().toFile());
             }
             pb.inheritIO();
+            McpToolInjection.applyLaunchEnvironment(pb.environment(), injectedSettingsFile);
             Process process = pb.start();
 
             boolean interrupted = false;
@@ -2950,7 +2953,7 @@ public class ResumeTool implements CliTool {
                 Thread.currentThread().interrupt();
             } finally {
                 // Always clean up MCP tools
-                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+                McpToolInjection.removeTools(injectedSettingsFile);
             }
 
             // Clean up terminal state after agent exits
@@ -2986,7 +2989,7 @@ public class ResumeTool implements CliTool {
             }
         } catch (Exception e) {
             // Clean up MCP tools on error path too
-            ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+            McpToolInjection.removeTools(injectedSettingsFile);
 
             String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             boolean restored = !terminalClosed || restoreTerminalAfterLaunchFailure();
@@ -3874,10 +3877,10 @@ public class ResumeTool implements CliTool {
         agentCommand.add(resumeParts[0]);
 
         // Pi loads MCP support as an extension rather than from the working-directory
-        // config alone, and Claude Code reads the config written for this launch. Keep
-        // those arguments before --session/other resume args.
+        // config alone, and Claude Code, Qwen Code and Codex read the config written for
+        // this launch. Keep those arguments before --session/other resume args.
         try {
-            agentCommand.addAll(ai.kompile.cli.main.chat.mcp.McpToolInjection.commandLineOverrides(
+            agentCommand.addAll(McpToolInjection.commandLineOverrides(
                     exportResult.getWorkingDirectory() != null
                             ? exportResult.getWorkingDirectory()
                             : Path.of(System.getProperty("user.dir")), agent, injectedSettingsFile));
@@ -3922,8 +3925,10 @@ public class ResumeTool implements CliTool {
     }
 
     /**
-     * Configure MCP access for a native resume. Codex's and Claude Code's configs are
-     * process-local because rewriting a shared config races with concurrent Kompile processes.
+     * Configure MCP access for a native resume. Codex's, Claude Code's, Qwen Code's and
+     * OpenCode's configs are process-local because rewriting a shared config races with
+     * concurrent Kompile processes. An OpenCode launch also needs
+     * {@link McpToolInjection#applyLaunchEnvironment} with the returned file.
      *
      * @return the settings file to restore after exit, or {@code null} for Codex
      */
@@ -3932,17 +3937,16 @@ public class ResumeTool implements CliTool {
         String agentKey = agent != null ? agent.toLowerCase(Locale.ROOT) : "";
         if (agentKey.contains("codex")) {
             List<String> overrides =
-                    ai.kompile.cli.main.chat.mcp.McpToolInjection.codexCommandLineOverrides(workingDirectory);
+                    McpToolInjection.codexCommandLineOverrides(workingDirectory);
             if (overrides.isEmpty()) {
                 throw new IOException("Could not resolve kompile CLI launcher for MCP injection");
             }
             agentCommand.addAll(1, overrides);
             return null;
         }
-        Path settingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+        Path settingsFile = McpToolInjection.injectTools(
                 workingDirectory, agent, sseUrl);
-        agentCommand.addAll(1, ai.kompile.cli.main.chat.mcp.McpToolInjection
-                .commandLineOverrides(workingDirectory, agent, settingsFile));
+        agentCommand.addAll(1, McpToolInjection.commandLineOverrides(workingDirectory, agent, settingsFile));
         return settingsFile;
     }
 

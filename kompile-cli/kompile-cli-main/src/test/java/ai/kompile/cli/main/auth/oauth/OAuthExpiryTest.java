@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Synthetic transports only: expiry storage must not duplicate lifecycle refresh margins. */
 class OAuthExpiryTest {
     @ParameterizedTest
-    @ValueSource(strings = {"anthropic", "xai", "radius", "google", "microsoft",
+    @ValueSource(strings = {"xai", "radius", "google", "microsoft",
             "reddit", "atlassian", "openai-codex"})
     void refreshStoresFullProviderTtlAndPreservesOrRotatesRefreshToken(String provider) throws Exception {
         for (long ttlSeconds : new long[]{30L, 3600L}) {
@@ -104,7 +104,6 @@ class OAuthExpiryTest {
 
     private static OAuthProviderFlow flow(String provider, OAuthSupport.HttpTransport transport) {
         return switch (provider) {
-            case "anthropic" -> new AnthropicOAuthFlow(transport);
             case "xai" -> new XaiOAuthFlow(transport, noPolling());
             case "radius" -> new RadiusOAuthFlow(transport, noPolling());
             case "google" -> new GoogleOAuthFlow(transport, "synthetic-client");

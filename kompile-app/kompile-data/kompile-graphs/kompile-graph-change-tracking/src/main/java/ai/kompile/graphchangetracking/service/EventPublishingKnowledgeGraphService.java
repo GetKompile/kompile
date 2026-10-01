@@ -6,6 +6,7 @@ import ai.kompile.graphchangetracking.event.EdgeMutationEvent;
 import ai.kompile.graphchangetracking.event.GraphBatchMutationEvent;
 import ai.kompile.graphchangetracking.event.NodeMutationEvent;
 import ai.kompile.knowledgegraph.domain.*;
+import ai.kompile.knowledgegraph.service.BoundedKnowledgeGraphReader;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -30,9 +31,11 @@ import java.util.Set;
 @Primary
 @ConditionalOnBean(name = "knowledgeGraphDelegate")
 @Slf4j
-public class EventPublishingKnowledgeGraphService implements KnowledgeGraphService {
+public class EventPublishingKnowledgeGraphService implements KnowledgeGraphService, BoundedKnowledgeGraphReader {
 
     private final KnowledgeGraphService delegate;
+    /** The bridge and the graph subprocess see this decorator's capabilities, not the delegate's. */
+    private final BoundedKnowledgeGraphReader boundedDelegate;
     private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
     private final MutationContextHolder contextHolder;
@@ -51,6 +54,7 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
             ObjectMapper objectMapper,
             MutationContextHolder contextHolder) {
         this.delegate = delegate;
+        this.boundedDelegate = BoundedKnowledgeGraphReader.of(delegate);
         this.eventPublisher = eventPublisher;
         this.objectMapper = objectMapper;
         this.contextHolder = contextHolder;
@@ -74,6 +78,29 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     @Override
     public int applyNodeEmbeddings(Map<String, INDArray> embeddingsByNodeId) {
         return delegate.applyNodeEmbeddings(embeddingsByNodeId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BOUNDED READS — pure delegation (read-only; no graph mutation to publish)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public Optional<GraphNode> getNodeInScope(String nodeId, Long factSheetId) {
+        return boundedDelegate.getNodeInScope(nodeId, factSheetId);
+    }
+
+    @Override
+    public IncidentEdges getIncidentEdges(String nodeId, Long factSheetId, Direction direction, int maxEdges) {
+        return boundedDelegate.getIncidentEdges(nodeId, factSheetId, direction, maxEdges);
+    }
+
+    /** Delegated whole, so a store behind a process boundary still answers in one call. */
+    @Override
+    public Neighborhood getNeighborhood(Long factSheetId, Collection<String> seedIds,
+                                        Collection<String> expansionSeedIds, int maxDepth, int maxNodes,
+                                        Direction direction, int maxEdges) {
+        return boundedDelegate.getNeighborhood(
+                factSheetId, seedIds, expansionSeedIds, maxDepth, maxNodes, direction, maxEdges);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

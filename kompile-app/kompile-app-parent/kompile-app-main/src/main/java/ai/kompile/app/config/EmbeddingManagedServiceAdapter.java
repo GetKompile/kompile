@@ -190,8 +190,13 @@ public class EmbeddingManagedServiceAdapter implements ModelLifecycleManager.Man
             log.info("Registered embedding GPU reservation: {}MB on {} (CUDA runtime {})",
                     budget / (1024 * 1024), targetDevice.name(), targetDevice.cudaRuntimeIndex());
         } catch (IllegalStateException e) {
-            log.warn("Could not register embedding reservation (device may be over-committed): {}",
-                    e.getMessage());
+            // The model is loaded and using that memory whether or not the ledger has room for it —
+            // record it anyway, over-committing the device, so admission sees it
+            log.warn("Embedding reservation of {}MB doesn't fit on {} ({}) — the model is loaded there; " +
+                            "recording an over-committed reservation",
+                    budget / (1024 * 1024), targetDevice.name(), e.getMessage());
+            gpuResourceManager.reserveOverCommit(DeviceRoutingConfig.SERVICE_EMBEDDING,
+                    DeviceRoutingConfig.SERVICE_EMBEDDING, targetDevice, budget);
         }
     }
 }

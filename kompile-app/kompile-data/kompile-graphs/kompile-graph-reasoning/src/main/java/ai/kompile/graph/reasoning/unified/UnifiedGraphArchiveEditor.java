@@ -67,10 +67,9 @@ public final class UnifiedGraphArchiveEditor {
         Path normalizedTarget = target.toAbsolutePath().normalize();
         Path parent = normalizedTarget.getParent();
         if (parent != null) Files.createDirectories(parent);
-        Path staged = Files.createTempFile(parent, normalizedTarget.getFileName() + ".edit-", ".tmp");
-        boolean published = false;
-        try {
-            Result result = rewriteStaged(normalizedSource, staged, additions,
+        try (KGraphScratch scratch = KGraphScratch.forRebuild(normalizedTarget)) {
+            Path staged = scratch.createFile(normalizedTarget.getFileName() + ".edit-", ".tmp");
+            Result result = rewriteStaged(normalizedSource, staged, scratch.directory(), additions,
                     keepEntity, keepLink, metaOverrides);
             try {
                 Files.move(staged, normalizedTarget, StandardCopyOption.ATOMIC_MOVE,
@@ -81,17 +80,15 @@ public final class UnifiedGraphArchiveEditor {
             if (normalizedSource.equals(normalizedTarget)) {
                 UnifiedGraphMutationJournal.clear(normalizedTarget);
             }
-            published = true;
             return new Result(normalizedTarget, result.entities(), result.relations(),
                     result.removedEntities(), result.removedRelations());
-        } finally {
-            if (!published) Files.deleteIfExists(staged);
         }
     }
 
     private static Result rewriteStaged(
             Path source,
             Path staged,
+            Path scratchDirectory,
             UnifiedGraph additions,
             Predicate<UnifiedGraphArchive.EntityRecord> keepEntity,
             Predicate<UnifiedGraphArchive.Link> keepLink,
@@ -173,9 +170,9 @@ public final class UnifiedGraphArchiveEditor {
         CompactAdjacencyCodec.LinkPass adjacencyPass = adjacencyPass(pass, topology);
         CompactAdjacencyCodec.Plan adjacency = CompactAdjacencyCodec.plan(
                 endpoints, relationTypes, relationCount[0], adjacencyPass);
-        Path links = Files.createTempFile("kompile-kgraph-edit-", ".links");
-        Path properties = Files.createTempFile("kompile-kgraph-edit-", ".properties");
-        Path adjacencyFile = Files.createTempFile("kompile-kgraph-edit-", ".adjacency");
+        Path links = Files.createTempFile(scratchDirectory, "kompile-kgraph-edit-", ".links");
+        Path properties = Files.createTempFile(scratchDirectory, "kompile-kgraph-edit-", ".properties");
+        Path adjacencyFile = Files.createTempFile(scratchDirectory, "kompile-kgraph-edit-", ".adjacency");
         try {
             try (OutputStream output = Files.newOutputStream(links, StandardOpenOption.TRUNCATE_EXISTING)) {
                 CompactTopologyCodec.writeLinks(topology, pass, output);
@@ -188,7 +185,7 @@ public final class UnifiedGraphArchiveEditor {
             }
             try (OutputStream output = Files.newOutputStream(
                     adjacencyFile, StandardOpenOption.TRUNCATE_EXISTING)) {
-                CompactAdjacencyCodec.write(adjacency, adjacencyPass, output);
+                CompactAdjacencyCodec.write(adjacency, adjacencyPass, output, scratchDirectory);
             }
 
             List<VectorPlan> vectors = vectorPlans(source, finalEntities, removedRelations);

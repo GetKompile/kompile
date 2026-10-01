@@ -390,6 +390,138 @@ class AgenticChatLoopContextOverflowRecoveryTest {
     }
 
     @Test
+    void claudeCodeRouteLeavesAutoCompactionToClaudeCode() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ScriptedClient client = claudeCodeClient(mapper);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "claude-code-compaction-" + UUID.randomUUID();
+        seedHistoryOfTokens(loop, session, 90_000);
+        setUsageAnchor(loop, 900_000, 90_000);
+
+        assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+
+        assertTrue(loop.autoCompactEnabled());
+        assertTrue(loop.compactionTriggerTokens() < 900_000,
+                "the same usage compacts on routes Kompile owns");
+        assertEquals(0, client.summaryCalls,
+                "Kompile's summary would replace the Claude Code session");
+        assertTrue(ledgerOf(loop).snapshot().checkpoint() == null);
+        assertEquals(1, client.chatCalls);
+    }
+
+    @Test
+    void kompileCompactsOnceAfterClaudeCodeReportsItCouldNotCompact() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ScriptedClient client = claudeCodeClient(mapper);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "claude-code-compaction-failed-" + UUID.randomUUID();
+        seedHistoryOfTokens(loop, session, 90_000);
+        reportClaudeCompactionFailure(client);
+        List<String> notices = captureNotices(loop);
+
+        assertTrue(loop.estimateConversationTokens() < loop.compactionTriggerTokens(),
+                "Kompile's measure of the session is not what triggers the fallback");
+        assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+
+        assertEquals(1, client.summaryCalls);
+        assertTrue(ledgerOf(loop).snapshot().checkpoint() != null);
+        assertTrue(notices.stream().anyMatch(line -> line.contains(
+                "Claude Code could not compact its session")), notices.toString());
+        assertFalse(client.claudeCompactionFailed(),
+                "the compaction replaced the session that could not compact");
+
+        assertEquals("done", loop.chat("next", session, "coder", "default", false));
+        assertEquals(1, client.summaryCalls, "the new session compacts on its own");
+        assertEquals(2, client.chatCalls);
+    }
+
+    @Test
+    void contextUsageComesFromClaudeCodeOnlyOnItsRoute() {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        assertTrue(newLoop(mapper, claudeCodeClient(mapper), new ToolRegistry(mapper))
+                .claudeCodeCompactsSession());
+        assertFalse(newLoop(mapper, millionTokenClient(mapper), new ToolRegistry(mapper))
+                .claudeCodeCompactsSession());
+    }
+
+    @Test
+    void claudeCodeSessionThatCannotCompactContinuesFromKompilesHistory() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ScriptedClient client = claudeCodeClient(mapper);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "claude-code-restore-" + UUID.randomUUID();
+        ConversationLedger ledger = seedShortHistory(loop, session);
+        // The session holds the conversation plus tool output Kompile never saw.
+        ledger.recordNativeSession("claude-cli", "full-session", "digest");
+        client.resumeClaudeNativeSession("full-session", "digest");
+        reportClaudeCompactionFailure(client);
+        List<String> notices = captureNotices(loop);
+        client.replayedMessages.clear();
+
+        assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+
+        assertEquals(0, client.summaryCalls, "the history is too short to summarize");
+        assertTrue(ledger.snapshot().checkpoint() == null);
+        assertTrue(notices.stream().anyMatch(line -> line.contains(
+                "continues in a new Claude Code session restored from Kompile's history")),
+                notices.toString());
+        assertFalse(client.claudeCompactionFailed());
+        assertTrue(client.claudeNativeSession() == null,
+                "the session that could not compact is not resumed");
+        assertFalse(client.claudeSessionHoldsConversation());
+        assertTrue(client.replayedMessages.containsAll(
+                List.of("user:old request", "assistant:old response")),
+                client.replayedMessages.toString());
+        assertEquals(1, client.chatCalls);
+    }
+
+    @Test
+    void rejectedClaudeCodeSessionRetriesInOneRestoredFromKompilesHistory() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ScriptedClient client = claudeCodeClient(mapper, Scenario.FIRST_OVERFLOW);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "claude-code-rejected-" + UUID.randomUUID();
+        ConversationLedger ledger = seedShortHistory(loop, session);
+        client.resumeClaudeNativeSession("rejected-session", "digest");
+        List<String> notices = captureNotices(loop);
+        client.replayedMessages.clear();
+
+        assertEquals("recovered", loop.chat("next", session, "coder", "default", false));
+
+        assertEquals(1, client.summaryCalls, "Kompile tries to compact its history first");
+        assertTrue(ledger.snapshot().checkpoint() == null);
+        assertTrue(notices.stream().anyMatch(line -> line.contains(
+                "Retrying in a new Claude Code session")), notices.toString());
+        assertEquals(2, client.chatCalls);
+        assertTrue(client.claudeNativeSession() == null, "the rejected session is not reused");
+        assertTrue(client.replayedMessages.containsAll(
+                List.of("user:old request", "assistant:old response")),
+                client.replayedMessages.toString());
+        assertFalse(client.replayedMessages.contains("user:next"),
+                "the retry sends the request once, not also as restored history");
+    }
+
+    @Test
+    void restoredClaudeCodeSessionIsNotSentTheRejectedRequestAgain() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ScriptedClient client = claudeCodeClient(mapper, Scenario.FIRST_OVERFLOW);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "claude-code-restored-rejected-" + UUID.randomUUID();
+        seedShortHistory(loop, session);
+        List<String> notices = captureNotices(loop);
+
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> loop.chat("next", session, "coder", "default", false));
+
+        assertTrue(failure.getMessage().contains("Context window exceeded"),
+                failure.getMessage());
+        assertEquals(1, client.chatCalls,
+                "a new session restored from the same history would receive the same request");
+        assertFalse(notices.stream().anyMatch(line -> line.contains(
+                "Retrying in a new Claude Code session")), notices.toString());
+    }
+
+    @Test
     void textOnlyCountCannotReplaceUsageForAPendingAttachmentRequest() throws Exception {
         ObjectMapper mapper = JsonUtils.standardMapper();
         ScriptedClient client = millionTokenClient(mapper);
@@ -458,6 +590,26 @@ class AgenticChatLoopContextOverflowRecoveryTest {
         return client;
     }
 
+    private ScriptedClient claudeCodeClient(ObjectMapper mapper) {
+        return claudeCodeClient(mapper, Scenario.SUCCESS);
+    }
+
+    private ScriptedClient claudeCodeClient(ObjectMapper mapper, Scenario scenario) {
+        ChatConfig config = new ChatConfig("anthropic", null, "claude-test", null);
+        config.setAuthenticationMethod("oauth");
+        config.setContextWindowTokens(1_050_000);
+        config.setMaxOutputTokens(128_000);
+        // Scripted turns and summaries: nothing here reaches the claude binary.
+        return new ScriptedClient(mapper, scenario, config);
+    }
+
+    /** What a Claude Code stream reporting {@code compact_result: failed} leaves set. */
+    private static void reportClaudeCompactionFailure(DirectLlmClient client) throws Exception {
+        Field failed = DirectLlmClient.class.getDeclaredField("claudeCompactionFailed");
+        failed.setAccessible(true);
+        failed.setBoolean(client, true);
+    }
+
     private static void setUsageAnchor(AgenticChatLoop loop, long input, long history) throws Exception {
         Field usage = AgenticChatLoop.class.getDeclaredField("lastReportedInputTokens");
         usage.setAccessible(true);
@@ -503,6 +655,17 @@ class AgenticChatLoopContextOverflowRecoveryTest {
     private void seedNativeThresholdHistory(
             AgenticChatLoop loop, String session) throws Exception {
         seedHistoryOfTokens(loop, session, 60_000);
+    }
+
+    /** One exchange: too short for Kompile to compact. */
+    private ConversationLedger seedShortHistory(
+            AgenticChatLoop loop, String session) throws Exception {
+        loop.configureConversationSession(session);
+        ConversationLedger ledger = ledgerOf(loop);
+        ledger.append(CompactionService.ConversationEntry.user("old request"));
+        ledger.append(CompactionService.ConversationEntry.assistant("old response"));
+        loop.rebuildDirectHistoryForProviderSwitch();
+        return ledger;
     }
 
     private void seedHistoryOfTokens(
@@ -565,8 +728,12 @@ class AgenticChatLoopContextOverflowRecoveryTest {
         private NativeCompactionResult nativeCompaction = NativeCompactionResult.unsupported();
 
         private ScriptedClient(ObjectMapper mapper, Scenario scenario) {
-            super(new ChatConfig(
-                    "custom", null, "overflow-test", "http://unused.invalid"), mapper);
+            this(mapper, scenario, new ChatConfig(
+                    "custom", null, "overflow-test", "http://unused.invalid"));
+        }
+
+        private ScriptedClient(ObjectMapper mapper, Scenario scenario, ChatConfig config) {
+            super(config, mapper);
             this.mapper = mapper;
             this.scenario = scenario;
         }

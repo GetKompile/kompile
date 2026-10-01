@@ -23,7 +23,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Method;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -114,17 +113,14 @@ class ApiAgentChatExecutorTest {
 
     @Test
     void oversizedFixedContextIsRejectedBeforeRequest() throws Exception {
-        var field = ApiAgentChatExecutor.class.getDeclaredField("contextBudgetService");
-        field.setAccessible(true);
-        field.set(executor, new ChatContextBudgetService(
-                new ModelCapabilityService(null), null));
+        executor.contextBudgetService = new ChatContextBudgetService(
+                new ModelCapabilityService(null), null);
         AgentChatRequest request = new AgentChatRequest();
         request.setMessage("hello");
         request.setSystemPromptOverride("x".repeat(1_000_000));
 
-        var failure = assertThrows(java.lang.reflect.InvocationTargetException.class,
+        assertThrows(IllegalStateException.class,
                 () -> invokeBuildOpenAiRequest(buildAgent("gpt-4o"), request, "hello"));
-        assertInstanceOf(IllegalStateException.class, failure.getCause());
     }
 
     @Test
@@ -219,12 +215,9 @@ class ApiAgentChatExecutorTest {
     }
 
     /**
-     * Invoke the private buildOpenAiRequest method via reflection.
+     * Build the OpenAI-compatible request body the executor would send.
      */
-    private String invokeBuildOpenAiRequest(AgentProvider agent, AgentChatRequest request, String prompt) throws Exception {
-        Method method = ApiAgentChatExecutor.class.getDeclaredMethod(
-                "buildOpenAiRequest", AgentProvider.class, AgentChatRequest.class, String.class);
-        method.setAccessible(true);
-        return (String) method.invoke(executor, agent, request, prompt);
+    private String invokeBuildOpenAiRequest(AgentProvider agent, AgentChatRequest request, String prompt) {
+        return executor.buildOpenAiRequest(agent, request, prompt);
     }
 }

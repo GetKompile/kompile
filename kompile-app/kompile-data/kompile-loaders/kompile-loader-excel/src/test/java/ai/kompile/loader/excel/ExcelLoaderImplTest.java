@@ -26,7 +26,9 @@ import org.springframework.ai.document.Document;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.file.Path;
+import java.time.LocalDate;
 import java.util.List;
+import java.util.TimeZone;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -275,6 +277,65 @@ class ExcelLoaderImplTest {
         assertTrue(graphJson.contains("CELL") || graphJson.contains("HEADER_CELL"),
                 "tableGraph must contain CELL or HEADER_CELL entity types");
         assertTrue(graphJson.contains("CONTAINS"), "tableGraph must contain CONTAINS relationships");
+    }
+
+    @Test
+    void testDateCellsFormatAsIsoAcrossTimeZones() throws Exception {
+        File excelFile = tempDir.resolve("dates.xlsx").toFile();
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Shipments");
+            CellStyle dateStyle = workbook.createCellStyle();
+            dateStyle.setDataFormat(workbook.createDataFormat().getFormat("yyyy-mm-dd"));
+
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("Item");
+            header.createCell(1).setCellValue("Ship Date");
+
+            Row row1 = sheet.createRow(1);
+            row1.createCell(0).setCellValue("Widget A");
+            Cell dateCell = row1.createCell(1);
+            dateCell.setCellValue(LocalDate.of(2026, 9, 28));
+            dateCell.setCellStyle(dateStyle);
+
+            try (FileOutputStream fos = new FileOutputStream(excelFile)) {
+                workbook.write(fos);
+            }
+        }
+
+        TimeZone original = TimeZone.getDefault();
+        String previousMarkdown = null;
+        try {
+            for (String zone : new String[] {"Asia/Tokyo", "America/Los_Angeles"}) {
+                TimeZone.setDefault(TimeZone.getTimeZone(zone));
+
+                ExcelLoaderImpl loader = new ExcelLoaderImpl();
+                DocumentSourceDescriptor descriptor = DocumentSourceDescriptor.builder()
+                        .type(DocumentSourceDescriptor.SourceType.FILE)
+                        .pathOrUrl(excelFile.getAbsolutePath())
+                        .build();
+
+                List<Document> documents = loader.load(descriptor);
+                Document sheetDoc = documents.stream()
+                        .filter(d -> "table".equals(d.getMetadata().get("content_type")))
+                        .findFirst()
+                        .orElse(null);
+                assertNotNull(sheetDoc);
+
+                String markdown = (String) sheetDoc.getMetadata().get("full_table_content");
+                assertTrue(markdown.contains("2026-09-28"),
+                        "Expected ISO date 2026-09-28 in zone " + zone + " but got: " + markdown);
+                assertFalse(markdown.matches("(?s).*\\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\b.*"),
+                        "Date should not render via Date.toString() weekday format in zone " + zone);
+
+                if (previousMarkdown != null) {
+                    assertEquals(previousMarkdown, markdown,
+                            "Date formatting must be identical across time zones");
+                }
+                previousMarkdown = markdown;
+            }
+        } finally {
+            TimeZone.setDefault(original);
+        }
     }
 
     // --- Helper methods ---

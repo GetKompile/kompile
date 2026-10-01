@@ -52,7 +52,7 @@ class BayesianNetworkServiceManagedMebnTest {
         AtomicReference<Long> inferenceScope = new AtomicReference<>();
         BayesianNetworkService service = new BayesianNetworkService(graph) {
             @Override
-            protected BayesianInferenceResult queryWithMTheory(
+            public BayesianInferenceResult queryWithMTheory(
                     MTheory selected, Map<String, Integer> evidence, TypeHierarchy hierarchy,
                     Long factSheetId) {
                 used.set(selected);

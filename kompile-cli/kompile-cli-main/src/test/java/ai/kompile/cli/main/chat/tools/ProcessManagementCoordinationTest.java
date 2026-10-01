@@ -40,6 +40,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProcessManagementCoordinationTest {
@@ -86,6 +87,58 @@ class ProcessManagementCoordinationTest {
     }
 
     @Test
+    void theMonitorIsPublishedForTheSessionThatStartedTheOwner(@TempDir Path tempDir) throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        CoordinationStateManager coordinator = new CoordinationStateManager(
+                tempDir, "mcp-owner", mapper, tempDir.resolve("system-coordination"));
+        BackgroundProcessManager processes = new BackgroundProcessManager("mcp-owner", tempDir);
+        try {
+            // An MCP server registers as the child of the chat whose agent it serves.
+            coordinator.registerAgent("MCP stdio tool session", "chat-session", "claude", 1,
+                    ProcessHandle.current().pid(), "tool-transcript", null);
+            ProcessManagementTool tool = new ProcessManagementTool(processes, coordinator);
+            PermissionService permissions = new PermissionService();
+            permissions.setAutoApproveAll(true);
+            ToolContext context = new ToolContext("tool-transcript", AgentConfig.builder("coder").build(),
+                    permissions, tempDir, new ToolRegistry(mapper));
+            ObjectNode launch = mapper.createObjectNode();
+            launch.put("action", "launch");
+            // A builtin blocking read runs long without tripping the mandate's sleep ban.
+            launch.put("command", "read -t 60");
+            launch.put("description", "long build");
+            launch.put("monitor_message", "check the build log");
+            ToolResult launched = tool.execute(launch, context);
+            assertFalse(launched.isError(), launched::getOutput);
+            String processId = String.valueOf(launched.getMetadata().get("processId"));
+
+            ProcessCoordEntry published = onlyProcess(coordinator);
+            assertEquals(processId, published.getProcessId());
+            assertEquals("chat-session", published.getParentSessionId());
+            assertTrue(published.isMonitored());
+            assertEquals("check the build log", published.getMonitorMessage());
+
+            ObjectNode unmonitor = mapper.createObjectNode();
+            unmonitor.put("action", "unmonitor");
+            unmonitor.put("process_id", processId);
+            assertFalse(tool.execute(unmonitor, context).isError());
+            assertFalse(onlyProcess(coordinator).isMonitored());
+            assertNull(onlyProcess(coordinator).getMonitorMessage());
+
+            ObjectNode monitor = mapper.createObjectNode();
+            monitor.put("action", "monitor");
+            monitor.put("process_id", processId);
+            monitor.put("monitor_message", "rerun on failure");
+            assertFalse(tool.execute(monitor, context).isError());
+            assertTrue(onlyProcess(coordinator).isMonitored());
+            assertEquals("rerun on failure", onlyProcess(coordinator).getMonitorMessage());
+            assertEquals("RUNNING", onlyProcess(coordinator).getState());
+        } finally {
+            processes.close();
+            coordinator.shutdown();
+        }
+    }
+
+    @Test
     void terminalUpdateWaitsThroughBriefCoordinatorLockContention(@TempDir Path tempDir)
             throws Exception {
         ObjectMapper mapper = JsonUtils.standardMapper();
@@ -122,6 +175,12 @@ class ProcessManagementCoordinationTest {
         } finally {
             coordinator.shutdown();
         }
+    }
+
+    private static ProcessCoordEntry onlyProcess(CoordinationStateManager coordinator) {
+        List<ProcessCoordEntry> entries = coordinator.queryProcesses();
+        assertEquals(1, entries.size(), "published: " + entries);
+        return entries.get(0);
     }
 
     private static ProcessCoordEntry awaitTerminalProcess(

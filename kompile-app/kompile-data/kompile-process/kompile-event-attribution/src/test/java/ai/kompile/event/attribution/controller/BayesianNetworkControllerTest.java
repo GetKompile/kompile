@@ -14,6 +14,7 @@ import ai.kompile.graph.reasoning.bayesian.BayesianNode;
 import ai.kompile.graph.reasoning.bayesian.NoisyOrCpt;
 import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
 import ai.kompile.graph.reasoning.domain.InferenceStep;
+import ai.kompile.graph.reasoning.domain.MTheoryStructure;
 import ai.kompile.graph.reasoning.domain.MpeResult;
 import ai.kompile.graph.reasoning.domain.SensitivityResult;
 import ai.kompile.event.attribution.service.BayesianNetworkService;
@@ -186,12 +187,9 @@ class BayesianNetworkControllerTest {
                                              String entityType,
                                              Map<String, Integer> evidence,
                                              Integer maxDepth,
-                                             Integer maxNodes) throws Exception {
-        Class<?> clazz = Class.forName(
-                "ai.kompile.event.attribution.controller.BayesianNetworkController$MebnTypeQueryRequest");
-        Constructor<?> ctor = clazz.getDeclaredConstructors()[0];
-        ctor.setAccessible(true);
-        return ctor.newInstance(seedNodeIds, entityType, evidence, maxDepth, maxNodes);
+                                             Integer maxNodes) {
+        return new BayesianNetworkController.MebnTypeQueryRequest(
+                seedNodeIds, entityType, evidence, maxDepth, maxNodes, null);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -861,7 +859,7 @@ class BayesianNetworkControllerTest {
         BayesianInferenceResult fullResult = makeResult(
                 allPosteriors, allPriors, varToNodeId, varToTitle);
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(fullResult);
 
         // Query for ENTITY type — should keep only the 2 ENTITY variables
@@ -916,7 +914,7 @@ class BayesianNetworkControllerTest {
         BayesianInferenceResult fullResult = makeResult(
                 allPosteriors, allPriors, varToNodeId, varToTitle);
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(fullResult);
 
         Object req = makeMebnTypeQueryRequest(List.of("seed"), "ENTITY", Map.of(), 3, 100);
@@ -962,7 +960,7 @@ class BayesianNetworkControllerTest {
                 Map.of("varA", "kg-a", "varB", "kg-b"),
                 Map.of("varA", "Var A", "varB", "Var B"));
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(fullResult);
 
         Object req = makeMebnTypeQueryRequest(List.of("seed"), null, Map.of(), 3, 100);
@@ -985,7 +983,7 @@ class BayesianNetworkControllerTest {
                 Map.of("varX", "kg-x", "varY", "kg-y"),
                 Map.of("varX", "Var X", "varY", "Var Y"));
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(fullResult);
 
         Object req = makeMebnTypeQueryRequest(List.of("seed"), "   ", Map.of(), 3, 100);
@@ -1011,7 +1009,7 @@ class BayesianNetworkControllerTest {
                 new LinkedHashMap<>(Map.of("isRisky_ENTITY_n1", "n1", "isRisky_process_n2", "n2")),
                 new LinkedHashMap<>(Map.of("isRisky_ENTITY_n1", "N1", "isRisky_process_n2", "N2")));
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(fullResult);
 
         // lowercase "entity" should still match "ENTITY"
@@ -1040,7 +1038,7 @@ class BayesianNetworkControllerTest {
                 new LinkedHashMap<>(Map.of("isRisky_ENTITY_n1", "n1", "isActive_PROCESS_n2", "n2")),
                 new LinkedHashMap<>(Map.of("isRisky_ENTITY_n1", "Node 1", "isActive_PROCESS_n2", "Node 2")));
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(fullResult);
 
         Object req = makeMebnTypeQueryRequest(List.of("seed"), "ENTITY", Map.of(), 3, 100);
@@ -1071,7 +1069,7 @@ class BayesianNetworkControllerTest {
                 new LinkedHashMap<>(Map.of("isRisky_ENTITY_n1", "n1", "isActive_PROCESS_n2", "n2")),
                 new LinkedHashMap<>(Map.of("isRisky_ENTITY_n1", "Title Entity", "isActive_PROCESS_n2", "Title Process")));
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(fullResult);
 
         Object req = makeMebnTypeQueryRequest(List.of("seed"), "ENTITY", Map.of(), 3, 100);
@@ -1101,7 +1099,7 @@ class BayesianNetworkControllerTest {
                 new LinkedHashMap<>(Map.of("isActive_PROCESS_n1", "n1")),
                 new LinkedHashMap<>(Map.of("isActive_PROCESS_n1", "Node 1")));
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(fullResult);
 
         // Ask for ENTITY — none present
@@ -1127,7 +1125,7 @@ class BayesianNetworkControllerTest {
                 new LinkedHashMap<>(), new LinkedHashMap<>(),
                 new LinkedHashMap<>(), new LinkedHashMap<>());
 
-        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt()))
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), isNull()))
                 .thenReturn(fullResult);
 
         Map<String, Integer> evidence = Map.of("var_EVIDENCE", 1);
@@ -1138,7 +1136,25 @@ class BayesianNetworkControllerTest {
                 eq(List.of("seed")),
                 eq(evidence),
                 eq(5),
-                eq(200));
+                eq(200),
+                isNull(),
+                isNull());
+    }
+
+    /**
+     * byType scopes inference to the requested fact sheet, as POST /mebn/query does.
+     */
+    @Test
+    void byType_passesFactSheetIdToService() {
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), eq(42L)))
+                .thenReturn(makeResult(new LinkedHashMap<>(), new LinkedHashMap<>(),
+                        new LinkedHashMap<>(), new LinkedHashMap<>()));
+
+        controller.queryMebnByType(new BayesianNetworkController.MebnTypeQueryRequest(
+                List.of("seed"), "ENTITY", Map.of(), 2, 50, 42L));
+
+        verify(bayesianService).queryMebnFromKg(
+                eq(List.of("seed")), eq(Map.of()), eq(2), eq(50), isNull(), eq(42L));
     }
 
     // =========================================================================
@@ -1249,5 +1265,42 @@ class BayesianNetworkControllerTest {
         assertEquals(200, response.getStatusCode().value());
         verify(bayesianService).queryMebnFromKg(
                 eq(List.of("node-global")), eq(Map.of()), eq(3), eq(100), isNull(), isNull());
+    }
+
+    /**
+     * The POST query carries evidence, and scopes it to a fact sheet the way the GET does.
+     */
+    @Test
+    void mebnQueryPost_passesEvidenceAndFactSheetIdToService() {
+        BayesianInferenceResult result = makeResult(
+                new LinkedHashMap<>(), new LinkedHashMap<>(),
+                new LinkedHashMap<>(), new LinkedHashMap<>());
+        Map<String, Integer> evidence = Map.of("isRelevant(node-42)", 1);
+
+        when(bayesianService.queryMebnFromKg(anyCollection(), anyMap(), anyInt(), anyInt(), isNull(), eq(42L)))
+                .thenReturn(result);
+
+        ResponseEntity<BayesianInferenceResult> response = controller.queryMebn(
+                new BayesianNetworkController.MebnQueryRequest(List.of("node-42"), evidence, 2, 50, 42L));
+
+        assertEquals(200, response.getStatusCode().value());
+        verify(bayesianService).queryMebnFromKg(
+                eq(List.of("node-42")), eq(evidence), eq(2), eq(50), isNull(), eq(42L));
+    }
+
+    /**
+     * The theory structure is described by the service, which may run in the graph subprocess;
+     * a blank node id means no seeds.
+     */
+    @Test
+    void mebnTheory_returnsTheStructureTheServiceDescribes() {
+        MTheoryStructure structure = new MTheoryStructure("kg", List.of());
+        when(bayesianService.describeMebnTheory(anyCollection(), anyInt(), anyInt())).thenReturn(structure);
+
+        assertSame(structure, controller.mebnTheory("node-42", 2, 50).getBody());
+        verify(bayesianService).describeMebnTheory(List.of("node-42"), 2, 50);
+
+        controller.mebnTheory(" ", 3, 100);
+        verify(bayesianService).describeMebnTheory(List.of(), 3, 100);
     }
 }

@@ -81,7 +81,7 @@ public class ProjectBackendService {
     private CodebaseIndexer codebaseIndexer;
 
     @Autowired(required = false)
-    private FactSheetService factSheetService;
+    FactSheetService factSheetService;
 
     @Autowired(required = false)
     private ChatSessionRepository chatSessionRepository;
@@ -99,7 +99,7 @@ public class ProjectBackendService {
     private ProjectGraphPortabilityService projectGraphPortabilityService;
 
     @Value("${kompile.project.root:}")
-    private String configuredRoot;
+    String configuredRoot;
 
     public ProjectBackendService(CodeProjectRepository codeProjectRepository, CodebaseIndexer codebaseIndexer) {
         this.codeProjectRepository = codeProjectRepository;

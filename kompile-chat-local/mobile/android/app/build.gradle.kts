@@ -401,6 +401,10 @@ dependencies {
     // ── Desugaring (needed for java.time on API < 26 and some Java 9+ APIs) ──
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.2")
 
+    // Shaded Woodstox retains Bnd service-provider annotations. Its provided
+    // dependency is not transitive; supply it to R8 without packaging build metadata.
+    compileOnly("biz.aQute.bnd:biz.aQute.bnd.annotation:6.4.0")
+
     // ── Compose BOM ───────────────────────────────────────────────────────────
     val composeBom = platform("androidx.compose:compose-bom:2024.11.00")
     implementation(composeBom)

@@ -171,15 +171,6 @@ class CliLlmFallbackTest {
     }
 
     @Test
-    void testResolveWithExplicitOllamaProvider() {
-        CliExtractionLlmClient client = CliExtractionLlmClient.resolve(
-                "ollama", "llama3.3", null, false);
-        assertNotNull(client, "Should resolve with explicit Ollama provider");
-        assertTrue(client.getResolvedFrom().contains("ollama"));
-        client.close();
-    }
-
-    @Test
     void testResolveReportsProviderInResolvedFrom() {
         CliExtractionLlmClient client = CliExtractionLlmClient.resolve(
                 "groq", "llama-3.3-70b-versatile", "test-key", false);
@@ -198,11 +189,11 @@ class CliLlmFallbackTest {
 
     @Test
     void testResolveWithNoProviderAndNoAutoStartReturnsNull() {
-        // When no explicit provider, no ChatConfig, no Ollama, and autoStart=false
+        // When no explicit provider, no ChatConfig, no local server, and autoStart=false
         // the result depends on env vars. We can at least verify no NPE.
         CliExtractionLlmClient client = CliExtractionLlmClient.resolve(
                 null, null, null, false);
-        // May return null or a valid client depending on env vars/Ollama
+        // May return null or a valid client depending on env vars or a running local server
         if (client != null) {
             client.close();
         }

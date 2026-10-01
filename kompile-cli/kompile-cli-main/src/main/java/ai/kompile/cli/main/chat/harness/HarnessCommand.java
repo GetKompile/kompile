@@ -396,7 +396,7 @@ public class HarnessCommand implements Callable<Integer> {
         @CommandLine.Option(names = "--judge-local-quant", description = "Quantization for local model (e.g. Q4_K_M)")
         String judgeLocalQuant;
 
-        @CommandLine.Option(names = "--judge-server-type", description = "Server type for auto-server mode (ollama, kompile)")
+        @CommandLine.Option(names = "--judge-server-type", description = "Server type for auto-server mode (kompile)")
         String judgeServerType;
 
         @CommandLine.Option(names = "--judge-server-port", description = "Port for auto-server mode (0 = default)")
@@ -519,7 +519,7 @@ public class HarnessCommand implements Callable<Integer> {
                 System.out.printf("  %-25s %s%n", "samediff-llm available:", LocalJudgeBackend.checkClassesAvailable());
             }
             if ("auto-server".equals(modeDisplay) || "auto".equals(modeDisplay)) {
-                System.out.printf("  %-25s %s%n", "server-type:", config.getJudgeServerType() != null ? config.getJudgeServerType() : "ollama");
+                System.out.printf("  %-25s %s%n", "server-type:", config.getJudgeServerType() != null ? config.getJudgeServerType() : "kompile");
                 System.out.printf("  %-25s %s%n", "server-port:", config.getJudgeServerPort() > 0 ? config.getJudgeServerPort() : "(default)");
             }
             System.out.println();

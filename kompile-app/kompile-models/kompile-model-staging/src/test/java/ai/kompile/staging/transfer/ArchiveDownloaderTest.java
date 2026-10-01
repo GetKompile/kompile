@@ -13,7 +13,6 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -202,7 +201,7 @@ class ArchiveDownloaderTest {
                 mock(ArchiveImporter.class),
                 limits,
                 transport);
-        ReflectionTestUtils.setField(downloader, "resumeEnabled", resumeEnabled);
+        downloader.resumeEnabled = resumeEnabled;
         return downloader;
     }
 

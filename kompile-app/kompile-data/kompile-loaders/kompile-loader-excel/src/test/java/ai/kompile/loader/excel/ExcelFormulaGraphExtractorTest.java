@@ -27,8 +27,11 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -318,6 +321,76 @@ class ExcelFormulaGraphExtractorTest {
             List<CellNode> d1Deps = graph.getDependenciesOf("Chain!D1");
             assertEquals(1, d1Deps.size());
             assertEquals("Chain!C1", d1Deps.get(0).getCellReference());
+        }
+    }
+
+    @Test
+    void dateFormattedNumericCellDisplaysIsoDate() throws Throwable {
+        forEachTimeZone(() -> {
+            try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+                Sheet sheet = workbook.createSheet("Dates");
+                Cell cell = sheet.createRow(0).createCell(0);
+                cell.setCellValue(LocalDate.of(2026, 9, 28));
+                CellStyle style = workbook.createCellStyle();
+                style.setDataFormat(workbook.createDataFormat().getFormat("yyyy-mm-dd"));
+                cell.setCellStyle(style);
+
+                SpreadsheetGraph graph =
+                        new ExcelFormulaGraphExtractor(workbook).extract(workbook, "dates.xlsx");
+                CellNode node = graph.getCells().get("Dates!A1");
+
+                assertEquals("DATE", node.getCellType());
+                assertEquals("2026-09-28", node.getDisplayValue());
+            }
+        });
+    }
+
+    @Test
+    void dateFormattedFormulaResultDisplaysIsoDate() throws Throwable {
+        forEachTimeZone(() -> {
+            try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+                Sheet sheet = workbook.createSheet("Dates");
+                CellStyle dateStyle = workbook.createCellStyle();
+                dateStyle.setDataFormat(workbook.createDataFormat().getFormat("yyyy-mm-dd"));
+
+                Row row = sheet.createRow(0);
+                Cell a1 = row.createCell(0);
+                a1.setCellValue(LocalDate.of(2026, 9, 28));
+                a1.setCellStyle(dateStyle);
+
+                // C1 = A1 + 1, also date-formatted: must display as the next day's ISO date,
+                // not a raw serial number or a Date.toString() rendering.
+                Cell c1 = row.createCell(2);
+                c1.setCellFormula("A1+1");
+                c1.setCellStyle(dateStyle);
+
+                SpreadsheetGraph graph =
+                        new ExcelFormulaGraphExtractor(workbook).extract(workbook, "dates.xlsx");
+
+                List<CellNode> formulas = graph.getFormulaCells();
+                assertEquals(1, formulas.size());
+                // Formula cells always report cellType "FORMULA" (that's how getFormulaCells()
+                // finds them); the resolved date lives in evaluatedCellType/displayValue, mirroring
+                // cachedFormulaEvaluation's NUMERIC case which never relabels the evaluation type.
+                assertEquals("FORMULA", formulas.get(0).getCellType());
+                assertEquals("NUMERIC", formulas.get(0).getEvaluatedCellType());
+                assertEquals("2026-09-29", formulas.get(0).getDisplayValue());
+            }
+        });
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    /** Runs {@code action} once per non-UTC zone, restoring the JVM default afterward. */
+    private static void forEachTimeZone(Executable action) throws Throwable {
+        TimeZone original = TimeZone.getDefault();
+        try {
+            for (String zone : new String[] {"Asia/Tokyo", "America/Los_Angeles"}) {
+                TimeZone.setDefault(TimeZone.getTimeZone(zone));
+                action.execute();
+            }
+        } finally {
+            TimeZone.setDefault(original);
         }
     }
 }

@@ -44,16 +44,16 @@ public class NotionWebhookController {
     private static final Logger log = LoggerFactory.getLogger(NotionWebhookController.class);
 
     @Autowired
-    private NoteSyncConfigService configService;
+    NoteSyncConfigService configService;
 
     @Autowired
-    private NoteSyncConnectionRepository connectionRepository;
+    NoteSyncConnectionRepository connectionRepository;
 
     @Autowired
-    private NoteSyncConnectionService connectionService;
+    NoteSyncConnectionService connectionService;
 
     @Autowired
-    private ObjectMapper objectMapper;
+    ObjectMapper objectMapper;
 
     /**
      * Receives Notion webhook events. Returns 200 immediately, processes async.

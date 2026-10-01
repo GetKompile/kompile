@@ -8,7 +8,9 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -63,25 +65,27 @@ class AuthWizardTest {
     }
 
     @Test
-    void anthropicSubscriptionLoginIsClaudeCodesSoNoKompileCredentialIsNamed() throws Exception {
-        CredentialStore store = new CredentialStore(tempDir.resolve("anthropic-oauth-auth.json"));
+    void anthropicLoginOffersItsApiKeyButNoSubscriptionSignIn() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("anthropic-auth.json"));
         ScriptedPrompter prompter = new ScriptedPrompter()
-                .selecting("Anthropic", "OAuth / subscription sign-in")
-                .answering("never-asked");
+                .selecting("Anthropic", "Paste an API key")
+                .answering("work")
+                .secrets("anthropic-secret");
 
         AuthWizard.LoginRequest request;
         try (AuthWizard wizard = AuthWizard.using(prompter)) {
             request = wizard.promptForLogin(new OAuthProviderRegistry(), store);
         }
 
+        // Claude Code owns Anthropic's subscription login, so the wizard never offers to sign in to it.
+        assertEquals(List.of("Paste an API key", "Reference an environment variable"),
+                prompter.menus.get("Select Login Method:"));
         assertNotNull(request);
         assertEquals("anthropic", request.providerId());
-        assertEquals(AuthWizard.LoginKind.OAUTH, request.kind());
-        assertNull(request.credentialName());
-        assertNull(request.oauthMethod());
-        // Claude Code keeps this login, so there is no credential name or activation to ask about.
-        assertEquals(List.of("never-asked"), List.copyOf(prompter.answers));
-        assertTrue(store.list().isEmpty());
+        assertEquals("work", request.credentialName());
+        assertEquals(AuthWizard.LoginKind.API_KEY, request.kind());
+        assertEquals("anthropic-secret", request.storedValue());
+        assertTrue(request.activate());
     }
 
     @Test
@@ -175,6 +179,7 @@ class AuthWizardTest {
         private final Deque<String> secretAnswers = new ArrayDeque<>();
         private final Deque<Boolean> confirmations = new ArrayDeque<>();
         private final List<String> messages = new ArrayList<>();
+        private final Map<String, List<String>> menus = new LinkedHashMap<>();
 
         private ScriptedPrompter selecting(String... values) {
             selections.addAll(List.of(values));
@@ -204,6 +209,7 @@ class AuthWizardTest {
 
         @Override
         public int select(String title, List<String> items) {
+            menus.put(title, List.copyOf(items));
             String wanted = selections.removeFirst();
             if ("__cancel__".equals(wanted)) {
                 return -1;

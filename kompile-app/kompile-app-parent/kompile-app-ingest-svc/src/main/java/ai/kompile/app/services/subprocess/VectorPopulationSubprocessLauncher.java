@@ -19,6 +19,7 @@ package ai.kompile.app.services.subprocess;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.app.config.DeviceRoutingConfig;
+import ai.kompile.app.config.GpuDevice;
 import ai.kompile.app.ingest.service.IngestEventService;
 import ai.kompile.app.services.IngestProgressTracker;
 import ai.kompile.app.services.DeviceRoutingConfigService;
@@ -27,13 +28,17 @@ import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.OpTimingService;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.services.VectorPopulationProgressTracker;
+import ai.kompile.app.services.scheduler.JobResourceProfiles;
 import ai.kompile.app.services.subprocess.SubprocessCommandBuilder.MemoryOverrides;
 import ai.kompile.app.services.subprocess.SubprocessCommandBuilder.ThreadOverrides;
 import ai.kompile.app.services.subprocess.SubprocessRestartManager.FailureReason;
 import ai.kompile.app.subprocess.BackendConfigurable;
+import ai.kompile.app.subprocess.ManagedSubprocessLauncher.BackendPreference;
+import ai.kompile.app.subprocess.SubprocessBackendFlags;
 import ai.kompile.app.subprocess.SubprocessMessage;
 import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.subprocess.SubprocessPlacementSupport;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
 import ai.kompile.app.subprocess.VectorPopulationSubprocessArgs;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestPhase;
@@ -57,6 +62,9 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Service for launching and managing vector population subprocesses.
@@ -80,16 +88,25 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
 
     private static final Logger logger = LoggerFactory.getLogger(VectorPopulationSubprocessLauncher.class);
 
-    /** Shared device-agnostic placement (same base infra every subprocess uses). */
+    /**
+     * Placement assigned through {@link BackendConfigurable}. Only the legacy four-argument
+     * {@code launchVectorPopulation} reads it, once per task; the scheduler passes each task's placement instead.
+     */
     private final SubprocessPlacementSupport placement = new SubprocessPlacementSupport();
 
-    /** {@link BackendConfigurable} — the scheduler assigns backend/device/memory before spawn. */
+    /** {@link BackendConfigurable} — the placement for the next launch that doesn't carry its own. */
     @Override
     public void applyPlacement(SubprocessPlacement p) {
         this.placement.applyPlacement(p);
     }
 
     private static final String VECTOR_POPULATION_TOPIC = "/topic/vector-population/progress";
+
+    private static final String CANCELLED_BY_USER = "Vector population cancelled by user";
+    private static final String STOPPED_FOR_SHUTDOWN = "Vector population stopped: the application is shutting down";
+
+    /** How long a caller's result waits, after the verdict, for the attempt that gave it to exit */
+    private static final long VERDICT_EXIT_WAIT_SECONDS = 30;
 
     // Fallback values if SubprocessConfigService is not available
     @Value("${kompile.vectorpopulation.subprocess.java-path:java}")
@@ -131,7 +148,7 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
     private final VectorPopulationStatsConverter statsConverter;
 
     @Autowired(required = false)
-    private ModelLifecycleManager modelLifecycleManager;
+    ModelLifecycleManager modelLifecycleManager;
 
     @Autowired(required = false)
     private ai.kompile.app.subprocess.SubprocessRegistry subprocessRegistry;
@@ -147,6 +164,23 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
 
     // Track tasks that have already logged warnings
     private final Set<String> warnedTaskIds = ConcurrentHashMap.newKeySet();
+
+    /**
+     * One vector population task across its restarts, which reuse its taskId: the index paths and
+     * placement every attempt runs on, the future its caller holds, and the attempt now running.
+     */
+    private record TaskLaunch(String keywordIndexPath, String vectorIndexPath, SubprocessPlacement placement,
+            CompletableFuture<VectorPopulationResult> resultFuture,
+            AtomicReference<VectorPopulationHandle> currentAttempt, AtomicBoolean cancelled) {}
+
+    // Launch state per task, keyed by taskId (the scheduler's jobId on the scheduler path)
+    private final Map<String, TaskLaunch> taskLaunches = new ConcurrentHashMap<>();
+
+    /** TaskIds whose GPU row this launcher acquired itself; released once, when the task ends */
+    private final Set<String> launcherGpuHolds = ConcurrentHashMap.newKeySet();
+
+    /** Set once shutdown begins; no attempt starts after it */
+    private volatile boolean shuttingDown;
 
     @Autowired
     public VectorPopulationSubprocessLauncher(
@@ -206,12 +240,7 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
         lifecycleManager.setContext(
                 activeProcesses,
                 warnedTaskIds,
-                (taskId, options) -> {
-                    VectorPopulationHandle existing = activeProcesses.get(taskId);
-                    String kwPath = existing != null ? existing.getKeywordIndexPath() : null;
-                    String vPath = existing != null ? existing.getVectorIndexPath() : null;
-                    return launchVectorPopulation(taskId, kwPath, vPath, options);
-                },
+                this::relaunchVectorPopulation,
                 (taskId, phase, percent, message) -> broadcastProgress(taskId, phase, percent, "Step", message, null),
                 (taskId, phase, percent, message, stats) -> broadcastProgress(taskId, phase, percent, "Step", message, stats));
 
@@ -228,7 +257,7 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
                                 transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
                     }
                     if (resourceScheduler != null) {
-                        var profile = ai.kompile.app.services.scheduler.JobResourceProfiles.VECTOR_POPULATION;
+                        var profile = JobResourceProfiles.VECTOR_POPULATION;
                         boolean requiresGpu = profile.phaseRequiresGpu(transition.toPhase());
                         long gpuMem = profile.gpuMemoryForPhase(transition.toPhase());
                         resourceScheduler.reportPhaseTransition(handle.getTaskId(), transition.toPhase(), requiresGpu, gpuMem);
@@ -236,25 +265,24 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
                 },
                 (handle, completed) -> forwardCompletion(handle, completed),
                 (handle, failed) -> {
-                    // Restartable failures: broadcast RECOVERY_SCHEDULED but do not forward as full failure
-                    if (handle.isOomDetected()) {
-                        FailureReason failureReason = handle.getFailureReason() != null
-                                ? handle.getFailureReason() : FailureReason.OUT_OF_MEMORY;
-                        String recoveryType = failureReason == FailureReason.BATCH_SIZE_TOO_LARGE
-                                ? "BATCH SIZE TOO LARGE" : "OOM";
-                        String recoveryAction = failureReason == FailureReason.BATCH_SIZE_TOO_LARGE
-                                ? "reducing batch size by 75%" : "adjusting memory settings";
-                        broadcastProgress(handle.getTaskId(), "RECOVERY_SCHEDULED",
-                                handle.getProgressPercent(),
-                                "Adaptive Recovery",
-                                recoveryType + " detected during " + failed.phase() + " - " + recoveryAction,
-                                Map.of("phase", failed.phase(),
-                                       "failureReason", failureReason.name(),
-                                       "isRecovery", true));
-                    } else {
-                        forwardFailure(handle, failed);
-                        closeSubprocessLog(handle, "FAILED", null, failed.errorMessage(), false, false);
-                    }
+                    forwardFailure(handle, failed);
+                    closeSubprocessLog(handle, "FAILED", null, failed.errorMessage(), false, false);
+                },
+                (handle, failed) -> {
+                    // Restartable failure: its restart is scheduled once the attempt exits
+                    FailureReason failureReason = handle.getFailureReason() != null
+                            ? handle.getFailureReason() : FailureReason.OUT_OF_MEMORY;
+                    String recoveryType = failureReason == FailureReason.BATCH_SIZE_TOO_LARGE
+                            ? "BATCH SIZE TOO LARGE" : "OOM";
+                    String recoveryAction = failureReason == FailureReason.BATCH_SIZE_TOO_LARGE
+                            ? "reducing batch size by 75%" : "adjusting memory settings";
+                    broadcastProgress(handle.getTaskId(), "RECOVERY_SCHEDULED",
+                            handle.getProgressPercent(),
+                            "Adaptive Recovery",
+                            recoveryType + " detected during " + failed.phase() + " - " + recoveryAction,
+                            Map.of("phase", failed.phase(),
+                                   "failureReason", failureReason.name(),
+                                   "isRecovery", true));
                 },
                 (handle, heartbeat) -> {
                     if (heartbeatBroadcaster != null) {
@@ -262,14 +290,20 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
                     }
                 },
                 (handle, exitCode) -> {
-                    lifecycleManager.handleCompletion(handle, exitCode);
-                    cleanup(handle);
+                    // An exit whose handling throws (a restart the shut-down scheduler rejects) still frees
+                    // the attempt and deletes its args file
+                    try {
+                        lifecycleManager.handleCompletion(handle, exitCode);
+                    } finally {
+                        cleanup(handle);
+                    }
                 },
                 warnedTaskIds);
     }
 
     /**
-     * Launch a subprocess to populate vector store from Lucene keyword index.
+     * Launch a subprocess to populate vector store from Lucene keyword index, on the placement assigned
+     * via {@link #applyPlacement}.
      *
      * @param taskId           Unique task identifier
      * @param keywordIndexPath Path to the source Lucene keyword index
@@ -282,12 +316,140 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
             String keywordIndexPath,
             String vectorIndexPath,
             Map<String, Object> options) {
+        return launchVectorPopulation(taskId, keywordIndexPath, vectorIndexPath, options, placement.placement());
+    }
+
+    /**
+     * Launch a vector population subprocess on an explicit placement. The taskId names the task for its
+     * whole life: every restart reuses its index paths and this placement, and cancelling it reaches any
+     * attempt.
+     *
+     * @param placement the child's backend/device/memory cap — the scheduler's placement for the task it
+     *                  holds a GPU row for; null lets the launcher reserve the task's own row
+     * @return Future that completes when the task finishes (after any restarts)
+     */
+    public CompletableFuture<VectorPopulationResult> launchVectorPopulation(
+            String taskId,
+            String keywordIndexPath,
+            String vectorIndexPath,
+            Map<String, Object> options,
+            SubprocessPlacement placement) {
+        TaskLaunch existing = taskLaunches.get(taskId);
+        if (existing != null) {
+            logger.warn("Vector population task {} is already running; not launching it again", taskId);
+            return afterAttemptExits(existing);
+        }
+
+        // Settle the task's GPU row before any command is built, so the child is pinned to its device
+        TaskLaunch task = new TaskLaunch(keywordIndexPath, vectorIndexPath, resolveTaskPlacement(taskId, placement),
+                new CompletableFuture<>(), new AtomicReference<>(), new AtomicBoolean());
+        taskLaunches.put(taskId, task);
+        // A task that ends with no attempt running (never started, cancelled between restarts) is
+        // finished here; otherwise cleanup finishes it when its last attempt exits
+        task.resultFuture().whenComplete((result, error) -> {
+            if (!activeProcesses.containsKey(taskId)) {
+                finishTask(taskId);
+            }
+        });
+        launchAttempt(taskId, task, options, task.resultFuture());
+        return afterAttemptExits(task);
+    }
+
+    /**
+     * A task's result as its caller sees it: complete once the attempt that gave the verdict has exited, or
+     * {@link #VERDICT_EXIT_WAIT_SECONDS} after the verdict. After COMPLETED the child still flushes its index
+     * on its device, and a caller such as the scheduler frees the task's GPU row as soon as this completes.
+     */
+    private CompletableFuture<VectorPopulationResult> afterAttemptExits(TaskLaunch task) {
+        return task.resultFuture().thenCompose(result -> {
+            VectorPopulationHandle attempt = task.currentAttempt().get();
+            if (attempt == null || !attempt.isAlive()) {
+                return CompletableFuture.completedFuture(result);
+            }
+            return attempt.getProcess().onExit()
+                    .completeOnTimeout(null, VERDICT_EXIT_WAIT_SECONDS, TimeUnit.SECONDS)
+                    .handle((exited, error) -> {
+                        if (exited == null) {
+                            logger.warn("[vecpop-{}] Subprocess still running {}s after its verdict; not waiting for it",
+                                    attempt.getTaskId(), VERDICT_EXIT_WAIT_SECONDS);
+                        }
+                        return result;
+                    });
+        });
+    }
+
+    /**
+     * The placement every attempt of a new task runs on. A CPU placement, or a GPU placement for a task
+     * whose row is already held (the scheduler acquired it), is used as given. Otherwise the launcher
+     * acquires the task's own row and places the child on that device; if it can't, the task runs on
+     * CPU — a child is never pinned to a GPU without a row.
+     */
+    private SubprocessPlacement resolveTaskPlacement(String taskId, SubprocessPlacement requested) {
+        if (modelLifecycleManager == null
+                || (requested != null && requested.backend() == BackendPreference.CPU)) {
+            return requested;
+        }
+        long capBytes = JobResourceProfiles.VECTOR_POPULATION.peakGpuMemoryBytes();
+        ModelLifecycleManager.JobGpuHold held = modelLifecycleManager.getActiveJobHolds().get(taskId);
+        if (held != null) {
+            return requested != null && requested.isGpu() ? requested : placementOn(held.device(), capBytes);
+        }
+        if (requested != null) {
+            logger.warn("[vecpop-{}] GPU placement {} has no GPU row; acquiring one for the task", taskId, requested);
+        }
+        try {
+            GpuDevice device = modelLifecycleManager.acquireGpuForJob(taskId,
+                    JobResourceProfiles.VECTOR_POPULATION.serviceType(), "Vector population: " + taskId,
+                    ModelLifecycleManager.HoldLifetime.BOUNDED, capBytes, null);
+            launcherGpuHolds.add(taskId);
+            logger.info("[vecpop-{}] GPU row acquired for vector population on {}", taskId, device.name());
+            return placementOn(device, capBytes);
+        } catch (IllegalStateException e) {
+            logger.warn("[vecpop-{}] Could not acquire GPU for vector population, running on CPU: {}",
+                    taskId, e.getMessage());
+            return SubprocessPlacement.cpu();
+        }
+    }
+
+    /** The child's placement on a reserved device — derived the same way the scheduler derives it. */
+    private static SubprocessPlacement placementOn(GpuDevice device, long capBytes) {
+        return SubprocessPlacement.gpu(device.cudaRuntimeIndex(),
+                ModelLifecycleManager.clampToDevice(capBytes, device));
+    }
+
+    /**
+     * Restart callback for {@link SubprocessLifecycleManager}: relaunch a task on the index paths and
+     * placement of its first attempt, unless it was cancelled or ended while the restart was pending.
+     */
+    private CompletableFuture<VectorPopulationResult> relaunchVectorPopulation(
+            String taskId, Map<String, Object> options) {
+        TaskLaunch task = taskLaunches.get(taskId);
+        if (task == null || task.cancelled().get() || task.resultFuture().isDone()) {
+            logger.info("[vecpop-{}] Task was cancelled or has ended; not restarting it", taskId);
+            if (task != null && task.cancelled().get()) {
+                // The restart's progress updates may have landed after the cancel's — restate it
+                reportCancelled(taskId, null, task.vectorIndexPath(),
+                        shuttingDown ? STOPPED_FOR_SHUTDOWN : CANCELLED_BY_USER);
+            }
+            return CompletableFuture.completedFuture(
+                    VectorPopulationResult.failure(taskId, "RESTARTING", "Cancelled before restart"));
+        }
+        return launchAttempt(taskId, task, options, new CompletableFuture<>());
+    }
+
+    /** Start one attempt of a task; {@code resultFuture} completes with that attempt's result. */
+    private CompletableFuture<VectorPopulationResult> launchAttempt(String taskId, TaskLaunch task,
+            Map<String, Object> options, CompletableFuture<VectorPopulationResult> resultFuture) {
+        String keywordIndexPath = task.keywordIndexPath();
+        String vectorIndexPath = task.vectorIndexPath();
 
         logger.info("Launching vector population subprocess for task: {} keywordIndex: {} vectorIndex: {}",
                 taskId, keywordIndexPath, vectorIndexPath);
 
-        CompletableFuture<VectorPopulationResult> resultFuture = new CompletableFuture<>();
-
+        Path argsFile = null;
+        Process process = null;
+        VectorPopulationHandle handle = null;
+        boolean monitored = false;
         try {
             String nd4jConfigJson = captureNd4jConfig();
 
@@ -406,7 +568,7 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
 
             logger.debug("Using callback URL: {}", callbackBaseUrl);
 
-            Path argsFile = Files.createTempFile("vector-pop-args-" + taskId, ".json");
+            argsFile = Files.createTempFile("vector-pop-args-" + taskId, ".json");
             args.toFile(argsFile);
             logger.debug("Wrote subprocess args to: {}", argsFile);
 
@@ -443,10 +605,11 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
             }
 
             // Build command via SubprocessCommandBuilder (a shared bean — keep per-spawn placement in
-            // this launcher, not the bean). Inject device-agnostic backend/device flags right after the
-            // java executable (index 1), before -cp/main class. No CUDA_VISIBLE_DEVICES.
+            // this launcher, not the bean). Inject the task's device-agnostic backend/device flags right
+            // after the executable (index 1): before -cp/main class for java, before the --subprocess=
+            // dispatch token for the native executable. No CUDA_VISIBLE_DEVICES.
             List<String> command = new ArrayList<>(commandBuilder.buildCommand(argsFile, memoryOverrides));
-            List<String> deviceFlags = placement.jvmFlags();
+            List<String> deviceFlags = SubprocessBackendFlags.jvmFlags(task.placement(), BackendPreference.INHERIT);
             if (!deviceFlags.isEmpty()) {
                 command.addAll(1, deviceFlags);
             }
@@ -459,39 +622,40 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
             // Propagate ND4J environment variables with thread overrides
             commandBuilder.propagateNd4jEnvironment(processBuilder.environment(), threadOverrides);
             // Device-agnostic per-device memory bound (SD_MAX_DEVICE_BYTES) — shared base infra.
-            placement.applyEnv(processBuilder.environment());
+            SubprocessBackendFlags.applyEnv(processBuilder.environment(), task.placement());
+            // Protocol messages get a pipe of their own, which native output written to fd 1 can't reach
+            boolean wrapped = SubprocessProtocolChannel.apply(processBuilder);
 
-            // === GPU LIFECYCLE: Acquire GPU resources for this vector population job ===
-            if (modelLifecycleManager != null && !modelLifecycleManager.hasJobGpuHold(taskId)) {
-                try {
-                    modelLifecycleManager.acquireGpuForVectorPopulation(taskId);
-                    logger.info("[vecpop-{}] GPU resources acquired for vector population job", taskId);
-                } catch (IllegalStateException e) {
-                    logger.warn("[vecpop-{}] Could not acquire GPU for vector population (may use CPU fallback): {}",
-                            taskId, e.getMessage());
+            // Start under the task's lock: a cancel either reaches this attempt or keeps it from starting
+            synchronized (task) {
+                if (task.cancelled().get() || shuttingDown) {
+                    logger.info("[vecpop-{}] Task was cancelled or the application is shutting down; "
+                            + "not starting this attempt", taskId);
+                    resultFuture.complete(VectorPopulationResult.failure(taskId, "STARTING", "Cancelled before start"));
+                    Files.deleteIfExists(argsFile);
+                    return resultFuture;
                 }
-            } else if (modelLifecycleManager != null) {
-                logger.info("[vecpop-{}] GPU already held by scheduler, skipping launcher acquire", taskId);
+
+                process = processBuilder.start();
+                logger.info("Started vector population subprocess with PID: {}", process.pid());
+
+                // Register with centralized subprocess registry for orphan protection
+                if (subprocessRegistry != null) {
+                    subprocessRegistry.register("vector-pop-" + taskId, process, "vector-population");
+                }
+
+                // Record subprocess start for timing
+                if (opTimingService != null) {
+                    opTimingService.recordSubprocessStart(taskId, "VECTOR_POPULATION");
+                }
+
+                // Create handle
+                handle = new VectorPopulationHandle(
+                        taskId, keywordIndexPath, vectorIndexPath,
+                        process, resultFuture, argsFile);
+                task.currentAttempt().set(handle);
+                activeProcesses.put(taskId, handle);
             }
-
-            Process process = processBuilder.start();
-            logger.info("Started vector population subprocess with PID: {}", process.pid());
-
-            // Register with centralized subprocess registry for orphan protection
-            if (subprocessRegistry != null) {
-                subprocessRegistry.register("vector-pop-" + taskId, process, "vector-population");
-            }
-
-            // Record subprocess start for timing
-            if (opTimingService != null) {
-                opTimingService.recordSubprocessStart(taskId, "VECTOR_POPULATION");
-            }
-
-            // Create handle
-            VectorPopulationHandle handle = new VectorPopulationHandle(
-                    taskId, keywordIndexPath, vectorIndexPath,
-                    process, resultFuture, argsFile);
-            activeProcesses.put(taskId, handle);
 
             // Open subprocess log writer (Phase 2 log aggregation)
             try {
@@ -509,7 +673,9 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
             }
 
             // Start monitoring via SubprocessOutputHandler
-            outputHandler.startMonitoring(handle);
+            outputHandler.startMonitoring(handle, SubprocessProtocolChannel.stderrProtocol(
+                    wrapped, SubprocessMessage.MESSAGE_PREFIX, "vector-pop-" + taskId));
+            monitored = true;
 
             // Start tracking via progress tracker
             if (progressTracker != null) {
@@ -534,6 +700,25 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
 
         } catch (Exception e) {
             logger.error("Failed to launch vector population subprocess for task: {}", taskId, e);
+            if (monitored) {
+                // The monitor owns the running attempt and completes its result
+                return resultFuture;
+            }
+            // Nothing watches this attempt, so it ends here. The args file carries the staging API key.
+            if (process != null) {
+                process.destroyForcibly();
+            }
+            if (handle != null) {
+                closeSubprocessLog(handle, "FAILED", null, "Launch failed: " + e.getMessage(), false, false);
+                cleanup(handle);
+            } else {
+                if (process != null && subprocessRegistry != null) {
+                    subprocessRegistry.deregister("vector-pop-" + taskId);
+                }
+                deleteArgsFile(argsFile);
+            }
+            // Completing after cleanup: a first attempt then ends its task, a restart's failure goes
+            // back to the lifecycle manager
             resultFuture.completeExceptionally(e);
         }
 
@@ -541,34 +726,64 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
     }
 
     /**
-     * Cancel a running subprocess.
+     * Cancel a vector population task by its taskId: the attempt now running is stopped, and a restart
+     * still pending (or a first attempt not yet started) never starts.
      */
     public boolean cancelVectorPopulation(String taskId) {
-        VectorPopulationHandle handle = activeProcesses.get(taskId);
-        if (handle == null || !handle.isAlive()) {
+        TaskLaunch task = taskLaunches.get(taskId);
+        VectorPopulationHandle handle;
+        if (task != null) {
+            // Under the task's lock, so an attempt about to start sees the cancel
+            synchronized (task) {
+                task.cancelled().set(true);
+                handle = task.currentAttempt().get();
+            }
+        } else {
+            handle = activeProcesses.get(taskId);
+        }
+
+        // A running attempt is stopped, and its exit is reported as cancelled. One that already has its
+        // verdict is left alone: after COMPLETED it is still flushing its index
+        if (handle != null && handle.isAlive() && !handle.isCancelled() && !handle.getResultFuture().isDone()) {
+            logger.info("Cancelling vector population subprocess for task: {}", taskId);
+            handle.cancel();
+            return true;
+        }
+
+        // No attempt left to stop (between restarts, not started yet, or already being killed for a stall
+        // restart): the task ends here, and its pending restart sees that and never runs
+        CompletableFuture<VectorPopulationResult> pending = handle != null ? handle.getResultFuture()
+                : task != null ? task.resultFuture() : null;
+        if (pending == null || !pending.complete(VectorPopulationResult.failure(taskId,
+                handle != null ? handle.getCurrentPhase() : "STARTING", CANCELLED_BY_USER))) {
             return false;
         }
+        logger.info("Cancelling vector population task {} between attempts", taskId);
+        reportCancelled(taskId, handle, task != null ? task.vectorIndexPath() : handle.getVectorIndexPath(),
+                CANCELLED_BY_USER);
+        return true;
+    }
 
-        logger.info("Cancelling vector population subprocess for task: {}", taskId);
-        handle.cancel();
-
+    /** Report a task's cancel: to the progress trackers, the UI, and the log of the attempt it ended. */
+    private void reportCancelled(String taskId, VectorPopulationHandle handle, String vectorIndexPath, String message) {
+        String phase = handle != null ? handle.getCurrentPhase() : "STARTING";
         if (progressTracker != null) {
-            progressTracker.cancelTask(taskId, "Vector population cancelled by user");
+            progressTracker.cancelTask(taskId, message);
         }
         if (ingestProgressTracker != null) {
-            String displayName = buildTaskDisplayName(handle.getVectorIndexPath());
-            IngestPhase ingestPhase = statsConverter.mapPhaseToIngestPhase(handle.getCurrentPhase());
+            String displayName = buildTaskDisplayName(vectorIndexPath);
+            IngestPhase ingestPhase = statsConverter.mapPhaseToIngestPhase(phase);
             IngestStats stats = IngestStats.builder()
                     .subprocessRuntimeInfo(IngestProgressUpdate.SubprocessRuntimeInfo.forProcessMode("SUBPROCESS"))
                     .build();
-            ingestProgressTracker.cancelTask(taskId, displayName, ingestPhase,
-                    "Vector population cancelled by user", stats);
+            ingestProgressTracker.cancelTask(taskId, displayName, ingestPhase, message, stats);
         }
 
-        broadcastProgress(taskId, handle.getCurrentPhase(), handle.getProgressPercent(),
-                "Cancelled", "Vector population cancelled by user", null);
-
-        return true;
+        broadcastProgress(taskId, phase, handle != null ? handle.getProgressPercent() : 0,
+                "Cancelled", message, null);
+        if (handle != null) {
+            closeSubprocessLog(handle, "CANCELLED", null, message, false, false);
+        }
     }
 
     /**
@@ -599,26 +814,46 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
     @PreDestroy
     public void shutdownAll() {
         logger.info("Shutting down all active vector population subprocesses...");
+        shuttingDown = true;
+
+        // No pending restart may start once shutdown begins. A task with no attempt left running (between
+        // restarts, not started, or its attempt being stopped for a restart) ends here: the restart scheduler
+        // is shut down below, so nothing else would end it
+        for (Map.Entry<String, TaskLaunch> entry : taskLaunches.entrySet()) {
+            TaskLaunch task = entry.getValue();
+            VectorPopulationHandle attempt;
+            synchronized (task) {
+                task.cancelled().set(true);
+                attempt = task.currentAttempt().get();
+            }
+            if (attempt != null && attempt.isAlive() && !attempt.isCancelled()) {
+                continue;
+            }
+            CompletableFuture<VectorPopulationResult> pending = attempt != null
+                    ? attempt.getResultFuture() : task.resultFuture();
+            if (pending.complete(VectorPopulationResult.failure(entry.getKey(),
+                    attempt != null ? attempt.getCurrentPhase() : "STARTING", STOPPED_FOR_SHUTDOWN))) {
+                reportCancelled(entry.getKey(), attempt, task.vectorIndexPath(), STOPPED_FOR_SHUTDOWN);
+            }
+        }
 
         for (VectorPopulationHandle handle : activeProcesses.values()) {
             if (handle.isAlive()) {
                 logger.info("Cancelling subprocess: {}", handle.getTaskId());
                 handle.cancel();
             }
-
-            if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.getTaskId())) {
-                logger.info("[vecpop-{}] Releasing GPU resources during shutdown", handle.getTaskId());
-                try {
-                    modelLifecycleManager.releaseGpuForVectorPopulation(handle.getTaskId());
-                } catch (Exception e) {
-                    logger.warn("[vecpop-{}] Error releasing GPU during shutdown: {}",
-                            handle.getTaskId(), e.getMessage());
-                }
-            }
         }
 
         for (VectorPopulationHandle handle : activeProcesses.values()) {
             handle.waitFor(Duration.ofSeconds(5));
+            // Its watcher deletes the args file too, but the JVM may exit before the watcher gets there. The
+            // file carries the staging API key
+            deleteArgsFile(handle.getArgsFile());
+        }
+
+        // Release only the GPU rows this launcher acquired — the scheduler releases its own
+        for (String taskId : List.copyOf(launcherGpuHolds)) {
+            finishTask(taskId);
         }
 
         activeProcesses.clear();
@@ -766,37 +1001,62 @@ public class VectorPopulationSubprocessLauncher implements BackendConfigurable {
     // ---- Cleanup ----
 
     private void cleanup(VectorPopulationHandle handle) {
-        activeProcesses.remove(handle.getTaskId());
-        warnedTaskIds.remove(handle.getTaskId());
-
-        if (subprocessRegistry != null) {
-            subprocessRegistry.deregister("vector-pop-" + handle.getTaskId());
-        }
-
-        if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.getTaskId())) {
-            logger.info("[vecpop-{}] Releasing GPU resources for completed/failed vector population job", handle.getTaskId());
-            try {
-                modelLifecycleManager.releaseGpuForVectorPopulation(handle.getTaskId());
-            } catch (Exception e) {
-                logger.warn("[vecpop-{}] Error releasing GPU resources: {}", handle.getTaskId(), e.getMessage());
+        // A restart may already have registered the task's next attempt — leave its tracking alone
+        if (activeProcesses.remove(handle.getTaskId(), handle)) {
+            warnedTaskIds.remove(handle.getTaskId());
+            if (subprocessRegistry != null) {
+                subprocessRegistry.deregister("vector-pop-" + handle.getTaskId());
             }
         }
 
-        SubprocessLogWriter lw = handle.logWriter;
-        if (lw != null) {
-            handle.logWriter = null;
-            try { lw.close(); } catch (Exception e) {
-                logger.warn("Failed to close subprocess log writer: {}", e.getMessage());
-            }
+        // The task's placement and GPU row outlive an attempt whose restart is pending
+        if (handle.getResultFuture().isDone()) {
+            finishTask(handle.getTaskId());
         }
 
-        Path argsFile = handle.getArgsFile();
-        if (argsFile != null && Files.exists(argsFile)) {
-            try {
-                Files.delete(argsFile);
+        // Safety net: every verdict closes its attempt's log, so one still open here never got a verdict or
+        // failed partway through reporting it
+        if (handle.logWriter != null) {
+            CompletableFuture<VectorPopulationResult> future = handle.getResultFuture();
+            VectorPopulationResult verdict = future.isDone() && !future.isCompletedExceptionally()
+                    ? future.join() : null;
+            Process process = handle.getProcess();
+            closeSubprocessLog(handle, verdict != null && verdict.success() ? "COMPLETED" : "FAILED",
+                    process.isAlive() ? null : process.exitValue(),
+                    verdict != null ? verdict.errorMessage() : "Subprocess ended without a verdict",
+                    handle.isOomDetected(), false);
+        }
+
+        deleteArgsFile(handle.getArgsFile());
+    }
+
+    /** Idempotent: shutdown and the attempt's watcher may both delete it. */
+    private void deleteArgsFile(Path argsFile) {
+        if (argsFile == null) {
+            return;
+        }
+        try {
+            if (Files.deleteIfExists(argsFile)) {
                 logger.debug("Deleted args file: {}", argsFile);
-            } catch (IOException e) {
-                logger.warn("Failed to delete args file: {}", argsFile);
+            }
+        } catch (IOException e) {
+            logger.warn("Failed to delete args file: {}", argsFile);
+        }
+    }
+
+    /**
+     * End a task's tracking once its result is final and no attempt is running, releasing its GPU row if
+     * this launcher acquired it — a row the scheduler holds is the scheduler's to release. Idempotent:
+     * the launcher's row is released exactly once.
+     */
+    private void finishTask(String taskId) {
+        taskLaunches.remove(taskId);
+        if (launcherGpuHolds.remove(taskId) && modelLifecycleManager != null) {
+            logger.info("[vecpop-{}] Releasing GPU resources for finished vector population task", taskId);
+            try {
+                modelLifecycleManager.releaseGpuForVectorPopulation(taskId);
+            } catch (Exception e) {
+                logger.warn("[vecpop-{}] Error releasing GPU resources: {}", taskId, e.getMessage());
             }
         }
     }

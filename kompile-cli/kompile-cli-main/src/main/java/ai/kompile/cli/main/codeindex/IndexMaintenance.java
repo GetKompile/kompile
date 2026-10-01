@@ -1,5 +1,7 @@
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.common.util.JsonUtils;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,8 +24,14 @@ public final class IndexMaintenance {
     public static Result repair(String projectId) throws IOException {
         Path dir = LocalCodeIndexer.getIndexDir(projectId);
         try (var lock = IndexLockManager.acquireWriteLock(projectId, dir)) {
-            return checkLocked(dir, new IndexFileStore(dir,
-                    ai.kompile.cli.common.util.JsonUtils.standardMapper()).loadMetadata(), true);
+            Map<String, Object> metadata;
+            try {
+                metadata = new IndexFileStore(dir, JsonUtils.standardMapper()).loadMetadata();
+            } catch (IndexFileStore.UnreadableIndexStateException torn) {
+                // Checked as missing: the result then asks for the source reindex that rewrites it.
+                metadata = Map.of();
+            }
+            return checkLocked(dir, metadata, true);
         }
     }
 
@@ -46,11 +54,14 @@ public final class IndexMaintenance {
             boolean repaired = db.checkAndRepair();
             String generation = db.getIndexGeneration();
             Object expected = metadata.get("indexedAt");
-            boolean reindex = Files.exists(dir.resolve("update.pending"))
-                    || !Objects.equals(generation, expected == null ? null : expected.toString());
+            String reason = metadata.isEmpty() ? "index metadata missing or unreadable"
+                    : Files.exists(dir.resolve(IndexFileStore.UPDATE_PENDING_FILE)) ? "interrupted update"
+                    : !Objects.equals(generation, expected == null ? null : expected.toString()) ? "generation mismatch"
+                    : null;
+            boolean reindex = reason != null;
             Result result = new Result(now, repaired ? "REPAIRED" : "HEALTHY", reindex,
                     (repaired ? "FTS rebuilt and verified from entities_meta" : "SQLite quick_check and FTS content check passed")
-                    + (reindex ? "; interrupted update or generation mismatch: source reindex required" : ""));
+                    + (reindex ? "; " + reason + ": source reindex required" : ""));
             LAST.put(key, result);
             if (repaired) CodeIndexDiagnostics.alert("[code-index] " + key + ": " + result.summary());
             return result;

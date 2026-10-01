@@ -21,7 +21,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Optional;
 
@@ -41,7 +40,7 @@ class GraphStorageRegistryTest {
     private GraphStorageRegistry registry;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         jpaStrategy = mock(GraphStorageStrategy.class);
         when(jpaStrategy.getStorageType()).thenReturn("jpa");
         when(jpaStrategy.isAvailable()).thenReturn(true);
@@ -51,14 +50,8 @@ class GraphStorageRegistryTest {
         when(neo4jStrategy.isAvailable()).thenReturn(true);
 
         registry = new GraphStorageRegistry(List.of(jpaStrategy, neo4jStrategy));
-        setDefaultStorageType("jpa");
+        registry.defaultStorageType = "jpa";
         registry.init();
-    }
-
-    private void setDefaultStorageType(String type) throws Exception {
-        Field field = GraphStorageRegistry.class.getDeclaredField("defaultStorageType");
-        field.setAccessible(true);
-        field.set(registry, type);
     }
 
     // ─── getStrategy ───────────────────────────────────────────────────
@@ -220,7 +213,7 @@ class GraphStorageRegistryTest {
     @Test
     void emptyRegistry_getAvailableStorageTypes_empty() throws Exception {
         GraphStorageRegistry empty = new GraphStorageRegistry(List.of());
-        setField(empty, "defaultStorageType", "jpa");
+        empty.defaultStorageType = "jpa";
         empty.init();
 
         assertTrue(empty.getAvailableStorageTypes().isEmpty());
@@ -229,16 +222,10 @@ class GraphStorageRegistryTest {
     @Test
     void emptyRegistry_getStrategyWithFallback_throws() throws Exception {
         GraphStorageRegistry empty = new GraphStorageRegistry(List.of());
-        setField(empty, "defaultStorageType", "jpa");
+        empty.defaultStorageType = "jpa";
         empty.init();
 
         assertThrows(IllegalStateException.class,
                 () -> empty.getStrategyWithFallback(null));
-    }
-
-    private void setField(Object target, String fieldName, Object value) throws Exception {
-        Field field = target.getClass().getDeclaredField(fieldName);
-        field.setAccessible(true);
-        field.set(target, value);
     }
 }

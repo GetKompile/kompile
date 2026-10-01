@@ -57,7 +57,7 @@ public class ArchiveDownloader {
     private final SafeHttpTransport httpTransport;
 
     @Value("${kompile.archive.download.resume-enabled:true}")
-    private boolean resumeEnabled;
+    boolean resumeEnabled;
 
     @Value("${kompile.archive.download.directory:#{systemProperties['user.home']}/.kompile/downloads}")
     private String downloadDirectory;

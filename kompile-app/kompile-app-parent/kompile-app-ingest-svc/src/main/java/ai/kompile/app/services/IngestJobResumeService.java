@@ -108,12 +108,15 @@ public class IngestJobResumeService {
         // Use subprocess launcher (which has the checkpoint resume logic)
         if (subprocessLauncher != null) {
             Path filePath = Path.of(checkpoint.getFilePath());
+            // No placement of its own: the launcher reserves the resumed job's GPU row (CPU if it
+            // can't) rather than reuse whichever job's placement was assigned last
             subprocessLauncher.launchIngest(
                     newTaskId,
                     filePath,
                     job.getLoaderUsed(),
                     job.getChunkerUsed(),
-                    options);
+                    options,
+                    null);
             log.info("Resumed ingest job {} from checkpoint of {} (file: {})",
                     newTaskId, originalTaskId, filePath);
         } else if (documentIngestService != null) {

@@ -49,18 +49,18 @@ public class GraphEdgeComputationServiceImpl implements GraphEdgeComputationServ
     // fields were null on the live path (NPE in computeSharedEntityEdges). @Autowired fields ARE
     // applied to the proxy instance.
     @Autowired
-    private KnowledgeGraphService knowledgeGraphService;
+    KnowledgeGraphService knowledgeGraphService;
 
     @Autowired(required = false)
-    private EmbeddingModel embeddingModel;
+    EmbeddingModel embeddingModel;
 
     // Hot-reloadable managed config (no @Value, no hard-coded literals). Optional so the service
     // still functions if the manager bean is absent — it then defaults to star topology.
     @Autowired(required = false)
-    private KbConfigManager kbConfigManager;
+    KbConfigManager kbConfigManager;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final AtomicBoolean cancelled = new AtomicBoolean(false);
+    final AtomicBoolean cancelled = new AtomicBoolean(false);
     private final AtomicInteger lastEdgesCreated = new AtomicInteger(0);
     private volatile String currentOperation = "idle";
 

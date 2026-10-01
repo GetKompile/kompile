@@ -16,30 +16,24 @@
 package ai.kompile.cli.main.project;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.agent.CodeNavigationGuidance;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.mcp.McpToolInjectionSupport;
 import ai.kompile.core.agent.CliAgentRegistry;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URI;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
 
 /**
  * One-shot init-time provisioner that makes coding agents work in a project.
@@ -56,9 +50,10 @@ import java.util.function.Supplier;
  *   <li>If opencode is installed, write the kompile stdio entry into the
  *       project's opencode config (format-version-aware).</li>
  *   <li>Write {@code AGENTS.md} if it does not already exist, composing the
- *       classpath template with a project-specific preamble.</li>
- *   <li>When no CLI agent is found, probe Ollama and register a fallback API
- *       agent entry in {@code ~/.kompile/config/api-agents.json}.</li>
+ *       classpath template with a project-specific preamble. An existing
+ *       {@code AGENTS.md} only gets its code-navigation section added or brought
+ *       up to date; everything outside that section is kept byte for byte.</li>
+ *   <li>When no CLI agent is found, warn with install links for the supported agent CLIs.</li>
  * </ol>
  */
 public final class InitAgentProvisioner {
@@ -75,17 +70,24 @@ public final class InitAgentProvisioner {
             new AgentSpec("pi",       "pi-cli",      "https://github.com/getcursor/cursor-api", false)
     );
 
-    private static final String OLLAMA_TAGS_URL    = "http://localhost:11434/api/tags";
-    private static final String OLLAMA_ENDPOINT    = "http://localhost:11434/v1";
-    private static final String OLLAMA_AGENT_NAME  = "ollama-local";
-    private static final String API_AGENTS_RELPATH = ".kompile/config/api-agents.json";
     private static final String AGENTS_MD_TEMPLATE = "templates/AGENTS.md";
 
-    // Package-private: allows tests to inject a fake Ollama probe without forking a process.
-    static Supplier<OllamaProbeResult> ollamaProbeSupplier = InitAgentProvisioner::probeOllama;
+    /**
+     * Delimit the code-navigation section init keeps current in {@code AGENTS.md}. They differ
+     * from the managed system-prompt and skills blocks, so a session's cleanup never removes it.
+     */
+    static final String CODE_NAVIGATION_BEGIN = "<!-- BEGIN KOMPILE CODE NAVIGATION -->";
+    static final String CODE_NAVIGATION_END = "<!-- END KOMPILE CODE NAVIGATION -->";
 
     // Package-private: allows tests to override the launcher path without touching env (JVM-global).
     static String launcherPathOverride = null;
+
+    // Package-private: lets tests search their own directory instead of PATH, so a test never
+    // starts the agent CLIs installed on the machine.
+    static String agentSearchPathOverride = null;
+
+    // Package-private: how long one `<agent> --version` may run before it is killed.
+    static Duration versionProbeTimeout = Duration.ofSeconds(5);
 
     private InitAgentProvisioner() {}
 
@@ -144,32 +146,22 @@ public final class InitAgentProvisioner {
         // ── 4. AGENTS.md ──────────────────────────────────────────────────────
         try {
             Path agentsMd = projectRoot.resolve("AGENTS.md");
-            if (Files.exists(agentsMd)) {
-                summary.add("  AGENTS.md: already exists — left untouched");
-            } else {
+            if (!Files.exists(agentsMd)) {
                 writeAgentsMd(agentsMd, projectRoot, appPort, stagingPort);
                 summary.add("  AGENTS.md: written");
+            } else if (mergeCodeNavigation(agentsMd)) {
+                summary.add("  AGENTS.md: already exists — code-navigation section written, the rest left untouched");
+            } else {
+                summary.add("  AGENTS.md: already exists — left untouched");
             }
         } catch (Exception e) {
             warnings.add("Could not write AGENTS.md: " + e.getMessage());
         }
 
-        // ── 5. Fallback API agent (Ollama) ────────────────────────────────────
+        // ── 5. No agent CLI found ─────────────────────────────────────────────
         if (!anyCliFound) {
-            try {
-                OllamaProbeResult ollama = ollamaProbeSupplier.get();
-                if (ollama.up) {
-                    registerOllamaAgent(ollama.firstModel, warnings);
-                    summary.add("  Fallback: ollama-local registered in ~/.kompile/config/api-agents.json"
-                            + " (model: " + ollama.firstModel + ")");
-                } else {
-                    warnings.add("No agent CLI found and Ollama is not reachable at " + OLLAMA_TAGS_URL);
-                    warnings.add("  Install a CLI agent: https://claude.ai/code  |  https://opencode.ai  |  https://github.com/google-gemini/gemini-cli");
-                    warnings.add("  Or install Ollama (https://ollama.com) for a local API fallback.");
-                }
-            } catch (Exception e) {
-                warnings.add("Fallback Ollama probe failed: " + e.getMessage());
-            }
+            warnings.add("No agent CLI found.");
+            warnings.add("  Install a CLI agent: https://claude.ai/code  |  https://opencode.ai  |  https://github.com/google-gemini/gemini-cli");
         }
 
         return new AgentProvisionResult(
@@ -235,12 +227,12 @@ public final class InitAgentProvisioner {
             List<CliAgentRegistry.CliAgentDef> defs) {
         // Use the same PATH-scan logic CliAgentRegistry.detectFirstAvailable() uses,
         // but for each individual command so we get per-agent found/not-found status.
-        String path = System.getenv("PATH");
+        String path = agentSearchPath();
         if (path == null) return new DetectedAgent(spec.command, false, null);
         for (String dir : path.split(File.pathSeparator)) {
             File candidate = new File(dir, spec.command);
             if (candidate.canExecute()) {
-                String version = tryGetVersion(spec.command);
+                String version = tryGetVersion(candidate.getPath());
                 return new DetectedAgent(spec.command, true, version);
             }
         }
@@ -248,37 +240,37 @@ public final class InitAgentProvisioner {
     }
 
     private static DetectedAgent detectViaPathProbe(AgentSpec spec) {
-        String path = System.getenv("PATH");
+        String path = agentSearchPath();
         if (path == null) return new DetectedAgent(spec.command, false, null);
         for (String dir : path.split(File.pathSeparator)) {
             File candidate = new File(dir, spec.command);
             if (candidate.canExecute()) {
-                String version = tryGetVersion(spec.command);
+                String version = tryGetVersion(candidate.getPath());
                 return new DetectedAgent(spec.command, true, version);
             }
         }
         return new DetectedAgent(spec.command, false, null);
     }
 
-    /** Runs `<cmd> --version`, returns first non-blank line or null on failure. */
-    private static String tryGetVersion(String command) {
-        try {
-            ProcessBuilder pb = new ProcessBuilder(command, "--version");
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            String out;
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
-                out = r.lines()
-                        .map(String::trim)
-                        .filter(l -> !l.isBlank())
-                        .findFirst()
-                        .orElse(null);
-            }
-            p.waitFor(5, TimeUnit.SECONDS);
-            return out;
-        } catch (Exception e) {
+    /**
+     * Runs {@code <executable> --version} and returns the first non-blank line it printed, or
+     * null when it fails or outlives {@link #versionProbeTimeout}. The probe is killed then, so
+     * a CLI that never answers cannot hold up {@code project init}.
+     */
+    private static String tryGetVersion(String executable) {
+        String out = McpToolInjection.probeOutput(versionProbeTimeout, executable, "--version");
+        if (out == null) {
             return null;
         }
+        return out.lines()
+                .map(String::trim)
+                .filter(l -> !l.isBlank())
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static String agentSearchPath() {
+        return agentSearchPathOverride != null ? agentSearchPathOverride : System.getenv("PATH");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -564,76 +556,38 @@ public final class InitAgentProvisioner {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Step 5 — Ollama fallback
-    // ─────────────────────────────────────────────────────────────────────────
-
-    static OllamaProbeResult probeOllama() {
-        try {
-            URL url = URI.create(OLLAMA_TAGS_URL).toURL();
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(1500);
-            conn.setReadTimeout(1500);
-            conn.setRequestMethod("GET");
-            int status = conn.getResponseCode();
-            if (status != 200) return OllamaProbeResult.down();
-
-            StringBuilder sb = new StringBuilder();
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
-                String line;
-                while ((line = r.readLine()) != null) sb.append(line);
-            }
-            String body = sb.toString();
-            // Parse { "models": [ { "name": "..." }, ... ] }
-            ObjectNode json = (ObjectNode) OM.readTree(body);
-            if (json.has("models") && json.get("models").isArray()
-                    && json.get("models").size() > 0) {
-                String model = json.get("models").get(0).path("name").asText(null);
-                return new OllamaProbeResult(true, model != null ? model : "unknown");
-            }
-            return new OllamaProbeResult(true, "unknown");
-        } catch (Exception e) {
-            return OllamaProbeResult.down();
-        }
+    /** The marked code-navigation section, exactly as the AGENTS.md template carries it. */
+    static String codeNavigationSection() {
+        return CODE_NAVIGATION_BEGIN + "\n## CODE NAVIGATION\n\n"
+                + CodeNavigationGuidance.RULE + "\n" + CODE_NAVIGATION_END;
     }
 
-    private static void registerOllamaAgent(String modelName, List<String> warnings) {
-        Path configPath = Path.of(System.getProperty("user.home"), API_AGENTS_RELPATH);
-        try {
-            Files.createDirectories(configPath.getParent());
-
-            List<ApiAgentEntry> entries;
-            if (Files.exists(configPath)) {
-                try {
-                    entries = new ArrayList<>(OM.readValue(configPath.toFile(),
-                            new TypeReference<List<ApiAgentEntry>>() {}));
-                } catch (Exception e) {
-                    warnings.add("api-agents.json parse failed — will overwrite: " + e.getMessage());
-                    entries = new ArrayList<>();
-                }
-            } else {
-                entries = new ArrayList<>();
-            }
-
-            // Skip if an entry with the same name already exists.
-            boolean exists = entries.stream().anyMatch(e -> OLLAMA_AGENT_NAME.equals(e.name));
-            if (!exists) {
-                ApiAgentEntry entry = new ApiAgentEntry();
-                entry.name        = OLLAMA_AGENT_NAME;
-                entry.displayName = "Ollama (local)";
-                entry.endpointUrl = OLLAMA_ENDPOINT;
-                entry.apiKey      = "";
-                entry.modelName   = modelName;
-                entry.temperature = 0.7;
-                entry.maxTokens   = 4096;
-                entry.description = "Local Ollama OpenAI-compatible endpoint (auto-registered by kompile init)";
-                entry.isDefault   = false;
-                entries.add(entry);
-                OM.writerWithDefaultPrettyPrinter().writeValue(configPath.toFile(), entries);
-            }
-        } catch (Exception e) {
-            warnings.add("Could not write api-agents.json: " + e.getMessage());
+    /**
+     * Add the code-navigation section to an existing {@code AGENTS.md}, or bring the last marked
+     * one up to date. Text outside the markers is kept byte for byte. Searching from the last
+     * BEGIN means a BEGIN whose END was deleted never makes the replacement swallow user text.
+     *
+     * @return whether the file changed
+     */
+    static boolean mergeCodeNavigation(Path agentsMd) throws IOException {
+        String content = Files.readString(agentsMd);
+        String section = codeNavigationSection();
+        int begin = content.lastIndexOf(CODE_NAVIGATION_BEGIN);
+        int end = begin < 0 ? -1 : content.indexOf(CODE_NAVIGATION_END, begin);
+        String merged;
+        if (end >= 0) {
+            merged = content.substring(0, begin) + section
+                    + content.substring(end + CODE_NAVIGATION_END.length());
+        } else {
+            String separator = content.isEmpty() || content.endsWith("\n\n") ? ""
+                    : content.endsWith("\n") ? "\n" : "\n\n";
+            merged = content + separator + section + "\n";
         }
+        if (merged.equals(content)) {
+            return false;
+        }
+        Files.writeString(agentsMd, merged);
+        return true;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -643,32 +597,6 @@ public final class InitAgentProvisioner {
     private record AgentSpec(String command, String registryName, String installUrl, boolean isDefault) {}
 
     private record DetectedAgent(String command, boolean found, String version) {}
-
-    /** Matches the ApiAgentConfig schema in AgentRegistryService (fields must be public for Jackson). */
-    public static class ApiAgentEntry {
-        public String name;
-        public String displayName;
-        public String endpointUrl;
-        public String apiKey;
-        public String modelName;
-        public double temperature = 0.7;
-        public int    maxTokens  = 4096;
-        public String description;
-        public boolean isDefault;
-    }
-
-    /** Result of an Ollama reachability probe. */
-    static class OllamaProbeResult {
-        final boolean up;
-        final String firstModel;
-
-        OllamaProbeResult(boolean up, String firstModel) {
-            this.up         = up;
-            this.firstModel = firstModel;
-        }
-
-        static OllamaProbeResult down() { return new OllamaProbeResult(false, null); }
-    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Public result type

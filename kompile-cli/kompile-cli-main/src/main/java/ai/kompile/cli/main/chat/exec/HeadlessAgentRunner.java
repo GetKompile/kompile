@@ -608,7 +608,15 @@ public final class HeadlessAgentRunner {
             if (webControls != null) {
                 // As in the CLI, processes owned by other sessions join the live activity panel.
                 sharedMirror = new SharedProcessMirror(processManager, coordinationManager, opts.sessionId());
+                // Read before the first turn: a process that ends after this read can wake the run.
+                sharedMirror.pollOnce();
                 sharedMirror.start();
+                webControls.setSharedProcesses(sharedMirror);
+                if (directClient != null) {
+                    // Claude Code's MCP server then registers as this session's child, so a monitored
+                    // process it launches wakes this run. Claude Code's own tasks show as panel rows.
+                    directClient.setClaudeTaskProcesses(processManager);
+                }
             }
             ProcessManagementTool processTool = webControls == null ? null
                     : new ProcessManagementTool(processManager, coordinationManager);

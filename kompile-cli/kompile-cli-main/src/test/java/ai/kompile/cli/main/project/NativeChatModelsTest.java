@@ -2,6 +2,7 @@
 package ai.kompile.cli.main.project;
 
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -27,6 +28,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class NativeChatModelsTest {
     @TempDir Path root;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -255,10 +257,17 @@ class NativeChatModelsTest {
             assertEquals(96, image.getHeight());
             Map<Integer, String> palette = Map.of(0xFF0000, "RED", 0x00FF00, "GREEN", 0x0000FF, "BLUE",
                     0xFFFF00, "YELLOW", 0x000000, "BLACK", 0xFFFFFF, "WHITE");
+            // The probe paints its raster by hand (no AWT): gray everywhere except six 64x80 tiles.
+            for (int[] gray : new int[][]{{0, 0}, {431, 95}, {36, 7}, {36, 88}, {3, 48}, {68, 48}}) {
+                assertEquals(0x808080, image.getRGB(gray[0], gray[1]) & 0xFFFFFF);
+            }
             List<String> colors = new ArrayList<>();
             for (int tile = 0; tile < 6; tile++) {
-                String color = palette.get(image.getRGB(tile * 72 + 36, 48) & 0xFFFFFF);
+                int center = image.getRGB(tile * 72 + 36, 48) & 0xFFFFFF;
+                String color = palette.get(center);
                 assertNotNull(color);
+                assertEquals(center, image.getRGB(tile * 72 + 4, 8) & 0xFFFFFF);
+                assertEquals(center, image.getRGB(tile * 72 + 67, 87) & 0xFFFFFF);
                 colors.add(color);
             }
             return String.join(",", colors);

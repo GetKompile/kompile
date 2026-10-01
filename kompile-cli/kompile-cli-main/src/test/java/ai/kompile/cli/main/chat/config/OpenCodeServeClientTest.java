@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.config;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
@@ -183,6 +184,63 @@ class OpenCodeServeClientTest {
     }
 
     @Test
+    void restTurnSendsAttachedImagesAsFilePartsAfterThePrompt() throws Exception {
+        AtomicReference<String> turnBody = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            OutputStream sse = exchange.getResponseBody();
+            try {
+                for (int i = 0; i < 60; i++) {
+                    sse.write(' ');
+                    sse.flush();
+                    Thread.sleep(100);
+                }
+            } catch (IOException | InterruptedException expected) {
+                // client stop() closed the stream or the window elapsed
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/session/session-9/message", exchange -> {
+            turnBody.set(new String(exchange.getRequestBody().readAllBytes(),
+                    StandardCharsets.UTF_8));
+            byte[] response = """
+                    {"info":{"id":"m-final","role":"assistant","tokens":
+                      {"input":7,"output":2,"cache":{"read":0,"write":0}}},
+                     "parts":[{"type":"text","text":"a scanned page"}]}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+                "/tmp/page.png", "image/png", true, "cGFnZQ==", null);
+        DirectLlmClient.AttachmentInput notes = new DirectLlmClient.AttachmentInput(
+                "/tmp/notes.txt", "text/plain", false, null, "margin notes");
+        try {
+            try (OpenCodeServeClient client = new OpenCodeServeClient(
+                    objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "session-9")) {
+                assertEquals("a scanned page", client.send("opencode-go/deepseek-v4-pro", null,
+                        "system instructions", "what is this", List.of(image, notes), ignored -> { }, null));
+            }
+            JsonNode parts = objectMapper.readTree(turnBody.get()).path("parts");
+            assertEquals(3, parts.size(), parts.toString());
+            assertEquals("text", parts.get(0).path("type").asText());
+            assertTrue(parts.get(0).path("text").asText().contains("what is this"), parts.toString());
+            assertEquals("file", parts.get(1).path("type").asText());
+            assertEquals("image/png", parts.get(1).path("mime").asText());
+            assertEquals("page.png", parts.get(1).path("filename").asText());
+            assertEquals("data:image/png;base64,cGFnZQ==", parts.get(1).path("url").asText());
+            assertEquals("[File: /tmp/notes.txt]\nmargin notes", parts.get(2).path("text").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void restTurnSurfacesToolActivityFromTheEventBus() throws Exception {
         List<String> streamed = new ArrayList<>();
         List<String> activity = new ArrayList<>();
@@ -358,8 +416,141 @@ class OpenCodeServeClientTest {
     }
 
     private static String stepPart(String sessionId, String part) {
-        return "{\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\""
-                + sessionId + "\",\"part\":" + part + "}}";
+        // Native OpenCode nests the session id inside the part, not properties.
+        return "{\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"sessionID\":\""
+                + sessionId + "\"," + part.substring(1) + "}}";
+    }
+
+    @Test
+    void usageSnapshotsDeduplicateByMessageAndReconcileFinalRestResponse() throws Exception {
+        List<String> usage = new CopyOnWriteArrayList<>();
+        CountDownLatch messagesSeen = new CountDownLatch(3);
+        CountDownLatch turnOver = new CountDownLatch(1);
+        ExecutorService handlers = Executors.newCachedThreadPool();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.setExecutor(handlers);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            try {
+                for (String info : List.of(
+                        usageInfo("other-session", "other", 999, 999),
+                        usageInfo("session-usage", "m1", 20, 75),
+                        usageInfo("session-usage", "m1", 20, 75), // repeated snapshot
+                        usageInfo("session-usage", "m1", 30, 80), // larger snapshot
+                        usageInfo("session-usage", "m1", 20, 75), // stale snapshot
+                        usageInfo("session-usage", "m2", 20, 75))) { // distinct request, same counts
+                    String frame = "data: {\"type\":\"message.updated\",\"properties\":{\"info\":" + info + "}}\n\n";
+                    exchange.getResponseBody().write(frame.getBytes(StandardCharsets.UTF_8));
+                }
+                exchange.getResponseBody().flush();
+                turnOver.await(10, TimeUnit.SECONDS);
+            } catch (IOException | InterruptedException expected) {
+                // Client closed the SSE lane when the turn ended.
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/session/session-usage/message", exchange -> {
+            try {
+                messagesSeen.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            String response = "{\"info\":" + usageInfo("session-usage", "m2", 20, 100)
+                    + ",\"parts\":[{\"type\":\"text\",\"text\":\"done\"}]}";
+            byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:" + server.getAddress().getPort(), "session-usage")) {
+            assertEquals("done", client.send("opencode-go/deepseek-v4-pro", null, null,
+                    "hello", ignored -> { }, usageListener(usage, messagesSeen)));
+            assertEquals(List.of("20:75:1000:200", "10:5:0:0", "20:75:1000:200", "0:25:0:0"), usage);
+        } finally {
+            turnOver.countDown();
+            server.stop(0);
+            handlers.shutdownNow();
+        }
+    }
+
+    @Test
+    void finalRestUsageSurvivesUnavailableEventBus() throws Exception {
+        List<String> usage = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+        });
+        server.createContext("/session/session-rest/message", exchange -> {
+            String response = "{\"info\":" + usageInfo("session-rest", "m1", 20, 75)
+                    + ",\"parts\":[{\"type\":\"text\",\"text\":\"done\"}]}";
+            byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:" + server.getAddress().getPort(), "session-rest")) {
+            assertEquals("done", client.send("opencode-go/deepseek-v4-pro", null, null,
+                    "hello", ignored -> { }, usageListener(usage, new CountDownLatch(0))));
+            assertEquals(List.of("20:75:1000:200"), usage);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void stoppedEventSubscriptionCannotAttributeLateUsageToANewerTurn() throws Exception {
+        List<String> usage = new CopyOnWriteArrayList<>();
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:1", "session-late")) {
+            Class<?> type = Class.forName(OpenCodeServeClient.class.getName() + "$EventBusListener");
+            var constructor = type.getDeclaredConstructor(OpenCodeServeClient.class, String.class,
+                    java.util.function.Consumer.class, OpenCodeServeClient.ActivityListener.class);
+            constructor.setAccessible(true);
+            Object listener = constructor.newInstance(client, "session-late", null,
+                    usageListener(usage, new CountDownLatch(0)));
+            var handle = type.getDeclaredMethod("handleEvent", String.class);
+            handle.setAccessible(true);
+            var stop = type.getDeclaredMethod("stop");
+            stop.setAccessible(true);
+            String event = "{\"type\":\"message.updated\",\"properties\":{\"info\":"
+                    + usageInfo("session-late", "m1", 20, 75) + "}}";
+            handle.invoke(listener, event);
+            stop.invoke(listener); // also models stopping before HTTP connection completes
+            handle.invoke(listener, event.replace("m1", "m2"));
+            assertEquals(List.of("20:75:1000:200"), usage);
+        }
+    }
+
+    private static String usageInfo(String session, String id, long input, long output) {
+        return """
+                {"sessionID":"%s","id":"%s","role":"assistant",
+                 "tokens":{"input":%d,"output":%d,"reasoning":50,"cache":{"read":1000,"write":200}}}
+                """.formatted(session, id, input, output).strip().replace("\n", "");
+    }
+
+    private static OpenCodeServeClient.ActivityListener usageListener(List<String> usage, CountDownLatch seen) {
+        return new OpenCodeServeClient.ActivityListener() {
+            @Override
+            public void onToolStart(String callId, String name, String input) { }
+
+            @Override
+            public void onToolComplete(String callId, String name, String output, int exitCode, boolean error) { }
+
+            @Override
+            public void onTokenUsage(long input, long output, long read, long write) {
+                usage.add(input + ":" + output + ":" + read + ":" + write);
+                seen.countDown();
+            }
+        };
     }
 
     @Test

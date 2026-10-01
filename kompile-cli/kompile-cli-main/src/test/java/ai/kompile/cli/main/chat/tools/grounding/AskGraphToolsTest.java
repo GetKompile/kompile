@@ -11,31 +11,43 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
+import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer;
 import ai.kompile.cli.main.chat.tools.KnowledgeGraphTool;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mock.http.client.MockClientHttpRequest;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 /**
@@ -57,6 +69,8 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
  * </ul>
  */
 @DisplayName("ask_graph_* MCP Tools")
+@TemporaryUserHome
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class AskGraphToolsTest {
 
     @TempDir
@@ -64,9 +78,12 @@ class AskGraphToolsTest {
 
     private ObjectMapper om;
     private ToolContext ctx;
+    private String previousAdmissionMode;
 
     @BeforeEach
     void setUp() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
         om = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("coder")
                 .enabledTools(Set.of("*"))
@@ -84,6 +101,15 @@ class AskGraphToolsTest {
         perms.setUserOverride("knowledge_graph",      PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
         ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
     }
 
     // ── ask_graph_verify ──────────────────────────────────────────────────────────
@@ -675,7 +701,7 @@ class AskGraphToolsTest {
             var mebnMeta        = om.createObjectNode();
 
             String output = tool.formatMebnResult("node_42", posteriors, priors,
-                    variableToTitle, mebnMeta, 0, 12L);
+                    variableToTitle, mebnMeta, Map.of(), 0, 12L);
 
             assertTrue(output.contains("node_42"), "output must include the anchor nodeId");
             assertTrue(output.contains("No variables"), "empty graph must say no variables");
@@ -706,7 +732,7 @@ class AskGraphToolsTest {
             mebnMeta.set("var_a", metaA);
 
             String output = tool.formatMebnResult("node_42", posteriors, priors,
-                    titles, mebnMeta, 2, 50L);
+                    titles, mebnMeta, Map.of(), 2, 50L);
 
             // var_a appears first (largest delta)
             int posA = output.indexOf("Risk Score A");
@@ -724,6 +750,35 @@ class AskGraphToolsTest {
             assertTrue(output.contains("entityType=PERSON"), "entityType must appear");
             assertTrue(output.contains("group=RiskMFrag"), "mfragName must appear as group=");
             assertTrue(output.contains("role=RESIDENT"), "nodeRole must appear");
+            assertFalse(output.contains("No evidence was applied"),
+                    "a result whose posteriors moved must not say no evidence was applied");
+        }
+
+        @Test
+        @DisplayName("formatter: without evidence, says so and orders by probability")
+        void formatter_noEvidenceSaysSoAndOrdersByProbability() {
+            // Without evidence, prior == posterior.
+            ObjectNode posteriors = om.createObjectNode();
+            posteriors.put("var_low", 0.2);
+            posteriors.put("var_high", 0.8);
+
+            ObjectNode priors = om.createObjectNode();
+            priors.put("var_low", 0.2);
+            priors.put("var_high", 0.8);
+
+            ObjectNode titles = om.createObjectNode();
+            titles.put("var_low", "Low");
+            titles.put("var_high", "High");
+
+            String output = tool.formatMebnResult("node_42", posteriors, priors,
+                    titles, om.createObjectNode(), Map.of(), 2, 5L);
+
+            assertTrue(output.contains("No evidence was applied"), output);
+            assertTrue(output.contains("variables by probability"), output);
+            assertFalse(output.contains("by belief update"), output);
+            int high = output.indexOf("[1] High");
+            int low = output.indexOf("[2] Low");
+            assertTrue(high >= 0 && low > high, "the likelier variable must lead: " + output);
         }
 
         @Test
@@ -742,10 +797,167 @@ class AskGraphToolsTest {
             int total = AskGraphMebnTool.MAX_VARIABLES_DISPLAY + 2;
 
             String output = tool.formatMebnResult("node_X", posteriors, priors,
-                    titles, om.createObjectNode(), total, 100L);
+                    titles, om.createObjectNode(), Map.of(), total, 100L);
 
             assertTrue(output.contains("more variable"),
                     "truncation notice must appear when variables exceed cap");
+        }
+
+        @Test
+        @DisplayName("evidence: true/false and 1/0 are read as states; anything else is rejected")
+        void parseEvidence_acceptsBooleansAndBinaryStates() throws Exception {
+            assertEquals(Map.of(), AskGraphMebnTool.parseEvidence(null));
+            assertEquals(Map.of(), AskGraphMebnTool.parseEvidence(om.nullNode()));
+            assertEquals(Map.of("a(x)", 1, "b(x)", 0, "c(x)", 1, "d(x)", 0), AskGraphMebnTool.parseEvidence(
+                    om.readTree("{\"a(x)\":true,\"b(x)\":false,\"c(x)\":1,\"d(x)\":0}")));
+
+            for (String bad : new String[]{"{\"a(x)\":2}", "{\"a(x)\":\"yes\"}", "{\"a(x)\":0.5}", "[\"a(x)\"]"}) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> AskGraphMebnTool.parseEvidence(om.readTree(bad)), bad);
+            }
+        }
+
+        @Test
+        @DisplayName("evidence: an invalid state is rejected before any backend is used")
+        void invalidEvidence_returnsError() throws Exception {
+            ObjectNode params = om.createObjectNode();
+            params.put("nodeId", "node_42");
+            params.putObject("evidence").put("isRelevant(node_42)", "yes");
+
+            ToolResult result = tool.execute(params, ctx);
+
+            assertTrue(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("isRelevant(node_42)"), result.getOutput());
+        }
+
+        @Test
+        @DisplayName("formatter: evidence is listed, observed variables marked, titled variables named")
+        void formatter_evidenceListedAndObservedMarked() {
+            ObjectNode posteriors = om.createObjectNode();
+            posteriors.put("isRelevant(a)", 1.0);
+            posteriors.put("isRelevant(b)", 0.7);
+            ObjectNode priors = om.createObjectNode();
+            priors.put("isRelevant(a)", 0.4);
+            priors.put("isRelevant(b)", 0.6);
+            ObjectNode titles = om.createObjectNode();
+            titles.put("isRelevant(a)", "Alice");
+
+            String output = tool.formatMebnResult("a", posteriors, priors, titles,
+                    om.createObjectNode(), Map.of("isRelevant(a)", 1), 2, 3L);
+
+            assertTrue(output.contains("Evidence: isRelevant(a)=TRUE"), output);
+            assertTrue(output.contains("[1] Alice  variable=isRelevant(a)"), output);
+            assertTrue(output.contains("(Δ+0.600)  observed"), output);
+            // An untitled variable is already shown by name.
+            assertTrue(output.contains("[2] isRelevant(b)\n"), output);
+            assertFalse(output.contains("No evidence was applied"), output);
+        }
+
+        @Test
+        @DisplayName("remote: evidence is POSTed with its fact sheet and reported as applied")
+        void remoteEvidence_isPostedAndReported() throws Exception {
+            RestTemplate rt = new RestTemplate();
+            MockRestServiceServer mockServer = MockRestServiceServer.createServer(rt);
+            AskGraphMebnTool remote = new AskGraphMebnTool(new GroundingBackendClient("http://kg", rt), om);
+            String[] body = {null};
+            mockServer.expect(requestTo("http://kg/api/attribution/bayesian/mebn/query"))
+                    .andExpect(method(HttpMethod.POST))
+                    .andExpect(request -> body[0] = ((MockClientHttpRequest) request).getBodyAsString())
+                    .andRespond(withSuccess("""
+                            {"posteriors":{"isRelevant(n1)":1.0,"isRelevant(n2)":0.8},
+                             "priors":{"isRelevant(n1)":0.5,"isRelevant(n2)":0.6},
+                             "variableToTitle":{"isRelevant(n1)":"Alpha","isRelevant(n2)":"Beta"},
+                             "evidence":{"isRelevant(n1)":1},"computationTimeMs":4}
+                            """, MediaType.APPLICATION_JSON));
+
+            ObjectNode params = om.createObjectNode();
+            params.put("nodeId", "n1");
+            params.put("factSheetId", 7);
+            params.putObject("evidence").put("isRelevant(n1)", true);
+            ToolResult result = remote.execute(params, ctx);
+
+            mockServer.verify();
+            assertFalse(result.isError(), result.getOutput());
+            var sent = om.readTree(body[0]);
+            assertEquals("n1", sent.path("seedNodeIds").path(0).asText(), body[0]);
+            assertEquals(1, sent.path("evidence").path("isRelevant(n1)").asInt(), body[0]);
+            assertEquals(7, sent.path("factSheetId").asLong(), body[0]);
+            assertEquals(true, result.getMetadata().get("evidenceApplied"));
+            assertTrue(result.getOutput().contains("Evidence: isRelevant(n1)=TRUE"), result.getOutput());
+            assertTrue(result.getOutput().contains("Beta  variable=isRelevant(n2)"), result.getOutput());
+        }
+
+        @Test
+        @DisplayName("remote: an evidence name outside the network is an error naming the valid ones")
+        void remoteUnknownEvidence_isRejected() throws Exception {
+            RestTemplate rt = new RestTemplate();
+            MockRestServiceServer mockServer = MockRestServiceServer.createServer(rt);
+            AskGraphMebnTool remote = new AskGraphMebnTool(new GroundingBackendClient("http://kg", rt), om);
+            mockServer.expect(requestTo("http://kg/api/attribution/bayesian/mebn/query"))
+                    .andExpect(method(HttpMethod.POST))
+                    .andRespond(withSuccess("""
+                            {"posteriors":{"isRelevant(n1)":0.5},"priors":{"isRelevant(n1)":0.5}}
+                            """, MediaType.APPLICATION_JSON));
+
+            ObjectNode params = om.createObjectNode();
+            params.put("nodeId", "n1");
+            params.putObject("evidence").put("Alpha", 1);
+            ToolResult result = remote.execute(params, ctx);
+
+            mockServer.verify();
+            assertTrue(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("Unknown evidence variable(s): Alpha"), result.getOutput());
+            assertTrue(result.getOutput().contains("isRelevant(n1)"), result.getOutput());
+        }
+
+        @Test
+        @DisplayName("remote: a server that rejects the evidence gets its reason to the model")
+        void remoteEvidenceRejectedByServer_surfacesItsReason() throws Exception {
+            RestTemplate rt = new RestTemplate();
+            MockRestServiceServer mockServer = MockRestServiceServer.createServer(rt);
+            AskGraphMebnTool remote = new AskGraphMebnTool(new GroundingBackendClient("http://kg", rt), om);
+            // The app's GlobalExceptionHandler body for the service's IllegalArgumentException.
+            mockServer.expect(requestTo("http://kg/api/attribution/bayesian/mebn/query"))
+                    .andExpect(method(HttpMethod.POST))
+                    .andRespond(withStatus(HttpStatus.BAD_REQUEST).contentType(MediaType.APPLICATION_JSON)
+                            .body("""
+                                    {"error":"Bad request","type":"IllegalArgumentException","message":"Unknown MEBN evidence variable(s): Alpha. Use names from posteriors, e.g. isRelevant(n1)."}
+                                    """));
+
+            ObjectNode params = om.createObjectNode();
+            params.put("nodeId", "n1");
+            params.putObject("evidence").put("Alpha", 1);
+            ToolResult result = remote.execute(params, ctx);
+
+            mockServer.verify();
+            assertTrue(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().startsWith(
+                    "ask_graph_mebn failed (HTTP 400): Unknown MEBN evidence variable(s): Alpha"), result.getOutput());
+            assertTrue(result.getOutput().contains("isRelevant(n1)"), result.getOutput());
+            assertFalse(result.getOutput().contains("400 Bad Request"),
+                    "the server's message, not the HTTP client's exception text: " + result.getOutput());
+        }
+
+        @Test
+        @DisplayName("remote: without evidence the GET query is unchanged")
+        void remoteWithoutEvidence_usesGet() throws Exception {
+            RestTemplate rt = new RestTemplate();
+            MockRestServiceServer mockServer = MockRestServiceServer.createServer(rt);
+            AskGraphMebnTool remote = new AskGraphMebnTool(new GroundingBackendClient("http://kg", rt), om);
+            mockServer.expect(requestTo("http://kg/api/attribution/bayesian/mebn/query?nodeId=n1&maxDepth=3&maxNodes=100"))
+                    .andExpect(method(HttpMethod.GET))
+                    .andRespond(withSuccess("""
+                            {"posteriors":{"isRelevant(n1)":0.5},"priors":{"isRelevant(n1)":0.5}}
+                            """, MediaType.APPLICATION_JSON));
+
+            ObjectNode params = om.createObjectNode();
+            params.put("nodeId", "n1");
+            ToolResult result = remote.execute(params, ctx);
+
+            mockServer.verify();
+            assertFalse(result.isError(), result.getOutput());
+            assertEquals(false, result.getMetadata().get("evidenceApplied"));
+            assertTrue(result.getOutput().contains("No evidence was applied"), result.getOutput());
         }
     }
 
@@ -790,10 +1002,15 @@ class AskGraphToolsTest {
             AskGraphMebnTool t = new AskGraphMebnTool((String) null, om);
             String hint = t.compactHint();
             assertNotNull(hint, "compactHint must not be null");
-            // hint should explain the output (before/after probabilities), not the algorithm
+            // hint should explain the output (the model's probabilities), not the algorithm
             assertTrue(hint.toLowerCase().contains("probab") || hint.toLowerCase().contains("prior")
                     || hint.toLowerCase().contains("posterior"),
                     "MEBN hint should describe probabilistic output");
+            // the hint offers evidence and says what the result means without it
+            assertTrue(hint.contains("evidence"), hint);
+            assertTrue(hint.contains("prior = posterior"), hint);
+            assertFalse(hint.toLowerCase().contains("delta"), hint);
+            assertTrue(hint.length() <= 200, "MCP listings cap hints at 200 chars; was " + hint.length());
         }
 
         @Test
@@ -954,6 +1171,73 @@ class AskGraphToolsTest {
                     "description must mention list_predicates action");
             assertTrue(hint.contains("list_predicates"),
                     "compactHint must mention list_predicates for discoverability");
+        }
+    }
+
+    // ── MCP stdio listing: whole hints, and the actions each knowledge_graph mode serves ──
+
+    @Nested
+    @DisplayName("MCP stdio listing")
+    class McpStdioListing {
+
+        private JsonNode listed(CliTool tool) {
+            ArrayNode definitions = om.createArrayNode();
+            definitions.addObject()
+                    .put("name", tool.id())
+                    .put("description", tool.description())
+                    .set("inputSchema", tool.parameterSchema());
+            return ToolSchemaOptimizer.optimize(definitions,
+                    ToolSchemaOptimizer.OptimizationLevel.COMPACT, Map.of(tool.id(), tool.compactHint())).get(0);
+        }
+
+        @Test
+        @DisplayName("every graph grounding tool is listed with its whole hint")
+        void everyGroundingHintIsListedWhole() {
+            List<CliTool> tools = List.of(
+                    new AskGraphVerifyTool((String) null, om),
+                    new AskGraphQueryTool((String) null, om),
+                    new AskGraphExplainTool((String) null, om),
+                    new AskGraphClaimTool((String) null, om),
+                    new AskGraphSynthesizeTool((String) null, om),
+                    new AskGraphRetractTool((String) null, om),
+                    new AskGraphAssertTool((String) null, om),
+                    new AskGraphFusedTool((String) null, om),
+                    new AskGraphMebnTool((String) null, om),
+                    new AskGraphSubscribeTool((String) null, om),
+                    new KnowledgeGraphTool((String) null, om));
+            for (CliTool tool : tools) {
+                String hint = tool.compactHint();
+                // Without a hint the listing cuts the description to 60 characters.
+                assertNotNull(hint, tool.id());
+                assertFalse(hint.isBlank(), tool.id());
+                assertTrue(hint.length() <= 200, tool.id() + " hint is " + hint.length() + " chars: " + hint);
+                assertEquals(hint, listed(tool).path("description").asText(), tool.id());
+            }
+        }
+
+        @Test
+        @DisplayName("knowledge_graph lists the actions its mode serves")
+        void knowledgeGraphListsTheActionsItsModeServes() throws Exception {
+            JsonNode localAction = listed(new KnowledgeGraphTool((String) null, om))
+                    .path("inputSchema").path("properties").path("action");
+            assertEquals("string", localAction.path("type").asText());
+            List<?> local = om.convertValue(localAction.path("enum"), List.class);
+            assertEquals(LocalProjectGraphBackend.KNOWLEDGE_GRAPH_ACTIONS, local);
+            assertFalse(local.contains("cypher") || local.contains("algorithm") || local.contains("communities"),
+                    local.toString());
+
+            List<?> remote = om.convertValue(listed(new KnowledgeGraphTool("http://localhost:8080", om))
+                    .path("inputSchema").path("properties").path("action").path("enum"), List.class);
+            assertTrue(remote.containsAll(List.of("cypher", "extract", "restore_snapshot", "list_predicates")),
+                    remote.toString());
+
+            // An action the folder archive does not serve is answered with the ones it does.
+            ToolResult result = new KnowledgeGraphTool((String) null, om)
+                    .execute(om.createObjectNode().put("action", "cypher"), ctx);
+            assertTrue(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains(
+                    "Supported locally: " + String.join(", ", LocalProjectGraphBackend.KNOWLEDGE_GRAPH_ACTIONS)),
+                    result.getOutput());
         }
     }
 }

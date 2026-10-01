@@ -14,6 +14,7 @@ import ai.kompile.cli.main.codeindex.LocalCodeIndexer;
 import ai.kompile.cli.main.project.LocalCrawlCliAgentRunner;
 import ai.kompile.cli.main.project.LocalCrawlServingSession;
 import ai.kompile.cli.main.project.NativeChatModels;
+import ai.kompile.cli.main.project.ProjectAutoDetection;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.NativeChatCompletion;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
@@ -23,6 +24,12 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlJob.LlmCallRecord;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest.RuntimeConfig;
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.graphrag.DocumentGraphExtractor;
+import ai.kompile.core.graphrag.ExtractorUtils;
+import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionResult;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
@@ -35,6 +42,9 @@ import ai.kompile.graph.reasoning.bayesian.BayesianNetwork;
 import ai.kompile.graph.reasoning.bayesian.Factor;
 import ai.kompile.graph.reasoning.bayesian.GraphBayesianNetworkBuilder;
 import ai.kompile.graph.reasoning.bayesian.VariableElimination;
+import ai.kompile.graph.reasoning.confidence.Opinion;
+import ai.kompile.graph.reasoning.explain.ReasoningTrace;
+import ai.kompile.graph.reasoning.explain.ReasoningTraceRenderer;
 import ai.kompile.graph.reasoning.fol.MebnInferenceService;
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner.Structural;
 import ai.kompile.graph.reasoning.lifecycle.FinalGraphLearningResolutionPipeline;
@@ -56,12 +66,15 @@ import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.SimpleGraphEntity;
 import ai.kompile.graph.reasoning.model.SimpleGraphRelation;
+import ai.kompile.graph.reasoning.model.TemporalView;
+import ai.kompile.graph.reasoning.quantitative.QuantitativeQuery;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
-import ai.kompile.graph.reasoning.query.GraphQueryEngine.Capability;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine.Direction;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine.Intent;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine.Query;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine.Status;
+import ai.kompile.graph.reasoning.query.PredicateNames;
+import ai.kompile.graph.reasoning.query.QuantitativeRequestParser;
 import ai.kompile.graph.reasoning.resolution.UnifiedGraphEntityResolver;
 import ai.kompile.graph.reasoning.unified.GraphArchiveMigrator;
 import ai.kompile.graph.reasoning.unified.KGraphCompatibilityPolicy;
@@ -73,6 +86,10 @@ import ai.kompile.graph.reasoning.unified.UnifiedGraphMutationJournal;
 import ai.kompile.graph.reasoning.unified.VectorLayer;
 import ai.kompile.graph.reasoning.unified.VectorLayer.Target;
 import ai.kompile.graph.reasoning.uncertainty.SensitivityAnalyzer;
+import ai.kompile.loader.discord.DiscordGraphExtractor;
+import ai.kompile.loader.email.inbox.EmailGraphExtractor;
+import ai.kompile.loader.gmail.GmailGraphExtractor;
+import ai.kompile.loader.slack.SlackGraphExtractor;
 import ai.kompile.project.KompileProjectStore;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -133,7 +150,19 @@ public final class LocalProjectGraphBackend {
   public static final String RELATION_LAYER = "kge-relations";
   public static final String MODEL_ARTIFACT = "models/kge.json";
   public static final int CODE_PROJECTION_VERSION = 4;
+  /** Every action {@link #knowledgeGraph} serves from the folder-local archive. */
+  public static final List<String> KNOWLEDGE_GRAPH_ACTIONS = List.of(
+      "extract", "list_providers", "list_models", "capability_probe", "list_fact_sheets", "list_graphs",
+      "list_snapshots", "overview", "stats", "graph_health", "report", "get_fact_sheet", "get_active_fact_sheet",
+      "opinions", "facts_by_tier", "reasoning_layers", "owl_reasoning", "ontology_conformance", "list_nodes",
+      "search_nodes", "search_entity", "find_by_topic", "get_node", "node_provenance", "list_edges",
+      "list_predicates", "add_node", "add_edge", "delete_node", "delete_edge", "find_connected", "related_docs",
+      "source_context", "entities_in_doc", "traverse", "hierarchy", "ancestors", "source_chunks", "shortest_path");
   private static final String PROJECTION_OWNER_KEY = "_kompileProjectionOwner";
+  /** Id prefix of an edge a model asserted, as opposed to one a crawl or projection stored. */
+  private static final String ASSERTED_RELATION_PREFIX = "asserted:";
+  /** Transient meta of a valid-time view: every relation type of the unfiltered graph. */
+  private static final String VIEW_RELATION_TYPES_META = "query.relationTypes";
   private static final String CODE_INDEX_PROJECTION_OWNER = "local-code-index";
   private static final int DEFAULT_DIM = 32;
   private static final int DEFAULT_EPOCHS = 8;
@@ -200,18 +229,6 @@ public final class LocalProjectGraphBackend {
     return Collections.unmodifiableList(new ArrayList<>(ids));
   }
 
-  private static final List<Capability> QUERY_CAPABILITIES =
-      GraphQueryEngine.capabilityContract().stream()
-          .filter(
-              capability -> {
-                return switch (Intent.valueOf(capability.intent())) {
-                  case MODELS, CALCULATE, SCENARIO, SOLVE_TARGET -> false;
-                  default -> true;
-                };
-              })
-          .toList();
-  private static final Set<Intent> QUERY_INTENTS =
-      Set.copyOf(QUERY_CAPABILITIES.stream().map(Capability::intent).map(Intent::valueOf).toList());
   private final ObjectMapper mapper;
   private final KompileProjectStore projectStore;
   private final ProjectLocalLearningSubprocessExecutor learningExecutor;
@@ -501,7 +518,8 @@ public final class LocalProjectGraphBackend {
         Map.of("backend", "project-local"));
     Map<String, String> documentNodes =
         this.addDocuments(
-            graph, directory, knowledgeBaseNode, projectId, knowledgeBaseId, factSheetId);
+            graph, projectRoot, directory, knowledgeBaseNode, projectId, knowledgeBaseId,
+            factSheetId);
     int codeEntityCount =
         this.addCodeProjects(
             graph, knowledgeBaseNode, documentNodes, projectId, factSheetId, codeProjects);
@@ -610,7 +628,19 @@ public final class LocalProjectGraphBackend {
                     : (graph.relations().isEmpty()
                         ? "SKIPPED_EMPTY_GRAPH"
                         : "SKIPPED_BY_CONFIGURATION")));
-    if (training.enabled() && trainingSummary != null) stampCodeGenerations(graph, "codeKgeGeneration.");
+    boolean kgeLearned = training.enabled() && trainingSummary != null;
+    // Learned assets copied from the previous graph describe its topology; until their learner
+    // runs on this graph they must not be served as current.
+    if (!kgeLearned && (graph.vectorLayer(ENTITY_LAYER) != null
+        || graph.vectorLayer(RELATION_LAYER) != null || graph.artifact(MODEL_ARTIFACT) != null)) {
+      graph.meta("learning.kgeStale", true);
+    }
+    // Recorded traces and imported weight maps are not learned state, so a graph holding only
+    // those has nothing to go stale.
+    if (!reasoningSummary.enabled() && UnifiedGraphReasoningLifecycle.hasLearnedState(graph)) {
+      graph.meta("learning.reasoningStale", true);
+    }
+    if (kgeLearned) stampCodeGenerations(graph, "codeKgeGeneration.");
     if (reasoningSummary.enabled()) stampCodeGenerations(graph, "codeLearningGeneration.");
     // Preserve the already-published code slices before the single atomic replacement.
     // Do not re-read a newer SQLite generation and label it with an older archive receipt.
@@ -679,7 +709,7 @@ public final class LocalProjectGraphBackend {
               result.entities(),
               result.relations(),
               result.path(),
-              QUERY_CAPABILITIES,
+              GraphQueryEngine.capabilityContract(),
               result.guidance(),
               result.data(),
               result.resolutions(),
@@ -725,50 +755,49 @@ public final class LocalProjectGraphBackend {
       try {
         ObjectNode query = this.mapper.createObjectNode();
         this.copySelector(params, query);
-        String normalized = target.startsWith("causal:") ? target.substring(7).trim() : target;
+        boolean causal = target.startsWith("causal:");
+        String normalized = causal ? target.substring(7).trim() : target;
         Matcher fact = Pattern.compile("^([^\\s(]+)\\(([^,]+),\\s*([^)]+)\\)$").matcher(normalized);
-        if (fact.matches()) {
-          query.put("operation", "VERIFY");
+        boolean isFact = fact.matches();
+        String operation = isFact ? "VERIFY" : "DESCRIBE";
+        query.put("operation", operation);
+        if (isFact) {
           query.put("entityId", fact.group(2).trim());
           query.put("targetId", fact.group(3).trim());
           query.putArray("relationTypes").add(fact.group(1).trim());
         } else {
-          query.put("operation", "DESCRIBE");
           query.put("entityId", normalized);
         }
 
         JsonNode result = this.reasoningQuery(query, context);
         String status = result.path("status").asText("UNKNOWN");
-        String summary = result.path("summary").asText("No explanation was produced.");
+        // Locally graph_reason is a lookup: say so, then show the evidence, learned scores and
+        // trace exactly as graph_reasoning_query renders them.
         StringBuilder output =
             new StringBuilder()
-                .append("**")
-                .append(status)
-                .append("**\n")
-                .append("Target: ")
-                .append(target)
-                .append("\n\n")
-                .append("Answer:\n")
-                .append(summary);
-        JsonNode relations = result.path("relations");
-        if (relations.isArray() && !relations.isEmpty()) {
-          output.append("\n\nSupporting graph relations:");
-
-          for (JsonNode relation : relations) {
-            output
-                .append("\n  - ")
-                .append(relation.path("sourceLabel").asText(relation.path("sourceId").asText("?")))
-                .append(" -[")
-                .append(relation.path("type").asText("?"))
-                .append("]-> ")
-                .append(relation.path("targetLabel").asText(relation.path("targetId").asText("?")));
-          }
+                .append("**").append(status).append("** — ").append(operation).append("\n")
+                .append("Target: ").append(target).append("\n")
+                .append("Read from the stored graph and its last learning pass; no new inference was run")
+                .append(" and no confidence changed.\n");
+        if (causal) {
+          output
+              .append("Causal attribution needs a configured Kompile server URL; the target was ")
+              .append(isFact ? "verified" : "described")
+              .append(" instead.\n");
+        }
+        String body = GraphReasoningQueryTool.renderBody(result);
+        if (!body.isEmpty()) {
+          output.append("\n").append(body);
         }
 
         return ToolResult.success(
             "graph_reason: " + target,
-            output.toString(),
-            Map.of("target", target, "verdict", status, "backend", "project-local"));
+            output.toString().trim(),
+            Map.of(
+                "target", target,
+                "verdict", status,
+                "operation", operation,
+                "backend", "project-local"));
       } catch (Exception var14) {
         return ToolResult.error("graph_reason local error: " + this.message(var14));
       }
@@ -994,9 +1023,9 @@ public final class LocalProjectGraphBackend {
               ToolResult.error(
                   "Project-local knowledge graph action '"
                       + action
-                      + "' is not implemented by the archive backend yet. Local crawl archives"
-                      + " support graph discovery, status, node/edge search, predicate discovery,"
-                      + " traversal, algorithms, reporting, and shortest paths.");
+                      + "' is not supported by the folder-local archive. Supported locally: "
+                      + String.join(", ", KNOWLEDGE_GRAPH_ACTIONS)
+                      + ". Configure a server for the remaining actions.");
         };
       } catch (Exception var6) {
         return ToolResult.error("knowledge_graph local error: " + this.message(var6));
@@ -1592,7 +1621,7 @@ public final class LocalProjectGraphBackend {
     ArrayNode edges = this.mapper.createArrayNode();
 
     for (GraphRelation relation : selection.graph().relations()) {
-      if ((type == null || type.equalsIgnoreCase(relation.type()))
+      if ((type == null || type.equalsIgnoreCase(relation.type()) || PredicateNames.same(type, relation.type()))
           && (node == null || node.equals(relation.sourceId()) || node.equals(relation.targetId()))
           && (source == null || source.equals(relation.sourceId()))
           && (target == null || target.equals(relation.targetId()))) {
@@ -2111,16 +2140,19 @@ public final class LocalProjectGraphBackend {
       if (!params.path("validAt").isTextual()) throw new IllegalArgumentException("validAt must be an ISO-8601 instant");
       try {
         validAt = Instant.parse(params.path("validAt").asText());
-      } catch (java.time.format.DateTimeParseException invalid) {
+      } catch (DateTimeParseException invalid) {
         throw new IllegalArgumentException("validAt must be an ISO-8601 instant", invalid);
       }
     }
     GraphSelection selected = selectGraph(context, params);
     if (validAt == null) return selected;
-    UnifiedGraph filtered = UnifiedGraph.of(
-        ai.kompile.graph.reasoning.model.TemporalView.asOf(selected.graph(), validAt));
+    UnifiedGraph filtered = UnifiedGraph.of(TemporalView.asOf(selected.graph(), validAt));
     filtered.graphId(selected.graph().graphId());
     selected.graph().meta().forEach(filtered::meta);
+    // A type whose edges all fall outside the window is still vocabulary (see viewRelationTypes).
+    Set<String> relationTypes = new LinkedHashSet<>();
+    selected.graph().relations().forEach(relation -> relationTypes.add(relation.type()));
+    filtered.meta(VIEW_RELATION_TYPES_META, List.copyOf(relationTypes));
     // Retain only the graph-resident ontology artifact for the filtered ABox. Learned model
     // artifacts do not describe this temporal view and must not leak into verification.
     byte[] ontologyArtifact = selected.graph().artifact(TableMemberOntologyBridge.ONTOLOGY_ARTIFACT);
@@ -2159,6 +2191,20 @@ public final class LocalProjectGraphBackend {
     return false;
   }
 
+  /**
+   * What {@link #staleCodeLearning} compared for this graph: graph changes since the last learning
+   * pass, and for a graph with projected code, each projected code generation against the one that
+   * pass recorded. The source tree itself is never re-read.
+   */
+  private static String freshnessBasis(UnifiedGraph graph) {
+    boolean projectsCode =
+        graph.meta().keySet().stream().anyMatch(key -> key.startsWith("codeIndexGeneration."));
+    return projectsCode
+        ? "graph-changes-versus-last-learning-pass; projected-code-versus-learning-generation; "
+            + "source-tree-not-checked"
+        : "graph-changes-versus-last-learning-pass";
+  }
+
   private static void stampCodeGenerations(UnifiedGraph graph, String receiptPrefix) {
     graph.meta("codeKgeGeneration.".equals(receiptPrefix) ? "learning.kgeStale" : "learning.reasoningStale", false);
     new LinkedHashMap<>(graph.meta()).forEach((key, value) -> {
@@ -2168,83 +2214,190 @@ public final class LocalProjectGraphBackend {
     });
   }
 
+  /** A project-local verification: the verify JSON, the trace of how its verdict was reached, and that verdict. */
+  private record LocalVerification(ObjectNode result, ReasoningTrace trace, String verdict, double confidence) {}
+
   private ToolResult offlineVerify(JsonNode params, ToolContext context) throws Exception {
     rejectHistoricalQuery(params);
     double threshold = confidenceThreshold(params, 0.5);
     String atomText = this.text(params, "atom");
     if (atomText == null) {
       return ToolResult.error("atom is required");
-    } else {
-      LocalProjectGraphBackend.GraphSelection selection = this.selectEvidenceGraph(context, params);
-      LocalProjectGraphBackend.Atom atom = this.atom(atomText);
-      UnifiedGraph graph = selection.graph();
-      List<GraphRelation> evidence = this.matchingRelations(graph, atom, Map.of());
-      boolean entitiesKnown =
-          atom.args().stream().allMatch(arg -> this.resolveEntity(graph, arg) != null);
-      double confidence =
-          evidence.stream().mapToDouble(GraphRelation::confidence).filter(Double::isFinite).max().orElse(0.0);
-      List<GraphRelation> authoritative = evidence.stream().filter(this::authoritativeRelation).toList();
-      double authoritativeConfidence = authoritative.stream().mapToDouble(GraphRelation::confidence)
-          .filter(Double::isFinite).max().orElse(0.0);
-
-      Optional<OwlOntology> declaredOntology = TableMemberOntologyBridge.declaredOntology(graph);
-      OwlEvidence owlEvidence = declaredOntology.isPresent()
-          ? this.owlEvidence(graph, atom, declaredOntology.get())
-          : OwlEvidence.empty();
-      double inferredConfidence = owlEvidence.confidence();
-      double supportConfidence = Math.max(authoritativeConfidence, inferredConfidence);
-      String verdict = authoritative.isEmpty() && !owlEvidence.supported()
-          ? "UNKNOWN"
-          : supportConfidence <= 0.0
-              ? "REFUTED"
-              : supportConfidence >= threshold ? "SUPPORTED" : "UNKNOWN";
-      // Learned PSL/MEBN posteriors are not evidence for an OWL entailment and are deliberately
-      // excluded whenever a declared ontology was evaluated.
-      Double posterior = declaredOntology.isPresent() ? null : this.learnedPosterior(graph, atom);
-      ObjectNode result = this.localEnvelope(selection);
-      result.put("atom", atomText);
-      result.put("verdict", verdict);
-      result.put("confidence", supportConfidence);
-      result.put("recordedEvidenceConfidence", confidence);
-      result.put("authoritativeConfidence", authoritativeConfidence);
-      result.put("inferredConfidence", inferredConfidence);
-      result.put("confidenceBasis", declaredOntology.isPresent()
-          ? "OWL RL support confidence from direct facts or minimum supporting fact confidence"
-          : "recorded edge confidence; heuristic calls are not verified");
-      result.put("calibratedConfidence", posterior != null ? posterior : supportConfidence);
-      if (posterior != null) {
-        result.put("learnedPosterior", posterior);
-      }
-      result.put("entityKnown", entitiesKnown);
-      result.put("openWorld", true);
-      if ("UNKNOWN".equals(verdict)) {
-        result.put("unknownReason", !entitiesKnown ? "entity-not-in-graph"
-            : evidence.isEmpty() && !owlEvidence.supported() ? "no-evidence"
-            : evidence.stream().noneMatch(this::authoritativeRelation) && !owlEvidence.supported()
-                ? "heuristic-code-evidence"
-                : owlEvidence.attempted() && !owlEvidence.supported()
-                    ? "no-owl-entailment" : "below-confidence-threshold");
-      }
-      ArrayNode evidenceAtoms = result.putArray("evidenceAtoms");
-      evidence.forEach(relation -> evidenceAtoms.add(this.relationAtom(relation)));
-      owlEvidence.evidenceAtoms().forEach(evidenceAtoms::add);
-      result.put("evidenceCount", evidence.size() + owlEvidence.evidenceAtoms().size());
-      result.put("derivationDepth", Math.max(evidence.isEmpty() ? 0 : 1, owlEvidence.depth()));
-      ArrayNode supportingFactKeys = result.putArray("supportingFactKeys");
-      owlEvidence.supportingFactKeys().forEach(supportingFactKeys::add);
-      ArrayNode activatedRules = result.putArray("activatedRules");
-      owlEvidence.activatedRules().forEach(activatedRules::add);
-      result.put("inferenceEngine", declaredOntology.isPresent() ? "OwlRlReasoner" : "direct-evidence");
-      result.put("owlEntailment", owlEvidence.supported());
-      if (declaredOntology.isPresent()) {
-        result.put("ontologySource", "declared-artifact");
-      }
-      return this.jsonSuccess(
-          "ask_graph_verify: " + atomText,
-          result,
-          Map.of("backend", "project-local", "verdict", verdict,
-              "confidence", posterior != null ? posterior : supportConfidence));
     }
+    LocalVerification verification = this.verifyAtom(params, context, atomText, threshold);
+    return this.jsonSuccess(
+        "ask_graph_verify: " + atomText,
+        verification.result(),
+        Map.of("backend", "project-local", "verdict", verification.verdict(),
+            "confidence", verification.confidence()));
+  }
+
+  /**
+   * Decides an atom from recorded evidence: a declared OWL ontology's entailment, or the recorded
+   * confidence of an authoritative matching relation. A heuristic code call is not a verified fact
+   * and never decides. The stored opinion on a matching relation, or else the value learned for the
+   * atom, is reported as {@code learnedScore} and does not decide either: the reasoning lifecycle
+   * stores the PSL/MEBN consensus training target there, which blends the recorded confidence with
+   * how central the endpoints are, so a well-evidenced relation between peripheral entities scores
+   * low. Learned values are omitted while learning is stale, for a valid-time view, and when an
+   * ontology is declared. The reported confidence is the confidence in the stated verdict: the
+   * support confidence when SUPPORTED, one minus it when REFUTED, and 0 when UNKNOWN.
+   */
+  private LocalVerification verifyAtom(JsonNode params, ToolContext context, String atomText,
+      double threshold) throws Exception {
+    LocalProjectGraphBackend.GraphSelection selection = this.selectEvidenceGraph(context, params);
+    LocalProjectGraphBackend.Atom atom = this.atom(atomText);
+    UnifiedGraph graph = selection.graph();
+    List<GraphRelation> evidence = this.matchingRelations(graph, atom, Map.of());
+    boolean entitiesKnown =
+        atom.args().stream().allMatch(arg -> this.resolveEntity(graph, arg) != null);
+    double confidence =
+        evidence.stream().mapToDouble(GraphRelation::confidence).filter(Double::isFinite).max().orElse(0.0);
+    List<GraphRelation> authoritative = evidence.stream().filter(this::authoritativeRelation).toList();
+    double authoritativeConfidence = authoritative.stream().mapToDouble(GraphRelation::confidence)
+        .filter(Double::isFinite).max().orElse(0.0);
+
+    Optional<OwlOntology> declaredOntology = TableMemberOntologyBridge.declaredOntology(graph);
+    OwlEvidence owlEvidence = declaredOntology.isPresent()
+        ? this.owlEvidence(graph, atom, declaredOntology.get())
+        : OwlEvidence.empty();
+    double inferredConfidence = owlEvidence.confidence();
+    double supportConfidence = Math.max(authoritativeConfidence, inferredConfidence);
+    // Learned PSL/MEBN results are not evidence for an OWL entailment and are deliberately
+    // excluded whenever a declared ontology was evaluated. They were learned over the whole
+    // graph, so a valid-time view does not use them either.
+    boolean learnedApplies = declaredOntology.isEmpty() && graph.meta().get("query.validAt") == null;
+    Double posterior = learnedApplies ? this.learnedPosterior(graph, atom, evidence) : null;
+    boolean opinionsFresh = learnedApplies && !staleCodeLearning(graph, "codeLearningGeneration.");
+    GraphRelation opinionRelation = null;
+    Opinion opinion = null;
+    if (opinionsFresh) {
+      for (GraphRelation relation : authoritative) {
+        Opinion stored = graph.relationOpinion(relation.id());
+        if (stored != null && (opinion == null || stored.expectation() > opinion.expectation())) {
+          opinion = stored;
+          opinionRelation = relation;
+        }
+      }
+    }
+    // A heuristic code call is not a verified fact, so it never decides a verdict.
+    boolean heuristicOnly = !evidence.isEmpty() && authoritative.isEmpty();
+    String basis = owlEvidence.supported() ? "owl-entailment" : evidence.isEmpty() ? "no-evidence" : "direct-evidence";
+    String verdict = authoritative.isEmpty() && !owlEvidence.supported()
+        ? "UNKNOWN"
+        : supportConfidence <= 0.0
+            ? "REFUTED"
+            : supportConfidence >= threshold ? "SUPPORTED" : "UNKNOWN";
+    double support = unitInterval(supportConfidence);
+    double verdictConfidence = "SUPPORTED".equals(verdict) ? support : "REFUTED".equals(verdict) ? 1.0 - support : 0.0;
+    // The learned value is reported beside the verdict and never decides it.
+    Double learnedScore = opinion != null ? Double.valueOf(unitInterval(opinion.expectation()))
+        : posterior != null ? Double.valueOf(unitInterval(posterior)) : null;
+    String learnedNote = opinion != null
+        ? String.format(Locale.ROOT, "; learned score %.3f (the stored PSL/MEBN opinion on %s, uncertainty %.3f)"
+            + " is reported for reference and does not decide the verdict",
+            learnedScore, this.relationAtom(opinionRelation), opinion.uncertainty())
+        : learnedScore != null
+            ? String.format(Locale.ROOT, "; learned score %.3f (the PSL/MEBN value learned for this atom)"
+                + " is reported for reference and does not decide the verdict", learnedScore)
+            : learnedApplies && !opinionsFresh && UnifiedGraphReasoningLifecycle.hasLearnedState(graph)
+                ? "; learning is stale (meta.stale), so learned scores are withheld until learning reruns"
+                    + " (a crawl with learning, or code_graph action=learn)"
+                : "";
+    String explanation = (declaredOntology.isPresent()
+        ? "OWL RL support confidence from direct facts or minimum supporting fact confidence"
+        : "recorded edge confidence; heuristic calls are not verified") + learnedNote;
+    List<String> didYouMean =
+        this.unknownPredicateSuggestions(graph, atom, evidence, declaredOntology.orElse(null));
+    ObjectNode result = this.localEnvelope(selection);
+    result.put("atom", atomText);
+    result.put("verdict", verdict);
+    result.put("confidence", verdictConfidence);
+    result.put("verdictBasis", basis);
+    result.put("recordedEvidenceConfidence", confidence);
+    result.put("authoritativeConfidence", authoritativeConfidence);
+    result.put("inferredConfidence", inferredConfidence);
+    result.put("confidenceBasis", explanation + "; confidence is in the stated verdict "
+        + "(the support confidence when SUPPORTED, one minus it when REFUTED, 0 when UNKNOWN)");
+    result.put("calibratedConfidence", verdictConfidence);
+    if (learnedScore != null) {
+      result.put("learnedScore", learnedScore);
+    }
+    if (posterior != null) {
+      result.put("learnedPosterior", posterior);
+    }
+    if (opinionRelation != null) {
+      ObjectNode stored = result.putObject("relationOpinion");
+      stored.put("relation", this.relationAtom(opinionRelation));
+      stored.put("belief", opinion.belief());
+      stored.put("disbelief", opinion.disbelief());
+      stored.put("uncertainty", opinion.uncertainty());
+      stored.put("baseRate", opinion.baseRate());
+      stored.put("expectation", opinion.expectation());
+    }
+    result.put("entityKnown", entitiesKnown);
+    result.put("openWorld", true);
+    if ("UNKNOWN".equals(verdict)) {
+      result.put("unknownReason", !entitiesKnown ? "entity-not-in-graph"
+          : didYouMean != null ? "unknown-predicate"
+          : evidence.isEmpty() && !owlEvidence.supported() ? "no-evidence"
+          : heuristicOnly && !owlEvidence.supported()
+              ? "heuristic-code-evidence"
+              : owlEvidence.attempted() && !owlEvidence.supported()
+                  ? "no-owl-entailment" : "below-confidence-threshold");
+      if (didYouMean != null) {
+        ArrayNode suggestions = result.putArray("didYouMean");
+        didYouMean.forEach(suggestions::add);
+      }
+    }
+    ArrayNode evidenceAtoms = result.putArray("evidenceAtoms");
+    evidence.forEach(relation -> evidenceAtoms.add(this.relationAtom(relation)));
+    owlEvidence.evidenceAtoms().forEach(evidenceAtoms::add);
+    result.put("evidenceCount", evidence.size() + owlEvidence.evidenceAtoms().size());
+    result.put("derivationDepth", Math.max(evidence.isEmpty() ? 0 : 1, owlEvidence.depth()));
+    ArrayNode supportingFactKeys = result.putArray("supportingFactKeys");
+    owlEvidence.supportingFactKeys().forEach(supportingFactKeys::add);
+    ArrayNode activatedRules = result.putArray("activatedRules");
+    owlEvidence.activatedRules().forEach(activatedRules::add);
+    result.put("inferenceEngine", declaredOntology.isPresent() ? "OwlRlReasoner" : "direct-evidence");
+    result.put("owlEntailment", owlEvidence.supported());
+    if (declaredOntology.isPresent()) {
+      result.put("ontologySource", "declared-artifact");
+    }
+
+    List<ReasoningTrace.Step> premises = new ArrayList<>();
+    for (GraphRelation relation : evidence) {
+      boolean verified = this.authoritativeRelation(relation);
+      ReasoningTrace.Step fact = ReasoningTrace.Step.fact(
+          this.relationAtom(relation) + (verified ? "" : " (heuristic code call, not a verified fact)"),
+          unitInterval(relation.confidence()), relation.id());
+      Opinion stored = opinionsFresh && verified ? graph.relationOpinion(relation.id()) : null;
+      // A learned opinion is labelled in meta rather than attached as the fact's opinion, so it is
+      // never read as the recorded evidence.
+      premises.add(stored == null ? fact : ReasoningTrace.Step.withMeta(fact, Map.of("learnedScore",
+          String.format(Locale.ROOT, "%.3f", unitInterval(stored.expectation())))));
+    }
+    if (owlEvidence.supported()) {
+      premises.add(ReasoningTrace.Step.derived(ReasoningTrace.StepKind.RULE,
+          "OWL RL entails " + String.join(", ", owlEvidence.evidenceAtoms())
+              + " from " + String.join(", ", owlEvidence.supportingFactKeys()),
+          String.join(", ", owlEvidence.activatedRules()), unitInterval(inferredConfidence), List.of()));
+    }
+    Map<String, String> traceMeta = new LinkedHashMap<>();
+    traceMeta.put("verdictBasis", basis);
+    traceMeta.put("threshold", Double.toString(threshold));
+    traceMeta.put("learningStale", Boolean.toString(learnedApplies && !opinionsFresh));
+    if (learnedScore != null) {
+      traceMeta.put("learnedScore", String.format(Locale.ROOT, "%.3f", learnedScore));
+    }
+    ReasoningTrace trace = ReasoningTrace.of(ReasoningTrace.Step.derived(ReasoningTrace.StepKind.INFERENCE,
+        "verdict " + verdict + " for " + atomText + ": " + explanation, basis, verdictConfidence,
+        null, traceMeta, premises));
+    return new LocalVerification(result, trace, verdict, verdictConfidence);
+  }
+
+  private static double unitInterval(double value) {
+    return Double.isFinite(value) ? Math.max(0.0, Math.min(1.0, value)) : 0.0;
   }
 
   private ToolResult offlineQuery(JsonNode params, ToolContext context) throws Exception {
@@ -2268,6 +2421,7 @@ public final class LocalProjectGraphBackend {
       LocalProjectGraphBackend.GraphSelection selection = this.selectEvidenceGraph(context, params);
       List<ConfidenceBinding> bindings = new ArrayList<>();
       bindings.add(new ConfidenceBinding(Map.of(), 1.0, false));
+      Map<String, String> typeKeys = new HashMap<>();
 
       for (JsonNode conjunct : conjuncts) {
         List<String> args = new ArrayList<>();
@@ -2277,6 +2431,7 @@ public final class LocalProjectGraphBackend {
         if (args.isEmpty() || args.size() > 2 || pattern.predicate().isBlank()) {
           return ToolResult.error("Each conjunct requires a predicate and one or two arguments");
         }
+        String predicate = PredicateNames.key(pattern.predicate());
         List<ConfidenceBinding> next = new ArrayList<>();
 
         for (ConfidenceBinding existing : bindings) {
@@ -2286,7 +2441,7 @@ public final class LocalProjectGraphBackend {
                   + " relation examinations; no partial bindings returned. Narrow the conjuncts "
                   + "or increase maxWork explicitly (maximum 1000000).");
             }
-            if (!relation.type().equals(pattern.predicate())
+            if (!predicate.equals(typeKeys.computeIfAbsent(relation.type(), PredicateNames::key))
                 || !this.matchesArgument(selection.graph(), pattern.args().get(0), relation.sourceId(), existing.variables())
                 || (pattern.args().size() == 2 && !this.matchesArgument(selection.graph(),
                     pattern.args().get(1), relation.targetId(), existing.variables()))) continue;
@@ -2328,6 +2483,9 @@ public final class LocalProjectGraphBackend {
       result.put("confidenceBasis", "Lukasiewicz conjunction of recorded edge confidences; "
           + "rows marked heuristicEvidence are source-pattern matches, not verified calls");
       result.put("truncated", truncated);
+      if (bindings.isEmpty()) {
+        this.reportUnknownPredicates(result, conjuncts, typeKeys, selection.graph());
+      }
       return this.jsonSuccess(
           "ask_graph_query: " + rows.size() + " binding(s)",
           result,
@@ -2348,9 +2506,10 @@ public final class LocalProjectGraphBackend {
         return this.withGraphWriteLock(
             selected.path(),
             () -> {
-              LocalProjectGraphBackend.Atom atom = this.atom(atomText);
+              LocalProjectGraphBackend.Atom atom = this.groundAtom(atomText);
               LocalProjectGraphBackend.GraphSelection selection;
               UnifiedGraphMutationJournal.AppendResult journalResult = null;
+              ArrayNode replacedAtoms = this.mapper.createArrayNode();
               if (this.compactArchive(selected.path())) {
                 List<GraphEntity> newEntities = new ArrayList<>();
                 String targetText =
@@ -2370,19 +2529,24 @@ public final class LocalProjectGraphBackend {
                 GraphRelation asserted = this.relationForResolvedAtom(source, target, atom, value, params);
                 UnifiedGraphArchive.Link assertedLink = this.archiveLink(asserted);
                 UnifiedGraphArchive.Link previous = null;
+                List<UnifiedGraphArchive.Link> replaced = new ArrayList<>();
                 if (newEntities.isEmpty()) {
                   try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(selected.path())) {
                     for (UnifiedGraphArchive.Link link : archive.incidentLinks(
                         source.id(), GraphQueryEngine.Direction.OUTGOING, 1_000_000)) {
                       if (link.id().equals(asserted.id())) {
                         previous = link;
-                        break;
+                      } else if (this.supersededAssertion(
+                          link.id(), link.type(), link.sourceId(), link.targetId(), asserted)) {
+                        replaced.add(link);
+                        this.addStoredAtom(replacedAtoms, link.id(), link.type(), link.sourceId(),
+                            link.targetId(), link.attributes());
                       }
                     }
                   }
                 }
                 journalResult = UnifiedGraphMutationJournal.appendAssertion(
-                    selected.path(), newEntities, assertedLink, previous);
+                    selected.path(), newEntities, assertedLink, previous, replaced);
                 selection = selected;
               } else {
                 selection =
@@ -2390,6 +2554,14 @@ public final class LocalProjectGraphBackend {
                         UnifiedGraph.load(selected.path()), selected.path());
                 GraphRelation relation =
                     this.relationForAtom(selection.graph(), atom, value, params);
+                for (GraphRelation stored : List.copyOf(selection.graph().outgoing(relation.sourceId()))) {
+                  if (this.supersededAssertion(
+                      stored.id(), stored.type(), stored.sourceId(), stored.targetId(), relation)) {
+                    selection.graph().removeRelationById(stored.id());
+                    this.addStoredAtom(replacedAtoms, stored.id(), stored.type(), stored.sourceId(),
+                        stored.targetId(), stored.attributes());
+                  }
+                }
                 selection.graph().removeRelationById(relation.id()).addRelation(relation);
                 selection.graph().meta("learning.reasoningStale", true).meta("learning.kgeStale", true);
                 this.saveAtomic(selection.graph(), selection.path());
@@ -2403,6 +2575,15 @@ public final class LocalProjectGraphBackend {
               result.put("value", value);
               result.put("version", version);
               result.put("cascadeTriggered", false);
+              result.put("contradictionCheckPerformed", false);
+              result.put("caveat", "The fact was stored"
+                  + (replacedAtoms.isEmpty() ? "" : ", replacing its assertion under another "
+                      + "predicate spelling (listed in replacedAtoms),")
+                  + " and learned state invalidated; "
+                  + "no contradiction check or automatic re-reasoning cascade was performed.");
+              if (!replacedAtoms.isEmpty()) {
+                result.set("replacedAtoms", replacedAtoms);
+              }
               if (journalResult != null) {
                 result.put("mutationJournalRecords", journalResult.recordCount());
                 result.put("compactionRecommended", journalResult.compactionRecommended());
@@ -2423,7 +2604,8 @@ public final class LocalProjectGraphBackend {
    * (reasoning/consensus-targets.bin, written by the crawl-end learning subprocess). Returns null
    * when no trained program is stored or the atom was not a learning target.
    */
-  private Double learnedPosterior(UnifiedGraph graph, LocalProjectGraphBackend.Atom atom) {
+  private Double learnedPosterior(
+      UnifiedGraph graph, LocalProjectGraphBackend.Atom atom, List<GraphRelation> evidence) {
     if (staleCodeLearning(graph, "codeLearningGeneration.")) return null;
     Object model = graph.model("reasoning/consensus-targets.bin");
     if (!(model instanceof Map<?, ?> targets)) {
@@ -2445,8 +2627,69 @@ public final class LocalProjectGraphBackend {
           return number.doubleValue();
         }
       }
+      // Learning keys each target by the stored relation's own spelling, so a predicate asked in
+      // another spelling finds its posterior through the relations it matched.
+      Double matched = null;
+      for (GraphRelation relation : evidence) {
+        value = targets.get(UnifiedGraphReasoningLifecycle.relationTargetKey(
+            relation.type(), relation.sourceId(), relation.targetId()));
+        if (value instanceof Number number && (matched == null || number.doubleValue() > matched)) {
+          matched = number.doubleValue();
+        }
+      }
+      return matched;
     }
     return null;
+  }
+
+  /**
+   * Stored relation types spelled closest to a binary atom's predicate when no stored relation
+   * type or declared OWL property spells it, or null when the predicate is known and an UNKNOWN
+   * verdict means the facts, not the vocabulary, are missing. A type whose edges were all
+   * retracted, or all fall outside a valid-time window, is still known.
+   */
+  private List<String> unknownPredicateSuggestions(UnifiedGraph graph,
+      LocalProjectGraphBackend.Atom atom, List<GraphRelation> evidence, OwlOntology ontology) {
+    if (atom.args().size() != 2 || !evidence.isEmpty()
+        || ontology != null && owlProperty(ontology, atom.predicate()) != null) {
+      return null;
+    }
+    String key = PredicateNames.key(atom.predicate());
+    Set<String> relationTypes = viewRelationTypes(graph);
+    graph.relations().forEach(relation -> relationTypes.add(relation.type()));
+    Set<String> known = new HashSet<>(relationTypes);
+    known.addAll(graph.retractedRelationTypes());
+    return known.stream().anyMatch(type -> PredicateNames.key(type).equals(key))
+        ? null
+        : PredicateNames.suggestions(atom.predicate(), relationTypes, 3);
+  }
+
+  /**
+   * Names each conjunct predicate that no stored relation type spells, with the closest stored
+   * spellings, so a query that bound nothing says whether the vocabulary or the facts are missing.
+   * A type whose edges were all retracted, or all fall outside a valid-time window, is still known.
+   */
+  private void reportUnknownPredicates(
+      ObjectNode result, JsonNode conjuncts, Map<String, String> typeKeys, UnifiedGraph graph) {
+    Set<String> vocabulary = viewRelationTypes(graph);
+    vocabulary.addAll(typeKeys.keySet());
+    Set<String> known = new HashSet<>(typeKeys.values());
+    vocabulary.forEach(type -> known.add(PredicateNames.key(type)));
+    graph.retractedRelationTypes().forEach(type -> known.add(PredicateNames.key(type)));
+    Set<String> reported = new HashSet<>();
+    ArrayNode unknown = this.mapper.createArrayNode();
+    for (JsonNode conjunct : conjuncts) {
+      String predicate = conjunct.path("predicate").asText("");
+      String key = PredicateNames.key(predicate);
+      if (key.isEmpty() || known.contains(key) || !reported.add(key)) continue;
+      ObjectNode entry = unknown.addObject();
+      entry.put("predicate", predicate);
+      ArrayNode didYouMean = entry.putArray("didYouMean");
+      PredicateNames.suggestions(predicate, vocabulary, 3).forEach(didYouMean::add);
+    }
+    if (!unknown.isEmpty()) {
+      result.set("unknownPredicates", unknown);
+    }
   }
 
   private ToolResult offlineRetract(JsonNode params, ToolContext context) throws Exception {
@@ -2463,10 +2706,11 @@ public final class LocalProjectGraphBackend {
       return this.withGraphWriteLock(
           selected.path(),
           () -> {
-            LocalProjectGraphBackend.Atom atom = this.atom(atomText);
+            LocalProjectGraphBackend.Atom atom = this.groundAtom(atomText);
             LocalProjectGraphBackend.GraphSelection selection;
             int removed;
             UnifiedGraphMutationJournal.AppendResult journalResult = null;
+            ArrayNode removedAtoms = this.mapper.createArrayNode();
             if (this.compactArchive(selected.path())) {
               List<String> requested = atom.args().size() == 2
                   ? List.of(atom.args().get(0), atom.args().get(1))
@@ -2480,6 +2724,8 @@ public final class LocalProjectGraphBackend {
                       : this.archiveMatches(
                           selected.path(), atom, source.id(), target == null ? null : target.id());
               removed = matches.size();
+              matches.forEach(link -> this.addStoredAtom(removedAtoms, link.id(), link.type(),
+                  link.sourceId(), link.targetId(), link.attributes()));
               if (removed > 0) {
                 journalResult = UnifiedGraphMutationJournal.appendRetractions(selected.path(), matches);
               }
@@ -2491,7 +2737,12 @@ public final class LocalProjectGraphBackend {
               List<GraphRelation> matches =
                   this.matchingRelations(selection.graph(), atom, Map.of());
               removed = matches.size();
-              matches.forEach(relation -> selection.graph().removeRelationById(relation.id()));
+              for (GraphRelation relation : matches) {
+                selection.graph().removeRelationById(relation.id())
+                    .recordRetractedRelationType(relation.type());
+                this.addStoredAtom(removedAtoms, relation.id(), relation.type(), relation.sourceId(),
+                    relation.targetId(), relation.attributes());
+              }
               if (removed > 0) selection.graph().meta("learning.reasoningStale", true).meta("learning.kgeStale", true);
               this.saveAtomic(selection.graph(), selection.path());
             }
@@ -2502,15 +2753,16 @@ public final class LocalProjectGraphBackend {
             result.put("status", removed == 0 ? "NOT_FOUND" : "RETRACTED");
             result.put("mode", params.path("mode").asText("retract"));
             result.put("removed", removed);
+            result.set("removedAtoms", removedAtoms);
             result.putNull("dependentAtomsUnsupported");
             result.putNull("dependentAtomsWeakened");
             result.put("dependencyAnalysisPerformed", false);
-            result.put("caveat", "Exact facts were retracted and learned state invalidated; "
-                + "no dependency analysis or automatic re-reasoning cascade was performed.");
-              result.put("cascadeTriggered", false);
-              result.put("contradictionCheckPerformed", false);
-              result.put("caveat", "The fact was stored and learned state invalidated; "
-                  + "no contradiction check or automatic re-reasoning cascade was performed.");
+            result.put("caveat", removed == 0
+                ? "No stored edge matched the fact under any predicate spelling; nothing was retracted."
+                : "Stored edges matching the fact under any predicate spelling were retracted (listed "
+                    + "in removedAtoms) and learned state invalidated; no dependency analysis or "
+                    + "automatic re-reasoning cascade was performed.");
+            result.put("cascadeTriggered", false);
             if (journalResult != null) {
               result.put("mutationJournalRecords", journalResult.recordCount());
               result.put("compactionRecommended", journalResult.compactionRecommended());
@@ -2541,7 +2793,7 @@ public final class LocalProjectGraphBackend {
         result.put("nextCursor", 0);
         ArrayNode snapshot = result.putArray("snapshot");
         selection.graph().relations().stream()
-            .filter(rel -> this.containsIgnoreCase(names, rel.type()))
+            .filter(rel -> this.containsPredicate(names, rel.type()))
             .forEach(rel -> snapshot.add(this.relationAtom(rel)));
         return this.jsonSuccess(
             "ask_graph_subscribe: subscription created",
@@ -2604,13 +2856,22 @@ public final class LocalProjectGraphBackend {
               "No learned project-local MEBN theory is stored in this graph. Run crawl_documents"
                   + " with reasoningLearning.enabled=true.");
         } else {
+          Map<String, Integer> evidence = AskGraphMebnTool.parseEvidence(params.get("evidence"));
           int depth = Math.max(0, Math.min(10, params.path("maxDepth").asInt(3)));
           int max = Math.max(0, Math.min(1000, params.path("maxNodes").asInt(100)));
           Set<String> nodes = neighborhood(selection.graph(), anchor.id(), depth, max);
           MTheory queryTheory = RelationalMTheoryArtifactCodec.restrictToEntityIds(theory, nodes);
           long started = System.nanoTime();
-          Map<String, Double> learnedPosteriors =
-              new MebnInferenceService().infer(selection.graph(), queryTheory, Map.of());
+          MebnInferenceService inference = new MebnInferenceService();
+          Map<String, Double> learnedPriors = inference.infer(selection.graph(), queryTheory, Map.of());
+          String unknownEvidence = AskGraphMebnTool.unknownEvidence(evidence, learnedPriors.keySet());
+          if (unknownEvidence != null) {
+            return ToolResult.error(unknownEvidence);
+          }
+          // Without evidence the conditioned pass would reproduce the priors.
+          Map<String, Double> learnedPosteriors = evidence.isEmpty()
+              ? learnedPriors
+              : inference.infer(selection.graph(), queryTheory, evidence);
           ObjectNode result = this.localEnvelope(selection);
           ObjectNode priors = result.putObject("priors");
           ObjectNode posteriors = result.putObject("posteriors");
@@ -2625,7 +2886,7 @@ public final class LocalProjectGraphBackend {
                         variable.contains("(")
                             ? variable.substring(0, variable.indexOf(40))
                             : variable;
-                    priors.put(variable, entry.getValue());
+                    priors.put(variable, learnedPriors.get(variable));
                     posteriors.put(variable, entry.getValue());
                     titles.put(variable, variable);
                     ObjectNode item = meta.putObject(variable);
@@ -2642,6 +2903,16 @@ public final class LocalProjectGraphBackend {
                   });
           result.put("mTheory", queryTheory.getName());
           result.put("learnedTheory", true);
+          ObjectNode evidenceJson = result.putObject("evidence");
+          evidence.forEach(evidenceJson::put);
+          result.put("evidenceApplied", !evidence.isEmpty());
+          result.put(
+              "note",
+              evidence.isEmpty()
+                  ? "No evidence was applied, so each prior equals its posterior; the anchor node"
+                      + " only selects which variables are included."
+                  : "Posteriors are conditioned on the evidence; each prior is the model's"
+                      + " probability without it.");
           result.put("scopedEntityCount", nodes.size());
           result.put("computationTimeMs", (System.nanoTime() - started) / 1000000L);
           return this.jsonSuccess(
@@ -2657,7 +2928,9 @@ public final class LocalProjectGraphBackend {
                   "scopedEntityCount",
                   nodes.size(),
                   "learnedTheory",
-                  true));
+                  true,
+                  "evidenceApplied",
+                  !evidence.isEmpty()));
         }
       }
     }
@@ -2667,48 +2940,57 @@ public final class LocalProjectGraphBackend {
     String target = this.firstNonBlank(this.text(params, "atom"), this.text(params, "target"));
     if (target == null) {
       return ToolResult.error("atom is required");
-    } else {
-      ObjectNode verifyParams = (ObjectNode) params.deepCopy();
-      verifyParams.put("atom", target);
-      ToolResult verified = this.offlineVerify(verifyParams, context);
-      if (verified.isError()) {
-        ObjectNode query = (ObjectNode) params.deepCopy();
-        query.put("operation", "DESCRIBE");
-        query.put("entityId", target);
-        JsonNode result = this.reasoningQuery(query, context);
-        return this.jsonSuccess(
-            "ask_graph_explain: " + target,
-            result,
-            Map.of("backend", "project-local", "target", target, "inferenceMode", "DESCRIBE"));
-      } else {
-        JsonNode evidence = this.mapper.readTree(verified.getOutput());
-        String mode = evidence.path("inferenceEngine").asText("direct-evidence");
-        StringBuilder derivation = new StringBuilder()
-            .append("Project-local grounded derivation (" ).append(mode).append("):\n")
-            .append("Verdict: ").append(evidence.path("verdict").asText("UNKNOWN"))
-            .append("\nConfidence: ").append(evidence.path("confidence").asDouble(0.0));
-        JsonNode supporting = evidence.path("supportingFactKeys");
-        if (supporting.isArray() && !supporting.isEmpty()) {
-          derivation.append("\nSupporting fact keys:");
-          supporting.forEach(item -> derivation.append("\n  - ").append(item.asText()));
-        }
-        JsonNode rules = evidence.path("activatedRules");
-        if (rules.isArray() && !rules.isEmpty()) {
-          derivation.append("\nActivated rules:");
-          rules.forEach(item -> derivation.append("\n  - ").append(item.asText()));
-        }
-        JsonNode atoms = evidence.path("evidenceAtoms");
-        if (atoms.isArray() && !atoms.isEmpty()) {
-          derivation.append("\nEvidence atoms:");
-          atoms.forEach(item -> derivation.append("\n  - ").append(item.asText()));
-        }
-        return ToolResult.success(
-            "ask_graph_explain: " + target,
-            derivation.toString(),
-            Map.of("backend", "project-local", "target", target, "inferenceMode", mode,
-                "grounded", true, "verdict", evidence.path("verdict").asText("UNKNOWN")));
-      }
     }
+    int open = target.indexOf('(');
+    if (open <= 0 || target.lastIndexOf(')') <= open) {
+      // A bare entity id has no verdict to explain, so describe the entity instead.
+      ObjectNode query = (ObjectNode) params.deepCopy();
+      query.put("operation", "DESCRIBE");
+      query.put("entityId", target);
+      JsonNode result = this.reasoningQuery(query, context);
+      return this.jsonSuccess(
+          "ask_graph_explain: " + target,
+          result,
+          Map.of("backend", "project-local", "target", target, "inferenceMode", "DESCRIBE"));
+    }
+    rejectHistoricalQuery(params);
+    LocalVerification verification =
+        this.verifyAtom(params, context, target, confidenceThreshold(params, 0.5));
+    ObjectNode evidence = verification.result();
+    String mode = evidence.path("inferenceEngine").asText("direct-evidence");
+    String basis = evidence.path("verdictBasis").asText("direct-evidence");
+    StringBuilder derivation = new StringBuilder()
+        .append("Project-local grounded derivation (").append(mode).append("):\n")
+        .append("Verdict: ").append(verification.verdict())
+        .append("\nConfidence: ").append(verification.confidence())
+        .append("\nBasis: ").append(basis).append(" - ").append(evidence.path("confidenceBasis").asText(""))
+        .append("\n").append(ReasoningTraceRenderer.toLlmContext(
+            verification.trace(), ReasoningTraceRenderer.DEFAULT_MAX_LINES));
+    JsonNode supporting = evidence.path("supportingFactKeys");
+    if (supporting.isArray() && !supporting.isEmpty()) {
+      derivation.append("\nSupporting fact keys:");
+      supporting.forEach(item -> derivation.append("\n  - ").append(item.asText()));
+    }
+    JsonNode rules = evidence.path("activatedRules");
+    if (rules.isArray() && !rules.isEmpty()) {
+      derivation.append("\nActivated rules:");
+      rules.forEach(item -> derivation.append("\n  - ").append(item.asText()));
+    }
+    JsonNode atoms = evidence.path("evidenceAtoms");
+    if (atoms.isArray() && !atoms.isEmpty()) {
+      derivation.append("\nEvidence atoms:");
+      atoms.forEach(item -> derivation.append("\n  - ").append(item.asText()));
+    }
+    Map<String, Object> metadata = new LinkedHashMap<>();
+    metadata.put("backend", "project-local");
+    metadata.put("target", target);
+    metadata.put("inferenceMode", mode);
+    metadata.put("grounded", true);
+    metadata.put("verdict", verification.verdict());
+    metadata.put("verdictBasis", basis);
+    metadata.put("confidence", verification.confidence());
+    metadata.put("trace", this.mapper.valueToTree(verification.trace()));
+    return ToolResult.success("ask_graph_explain: " + target, derivation.toString(), metadata);
   }
 
   private ToolResult offlineFused(JsonNode params, ToolContext context) throws Exception {
@@ -2801,8 +3083,9 @@ public final class LocalProjectGraphBackend {
       result.put("claimAtom", verification.path("atom").asText());
       result.putNull("fusedScore");
       result.put("fusionPerformed", false);
-      result.put("caveat", "Project-local verification uses direct evidence and declared OWL entailment; "
-          + "no five-channel fusion was performed. Heuristic code calls are not verified facts.");
+      result.put("caveat", "Project-local verification decides from a declared OWL entailment or recorded direct "
+          + "evidence (see verdictBasis); a learned PSL/MEBN score, when present, is reported as learnedScore and "
+          + "does not decide. No five-channel fusion was performed. Heuristic code calls are not verified facts.");
       return this.jsonSuccess(
           "ask_graph_claim: " + subject + " " + predicate + " " + object,
           result,
@@ -3131,16 +3414,28 @@ public final class LocalProjectGraphBackend {
     return new OwlEvidence(true, false, 0.0, 0, List.of(), List.of(), List.of());
   }
 
+  /** An exact IRI or local-name match wins; otherwise the local name may be spelled differently. */
   private OwlObjectProperty owlProperty(OwlOntology ontology, String predicate) {
-    return ontology.objectProperties().values().stream()
+    Collection<OwlObjectProperty> properties = ontology.objectProperties().values();
+    return properties.stream()
         .filter(property -> predicate.equals(property.propertyIri()) || predicate.equals(property.localName()))
-        .findFirst().orElse(null);
+        .findFirst()
+        .or(() -> properties.stream()
+            .filter(property -> PredicateNames.same(predicate, property.localName()))
+            .findFirst())
+        .orElse(null);
   }
 
+  /** An exact IRI or local-name match wins; otherwise the local name may be spelled differently. */
   private OwlClass owlClass(OwlOntology ontology, String predicate) {
-    return ontology.classes().values().stream()
+    Collection<OwlClass> classes = ontology.classes().values();
+    return classes.stream()
         .filter(owlClass -> predicate.equals(owlClass.classIri()) || predicate.equals(owlClass.localName()))
-        .findFirst().orElse(null);
+        .findFirst()
+        .or(() -> classes.stream()
+            .filter(owlClass -> PredicateNames.same(predicate, owlClass.localName()))
+            .findFirst())
+        .orElse(null);
   }
 
   private OwlTypePath owlTypePath(OwlOntology ontology, String sourceIri, String targetIri) {
@@ -3311,7 +3606,7 @@ public final class LocalProjectGraphBackend {
     ObjectNode meta = result.putObject("meta");
     meta.put("backend", "project-local");
     meta.put("stale", staleCodeLearning(selection.graph(), "codeLearningGeneration."));
-    meta.put("freshnessBasis", "projected-code-versus-learning-generation; source-tree-not-checked");
+    meta.put("freshnessBasis", freshnessBasis(selection.graph()));
     meta.put("kbVersion", LOCAL_KB_VERSION.get());
     return result;
   }
@@ -3637,8 +3932,11 @@ public final class LocalProjectGraphBackend {
 
   private List<GraphRelation> matchingRelations(
       UnifiedGraph graph, LocalProjectGraphBackend.Atom atom, Map<String, String> bindings) {
+    String predicate = PredicateNames.key(atom.predicate());
+    Map<String, String> typeKeys = new HashMap<>();
     return graph.relations().stream()
-        .filter(relation -> relation.type().equals(atom.predicate()))
+        .filter(relation -> predicate.equals(
+            typeKeys.computeIfAbsent(relation.type(), PredicateNames::key)))
         .filter(
             relation ->
                 this.matchesArgument(graph, atom.args().get(0), relation.sourceId(), bindings))
@@ -3711,7 +4009,9 @@ public final class LocalProjectGraphBackend {
       LocalProjectGraphBackend.Atom atom,
       double confidence,
       JsonNode params) {
-    String id = "asserted:" + stableId(source.id() + "\n" + atom.predicate() + "\n" + target.id());
+    // The predicate key names the fact, so every spelling of one assertion shares its id.
+    String id = ASSERTED_RELATION_PREFIX
+        + stableId(source.id() + "\n" + PredicateNames.key(atom.predicate()) + "\n" + target.id());
     Map<String, Object> attributes = new LinkedHashMap<>();
     attributes.put("atom", atom.predicate() + "(" + String.join(", ", atom.args()) + ")");
     attributes.put("source", this.firstNonBlank(this.text(params, "source"), "stdio-local"));
@@ -3810,9 +4110,61 @@ public final class LocalProjectGraphBackend {
       LocalProjectGraphBackend.Atom atom,
       String sourceId,
       String targetId) {
-    return link.type().equals(atom.predicate())
+    return PredicateNames.same(link.type(), atom.predicate())
         && link.sourceId().equals(sourceId)
         && (targetId == null || link.targetId().equals(targetId));
+  }
+
+  /**
+   * Whether a stored edge is an earlier assertion of the same fact under another predicate
+   * spelling, which a new assertion replaces so repeated spellings leave one edge. Crawled and
+   * projected edges are evidence in their own right and are never replaced.
+   */
+  private boolean supersededAssertion(
+      String id, String type, String sourceId, String targetId, GraphRelation asserted) {
+    return id.startsWith(ASSERTED_RELATION_PREFIX) && !id.equals(asserted.id())
+        && sourceId.equals(asserted.sourceId()) && targetId.equals(asserted.targetId())
+        && PredicateNames.same(type, asserted.type());
+  }
+
+  /** Lists a stored edge a mutation removed: its atom in the stored spelling, id, and origin. */
+  private void addStoredAtom(ArrayNode atoms, String id, String type, String sourceId,
+      String targetId, Map<String, Object> attributes) {
+    ObjectNode entry = atoms.addObject();
+    entry.put("atom", type + "(" + sourceId + ", " + targetId + ")");
+    entry.put("relationId", id);
+    String origin = "unrecorded";
+    for (String key : List.of("provenance", PROJECTION_OWNER_KEY, "source")) {
+      String value = this.string(attributes.get(key));
+      if (value != null && !value.isBlank()) {
+        origin = value;
+        break;
+      }
+    }
+    entry.put("origin", origin);
+    entry.put("asserted", id.startsWith(ASSERTED_RELATION_PREFIX));
+  }
+
+  /** Assert and retract name one stored fact; a ?variable would match or create arbitrary entities. */
+  private LocalProjectGraphBackend.Atom groundAtom(String value) {
+    LocalProjectGraphBackend.Atom atom = this.atom(value);
+    if (atom.args().stream().anyMatch(arg -> arg.startsWith("?"))) {
+      throw new IllegalArgumentException(
+          "atom must be ground: name stored entities, not ?variables. No facts were changed.");
+    }
+    return atom;
+  }
+
+  /**
+   * Every relation type of the unfiltered graph when {@code graph} is a valid-time view, else an
+   * empty set: a type whose edges all fall outside the window is still vocabulary.
+   */
+  private static Set<String> viewRelationTypes(UnifiedGraph graph) {
+    Set<String> types = new LinkedHashSet<>();
+    if (graph.meta().get(VIEW_RELATION_TYPES_META) instanceof Collection<?> viewTypes) {
+      viewTypes.forEach(type -> types.add(String.valueOf(type)));
+    }
+    return types;
   }
 
   private GraphEntity ensureEntity(UnifiedGraph graph, String requested) {
@@ -3851,7 +4203,7 @@ public final class LocalProjectGraphBackend {
   private void publish(
       Path graphPath, String predicate, String operation, String atom, long version) {
     LOCAL_SUBSCRIPTIONS.values().stream()
-        .filter(subscription -> this.containsIgnoreCase(subscription.predicates(), predicate))
+        .filter(subscription -> this.containsPredicate(subscription.predicates(), predicate))
         .filter(
             subscription ->
                 graphPath == null || subscription.graphPath().equals(graphPath.toString()))
@@ -3867,8 +4219,9 @@ public final class LocalProjectGraphBackend {
             });
   }
 
-  private boolean containsIgnoreCase(Collection<String> values, String needle) {
-    return values.stream().anyMatch(value -> value.equalsIgnoreCase(needle));
+  private boolean containsPredicate(Collection<String> predicates, String predicate) {
+    return predicates.stream().anyMatch(value ->
+        value.equalsIgnoreCase(predicate) || PredicateNames.same(value, predicate));
   }
 
   private static Set<String> neighborhood(UnifiedGraph graph, String start, int depth, int max) {
@@ -3914,6 +4267,7 @@ public final class LocalProjectGraphBackend {
 
   private Map<String, String> addDocuments(
       UnifiedGraph graph,
+      Path projectRoot,
       Path directory,
       String knowledgeBaseNode,
       String projectId,
@@ -3921,6 +4275,9 @@ public final class LocalProjectGraphBackend {
       Long factSheetId)
       throws IOException {
     Map<String, String> documentNodes = new LinkedHashMap<>();
+    List<LocalProjectGraphBackend.ConnectorDocumentRow> connectorRows = new ArrayList<>();
+    Map<String, String> sourcePathIndex = new HashMap<>();
+    List<LocalProjectGraphBackend.PendingAttachmentLink> pendingAttachmentLinks = new ArrayList<>();
     this.forEachJsonLine(
         directory.resolve("documents.jsonl"),
         document -> {
@@ -3954,8 +4311,27 @@ public final class LocalProjectGraphBackend {
                 "CONTAINS_DOCUMENT",
                 Map.of("source", document.path("source").asText("")));
             documentNodes.put(documentId, nodeId);
+            this.indexSourcePaths(sourcePathIndex, projectRoot, document, nodeId);
+            this.collectPendingAttachmentLink(document, nodeId, pendingAttachmentLinks);
+            if ("external-materialized".equals(document.path("loader").asText(""))) {
+              connectorRows.add(
+                  new LocalProjectGraphBackend.ConnectorDocumentRow(documentId, nodeId, document));
+            }
           }
         });
+    this.resolvePendingAttachmentLinks(graph, pendingAttachmentLinks, sourcePathIndex);
+    if (!connectorRows.isEmpty()) {
+      try {
+        this.addConnectorGraphExtraction(
+            graph, projectRoot, knowledgeBaseId, connectorRows, sourcePathIndex);
+      } catch (Exception connectorFailure) {
+        // Local knowledge-graph enrichment from connector messages (Slack/Discord/Email) is a
+        // best-effort addition on top of the DOCUMENT/CHUNK graph already built above. It must
+        // never turn an otherwise-healthy crawl into a failed one.
+        graph.meta("connectorGraphExtractionError", this.message(connectorFailure));
+      }
+    }
+
     Map<String, String> previousChunk = new HashMap<>();
     this.forEachJsonLine(
         directory.resolve("chunks.jsonl"),
@@ -3996,6 +4372,397 @@ public final class LocalProjectGraphBackend {
         });
     return documentNodes;
   }
+
+  /**
+   * Indexes the filesystem-path shapes a document row may be looked up by, so {@link
+   * #addAttachmentEdges} can match a connector message's {@code attachments[].path} back to the
+   * DOCUMENT node of the file it points at. Local crawls may record a path-shaped {@code source}
+   * (absolute or {@code file://}), a crawl-root-relative {@code relativePath}, or both; every
+   * shape actually seen in the wild is indexed so a later lookup only has to normalize once.
+   * {@code putIfAbsent} keeps the first document that claims a given path, which is an arbitrary
+   * but stable tie-break for the rare case of two rows sharing a resolved path.
+   */
+  private void indexSourcePaths(
+      Map<String, String> index, Path projectRoot, JsonNode document, String nodeId) {
+    String source = document.path("source").asText(null);
+    if (source != null && !source.isBlank()) {
+      index.putIfAbsent(source, nodeId);
+      if (!source.contains("://")) {
+        try {
+          index.putIfAbsent(this.normalizeAbsolutePath(Path.of(source)), nodeId);
+        } catch (RuntimeException notAPath) {
+          // Not a filesystem path on this platform; the raw-string key above still applies.
+        }
+      }
+    }
+
+    String relativePath = document.path("relativePath").asText(null);
+    if (relativePath != null && !relativePath.isBlank()) {
+      index.putIfAbsent(relativePath, nodeId);
+      try {
+        index.putIfAbsent(this.normalizeAbsolutePath(projectRoot.resolve(relativePath)), nodeId);
+      } catch (RuntimeException notAPath) {
+        // Not a filesystem path on this platform; the raw-string key above still applies.
+      }
+    }
+
+    // C1/C4: connector-assigned identities -- e.g. "slack://channel/<id>/message/<ts>",
+    // "gmail://messages/<id>", "discord://<guild>/<channel>/<message>", an IMAP/POP3
+    // Message-ID-derived value, or a "<parent>#attachment/<n>" child -- are opaque strings,
+    // never filesystem paths. Index whichever of them the row records verbatim, by exact-string
+    // key only; never parse or assume a shape here (each connector's own format is free to
+    // change without this backend caring).
+    this.indexOpaqueSourcePath(index, document.path(GraphConstants.META_SOURCE_PATH), nodeId);
+    JsonNode metadataNode = document.path("loaderOutputs").path(0).path("metadata");
+    if (metadataNode.isObject()) {
+      this.indexOpaqueSourcePath(index, metadataNode.path(GraphConstants.META_SOURCE_PATH), nodeId);
+    }
+  }
+
+  private void indexOpaqueSourcePath(Map<String, String> index, JsonNode node, String nodeId) {
+    String value = this.textOrNull(node);
+    if (value != null) {
+      index.putIfAbsent(value, nodeId);
+    }
+  }
+
+  /** Returns the node's text, or {@code null} when missing, non-textual, or blank. */
+  private String textOrNull(JsonNode node) {
+    String value = node != null && node.isTextual() ? node.asText("") : "";
+    return value.isBlank() ? null : value;
+  }
+
+  private String normalizeAbsolutePath(Path path) {
+    return path.toAbsolutePath().normalize().toString();
+  }
+
+  /**
+   * Deterministic, no-LLM local knowledge-graph enrichment for connector-sourced messages
+   * (Slack/Discord/Gmail/IMAP) materialized to markdown by the local crawl pipeline (see
+   * {@code LocalExternalSourceLoaderRegistry}). Each matching row is reconstructed into a Spring
+   * AI {@link Document} (markdown body + {@code loaderOutputs[0].metadata}) and offered to every
+   * {@link DocumentGraphExtractor} whose {@code canExtract} accepts it. Entities/relations are
+   * merged across all connector documents in this knowledge base before being written to the
+   * graph, because {@link UnifiedGraph#addEntity} replaces rather than merges same-id entities.
+   *
+   * <p>Failures are per-document/per-extractor and never abort the crawl: a message that fails to
+   * parse or an extractor that throws only costs that one document's enrichment, recorded as a
+   * warning on the graph's metadata.
+   */
+  private void addConnectorGraphExtraction(
+      UnifiedGraph graph,
+      Path projectRoot,
+      String knowledgeBaseId,
+      List<LocalProjectGraphBackend.ConnectorDocumentRow> connectorRows,
+      Map<String, String> sourcePathIndex) {
+    List<DocumentGraphExtractor> extractors =
+        List.of(
+            new SlackGraphExtractor(),
+            new DiscordGraphExtractor(),
+            new GmailGraphExtractor(),
+            new EmailGraphExtractor());
+
+    Map<String, ExtractedEntity> mergedEntities = new LinkedHashMap<>();
+    Map<String, ExtractedRelation> mergedRelations = new LinkedHashMap<>();
+    Map<String, Set<String>> entityDocumentNodes = new LinkedHashMap<>();
+    List<String> warnings = new ArrayList<>();
+
+    for (LocalProjectGraphBackend.ConnectorDocumentRow connectorRow : connectorRows) {
+      this.addAttachmentEdges(graph, projectRoot, connectorRow, sourcePathIndex, warnings);
+
+      Document document;
+      try {
+        document = this.toConnectorDocument(projectRoot, connectorRow.row());
+      } catch (Exception readFailure) {
+        warnings.add(connectorRow.documentId() + ": " + this.message(readFailure));
+        continue;
+      }
+      if (document == null) {
+        continue;
+      }
+
+      for (DocumentGraphExtractor extractor : extractors) {
+        try {
+          if (!extractor.canExtract(document)) {
+            continue;
+          }
+          ExtractionResult result = extractor.extract(document);
+          if (result == null) {
+            continue;
+          }
+          ExtractorUtils.mergeResult(mergedEntities, mergedRelations, result);
+          List<ExtractedEntity> entities = result.entities();
+          if (entities != null) {
+            for (ExtractedEntity entity : entities) {
+              entityDocumentNodes
+                  .computeIfAbsent(entity.id(), ignored -> new LinkedHashSet<>())
+                  .add(connectorRow.nodeId());
+            }
+          }
+        } catch (Exception extractionFailure) {
+          warnings.add(
+              connectorRow.documentId()
+                  + "/"
+                  + extractor.getClass().getSimpleName()
+                  + ": "
+                  + this.message(extractionFailure));
+        }
+      }
+    }
+
+    Map<String, String> connectorNodeIds = new HashMap<>();
+    for (ExtractedEntity entity : mergedEntities.values()) {
+      String nodeId = "connector-entity:" + stableId(knowledgeBaseId + "\n" + entity.id());
+      connectorNodeIds.put(entity.id(), nodeId);
+      Map<String, Object> attributes = new LinkedHashMap<>();
+      if (entity.properties() != null) {
+        attributes.putAll(entity.properties());
+      }
+      if (entity.description() != null) {
+        attributes.put("description", entity.description());
+      }
+      if (entity.aliases() != null && !entity.aliases().isEmpty()) {
+        attributes.put("aliases", entity.aliases());
+      }
+      attributes.put("confidence", entity.confidence());
+      attributes.put("provenance", "local-crawl:connector-extraction");
+      graph.addEntity(
+          GraphEntity.builder(nodeId)
+              .type(this.firstNonBlank(entity.type(), "ENTITY"))
+              .label(this.firstNonBlank(entity.name(), entity.id()))
+              .weight(entity.confidence())
+              .confidence(entity.confidence())
+              .tag("connector")
+              .attributes(this.nonNullAttributes(attributes))
+              .build());
+      for (String documentNode : entityDocumentNodes.getOrDefault(entity.id(), Set.of())) {
+        this.addRelation(
+            graph,
+            documentNode,
+            nodeId,
+            "CONTAINS_ENTITY",
+            Map.of("provenance", "local-crawl:connector-extraction"));
+      }
+    }
+
+    for (ExtractedRelation relation : mergedRelations.values()) {
+      String sourceNode = connectorNodeIds.get(relation.source());
+      String targetNode = connectorNodeIds.get(relation.target());
+      if (sourceNode == null || targetNode == null) {
+        continue;
+      }
+      Map<String, Object> attributes = new LinkedHashMap<>();
+      if (relation.properties() != null) {
+        attributes.putAll(relation.properties());
+      }
+      if (relation.description() != null) {
+        attributes.put("description", relation.description());
+      }
+      if (relation.occurredAt() != null) {
+        attributes.put("occurredAt", relation.occurredAt());
+      }
+      double confidence = relation.confidence() != null ? relation.confidence() : 1.0;
+      this.addWeightedRelation(
+          graph,
+          sourceNode,
+          targetNode,
+          relation.type(),
+          confidence,
+          confidence,
+          this.nonNullAttributes(attributes));
+    }
+
+    if (!warnings.isEmpty()) {
+      graph.meta("connectorGraphExtractionWarnings", warnings);
+    }
+  }
+
+  /**
+   * Creates HAS_ATTACHMENT edges from a connector message's DOCUMENT node to the DOCUMENT node of
+   * each attachment file. The {@code attachments[].path} contract value is resolved relative to
+   * the message's materialized markdown file's directory, then matched against the source-path
+   * index built by {@link #indexSourcePaths} from every document row's {@code source}/{@code
+   * relativePath}. Unmatched or unresolvable attachments are skipped, not fatal: attachment
+   * materialization/upload is owned by the connector loaders, not this backend.
+   */
+  private void addAttachmentEdges(
+      UnifiedGraph graph,
+      Path projectRoot,
+      LocalProjectGraphBackend.ConnectorDocumentRow connectorRow,
+      Map<String, String> sourcePathIndex,
+      List<String> warnings) {
+    JsonNode row = connectorRow.row();
+    List<JsonNode> attachments = new ArrayList<>();
+    this.collectAttachmentNodes(row.path("attachments"), attachments);
+    JsonNode metadataNode = row.path("loaderOutputs").path(0).path("metadata");
+    if (metadataNode.isObject()) {
+      this.collectAttachmentNodes(metadataNode.path("attachments"), attachments);
+    }
+    if (attachments.isEmpty()) {
+      return;
+    }
+    String markdownPathValue = row.path("markdownPath").asText("");
+    if (markdownPathValue.isBlank()) {
+      return;
+    }
+    Path markdownDirectory = projectRoot.resolve(markdownPathValue).normalize().getParent();
+    if (markdownDirectory == null) {
+      return;
+    }
+
+    for (JsonNode attachment : attachments) {
+      String attachmentPath =
+          attachment.isTextual() ? attachment.asText("") : attachment.path("path").asText("");
+      if (attachmentPath.isBlank()) {
+        continue;
+      }
+      try {
+        String key = this.normalizeAbsolutePath(markdownDirectory.resolve(attachmentPath));
+        String targetNode = sourcePathIndex.get(key);
+        if (targetNode == null) {
+          targetNode = sourcePathIndex.get(attachmentPath);
+        }
+        if (targetNode != null && !targetNode.equals(connectorRow.nodeId())) {
+          Map<String, Object> attributes = new LinkedHashMap<>();
+          attributes.put("provenance", "local-crawl:connector-extraction");
+          String fileName = attachment.isObject() ? attachment.path("fileName").asText(null) : null;
+          if (fileName != null && !fileName.isBlank()) {
+            attributes.put("fileName", fileName);
+          }
+          this.addRelation(
+              graph,
+              connectorRow.nodeId(),
+              targetNode,
+              GraphConstants.REL_HAS_ATTACHMENT,
+              attributes);
+        }
+      } catch (RuntimeException resolutionFailure) {
+        warnings.add(
+            connectorRow.documentId()
+                + ": attachment path '"
+                + attachmentPath
+                + "' "
+                + this.message(resolutionFailure));
+      }
+    }
+  }
+
+  private void collectAttachmentNodes(JsonNode attachmentsNode, List<JsonNode> out) {
+    if (attachmentsNode != null && attachmentsNode.isArray()) {
+      attachmentsNode.forEach(out::add);
+    }
+  }
+
+  /**
+   * Rebuilds the Spring AI {@link Document} a connector document row was originally materialized
+   * from: text is the markdown body with the {@code external-materialized} header comments
+   * stripped (see {@link #stripExternalMaterializedHeader}), metadata is {@code
+   * loaderOutputs[0].metadata} exactly as recorded by the loader that produced this row. This is
+   * the same (text, metadata) shape {@code canExtract}/{@code extract} on every {@link
+   * DocumentGraphExtractor} expect, without needing a Spring context to reconstruct it.
+   */
+  private Document toConnectorDocument(Path projectRoot, JsonNode row) throws IOException {
+    JsonNode metadataNode = row.path("loaderOutputs").path(0).path("metadata");
+    Map<String, Object> metadata =
+        metadataNode.isObject() ? this.jsonAttributes(metadataNode) : new LinkedHashMap<>();
+    String markdownPathValue = row.path("markdownPath").asText("");
+    String text = "";
+    if (!markdownPathValue.isBlank()) {
+      Path markdownPath = projectRoot.resolve(markdownPathValue).normalize();
+      if (Files.isRegularFile(markdownPath)) {
+        text =
+            this.stripExternalMaterializedHeader(
+                Files.readString(markdownPath, StandardCharsets.UTF_8));
+      }
+    }
+    return new Document(text, metadata);
+  }
+
+  /**
+   * Strips the two {@code <!-- kompile-source-type: ... -->} / {@code <!-- kompile-source-metadata:
+   * ... -->} header-comment lines {@code LocalExternalSourceLoaderRegistry} writes ahead of a
+   * materialized message body, mirroring (without calling — it is a private method on a different
+   * class) {@code LocalDocumentLoaderRegistry#loadExternalMaterialized}'s body extraction. Falls
+   * back to the full, trimmed content when the header shape is not recognized, so a format drift
+   * degrades to "extra header text in the body" rather than losing content.
+   */
+  private String stripExternalMaterializedHeader(String markdown) {
+    if (markdown == null || markdown.isEmpty()) {
+      return "";
+    }
+    String[] lines = markdown.split("\n", -1);
+    if (lines.length >= 2
+        && lines[0].startsWith("<!-- kompile-source-type: ")
+        && lines[1].startsWith("<!-- kompile-source-metadata: ")
+        && lines[1].endsWith(" -->")) {
+      StringBuilder body = new StringBuilder();
+      for (int i = 2; i < lines.length; i++) {
+        if (body.length() > 0) {
+          body.append('\n');
+        }
+        body.append(lines[i]);
+      }
+      return body.toString().trim();
+    }
+    return markdown.trim();
+  }
+
+  /**
+   * C4 server mode: a connector may hand back attachment children directly as their own {@code
+   * documents.jsonl} rows -- {@code source_path} {@code "<parent>#attachment/<n>"} plus a {@code
+   * parent_source_path} back-reference (see e.g. {@code
+   * ImapPopDocumentLoader#buildAttachmentDocuments}) -- instead of a materialized parent's {@code
+   * attachments[].path} list (see {@link #addAttachmentEdges}). {@code parentSourcePath} is
+   * recorded verbatim and resolved only by exact-string lookup once every row has been indexed;
+   * see {@link #resolvePendingAttachmentLinks}.
+   */
+  private record PendingAttachmentLink(String childNodeId, String parentSourcePath) {}
+
+  /**
+   * Collects this row's server-mode attachment link (if any) for deferred resolution. A row may
+   * record {@code parent_source_path} either at the top level or nested under {@code
+   * loaderOutputs[0].metadata} (wherever the connector loader put it on the original {@code
+   * Document}); both are checked, opaquely, with no assumption about which connector wrote it.
+   */
+  private void collectPendingAttachmentLink(
+      JsonNode document, String nodeId, List<LocalProjectGraphBackend.PendingAttachmentLink> out) {
+    String parentSourcePath = this.textOrNull(document.path("parent_source_path"));
+    if (parentSourcePath == null) {
+      JsonNode metadataNode = document.path("loaderOutputs").path(0).path("metadata");
+      if (metadataNode.isObject()) {
+        parentSourcePath = this.textOrNull(metadataNode.path("parent_source_path"));
+      }
+    }
+    if (parentSourcePath != null) {
+      out.add(new LocalProjectGraphBackend.PendingAttachmentLink(nodeId, parentSourcePath));
+    }
+  }
+
+  /**
+   * Resolves every collected {@link PendingAttachmentLink} against the now-complete {@code
+   * sourcePathIndex} (every row in {@code documents.jsonl} has been scanned by this point,
+   * regardless of which order parent/child rows appeared in) and writes the matching {@code
+   * HAS_ATTACHMENT} edges. A parent that never appeared in this knowledge base (e.g. filtered out
+   * of the crawl) simply leaves that attachment unlinked rather than failing the crawl.
+   */
+  private void resolvePendingAttachmentLinks(
+      UnifiedGraph graph,
+      List<LocalProjectGraphBackend.PendingAttachmentLink> pendingLinks,
+      Map<String, String> sourcePathIndex) {
+    for (LocalProjectGraphBackend.PendingAttachmentLink link : pendingLinks) {
+      String parentNode = sourcePathIndex.get(link.parentSourcePath());
+      if (parentNode != null && !parentNode.equals(link.childNodeId())) {
+        this.addRelation(
+            graph,
+            parentNode,
+            link.childNodeId(),
+            GraphConstants.REL_HAS_ATTACHMENT,
+            Map.of("provenance", "local-crawl:server-mode-attachment"));
+      }
+    }
+  }
+
+  private record ConnectorDocumentRow(String documentId, String nodeId, JsonNode row) {}
 
   /**
    * Read the previous crawl's schema while the caller still owns the graph write lock. Missing
@@ -5542,72 +6309,77 @@ public final class LocalProjectGraphBackend {
       throw new IllegalArgumentException("Unknown graph operation: " + operation);
     }
 
-    if (!QUERY_INTENTS.contains(intent)) {
-      throw new IllegalArgumentException(
-          "Graph operation "
-              + intent
-              + " is not supported by the project-local graph query transport. Use"
-              + " operation=CAPABILITIES.");
-    } else {
-      Direction direction = null;
-      String rawDirection = params.path("direction").asText("");
-      if (!rawDirection.isBlank()) {
-        String normalizedDirection = normalizeGraphEnum(rawDirection);
-        if ("FORWARD".equals(normalizedDirection)) {
-          normalizedDirection = "OUTGOING";
-        }
-
-        if ("REVERSE".equals(normalizedDirection) || "BACKWARD".equals(normalizedDirection)) {
-          normalizedDirection = "INCOMING";
-        }
-
-        try {
-          direction = Direction.valueOf(normalizedDirection);
-        } catch (IllegalArgumentException var15) {
-          throw new IllegalArgumentException(
-              "direction must be OUTGOING, INCOMING, or BOTH (forward/reverse aliases are"
-                  + " accepted)");
-        }
+    Direction direction = null;
+    String rawDirection = params.path("direction").asText("");
+    if (!rawDirection.isBlank()) {
+      String normalizedDirection = normalizeGraphEnum(rawDirection);
+      if ("FORWARD".equals(normalizedDirection)) {
+        normalizedDirection = "OUTGOING";
       }
 
-      List<String> relationTypes = new ArrayList<>();
-      JsonNode types = params.path("relationTypes");
-      if (types.isArray()) {
-        types.forEach(value -> relationTypes.add(value.asText()));
+      if ("REVERSE".equals(normalizedDirection) || "BACKWARD".equals(normalizedDirection)) {
+        normalizedDirection = "INCOMING";
       }
 
-      double[] embedding = null;
-      JsonNode vector = params.path("queryEmbedding");
-      if (vector.isArray()) {
-        embedding = new double[vector.size()];
-
-        for (int i = 0; i < vector.size(); i++) {
-          embedding[i] = vector.get(i).asDouble();
-        }
+      try {
+        direction = Direction.valueOf(normalizedDirection);
+      } catch (IllegalArgumentException var15) {
+        throw new IllegalArgumentException(
+            "direction must be OUTGOING, INCOMING, or BOTH (forward/reverse aliases are"
+                + " accepted)");
       }
-
-      Structural structural = null;
-      String rawStructural = params.path("structural").asText("");
-      if (!rawStructural.isBlank()) {
-        try {
-          structural = Structural.valueOf(normalizeGraphEnum(rawStructural));
-        } catch (IllegalArgumentException var14) {
-          throw new IllegalArgumentException("structural must be PSL or BAYESIAN");
-        }
-      }
-
-      return new Query(
-          intent,
-          this.text(params, "entityId"),
-          this.text(params, "targetId"),
-          direction,
-          relationTypes,
-          params.hasNonNull("maxDepth") ? params.path("maxDepth").asInt() : null,
-          params.hasNonNull("topK") ? params.path("topK").asInt() : null,
-          embedding,
-          structural,
-          question);
     }
+
+    List<String> relationTypes = new ArrayList<>();
+    JsonNode types = params.path("relationTypes");
+    if (types.isArray()) {
+      types.forEach(value -> relationTypes.add(value.asText()));
+    }
+
+    double[] embedding = null;
+    JsonNode vector = params.path("queryEmbedding");
+    if (vector.isArray()) {
+      embedding = new double[vector.size()];
+
+      for (int i = 0; i < vector.size(); i++) {
+        embedding[i] = vector.get(i).asDouble();
+      }
+    }
+
+    Structural structural = null;
+    String rawStructural = params.path("structural").asText("");
+    if (!rawStructural.isBlank()) {
+      try {
+        structural = Structural.valueOf(normalizeGraphEnum(rawStructural));
+      } catch (IllegalArgumentException var14) {
+        throw new IllegalArgumentException("structural must be PSL or BAYESIAN");
+      }
+    }
+
+    Integer topK = params.hasNonNull("topK") ? params.path("topK").asInt() : null;
+    // MODELS, CALCULATE, SCENARIO, and SOLVE_TARGET read the quantitative object (or its JSON
+    // string); a missing or malformed one is rejected with an example of the expected shape.
+    JsonNode quantitativeSpec = params.path(QuantitativeRequestParser.FIELD);
+    QuantitativeQuery quantitative =
+        QuantitativeRequestParser.parse(
+            intent,
+            quantitativeSpec.isMissingNode() || quantitativeSpec.isNull()
+                ? null
+                : this.mapper.convertValue(quantitativeSpec, Object.class),
+            topK,
+            embedding);
+    return new Query(
+        intent,
+        this.text(params, "entityId"),
+        this.text(params, "targetId"),
+        direction,
+        relationTypes,
+        params.hasNonNull("maxDepth") ? params.path("maxDepth").asInt() : null,
+        topK,
+        embedding,
+        structural,
+        question,
+        quantitative);
   }
 
   private static String normalizeGraphEnum(String value) {
@@ -5875,6 +6647,7 @@ public final class LocalProjectGraphBackend {
       for (Path path : candidates) {
         UnifiedGraph graph = UnifiedGraph.load(path);
         graph.entities().forEach(merged::addEntity);
+        graph.retractedRelationTypes().forEach(merged::recordRetractedRelationType);
 
         for (GraphRelation relation : graph.relations()) {
           if (relationIds.add(relation.id())) {
@@ -5925,9 +6698,12 @@ public final class LocalProjectGraphBackend {
     return candidates;
   }
 
+  /** Resolves like LocalProjectCrawlBackend, so both find the project a folder bootstrap initialised. */
   private Path projectRoot(Path workingDirectory) {
     Path working = workingDirectory.toAbsolutePath().normalize();
-    return this.projectStore.findProjectRoot(working).orElse(working);
+    return this.projectStore
+        .findProjectRoot(working)
+        .orElseGet(() -> ProjectAutoDetection.autoInitRoot(working).orElse(working));
   }
 
   static String stripGeneratedCrawlFrontMatter(String text) {
@@ -6781,12 +7557,16 @@ public final class LocalProjectGraphBackend {
 
       boolean hasExplicit = explicit != null && explicit.isObject();
       boolean hasRuntime = runtime != null && runtime.isObject();
-      boolean enabled =
+      boolean configured =
           hasExplicit
               ? explicit.path("enabled").asBoolean(true)
               : (hasRuntime && runtime.has("trainEmbeddingsAfterEnrichment")
                   ? runtime.path("trainEmbeddingsAfterEnrichment").asBoolean()
                   : true);
+      // Same step-plan rule as reasoning learning: a crawl that skips LEARNING refreshes neither
+      // learned model, so one never describes this graph while the other describes the last one.
+      boolean enabled =
+          LocalProjectGraphBackend.localStepPlan(request).isRun("ENRICHMENT") && configured;
       String algorithm =
           hasExplicit
               ? explicit.path("algorithm").asText("TRANSE")

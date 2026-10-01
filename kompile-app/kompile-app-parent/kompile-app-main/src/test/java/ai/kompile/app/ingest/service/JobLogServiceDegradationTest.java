@@ -27,7 +27,6 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.dao.PessimisticLockingFailureException;
 
-import java.lang.reflect.Field;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -47,12 +46,10 @@ class JobLogServiceDegradationTest {
     private JobLogService service;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         service = new JobLogService(repository);
         // @Value-injected in production; force-enable for the unit test.
-        Field enabled = JobLogService.class.getDeclaredField("enabled");
-        enabled.setAccessible(true);
-        enabled.set(service, true);
+        service.enabled = true;
     }
 
     @Test

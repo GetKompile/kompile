@@ -31,7 +31,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -69,9 +68,12 @@ class DistributedCrawlControllerIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        coordinator = new DistributedCrawlCoordinator(List.of(new LocalDelegate()), null, om);
-        ReflectionTestUtils.setField(coordinator, "aggregator", new DistributedCrawlAggregator());
-        ReflectionTestUtils.setField(coordinator, "eventPublisher", mock(ApplicationEventPublisher.class));
+        coordinator = new DistributedCrawlCoordinator(List.of(new LocalDelegate()), null, om) {
+            {
+                aggregator = new DistributedCrawlAggregator();
+                eventPublisher = mock(ApplicationEventPublisher.class);
+            }
+        };
 
         cfgService = mock(ResourceSchedulerConfigService.class);
         cfg = new ResourceSchedulerConfig();
@@ -248,7 +250,7 @@ class DistributedCrawlControllerIntegrationTest {
 
         DistributedCrawlController controller = new DistributedCrawlController(
                 coordinator, new DistributedCrawlAggregator(), svc, jobLogService);
-        ReflectionTestUtils.setField(controller, "backendHealth", adapter);
+        controller.backendHealth = adapter;
         MockMvc mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setMessageConverters(new MappingJackson2HttpMessageConverter(om)).build();
 

@@ -107,7 +107,7 @@ public record ProviderPromptCacheCapabilities(
             case "kompile-local" -> new ProviderPromptCacheCapabilities(
                     Activation.LOCAL, UsageDialect.NONE,
                     SessionAffinity.NONE, RetentionControl.NONE);
-            case "gemini", "deepseek", "groq", "zai", "ollama", "custom" ->
+            case "gemini", "deepseek", "groq", "zai", "custom" ->
                     new ProviderPromptCacheCapabilities(
                             Activation.IMPLICIT, UsageDialect.OPENAI_CHAT,
                             SessionAffinity.NONE, RetentionControl.NONE);

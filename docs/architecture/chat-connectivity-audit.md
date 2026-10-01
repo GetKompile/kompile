@@ -67,7 +67,9 @@ Two independent bridges — both HTTP-only; the staging isolation mandate holds 
 real CLI does not have (verified: `claude --help` has `--mcp-config`, no `--mcp-server`). With tool discovery
 non-empty the spawn died on "unknown option"; the config-file path was an explicit TODO no-op. The help-parse also
 never cleared bogus presets and its regex fallback could latch `--mcp-debug`. **Fixed** (see below): chat/passthrough/
-enforcer-spawned claude now gets `--mcp-config ~/.kompile/config/agent-mcp-config.json` pointing at `{base}/mcp/sse`.
+enforcer-spawned claude now gets `--mcp-config ~/.kompile/config/agent-mcp-config-<port>.json` pointing at
+`{base}/mcp/sse`. The file is per app port, so two apps on one host never overwrite each other's target; the
+unnumbered `agent-mcp-config.json` is only used when the MCP URL carries no port.
 
 ### Local models (staging) ↔ chat
 **Worked**: the full request path UI → `kompile-local` → staging `/v1/chat/completions` → GGUF inference.
@@ -105,7 +107,7 @@ Was already wired end-to-end (flags → retrievers → prompt context → source
 
 | # | Change | Files |
 |---|---|---|
-| F1 | MCP injection: prefer `--mcp-config <file>` (generated at `~/.kompile/config/agent-mcp-config.json`, claude-compatible shape, target `{base}/mcp/sse`); help-parse now clears unadvertised preset flags and skips the loose regex fallback when a config flag is known; removed bogus `--mcp-server` preset for claude; new `ServerPortService.getMcpSseUrl()` | `AgentSubprocessExecutor`, `AgentRegistryService`, `cli-agents.json`, `ServerPortService` |
+| F1 | MCP injection: prefer `--mcp-config <file>` (generated per app port at `~/.kompile/config/agent-mcp-config-<port>.json`, claude-compatible shape, target `{base}/mcp/sse`); help-parse now clears unadvertised preset flags and skips the loose regex fallback when a config flag is known; removed bogus `--mcp-server` preset for claude; new `ServerPortService.getMcpSseUrl()` | `AgentSubprocessExecutor`, `AgentRegistryService`, `cli-agents.json`, `ServerPortService` |
 | F2 | Graph tools on both MCP server paths + new `kb_query`/`kb_assert` tool; `kompile-tool-graph` finally wired into the app | `McpToolRegistry`, `McpSseServerConfiguration`, new `KbGroundingTool`, app-main `pom.xml` |
 | F3 | `kompile-local` continuous re-discovery (30s poll, change-driven, quiet) | `KompileLocalModelService` |
 | F4 | API lane emits `reasoning_trace`; one-shot CLI lane emits structured `tool_use` SSE (same shape as passthrough; text-pattern rendering unchanged) | `AgentChatService` |
@@ -120,15 +122,43 @@ actually instantiates the kompile-tool-graph beans at boot).
 
 ---
 
+## 2026-10-01 follow-up: launch bindings and concurrent MCP routing
+
+App-spawned agents now carry their configuration through `PreparedCommand`: one-shot chat,
+`executeSync`, passthrough, and enforcer launches apply its environment after the agent's own
+settings and close temporary resources after exit. These bindings target the launching app's
+HTTP MCP server, not the CLI's folder-local stdio server.
+
+| Agent | App MCP binding |
+|---|---|
+| Claude / advertised config-file lane | `--mcp-config=<file>`; per-port `~/.kompile/config/agent-mcp-config-<port>.json`, replaced whole when its URL changes |
+| Codex | Per-run `-c mcp_servers.kompile-app.url="<url>"` override |
+| Gemini CLI | Private system-settings file via `GEMINI_CLI_SYSTEM_SETTINGS_PATH`; preserve readable system settings and the original system-defaults location |
+| OpenCode | Merge `kompile-app` into per-launch `OPENCODE_CONFIG_CONTENT`, preserving other readable settings |
+
+Gemini launch files and scoped/isolated-turn files record the owning app PID, use owner-only
+POSIX permissions, and are removed on close; later launches sweep files whose owner process has
+exited. Scoped isolation is separately gated on verified strict configuration support; ordinary
+Gemini/OpenCode injection is **not** a claim of strict isolation. Agents without a verified lane
+or advertised MCP flag are reported as unsupported rather than handed a guessed option.
+
+Both app and staging transports route each Streamable HTTP response to its JSON-RPC request's
+POST stream. Server messages use a live GET/legacy stream when available, otherwise one pending
+POST stream; they are not broadcast across overlapping requests. Duplicate in-flight IDs are
+rejected, response delivery releases the ID before handler completion, and session teardown
+closes all streams even when SDK shutdown fails. Regression tests exercise real SDK 0.10.0
+routing plus focused transport lifecycle checks. The MockMvc SSE helper parses only complete
+blank-line-terminated events, avoiding partial-JSON polling races.
+
 ## 4. Remaining gaps (known, not blocking, in rough priority order)
 
 1. **API/local-model lane has no tool-calling loop** — `ApiAgentChatExecutor` sends no `tools` field and has no
    dispatch loop, so API-backed and staging-served models cannot call graph tools; they get graph context only via
    graph-RAG prompt augmentation. A tool loop would also need staging's `/v1/chat/completions` to emit tool calls
    (GGUF grammar support — currently absent). Design decision, not a wiring bug.
-2. **gemini/qwen/opencode MCP wiring** — these CLIs configure MCP via settings files (`.gemini/settings.json`,
-   `opencode.json`), not CLI flags; injection currently reaches only claude (the default agent). Port the CLI-side
-   `McpToolInjection` writer if chat-spawned gemini/opencode should get tools too.
+2. **Other settings-only agent lanes** — Gemini CLI and OpenCode app launches are now wired as described
+   above. Qwen, Pi, and Antigravity have no equivalent verified automatic app-side lane here; an advertised
+   MCP flag may still be used. Do not infer app support from the separate CLI-side `McpToolInjection` writer.
 3. **Referencing layer (`ReferenceResolver`/`DisplayRef`/`displayRef` pipe) is spec-only** (WP48/49 in
    `reasoning-math-composition-implementation-plan.md`); chat still shows truncated raw `documentId` prefixes in
    sources.

@@ -16,7 +16,6 @@
 package ai.kompile.app.services.subprocess;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -24,8 +23,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * Unit tests for {@link ServingSubprocessLauncher#isModelLoaded()} TTL cache behavior
  * and {@link ServingSubprocessBackend#isAvailable()} model-awareness.
  *
- * <p>Uses reflection to set up the internal state (running flag, cached values) without
- * actually launching a subprocess or making HTTP calls.</p>
+ * <p>Sets the internal state (running flag, cached values) directly, without actually
+ * launching a subprocess or making HTTP calls.</p>
  */
 class ServingAvailabilityTest {
 
@@ -44,17 +43,13 @@ class ServingAvailabilityTest {
     void isModelLoaded_cacheHit_returnsStaleResult() throws Exception {
         ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
         // Force running = true so the TTL check is reached
-        java.util.concurrent.atomic.AtomicBoolean running =
-                (java.util.concurrent.atomic.AtomicBoolean) ReflectionTestUtils.getField(launcher, "running");
-        assertNotNull(running);
-        running.set(true);
+        launcher.running.set(true);
         // Simulate a live process handle
-        ReflectionTestUtils.setField(launcher, "process",
-                createFakeLiveProcess());
+        launcher.process = createFakeLiveProcess();
 
         // Prime the cache: cachedModelLoaded=true, timestamp=now
-        ReflectionTestUtils.setField(launcher, "cachedModelLoaded", true);
-        ReflectionTestUtils.setField(launcher, "modelLoadedCacheTimeNs", System.nanoTime());
+        launcher.cachedModelLoaded = true;
+        launcher.modelLoadedCacheTimeNs = System.nanoTime();
 
         // Without any HTTP call the cache should serve true
         assertTrue(launcher.isModelLoaded(), "Cache hit should return cached=true");
@@ -65,24 +60,20 @@ class ServingAvailabilityTest {
     @Test
     void isModelLoaded_expiredCache_repollsAndReturnsFalse() throws Exception {
         ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
-        java.util.concurrent.atomic.AtomicBoolean running =
-                (java.util.concurrent.atomic.AtomicBoolean) ReflectionTestUtils.getField(launcher, "running");
-        assertNotNull(running);
-        running.set(true);
+        launcher.running.set(true);
         // Simulate a live process handle
-        ReflectionTestUtils.setField(launcher, "process", createFakeLiveProcess());
+        launcher.process = createFakeLiveProcess();
 
         // Expire the cache: set cacheTimeNs to far in the past
-        ReflectionTestUtils.setField(launcher, "cachedModelLoaded", true);
-        ReflectionTestUtils.setField(launcher, "modelLoadedCacheTimeNs", 0L); // effectively expired
+        launcher.cachedModelLoaded = true;
+        launcher.modelLoadedCacheTimeNs = 0L; // effectively expired
 
         // No real HTTP client — the getJson() will fail with connection refused.
         // The expected behavior is that the exception is caught, cached=false is stored, false returned.
         boolean result = launcher.isModelLoaded();
         assertFalse(result, "After expired TTL with no subprocess running, should return false");
         // Cache should now hold false
-        Boolean cached = (Boolean) ReflectionTestUtils.getField(launcher, "cachedModelLoaded");
-        assertFalse(cached, "Cached value should be updated to false after failed re-poll");
+        assertFalse(launcher.cachedModelLoaded, "Cached value should be updated to false after failed re-poll");
     }
 
     // ── invalidateModelLoadedCache resets timestamp ───────────────────────────
@@ -91,10 +82,9 @@ class ServingAvailabilityTest {
     void invalidateModelLoadedCache_resetsTimestamp() {
         ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
         // Prime a non-zero timestamp
-        ReflectionTestUtils.setField(launcher, "modelLoadedCacheTimeNs", System.nanoTime());
+        launcher.modelLoadedCacheTimeNs = System.nanoTime();
         launcher.invalidateModelLoadedCache();
-        long ts = (long) ReflectionTestUtils.getField(launcher, "modelLoadedCacheTimeNs");
-        assertEquals(0L, ts, "invalidateModelLoadedCache should reset cacheTimeNs to 0");
+        assertEquals(0L, launcher.modelLoadedCacheTimeNs, "invalidateModelLoadedCache should reset cacheTimeNs to 0");
     }
 
     // ── ServingSubprocessBackend.isAvailable requires model loaded ─────────────
@@ -109,17 +99,14 @@ class ServingAvailabilityTest {
     @Test
     void backendIsAvailable_falseWhenRunningButNoModelLoaded() throws Exception {
         ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
-        java.util.concurrent.atomic.AtomicBoolean running =
-                (java.util.concurrent.atomic.AtomicBoolean) ReflectionTestUtils.getField(launcher, "running");
-        assertNotNull(running);
-        running.set(true);
-        ReflectionTestUtils.setField(launcher, "process", createFakeLiveProcess());
+        launcher.running.set(true);
+        launcher.process = createFakeLiveProcess();
         // Expired cache + no subprocess → re-poll will fail → cached=false
-        ReflectionTestUtils.setField(launcher, "modelLoadedCacheTimeNs", 0L);
-        ReflectionTestUtils.setField(launcher, "cachedModelLoaded", false);
+        launcher.modelLoadedCacheTimeNs = 0L;
+        launcher.cachedModelLoaded = false;
 
         ServingSubprocessBackend backend = new ServingSubprocessBackend();
-        ReflectionTestUtils.setField(backend, "launcher", launcher);
+        backend.launcher = launcher;
 
         assertFalse(backend.isAvailable(),
                 "isAvailable should be false when subprocess running but no model loaded");
@@ -128,17 +115,14 @@ class ServingAvailabilityTest {
     @Test
     void backendIsAvailable_trueWhenRunningAndModelLoaded() throws Exception {
         ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
-        java.util.concurrent.atomic.AtomicBoolean running =
-                (java.util.concurrent.atomic.AtomicBoolean) ReflectionTestUtils.getField(launcher, "running");
-        assertNotNull(running);
-        running.set(true);
-        ReflectionTestUtils.setField(launcher, "process", createFakeLiveProcess());
+        launcher.running.set(true);
+        launcher.process = createFakeLiveProcess();
         // Set a fresh cache hit with loaded=true
-        ReflectionTestUtils.setField(launcher, "cachedModelLoaded", true);
-        ReflectionTestUtils.setField(launcher, "modelLoadedCacheTimeNs", System.nanoTime());
+        launcher.cachedModelLoaded = true;
+        launcher.modelLoadedCacheTimeNs = System.nanoTime();
 
         ServingSubprocessBackend backend = new ServingSubprocessBackend();
-        ReflectionTestUtils.setField(backend, "launcher", launcher);
+        backend.launcher = launcher;
 
         assertTrue(backend.isAvailable(),
                 "isAvailable should be true when running + model loaded (cache hit)");

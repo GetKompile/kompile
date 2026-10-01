@@ -21,6 +21,7 @@ import ai.kompile.cli.main.chat.LocalServingRuntimePool;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.core.llm.ModelContextWindows;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -40,6 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -63,6 +65,10 @@ public class DirectLlmClient implements AutoCloseable {
     static final int OPENAI_INSTRUCTIONS_MAX_CHARS = 1_048_576;
     static final int OPENAI_PROMPT_CACHE_KEY_MAX_CHARS = 64;
     private static final int CHARS_PER_TOKEN = 4;
+    /** Input tokens one inline image costs a vision encoder: ~1.15 MP on Anthropic, a full tile set on SmolVLM. */
+    public static final int IMAGE_TOKEN_ESTIMATE = 1_600;
+    /** Local serving output ceiling when the active model reports none. */
+    private static final int KOMPILE_SERVING_MAX_TOKENS = 1_024;
     private static final String MEMORY_CONTEXT_OPEN = "<memory_context>";
     private static final String MEMORY_CONTEXT_CLOSE = "</memory_context>";
     private static final String RESTORED_CONVERSATION_OPEN = "[Earlier conversation restored by "
@@ -79,6 +85,7 @@ public class DirectLlmClient implements AutoCloseable {
         default void onToolOutput(String callId, String name, String output) { }
         void onToolComplete(String callId, String name, String output,
                             int exitCode, boolean error);
+        /** Settled usage deltas, never cumulative SSE snapshots; input/cache categories are disjoint. */
         default void onTokenUsage(long input, long output,
                                   long cacheRead, long cacheCreation) { }
         default void onNotice(String text) { }
@@ -436,9 +443,10 @@ public class DirectLlmClient implements AutoCloseable {
 
     /**
      * Stream a chat completion turn with optional model override and attachments.
-     * Images and text attachments are encoded using the selected provider's native content-block
-     * format. Protocols without a verified media contract fail explicitly instead of silently
-     * dropping attachment bytes.
+     * Images and text attachments are encoded using the selected route's native media format:
+     * content blocks for the HTTP APIs, stream-json image blocks for Claude Code, file parts
+     * for OpenCode, pi-ai image content, and per-message images for local serving. Whether
+     * the model itself accepts images is the provider's answer, reported as a provider error.
      */
     public StreamResult streamChat(String userMessage, String systemPrompt,
                                     ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
@@ -461,18 +469,18 @@ public class DirectLlmClient implements AutoCloseable {
                 return showClaudeFollowUp(followUp, userMessage, effectiveModel);
             }
             ResolvedRoute route = resolveRoute(effectiveModel);
-            if (!requestAttachments.isEmpty() && !supportsAttachments(route.protocol())) {
-                return attachmentFailure("Provider protocol " + route.protocol()
-                        + " does not support structured attachments in Kompile chat. "
-                        + "Use OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages.");
-            }
             int connectivityAttempt = 1;
             boolean authenticationRefreshAttempted = false;
             OAuthProviderFlow.RequestAuth retryAuth = null;
+            StreamResult previousAttempts = null;
             while (true) {
                 StreamResult result = streamAttempt(
                         route, userMessage, systemPrompt, toolDefs, toolResults,
                         effectiveModel, requestAttachments, retryAuth);
+                // A replay-safe failure can still report billed input (for example
+                // message_start followed by EOF). Keep that usage, not its context.
+                mergePreviousAttemptUsage(result, previousAttempts);
+                previousAttempts = result;
                 finishGenerationOutcome(result);
                 if (result.authenticationFailure) {
                     if (isCancelled() || Thread.currentThread().isInterrupted()) {
@@ -545,23 +553,58 @@ public class DirectLlmClient implements AutoCloseable {
             ResolvedRoute route, String userMessage, String systemPrompt,
             ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
             String effectiveModel, List<AttachmentInput> attachments, OAuthProviderFlow.RequestAuth retryAuth) {
-        return switch (route.protocol()) {
+        StreamResult result = switch (route.protocol()) {
             case KOMPILE_LOCAL -> streamKompileServing(
                     userMessage, systemPrompt, toolDefs, toolResults, attachments);
             case OPENCODE -> streamOpenCode(
-                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments);
             case CLAUDE_CLI -> streamClaudeCli(
-                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments);
             case OPENAI_RESPONSES -> streamOpenAiResponses(
                     userMessage, systemPrompt, toolDefs, toolResults,
                     effectiveModel, route.codexBackend(), attachments, retryAuth);
             case PI_MESSAGES -> streamPiMessages(
-                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, retryAuth);
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel,
+                    attachments, retryAuth);
             case ANTHROPIC_MESSAGES -> streamAnthropic(
                     userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments, retryAuth);
             case OPENAI_CHAT -> streamOpenAi(
                     userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments, retryAuth);
         };
+        // Native session transports already emit per-request deltas. HTTP readers
+        // reconcile cumulative SSE snapshots into one settled attempt here instead.
+        if (route.protocol() != WireProtocol.OPENCODE
+                && route.protocol() != WireProtocol.CLAUDE_CLI) {
+            ProviderActivityListener listener = providerActivityListener;
+            if (listener != null && hasTokenUsage(result)) {
+                listener.onTokenUsage(
+                        result.inputTokens + result.compactionInputTokens,
+                        result.outputTokens + result.compactionOutputTokens,
+                        result.cacheReadTokens + result.compactionCacheReadTokens,
+                        result.cacheCreationTokens + result.compactionCacheCreationTokens);
+            }
+        }
+        return result;
+    }
+
+    private static boolean hasTokenUsage(StreamResult result) {
+        return result.inputTokens > 0 || result.outputTokens > 0
+                || result.cacheReadTokens > 0 || result.cacheCreationTokens > 0
+                || result.compactionInputTokens > 0 || result.compactionOutputTokens > 0
+                || result.compactionCacheReadTokens > 0 || result.compactionCacheCreationTokens > 0;
+    }
+
+    private static void mergePreviousAttemptUsage(StreamResult result, StreamResult previous) {
+        if (previous == null || !hasTokenUsage(previous)) return;
+        result.lastRequestInputTokens = result.contextInputTokens();
+        result.inputTokens += previous.inputTokens;
+        result.outputTokens += previous.outputTokens;
+        result.cacheReadTokens += previous.cacheReadTokens;
+        result.cacheCreationTokens += previous.cacheCreationTokens;
+        result.compactionInputTokens += previous.compactionInputTokens;
+        result.compactionOutputTokens += previous.compactionOutputTokens;
+        result.compactionCacheReadTokens += previous.compactionCacheReadTokens;
+        result.compactionCacheCreationTokens += previous.compactionCacheCreationTokens;
     }
 
     public ResolvedRoute resolveRoute(String modelOverride) {
@@ -614,9 +657,13 @@ public class DirectLlmClient implements AutoCloseable {
         return resolveRoute(modelOverride).capabilities();
     }
 
-    /** Whether the selected wire protocol can carry structured file/image attachments. */
+    /**
+     * Whether this client carries file/image attachments to the selected route. Every wire
+     * protocol has a native media format, so the direct client always does; clients that
+     * relay turns elsewhere override this when their transport cannot.
+     */
     public boolean supportsAttachments(String modelOverride) {
-        return supportsAttachments(resolveRoute(modelOverride).protocol());
+        return true;
     }
 
     public void setNativeCompactionTriggerTokens(int tokens) {
@@ -647,21 +694,62 @@ public class DirectLlmClient implements AutoCloseable {
     /**
      * Per-request output token limit: the output ceiling while the window has room,
      * shrinking to what fits only as the input approaches the window. The 1% margin
-     * (floored at 1,024) absorbs the chars/4 input estimate's error.
+     * (floored at 1,024) absorbs the chars/4 input estimate's error. The output floor
+     * never raises a smaller configured output ceiling.
      */
     static int wireMaxTokens(int outputCeiling, int contextWindow, long estimatedInputTokens) {
         if (outputCeiling <= 0) return 0;
         if (contextWindow <= 0) return outputCeiling;
         long byWindow = (long) contextWindow - estimatedInputTokens
                 - Math.max(1_024L, contextWindow / 100);
-        return (int) Math.max(1_024L, Math.min(outputCeiling, byWindow));
+        return (int) Math.max(Math.min(1_024L, outputCeiling), Math.min(outputCeiling, byWindow));
     }
 
-    /** chars/4 estimate over the exact payload riding as input (messages + tool schemas). */
-    private static long estimateRequestInputTokens(ArrayNode messages, ArrayNode toolDefs) {
-        long chars = messages.toString().length();
+    /**
+     * chars/4 estimate over the exact payload riding as input (messages + tool schemas).
+     * A vision encoder bills an inline image per image, not per character of its base64
+     * text, so each image counts as {@link #IMAGE_TOKEN_ESTIMATE} tokens instead.
+     */
+    static long estimateRequestInputTokens(ArrayNode messages, ArrayNode toolDefs) {
+        long[] images = new long[2];
+        countInlineImages(messages, images);
+        long chars = messages.toString().length() - images[0];
         if (toolDefs != null) chars += toolDefs.toString().length();
-        return chars / CHARS_PER_TOKEN;
+        return Math.max(0L, chars) / CHARS_PER_TOKEN + images[1] * IMAGE_TOKEN_ESTIMATE;
+    }
+
+    /**
+     * Tallies inline image payloads in any route's message shape: data URLs (OpenAI),
+     * {@code base64Data} (local serving), and {@code data} in Anthropic base64 sources
+     * and pi-ai image content.
+     *
+     * @param images accumulates {payload chars, image count}
+     */
+    private static void countInlineImages(JsonNode node, long[] images) {
+        if (node == null) return;
+        if (node.isArray()) {
+            for (JsonNode child : node) countInlineImages(child, images);
+            return;
+        }
+        if (!node.isObject()) return;
+        String type = node.path("type").asText("");
+        boolean dataIsImage = "base64".equals(type) || "image".equals(type);
+        for (Iterator<Map.Entry<String, JsonNode>> fields = node.fields(); fields.hasNext();) {
+            Map.Entry<String, JsonNode> field = fields.next();
+            JsonNode value = field.getValue();
+            if (value.isTextual()) {
+                String text = value.textValue();
+                boolean payload = "base64Data".equals(field.getKey())
+                        || (dataIsImage && "data".equals(field.getKey()))
+                        || (text.startsWith("data:image/") && text.contains(";base64,"));
+                if (payload) {
+                    images[0] += text.length();
+                    images[1]++;
+                }
+            } else {
+                countInlineImages(value, images);
+            }
+        }
     }
 
     /** Attempt an explicit provider-native compaction without generic fallback. */
@@ -984,7 +1072,7 @@ public class DirectLlmClient implements AutoCloseable {
 
     private StreamResult streamOpenCode(String userMessage, String systemPrompt,
                                          ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
-                                         String effectiveModel) {
+                                         String effectiveModel, List<AttachmentInput> attachments) {
         StreamResult result = new StreamResult();
         StringBuilder streamed = new StringBuilder();
         try {
@@ -1006,7 +1094,7 @@ public class DirectLlmClient implements AutoCloseable {
             // Cancelling the chat turn aborts the OpenCode turn and the tools it started.
             client.setCancellationCheck(this::isCancelled);
             String text = client.send(effectiveModel, config.getThinking(),
-                    systemPrompt, turnMessage,
+                    systemPrompt, turnMessage, attachments,
                     chunk -> {
                         streamed.append(chunk);
                         printStreamingChunk(chunk);
@@ -1055,7 +1143,7 @@ public class DirectLlmClient implements AutoCloseable {
             if (streamed.length() == 0) {
                 printStreamingChunk(text);
             }
-            appendOpenCodeHistory(userMessage, text);
+            appendOpenCodeHistory(userMessage, attachments, text);
             openCodeNeedsSeed = false;
         } catch (OpenCodeServeClient.TurnNotStartedException e) {
             // The turn never reached the provider: no native session history was
@@ -1099,7 +1187,7 @@ public class DirectLlmClient implements AutoCloseable {
      */
     private StreamResult streamClaudeCli(String userMessage, String systemPrompt,
                                          ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
-                                         String effectiveModel) {
+                                         String effectiveModel, List<AttachmentInput> attachments) {
         StreamResult result = new StreamResult();
         // A turn's usage adds up all of its requests; only the last one's input
         // describes the session, and it stays 0 when Claude Code reports none.
@@ -1112,7 +1200,7 @@ public class DirectLlmClient implements AutoCloseable {
             String text;
             try {
                 text = sendClaudeTurn(client, effectiveModel, systemPrompt, userMessage,
-                        result, streamed);
+                        attachments, result, streamed);
             } catch (ClaudeCliClient.TurnNotStartedException e) {
                 // A session Claude Code no longer has (or never finished creating)
                 // fails before the turn begins. Nothing reached the provider, so
@@ -1134,13 +1222,13 @@ public class DirectLlmClient implements AutoCloseable {
                             + "conversation restored.");
                 }
                 text = sendClaudeTurn(client, effectiveModel, systemPrompt, userMessage,
-                        result, streamed);
+                        attachments, result, streamed);
             }
             result.text = text;
             if (streamed.length() == 0) {
                 printStreamingChunk(text);
             }
-            appendOpenCodeHistory(userMessage, text);
+            appendOpenCodeHistory(userMessage, attachments, text);
             claudeNeedsSeed = false;
             result.claudeNativeSession = client.nativeSession();
         } catch (ClaudeCliClient.TurnNotStartedException e) {
@@ -1210,6 +1298,7 @@ public class DirectLlmClient implements AutoCloseable {
      */
     private String sendClaudeTurn(ClaudeCliClient client, String effectiveModel,
                                   String systemPrompt, String userMessage,
+                                  List<AttachmentInput> attachments,
                                   StreamResult result, StringBuilder streamed) throws Exception {
         String restored = claudeNeedsSeed ? restoredConversation(systemPrompt, userMessage) : "";
         // Cancelling the chat turn stops the CLI and the tools it started.
@@ -1218,7 +1307,7 @@ public class DirectLlmClient implements AutoCloseable {
         // rechecked against the effective request model like the HTTP routes.
         return client.send(effectiveModel, config.effectiveEffort(),
                 config.useFastMode(effectiveModel),
-                systemPrompt, userMessage, restored,
+                systemPrompt, userMessage, restored, attachments,
                 claudeOutput(streamed), claudeActivity(result, effectiveModel));
     }
 
@@ -1406,11 +1495,17 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private void appendOpenCodeHistory(String userMessage, String assistantText) {
-        if (userMessage != null) {
-            ObjectNode user = objectMapper.createObjectNode();
-            user.put("role", "user");
-            user.put("content", withoutTurnEnvelopes(userMessage));
-            conversationHistory.add(user);
+        appendOpenCodeHistory(userMessage, List.of(), assistantText);
+    }
+
+    /**
+     * Records a provider-session turn as text. The provider's session keeps the
+     * attachment bytes it received; this history keeps a marker for each.
+     */
+    private void appendOpenCodeHistory(String userMessage, List<AttachmentInput> attachments,
+                                       String assistantText) {
+        if (userMessage != null || (attachments != null && !attachments.isEmpty())) {
+            conversationHistory.add(textRouteUserMessage(userMessage, attachments));
         }
         if (assistantText != null && !assistantText.isBlank()) {
             ObjectNode assistant = objectMapper.createObjectNode();
@@ -1418,6 +1513,15 @@ public class DirectLlmClient implements AutoCloseable {
             assistant.put("content", assistantText);
             conversationHistory.add(assistant);
         }
+    }
+
+    /** A user turn as a route with text history keeps it: a marker per attachment, then the text. */
+    private ObjectNode textRouteUserMessage(String userMessage, List<AttachmentInput> attachments) {
+        ObjectNode user = objectMapper.createObjectNode();
+        user.put("role", "user");
+        user.put("content", attachmentMarkers(attachments)
+                + (userMessage == null ? "" : withoutTurnEnvelopes(userMessage)));
+        return user;
     }
 
     @Override
@@ -1447,6 +1551,41 @@ public class DirectLlmClient implements AutoCloseable {
             msg.put("content", content);
             conversationHistory.add(msg);
         }
+    }
+
+    /**
+     * Replay a user turn with its attachments, in the shape the route's history keeps
+     * after a live turn, so a resumed or re-projected conversation resends what the turn
+     * attached. Routes whose history is text keep a marker per attachment, as live.
+     */
+    public void addReplayedUserTurn(String content, List<AttachmentInput> attachments,
+                                    String modelOverride) {
+        if (attachments == null || attachments.isEmpty()) {
+            addToHistory("user", content);
+            return;
+        }
+        WireProtocol protocol;
+        try {
+            protocol = resolveRoute(modelOverride).protocol();
+        } catch (Exception ignored) {
+            protocol = null;
+        }
+        synchronized (historyLock) {
+            conversationHistory.add(userHistoryMessage(protocol, content, attachments));
+        }
+    }
+
+    private ObjectNode userHistoryMessage(WireProtocol protocol, String text,
+                                          List<AttachmentInput> attachments) {
+        if (protocol == null) return textRouteUserMessage(text, attachments);
+        return switch (protocol) {
+            case KOMPILE_LOCAL -> kompileServingUserMessage(text, attachments);
+            case OPENAI_CHAT -> openAiUserMessage(text, attachments);
+            case ANTHROPIC_MESSAGES -> anthropicUserMessage(text, attachments);
+            case OPENAI_RESPONSES -> createResponsesUserMessage(text, attachments);
+            case PI_MESSAGES -> createPiUserMessage(text, attachments);
+            case OPENCODE, CLAUDE_CLI -> textRouteUserMessage(text, attachments);
+        };
     }
 
     /**
@@ -1640,6 +1779,7 @@ public class DirectLlmClient implements AutoCloseable {
                     isolated.setCancellationCheck(cancellationCheck);
                 }
                 isolated.setOutputConsumer(outputConsumer);
+                isolated.setProviderActivityListener(providerActivityListener);
                 isolated.setConnectivityEventConsumer(connectivityEventConsumer);
                 return isolated.streamChat(prompt, systemPrompt, null, null, modelOverride);
             }
@@ -1700,6 +1840,7 @@ public class DirectLlmClient implements AutoCloseable {
                 isolated.setCancellationCheck(cancellationCheck);
             }
             isolated.setOutputConsumer(outputConsumer);
+            isolated.setProviderActivityListener(providerActivityListener);
             isolated.setConnectivityEventConsumer(connectivityEventConsumer);
             isolated.requestedJsonOutput = new JsonOutputSpec(
                     normalizeJsonSchemaName(schemaName), schema.deepCopy(), strict);
@@ -2736,6 +2877,7 @@ public class DirectLlmClient implements AutoCloseable {
                     case "response.failed" -> {
                         state.terminal = true;
                         state.failed = true;
+                        readResponsesUsage(event.path("response").path("usage"), result);
                         JsonNode error = event.path("response").path("error");
                         String message = error.path("message").asText("Response failed");
                         appendProtocolError(result, message, error.toString());
@@ -2858,51 +3000,44 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private void readResponsesUsage(JsonNode usage, StreamResult result) {
-        if (usage == null || usage.isMissingNode()) {
-            return;
-        }
-        long cacheRead = usage.path("input_tokens_details").path("cached_tokens").asLong(0);
-        long cacheWrite = usage.path("input_tokens_details").path("cache_write_tokens").asLong(0);
-        long totalInput = usage.path("input_tokens").asLong(0);
-        result.inputTokens = Math.max(0, totalInput - cacheRead - cacheWrite);
-        result.outputTokens = usage.path("output_tokens").asLong(0);
-        result.cacheReadTokens = cacheRead;
-        result.cacheCreationTokens = cacheWrite;
+        if (usage == null || !usage.isObject()) return;
+        JsonNode details = usage.path("input_tokens_details");
+        long totalInput = usageCount(usage, "input_tokens",
+                result.inputTokens + result.cacheReadTokens + result.cacheCreationTokens);
+        result.cacheReadTokens = usageCount(details, "cached_tokens", result.cacheReadTokens);
+        result.cacheCreationTokens = usageCount(details, "cache_write_tokens", result.cacheCreationTokens);
+        result.inputTokens = Math.max(0L, totalInput - result.cacheReadTokens - result.cacheCreationTokens);
+        // output_tokens already includes reasoning: never add its detail twice.
+        result.outputTokens = usageCount(usage, "output_tokens", result.outputTokens);
     }
 
     static void readOpenAiCompatibleUsage(JsonNode usage, StreamResult result) {
-        if (usage == null || usage.isMissingNode()) return;
+        // Many streams send usage:null on ordinary chunks. Usage objects are
+        // cumulative snapshots, not deltas; absent fields must not erase counts.
+        if (usage == null || !usage.isObject()) return;
         JsonNode details = usage.path("prompt_tokens_details");
-        long cacheRead = firstPresentLong(
-                details, "cached_tokens",
-                usage, "prompt_cache_hit_tokens",
-                usage, "cached_tokens");
-        long cacheWrite = details.path("cache_write_tokens").asLong(0L);
-        long ordinaryInput;
-        if (usage.has("prompt_cache_miss_tokens")) {
-            ordinaryInput = usage.path("prompt_cache_miss_tokens").asLong(0L);
-        } else {
-            long totalInput = usage.has("prompt_tokens")
-                    ? usage.path("prompt_tokens").asLong(0L)
-                    : usage.path("input_tokens").asLong(0L);
-            ordinaryInput = Math.max(0L, totalInput - cacheRead - cacheWrite);
-        }
-        result.inputTokens = ordinaryInput;
-        result.outputTokens = usage.has("completion_tokens")
-                ? usage.path("completion_tokens").asLong(0L)
-                : usage.path("output_tokens").asLong(0L);
+        long cacheRead = usageCount(details, "cached_tokens",
+                usageCount(usage, "prompt_cache_hit_tokens",
+                        usageCount(usage, "cached_tokens", result.cacheReadTokens)));
+        long cacheWrite = usageCount(details, "cache_write_tokens", result.cacheCreationTokens);
+        long totalInput = usageCount(usage, "prompt_tokens",
+                usageCount(usage, "input_tokens",
+                        result.inputTokens + result.cacheReadTokens + result.cacheCreationTokens));
+        // DeepSeek's miss count is uncached input, not cache-creation usage.
+        result.inputTokens = usage.hasNonNull("prompt_cache_miss_tokens")
+                ? Math.max(0L, usageCount(usage, "prompt_cache_miss_tokens", 0L) - cacheWrite)
+                : Math.max(0L, totalInput - cacheRead - cacheWrite);
+        // Chat Completions totals include reasoning (also on Gemini's OpenAI
+        // endpoint); completion_tokens_details is a breakdown, not extra output.
+        result.outputTokens = usageCount(usage, "completion_tokens",
+                usageCount(usage, "output_tokens", result.outputTokens));
         result.cacheReadTokens = cacheRead;
         result.cacheCreationTokens = cacheWrite;
     }
 
-    private static long firstPresentLong(
-            JsonNode first, String firstField,
-            JsonNode second, String secondField,
-            JsonNode third, String thirdField) {
-        if (first != null && first.has(firstField)) return first.path(firstField).asLong(0L);
-        if (second != null && second.has(secondField)) return second.path(secondField).asLong(0L);
-        return third != null && third.has(thirdField)
-                ? third.path(thirdField).asLong(0L) : 0L;
+    private static long usageCount(JsonNode usage, String field, long fallback) {
+        return usage != null && usage.hasNonNull(field)
+                ? Math.max(0L, usage.path(field).asLong(0L)) : fallback;
     }
 
     private void appendResponsesHistory(
@@ -2970,7 +3105,8 @@ public class DirectLlmClient implements AutoCloseable {
             String systemPrompt,
             ArrayNode toolDefs,
             List<ToolCallResultInput> toolResults,
-            String effectiveModel, OAuthProviderFlow.RequestAuth retryAuth) {
+            String effectiveModel, List<AttachmentInput> attachments,
+            OAuthProviderFlow.RequestAuth retryAuth) {
         StreamResult result = new StreamResult();
         try {
             OAuthProviderFlow.RequestAuth auth = retryAuth != null ? retryAuth : config.resolveRequestAuth();
@@ -2983,6 +3119,11 @@ public class DirectLlmClient implements AutoCloseable {
                 printStreamingChunk(result.text);
                 return result;
             }
+            if (gatewayConfig.textOnlyModelIds().contains(effectiveModel)
+                    && attachments.stream().anyMatch(AttachmentInput::isImage)) {
+                return attachmentFailure("Radius model " + effectiveModel
+                        + " accepts text only, so it cannot read the attached image");
+            }
 
             ObjectNode request = objectMapper.createObjectNode();
             request.put("model", effectiveModel);
@@ -2990,7 +3131,7 @@ public class DirectLlmClient implements AutoCloseable {
             if (systemPrompt != null && !systemPrompt.isBlank()) {
                 context.put("systemPrompt", systemPrompt);
             }
-            context.set("messages", buildPiMessages(userMessage, toolResults));
+            context.set("messages", buildPiMessages(userMessage, attachments, toolResults));
             if (toolDefs != null && !toolDefs.isEmpty()) {
                 context.set("tools", convertToolDefsToPi(toolDefs));
             }
@@ -3047,7 +3188,7 @@ public class DirectLlmClient implements AutoCloseable {
             parsePiMessagesStream(guardResponseStream(response.body()), result, state);
             if (!state.failed && !result.cancelled) {
                 appendPiToolResultHistory(toolResults);
-                appendPiMessagesHistory(userMessage, effectiveModel, result, state);
+                appendPiMessagesHistory(userMessage, attachments, effectiveModel, result, state);
             }
         } catch (Exception e) {
             recordStreamFailure(result, e, "[Error: ");
@@ -3087,6 +3228,7 @@ public class DirectLlmClient implements AutoCloseable {
             throw new IllegalStateException("Invalid Radius config: missing baseUrl");
         }
         List<String> modelIds = new ArrayList<>();
+        Set<String> textOnlyModelIds = new LinkedHashSet<>();
         JsonNode models = root.path("models");
         if (!models.isArray()) {
             throw new IllegalStateException("Invalid Radius config: models must be an array");
@@ -3095,17 +3237,34 @@ public class DirectLlmClient implements AutoCloseable {
             String id = model.path("id").asText(null);
             if (id != null && !id.isBlank()) {
                 modelIds.add(id);
+                if (declaresTextOnlyInput(model.path("input"))) {
+                    textOnlyModelIds.add(id);
+                }
             }
         }
         RadiusGatewayConfig loaded = new RadiusGatewayConfig(
-                trimTrailingSlashes(messagesBaseUrl), List.copyOf(modelIds));
+                trimTrailingSlashes(messagesBaseUrl), List.copyOf(modelIds), Set.copyOf(textOnlyModelIds));
         radiusGatewayConfigSource = normalizedGateway;
         radiusGatewayConfig = loaded;
         return loaded;
     }
 
+    /** A catalog entry is text-only when it lists its input kinds and "image" is not among them. */
+    private static boolean declaresTextOnlyInput(JsonNode input) {
+        if (!input.isArray() || input.isEmpty()) {
+            return false;
+        }
+        for (JsonNode kind : input) {
+            if ("image".equals(kind.asText())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private ArrayNode buildPiMessages(
             String userMessage,
+            List<AttachmentInput> attachments,
             List<ToolCallResultInput> toolResults) {
         ArrayNode messages = objectMapper.createArrayNode();
         conversationHistory.forEach(messages::add);
@@ -3126,8 +3285,8 @@ public class DirectLlmClient implements AutoCloseable {
                 messages.add(message);
             }
         }
-        if (userMessage != null) {
-            messages.add(createPiUserMessage(userMessage));
+        if (userMessage != null || !attachments.isEmpty()) {
+            messages.add(createPiUserMessage(userMessage, attachments));
         }
         return messages;
     }
@@ -3148,10 +3307,30 @@ public class DirectLlmClient implements AutoCloseable {
         }
     }
 
-    private ObjectNode createPiUserMessage(String userMessage) {
+    /**
+     * A pi-ai user message: string content, or pi-ai image and text parts when the turn
+     * carries attachments, which stay in history the way the other HTTP routes keep theirs.
+     */
+    private ObjectNode createPiUserMessage(String userMessage, List<AttachmentInput> attachments) {
         ObjectNode message = objectMapper.createObjectNode();
         message.put("role", "user");
-        message.put("content", userMessage);
+        if (attachments.isEmpty()) {
+            message.put("content", userMessage);
+        } else {
+            ArrayNode content = message.putArray("content");
+            for (AttachmentInput attachment : attachments) {
+                if (attachment.isImage()) {
+                    content.addObject().put("type", "image")
+                            .put("data", attachment.base64Data())
+                            .put("mimeType", attachment.mimeType());
+                } else {
+                    content.addObject().put("type", "text").put("text", attachmentText(attachment));
+                }
+            }
+            if (userMessage != null) {
+                content.addObject().put("type", "text").put("text", userMessage);
+            }
+        }
         message.put("timestamp", System.currentTimeMillis());
         return message;
     }
@@ -3329,20 +3508,22 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private void readPiUsage(JsonNode usage, StreamResult result) {
-        if (usage == null || usage.isMissingNode()) return;
-        result.inputTokens = usage.path("input").asLong(0);
-        result.outputTokens = usage.path("output").asLong(0);
-        result.cacheReadTokens = usage.path("cacheRead").asLong(0);
-        result.cacheCreationTokens = usage.path("cacheWrite").asLong(0);
+        if (usage == null || !usage.isObject()) return;
+        // Pi has already normalized ordinary input separately from cache usage.
+        result.inputTokens = usageCount(usage, "input", result.inputTokens);
+        result.outputTokens = usageCount(usage, "output", result.outputTokens);
+        result.cacheReadTokens = usageCount(usage, "cacheRead", result.cacheReadTokens);
+        result.cacheCreationTokens = usageCount(usage, "cacheWrite", result.cacheCreationTokens);
     }
 
     private void appendPiMessagesHistory(
             String userMessage,
+            List<AttachmentInput> attachments,
             String effectiveModel,
             StreamResult result,
             PiMessagesStreamState state) {
-        if (userMessage != null) {
-            conversationHistory.add(createPiUserMessage(userMessage));
+        if (userMessage != null || !attachments.isEmpty()) {
+            conversationHistory.add(createPiUserMessage(userMessage, attachments));
         }
         if (result.text.isEmpty() && result.toolCalls.isEmpty() && state.contentBlocks.isEmpty()) return;
 
@@ -3466,27 +3647,26 @@ public class DirectLlmClient implements AutoCloseable {
                 result.cancelled = true;
                 return result;
             }
+            long turnImages = attachments.stream().filter(AttachmentInput::isImage).count();
+            if (turnImages > StructuredChatLanguageModel.MAX_INLINE_IMAGES_PER_REQUEST) {
+                return attachmentFailure("Local serving accepts at most "
+                        + StructuredChatLanguageModel.MAX_INLINE_IMAGES_PER_REQUEST
+                        + " images per turn; this turn attaches " + turnImages);
+            }
             ObjectNode request = objectMapper.createObjectNode();
             ObjectNode structured = request.putObject("request");
-            structured.set("messages", buildKompileServingMessages(
-                    userMessage, systemPrompt, toolResults));
-            if (attachments != null && !attachments.isEmpty()) {
-                ArrayNode images = structured.putArray("images");
-                for (AttachmentInput attachment : attachments) {
-                    if (attachment.isImage()) {
-                        ObjectNode inline = images.addObject();
-                        inline.put("mimeType", attachment.mimeType());
-                        inline.put("base64Data", attachment.base64Data());
-                    }
-                }
-            }
+            ArrayNode messages = buildKompileServingMessages(
+                    userMessage, systemPrompt, toolResults, attachments);
+            structured.set("messages", messages);
             ArrayNode tools = buildKompileServingTools(toolDefs);
             structured.set("tools", tools);
             structured.put("addGenerationPrompt", true);
             structured.put("toolDefinitionFormat", "STANDARD");
             structured.put("toolCallFormat", "NATIVE");
             structured.put("toolChoice", tools.isEmpty() ? "NONE" : "AUTO");
-            request.put("maxTokens", 1024);
+            request.put("maxTokens", wireMaxTokens(
+                    wireMaxOutputTokens > 0 ? wireMaxOutputTokens : KOMPILE_SERVING_MAX_TOKENS,
+                    contextWindowTokens, estimateRequestInputTokens(messages, tools)));
 
             HttpResponse<String> response = sendKompileServing(request);
 
@@ -3551,11 +3731,8 @@ public class DirectLlmClient implements AutoCloseable {
 
             if (!result.cancelled && !result.failed) {
                 appendKompileToolResultHistory(toolResults);
-                if (userMessage != null) {
-                    ObjectNode user = objectMapper.createObjectNode();
-                    user.put("role", "user");
-                    user.put("content", userMessage);
-                    conversationHistory.add(user);
+                if (userMessage != null || !attachments.isEmpty()) {
+                    conversationHistory.add(kompileServingUserMessage(userMessage, attachments));
                 }
                 boolean rescued = !result.toolCalls.isEmpty()
                         && !payload.path("content").asText("").equals(result.text);
@@ -3594,8 +3771,15 @@ public class DirectLlmClient implements AutoCloseable {
             return sendKompileServing(config.getBaseUrl(), request);
         }
         try (LocalServingRuntimePool.Lease runtime = binding.acquire()) {
+            String liveUrl = runtime.baseUrl().toString();
+            if (!liveUrl.equals(config.getBaseUrl())) {
+                // An idle-evicted child restarts on a new port. Point the config at it so
+                // the model-limits and image-support probe reads the running child. Only
+                // the URL changes: the model and the binding stay as they are.
+                config.setBaseUrl(liveUrl);
+            }
             synchronized (runtime.coordinationLock()) {
-                return sendKompileServing(runtime.baseUrl().toString(), request);
+                return sendKompileServing(liveUrl, request);
             }
         }
     }
@@ -3616,20 +3800,47 @@ public class DirectLlmClient implements AutoCloseable {
         return httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
     }
 
+    /**
+     * The serving request's messages. Images ride on the message that attached them;
+     * the current turn's images always do, and earlier ones fill the rest of the
+     * per-request image limit newest first, the oldest becoming a text marker.
+     */
     private ArrayNode buildKompileServingMessages(
             String userMessage,
             String systemPrompt,
-            List<ToolCallResultInput> toolResults) {
+            List<ToolCallResultInput> toolResults,
+            List<AttachmentInput> attachments) {
         ArrayNode messages = objectMapper.createArrayNode();
         if (systemPrompt != null && !systemPrompt.isEmpty()) {
             ObjectNode system = messages.addObject();
             system.put("role", "system");
             system.put("content", systemPrompt);
         }
+        ArrayNode turnImages = kompileServingImages(attachments);
+        int historyImages = 0;
+        for (ObjectNode historyMessage : conversationHistory) {
+            historyImages += historyMessage.path("images").size();
+        }
+        int omit = Math.max(0, historyImages - Math.max(0,
+                StructuredChatLanguageModel.MAX_INLINE_IMAGES_PER_REQUEST - turnImages.size()));
         for (ObjectNode historyMessage : conversationHistory) {
             ObjectNode message = messages.addObject();
             message.put("role", historyMessage.path("role").asText("user"));
-            message.put("content", historyMessage.path("content").asText(""));
+            StringBuilder omitted = new StringBuilder();
+            ArrayNode images = objectMapper.createArrayNode();
+            for (JsonNode image : historyMessage.path("images")) {
+                if (omit > 0) {
+                    omit--;
+                    omitted.append("[Earlier image omitted: ")
+                            .append(image.path("path").asText("image")).append("]\n");
+                } else {
+                    images.addObject()
+                            .put("mimeType", image.path("mimeType").asText())
+                            .put("base64Data", image.path("base64Data").asText());
+                }
+            }
+            message.put("content", omitted + historyMessage.path("content").asText(""));
+            if (!images.isEmpty()) message.set("images", images);
         }
         if (toolResults != null) {
             for (ToolCallResultInput toolResult : toolResults) {
@@ -3638,12 +3849,56 @@ public class DirectLlmClient implements AutoCloseable {
                 message.put("content", toolResult.output);
             }
         }
-        if (userMessage != null) {
+        if (userMessage != null || !attachments.isEmpty()) {
             ObjectNode user = messages.addObject();
             user.put("role", "user");
-            user.put("content", userMessage);
+            user.put("content", kompileServingUserText(userMessage, attachments));
+            if (!turnImages.isEmpty()) user.set("images", turnImages);
         }
         return messages;
+    }
+
+    /**
+     * A user turn as local-serving history keeps it. The images stay, with their paths,
+     * so later turns can still see them; buildKompileServingMessages bounds how many ride.
+     */
+    private ObjectNode kompileServingUserMessage(String userMessage, List<AttachmentInput> attachments) {
+        ObjectNode user = objectMapper.createObjectNode();
+        user.put("role", "user");
+        user.put("content", kompileServingUserText(userMessage, attachments));
+        ArrayNode images = user.putArray("images");
+        for (AttachmentInput attachment : attachments) {
+            if (attachment.isImage()) {
+                images.addObject()
+                        .put("mimeType", attachment.mimeType())
+                        .put("base64Data", attachment.base64Data())
+                        .put("path", attachment.path());
+            }
+        }
+        if (images.isEmpty()) user.remove("images");
+        return user;
+    }
+
+    /** A turn's text for local serving: text attachments ahead of the message. */
+    private static String kompileServingUserText(String userMessage, List<AttachmentInput> attachments) {
+        StringBuilder text = new StringBuilder();
+        for (AttachmentInput attachment : attachments) {
+            if (!attachment.isImage()) text.append(attachmentText(attachment)).append("\n\n");
+        }
+        return text.append(userMessage == null ? "" : userMessage).toString();
+    }
+
+    /** A turn's images in the serving wire shape ({@code StructuredChatLanguageModel.InlineImage}). */
+    private ArrayNode kompileServingImages(List<AttachmentInput> attachments) {
+        ArrayNode images = objectMapper.createArrayNode();
+        for (AttachmentInput attachment : attachments) {
+            if (attachment.isImage()) {
+                images.addObject()
+                        .put("mimeType", attachment.mimeType())
+                        .put("base64Data", attachment.base64Data());
+            }
+        }
+        return images;
     }
 
     private void appendKompileToolResultHistory(List<ToolCallResultInput> toolResults) {
@@ -3700,24 +3955,24 @@ public class DirectLlmClient implements AutoCloseable {
             for (int pass = 0; ; pass++) {
                 StreamResult passResult = (pass == 0)
                         ? result : new StreamResult();
-                openAiStreamOnce(url, request, auth, userMessage, toolDefs,
-                        passResult);
-                if (pass > 0) {
-                    // The resumed stream continues the same answer: splice its text
-                    // after what the dropped pass already showed, and merge usage so
-                    // token accounting covers both requests.
-                    result.text += passResult.text;
-                    result.inputTokens += passResult.inputTokens;
-                    result.outputTokens += passResult.outputTokens;
-                    result.cacheReadTokens += passResult.cacheReadTokens;
-                    result.cacheCreationTokens += passResult.cacheCreationTokens;
-                    result.toolCalls.addAll(passResult.toolCalls);
-                    result.refusalDetected |= passResult.refusalDetected;
-                    result.truncatedDetected |= passResult.truncatedDetected;
-                    // The context holds the resumed request alone; it already
-                    // carries the dropped pass's text, so the sum overstates it.
-                    long resumedContext = passResult.contextInputTokens();
-                    if (resumedContext > 0L) result.lastRequestInputTokens = resumedContext;
+                try {
+                    openAiStreamOnce(url, request, auth, userMessage, toolDefs, passResult);
+                } finally {
+                    if (pass > 0) {
+                        // Preserve both requests' billed usage even if parsing the
+                        // continuation throws after receiving a usage snapshot.
+                        result.text += passResult.text;
+                        result.inputTokens += passResult.inputTokens;
+                        result.outputTokens += passResult.outputTokens;
+                        result.cacheReadTokens += passResult.cacheReadTokens;
+                        result.cacheCreationTokens += passResult.cacheCreationTokens;
+                        result.toolCalls.addAll(passResult.toolCalls);
+                        result.refusalDetected |= passResult.refusalDetected;
+                        result.truncatedDetected |= passResult.truncatedDetected;
+                        // Context is the resumed request alone, never their sum.
+                        // Zero means its usage was not reported, not the prior input.
+                        result.lastRequestInputTokens = passResult.contextInputTokens();
+                    }
                 }
                 if (!isSilentStreamDrop(passResult, toolDefs) || pass >= 1) {
                     if (pass > 0) {
@@ -3883,14 +4138,7 @@ public class DirectLlmClient implements AutoCloseable {
         appendOpenAiToolResultHistory(toolResults);
         if (result.failed) return;
         if (userMessage != null || !attachments.isEmpty()) {
-            ObjectNode userMsg = objectMapper.createObjectNode();
-            userMsg.put("role", "user");
-            if (attachments.isEmpty()) {
-                userMsg.put("content", userMessage);
-            } else {
-                userMsg.set("content", buildOpenAiContentArray(userMessage, attachments));
-            }
-            conversationHistory.add(userMsg);
+            conversationHistory.add(openAiUserMessage(userMessage, attachments));
         }
         if (result.text.isEmpty() && result.toolCalls.isEmpty()) return;
         ObjectNode assistantMsg = objectMapper.createObjectNode();
@@ -3949,14 +4197,7 @@ public class DirectLlmClient implements AutoCloseable {
 
         // Current user message
         if (userMessage != null || !attachments.isEmpty()) {
-            ObjectNode userMsg = objectMapper.createObjectNode();
-            userMsg.put("role", "user");
-            if (attachments.isEmpty()) {
-                userMsg.put("content", userMessage);
-            } else {
-                userMsg.set("content", buildOpenAiContentArray(userMessage, attachments));
-            }
-            messages.add(userMsg);
+            messages.add(openAiUserMessage(userMessage, attachments));
         }
 
         return "zai".equalsIgnoreCase(config.getProvider())
@@ -4204,8 +4445,25 @@ public class DirectLlmClient implements AutoCloseable {
 
                     // Extract token usage if present (final chunk in OpenAI streaming)
                     JsonNode usageNode = chunk.path("usage");
-                    if (!usageNode.isMissingNode()) {
-                        readOpenAiCompatibleUsage(usageNode, result);
+                    if (!usageNode.isObject() || usageNode.isEmpty()) {
+                        // Groq's original streaming dialect nests the same totals.
+                        usageNode = chunk.path("x_groq").path("usage");
+                    }
+                    readOpenAiCompatibleUsage(usageNode, result);
+                    if ("xai".equals(config.getProvider())
+                            && usageNode.hasNonNull("prompt_tokens")
+                            && usageNode.hasNonNull("completion_tokens")
+                            && usageNode.hasNonNull("total_tokens")) {
+                        // xAI's legacy chat dialect can exclude reasoning from
+                        // completion_tokens. Only add it when the wire total proves
+                        // it is separate; inclusive responses must not count it twice.
+                        long reasoning = usageCount(usageNode.path("completion_tokens_details"),
+                                "reasoning_tokens", 0L);
+                        long uncounted = usageCount(usageNode, "total_tokens", 0L)
+                                - usageCount(usageNode, "prompt_tokens", 0L) - result.outputTokens;
+                        if (reasoning > 0L && uncounted == reasoning) {
+                            result.outputTokens += reasoning;
+                        }
                     }
 
                     // Check for finish_reason
@@ -4216,7 +4474,9 @@ public class DirectLlmClient implements AutoCloseable {
                     }
                     result.refusalDetected |= "content_filter".equals(finishReason);
                     result.truncatedDetected |= "length".equals(finishReason);
-                    if (terminal && finishGenerationOutcome(result)) return;
+                    // Even a refusal/length cutoff can be followed by the final
+                    // usage-only chunk. Drain through [DONE] before returning.
+                    if (terminal && finishGenerationOutcome(result)) continue;
                     if ("tool_calls".equals(finishReason) || "stop".equals(finishReason)) {
                         // Finalize any accumulated tool calls
                         for (ToolCallAccumulator acc : toolAccumulators) {
@@ -4394,10 +4654,7 @@ public class DirectLlmClient implements AutoCloseable {
             // Track in conversation history only after a completed stream.
             if (!result.cancelled && !result.failed && result.nativeCompactionSummary == null
                     && (userMessage != null || !attachments.isEmpty())) {
-                ObjectNode userMsg = objectMapper.createObjectNode();
-                userMsg.put("role", "user");
-                userMsg.set("content", buildAnthropicContentArray(userMessage, attachments));
-                conversationHistory.add(userMsg);
+                conversationHistory.add(anthropicUserMessage(userMessage, attachments));
             }
 
             if (!result.cancelled && !result.failed
@@ -4565,10 +4822,7 @@ public class DirectLlmClient implements AutoCloseable {
 
         // Current user message
         if (userMessage != null || !attachments.isEmpty()) {
-            ObjectNode userMsg = objectMapper.createObjectNode();
-            userMsg.put("role", "user");
-            userMsg.set("content", buildAnthropicContentArray(userMessage, attachments));
-            messages.add(userMsg);
+            messages.add(anthropicUserMessage(userMessage, attachments));
         }
 
         return messages;
@@ -4614,6 +4868,39 @@ public class DirectLlmClient implements AutoCloseable {
         return anthropicTools;
     }
 
+    static void readAnthropicUsage(JsonNode usage, StreamResult result) {
+        if (usage == null || !usage.isObject()) return;
+        // Anthropic input is already exclusive of both cache categories. Delta
+        // usage updates all four cumulative fields, not just output_tokens.
+        result.inputTokens = usageCount(usage, "input_tokens", result.inputTokens);
+        result.outputTokens = usageCount(usage, "output_tokens", result.outputTokens);
+        result.cacheReadTokens = usageCount(usage, "cache_read_input_tokens", result.cacheReadTokens);
+        result.cacheCreationTokens = usageCount(usage, "cache_creation_input_tokens", result.cacheCreationTokens);
+        JsonNode iterations = usage.path("iterations");
+        if (!iterations.isArray()) return;
+        // Anthropic excludes compaction iterations from top-level usage. The
+        // iterations array is itself a snapshot, so a repeated delta replaces it.
+        result.compactionInputTokens = 0L;
+        result.compactionOutputTokens = 0L;
+        result.compactionCacheReadTokens = 0L;
+        result.compactionCacheCreationTokens = 0L;
+        result.lastRequestInputTokens = iterations.isEmpty() ? -1L : 0L;
+        for (JsonNode iteration : iterations) {
+            if ("compaction".equals(iteration.path("type").asText())) {
+                result.compactionInputTokens += usageCount(iteration, "input_tokens", 0L);
+                result.compactionOutputTokens += usageCount(iteration, "output_tokens", 0L);
+                result.compactionCacheReadTokens += usageCount(iteration, "cache_read_input_tokens", 0L);
+                result.compactionCacheCreationTokens += usageCount(iteration, "cache_creation_input_tokens", 0L);
+            } else if ("message".equals(iteration.path("type").asText())) {
+                // Server-side tool loops bill multiple prompts, but only their
+                // last message iteration describes the current context window.
+                result.lastRequestInputTokens = usageCount(iteration, "input_tokens", 0L)
+                        + usageCount(iteration, "cache_read_input_tokens", 0L)
+                        + usageCount(iteration, "cache_creation_input_tokens", 0L);
+            }
+        }
+    }
+
     private void parseAnthropicStream(java.io.InputStream inputStream, StreamResult result) throws Exception {
         String currentToolId = null;
         String currentToolName = null;
@@ -4638,13 +4925,7 @@ public class DirectLlmClient implements AutoCloseable {
 
                     switch (type) {
                         case "message_start": {
-                            // Anthropic sends input token count in message_start
-                            JsonNode msgUsage = event.path("message").path("usage");
-                            if (!msgUsage.isMissingNode()) {
-                                result.inputTokens = msgUsage.path("input_tokens").asLong(0);
-                                result.cacheReadTokens = msgUsage.path("cache_read_input_tokens").asLong(0);
-                                result.cacheCreationTokens = msgUsage.path("cache_creation_input_tokens").asLong(0);
-                            }
+                            readAnthropicUsage(event.path("message").path("usage"), result);
                             break;
                         }
 
@@ -4718,22 +4999,7 @@ public class DirectLlmClient implements AutoCloseable {
                             result.refusalDetected |= "refusal".equals(stopReason);
                             result.truncatedDetected |= "max_tokens".equals(stopReason)
                                     || "model_context_window_exceeded".equals(stopReason);
-                            // Anthropic sends output token count in message_delta
-                            JsonNode deltaUsage = event.path("usage");
-                            if (!deltaUsage.isMissingNode()) {
-                                result.outputTokens = deltaUsage.path("output_tokens").asLong(0);
-                                JsonNode iterations = deltaUsage.path("iterations");
-                                if (iterations.isArray()) {
-                                    for (JsonNode iteration : iterations) {
-                                        if ("compaction".equals(iteration.path("type").asText())) {
-                                            result.compactionInputTokens +=
-                                                    iteration.path("input_tokens").asLong(0L);
-                                            result.compactionOutputTokens +=
-                                                    iteration.path("output_tokens").asLong(0L);
-                                        }
-                                    }
-                                }
-                            }
+                            readAnthropicUsage(event.path("usage"), result);
                             if (result.refusalDetected || result.truncatedDetected) {
                                 finishGenerationOutcome(result);
                                 return;
@@ -4763,6 +5029,18 @@ public class DirectLlmClient implements AutoCloseable {
     // ========================================================================
     // Helpers
     // ========================================================================
+
+    /** A Chat Completions user turn: string content, or content blocks when it attaches files. */
+    private ObjectNode openAiUserMessage(String text, List<AttachmentInput> attachments) {
+        ObjectNode message = objectMapper.createObjectNode();
+        message.put("role", "user");
+        if (attachments.isEmpty()) {
+            message.put("content", text);
+        } else {
+            message.set("content", buildOpenAiContentArray(text, attachments));
+        }
+        return message;
+    }
 
     /**
      * Build an OpenAI-compatible content array for a message with optional attachments.
@@ -4826,20 +5104,36 @@ public class DirectLlmClient implements AutoCloseable {
      * The user message text is appended as the final text block.
      */
     private ArrayNode buildAnthropicContentArray(String text, List<AttachmentInput> attachments) {
-        ArrayNode content = objectMapper.createArrayNode();
+        return anthropicContent(objectMapper, text, attachments);
+    }
+
+    private ObjectNode anthropicUserMessage(String text, List<AttachmentInput> attachments) {
+        ObjectNode message = objectMapper.createObjectNode();
+        message.put("role", "user");
+        message.set("content", buildAnthropicContentArray(text, attachments));
+        return message;
+    }
+
+    /**
+     * Anthropic content blocks, shared with Claude Code's stream-json user messages,
+     * which carry the Messages API content shape.
+     */
+    static ArrayNode anthropicContent(ObjectMapper mapper, String text,
+                                      List<AttachmentInput> attachments) {
+        ArrayNode content = mapper.createArrayNode();
         if (attachments != null) {
             for (AttachmentInput att : attachments) {
                 if (att.isImage()) {
-                    ObjectNode imageBlock = objectMapper.createObjectNode();
+                    ObjectNode imageBlock = mapper.createObjectNode();
                     imageBlock.put("type", "image");
-                    ObjectNode source = objectMapper.createObjectNode();
+                    ObjectNode source = mapper.createObjectNode();
                     source.put("type", "base64");
                     source.put("media_type", att.mimeType());
                     source.put("data", att.base64Data());
                     imageBlock.set("source", source);
                     content.add(imageBlock);
                 } else {
-                    ObjectNode textBlock = objectMapper.createObjectNode();
+                    ObjectNode textBlock = mapper.createObjectNode();
                     textBlock.put("type", "text");
                     textBlock.put("text", "[File: " + att.path() + "]\n" + att.textContent());
                     content.add(textBlock);
@@ -4847,7 +5141,7 @@ public class DirectLlmClient implements AutoCloseable {
             }
         }
         if (text != null) {
-            ObjectNode textBlock = objectMapper.createObjectNode();
+            ObjectNode textBlock = mapper.createObjectNode();
             textBlock.put("type", "text");
             textBlock.put("text", text);
             content.add(textBlock);
@@ -4879,25 +5173,33 @@ public class DirectLlmClient implements AutoCloseable {
         return null;
     }
 
-    private static boolean supportsAttachments(WireProtocol protocol) {
-        return protocol == WireProtocol.OPENAI_CHAT
-                || protocol == WireProtocol.OPENAI_RESPONSES
-                || protocol == WireProtocol.ANTHROPIC_MESSAGES;
-    }
-
-    private StreamResult attachmentFailure(String detail) {
+    protected StreamResult attachmentFailure(String detail) {
         StreamResult result = new StreamResult();
         String message = "[Attachment error: " + detail + "]";
         appendProviderFailure(result, 0, detail, message, true);
         return result;
     }
 
-    private static String dataUrl(AttachmentInput attachment) {
+    static String dataUrl(AttachmentInput attachment) {
         return "data:" + attachment.mimeType() + ";base64," + attachment.base64Data();
     }
 
-    private static String attachmentText(AttachmentInput attachment) {
+    static String attachmentText(AttachmentInput attachment) {
         return "[File: " + attachment.path() + "]\n" + attachment.textContent();
+    }
+
+    /**
+     * The text a history entry keeps for a turn's attachments on routes whose history is
+     * text: the provider saw the bytes, later turns see what was attached.
+     */
+    static String attachmentMarkers(List<AttachmentInput> attachments) {
+        if (attachments == null || attachments.isEmpty()) return "";
+        StringBuilder markers = new StringBuilder();
+        for (AttachmentInput attachment : attachments) {
+            markers.append(attachment.isImage() ? "[Attached image: " : "[Attached file: ")
+                    .append(attachment.path()).append("]\n");
+        }
+        return markers.toString();
     }
 
     private static boolean isBlank(String value) {
@@ -5107,6 +5409,13 @@ public class DirectLlmClient implements AutoCloseable {
                 && (normalized.contains("message") || normalized.contains("prompt"))) {
             return true;
         }
+        // Kompile serving relays DL4J's refusals: "Prompt length N exhausts the model
+        // context window M" from a vision-language package, "Prompt length N exceeds
+        // maxPrefillLength=M" from a fixed-buffer text pipeline.
+        if (normalized.contains("prompt length")
+                && (normalized.contains("exceed") || normalized.contains("exhaust"))) {
+            return true;
+        }
         if (normalized.contains("input length")
                 && (normalized.contains("allowed range")
                 || normalized.contains("range of input")
@@ -5288,6 +5597,8 @@ public class DirectLlmClient implements AutoCloseable {
         public JsonNode nativeCompactionPayload;
         public long compactionInputTokens;
         public long compactionOutputTokens;
+        public long compactionCacheReadTokens;
+        public long compactionCacheCreationTokens;
         /** Native session a successful Claude Code turn ran in; null on every other route. */
         public ClaudeNativeSession claudeNativeSession;
         // Token usage from API response (when available)
@@ -5406,6 +5717,6 @@ public class DirectLlmClient implements AutoCloseable {
         boolean failed;
     }
 
-    private record RadiusGatewayConfig(String baseUrl, List<String> modelIds) {
+    private record RadiusGatewayConfig(String baseUrl, List<String> modelIds, Set<String> textOnlyModelIds) {
     }
 }

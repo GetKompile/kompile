@@ -46,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code (Alice, KNOWS, ?)} must appear above a wrong-type entity like
  * {@code CompanyX} in the ranked list.</p>
  */
-class LinkPredictorTest {
+public class LinkPredictorTest {
 
     // ── Constants ─────────────────────────────────────────────────────────────
     private static final String ALICE    = "Alice";
@@ -80,7 +80,7 @@ class LinkPredictorTest {
     // ─────────────────────────────────────────────────────────────────────────
 
     @BeforeAll
-    static void trainModel() {
+    public static void trainModel() {
         MutableReasoningGraph kg = new MutableReasoningGraph();
         kg.addEntity(ALICE,     "Person",  "Alice");
         kg.addEntity(BOB,       "Person",  "Bob");
@@ -112,7 +112,7 @@ class LinkPredictorTest {
      * separated person entities from company entities for the KNOWS relation, this fails.</p>
      */
     @Test
-    void trueTailRanksAboveWrongTypeEntityInPredictTails() {
+    public void trueTailRanksAboveWrongTypeEntityInPredictTails() {
         List<LinkPredictor.ScoredPrediction> preds = PREDICTOR.predictTails(ALICE, KNOWS, 5);
 
         assertNotNull(preds, "predictTails must not return null");
@@ -150,7 +150,7 @@ class LinkPredictorTest {
      * heads must rank above {@code CompanyY} in the head-prediction list.</p>
      */
     @Test
-    void trueHeadRanksAboveWrongTypeEntityInPredictHeads() {
+    public void trueHeadRanksAboveWrongTypeEntityInPredictHeads() {
         List<LinkPredictor.ScoredPrediction> preds = PREDICTOR.predictHeads(WORKS_AT, COMPANY_X, 5);
 
         assertNotNull(preds, "predictHeads must not return null");
@@ -177,7 +177,7 @@ class LinkPredictorTest {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    void scoreTripleMatchesTrainedModel() {
+    public void scoreTripleMatchesTrainedModel() {
         double fromPredictor = PREDICTOR.scoreTriple(ALICE, KNOWS, BOB);
         double fromModel     = MODEL.score(ALICE, KNOWS, BOB);
 
@@ -191,7 +191,7 @@ class LinkPredictorTest {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    void predictTailsTruncatesToTopK() {
+    public void predictTailsTruncatesToTopK() {
         List<LinkPredictor.ScoredPrediction> top3 = PREDICTOR.predictTails(ALICE, KNOWS, 3);
         assertEquals(3, top3.size(), "predictTails(topK=3) must return exactly 3 results");
 
@@ -205,14 +205,14 @@ class LinkPredictorTest {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    void unknownEntityThrowsIllegalArgumentException() {
+    public void unknownEntityThrowsIllegalArgumentException() {
         assertThrows(IllegalArgumentException.class,
                 () -> PREDICTOR.predictTails("NonExistent", KNOWS, 5),
                 "Unknown entity should throw IllegalArgumentException");
     }
 
     @Test
-    void unknownRelationThrowsIllegalArgumentException() {
+    public void unknownRelationThrowsIllegalArgumentException() {
         assertThrows(IllegalArgumentException.class,
                 () -> PREDICTOR.predictTails(ALICE, "UNKNOWN_REL", 5),
                 "Unknown relation should throw IllegalArgumentException");
@@ -223,7 +223,7 @@ class LinkPredictorTest {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    void nullModelThrowsAtConstruction() {
+    public void nullModelThrowsAtConstruction() {
         assertThrows(IllegalArgumentException.class,
                 () -> new LinkPredictor(null),
                 "Null model should throw IllegalArgumentException at construction");

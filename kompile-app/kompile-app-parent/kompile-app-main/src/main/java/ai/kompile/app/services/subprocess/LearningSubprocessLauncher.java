@@ -32,6 +32,8 @@ import ai.kompile.core.kgembedding.KGEmbeddingConfig;
 import ai.kompile.core.kgembedding.KgeTrainingExecutor;
 import ai.kompile.core.kgembedding.Triple;
 import ai.kompile.core.reasoning.ReasoningLearningExecutor;
+import com.fasterxml.jackson.core.JsonEncoding;
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.linalg.api.ndarray.INDArray;
 
@@ -50,9 +52,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 /**
  * Out-of-process KGE / PSL / MEBN learning launcher.
@@ -70,7 +72,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@link Process#onExit()} so the future resolves on <em>any</em> exit (normal, killed by
  * the watchdog, or crashed).</p>
  *
- * <p><b>Enabled only when {@code kompile.learning.subprocess.enabled=true}.</b></p>
+ * <p>Registered unconditionally, with no enable property: a caller that finds this bean trains
+ * out of process, and one without it trains in its own JVM.</p>
  */
 @Service
 // On by default with no property required; runtime enable/disable is managed config, not a property file.
@@ -83,6 +86,15 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
 
     /** Default heap for the learning subprocess (8 g); overridden per-type via the SubprocessConfigService JSON. */
     private static final int DEFAULT_HEAP_MB = 8192;
+
+    /**
+     * Keeps run ids unique when two runs for one fact sheet start in the same millisecond; the
+     * subprocess registry destroys a live process whose id is registered again.
+     */
+    private static final AtomicLong RUN_SEQUENCE = new AtomicLong();
+
+    /** How long an exited child's last output lines are waited for before its exit is judged. */
+    private static final long OUTPUT_DRAIN_TIMEOUT_MS = 5_000L;
 
     /** UI-controllable managed-config (subprocess-ingest-config.json → subprocessTypes.learning). */
     @Autowired(required = false)
@@ -122,10 +134,10 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
     private long nativeCapCeilingMb;
 
     @Value("${kompile.learning.subprocess.stale-timeout-ms:180000}")
-    private long staleTimeoutMs;
+    long staleTimeoutMs;
 
     @Value("${kompile.learning.subprocess.timeout-ms:3600000}")
-    private long jobTimeoutMs;
+    long jobTimeoutMs;
 
     /** Used to read MemAvailable for dynamic native-cap computation. Optional: absent outside app-main. */
     @Autowired(required = false)
@@ -137,8 +149,8 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    /** Per-run liveness for the heartbeat stale-watchdog (process tracking lives in the base). */
-    private final ConcurrentHashMap<String, AtomicLong> lastHeartbeatByRun = new ConcurrentHashMap<>();
+    /** Runs the heartbeat stale-watchdog watches (process tracking lives in the base). */
+    final ConcurrentHashMap<String, RunOutcome<?>> watchedRuns = new ConcurrentHashMap<>();
 
     // ── ManagedSubprocessLauncher configuration ───────────────────────────────
 
@@ -386,7 +398,7 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
                                                 Map<String, INDArray> priorRelationEmbeddings,
                                                 Path serializedWarmStartPath,
                                                 KgeTrainingExecutor.ProgressCallback callback) {
-        String runId = "learning-" + factSheetId + "-" + System.currentTimeMillis();
+        String runId = "learning-" + factSheetId + "-" + System.currentTimeMillis() + "-" + RUN_SEQUENCE.incrementAndGet();
         log.info("Starting out-of-process KGE training: runId={}, algorithm={}, triples={}, " +
                         "warmStartEntities={}, warmStartRelations={}, serializedWarmStart={}",
                 runId, algorithm, triples.size(),
@@ -396,22 +408,27 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
         Path triplesFile = null;
         Path outputFile = null;
         Path warmStartFile = null;
+        RunOutcome<KgeTrainingResult> outcome = new RunOutcome<>("KGE", KgeTrainingResult::failure);
+        ManagedRun run;
         try {
             triplesFile = Files.createTempFile("kompile-kge-triples-", ".json");
             Files.writeString(triplesFile, objectMapper.writeValueAsString(triples), StandardCharsets.UTF_8);
             outputFile = Files.createTempFile("kompile-kge-out-", ".json");
 
-            // Prefer a pre-serialized warm-start artifact exported by the graph adapter. The
-            // map-based branch remains for tests/legacy callers, but production app-main should
-            // avoid rehydrating persisted embeddings into INDArray maps just to serialize them again.
+            // A pre-serialized warm-start file is passed through as is. Prior vectors given as maps
+            // are written to a temp file of the same shape: the job service passes them with a
+            // reduced epoch count, so dropping them would cold-start a model for only those epochs.
             String warmStartPath = null;
             if (serializedWarmStartPath != null) {
                 warmStartFile = serializedWarmStartPath;
                 warmStartPath = serializedWarmStartPath.toString();
                 log.info("[KGE {}] Using serialized warm-start file {}", runId, warmStartPath);
             } else if (!priorEmbeddings.isEmpty() || !priorRelationEmbeddings.isEmpty()) {
-                log.warn("[KGE {}] Ignoring INDArray warm-start maps in app-main; callers should use "
-                        + "the serialized warm-start overload", runId);
+                warmStartFile = Files.createTempFile("kompile-kge-warmstart-", ".json");
+                writeWarmStart(warmStartFile, priorEmbeddings, priorRelationEmbeddings);
+                warmStartPath = warmStartFile.toString();
+                log.info("[KGE {}] Wrote warm-start file: {} entity vectors, {} relation vectors",
+                        runId, priorEmbeddings.size(), priorRelationEmbeddings.size());
             }
 
             LearningSubprocessArgs subArgs = new LearningSubprocessArgs(
@@ -421,54 +438,27 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
                     triplesFile.toString(), outputFile.toString(), warmStartPath);
             argsFile = subArgs.writeToTempFile();
 
-            CountDownLatch doneLatch = new CountDownLatch(1);
-            AtomicReference<KgeTrainingResult> resultRef = new AtomicReference<>();
-            // Set true the instant a Completed message arrives so the process-exit handler can't
-            // race ahead and report a bogus "no completion message".
-            AtomicBoolean completedReceived = new AtomicBoolean(false);
-            AtomicLong hb = new AtomicLong(System.currentTimeMillis());
-            lastHeartbeatByRun.put(runId, hb);
-
+            watchedRuns.put(runId, outcome);
             Path finalOutputFile = outputFile;
-            Path finalArgs = argsFile, finalTriples = triplesFile, finalWarmStart = warmStartFile;
-            ManagedRun run = startProcess(runId, crawlJobId, List.of(argsFile.toString()),
-                    payload -> handleKgeMessage(payload, runId, crawlJobId, finalOutputFile,
-                            resultRef, completedReceived, doneLatch, hb, callback));
-
-            run.process().onExit().thenRun(() -> {
-                // Only treat the exit as a failure if NO Completed message was received. The
-                // subprocess exits soon after sending Completed; the guard prevents a fast exit from
-                // clobbering a genuine success with a bogus failure.
-                if (!completedReceived.get() && resultRef.compareAndSet(null,
-                        KgeTrainingResult.failure("Subprocess exited without a completion message"))) {
-                    doneLatch.countDown();
-                }
-                lastHeartbeatByRun.remove(runId);
-                finishRun(runId);
-                if (completedReceived.get()) {
-                    // The caller owns the embeddings artifact on success and deletes it after write-back.
-                    cleanupQuiet(finalArgs, finalTriples, finalWarmStart);
-                } else {
-                    cleanupQuiet(finalArgs, finalTriples, finalOutputFile, finalWarmStart);
-                }
-            });
-
-            if (!doneLatch.await(jobTimeoutMs, TimeUnit.MILLISECONDS)) {
-                stop(runId, "timeout after " + jobTimeoutMs + "ms");
-                return KgeTrainingResult.failure("Subprocess timed out after " + jobTimeoutMs + "ms");
-            }
-            return resultRef.get() != null ? resultRef.get()
-                    : KgeTrainingResult.failure("No result received from subprocess");
-
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            cleanupQuiet(argsFile, triplesFile, outputFile, warmStartFile);
-            return KgeTrainingResult.failure("Interrupted: " + ie.getMessage());
+            run = startProcess(runId, crawlJobId, List.of(argsFile.toString()),
+                    payload -> handleKgeMessage(payload, runId, crawlJobId, finalOutputFile, outcome, callback));
         } catch (Exception e) {
+            watchedRuns.remove(runId, outcome);
             log.error("Failed to launch KGE subprocess for fact sheet {}", factSheetId, e);
             cleanupQuiet(argsFile, triplesFile, outputFile, warmStartFile);
             return KgeTrainingResult.failure("Launch error: " + e.getMessage());
         }
+
+        Path finalArgs = argsFile, finalTriples = triplesFile, finalOutput = outputFile, finalWarmStart = warmStartFile;
+        run.process().onExit().thenRun(() -> {
+            settleExitedRun(run, outcome);
+            cleanupQuiet(finalArgs, finalTriples, finalWarmStart);
+            if (!outcome.verdict.get().success()) {
+                // A successful run's embeddings file belongs to the caller, which deletes it after write-back
+                cleanupQuiet(finalOutput);
+            }
+        });
+        return awaitOutcome(runId, outcome);
     }
 
     // ── ReasoningLearningExecutor — PSL ───────────────────────────────────────
@@ -482,7 +472,7 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
             double weightPriorStrength, double weightPriorMean, double[] perRuleMeans,
             ReasoningLearningExecutor.ProgressCallback callback) {
 
-        String runId = "psl-" + factSheetId + "-" + System.currentTimeMillis();
+        String runId = "psl-" + factSheetId + "-" + System.currentTimeMillis() + "-" + RUN_SEQUENCE.incrementAndGet();
         log.info("Starting out-of-process PSL weight learning: runId={}, factSheetId={}", runId, factSheetId);
         Path argsFile = null, inputFile = null;
         try {
@@ -509,7 +499,7 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
             double[][] pParentMatrix, double[][] targetMatrix, String mebnWeightsOutputPath,
             int maxEpochs, double learningRate, ReasoningLearningExecutor.ProgressCallback callback) {
 
-        String runId = "mebn-" + factSheetId + "-" + System.currentTimeMillis();
+        String runId = "mebn-" + factSheetId + "-" + System.currentTimeMillis() + "-" + RUN_SEQUENCE.incrementAndGet();
         log.info("Starting out-of-process MEBN strength learning: runId={}, factSheetId={}", runId, factSheetId);
         Path argsFile = null, inputFile = null;
         try {
@@ -531,56 +521,78 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
     private ReasoningLearningExecutor.LearningResult runReasoning(
             String runId, String crawlJobId, Path argsFile, Path inputFile,
             ReasoningLearningExecutor.ProgressCallback callback, String label) {
+        RunOutcome<ReasoningLearningExecutor.LearningResult> outcome =
+                new RunOutcome<>(label, ReasoningLearningExecutor.LearningResult::failure);
+        ManagedRun run;
         try {
-            CountDownLatch doneLatch = new CountDownLatch(1);
-            AtomicReference<ReasoningLearningExecutor.LearningResult> resultRef = new AtomicReference<>();
-            AtomicLong hb = new AtomicLong(System.currentTimeMillis());
-            lastHeartbeatByRun.put(runId, hb);
-
-            Path finalArgs = argsFile, finalInput = inputFile;
-            ManagedRun run = startProcess(runId, crawlJobId, List.of(argsFile.toString()),
-                    payload -> handleReasoningMessage(payload, runId, crawlJobId, label,
-                            callback, resultRef, doneLatch, hb));
-
-            run.process().onExit().thenRun(() -> {
-                if (resultRef.compareAndSet(null, ReasoningLearningExecutor.LearningResult.failure(
-                        label + " subprocess exited without a completion message"))) {
-                    doneLatch.countDown();
-                }
-                lastHeartbeatByRun.remove(runId);
-                finishRun(runId);
-                cleanupQuiet(finalArgs, finalInput);
-            });
-
-            if (!doneLatch.await(jobTimeoutMs, TimeUnit.MILLISECONDS)) {
-                stop(runId, label + " timeout after " + jobTimeoutMs + "ms");
-                return ReasoningLearningExecutor.LearningResult.failure(
-                        label + " subprocess timed out after " + jobTimeoutMs + "ms");
-            }
-            return resultRef.get() != null ? resultRef.get()
-                    : ReasoningLearningExecutor.LearningResult.failure("No result from subprocess");
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            cleanupQuiet(argsFile, inputFile);
-            return ReasoningLearningExecutor.LearningResult.failure("Interrupted: " + ie.getMessage());
+            watchedRuns.put(runId, outcome);
+            run = startProcess(runId, crawlJobId, List.of(argsFile.toString()),
+                    payload -> handleReasoningMessage(payload, runId, crawlJobId, label, callback, outcome));
         } catch (Exception e) {
-            log.error("Failed to run {} subprocess", label, e);
+            watchedRuns.remove(runId, outcome);
+            log.error("Failed to launch {} subprocess", label, e);
             cleanupQuiet(argsFile, inputFile);
-            return ReasoningLearningExecutor.LearningResult.failure("Error: " + e.getMessage());
+            return ReasoningLearningExecutor.LearningResult.failure("Launch error: " + e.getMessage());
         }
+
+        run.process().onExit().thenRun(() -> {
+            settleExitedRun(run, outcome);
+            cleanupQuiet(argsFile, inputFile);
+        });
+        return awaitOutcome(runId, outcome);
+    }
+
+    /**
+     * Judge an exited child once its output has been read: a completion or failure it reported
+     * stands, and otherwise its exit code is the verdict.
+     */
+    private void settleExitedRun(ManagedRun run, RunOutcome<?> outcome) {
+        if (!awaitOutputDrained(run, OUTPUT_DRAIN_TIMEOUT_MS)) {
+            log.warn("[{} {}] subprocess output was still being read {} ms after it exited; "
+                    + "judging the exit without it", outcome.label, run.runId(), OUTPUT_DRAIN_TIMEOUT_MS);
+        }
+        outcome.fail(exitReason(run.process()));
+        watchedRuns.remove(run.runId(), outcome);
+        finishRun(run.runId());
+    }
+
+    private static String exitReason(Process process) {
+        int code = process.exitValue();
+        // The child runs with -XX:+ExitOnOutOfMemoryError, which exits with 3 when its heap runs out
+        return code == 3 ? "ran out of memory (exit code 3)"
+                : "exited with code " + code + " without a completion message";
+    }
+
+    /** Wait for a run's verdict; a run that times out, or whose caller is interrupted, is stopped. */
+    private <T> T awaitOutcome(String runId, RunOutcome<T> outcome) {
+        try {
+            if (!outcome.decided.await(jobTimeoutMs, TimeUnit.MILLISECONDS)
+                    && outcome.fail("timed out after " + jobTimeoutMs + "ms")) {
+                stop(runId, "timeout after " + jobTimeoutMs + "ms");
+            }
+        } catch (InterruptedException ie) {
+            if (outcome.fail("wait was interrupted")) {
+                // Restore the interrupt only after stopping: with it set, stop would skip the child's graceful exit
+                stop(runId, "caller interrupted");
+            }
+            Thread.currentThread().interrupt();
+        }
+        return outcome.verdict.get();
     }
 
     // ── structured-message handlers ───────────────────────────────────────────
 
     private void handleKgeMessage(String json, String runId, String crawlJobId, Path outputFile,
-                                  AtomicReference<KgeTrainingResult> resultRef, AtomicBoolean completedReceived,
-                                  CountDownLatch doneLatch,
-                                  AtomicLong hb, KgeTrainingExecutor.ProgressCallback callback) {
+                                  RunOutcome<KgeTrainingResult> outcome,
+                                  KgeTrainingExecutor.ProgressCallback callback) {
         try {
             LearningSubprocessMessage msg = objectMapper.readValue(json, LearningSubprocessMessage.class);
             if (msg instanceof Heartbeat h) {
-                hb.set(h.timestampMs());
+                outcome.lastHeartbeatMs.set(h.timestampMs());
             } else if (msg instanceof Progress p) {
+                if (outcome.verdict.get() != null) {
+                    return; // the run is decided (timed out, stalled) and its child is being stopped
+                }
                 log.info("[KGE {}] epoch {}/{} loss={}", runId, p.epoch(), p.totalEpochs(),
                         String.format("%.4f", p.loss()));
                 if (callback != null && crawlJobId != null) {
@@ -588,15 +600,16 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
                     catch (Exception ex) { log.debug("[KGE {}] callback error: {}", runId, ex.getMessage()); }
                 }
             } else if (msg instanceof Completed c) {
-                log.info("[KGE {}] Completed: loss={}, entities={}, relations={}, output={}",
-                        runId, c.finalLoss(), c.entities(), c.relations(), outputFile);
-                completedReceived.set(true);
-                resultRef.set(KgeTrainingResult.success(outputFile, c.entities(), c.relations(), c.finalLoss()));
-                doneLatch.countDown();
+                if (outcome.decide(KgeTrainingResult.success(outputFile, c.entities(), c.relations(), c.finalLoss()))) {
+                    log.info("[KGE {}] Completed: loss={}, entities={}, relations={}, output={}",
+                            runId, c.finalLoss(), c.entities(), c.relations(), outputFile);
+                } else {
+                    log.info("[KGE {}] Completed after the run was decided; result discarded", runId);
+                }
             } else if (msg instanceof Failed f) {
-                log.warn("[KGE {}] Failed: {}", runId, f.reason());
-                resultRef.set(KgeTrainingResult.failure(f.reason()));
-                doneLatch.countDown();
+                if (outcome.decide(KgeTrainingResult.failure(f.reason()))) {
+                    log.warn("[KGE {}] Failed: {}", runId, f.reason());
+                }
             }
         } catch (Exception e) {
             log.debug("[KGE {}] cannot parse '{}': {}", runId, json, e.getMessage());
@@ -605,13 +618,15 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
 
     private void handleReasoningMessage(String json, String runId, String crawlJobId, String label,
                                         ReasoningLearningExecutor.ProgressCallback callback,
-                                        AtomicReference<ReasoningLearningExecutor.LearningResult> resultRef,
-                                        CountDownLatch doneLatch, AtomicLong hb) {
+                                        RunOutcome<ReasoningLearningExecutor.LearningResult> outcome) {
         try {
             LearningSubprocessMessage msg = objectMapper.readValue(json, LearningSubprocessMessage.class);
             if (msg instanceof Heartbeat h) {
-                hb.set(h.timestampMs());
+                outcome.lastHeartbeatMs.set(h.timestampMs());
             } else if (msg instanceof Progress p) {
+                if (outcome.verdict.get() != null) {
+                    return; // the run is decided (timed out, stalled) and its child is being stopped
+                }
                 log.info("[{} {}] epoch {}/{} loss={}", label, runId, p.epoch(), p.totalEpochs(),
                         String.format("%.4f", p.loss()));
                 if (callback != null && crawlJobId != null) {
@@ -619,13 +634,15 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
                     catch (Exception ex) { log.debug("[{} {}] callback error: {}", label, runId, ex.getMessage()); }
                 }
             } else if (msg instanceof Completed c) {
-                log.info("[{} {}] Completed: loss={}", label, runId, c.finalLoss());
-                resultRef.set(ReasoningLearningExecutor.LearningResult.success(c.finalLoss(), c.entities()));
-                doneLatch.countDown();
+                if (outcome.decide(ReasoningLearningExecutor.LearningResult.success(c.finalLoss(), c.entities()))) {
+                    log.info("[{} {}] Completed: loss={}", label, runId, c.finalLoss());
+                } else {
+                    log.info("[{} {}] Completed after the run was decided; result discarded", label, runId);
+                }
             } else if (msg instanceof Failed f) {
-                log.warn("[{} {}] Failed: {}", label, runId, f.reason());
-                resultRef.set(ReasoningLearningExecutor.LearningResult.failure(f.reason()));
-                doneLatch.countDown();
+                if (outcome.decide(ReasoningLearningExecutor.LearningResult.failure(f.reason()))) {
+                    log.warn("[{} {}] Failed: {}", label, runId, f.reason());
+                }
             }
         } catch (Exception e) {
             log.debug("[{} {}] cannot parse '{}': {}", label, runId, json, e.getMessage());
@@ -637,12 +654,29 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
     @Scheduled(fixedDelayString = "${kompile.learning.subprocess.stale-check-ms:30000}")
     public void checkForStaleProcesses() {
         long now = System.currentTimeMillis();
-        for (Map.Entry<String, AtomicLong> e : lastHeartbeatByRun.entrySet()) {
-            if (now - e.getValue().get() > staleTimeoutMs) {
-                log.warn("Learning run {} stale (no heartbeat for {}ms) — stopping", e.getKey(), staleTimeoutMs);
+        for (Map.Entry<String, RunOutcome<?>> e : watchedRuns.entrySet()) {
+            RunOutcome<?> outcome = e.getValue();
+            long silentMs = now - outcome.lastHeartbeatMs.get();
+            // Removing the watch first makes this the only check that acts on the run
+            if (silentMs > staleTimeoutMs && watchedRuns.remove(e.getKey(), outcome)) {
+                log.warn("Learning run {} stale (no heartbeat for {}ms) — stopping", e.getKey(), silentMs);
+                outcome.fail("stalled (no heartbeat for " + silentMs + "ms)");
                 stop(e.getKey(), "stale (no heartbeat)");
             }
         }
+    }
+
+    /**
+     * A learning run is one job, so restarting it means stopping it. Like a stall, its verdict
+     * names the reason before the child is stopped; the child's exit code would not.
+     */
+    @Override
+    protected void restartRun(String runId, String reason) {
+        RunOutcome<?> outcome = watchedRuns.remove(runId);
+        if (outcome != null) {
+            outcome.fail("stopped: " + reason);
+        }
+        super.restartRun(runId, reason);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -654,11 +688,72 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
         };
     }
 
+    /**
+     * Stream prior vectors to {@code file} in the shape the child reads back,
+     * {@code {"entities":{id:[floats]},"relations":{type:[floats]}}}.
+     */
+    private void writeWarmStart(Path file, Map<String, INDArray> entities,
+                                Map<String, INDArray> relations) throws IOException {
+        try (JsonGenerator json = objectMapper.getFactory().createGenerator(file.toFile(), JsonEncoding.UTF8)) {
+            json.writeStartObject();
+            writeVectors(json, "entities", entities);
+            writeVectors(json, "relations", relations);
+            json.writeEndObject();
+        }
+    }
+
+    private static void writeVectors(JsonGenerator json, String field, Map<String, INDArray> vectors)
+            throws IOException {
+        json.writeObjectFieldStart(field);
+        for (Map.Entry<String, INDArray> e : vectors.entrySet()) {
+            INDArray vector = e.getValue();
+            if (vector == null) {
+                continue;
+            }
+            // One bulk host read per vector; a view's buffer holds more than the view, so copy it out first
+            INDArray owned = vector.isView() || vector.offset() != 0 || vector.data().length() != vector.length()
+                    ? vector.dup() : vector;
+            json.writeFieldName(e.getKey());
+            json.writeStartArray();
+            for (float value : owned.data().asFloat()) {
+                json.writeNumber(value);
+            }
+            json.writeEndArray();
+        }
+        json.writeEndObject();
+    }
+
     private static void cleanupQuiet(Path... files) {
         for (Path f : files) {
             if (f != null) {
                 try { Files.deleteIfExists(f); } catch (IOException ignored) { }
             }
+        }
+    }
+
+    /** One run's outcome: the first one recorded wins and is the only one reported. */
+    private static final class RunOutcome<T> {
+        final String label;
+        final Function<String, T> failure;
+        final AtomicReference<T> verdict = new AtomicReference<>();
+        final CountDownLatch decided = new CountDownLatch(1);
+        final AtomicLong lastHeartbeatMs = new AtomicLong(System.currentTimeMillis());
+
+        RunOutcome(String label, Function<String, T> failure) {
+            this.label = label;
+            this.failure = failure;
+        }
+
+        boolean decide(T outcome) {
+            if (verdict.compareAndSet(null, outcome)) {
+                decided.countDown();
+                return true;
+            }
+            return false;
+        }
+
+        boolean fail(String what) {
+            return decide(failure.apply(label + " subprocess " + what));
         }
     }
 }

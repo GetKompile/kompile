@@ -26,7 +26,6 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlRequest.PartitionStrategy;
 import ai.kompile.core.crawl.graph.UnifiedCrawlSource;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -68,7 +67,7 @@ class DistributedCrawlFailureReassignTest {
         DistributedCrawlCoordinator c = new DistributedCrawlCoordinator(List.of(d), cfg, mapper());
         CrawlWorkerRegistry reg = mock(CrawlWorkerRegistry.class);
         when(reg.liveWorkers(anyLong())).thenReturn(List.of(liveWorker("w2")));
-        ReflectionTestUtils.setField(c, "workerRegistry", reg);
+        c.workerRegistry = reg;
         return c;
     }
 

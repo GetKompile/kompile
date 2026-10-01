@@ -34,7 +34,7 @@ public class GraphStorageRegistry {
     private final Map<String, GraphStorageStrategy> strategyMap = new HashMap<>();
 
     @Value("${kompile.graph-builder.storage:matrix}")
-    private String defaultStorageType;
+    String defaultStorageType;
 
     public GraphStorageRegistry(List<GraphStorageStrategy> strategies) {
         this.strategies = strategies;

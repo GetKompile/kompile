@@ -150,7 +150,7 @@ public class StdioPostFeedbackTool {
         judgeModes.add("auto-server");
         judgeMode.put("description", "Optional judge backend mode override.");
         props.putObject("judge_provider").put("type", "string")
-                .put("description", "Optional judge provider override, e.g. anthropic, openai, ollama.");
+                .put("description", "Optional judge provider override, e.g. anthropic, openai, gemini.");
         props.putObject("judge_model").put("type", "string")
                 .put("description", "Optional judge model override.");
         props.putObject("judge_api_key").put("type", "string")

@@ -293,7 +293,7 @@ public class SessionLifecycleManager {
         if (localMode && chatConfig != null) {
             body.append("  Provider:  ").append(chatConfig.getProvider()).append("/").append(chatConfig.getModel()).append("\n");
         }
-        body.append("  Agent:     ").append(repl.getAgentName());
+        body.append("  Agent:     ").append(localMode ? repl.getLocalAgentName() : repl.getAgentName());
         if (localMode) body.append(" (local)");
         body.append("\n");
         body.append("  RAG:       ").append(repl.isRagEnabled() ? "enabled" : "disabled").append("\n");

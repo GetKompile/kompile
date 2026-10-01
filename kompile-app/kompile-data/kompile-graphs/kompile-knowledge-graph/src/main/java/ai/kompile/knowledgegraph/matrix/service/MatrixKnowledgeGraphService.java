@@ -925,14 +925,35 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService, Bound
                 .map(n -> convertToGraphNode(n, externalId));
     }
 
+    /**
+     * Nodes whose id, external id or title equals the query (ignoring case) come first, then the
+     * nodes whose title or description contains it. Without the exact tier, a capped substring
+     * search returns whichever containing nodes the scan meets first and can miss the node the
+     * caller named ("Acme" vs. "Acme Holdings", "Acme Labs", ...).
+     */
     @Override
     public List<GraphNode> searchNodesInFactSheet(Long factSheetId, String query, int limit) {
+        if (factSheetId == null || limit <= 0) return List.of();
+        String exactQuery = query != null ? query.trim() : "";
         String lowerQuery = query != null ? query.toLowerCase() : "";
-        return graphStore.getAllNodes(graphIdForFactSheet(factSheetId)).stream()
-                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
-                .filter(n -> isUserNodeType(n.getNodeType()))
-                .filter(n -> (n.getTitle() != null && n.getTitle().toLowerCase().contains(lowerQuery))
-                        || (n.getDescription() != null && n.getDescription().toLowerCase().contains(lowerQuery)))
+        List<MatrixGraphNode> exact = new ArrayList<>();
+        List<MatrixGraphNode> partial = new ArrayList<>();
+        for (MatrixGraphNode n : graphStore.getAllNodes(graphIdForFactSheet(factSheetId))) {
+            if (!factSheetId.equals(n.getFactSheetId()) || !isUserNodeType(n.getNodeType())) continue;
+            String nodeId = n.getNodeId();
+            if (!exactQuery.isEmpty() && nodeId != null && (exactQuery.equalsIgnoreCase(nodeId)
+                    || exactQuery.equalsIgnoreCase(extractExternalId(nodeId))
+                    || exactQuery.equalsIgnoreCase(n.getTitle() != null ? n.getTitle().trim() : null))) {
+                exact.add(n);
+                if (exact.size() >= limit) break;
+            } else if (partial.size() < limit
+                    && ((n.getTitle() != null && n.getTitle().toLowerCase().contains(lowerQuery))
+                    || (n.getDescription() != null && n.getDescription().toLowerCase().contains(lowerQuery)))) {
+                partial.add(n);
+            }
+        }
+        exact.addAll(partial);
+        return exact.stream()
                 .limit(limit)
                 .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
                 .collect(Collectors.toList());

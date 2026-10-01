@@ -10,6 +10,7 @@
 package ai.kompile.event.attribution.algorithm;
 
 import ai.kompile.graph.reasoning.domain.*;
+import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -343,8 +344,8 @@ public class CausalTraversal {
     }
 
     /**
-     * Compute the causal strength of a single hop based on edge weight,
-     * causal type, and confidence.
+     * Compute the causal strength of a single hop: {@link GraphRelation#strength(double, double)
+     * min(weight, confidence)} scaled by the causal type.
      */
     public static double computeHopStrength(GraphEdge edge, CausalEdgeType causalType) {
         double baseWeight = edge.getWeight() != null ? edge.getWeight() : 0.5;
@@ -362,7 +363,7 @@ public class CausalTraversal {
             case CORRELATES_WITH -> 0.3;
         };
 
-        return Math.min(1.0, baseWeight * confidence * typeMultiplier);
+        return GraphRelation.strength(baseWeight, confidence) * typeMultiplier;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

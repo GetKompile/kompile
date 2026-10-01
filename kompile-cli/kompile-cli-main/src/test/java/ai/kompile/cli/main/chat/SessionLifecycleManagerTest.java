@@ -26,13 +26,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SessionLifecycleManagerTest {
@@ -179,6 +183,60 @@ class SessionLifecycleManagerTest {
             if (client != null) client.close();
             ChatCompleter.setActivity(null);
         }
+    }
+
+    @Test
+    void localModeSummaryNamesTheChatsAgentInsteadOfNull() throws Exception {
+        String sessionId = "local-agent-summary-test";
+        Path project = tempDir.resolve("agent-summary-project").toAbsolutePath().normalize();
+        Files.createDirectories(project);
+        ChatHistory history = new ChatHistory(sessionId);
+        history.open("(local)", "kompile", false, project);
+        ChatConfig config = new ChatConfig(
+                "custom", null, "agent-summary-test", "http://unused.invalid");
+        ChatRepl repl = new ChatRepl(
+                null, null, sessionId, false, "kompile", false, config, project);
+        try {
+            // Simulates /role, the role wizard, or the role_manager tool activating a role:
+            // the chat's local agent name changes. The summary must follow it — not the
+            // separate server-mode "agentName" field, which never moves off its unrelated
+            // startup value here (see R2). Before the fix, printSessionSummary always read
+            // getAgentName(), so it would keep showing that stale value after this switch.
+            String staleServerField = repl.getAgentName();
+            repl.setLocalAgentName("marker-role");
+            assertEquals(staleServerField, repl.getAgentName(),
+                    "setLocalAgentName must not touch the separate server-mode field");
+
+            TerminalRenderer renderer = new TerminalRenderer(false);
+            SessionLifecycleManager manager = new SessionLifecycleManager(
+                    repl, sessionId, true, history, new ChatSessionMetrics(sessionId),
+                    renderer, new AsciiRenderer(renderer), null, null, null);
+
+            String summary = printed(manager::printSessionSummary);
+
+            assertTrue(summary.contains("Agent:     marker-role (local)"), summary);
+            assertFalse(summary.contains("Agent:     null"), summary);
+            assertFalse(summary.contains("Agent:     " + staleServerField + "\n"), summary);
+        } finally {
+            history.close();
+            field(repl, "processManager", BackgroundProcessManager.class).close();
+            DirectLlmClient client = field(repl, "directClient", DirectLlmClient.class);
+            if (client != null) client.close();
+            ChatCompleter.setActivity(null);
+        }
+    }
+
+    /** What {@code action} printed to {@code System.out} while it ran. */
+    private static String printed(Runnable action) {
+        PrintStream original = System.out;
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(buffer, true, StandardCharsets.UTF_8));
+        try {
+            action.run();
+        } finally {
+            System.setOut(original);
+        }
+        return buffer.toString(StandardCharsets.UTF_8);
     }
 
     private static <T> T field(Object target, String name, Class<T> type) throws Exception {

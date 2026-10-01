@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ReasoningTraceJsonCodecTest {
@@ -36,5 +37,18 @@ class ReasoningTraceJsonCodecTest {
                 json.replace("\"premiseIds\":[]", "\"premiseIds\":[\"s0\"]"), "s1"));
         assertThrows(IllegalArgumentException.class, () -> ReasoningTraceJsonCodec.decode(
                 json.replace("\"confidence\":1.0", "\"confidence\":\"NaN\""), "s1"));
+    }
+
+    @Test
+    void aNaNStepConfidenceReadsAsNoSupportSoBothJsonFormsStayValid() {
+        ReasoningTrace trace = ReasoningTrace.of(ReasoningTrace.Step.derived(
+                ReasoningTrace.StepKind.FUSION, "result", "fuse", Double.NaN,
+                ReasoningTrace.Step.fact("observed", Double.NaN, "source")));
+
+        assertEquals(0.0, trace.conclusion().confidence());
+        assertFalse(trace.toJson().contains("NaN"), "bare NaN is not JSON: " + trace.toJson());
+        String json = ReasoningTraceJsonCodec.encode("process-trace:s1", "s1", trace);
+        assertEquals(trace.steps(), ReasoningTraceJsonCodec.decode(json, "s1").steps());
+        assertThrows(IllegalArgumentException.class, () -> ReasoningTrace.Step.fact("x", 1.5, "source"));
     }
 }

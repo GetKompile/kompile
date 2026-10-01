@@ -330,8 +330,10 @@ class EmbeddingManagedServiceAdapterTest {
             when(gpuResourceManager.reserve(DeviceRoutingConfig.SERVICE_EMBEDDING, GPU_4090, 5L * ONE_GB))
                     .thenThrow(new IllegalStateException("Not enough memory"));
 
-            // Should not throw — logs a warning instead
+            // Should not throw — the loaded model's memory is still recorded, over-committing the device
             assertDoesNotThrow(() -> adapter.register());
+            verify(gpuResourceManager).reserveOverCommit(DeviceRoutingConfig.SERVICE_EMBEDDING,
+                    DeviceRoutingConfig.SERVICE_EMBEDDING, GPU_4090, 5L * ONE_GB);
         }
     }
 }

@@ -336,6 +336,26 @@ class ProcessingCapacityTrackerImplTest {
     }
 
     @Test
+    void testCanAcceptOverCommittedDeviceDoesNotHideOtherDevices() {
+        GpuDevice gpu4090 = GpuDevice.local(0, 1, "RTX 4090", 24_000_000_000L);
+        GpuDevice gpu3070 = GpuDevice.local(1, 0, "RTX 3070 Ti", 8_000_000_000L);
+        when(gpuResourceManager.getDevices()).thenReturn(List.of(gpu4090, gpu3070));
+        when(gpuResourceManager.getAvailableMemory(gpu4090)).thenReturn(20_000_000_000L);
+        // The 3070 Ti holds an over-commit row: 4GB more reserved than it has
+        when(gpuResourceManager.getAvailableMemory(gpu3070)).thenReturn(-4_000_000_000L);
+
+        ProcessingBackend backend = ProcessingBackend.builder()
+                .id("local-vlm")
+                .type(ProcessingBackendType.LOCAL_MODEL)
+                .maxMemoryBytes(18_000_000_000L)
+                .enabled(true)
+                .build();
+
+        // The 4090's 20GB covers the 18GB; the 3070 Ti contributes 0, not -4GB
+        assertTrue(tracker.canAccept(backend, "vlm"));
+    }
+
+    @Test
     void testCanAcceptNoGpuCheckForNonLocalModel() {
         ProcessingBackend backend = ProcessingBackend.builder()
                 .id("api-backend")
@@ -445,6 +465,29 @@ class ProcessingCapacityTrackerImplTest {
         CapacitySnapshot snapshot = snapshots.get(0);
         assertEquals(24_000_000_000L, snapshot.getGpuMemoryTotal());
         assertEquals(8_000_000_000L, snapshot.getGpuMemoryUsed()); // 24G - 16G available
+    }
+
+    @Test
+    void testGetCapacitySnapshotOverCommittedDeviceReportsFullNotMoreThanTotal() {
+        GpuDevice device = GpuDevice.local(1, 0, "RTX 3070 Ti", 8_000_000_000L);
+        when(gpuResourceManager.getDevices()).thenReturn(List.of(device));
+        // Over-committed: 10GB reserved on an 8GB device
+        when(gpuResourceManager.getAvailableMemory(device)).thenReturn(-2_000_000_000L);
+
+        ProcessingBackend backend = ProcessingBackend.builder()
+                .id("local-vlm")
+                .type(ProcessingBackendType.LOCAL_MODEL)
+                .maxConcurrent(2)
+                .enabled(true)
+                .build();
+
+        ProcessingRouteConfig config = ProcessingRouteConfig.builder()
+                .backends(List.of(backend))
+                .build();
+
+        CapacitySnapshot snapshot = tracker.getCapacitySnapshot(config).get(0);
+        assertEquals(8_000_000_000L, snapshot.getGpuMemoryTotal());
+        assertEquals(8_000_000_000L, snapshot.getGpuMemoryUsed());
     }
 
     @Test

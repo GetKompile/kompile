@@ -299,15 +299,21 @@ public class GmailMessageParser {
 
         for (JsonNode part : parts) {
             String partMime = part.has("mimeType") ? part.get("mimeType").asText() : "";
+            String partFilename = part.has("filename") ? part.get("filename").asText() : "";
+            // A text/plain or text/html part that also carries a filename is an attachment, not
+            // body content — without this check an attachment could silently overwrite the real
+            // body depending on part ordering (the null-guards below add the same protection for
+            // parts that are legitimately body content but appear more than once).
+            boolean isAttachment = !partFilename.isBlank();
 
-            if ("text/plain".equals(partMime)) {
+            if (!isAttachment && "text/plain".equals(partMime)) {
                 JsonNode body = part.get("body");
-                if (body != null && body.has("data")) {
+                if (body != null && body.has("data") && plainText == null) {
                     plainText = decodeBase64Url(body.get("data").asText());
                 }
-            } else if ("text/html".equals(partMime)) {
+            } else if (!isAttachment && "text/html".equals(partMime)) {
                 JsonNode body = part.get("body");
-                if (body != null && body.has("data")) {
+                if (body != null && body.has("data") && htmlText == null) {
                     htmlText = decodeBase64Url(body.get("data").asText());
                 }
             } else if (partMime.startsWith("multipart/")) {
@@ -352,6 +358,19 @@ public class GmailMessageParser {
                     if (body.has("attachmentId")) {
                         att.put("attachmentId", body.get("attachmentId").asText());
                     }
+                    // Small attachments can arrive with the data inlined directly on the part
+                    // instead of behind an attachmentId — capture it so callers can decode it
+                    // without an extra attachments.get round trip.
+                    if (body.has("data") && !body.has("attachmentId")) {
+                        att.put("inlineData", body.get("data").asText());
+                    }
+                }
+                // A named part can still be an inline-rendered image (e.g. a signature logo)
+                // when it carries a Content-ID — capture it so C4 attachmentDirectory mode can
+                // skip saving it, matching every other loader's "skip inline CID images" rule.
+                String contentId = getHeaderValue(part, "Content-ID");
+                if (contentId != null && !contentId.isBlank()) {
+                    att.put("contentId", contentId.replaceAll("^<|>$", "").trim());
                 }
                 attachments.add(att);
             }

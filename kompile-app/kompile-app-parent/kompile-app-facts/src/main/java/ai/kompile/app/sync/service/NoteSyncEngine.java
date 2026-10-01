@@ -55,25 +55,25 @@ public class NoteSyncEngine {
     private static final Logger log = LoggerFactory.getLogger(NoteSyncEngine.class);
 
     @Autowired
-    private NoteRepository noteRepository;
+    NoteRepository noteRepository;
 
     @Autowired
-    private NoteService noteService;
+    NoteService noteService;
 
     @Autowired
-    private NoteSyncRecordRepository syncRecordRepository;
+    NoteSyncRecordRepository syncRecordRepository;
 
     @Autowired
-    private NoteSyncConnectionRepository connectionRepository;
+    NoteSyncConnectionRepository connectionRepository;
 
     @Autowired(required = false)
-    private List<SyncAdapter> adapters;
+    List<SyncAdapter> adapters;
 
     @Autowired
-    private NoteSyncProgressTracker progressTracker;
+    NoteSyncProgressTracker progressTracker;
 
     @Autowired(required = false)
-    private ApplicationEventPublisher eventPublisher;
+    ApplicationEventPublisher eventPublisher;
 
     /**
      * Run a full sync cycle for a given connection.

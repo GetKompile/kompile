@@ -97,8 +97,12 @@ public class DiffPolicyService {
 
     @Autowired
     public DiffPolicyService(@Autowired(required = false) DiffIndexService diffIndexService) {
+        this(diffIndexService, Paths.get(System.getProperty("user.home"), ".kompile", "agent-state", "diff-policy"));
+    }
+
+    DiffPolicyService(DiffIndexService diffIndexService, Path policyDir) {
         this.diffIndexService = diffIndexService;
-        this.policyDir = Paths.get(System.getProperty("user.home"), ".kompile", "agent-state", "diff-policy");
+        this.policyDir = policyDir;
     }
 
     /** Test seam for injecting (or clearing) the optional LLM detector backend. */

@@ -29,7 +29,7 @@ import java.util.Map;
  * <p>The concrete implementation ({@link ai.kompile.app.services.subprocess.LearningSubprocessLauncher})
  * lives in {@code kompile-app-main} and is wired by the app-main Spring context via
  * {@code @Autowired(required = false)} in {@code IncrementalReasoningOrchestrator}. When absent
- * the in-JVM path is used unchanged.</p>
+ * (a process without the learning launcher) the orchestrator trains in-JVM.</p>
  *
  * <h3>Contract</h3>
  * <ol>
@@ -42,8 +42,9 @@ import java.util.Map;
  *   <li>MEBN: the subprocess writes updated edge strengths to {@code mebnWeightsOutputPath}
  *       (the {@code mebn-weights.json} path). The caller re-applies via
  *       {@code MebnWeightPersistenceAdapter.load()} after return.</li>
- *   <li>If learning fails, {@link LearningResult#success()} is {@code false} and the caller
- *       falls through to the existing in-JVM path unchanged.</li>
+ *   <li>If learning fails, {@link LearningResult#success()} is {@code false}. The caller reports
+ *       the step as failed and keeps the current weights; it does not retry in-JVM, so ND4J never
+ *       runs in the caller's JVM.</li>
  * </ol>
  *
  * <h3>Memory isolation</h3>

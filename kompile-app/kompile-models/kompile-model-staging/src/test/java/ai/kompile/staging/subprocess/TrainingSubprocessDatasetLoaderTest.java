@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.subprocess;
 
+import ai.kompile.staging.subprocess.TrainingSubprocessMain.TrainingSample;
 import ai.kompile.staging.training.TranscriptJsonlDatasetSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -26,7 +27,6 @@ import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -51,13 +51,12 @@ class TrainingSubprocessDatasetLoaderTest {
                 "{\"input\":\"Explain SameDiff arrays\",\"output\":\"Use INDArray tensors\",\"score\":0.75}\n" +
                 "{\"prompt\":\"Train LoRA\",\"response\":\"Upload a dataset first\"}\n");
 
-        Object dataset = resolveAndLoadDataset(data.toString());
-        List<?> samples = samples(dataset);
+        List<TrainingSample> samples = loadSamples(data.toString());
 
         assertEquals(2, samples.size());
-        assertEquals("Explain SameDiff arrays", sampleValue(samples.get(0), "inputValue"));
-        assertEquals("Use INDArray tensors", sampleValue(samples.get(0), "labelValue"));
-        assertEquals(0.75, ((Number) sampleValue(samples.get(0), "scoreValue")).doubleValue(), 1e-9);
+        assertEquals("Explain SameDiff arrays", samples.get(0).inputValue());
+        assertEquals("Use INDArray tensors", samples.get(0).labelValue());
+        assertEquals(0.75, ((Number) samples.get(0).scoreValue()).doubleValue(), 1e-9);
     }
 
     @Test
@@ -66,26 +65,22 @@ class TrainingSubprocessDatasetLoaderTest {
         Files.writeString(data,
                 "{\"input_ids\":[11,12,13],\"attention_mask\":[1,1,1],\"labels\":[21,-100,23]}\n");
 
-        Object dataset = resolveAndLoadDataset(data.toString());
-        List<?> samples = samples(dataset);
-        Object sample = samples.get(0);
-        Map<?, ?> fields = (Map<?, ?>) sampleValue(sample, "fields");
+        List<TrainingSample> samples = loadSamples(data.toString());
+        TrainingSample sample = samples.get(0);
+        Map<String, Object> fields = sample.fields();
 
         assertEquals(List.of(11, 12, 13), fields.get("input_ids"));
         assertEquals(List.of(1, 1, 1), fields.get("attention_mask"));
         assertEquals(List.of(21, -100, 23), fields.get("labels"));
-        assertEquals(List.of(21, -100, 23), sampleValue(sample, "labelValue"));
+        assertEquals(List.of(21, -100, 23), sample.labelValue());
 
-        Method fillArray = TrainingSubprocessMain.class.getDeclaredMethod(
-                "fillArray", INDArray.class, String.class, List.class, boolean.class);
-        fillArray.setAccessible(true);
         INDArray inputIds = Nd4j.zeros(DataType.INT64, 1, 5);
         INDArray attentionMask = Nd4j.zeros(DataType.INT64, 1, 5);
         INDArray labels = Nd4j.zeros(DataType.INT64, 1, 3);
         try {
-            fillArray.invoke(null, inputIds, "serving_default_input_ids:0", samples, true);
-            fillArray.invoke(null, attentionMask, "attention_mask", samples, true);
-            fillArray.invoke(null, labels, "training_labels", samples, false);
+            TrainingSubprocessMain.fillArray(inputIds, "serving_default_input_ids:0", samples, true);
+            TrainingSubprocessMain.fillArray(attentionMask, "attention_mask", samples, true);
+            TrainingSubprocessMain.fillArray(labels, "training_labels", samples, false);
             assertEquals(11L, inputIds.getLong(0, 0));
             assertEquals(12L, inputIds.getLong(0, 1));
             assertEquals(13L, inputIds.getLong(0, 2));
@@ -125,14 +120,8 @@ class TrainingSubprocessDatasetLoaderTest {
                     .mmul(student.var("student_weight", Nd4j.ones(DataType.FLOAT, 3, 4)))
                     .rename("student_logits");
 
-            Method validate = TrainingSubprocessMain.class.getDeclaredMethod(
-                    "validateDistillationCompatibility",
-                    SameDiff.class, SameDiff.class, TrainingSubprocessArgs.class,
-                    List.class, List.class, String.class, String.class,
-                    TrainingSubprocessProgressReporter.class);
-            validate.setAccessible(true);
-            long[] shape = (long[]) validate.invoke(
-                    null, teacher, student, args,
+            long[] shape = TrainingSubprocessMain.validateDistillationCompatibility(
+                    teacher, student, args,
                     List.of("teacher_features"), List.of("student_features"),
                     "teacher_logits", "student_logits",
                     mock(TrainingSubprocessProgressReporter.class));
@@ -152,7 +141,7 @@ class TrainingSubprocessDatasetLoaderTest {
                 "dropout", 0.1,
                 "targetModules", List.of("q_proj", "v_proj"),
                 "bias", "lora_only");
-        LoraConfig config = buildLoraConfig(Map.of("peftType", "LORA", "loraConfig", lora));
+        LoraConfig config = TrainingSubprocessMain.buildLoraConfig(Map.of("peftType", "LORA", "loraConfig", lora));
 
         assertEquals(4, config.getR());
         assertEquals(12, config.getLoraAlpha());
@@ -171,16 +160,13 @@ class TrainingSubprocessDatasetLoaderTest {
                         + "{\"instruction\":\"Summarize\",\"input\":\"SameDiff is a graph API\","
                         + "\"output\":\"SameDiff builds computation graphs.\"}\n");
 
-        Object dataset = resolveAndLoadDataset(data.toString());
-        List<?> samples = samples(dataset);
+        List<TrainingSample> samples = loadSamples(data.toString());
 
         assertEquals(2, samples.size());
-        assertEquals("System: Be concise\nUser: What is LoRA?\nAssistant:",
-                sampleValue(samples.get(0), "inputValue"));
-        assertEquals("A low-rank adapter.", sampleValue(samples.get(0), "labelValue"));
-        assertEquals("Summarize\n\nInput:\nSameDiff is a graph API",
-                sampleValue(samples.get(1), "inputValue"));
-        assertEquals("SameDiff builds computation graphs.", sampleValue(samples.get(1), "labelValue"));
+        assertEquals("System: Be concise\nUser: What is LoRA?\nAssistant:", samples.get(0).inputValue());
+        assertEquals("A low-rank adapter.", samples.get(0).labelValue());
+        assertEquals("Summarize\n\nInput:\nSameDiff is a graph API", samples.get(1).inputValue());
+        assertEquals("SameDiff builds computation graphs.", samples.get(1).labelValue());
     }
 
     @Test
@@ -188,7 +174,8 @@ class TrainingSubprocessDatasetLoaderTest {
         Path data = tempDir.resolve("broken.jsonl");
         Files.writeString(data, "{\"prompt\":\"valid\",\"completion\":\"row\"}\n{not-json}\n");
 
-        Exception error = assertThrows(Exception.class, () -> resolveAndLoadDataset(data.toString()));
+        Exception error = assertThrows(Exception.class,
+                () -> TrainingSubprocessMain.resolveAndLoadDataset(data.toString()));
         String messages = messageChain(error);
         assertTrue(messages.contains(data + ":2"), messages);
     }
@@ -209,13 +196,11 @@ class TrainingSubprocessDatasetLoaderTest {
                         "sessionId", "direct-session",
                         "message", Map.of("role", "assistant", "content", "Direct response"))));
 
-        Object dataset = resolveAndLoadDataset(data.toString());
-        List<?> loadedSamples = samples(dataset);
+        List<TrainingSample> loadedSamples = loadSamples(data.toString());
 
         assertEquals(1, loadedSamples.size());
-        assertEquals("User: Direct prompt\nAssistant:",
-                sampleValue(loadedSamples.get(0), "inputValue"));
-        assertEquals("Direct response", sampleValue(loadedSamples.get(0), "labelValue"));
+        assertEquals("User: Direct prompt\nAssistant:", loadedSamples.get(0).inputValue());
+        assertEquals("Direct response", loadedSamples.get(0).labelValue());
     }
 
     @Test
@@ -254,15 +239,13 @@ class TrainingSubprocessDatasetLoaderTest {
                     TranscriptJsonlDatasetSupport.CLAUDE_CODE_JSONL,
                     claudeData);
 
-            Object claudeDataset = resolveAndLoadDataset("claude-training");
-            List<?> claudeSamples = samples(claudeDataset);
+            List<TrainingSample> claudeSamples = loadSamples("claude-training");
             assertEquals(2, claudeSamples.size());
-            assertEquals("User: Inspect the loader\nAssistant:",
-                    sampleValue(claudeSamples.get(0), "inputValue"));
-            assertEquals("I will inspect it.", sampleValue(claudeSamples.get(0), "labelValue"));
-            assertTrue(String.valueOf(sampleValue(claudeSamples.get(1), "inputValue"))
+            assertEquals("User: Inspect the loader\nAssistant:", claudeSamples.get(0).inputValue());
+            assertEquals("I will inspect it.", claudeSamples.get(0).labelValue());
+            assertTrue(String.valueOf(claudeSamples.get(1).inputValue())
                     .contains("Tool: [tool-result] loader source"));
-            assertEquals("The loader is fixed.", sampleValue(claudeSamples.get(1), "labelValue"));
+            assertEquals("The loader is fixed.", claudeSamples.get(1).labelValue());
 
             Path openCodeDir = tempDir.resolve(".kompile/datasets/opencode-training");
             Files.createDirectories(openCodeDir);
@@ -286,13 +269,10 @@ class TrainingSubprocessDatasetLoaderTest {
                     TranscriptJsonlDatasetSupport.OPENCODE_JSONL,
                     openCodeData);
 
-            Object openCodeDataset = resolveAndLoadDataset("opencode-training");
-            List<?> openCodeSamples = samples(openCodeDataset);
+            List<TrainingSample> openCodeSamples = loadSamples("opencode-training");
             assertEquals(1, openCodeSamples.size());
-            assertEquals("User: Run the focused tests\nAssistant:",
-                    sampleValue(openCodeSamples.get(0), "inputValue"));
-            assertEquals("[thinking] Use Maven.\nAll tests pass.",
-                    sampleValue(openCodeSamples.get(0), "labelValue"));
+            assertEquals("User: Run the focused tests\nAssistant:", openCodeSamples.get(0).inputValue());
+            assertEquals("[thinking] Use Maven.\nAll tests pass.", openCodeSamples.get(0).labelValue());
         } finally {
             System.setProperty("user.home", oldHome);
         }
@@ -321,15 +301,14 @@ class TrainingSubprocessDatasetLoaderTest {
                     "  \"rejectedColumn\": \"rejected\"\n" +
                     "}\n");
 
-            Object dataset = resolveAndLoadDataset("managed-ds");
-            List<?> samples = samples(dataset);
+            List<TrainingSample> samples = loadSamples("managed-ds");
 
             assertEquals(1, samples.size());
-            assertEquals("What is SDX?", sampleValue(samples.get(0), "inputValue"));
-            assertEquals("A runtime bundle", sampleValue(samples.get(0), "labelValue"));
-            assertEquals("Good answer", sampleValue(samples.get(0), "chosenValue"));
-            assertEquals("Bad answer", sampleValue(samples.get(0), "rejectedValue"));
-            assertNotNull(sampleValue(samples.get(0), "scoreValue"));
+            assertEquals("What is SDX?", samples.get(0).inputValue());
+            assertEquals("A runtime bundle", samples.get(0).labelValue());
+            assertEquals("Good answer", samples.get(0).chosenValue());
+            assertEquals("Bad answer", samples.get(0).rejectedValue());
+            assertNotNull(samples.get(0).scoreValue());
         } finally {
             System.setProperty("user.home", oldHome);
         }
@@ -363,7 +342,7 @@ class TrainingSubprocessDatasetLoaderTest {
                     .peftConfigJson("{\"peftType\":\"LORA\",\"rank\":8}")
                     .build();
 
-            Path manifest = writeTrainingArtifactManifest(args, "lora", outputDir.toString(),
+            Path manifest = TrainingSubprocessMain.writeTrainingArtifactManifest(args, "lora", outputDir.toString(),
                     "model.fb", Map.of("final_train_loss", 0.25), Map.<String, Object>of("rank", 8));
             Map<?, ?> json = new ObjectMapper().readValue(manifest.toFile(), Map.class);
             Map<?, ?> dataset = (Map<?, ?>) json.get("dataset");
@@ -406,23 +385,8 @@ class TrainingSubprocessDatasetLoaderTest {
                 .writeValue(datasetDir.resolve("meta.json").toFile(), meta);
     }
 
-    private static LoraConfig buildLoraConfig(Map<String, Object> config) throws Exception {
-        Method method = TrainingSubprocessMain.class.getDeclaredMethod("buildLoraConfig", Map.class);
-        method.setAccessible(true);
-        return (LoraConfig) method.invoke(null, config);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Path writeTrainingArtifactManifest(TrainingSubprocessArgs args,
-                                                      String processType,
-                                                      String outputPath,
-                                                      String modelFileName,
-                                                      Map<String, Double> finalMetrics,
-                                                      Map<String, Object> processConfig) throws Exception {
-        Method method = TrainingSubprocessMain.class.getDeclaredMethod("writeTrainingArtifactManifest",
-                TrainingSubprocessArgs.class, String.class, String.class, String.class, Map.class, Map.class);
-        method.setAccessible(true);
-        return (Path) method.invoke(null, args, processType, outputPath, modelFileName, finalMetrics, processConfig);
+    private static List<TrainingSample> loadSamples(String datasetId) {
+        return TrainingSubprocessMain.resolveAndLoadDataset(datasetId).samples();
     }
 
     private static String messageChain(Throwable error) {
@@ -436,24 +400,5 @@ class TrainingSubprocessDatasetLoaderTest {
             current = current.getCause();
         }
         return messages.toString();
-    }
-
-    private static Object resolveAndLoadDataset(String datasetId) throws Exception {
-        Method method = TrainingSubprocessMain.class.getDeclaredMethod("resolveAndLoadDataset", String.class);
-        method.setAccessible(true);
-        return method.invoke(null, datasetId);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<?> samples(Object dataset) throws Exception {
-        Method method = dataset.getClass().getDeclaredMethod("samples");
-        method.setAccessible(true);
-        return (List<?>) method.invoke(dataset);
-    }
-
-    private static Object sampleValue(Object sample, String accessor) throws Exception {
-        Method method = sample.getClass().getDeclaredMethod(accessor);
-        method.setAccessible(true);
-        return method.invoke(sample);
     }
 }

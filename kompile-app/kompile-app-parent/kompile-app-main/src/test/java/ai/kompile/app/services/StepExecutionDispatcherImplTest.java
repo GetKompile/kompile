@@ -42,7 +42,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestTemplate;
 
-import java.lang.reflect.Field;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -193,7 +192,7 @@ class StepExecutionDispatcherImplTest {
                 .build();
         when(mockExecutor.execute(any(ComputeNode.class), anyMap(), any(ExecutionContext.class)))
                 .thenReturn(successResult);
-        setPrivateField(dispatcher, "scriptingExecutor", mockExecutor);
+        dispatcher.scriptingExecutor = mockExecutor;
 
         Map<String, Object> result = dispatcher.executeScript("javascript", "return 42;", Map.of("x", 1));
 
@@ -209,7 +208,7 @@ class StepExecutionDispatcherImplTest {
                 .error("SyntaxError: unexpected token")
                 .build();
         when(mockExecutor.execute(any(), any(), any())).thenReturn(failResult);
-        setPrivateField(dispatcher, "scriptingExecutor", mockExecutor);
+        dispatcher.scriptingExecutor = mockExecutor;
 
         RuntimeException ex = assertThrows(RuntimeException.class,
                 () -> dispatcher.executeScript("javascript", "bad code", Map.of()));
@@ -295,7 +294,7 @@ class StepExecutionDispatcherImplTest {
     @Test
     void resolveExcelGraphJsonReturnsNullForNullInput() throws Exception {
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
-        setPrivateField(dispatcher, "knowledgeGraphService", kgService);
+        dispatcher.knowledgeGraphService = kgService;
 
         assertNull(dispatcher.resolveExcelGraphJson(null));
         assertNull(dispatcher.resolveExcelGraphJson(List.of()));
@@ -309,7 +308,7 @@ class StepExecutionDispatcherImplTest {
     @Test
     void resolveExcelGraphJsonFindsFormulaGraphInMetadata() throws Exception {
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
-        setPrivateField(dispatcher, "knowledgeGraphService", kgService);
+        dispatcher.knowledgeGraphService = kgService;
 
         String formulaJson = "{\"entities\":[],\"relationships\":[]}";
         String metaJson = objectMapper.writeValueAsString(Map.of("formulaGraph", formulaJson));
@@ -326,7 +325,7 @@ class StepExecutionDispatcherImplTest {
     @Test
     void resolveExcelGraphJsonReturnsNullWhenNodeNotFound() throws Exception {
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
-        setPrivateField(dispatcher, "knowledgeGraphService", kgService);
+        dispatcher.knowledgeGraphService = kgService;
         when(kgService.getNodesByIds(List.of("missing-node"))).thenReturn(List.of());
 
         assertNull(dispatcher.resolveExcelGraphJson(List.of("missing-node")));
@@ -338,8 +337,8 @@ class StepExecutionDispatcherImplTest {
     void executeExcelWithResultReturnsDispatchResult() throws Exception {
         NodeExecutor excelExec = mock(NodeExecutor.class);
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
-        setPrivateField(dispatcher, "excelExecutor", excelExec);
-        setPrivateField(dispatcher, "knowledgeGraphService", kgService);
+        dispatcher.excelExecutor = excelExec;
+        dispatcher.knowledgeGraphService = kgService;
 
         ExecutionResult execResult = ExecutionResult.builder()
                 .status(ExecutionStatus.COMPLETED)
@@ -362,7 +361,7 @@ class StepExecutionDispatcherImplTest {
     @Test
     void executeExcelWithResultHandlesNullGraphJson() throws Exception {
         NodeExecutor excelExec = mock(NodeExecutor.class);
-        setPrivateField(dispatcher, "excelExecutor", excelExec);
+        dispatcher.excelExecutor = excelExec;
 
         ExecutionResult execResult = ExecutionResult.builder()
                 .status(ExecutionStatus.COMPLETED)
@@ -381,8 +380,8 @@ class StepExecutionDispatcherImplTest {
     void executeExcelWithResultHandlesKgException() throws Exception {
         NodeExecutor excelExec = mock(NodeExecutor.class);
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
-        setPrivateField(dispatcher, "excelExecutor", excelExec);
-        setPrivateField(dispatcher, "knowledgeGraphService", kgService);
+        dispatcher.excelExecutor = excelExec;
+        dispatcher.knowledgeGraphService = kgService;
 
         ExecutionResult execResult = ExecutionResult.builder()
                 .status(ExecutionStatus.COMPLETED)
@@ -406,7 +405,7 @@ class StepExecutionDispatcherImplTest {
     @Test
     void resolveExcelGraphJsonFindsTableGraphKey() throws Exception {
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
-        setPrivateField(dispatcher, "knowledgeGraphService", kgService);
+        dispatcher.knowledgeGraphService = kgService;
 
         String tableGraphJson = "{\"entities\":[{\"type\":\"TABLE\"}],\"relationships\":[]}";
         String metaJson = objectMapper.writeValueAsString(Map.of("tableGraph", tableGraphJson));
@@ -423,7 +422,7 @@ class StepExecutionDispatcherImplTest {
     @Test
     void resolveExcelGraphJsonPrefersFormulaGraphOverTableGraph() throws Exception {
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
-        setPrivateField(dispatcher, "knowledgeGraphService", kgService);
+        dispatcher.knowledgeGraphService = kgService;
 
         // Use SpreadsheetGraph format for formulaGraph so we can identify which was chosen
         String formulaJson = "{\"workbookName\":\"Budget\",\"cells\":{\"Budget!A1\":{\"cellReference\":\"Budget!A1\"}},\"dependencies\":[]}";
@@ -443,7 +442,7 @@ class StepExecutionDispatcherImplTest {
     @Test
     void resolveExcelGraphJsonWalksFromTableNodeToParentDocument() throws Exception {
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
-        setPrivateField(dispatcher, "knowledgeGraphService", kgService);
+        dispatcher.knowledgeGraphService = kgService;
 
         // TABLE node with entity_subtype:table
         String tableMeta = objectMapper.writeValueAsString(Map.of("entity_subtype", "table"));
@@ -473,7 +472,7 @@ class StepExecutionDispatcherImplTest {
     @Test
     void resolveExcelGraphJsonRecognizesTableSubtype() throws Exception {
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
-        setPrivateField(dispatcher, "knowledgeGraphService", kgService);
+        dispatcher.knowledgeGraphService = kgService;
 
         // TABLE node with entity_subtype:table (not sheet)
         String tableMeta = objectMapper.writeValueAsString(Map.of("entity_subtype", "table"));
@@ -489,12 +488,6 @@ class StepExecutionDispatcherImplTest {
     }
 
     // --- Helpers ---
-
-    private void setPrivateField(Object target, String fieldName, Object value) throws Exception {
-        Field field = target.getClass().getDeclaredField(fieldName);
-        field.setAccessible(true);
-        field.set(target, value);
-    }
 
     static class SampleToolBean {
         @Tool(description = "Says hello to a user")

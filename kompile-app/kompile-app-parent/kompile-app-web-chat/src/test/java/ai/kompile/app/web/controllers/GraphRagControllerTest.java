@@ -30,7 +30,6 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.HashMap;
 import java.util.List;
@@ -221,7 +220,7 @@ class GraphRagControllerTest {
 
         @Test
         void reasoningSearchPassesFactSheetIdToRetriever() throws Exception {
-            ReflectionTestUtils.setField(controller, "graphReasoningRetriever", graphReasoningRetriever);
+            controller.graphReasoningRetriever = graphReasoningRetriever;
             when(graphReasoningRetriever.supports("CAUSAL")).thenReturn(true);
             when(graphReasoningRetriever.retrieve("Why did revenue drop?", "CAUSAL", 5, 7L))
                     .thenReturn("Revenue dropped because costs rose.");

@@ -57,7 +57,7 @@ public class ChatConfig {
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     @JsonProperty
-    private String provider; // kompile, kompile-local, opencode, openai, anthropic, gemini, ollama, custom
+    private String provider; // kompile, kompile-local, opencode, openai, anthropic, gemini, custom
 
     /**
      * Legacy/in-memory API key input. It is accepted when reading older config
@@ -760,10 +760,8 @@ public class ChatConfig {
         // transport fails the turn with the fix when `claude -p` rejects it.
         if (isClaudeCliNative()) return true;
         if (model == null || model.isBlank()) return false;
-        // First-party Kompile serving and external local endpoints do not require an API key.
-        if ("kompile-local".equals(provider)
-                || "ollama".equals(provider)
-                || isOpenCodeNative()) return true;
+        // First-party Kompile serving and native OpenCode do not require an API key.
+        if ("kompile-local".equals(provider) || isOpenCodeNative()) return true;
         if ("custom".equals(provider)) {
             if (baseUrl == null || baseUrl.isBlank()) return false;
             if ("oauth".equalsIgnoreCase(authenticationMethod)

@@ -18,6 +18,7 @@ package ai.kompile.embedding.anserini.subprocess;
 
 import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
+import ai.kompile.app.subprocess.SubprocessProtocolChannel;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -139,8 +140,9 @@ public class EmbeddingSubprocessMain {
 
     public static void main(String[] args) {
         NativeLibraryResolver.bootstrapOrThrow();
-        // Capture original stdout for protocol messages
-        originalStdout = System.out;
+        // Protocol messages go to the channel the launcher set up, which native output written to
+        // fd 1 can't reach, or to the original stdout when there is none
+        originalStdout = SubprocessProtocolChannel.open(System.out);
 
         // Redirect System.out to stderr so logging doesn't interfere with protocol
         System.setOut(System.err);
@@ -224,6 +226,11 @@ public class EmbeddingSubprocessMain {
         // Read staging service configuration
         String stagingUrl = System.getProperty("kompile.staging.url");
         String stagingApiKey = System.getProperty("kompile.staging.apiKey");
+        // The launcher passes the key through the environment, never argv; the property stays for
+        // manual launches.
+        if (stagingApiKey == null || stagingApiKey.isBlank()) {
+            stagingApiKey = System.getenv("KOMPILE_STAGING_API_KEY");
+        }
         String archivePath = System.getProperty("kompile.models.archivePath");
 
         boolean configured = false;

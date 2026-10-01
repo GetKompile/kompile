@@ -28,6 +28,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -41,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Document loader for ingesting files from Google Drive.
@@ -116,6 +118,19 @@ public class GoogleDriveLoaderImpl implements DocumentLoader, ai.kompile.core.lo
      */
     public List<Path> downloadTo(DocumentSourceDescriptor sourceDescriptor, Path destination)
             throws Exception {
+        return downloadTo(sourceDescriptor, destination, message -> logger.warn("{}", message));
+    }
+
+    /**
+     * Same download, but each per-file failure is reported to {@code warnings} instead of only
+     * logged, so a caller materializing a snapshot can surface partial failures. If every
+     * attempted file fails, throws using the first failure instead of returning an empty list
+     * silently.
+     */
+    @Override
+    public List<Path> downloadTo(
+            DocumentSourceDescriptor sourceDescriptor, Path destination, Consumer<String> warnings)
+            throws Exception {
         String accessToken = resolveAccessToken(sourceDescriptor);
         if (accessToken == null || accessToken.isEmpty()) {
             throw new IllegalStateException(
@@ -136,6 +151,8 @@ public class GoogleDriveLoaderImpl implements DocumentLoader, ai.kompile.core.lo
         }
         Files.createDirectories(destination);
         List<Path> written = new ArrayList<>();
+        Exception firstFailure = null;
+        String firstFailureId = null;
         for (String fileId : fileIds) {
             try {
                 Path file = downloadOriginal(fileId, accessToken, destination);
@@ -143,8 +160,19 @@ public class GoogleDriveLoaderImpl implements DocumentLoader, ai.kompile.core.lo
                     written.add(file);
                 }
             } catch (Exception e) {
-                logger.warn("Failed to download Google Drive file {}: {}", fileId, e.getMessage());
+                String message = "Failed to download Google Drive file " + fileId + ": " + e.getMessage();
+                logger.warn(message);
+                warnings.accept(message);
+                if (firstFailure == null) {
+                    firstFailure = e;
+                    firstFailureId = fileId;
+                }
             }
+        }
+        if (written.isEmpty() && firstFailure != null) {
+            throw new IOException("All " + fileIds.size()
+                    + " Google Drive file(s) failed to download; first failure (file " + firstFailureId
+                    + "): " + firstFailure.getMessage(), firstFailure);
         }
         return written;
     }

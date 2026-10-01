@@ -14,6 +14,8 @@ import ai.kompile.graph.reasoning.fol.MebnInferenceService;
 import ai.kompile.graph.reasoning.mebn.MTheory;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.query.PredicateNames;
+import ai.kompile.graph.reasoning.tms.ContradictionDetector;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.grounding.FactSheetKbState;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
@@ -142,20 +144,28 @@ public class ReasoningEntityResolutionService {
         return snapshot;
     }
 
-    private static void collectIdentityAtom(
+    /**
+     * Records an identity atom as same-entity or different-entity evidence. A negated atom
+     * ({@code ~sameAs(a, b)}, {@code notSameAs(a, b)}) is evidence for the opposite side.
+     */
+    static void collectIdentityAtom(
             String atomKey,
             double value,
             Map<String, Double> positive,
             Map<String, Double> negative) {
-        ParsedBinaryAtom atom = parseBinaryAtom(atomKey);
-        if (atom == null) return;
+        ContradictionDetector.ParsedAtom atom = ContradictionDetector.ParsedAtom.parse(atomKey);
+        if (atom.args().size() != 2) return;
         String predicate = normalizePredicate(atom.predicate());
-        String pairKey = pairKey(atom.left(), atom.right());
+        boolean sameEntity;
         if (POSITIVE_IDENTITY_PREDICATES.contains(predicate)) {
-            positive.merge(pairKey, clamp01(value), Math::max);
+            sameEntity = !atom.negated();
         } else if (NEGATIVE_IDENTITY_PREDICATES.contains(predicate)) {
-            negative.merge(pairKey, clamp01(value), Math::max);
+            sameEntity = atom.negated();
+        } else {
+            return;
         }
+        String pairKey = pairKey(atom.args().get(0), atom.args().get(1));
+        (sameEntity ? positive : negative).merge(pairKey, clamp01(value), Math::max);
     }
 
     private static void accumulateImportance(Map<String, double[]> accumulator, String atomKey, double value) {
@@ -188,9 +198,9 @@ public class ReasoningEntityResolutionService {
         return new ParsedBinaryAtom(matcher.group(1), matcher.group(2), matcher.group(3));
     }
 
+    /** Separator-free, lower-case {@link PredicateNames#canonical} form, {@code derived} prefixes removed. */
     private static String normalizePredicate(String predicate) {
-        String normalized = predicate == null ? "" : predicate.toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9]", "");
+        String normalized = PredicateNames.canonical(predicate).replace("_", "").toLowerCase(Locale.ROOT);
         while (normalized.startsWith("derived")) {
             normalized = normalized.substring("derived".length());
         }

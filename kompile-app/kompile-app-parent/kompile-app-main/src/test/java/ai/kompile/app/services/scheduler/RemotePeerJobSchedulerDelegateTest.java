@@ -25,7 +25,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Map;
 import java.util.Optional;
@@ -89,7 +88,7 @@ class RemotePeerJobSchedulerDelegateTest {
     @Test
     void isAvailable_failover_falseWhenLocalHasHeadroom() {
         cfg.setClusterRole("orchestrator");
-        ReflectionTestUtils.setField(delegate, "governor", governor);
+        delegate.governor = governor;
         when(registry.size(anyLong())).thenReturn(1);
         when(governor.isLocalSaturated()).thenReturn(false);
         assertFalse(delegate.isAvailable(), "failover mode keeps work local until the host is saturated");
@@ -98,7 +97,7 @@ class RemotePeerJobSchedulerDelegateTest {
     @Test
     void isAvailable_failover_trueWhenLocalSaturated() {
         cfg.setClusterRole("orchestrator");
-        ReflectionTestUtils.setField(delegate, "governor", governor);
+        delegate.governor = governor;
         when(registry.size(anyLong())).thenReturn(1);
         when(governor.isLocalSaturated()).thenReturn(true);
         assertTrue(delegate.isAvailable(), "saturated host fails over to peers");
@@ -108,7 +107,7 @@ class RemotePeerJobSchedulerDelegateTest {
     void isAvailable_alwaysMode_ignoresSaturation() {
         cfg.setClusterRole("orchestrator");
         cfg.setClusterOffloadMode("always");
-        ReflectionTestUtils.setField(delegate, "governor", governor);
+        delegate.governor = governor;
         when(registry.size(anyLong())).thenReturn(1);
         // governor.isLocalSaturated() must not be consulted in 'always' mode.
         assertTrue(delegate.isAvailable());

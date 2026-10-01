@@ -8,7 +8,6 @@ import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -101,8 +100,8 @@ class ManagedMebnUnifiedGraphArtifactsTest {
             IncrementalReasoningOrchestrator orchestrator,
             MebnWeightPersistenceAdapter weights) {
         ManagedMebnUnifiedGraphArtifacts artifacts = new ManagedMebnUnifiedGraphArtifacts();
-        ReflectionTestUtils.setField(artifacts, "orchestrator", orchestrator);
-        ReflectionTestUtils.setField(artifacts, "weights", weights);
+        artifacts.orchestrator = orchestrator;
+        artifacts.weights = weights;
         return artifacts;
     }
 

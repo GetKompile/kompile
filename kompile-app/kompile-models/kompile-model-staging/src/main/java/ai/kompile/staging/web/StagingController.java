@@ -1176,7 +1176,7 @@ public class StagingController {
      * Resolve the ModelType for a catalog model by checking which catalog list it belongs to,
      * or falling back to the modelType field on the CatalogModel itself.
      */
-    private ModelType resolveModelType(CatalogModel catalogModel) {
+    ModelType resolveModelType(CatalogModel catalogModel) {
         // Check explicit modelType field first
         if (catalogModel.getModelType() != null) {
             try {

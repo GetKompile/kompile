@@ -86,10 +86,10 @@ class DirectLlmClientOpenCodeRetryTest {
             transport.setAccessible(true);
             transport.set(client, server.client(new ObjectMapper()));
             var streamOpenCode = DirectLlmClient.class.getDeclaredMethod("streamOpenCode",
-                    String.class, String.class, ArrayNode.class, List.class, String.class);
+                    String.class, String.class, ArrayNode.class, List.class, String.class, List.class);
             streamOpenCode.setAccessible(true);
             Future<Object> turn = turnThread.submit(() -> streamOpenCode.invoke(
-                    client, "run a long tool", null, null, List.of(), "opencode-go/model"));
+                    client, "run a long tool", null, null, List.of(), "opencode-go/model", List.of()));
             assertTrue(server.turnStarted.await(10, TimeUnit.SECONDS),
                     "the turn never reached the server");
 

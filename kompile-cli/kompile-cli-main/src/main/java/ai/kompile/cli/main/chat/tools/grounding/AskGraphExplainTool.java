@@ -50,12 +50,8 @@ public class AskGraphExplainTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Explain why the KB believes (or disbelieves) a fact. "
-                + "atom format: 'predicate(arg1, arg2)' — case-sensitive predicate, comma-space separated args. "
-                + "Reasoning approach is auto-selected from the atom shape; mode is an advanced override. "
-                + "Output: step-by-step derivation tree showing which rules fired, which supporting facts "
-                + "were used at each hop, and a plain-English summary. "
-                + "depth default 3 (how many inference hops to trace back).";
+        return "Explain why the KB believes or doubts atom='worksFor(Alice, Acme)': a derivation tree of the "
+                + "rules and supporting facts at each hop, plus a plain-English summary. depth = hops (default 3).";
     }
 
     @Override
@@ -64,8 +60,8 @@ public class AskGraphExplainTool implements CliTool {
     @Override
     public String description() {
         return "Produce a derivation trace explaining why the knowledge base believes (or disbelieves) " +
-                "a specific fact. Returns a derivation tree with rule applications and " +
-                "supporting facts at each hop, plus a natural-language summary. Use this to audit " +
+                "a specific fact: a tree of rule applications and supporting facts at each hop, plus a " +
+                "natural-language summary. Use this to audit " +
                 "an LLM's reasoning or to present grounded explanations to end users. " +
                 "Optional chatModel.provider/modelId interprets the returned evidence using native chat; " +
                 "model output is separate and does not replace the derivation.";

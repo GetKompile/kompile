@@ -105,7 +105,7 @@ public class JudgeBackendFactory {
             if (chatConfig != null && chatConfig.isValid()) {
                 fallbackClient = createDirectJudgeClient(
                         chatConfig, null, null, config.getJudgeModel(), null,
-                        objectMapper, workingDirectory);
+                        config.getJudgeEffort(), objectMapper, workingDirectory);
                 fallbackChatConfig = fallbackClient == null
                         ? null : fallbackClient.getChatConfig();
             }
@@ -153,7 +153,7 @@ public class JudgeBackendFactory {
         if (primary == null) {
             return null;
         }
-        long deadlineMs = config.getJudgeDeadlineMs();
+        long deadlineMs = deadlineMs(primary, config);
         long cooldownMs = config.getRateLimitCooldownMs();
         List<JudgeBackend> backups = new ArrayList<>();
         List<String> candidates = config.getJudgeSwapCandidates();
@@ -166,14 +166,15 @@ public class JudgeBackendFactory {
             if (judgeClient == null && fallbackChatConfig != null) {
                 judgeClient = createDirectJudgeClient(
                         fallbackChatConfig, config.getJudgeProvider(), config.getJudgeApiKey(),
-                        config.getJudgeModel(), config.getJudgeBaseUrl(), objectMapper,
-                        workingDirectory);
+                        config.getJudgeModel(), config.getJudgeBaseUrl(), config.getJudgeEffort(),
+                        objectMapper, workingDirectory);
             }
             if (judgeClient != null) {
                 try {
                     for (String model : validCandidates) {
                         DirectLlmClient backup = createDirectJudgeClient(judgeClient.getChatConfig(),
-                                null, null, model, null, objectMapper, workingDirectory);
+                                null, null, model, null, config.getJudgeEffort(),
+                                objectMapper, workingDirectory);
                         if (backup != null) {
                             backups.add(new RemoteJudgeBackend(backup, null, backup.getConfiguredProvider()));
                         }
@@ -190,6 +191,19 @@ public class JudgeBackendFactory {
     }
 
     /**
+     * The per-call deadline for {@code backend}. A backend that starts a provider CLI process
+     * for each request pays the process start inside its deadline, so it gets
+     * {@link HarnessConfig#getJudgeProcessDeadlineMs()} when that is set. A disabled deadline
+     * ({@link HarnessConfig#getJudgeDeadlineMs()} of 0) stays disabled.
+     */
+    static long deadlineMs(JudgeBackend backend, HarnessConfig config) {
+        long deadlineMs = config.getJudgeDeadlineMs();
+        long processDeadlineMs = config.getJudgeProcessDeadlineMs();
+        return deadlineMs > 0 && processDeadlineMs > 0 && backend.startsProviderProcess()
+                ? processDeadlineMs : deadlineMs;
+    }
+
+    /**
      * Auto mode: CLI agents first (already authenticated), then kompile staging,
      * then local SameDiff, then remote API as last resort.
      */
@@ -202,8 +216,7 @@ public class JudgeBackendFactory {
 
         // 2. Kompile staging server — our own inference platform
         ServerJudgeBackend kompileBackend = new ServerJudgeBackend(
-                ServerJudgeBackend.ServerType.KOMPILE, config.getJudgeModel(),
-                config.getJudgeServerPort(), objectMapper, workingDirectory);
+                config.getJudgeModel(), config.getJudgeServerPort(), objectMapper, workingDirectory);
         if (kompileBackend.isAvailable()) {
             return kompileBackend;
         }
@@ -240,7 +253,7 @@ public class JudgeBackendFactory {
             DirectLlmClient isolated = createDirectJudgeClient(
                     mainChatClient.getChatConfig(), config.getJudgeProvider(),
                     config.getJudgeApiKey(), config.getJudgeModel(), config.getJudgeBaseUrl(),
-                    objectMapper, workingDirectory);
+                    config.getJudgeEffort(), objectMapper, workingDirectory);
             if (isolated != null) {
                 return new RemoteJudgeBackend(isolated, null, "main-chat");
             }
@@ -254,12 +267,39 @@ public class JudgeBackendFactory {
     }
 
     private static JudgeBackend createAutoServer(HarnessConfig config, ObjectMapper objectMapper, Path workingDirectory) {
-        ServerJudgeBackend.ServerType serverType = ServerJudgeBackend.ServerType.KOMPILE;
-        if ("ollama".equalsIgnoreCase(config.getJudgeServerType())) {
-            serverType = ServerJudgeBackend.ServerType.OLLAMA;
+        // kompile-model-staging is the only auto-server backend; any other configured type fails closed.
+        String serverType = config.getJudgeServerType();
+        if (serverType != null && !serverType.isBlank() && !"kompile".equalsIgnoreCase(serverType.trim())) {
+            return unsupportedServerType(serverType.trim());
         }
         return new ServerJudgeBackend(
-                serverType, config.getJudgeModel(), config.getJudgeServerPort(), objectMapper, workingDirectory);
+                config.getJudgeModel(), config.getJudgeServerPort(), objectMapper, workingDirectory);
+    }
+
+    private static JudgeBackend unsupportedServerType(String serverType) {
+        String reason = "Judge server type '" + serverType + "' is not supported; auto-server uses "
+                + "kompile-model-staging. Remove judgeServerType or set it to kompile.";
+        return new JudgeBackend() {
+            @Override
+            public String generate(String userPrompt, String systemPrompt) {
+                throw new IllegalStateException(reason);
+            }
+
+            @Override
+            public boolean isAvailable() {
+                return false;
+            }
+
+            @Override
+            public String failureReason() {
+                return reason;
+            }
+
+            @Override
+            public String describe() {
+                return "unsupported(judgeServerType=" + serverType + ")";
+            }
+        };
     }
 
     /**
@@ -279,7 +319,7 @@ public class JudgeBackendFactory {
         ChatConfig judgeConfig = new ChatConfig(provider, apiKey, model, config.getJudgeBaseUrl());
         OAuthProviderFlow.RequestAuth requestAuth = judgeConfig.resolveRequestAuth();
         if ((requestAuth == null || requestAuth.token() == null || requestAuth.token().isBlank())
-                && !"ollama".equalsIgnoreCase(provider)
+                && !"custom".equalsIgnoreCase(provider)
                 && !"kompile".equalsIgnoreCase(provider)) {
             return null;
         }
@@ -289,16 +329,13 @@ public class JudgeBackendFactory {
         if (model == null || model.isBlank()) return null;
         judgeConfig.setModel(model);
         judgeConfig.setThinking(JudgeDefaults.resolve(provider, workingDirectory, model, null).thinking());
-        return DirectLlmClient.withConnectivityPolicy(
-                judgeConfig, objectMapper,
-                judgeConfig.connectivityPolicy().withMaxAttempts(1), workingDirectory);
+        return newJudgeClient(judgeConfig, config.getJudgeEffort(), objectMapper, workingDirectory);
     }
 
     /**
-     * Build a private direct-provider client for a judge lane. It preserves the selected
-     * provider's authentication route without sharing mutable chat configuration, disables an
-     * inherited reasoning override in favor of supported low effort, and uses one provider
-     * attempt beneath the judge deadline.
+     * Build a private direct-provider client for a judge lane that asks for no particular
+     * effort beyond the judge selection's; see
+     * {@link #createDirectJudgeClient(ChatConfig, String, String, String, String, String, ObjectMapper, Path)}.
      */
     public static DirectLlmClient createDirectJudgeClient(
             ChatConfig baseChatConfig,
@@ -306,6 +343,28 @@ public class JudgeBackendFactory {
             String apiKeyOverride,
             String modelOverride,
             String baseUrlOverride,
+            ObjectMapper objectMapper,
+            Path workingDirectory) {
+        return createDirectJudgeClient(baseChatConfig, providerOverride, apiKeyOverride,
+                modelOverride, baseUrlOverride, null, objectMapper, workingDirectory);
+    }
+
+    /**
+     * Build a private direct-provider client for a judge lane. It preserves the selected
+     * provider's authentication route without sharing mutable chat configuration, disables an
+     * inherited reasoning override in favor of supported low effort, and uses one provider
+     * attempt beneath the judge deadline. On a provider CLI route (Claude Code) the judge runs
+     * with no tools and no MCP servers, and asks for {@code preferredEffort}
+     * ({@link HarnessConfig#getJudgeEffort()}) where the route offers that level and the judge
+     * selection sets no effort.
+     */
+    public static DirectLlmClient createDirectJudgeClient(
+            ChatConfig baseChatConfig,
+            String providerOverride,
+            String apiKeyOverride,
+            String modelOverride,
+            String baseUrlOverride,
+            String preferredEffort,
             ObjectMapper objectMapper,
             Path workingDirectory) {
         if (baseChatConfig == null) {
@@ -348,9 +407,20 @@ public class JudgeBackendFactory {
                     baseChatConfig.getLocalServingBinding().forChatConfig(judgeConfig));
         }
         judgeConfig.setThinking(selection.thinking());
-        return DirectLlmClient.withConnectivityPolicy(
+        return newJudgeClient(judgeConfig, preferredEffort, objectMapper, workingDirectory);
+    }
+
+    /**
+     * A judge client makes one provider attempt beneath the judge deadline and answers from
+     * its prompt: a provider CLI route runs it with no tools and no MCP servers.
+     */
+    private static DirectLlmClient newJudgeClient(ChatConfig judgeConfig, String preferredEffort,
+                                                  ObjectMapper objectMapper, Path workingDirectory) {
+        DirectLlmClient client = DirectLlmClient.withConnectivityPolicy(
                 judgeConfig, objectMapper,
                 judgeConfig.connectivityPolicy().withMaxAttempts(1), workingDirectory);
+        client.runToolFree(false, preferredEffort);
+        return client;
     }
 
     private static String resolveApiKeyFromEnv(String provider) {

@@ -109,11 +109,12 @@ public class ProcessingCapacityTrackerImpl implements ProcessingCapacityTracker 
             }
         }
 
-        // For LOCAL_MODEL: check GPU memory across all devices
+        // For LOCAL_MODEL: check GPU memory across all devices. An over-committed device has a
+        // negative available and offers nothing; it must not cancel out another device's free memory.
         if (backend.getType() == ProcessingBackendType.LOCAL_MODEL && gpuResourceManager != null) {
             try {
                 long totalAvailable = gpuResourceManager.getDevices().stream()
-                        .mapToLong(gpuResourceManager::getAvailableMemory)
+                        .mapToLong(device -> Math.max(0L, gpuResourceManager.getAvailableMemory(device)))
                         .sum();
                 if (backend.getMaxMemoryBytes() > 0 && totalAvailable < backend.getMaxMemoryBytes()) {
                     return false;
@@ -164,7 +165,9 @@ public class ProcessingCapacityTrackerImpl implements ProcessingCapacityTracker 
                 try {
                     for (var device : gpuResourceManager.getDevices()) {
                         gpuTotal += device.totalMemoryBytes();
-                        gpuUsed += device.totalMemoryBytes() - gpuResourceManager.getAvailableMemory(device);
+                        // Available goes negative while a device is over-committed.
+                        gpuUsed += device.totalMemoryBytes()
+                                - Math.max(0L, gpuResourceManager.getAvailableMemory(device));
                     }
                 } catch (Exception e) {
                     // GPU query failed — leave as 0

@@ -25,8 +25,9 @@ import java.util.Set;
 /**
  * Default infra-free implementation of {@link KbVerifier}.
  *
- * <p>All lookups are O(1) against the materialized {@link InferredFactStore} and the
- * directly-observed {@link FactStore}. No MAP re-inference is triggered here; targeted
+ * <p>Atom lookups are O(1) against the materialized {@link InferredFactStore} and the
+ * directly-observed {@link FactStore}; only the E5 functional-conflict check, which runs for
+ * functional predicates alone, scans both stores. No MAP re-inference is triggered here; targeted
  * inference escalation belongs in the Spring-side {@code KbGroundingService} layer.</p>
  *
  * <h3>Lookup order</h3>
@@ -37,9 +38,12 @@ import java.util.Set;
  *       present with high confidence → {@link VerifyResult.Status#REFUTED}.</li>
  *   <li>{@link FactStore#factFor(String)} for {@code atomKey} — directly observed hard facts
  *       are treated as SUPPORTED (confidence = the fact's value).</li>
- *   <li>E5: if status would be UNKNOWN and the predicate is functional, scan
- *       {@link InferredFactStore#allLatest()} and {@link FactStore} for a competing high-confidence
- *       fact {@code p(sameSubject, differentObject)} → REFUTED with basis description.</li>
+ *   <li>E5: if status would be UNKNOWN and the predicate is functional (a default or configured
+ *       functional predicate, in any spelling), scan {@link InferredFactStore#allLatest()} and
+ *       {@link FactStore} for a competing high-confidence fact {@code p(sameSubject, differentObject)}
+ *       → REFUTED with basis description. {@code p} matches in any spelling
+ *       ({@code HEADQUARTERED_IN} competes with {@code headquarteredIn}); a respelling of the claim
+ *       itself does not compete, and negated claims and facts never do.</li>
  *   <li>Otherwise → {@link VerifyResult.Status#UNKNOWN}.</li>
  * </ol>
  *
@@ -107,7 +111,7 @@ public final class DefaultKbVerifier implements KbVerifier {
      * @param inferredFactStore             the materialized inference result store
      * @param factStore                     the directly-observed fact store
      * @param threshold                     minimum confidence to report SUPPORTED
-     * @param functionalPredicates          predicates treated as single-valued per subject (E5)
+     * @param functionalPredicates          single-valued predicates (E5), added to the defaults; any spelling
      * @param functionalConflictThreshold   min confidence of a competing fact to trigger refutation
      */
     public DefaultKbVerifier(InferredFactStore inferredFactStore, FactStore factStore,
@@ -125,7 +129,7 @@ public final class DefaultKbVerifier implements KbVerifier {
      * @param inferredFactStore             the materialized inference result store
      * @param factStore                     the directly-observed fact store
      * @param threshold                     minimum confidence to report SUPPORTED
-     * @param functionalPredicates          predicates treated as single-valued per subject (E5)
+     * @param functionalPredicates          single-valued predicates (E5), added to the defaults; any spelling
      * @param functionalConflictThreshold   min confidence of a competing fact to trigger refutation
      * @param whyNotRules                   rule normal forms for E9 near-miss; null or empty disables E9
      */
@@ -206,16 +210,12 @@ public final class DefaultKbVerifier implements KbVerifier {
         }
 
         // Step 4: E5 — functional-constraint refutation for UNKNOWN atoms
-        // Parse the atom to get predicate + first arg for functional lookup.
-        ParsedAtomKey parsed = ParsedAtomKey.parse(trimmed);
-        if (parsed != null && ContradictionDetector.isFunctionalPredicate(parsed.predicate)) {
-            FunctionalConflict fc = findFunctionalConflict(parsed);
-            if (fc != null) {
-                List<String> counterEvidence = List.of(fc.competingAtom);
-                String basis = "functional-conflict: " + fc.competingAtom
-                        + " @" + String.format("%.2f", fc.confidence);
-                return VerifyResult.refuted(fc.confidence, List.of(), counterEvidence, basis);
-            }
+        FunctionalConflict fc = findFunctionalConflict(trimmed);
+        if (fc != null) {
+            List<String> counterEvidence = List.of(fc.competingAtom);
+            String basis = "functional-conflict: " + fc.competingAtom
+                    + " @" + String.format(Locale.ROOT, "%.2f", fc.confidence);
+            return VerifyResult.refuted(fc.confidence, List.of(), counterEvidence, basis);
         }
 
         // Step 5: Not derivable from current KB state.
@@ -243,17 +243,14 @@ public final class DefaultKbVerifier implements KbVerifier {
         String negKey = buildNegatedKey(atomKey);
         inferredFactStore.latest(negKey).ifPresent(neg -> {
             if (neg.confidence() >= threshold) {
-                result.add(negKey + " (confidence=" + String.format("%.2f", neg.confidence()) + ")");
+                result.add(negKey + " (confidence=" + String.format(Locale.ROOT, "%.2f", neg.confidence()) + ")");
             }
         });
 
-        // (b) Functional competitors (only if predicate is functional)
-        ParsedAtomKey parsed = ParsedAtomKey.parse(atomKey);
-        if (parsed != null && ContradictionDetector.isFunctionalPredicate(parsed.predicate)) {
-            FunctionalConflict fc = findFunctionalConflict(parsed);
-            if (fc != null) {
-                result.add(fc.competingAtom + " @" + String.format("%.2f", fc.confidence));
-            }
+        // (b) A functional competitor (only if the predicate is functional)
+        FunctionalConflict fc = findFunctionalConflict(atomKey);
+        if (fc != null) {
+            result.add(fc.competingAtom + " @" + String.format(Locale.ROOT, "%.2f", fc.confidence));
         }
 
         return result;
@@ -272,22 +269,24 @@ public final class DefaultKbVerifier implements KbVerifier {
     // ─── E5: functional-conflict refutation ──────────────────────────────────────
 
     /**
-     * Scan both the inferred store and the fact store for a competing high-confidence fact
-     * with the same predicate and first argument but different full atom key.
+     * Scan both the inferred store and the fact store for the strongest high-confidence fact that
+     * {@linkplain #competes competes} with {@code atomKey} under a functional predicate.
      *
-     * @return a {@link FunctionalConflict} describing the winner, or null if none found
+     * @return a {@link FunctionalConflict} describing the winner, or null if the predicate is not
+     *         functional, the claim is negated or has no subject, or nothing competes
      */
-    private FunctionalConflict findFunctionalConflict(ParsedAtomKey claim) {
+    private FunctionalConflict findFunctionalConflict(String atomKey) {
+        ContradictionDetector.ParsedAtom claim = ContradictionDetector.ParsedAtom.parse(atomKey);
+        if (claim.negated() || claim.args().isEmpty()
+                || !ContradictionDetector.isFunctionalPredicate(claim.predicate(), functionalPredicates)) {
+            return null;
+        }
         FunctionalConflict best = null;
 
         // Scan inferred store
         for (InferredFact candidate : inferredFactStore.allLatest()) {
             if (candidate.confidence() < functionalConflictThreshold) continue;
-            ParsedAtomKey cp = ParsedAtomKey.parse(candidate.atomKey());
-            if (cp == null) continue;
-            if (!cp.predicate.equalsIgnoreCase(claim.predicate)) continue;
-            if (!cp.firstArg.equalsIgnoreCase(claim.firstArg)) continue;
-            if (candidate.atomKey().equalsIgnoreCase(claim.raw)) continue; // same atom
+            if (!competes(claim, candidate.atomKey())) continue;
             if (best == null || candidate.confidence() > best.confidence) {
                 best = new FunctionalConflict(candidate.atomKey(), candidate.confidence());
             }
@@ -296,17 +295,32 @@ public final class DefaultKbVerifier implements KbVerifier {
         // Scan fact store
         for (Fact candidate : factStore.allFacts()) {
             if (!candidate.hard() || candidate.value() < functionalConflictThreshold) continue;
-            ParsedAtomKey cp = ParsedAtomKey.parse(candidate.atomKey());
-            if (cp == null) continue;
-            if (!cp.predicate.equalsIgnoreCase(claim.predicate)) continue;
-            if (!cp.firstArg.equalsIgnoreCase(claim.firstArg)) continue;
-            if (candidate.atomKey().equalsIgnoreCase(claim.raw)) continue; // same atom
+            if (!competes(claim, candidate.atomKey())) continue;
             if (best == null || candidate.value() > best.confidence) {
                 best = new FunctionalConflict(candidate.atomKey(), candidate.value());
             }
         }
 
         return best;
+    }
+
+    /**
+     * Whether {@code candidateKey} gives the claim's functional predicate another value: a positive
+     * atom of the same predicate in any spelling ({@code HEADQUARTERED_IN} for
+     * {@code headquarteredIn}), about the same subject, over different arguments. Arguments compare
+     * ignoring case, so a respelling of the claim itself never competes.
+     */
+    private static boolean competes(ContradictionDetector.ParsedAtom claim, String candidateKey) {
+        String subject = claim.args().get(0);
+        // Most stored facts are about other subjects: rule those out before the full parse.
+        String candidateSubject = firstArg(candidateKey);
+        if (candidateSubject != null && !candidateSubject.equalsIgnoreCase(subject)) return false;
+        ContradictionDetector.ParsedAtom candidate = ContradictionDetector.ParsedAtom.parse(candidateKey);
+        return !candidate.negated()
+                && !candidate.args().isEmpty()
+                && candidate.args().get(0).equalsIgnoreCase(subject)
+                && candidate.predicateKey().equals(claim.predicateKey())
+                && !sameArgsIgnoringCase(candidate.args(), claim.args());
     }
 
     // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -334,28 +348,30 @@ public final class DefaultKbVerifier implements KbVerifier {
         return "~" + atomKey;
     }
 
-    // ─── Inner types ─────────────────────────────────────────────────────────────
-
-    /** Minimal parse of an atom key into (raw, predicate, firstArg). */
-    private record ParsedAtomKey(String raw, String predicate, String firstArg) {
-        static ParsedAtomKey parse(String atomKey) {
-            if (atomKey == null || atomKey.isBlank()) return null;
-            int lp = atomKey.indexOf('(');
-            if (lp < 0) return null; // 0-arity atom — cannot be functional in the usual sense
-            int rp = atomKey.lastIndexOf(')');
-            if (rp <= lp) return null;
-            String predicate = atomKey.substring(0, lp).trim();
-            if (predicate.isBlank()) return null;
-            String inside = atomKey.substring(lp + 1, rp).trim();
-            if (inside.isBlank()) return null;
-            int comma = inside.indexOf(',');
-            String firstArg = (comma >= 0)
-                    ? inside.substring(0, comma).trim()
-                    : inside.trim();
-            if (firstArg.isBlank()) return null;
-            return new ParsedAtomKey(atomKey, predicate.toUpperCase(Locale.ROOT), firstArg);
-        }
+    /**
+     * First argument of an atom key, trimmed, read without a full parse; null when it cannot be
+     * read that cheaply (no argument list, or a blank first argument).
+     */
+    private static String firstArg(String atomKey) {
+        if (atomKey == null) return null;
+        int lp = atomKey.indexOf('(');
+        int rp = atomKey.lastIndexOf(')');
+        if (lp < 0 || rp <= lp) return null;
+        int comma = atomKey.indexOf(',', lp + 1);
+        int end = (comma >= 0 && comma < rp) ? comma : rp;
+        String arg = atomKey.substring(lp + 1, end).trim();
+        return arg.isEmpty() ? null : arg;
     }
+
+    private static boolean sameArgsIgnoringCase(List<String> left, List<String> right) {
+        if (left.size() != right.size()) return false;
+        for (int i = 0; i < left.size(); i++) {
+            if (!left.get(i).equalsIgnoreCase(right.get(i))) return false;
+        }
+        return true;
+    }
+
+    // ─── Inner types ─────────────────────────────────────────────────────────────
 
     /** Describes a detected functional competitor. */
     private record FunctionalConflict(String competingAtom, double confidence) {}

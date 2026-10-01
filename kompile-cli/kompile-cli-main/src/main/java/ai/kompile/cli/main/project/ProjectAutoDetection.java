@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -307,6 +308,46 @@ public final class ProjectAutoDetection {
         project.setCreatedAt(Instant.now());
         project.setUpdatedAt(Instant.now());
         return project;
+    }
+
+    /**
+     * Where a project manifest may be created automatically on behalf of {@code start}, if anywhere.
+     *
+     * <p>A manifest belongs at a checkout's top level: one seeded in a sub-directory forks the
+     * checkout into a second project that its top-level project never sees. The home directory
+     * and its parents are never project roots, and neither is a checkout that contains the home
+     * directory (a dotfiles repository); those need an explicit {@code kompile project init}.</p>
+     *
+     * @return the top level of the git checkout that contains {@code start}, {@code start} itself
+     *         when no checkout contains it, or empty when no manifest may be created for it
+     */
+    public static Optional<Path> autoInitRoot(Path start) {
+        Path normalized = canonical(start);
+        Path home = homeDirectory();
+        if (home != null && home.startsWith(normalized)) return Optional.empty();
+        for (Path dir = normalized; dir != null; dir = dir.getParent()) {
+            // A linked worktree or submodule marks its top level with a .git file, not a directory.
+            if (Files.exists(dir.resolve(".git"))) {
+                return home != null && home.startsWith(dir) ? Optional.empty() : Optional.of(dir);
+            }
+        }
+        return Optional.of(normalized);
+    }
+
+    private static Path homeDirectory() {
+        String home = System.getProperty("user.home");
+        if (home == null || home.isBlank()) return null;
+        Path path = Path.of(home);
+        return path.isAbsolute() ? canonical(path) : null;
+    }
+
+    private static Path canonical(Path path) {
+        Path absolute = path.toAbsolutePath().normalize();
+        try {
+            return absolute.toRealPath();
+        } catch (IOException unavailable) {
+            return absolute;
+        }
     }
 
     public static String inferCrawlSourceType(String source) {

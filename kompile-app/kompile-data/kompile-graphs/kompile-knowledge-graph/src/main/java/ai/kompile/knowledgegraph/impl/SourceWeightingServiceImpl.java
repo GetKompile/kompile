@@ -43,13 +43,13 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
     private KnowledgeGraphService knowledgeGraphService;
 
     @Value("${kompile.source-weighting.default-weight:1.0}")
-    private double defaultWeight;
+    double defaultWeight;
 
     @Value("${kompile.source-weighting.max-weight:3.0}")
-    private double maxWeight;
+    double maxWeight;
 
     @Value("${kompile.source-weighting.topic-relevance-factor:0.3}")
-    private double topicRelevanceFactor;
+    double topicRelevanceFactor;
 
     /**
      * Optional embedding model used to score query↔source semantic relevance in
@@ -58,7 +58,7 @@ public class SourceWeightingServiceImpl implements SourceWeightingService {
      * weight-only ranking.
      */
     @Autowired(required = false)
-    private EmbeddingModel embeddingModel;
+    EmbeddingModel embeddingModel;
 
     @Autowired
     public SourceWeightingServiceImpl(SourceWeightRepository weightRepository,

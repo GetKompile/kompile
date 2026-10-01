@@ -104,7 +104,7 @@ public class KbVerifyExplainTool {
                 if (groundingService != null) {
                     dto.put("stale", groundingService.isStale(factSheetId));
                 }
-                traceStore.storeTrace(dto);
+                traceStore.storeTrace(factSheetId, dto);
             }
 
             // Return a concise, agent-readable summary so the model's answer is grounded.

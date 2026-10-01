@@ -101,7 +101,7 @@ public class CrawlerController {
     private JobLogService jobLogService;
 
     @Autowired(required = false)
-    private CrawlJobPersistenceService crawlJobPersistenceService;
+    CrawlJobPersistenceService crawlJobPersistenceService;
 
     @Autowired(required = false)
     private ResourceAwareJobScheduler jobScheduler;

@@ -20,7 +20,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,7 +43,7 @@ class KbWeightsControllerMebnTest {
     private MebnWeightPersistenceAdapter adapter;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         adapter = adapterFor(tempDir.toString());
         // weightStore = null (PSL), mebnWeightPersistenceAdapter = the real adapter;
         // weightSessionService + reasoningOrchestrator = null (not exercised by these MEBN tests)
@@ -160,12 +159,10 @@ class KbWeightsControllerMebnTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private MebnWeightPersistenceAdapter adapterFor(String dataDirPath) throws Exception {
-        MebnWeightPersistenceAdapter a = new MebnWeightPersistenceAdapter();
-        Field f = MebnWeightPersistenceAdapter.class.getDeclaredField("dataDir");
-        f.setAccessible(true);
-        f.set(a, dataDirPath);
-        return a;
+    private MebnWeightPersistenceAdapter adapterFor(String dataDirPath) {
+        return new MebnWeightPersistenceAdapter() {{
+            dataDir = dataDirPath;
+        }};
     }
 
     private void writeWeightsFile(long factSheetId, String json) throws IOException {

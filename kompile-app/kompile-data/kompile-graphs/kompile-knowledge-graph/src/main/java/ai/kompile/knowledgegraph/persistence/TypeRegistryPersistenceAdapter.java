@@ -44,7 +44,7 @@ import java.util.Optional;
 public class TypeRegistryPersistenceAdapter {
 
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    String dataDir;
 
     /**
      * Serialize {@code registry} and write it to

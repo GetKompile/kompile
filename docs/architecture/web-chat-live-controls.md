@@ -4,6 +4,16 @@ The chat web adapter launches `kompile chat --input-format web-json --output-for
 Unlike plain exec, this opt-in mode consumes one initial web-json line and leaves stdin open for control JSONL.
 Both the web application and CLI must be rebuilt together. Older CLIs reject the new option explicitly.
 
+## Single chat and multi-project workspace
+
+- `kompile chat --web` preserves the single-project chat launch and directory boundary.
+- `kompile chat --web --workspace` launches the same CHAT JAR persona at `/#/workspace`. Add `--open-browser` to open it automatically. Rebuild the CLI, common library, CHAT backend and chat frontend together; the installed binaries are not updated by a source edit.
+- The launch directory is registered automatically. Add other **absolute directories on the server host** using the project sidebar, create chats within each project, and select chat tabs. The non-secret project/chat index persists at `~/.kompile/chat-workspace.json` using cross-process locking and atomic replacement. Canonical roots must be registered explicitly; registering a parent does not authorize every subdirectory.
+- Each open pane has its own CLI transport, provider/persona state, scoped browser history and live controls. Switching tabs hides rather than destroys panes, so multiple projects (or multiple chats in one project) can run together. Keyboard shortcuts and the header settings gear target only the selected pane. Close is disabled while that pane is busy; use its Stop control first. Closing a pane keeps its registered chat.
+- Workspace mode defaults to four concurrent CLI workers; single-chat mode retains one. `kompile.web.chat.harness.maxConcurrent` overrides the worker count, capped at eight, with two queued turns. The UI allows eight open panes. Resource/permission checks inside each CLI remain in force; parallel provider chats do not imply simultaneous local GPU capacity.
+- Project selection changes the CLI child's working directory, not the Spring server's shared folder/model/RAG services. Provider configuration follows the existing CLI project/global-config launch policy. CLI session identity includes the canonical project root and browser chat id, so one project cannot resume another project's chat accidentally.
+- Open panes/reconnect checkpoints are browser-tab scoped; rendered history is browser-origin scoped. The project/chat index and CLI transcripts survive a new launch, but a new server port does not copy another origin's rendered browser history. Reload exposes the existing reconnect/stop controls; it does not automatically resubmit input or resurrect work after server shutdown. Both `/chat` and `/workspace` routes remain available in a workspace launch; ordinary single-mode launches cannot add projects through the workspace API.
+
 ## Browser controls
 
 - **Ctrl+B / Background button** transfers an eligible blocking subagent invocation to the CLI's retained background-task lifecycle. Model thinking is not backgroundable.

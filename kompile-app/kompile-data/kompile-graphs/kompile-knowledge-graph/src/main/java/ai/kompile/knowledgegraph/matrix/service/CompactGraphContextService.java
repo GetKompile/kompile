@@ -15,10 +15,13 @@
  */
 package ai.kompile.knowledgegraph.matrix.service;
 
+import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
 import ai.kompile.graph.reasoning.explain.ReasoningTraceJsonCodec;
+import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.query.GraphQueryEngine;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
@@ -47,6 +50,11 @@ import java.util.TreeMap;
  * summaries, and opaque metadata blobs. It preserves graph facts, induced relations, explicit source
  * identifiers, and canonical reasoning steps. Ordering and fallback identifiers are deterministic so
  * the exact context can be retained as an audit artifact and compared across answer models.</p>
+ *
+ * <p>Only the retrieved nodes, the relations among them, their stored opinions, and the trace and
+ * process artifacts are read; the fact sheet is never exported whole. A question that retrieved no
+ * node yields no nodes, and a reasoning trace is included only when it references a retrieved node.
+ * A stored opinion is emitted as {@code learnedScore}, never as recorded confidence.</p>
  */
 @Service
 public class CompactGraphContextService {
@@ -56,7 +64,18 @@ public class CompactGraphContextService {
     static final String PROCESS_SUGGESTIONS_ARTIFACT = "process/suggestions.json";
     static final String PROCESS_TRACE_JSON_PREFIX = "process/reasoning-traces/v1/";
     static final String PROCESS_TRACE_JSON_SUFFIX = ".json";
+    /** The only artifacts read for compact traces. */
+    static final List<String> TRACE_ARTIFACT_PREFIXES =
+            List.of(TRACE_DTO_ARTIFACT, PROCESS_SUGGESTIONS_ARTIFACT, PROCESS_TRACE_JSON_PREFIX);
+    /** Where the bridge nests a live node's or edge's stored state. */
+    static final String STORE_ATTRIBUTE = "kompile.store";
     private static final int MAX_TRACE_ARTIFACTS_SCANNED = 256;
+    /**
+     * Edge budget of the bounded read. Each retrieved node's incident-edge read is capped by what is
+     * left of it, so a hub with more incident edges than this can miss a relation to another
+     * retrieved node unless that node's own read finds it.
+     */
+    private static final int MAX_NEIGHBORHOOD_EDGES = 4_096;
 
     private static final int MAX_NODES = 32;
     private static final int MAX_RELATIONS = 96;
@@ -83,13 +102,27 @@ public class CompactGraphContextService {
 
     /** Build compact JSON for the requested fact-sheet scope and retrieved node identifiers. */
     public CompactContext build(Long factSheetId, Collection<String> retrievedNodeIds) {
-        UnifiedGraph graph = unifiedGraphBridge.export(factSheetId);
-        LinkedHashSet<String> selectedIds = selectedIds(graph, retrievedNodeIds);
+        List<String> seeds = retrievedNodeIds == null ? List.of() : retrievedNodeIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .limit(MAX_NODES)
+                .toList();
+        // Depth 1 with a node budget equal to the seeds: the retrieved nodes and the relations among
+        // them are read, never the rest of the fact sheet.
+        UnifiedGraph graph = unifiedGraphBridge.exportNeighborhood(factSheetId, seeds, seeds, 1,
+                Math.max(1, seeds.size()), GraphQueryEngine.Direction.BOTH, MAX_NEIGHBORHOOD_EDGES);
+        LinkedHashSet<String> selectedIds = selectedIds(graph, seeds);
+        if (!selectedIds.isEmpty()) {
+            unifiedGraphBridge.exportArtifacts(factSheetId, TRACE_ARTIFACT_PREFIXES)
+                    .forEach(graph::putArtifact);
+        }
+        boolean opinionsStale = Boolean.TRUE.equals(
+                graph.meta().get(UnifiedGraphReasoningLifecycle.REASONING_STALE_META));
 
         List<Map<String, Object>> traces = compactTraces(graph, selectedIds);
         Map<String, Map<String, Object>> sources = new TreeMap<>();
-        List<Map<String, Object>> nodes = compactNodes(graph, selectedIds, traces, sources);
-        List<Map<String, Object>> relations = compactRelations(graph, selectedIds, sources);
+        List<Map<String, Object>> nodes = compactNodes(graph, selectedIds, traces, sources, opinionsStale);
+        List<Map<String, Object>> relations = compactRelations(graph, selectedIds, sources, opinionsStale);
         addTraceSources(traces, sources);
 
         List<Map<String, Object>> boundedSources = sources.values().stream()
@@ -100,6 +133,10 @@ public class CompactGraphContextService {
         scope.put("graphId", graph.graphId());
         scope.put("factSheetId", graph.factSheetId());
         scope.put("retrievedNodeIds", List.copyOf(selectedIds));
+        if (opinionsStale) {
+            // The graph changed after the last learning pass, so learned scores are withheld.
+            scope.put("opinionsStale", true);
+        }
 
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("contract", CONTRACT);
@@ -120,23 +157,13 @@ public class CompactGraphContextService {
         }
     }
 
-    private static LinkedHashSet<String> selectedIds(
-            UnifiedGraph graph, Collection<String> retrievedNodeIds) {
+    /** The retrieved ids the bounded read found in scope. There is no fallback to other nodes. */
+    private static LinkedHashSet<String> selectedIds(UnifiedGraph graph, List<String> seeds) {
         LinkedHashSet<String> result = new LinkedHashSet<>();
-        if (retrievedNodeIds != null) {
-            retrievedNodeIds.stream()
-                    .filter(id -> id != null && !id.isBlank())
-                    .filter(id -> graph.entity(id).isPresent())
-                    .distinct()
-                    .limit(MAX_NODES)
-                    .forEach(result::add);
-        }
-        if (result.isEmpty()) {
-            graph.entities().stream()
-                    .sorted(Comparator.comparing(GraphEntity::id))
-                    .limit(MAX_NODES)
-                    .map(GraphEntity::id)
-                    .forEach(result::add);
+        for (String id : seeds) {
+            if (graph.entity(id).isPresent()) {
+                result.add(id);
+            }
         }
         return result;
     }
@@ -145,7 +172,8 @@ public class CompactGraphContextService {
             UnifiedGraph graph,
             Set<String> selectedIds,
             List<Map<String, Object>> traces,
-            Map<String, Map<String, Object>> sources) {
+            Map<String, Map<String, Object>> sources,
+            boolean opinionsStale) {
         List<Map<String, Object>> nodes = new ArrayList<>();
         graph.entities().stream()
                 .filter(entity -> selectedIds.contains(entity.id()))
@@ -158,6 +186,7 @@ public class CompactGraphContextService {
                     node.put("type", bounded(entity.type()));
                     node.put("label", bounded(entity.label()));
                     node.put("confidence", finite(entity.confidence()));
+                    putLearnedScore(node, graph.entityOpinion(entity.id()), opinionsStale);
                     if (entity.timestamp() != null) {
                         node.put("timestamp", entity.timestamp().toString());
                     }
@@ -190,7 +219,8 @@ public class CompactGraphContextService {
     private List<Map<String, Object>> compactRelations(
             UnifiedGraph graph,
             Set<String> selectedIds,
-            Map<String, Map<String, Object>> sources) {
+            Map<String, Map<String, Object>> sources,
+            boolean opinionsStale) {
         List<Map<String, Object>> relations = new ArrayList<>();
         graph.relations().stream()
                 .filter(relation -> selectedIds.contains(relation.sourceId())
@@ -206,6 +236,7 @@ public class CompactGraphContextService {
                     edge.put("type", bounded(relation.type()));
                     edge.put("weight", finite(relation.weight()));
                     edge.put("confidence", finite(relation.confidence()));
+                    putLearnedScore(edge, graph.relationOpinion(relation.id()), opinionsStale);
                     edge.put("directed", relation.directed());
                     List<String> sourceIds = sourceIds(
                             relationAttributes, relation.id(), relation.type(), sources);
@@ -221,11 +252,32 @@ public class CompactGraphContextService {
         return List.copyOf(relations);
     }
 
-    /** Expand the bridge's edge metadata JSON into typed attributes, while never exposing raw JSON. */
+    /**
+     * A stored opinion is a score learned by graph reasoning, not recorded evidence, so it is
+     * labelled {@code learnedScore} beside the recorded confidence, and withheld while the graph has
+     * changed since the last learning pass (the query engine applies the same rule).
+     */
+    private static void putLearnedScore(Map<String, Object> target, Opinion opinion, boolean stale) {
+        if (opinion == null || stale) {
+            return;
+        }
+        double expectation = opinion.expectation();
+        if (Double.isFinite(expectation)) {
+            target.put("learnedScore", Math.max(0.0, Math.min(1.0, expectation)));
+        }
+    }
+
+    /**
+     * Expand the bridge's stored state and metadata JSON into typed attributes, while never exposing
+     * raw JSON or the store record itself. Attributes already on the entity or relation win.
+     */
     private Map<String, Object> expandedAttributes(Map<String, Object> attributes) {
         Map<String, Object> expanded = new LinkedHashMap<>();
         if (attributes != null) {
             expanded.putAll(attributes);
+        }
+        if (expanded.remove(STORE_ATTRIBUTE) instanceof Map<?, ?> store) {
+            liftStoreState(store, expanded);
         }
         Object rawMetadata = expanded.remove("metadataJson");
         if (rawMetadata instanceof String json && !json.isBlank()) {
@@ -241,6 +293,33 @@ public class CompactGraphContextService {
             }
         }
         return expanded;
+    }
+
+    /**
+     * The bridge nests a live node's or edge's description, validity and public metadata (which
+     * carries its provenance) under {@value #STORE_ATTRIBUTE}. Lift those so they reach the model
+     * the way a portable graph's top-level attributes do; the rest of the record is internal, and
+     * its raw metadata JSON also holds the restore state.
+     */
+    private static void liftStoreState(Map<?, ?> store, Map<String, Object> target) {
+        Object description = store.get("description");
+        if (description != null) {
+            target.putIfAbsent("description", description);
+        }
+        if (Boolean.TRUE.equals(store.get("stale"))) {
+            target.putIfAbsent("stale", true);
+        }
+        Object validUntil = store.get("validUntil");
+        if (validUntil != null) {
+            target.putIfAbsent("validUntil", validUntil);
+        }
+        if (store.get("metadata") instanceof Map<?, ?> metadata) {
+            metadata.forEach((key, value) -> {
+                if (key != null && value != null) {
+                    target.putIfAbsent(String.valueOf(key), value);
+                }
+            });
+        }
     }
 
     private List<Map<String, Object>> compactTraces(UnifiedGraph graph, Set<String> selectedIds) {
@@ -267,16 +346,14 @@ public class CompactGraphContextService {
                 // Malformed or future-version JSON traces are preserved but never exposed raw.
             }
         }
-        boolean hasScopedTrace = traceCandidates.stream().anyMatch(candidate -> candidate.relevance() > 0);
+        // Most relevant first; a trace that references no retrieved node is never included.
         traceCandidates.sort(Comparator.<TraceCandidate>comparingInt(TraceCandidate::relevance)
                 .reversed().thenComparing(TraceCandidate::name));
         for (TraceCandidate candidate : traceCandidates) {
-            if (traces.size() >= MAX_TRACES || remainingSteps[0] <= 0) {
+            if (traces.size() >= MAX_TRACES || remainingSteps[0] <= 0 || candidate.relevance() <= 0) {
                 break;
             }
-            if (!hasScopedTrace || candidate.relevance() > 0) {
-                traces.add(compactTrace(candidate, remainingSteps));
-            }
+            traces.add(compactTrace(candidate, remainingSteps));
         }
 
         byte[] traceDtos = graph.artifact(TRACE_DTO_ARTIFACT);
@@ -291,14 +368,11 @@ public class CompactGraphContextService {
                         .sorted(Comparator.<TraceDtoCandidate>comparingInt(TraceDtoCandidate::relevance)
                                 .reversed().thenComparing(candidate -> canonical(candidate.dto())))
                         .toList();
-                boolean hasScopedDto = dtoCandidates.stream().anyMatch(candidate -> candidate.relevance() > 0);
                 for (TraceDtoCandidate candidate : dtoCandidates) {
-                    if (traces.size() >= MAX_TRACES || remainingSteps[0] <= 0) {
+                    if (traces.size() >= MAX_TRACES || remainingSteps[0] <= 0 || candidate.relevance() <= 0) {
                         break;
                     }
-                    if (!hasScopedDto || candidate.relevance() > 0) {
-                        traces.add(compactTraceDto(candidate.dto(), remainingSteps));
-                    }
+                    traces.add(compactTraceDto(candidate.dto(), remainingSteps));
                 }
             } catch (Exception ignored) {
                 // Malformed optional trace DTOs do not prevent graph-only compact retrieval.

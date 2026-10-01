@@ -29,6 +29,7 @@ import ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
+import ai.kompile.cli.main.codeindex.CodeIndexSessionBrief;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.mcp.stdio.DirectSubagentRunnerStdio;
 import ai.kompile.cli.mcp.stdio.McpToolAuditLogger;
@@ -78,6 +79,8 @@ public class McpSocketSession implements Runnable {
     private final ConcurrentHashMap<String, ToolDef> tools = new ConcurrentHashMap<>();
     private final AtomicBoolean toolsReady = new AtomicBoolean(false);
     private volatile Path workDir;
+    /** Code-index guidance and this client's project status for initialize. */
+    volatile CodeIndexSessionBrief sessionBrief;
     private volatile String requestedProfile = "full";
     private volatile Set<String> allowedToolIds;
     private volatile CoordinationStateManager coordinator;
@@ -120,6 +123,8 @@ public class McpSocketSession implements Runnable {
             JsonNode header = sessionOm.readTree(headerLine);
             String workDirStr = header.has("workDir") ? header.get("workDir").asText() : null;
             this.workDir = workDirStr != null ? Paths.get(workDirStr) : pool.defaultWorkDir();
+            // Resolved per client on the brief's own thread; initialize waits only within its budget.
+            this.sessionBrief = CodeIndexSessionBrief.start(workDir);
             this.requestedProfile = header.path("profile").asText("full");
             this.allowedToolIds = parseAllowedToolIds(header.get("allowedTools"));
             this.gatewayInterceptor = CliToolGatewayInterceptor.fromConfig(sessionOm);
@@ -213,7 +218,7 @@ public class McpSocketSession implements Runnable {
         }
     }
 
-    private JsonNode handleMessage(JsonNode msg, ObjectMapper om) {
+    JsonNode handleMessage(JsonNode msg, ObjectMapper om) {
         JsonNode idNode = msg.get("id");
         JsonNode methodNode = msg.get("method");
         if (methodNode == null) return null;
@@ -239,6 +244,9 @@ public class McpSocketSession implements Runnable {
                     ObjectNode serverInfo = initResult.putObject("serverInfo");
                     serverInfo.put("name", "kompile-daemon");
                     serverInfo.put("version", "0.1.0-SNAPSHOT");
+                    CodeIndexSessionBrief brief = sessionBrief;
+                    initResult.put("instructions",
+                            brief != null ? brief.instructions() : CodeIndexSessionBrief.GUIDANCE);
                     result.set("result", initResult);
                 }
 

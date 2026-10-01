@@ -16,6 +16,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -189,6 +191,36 @@ class ProjectLocalLearningSubprocessExecutorTest {
     }
 
     @Test
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void childLaunchesCarryTheParentsCurrentUserHome() throws Exception {
+        Path args = tempDir.resolve("args.json");
+        Path jar = fakeBootJar("kompile-server.jar", "dependency.jar");
+        Path nativeBinary = tempDir.resolve("kompile-server");
+        Path home = Files.createDirectories(tempDir.resolve("relocated-home"));
+        String flag = "-Duser.home=" + home;
+        String previous = System.getProperty("user.home");
+        System.setProperty("user.home", home.toString());
+        try {
+            List<String> local =
+                    ProjectLocalLearningSubprocessExecutor.localLaunchSpec(args).command();
+            assertTrue(local.contains(flag));
+            assertTrue(local.indexOf(flag) < local.indexOf("-cp"));
+
+            List<String> jarLaunch = ProjectLocalLearningSubprocessExecutor.buildLaunchSpec(
+                    jar, false, args, 512).command();
+            assertTrue(jarLaunch.contains(flag));
+            assertTrue(jarLaunch.indexOf(flag) < jarLaunch.indexOf("-cp"));
+
+            List<String> nativeLaunch = ProjectLocalLearningSubprocessExecutor.buildLaunchSpec(
+                    nativeBinary, true, args, 512).command();
+            assertTrue(nativeLaunch.contains(flag));
+            assertTrue(nativeLaunch.indexOf(flag) < nativeLaunch.indexOf("--subprocess=learning"));
+        } finally {
+            System.setProperty("user.home", previous);
+        }
+    }
+
+    @Test
     void defaultConstructorSelectsTheBareClasspathChildInJvmMode() throws Exception {
         // In-JVM CLI (the MCP-initiated local case) must get the bare child automatically —
         // no launch-mode property, no injected factory. The surefire pom disables the
@@ -305,6 +337,89 @@ class ProjectLocalLearningSubprocessExecutorTest {
     }
 
     @Test
+    void learningRewritesOnlyTheRelationOpinionsAndWeightMapsItOwns() throws Exception {
+        String classpath = System.getProperty("surefire.test.class.path",
+                System.getProperty("java.class.path"));
+        ProjectLocalLearningSubprocessExecutor executor =
+                new ProjectLocalLearningSubprocessExecutor(MAPPER, args ->
+                        new ProjectLocalLearningSubprocessExecutor.LaunchSpec(
+                                List.of(JavaRuntimeLocator.javaExecutable(), "-cp", classpath,
+                                        ProjectLocalLearningSubprocessExecutor.LOCAL_CHILD_MAIN,
+                                        args.toString()),
+                                Map.of(), "owned-assets-learning-child"),
+                        true, false, 120_000L, 60_000L);
+        ProjectLocalLearningSubprocessExecutor.Plan reasoningPlan =
+                new ProjectLocalLearningSubprocessExecutor.Plan(
+                        new UnifiedGraphKgeLifecycle.Config(false, "TRANSE", 4, 1, 0.05, 1, 1L),
+                        new UnifiedGraphReasoningLifecycle.Config(true, 1, 1, 1, 0.35, 25),
+                        "OWNED_ASSETS");
+        Opinion previousRun = Opinion.fromSoftTruth(0.2);
+        UnifiedGraph before = graph()
+                .addEntity("bob", "PERSON", "Bob")
+                .addRelation("r2", "alice", "bob", "KNOWS", 0.8)
+                .putRelationOpinion("r1", previousRun)
+                .putWeightMap(UnifiedGraphReasoningLifecycle.PSL_WEIGHT_MAP, Map.of("stale", 1.0))
+                .putWeightMap("analystPriors", Map.of("acme", 0.5))
+                .putArtifactText(UnifiedGraphReasoningLifecycle.TRACES_ARTIFACT,
+                        "[{\"question\":\"who does alice know\"}]");
+
+        UnifiedGraph learned = executor.learn(
+                before, reasoningPlan, tempDir, "owned-assets-learning").graph();
+
+        assertEquals(Set.of("r1", "r2"),
+                ProjectLocalLearningSubprocessExecutor.learningProjectedRelationIds(learned));
+        assertNotEquals(previousRun, learned.relationOpinion("r1"));
+        assertNotNull(learned.relationOpinion("r2"));
+        assertFalse(learned.weightMap(UnifiedGraphReasoningLifecycle.PSL_WEIGHT_MAP)
+                .containsKey("stale"));
+        assertEquals(Map.of("acme", 0.5), learned.weightMap("analystPriors"));
+        // Recorded traces sit under reasoning/ but are not learned: they come back untouched.
+        assertEquals("[{\"question\":\"who does alice know\"}]",
+                learned.artifactText(UnifiedGraphReasoningLifecycle.TRACES_ARTIFACT));
+    }
+
+    @Test
+    void rejectsAChildThatRewritesARelationOpinionLearningDoesNotOwn() {
+        String classpath = System.getProperty("surefire.test.class.path",
+                System.getProperty("java.class.path"));
+        ProjectLocalLearningSubprocessExecutor executor =
+                new ProjectLocalLearningSubprocessExecutor(MAPPER, args ->
+                        new ProjectLocalLearningSubprocessExecutor.LaunchSpec(
+                                List.of(JavaRuntimeLocator.javaExecutable(), "-cp", classpath,
+                                        RelationOpinionMutatingLearningChild.class.getName(),
+                                        args.toString()),
+                                Map.of(), "relation-opinion-mutating-learning-child"),
+                        true, false, 30_000L, 10_000L);
+
+        UnifiedGraph before = graph().putRelationOpinion("r1", Opinion.fromSoftTruth(0.9));
+        java.io.IOException failure = assertThrows(java.io.IOException.class,
+                () -> executor.learn(before, plan(), tempDir, "crawl-relation-opinion"));
+        assertEquals("Learning subprocess changed non-learning relation opinion r1",
+                failure.getMessage());
+    }
+
+    @Test
+    void relationOpinionOwnershipComesFromTheStoredConsensusTargets() {
+        UnifiedGraph graph = graph()
+                .addEntity("bob", "PERSON", "Bob")
+                .addRelation("r2", "alice", "bob", "KNOWS", 0.8);
+        assertEquals(Set.of(),
+                ProjectLocalLearningSubprocessExecutor.learningProjectedRelationIds(graph));
+
+        graph.putModel(UnifiedGraphReasoningLifecycle.CONSENSUS_TARGETS_ARTIFACT,
+                new java.util.LinkedHashMap<>(Map.of(
+                        UnifiedGraphReasoningLifecycle.relationTargetKey("KNOWS", "alice", "bob"),
+                        0.7)));
+        assertEquals(Set.of("r2"),
+                ProjectLocalLearningSubprocessExecutor.learningProjectedRelationIds(graph));
+
+        graph.putArtifact(UnifiedGraphReasoningLifecycle.CONSENSUS_TARGETS_ARTIFACT,
+                new byte[]{1, 2, 3});
+        assertEquals(Set.of(),
+                ProjectLocalLearningSubprocessExecutor.learningProjectedRelationIds(graph));
+    }
+
+    @Test
     @EnabledIfSystemProperty(named = "kompile.test.learning.jar", matches = ".+")
     void realExecutableServerRunsPortableKgePslAndMebnInItsChildProcess() throws Exception {
         Path serverJar = Path.of(System.getProperty("kompile.test.learning.jar"))
@@ -410,6 +525,23 @@ class ProjectLocalLearningSubprocessExecutorTest {
             Path output = Path.of(request.path("outputGraphPath").asText());
             UnifiedGraph graph = UnifiedGraph.load(input);
             graph.meta("unrelated.metadata", "mutated").save(output);
+            System.out.println(ProjectLocalLearningSubprocessExecutor.MESSAGE_PREFIX
+                    + "{\"type\":\"COMPLETED\",\"finalLoss\":0.0,\"outputPath\":\""
+                    + output.toString().replace("\\", "\\\\")
+                    + "\",\"entities\":2,\"relations\":1}");
+        }
+    }
+
+    public static final class RelationOpinionMutatingLearningChild {
+        private RelationOpinionMutatingLearningChild() {
+        }
+
+        public static void main(String[] args) throws Exception {
+            JsonNode request = MAPPER.readTree(Path.of(args[0]).toFile());
+            Path input = Path.of(request.path("inputGraphPath").asText());
+            Path output = Path.of(request.path("outputGraphPath").asText());
+            UnifiedGraph graph = UnifiedGraph.load(input);
+            graph.putRelationOpinion("r1", Opinion.fromSoftTruth(0.1)).save(output);
             System.out.println(ProjectLocalLearningSubprocessExecutor.MESSAGE_PREFIX
                     + "{\"type\":\"COMPLETED\",\"finalLoss\":0.0,\"outputPath\":\""
                     + output.toString().replace("\\", "\\\\")

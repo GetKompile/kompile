@@ -7,11 +7,13 @@ package ai.kompile.cli.main.codeindex;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.confidence.Opinion;
@@ -27,8 +29,12 @@ import ai.kompile.project.KompileProjectManifest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -47,11 +53,31 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
+@TemporaryUserHome
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class LocalCodeKGraphPublisherTest {
 
     @TempDir
     Path tempDir;
+
+    private String previousAdmissionMode;
+
+    @BeforeEach
+    void setUp() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
+    }
 
     @Test
     void unchangedIndexGenerationReusesPublishedGraph() throws Exception {
@@ -709,6 +735,182 @@ class LocalCodeKGraphPublisherTest {
                     "the second publish must contain the newly indexed method");
         } finally {
             deleteTree(indexDirectory);
+        }
+    }
+
+    @Test
+    void subdirectoryOfARegisteredProjectIsNotRegisteredUnderASecondId() throws Exception {
+        Path owner = tempDir.resolve("registered-owner");
+        Path module = Files.createDirectories(owner.resolve("module"));
+        Files.writeString(module.resolve("Module.java"), "final class Module {}\n");
+        String ownerId = uniqueId("registered-owner");
+        KompileCodingProject registration = new KompileCodingProject();
+        registration.setId(ownerId);
+        registration.setCodeProjectId(ownerId);
+        registration.setName("Owner");
+        registration.setRootPath(owner.toString());
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("registered-owner");
+        request.setIncludeStandardComponents(false);
+        request.setCodingProjects(List.of(registration));
+        new KompileProjectStore().init(owner, request);
+        Path manifest = owner.resolve(KompileProjectStore.MANIFEST_FILE);
+        byte[] before = Files.readAllBytes(manifest);
+
+        String adhocId = uniqueId("module-adhoc");
+        Path indexDirectory = LocalCodeIndexer.getIndexDir(adhocId);
+        try {
+            LocalCodeIndexer indexer = new LocalCodeIndexer();
+            try (PrintStream quiet = new PrintStream(OutputStream.nullOutputStream())) {
+                indexer.index(module, adhocId, null, null, true, quiet);
+            }
+            LocalCodeKGraphPublisher.ProjectionResult projection =
+                    LocalCodeKGraphPublisher.publish(module, adhocId, null, null);
+
+            assertFalse(projection.published());
+            assertNull(projection.graphPath());
+            assertTrue(projection.skippedReason().contains("'" + ownerId + "'"), projection.skippedReason());
+            assertTrue(projection.skippedReason().contains(owner.toRealPath().toString()),
+                    projection.skippedReason());
+            assertArrayEquals(before, Files.readAllBytes(manifest),
+                    "the owner's manifest must not gain a second id for its own files");
+            // Only the graph slice is skipped: the index stays searchable under the id it was built with.
+            assertFalse(indexer.search(adhocId, "Module", null, 10).isEmpty());
+        } finally {
+            deleteTree(indexDirectory);
+        }
+    }
+
+    @Test
+    void checkoutSubdirectoryWithoutAProjectIsNotInitialised() throws Exception {
+        Path checkout = fakeCheckout("uninitialised-checkout");
+        Path sub = Files.createDirectories(checkout.resolve("tools/sub"));
+        Files.writeString(sub.resolve("Tool.java"), "final class Tool {}\n");
+        String subId = uniqueId("checkout-sub");
+        Path indexDirectory = LocalCodeIndexer.getIndexDir(subId);
+        try {
+            try (PrintStream quiet = new PrintStream(OutputStream.nullOutputStream())) {
+                new LocalCodeIndexer().index(sub, subId, null, null, true, quiet);
+            }
+            LocalCodeKGraphPublisher.ProjectionResult projection =
+                    LocalCodeKGraphPublisher.publish(sub, subId, null, null);
+
+            assertFalse(projection.published());
+            assertTrue(projection.skippedReason().contains("inside the checkout " + checkout.toRealPath()),
+                    projection.skippedReason());
+            assertNoProjectState(sub, sub.getParent(), checkout);
+        } finally {
+            deleteTree(indexDirectory);
+        }
+    }
+
+    @Test
+    void checkoutTopIsInitialisedOnPublish() throws Exception {
+        Path checkout = fakeCheckout("initialised-checkout");
+        Files.writeString(checkout.resolve("Top.java"), "final class Top {}\n");
+        String topId = uniqueId("checkout-top");
+        Path indexDirectory = LocalCodeIndexer.getIndexDir(topId);
+        try {
+            try (PrintStream quiet = new PrintStream(OutputStream.nullOutputStream())) {
+                new LocalCodeIndexer().index(checkout, topId, null, null, true, quiet);
+            }
+            LocalCodeKGraphPublisher.ProjectionResult projection =
+                    LocalCodeKGraphPublisher.publish(checkout, topId, null, null);
+
+            assertTrue(projection.published(), projection.skippedReason());
+            assertTrue(Files.isRegularFile(projection.graphPath()));
+            List<KompileCodingProject> registrations =
+                    new KompileProjectStore().load(checkout).getCodingProjects();
+            assertEquals(1, registrations.size());
+            assertEquals(topId, registrations.get(0).getCodeProjectId());
+        } finally {
+            deleteTree(indexDirectory);
+        }
+    }
+
+    @Test
+    void callScopedPatternsAreNotSavedOnTheRegistration() throws Exception {
+        Path root = tempDir.resolve("call-scoped-patterns");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Scoped.java"), "final class Scoped {}\n");
+        Files.writeString(root.resolve("notes.md"), "# Notes\n");
+        String projectId = uniqueId("call-scoped-patterns");
+        Path indexDirectory = LocalCodeIndexer.getIndexDir(projectId);
+        try {
+            try (PrintStream quiet = new PrintStream(OutputStream.nullOutputStream())) {
+                new LocalCodeIndexer().index(root, projectId, "*.java", null, true, quiet);
+            }
+            assertTrue(LocalCodeKGraphPublisher.publish(root, projectId, "*.java", null).published());
+            KompileCodingProject registration =
+                    new KompileProjectStore().load(root).getCodingProjects().get(0);
+            assertNull(registration.getIncludePatterns(),
+                    "one call's scope must not narrow every later refresh of the project");
+            assertEquals("*.java", registration.getMetadata().get("codeProjectionIncludes"));
+
+            // A call that names no scope publishes the scope the committed index was built with.
+            assertTrue(LocalCodeKGraphPublisher.publish(root, projectId, null, null).published());
+            registration = new KompileProjectStore().load(root).getCodingProjects().get(0);
+            assertNull(registration.getIncludePatterns());
+            assertEquals("*.java", registration.getMetadata().get("codeProjectionIncludes"));
+        } finally {
+            deleteTree(indexDirectory);
+        }
+    }
+
+    @Test
+    void explicitIndexInARefusedDirectoryLiftsTheFenceWithoutProjectState() throws Exception {
+        Path checkout = fakeCheckout("fenced-checkout");
+        Path sub = Files.createDirectories(checkout.resolve("sub"));
+        String projectId = uniqueId("fenced-sub");
+        Path indexDirectory = Files.createDirectories(LocalCodeIndexer.getIndexDir(projectId));
+        try {
+            Files.writeString(indexDirectory.resolve(LocalCodeIndexer.REMOVAL_MARKER),
+                    sub.toRealPath().toString());
+            assertTrue(LocalCodeIndexer.isRemoved(projectId));
+
+            LocalCodeKGraphPublisher.prepareExplicitIndex(sub, projectId);
+
+            assertFalse(LocalCodeIndexer.isRemoved(projectId),
+                    "an explicit index request lifts the removal fence");
+            assertNoProjectState(sub, checkout);
+        } finally {
+            deleteTree(indexDirectory);
+        }
+    }
+
+    @Test
+    void removingAnIndexInARefusedDirectoryCreatesNoProjectState() throws Exception {
+        Path checkout = fakeCheckout("removal-checkout");
+        Path sub = Files.createDirectories(checkout.resolve("sub"));
+        Files.writeString(sub.resolve("Gone.java"), "final class Gone {}\n");
+        String projectId = uniqueId("removal-sub");
+        Path indexDirectory = LocalCodeIndexer.getIndexDir(projectId);
+        try {
+            try (PrintStream quiet = new PrintStream(OutputStream.nullOutputStream())) {
+                new LocalCodeIndexer().index(sub, projectId, null, null, true, quiet);
+            }
+
+            assertEquals(0, LocalCodeKGraphPublisher.remove(sub, projectId));
+
+            assertTrue(LocalCodeIndexer.isRemoved(projectId));
+            assertFalse(Files.exists(indexDirectory.resolve("index.db")));
+            assertNoProjectState(sub, checkout);
+        } finally {
+            deleteTree(indexDirectory);
+        }
+    }
+
+    /** A directory that looks like a git checkout to auto-init detection; no git command runs in it. */
+    private Path fakeCheckout(String name) throws Exception {
+        Path checkout = tempDir.resolve(name);
+        Files.createDirectories(checkout.resolve(".git"));
+        return checkout;
+    }
+
+    private static void assertNoProjectState(Path... directories) {
+        for (Path directory : directories) {
+            assertFalse(Files.exists(directory.resolve(KompileProjectStore.MANIFEST_FILE)), directory.toString());
+            assertFalse(Files.exists(directory.resolve(KompileProjectStore.METADATA_DIR)), directory.toString());
         }
     }
 

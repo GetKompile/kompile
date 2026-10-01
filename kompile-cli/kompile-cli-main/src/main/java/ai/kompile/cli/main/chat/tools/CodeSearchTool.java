@@ -52,6 +52,12 @@ public class CodeSearchTool implements CliTool {
     private static final Set<String> REFRESHABLE_ACTIONS = Set.of(
             "search", "ranked_search", "blended_search", "signatures", "routing");
 
+    /**
+     * Checked for {@code action=index} on top of {@link #permissionKey()}, so read-only
+     * agents can query the index without rebuilding it.
+     */
+    public static final String INDEX_PERMISSION_KEY = "code_search.index";
+
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
     private final boolean remoteConfigured;
@@ -77,6 +83,12 @@ public class CodeSearchTool implements CliTool {
                 "file views), health (index quality score 0-100), routing (file complexity tiers), " +
                 "index, stats, entities. No explicit URL uses the folder-local index; " +
                 "explicit remote requests never fall back locally. Analysis actions are local-only.";
+    }
+
+    @Override
+    public String compactHint() {
+        return "Code index lookup - use BEFORE grep for classes/methods/symbols: action=blended_search " +
+                "query=<name>; entities file_path=<f>. project_id auto-resolves from the working directory.";
     }
 
     @Override
@@ -152,6 +164,9 @@ public class CodeSearchTool implements CliTool {
         context.checkPermission(permissionKey(), "Search/index codebase");
 
         String action = params.path("action").asText("search");
+        if ("index".equals(action)) {
+            context.checkPermission(INDEX_PERMISSION_KEY, "Build or refresh the code index");
+        }
 
         // Default root_path to current working directory if not specified
         String cwd = context.getWorkingDirectory().toAbsolutePath().toString();
@@ -167,7 +182,7 @@ public class CodeSearchTool implements CliTool {
             String refreshNote = null;
             if (REFRESHABLE_ACTIONS.contains(action) && params.path("auto_refresh").asBoolean(true)) {
                 refreshNote = BackgroundIndexService.getInstance()
-                        .prepareForRead(new LocalCodeIndexer(), projectId);
+                        .prepareForRead(new LocalCodeIndexer(), projectId, context.getWorkingDirectory());
             }
             ToolResult result = executeLocal(action, params, projectId, cwd, context);
             return withBackend(result, "folder-local", refreshNote);
@@ -394,42 +409,59 @@ public class CodeSearchTool implements CliTool {
 
             return switch (action) {
                 case "index" -> {
-                    String rootPath = params.path("root_path").asText("");
-                    if (rootPath.isEmpty()) rootPath = cwd;
+                    String requestedRoot = params.path("root_path").asText("");
+                    if (requestedRoot.isEmpty()) requestedRoot = cwd;
+                    Path requested = Path.of(requestedRoot).toAbsolutePath();
+                    Path root = ProjectIdResolver.indexRoot(projectId, requested);
                     ai.kompile.cli.main.codeindex.LocalCodeIndexer.IndexResult result =
-                            localIndexer.index(java.nio.file.Path.of(rootPath), projectId,
+                            localIndexer.index(root, projectId,
                                     null, null, ProgressPrintStream.from(context));
                     LocalCodeKGraphPublisher.ProjectionResult projection =
-                            LocalCodeKGraphPublisher.publish(Path.of(rootPath), projectId, null, null);
-                    CodeGraphLearningRunner.ConfiguredResult learning =
-                            new CodeGraphLearningRunner().runConfigured(
-                                    Path.of(rootPath), projection.graphPath(),
-                                    CodeGraphReasoningConfig.TRIGGER_BUILD);
+                            LocalCodeKGraphPublisher.publish(root, projectId, null, null);
+                    CodeGraphLearningRunner.ConfiguredResult learning = projection.published()
+                            ? new CodeGraphLearningRunner().runConfigured(
+                                    root, projection.graphPath(), CodeGraphReasoningConfig.TRIGGER_BUILD)
+                            : null;
                     StringBuilder sb = new StringBuilder();
                     sb.append("Codebase indexed locally\n\n");
                     sb.append("- **Project**: ").append(result.projectId()).append("\n");
                     sb.append("- **Root**: ").append(result.rootPath()).append("\n");
+                    if (!root.equals(requested)) {
+                        sb.append("- **Indexed the project root**: ").append(requested)
+                                .append(" is part of project '").append(projectId)
+                                .append("', whose index covers ").append(root).append("\n");
+                    }
                     sb.append("- **Files processed**: ").append(result.filesProcessed()).append("\n");
                     sb.append("- **Entities found**: ").append(result.entitiesFound()).append("\n");
-                    sb.append("- **Knowledge base**: ").append(projection.knowledgeBaseId()).append("\n");
-                    sb.append("- **KGraph**: ").append(projection.graphPath()).append("\n");
-                    sb.append("- **Code graph learning**: ").append(learning.status()).append("\n");
-                    if (learning.error() != null) {
-                        sb.append("  - Learning failed without invalidating the structural index: ")
-                                .append(learning.error()).append("\n");
+                    if (projection.published()) {
+                        sb.append("- **Knowledge base**: ").append(projection.knowledgeBaseId()).append("\n");
+                        sb.append("- **KGraph**: ").append(projection.graphPath()).append("\n");
+                        sb.append("- **Code graph learning**: ").append(learning.status()).append("\n");
+                        if (learning.error() != null) {
+                            sb.append("  - Learning failed without invalidating the structural index: ")
+                                    .append(learning.error()).append("\n");
+                        }
+                    } else {
+                        sb.append("- **KGraph**: not published — ").append(projection.skippedReason()).append("\n");
                     }
                     if (result.errors() > 0) sb.append("- **Errors**: ").append(result.errors()).append("\n");
-                    sb.append("\nGraph search with: graph_search query='...' knowledgeBase='")
-                            .append(projection.knowledgeBaseId()).append("' code_project_id='")
-                            .append(projectId).append("'\n");
+                    if (projection.published()) {
+                        sb.append("\nGraph search with: graph_search query='...' knowledgeBase='")
+                                .append(projection.knowledgeBaseId()).append("' code_project_id='")
+                                .append(projectId).append("'\n");
+                    }
                     Map<String, Object> metadata = new LinkedHashMap<>();
                     metadata.put("projectId", projectId);
                     metadata.put("filesProcessed", result.filesProcessed());
-                    metadata.put("knowledgeBase", projection.knowledgeBaseId());
-                    metadata.put("graphPath", projection.graphPath().toString());
-                    metadata.put("learningStatus", learning.status());
-                    if (learning.error() != null) metadata.put("learningError", learning.error());
-                    yield ToolResult.success("code_index: " + rootPath, sb.toString(), metadata);
+                    if (projection.published()) {
+                        metadata.put("knowledgeBase", projection.knowledgeBaseId());
+                        metadata.put("graphPath", projection.graphPath().toString());
+                        metadata.put("learningStatus", learning.status());
+                        if (learning.error() != null) metadata.put("learningError", learning.error());
+                    } else {
+                        metadata.put("kgraphSkipped", projection.skippedReason());
+                    }
+                    yield ToolResult.success("code_index: " + root, sb.toString(), metadata);
                 }
                 case "search" -> {
                     String query = params.path("query").asText("");

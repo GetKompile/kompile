@@ -75,7 +75,7 @@ public class MebnTheoryRegistrationService {
     private final IncrementalReasoningOrchestrator orchestrator;
 
     @Autowired(required = false)
-    private KnowledgeGraphService knowledgeGraphService;
+    KnowledgeGraphService knowledgeGraphService;
 
     @Autowired(required = false)
     private GraphToFactStoreProjector graphToFactStoreProjector;

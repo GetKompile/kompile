@@ -140,7 +140,13 @@ public class GraphExportTool implements CliTool {
                 apiPath += "&factSheetId=" + factSheetId;
             }
 
-            byte[] bytes = client.getBytes(apiPath);
+            GroundingBackendClient.BinaryResponse resp = client.getBytes(apiPath);
+            if (!resp.successful()) {
+                // An error body is the server's explanation, not a graph: nothing is written.
+                return ToolResult.error("graph_export failed (HTTP " + resp.statusCode() + "): "
+                        + GroundingBackendClient.errorMessage(resp.bodyText()));
+            }
+            byte[] bytes = resp.body();
             if (bytes.length == 0) {
                 return ToolResult.error("graph_export: server returned an empty response.");
             }

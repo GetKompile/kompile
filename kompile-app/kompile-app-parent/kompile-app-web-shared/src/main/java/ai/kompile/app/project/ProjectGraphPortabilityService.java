@@ -61,13 +61,13 @@ public class ProjectGraphPortabilityService {
     private final KompileProjectStore store = new KompileProjectStore();
 
     @Autowired(required = false)
-    private FactSheetService factSheetService;
+    FactSheetService factSheetService;
     @Autowired(required = false)
-    private KnowledgeGraphService knowledgeGraphService;
+    KnowledgeGraphService knowledgeGraphService;
     @Autowired(required = false)
-    private UnifiedGraphBridge unifiedGraphBridge;
+    UnifiedGraphBridge unifiedGraphBridge;
     @Autowired(required = false)
-    private ProjectGraphDestinationMapper destinationMapper;
+    ProjectGraphDestinationMapper destinationMapper;
 
     private final AtomicBoolean rehydrating = new AtomicBoolean();
 

@@ -140,7 +140,7 @@ class GpuLifecycleIntegrationTest {
         }
 
         @Test
-        @DisplayName("should handle suspend failure gracefully and still acquire GPU")
+        @DisplayName("a service that fails to suspend keeps its reservation, so the job is short of memory")
         void handlesSuspendFailure() {
             // Setup: embedding service that fails to suspend (but stops running)
             TestManagedService embeddingService = new TestManagedService("embedding") {
@@ -155,10 +155,14 @@ class GpuLifecycleIntegrationTest {
             // Use 8GB so VLM (18GB budget) won't fit (24-8=16 < 18), forcing eviction
             gpuResourceManager.reserve("embedding", GPU_4090, 8L * ONE_GB);
 
-            // VLM should still be able to acquire (eviction releases reservation even on suspend failure)
-            GpuDevice device = manager.acquireGpuForJob("vlm-1", "vlm", "test");
-            assertNotNull(device);
-            assertTrue(manager.hasJobGpuHold("vlm-1"));
+            // A failed suspend frees nothing the ledger can trust — the service may still hold the
+            // memory — so its reservation stays and the VLM job can't have that memory
+            assertThrows(ModelLifecycleManager.GpuShortfallException.class,
+                    () -> manager.acquireGpuForJob("vlm-1", "vlm", "test"));
+            assertEquals(1, embeddingService.suspendCount.get());
+            assertTrue(gpuResourceManager.hasReservationForService("embedding"));
+            assertFalse(manager.hasJobGpuHold("vlm-1"));
+            assertFalse(gpuResourceManager.hasReservation("vlm-1"));
         }
     }
 

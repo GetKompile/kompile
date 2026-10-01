@@ -666,12 +666,11 @@ public class AppConfigWizard {
 
         Map<String, Object> config = loadConfig(LLM_PROVIDER_CONFIG);
 
-        String[] providers = {"openai", "anthropic", "gemini", "ollama", "custom"};
+        String[] providers = {"openai", "anthropic", "gemini", "custom"};
         String[] providerDescs = {
                 "OpenAI       — GPT-4, GPT-4o, etc.",
                 "Anthropic    — Claude 4.6, Claude 4.5, etc.",
                 "Google Gemini — Gemini 2.5 Pro, Flash, etc.",
-                "Ollama       — Local models (Llama, Mistral, etc.)",
                 "Custom       — OpenAI-compatible endpoint"
         };
 
@@ -701,32 +700,36 @@ public class AppConfigWizard {
             System.out.println();
             return false;
         }
+        if (!Arrays.asList(providers).contains(selectedProvider)) {
+            System.out.println(YELLOW + "  Unsupported provider: " + selectedProvider
+                    + ". Choose one of the listed providers." + RESET);
+            System.out.println();
+            return false;
+        }
 
         // API key
-        if (!"ollama".equals(selectedProvider)) {
-            String envVar = getEnvVarForProvider(selectedProvider);
-            String envValue = envVar != null ? System.getenv(envVar) : null;
+        String envVar = getEnvVarForProvider(selectedProvider);
+        String envValue = envVar != null ? System.getenv(envVar) : null;
 
-            if (envValue != null && !envValue.isBlank()) {
-                System.out.println("  Found " + envVar + " in environment: " + DIM + maskKey(envValue) + RESET);
-                String use = prompt(reader, "  Use environment variable? [Y/n]: ");
-                if (use == null || use.isBlank() || use.toLowerCase().startsWith("y")) {
-                    config.put("apiKeySource", "env:" + envVar);
-                } else {
-                    String key = prompt(reader, "  API key: ");
-                    if (key != null && !key.trim().isEmpty()) {
-                        config.put("apiKey", key.trim());
-                        config.put("apiKeySource", "config");
-                    }
-                }
+        if (envValue != null && !envValue.isBlank()) {
+            System.out.println("  Found " + envVar + " in environment: " + DIM + maskKey(envValue) + RESET);
+            String use = prompt(reader, "  Use environment variable? [Y/n]: ");
+            if (use == null || use.isBlank() || use.toLowerCase().startsWith("y")) {
+                config.put("apiKeySource", "env:" + envVar);
             } else {
-                String currentKey = MapUtils.getString(config, "apiKey", "");
-                String keyPrompt = currentKey.isEmpty() ? "  API key: " : "  API key (Enter to keep current): ";
-                String key = prompt(reader, keyPrompt);
+                String key = prompt(reader, "  API key: ");
                 if (key != null && !key.trim().isEmpty()) {
                     config.put("apiKey", key.trim());
                     config.put("apiKeySource", "config");
                 }
+            }
+        } else {
+            String currentKey = MapUtils.getString(config, "apiKey", "");
+            String keyPrompt = currentKey.isEmpty() ? "  API key: " : "  API key (Enter to keep current): ";
+            String key = prompt(reader, keyPrompt);
+            if (key != null && !key.trim().isEmpty()) {
+                config.put("apiKey", key.trim());
+                config.put("apiKeySource", "config");
             }
         }
 
@@ -735,7 +738,6 @@ public class AppConfigWizard {
                 {"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini"},                 // openai
                 {"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"}, // anthropic
                 {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"},        // gemini
-                {},                                                                  // ollama
                 {}                                                                   // custom
         };
 
@@ -774,11 +776,10 @@ public class AppConfigWizard {
                     MapUtils.getString(config, "model", "")));
         }
 
-        // Base URL for ollama/custom
-        if ("ollama".equals(selectedProvider) || "custom".equals(selectedProvider)) {
-            String defaultUrl = "ollama".equals(selectedProvider) ? "http://localhost:11434" : "";
+        // Base URL for custom
+        if ("custom".equals(selectedProvider)) {
             config.put("baseUrl", promptWithDefault(reader, "  Base URL",
-                    MapUtils.getString(config, "baseUrl", defaultUrl)));
+                    MapUtils.getString(config, "baseUrl", "")));
         }
 
         saveConfig(LLM_PROVIDER_CONFIG, config);
@@ -798,10 +799,6 @@ public class AppConfigWizard {
                 break;
             case "gemini":
                 System.out.println("    spring.ai.vertex.ai.gemini.chat.options.model=" + MapUtils.getString(config, "model", "gemini-2.5-pro"));
-                break;
-            case "ollama":
-                System.out.println("    spring.ai.ollama.base-url=" + MapUtils.getString(config, "baseUrl", "http://localhost:11434"));
-                System.out.println("    spring.ai.ollama.chat.options.model=" + MapUtils.getString(config, "model", "llama3"));
                 break;
             case "custom":
                 System.out.println("    spring.ai.openai.base-url=" + MapUtils.getString(config, "baseUrl", ""));

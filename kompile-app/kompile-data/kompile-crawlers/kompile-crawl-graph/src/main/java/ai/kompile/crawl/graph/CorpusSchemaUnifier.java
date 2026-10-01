@@ -465,6 +465,7 @@ final class CorpusSchemaUnifier {
                                     nodeTypesPerTopic, relationshipsPerTopic),
                             TASK_TYPE, job, scope);
                 } catch (RuntimeException structuredFailure) {
+                    CrawlLlmDispatcher.rethrowServingFailure(structuredFailure);
                     response = recoverCompletedPackedBinding(structuredFailure);
                     if (response == null) throw structuredFailure;
                     log.warn("Recovered a complete numeric topic binding after tool-wrapper "
@@ -632,6 +633,7 @@ final class CorpusSchemaUnifier {
                                     endpointSignatureRequest(prompt, options), TASK_TYPE, job, scope),
                             options, batches, frozen);
                 } catch (RuntimeException failure) {
+                    CrawlLlmDispatcher.rethrowServingFailure(failure);
                     parsed = new EndpointSignatureParseResult(
                             List.of(), List.of("[SCHEMA_ENDPOINT_SIGNATURE] "
                                     + conciseMessage(failure)));
@@ -878,6 +880,7 @@ final class CorpusSchemaUnifier {
             }
             return new EndpointSignatureParseResult(List.copyOf(patterns), List.of());
         } catch (RuntimeException failure) {
+                    CrawlLlmDispatcher.rethrowServingFailure(failure);
             return new EndpointSignatureParseResult(
                     List.of(), List.of("[SCHEMA_ENDPOINT_SIGNATURE] " + failure.getMessage()));
         }
@@ -1623,7 +1626,8 @@ final class CorpusSchemaUnifier {
                         // discovery batch, before schema framing enters the conversation. Its
                         // proposals flow into the same evidence/support structures, so
                         // consolidation, support counting, and freeze treat both sources
-                        // identically. Failure here is non-fatal for the whole crawl.
+                        // identically. Only malformed sample content is non-fatal;
+                        // model execution failures must stop the prepass.
                         bootstrapCandidates = classificationSampleProposals(
                                 windows, ontology.snapshot(), batchEvidence, new LinkedHashMap<>(),
                                 job, corpusSnapshotId, batchIndex + 1, dispatcher,
@@ -1714,7 +1718,10 @@ final class CorpusSchemaUnifier {
                             ? "Corpus type validation failed without diagnostics"
                             : validationErrors);
                 }
+            } catch (ClassificationModelFailure modelFailure) {
+                throw modelFailure;
             } catch (RuntimeException modelFailure) {
+                CrawlLlmDispatcher.rethrowServingFailure(modelFailure);
                 failures.add("batch " + (batchIndex + 1) + ": " + conciseMessage(modelFailure));
                 log.warn(
                         "[Job {}] Corpus {} induction failed for snapshot {} batch {}/{}; "
@@ -1824,6 +1831,7 @@ final class CorpusSchemaUnifier {
                         parsed = accumulator.accept(arguments);
                     }
                 } catch (RuntimeException failure) {
+                    CrawlLlmDispatcher.rethrowServingFailure(failure);
                     // Unsupported backend / infrastructure / programming errors are not
                     // discovery outcomes: record and let exhaustion report them.
                     failures.add("batch " + (batchIndex + 1) + " attempt " + attempt + ": "
@@ -1979,6 +1987,7 @@ final class CorpusSchemaUnifier {
                                 CorpusSchemaPromptBuilder.TypePass.RELATIONSHIP_TYPES,
                                 ontology.snapshot())));
             } catch (RuntimeException failure) {
+                    CrawlLlmDispatcher.rethrowServingFailure(failure);
                 failures.add("consolidation attempt " + attempt + ": " + conciseMessage(failure));
                 continue;
             }
@@ -2228,7 +2237,8 @@ final class CorpusSchemaUnifier {
      * containing the classified name (validated by the same machinery discovery evidence uses),
      * and its parent is the trusted parentType the model chose. Candidates whose category noun
      * already equals an established type label dedupe away. Returns the number of kept bootstrap
-     * candidates. Any failure is non-fatal: the sample logs, marks the outcome, and returns 0.
+     * candidates. Malformed sample content is non-fatal, but a failed model call stops
+     * the prepass: transport completion does not prove native generation has stopped.
      */
     private static int classificationSampleProposals(
             Map<String, String> windows,
@@ -2240,14 +2250,27 @@ final class CorpusSchemaUnifier {
             int batchIndex,
             CrawlLlmDispatcher dispatcher,
             Map<String, String> observedEntityTypes) {
+        String prompt = CorpusSchemaPromptBuilder.buildEntityClassificationSample(
+                windows, SchemaHierarchyVocabulary.BASE_ENTITY_TYPES);
+        CrawlLlmDispatcher.LlmCallScope scope = classificationSampleScope(
+                job, corpusSnapshotId, batchIndex, 1);
+        StructuredChatLanguageModel.Response response;
         try {
-            String prompt = CorpusSchemaPromptBuilder.buildEntityClassificationSample(
-                    windows, SchemaHierarchyVocabulary.BASE_ENTITY_TYPES);
-            CrawlLlmDispatcher.LlmCallScope scope = classificationSampleScope(
-                    job, corpusSnapshotId, batchIndex, 1);
-            StructuredChatLanguageModel.Response response =
-                    dispatcher.promptStructuredWithCapacityFallback(
-                            entityClassificationRequest(prompt), TASK_TYPE, job, scope);
+            response = dispatcher.promptStructuredWithCapacityFallback(
+                    entityClassificationRequest(prompt), TASK_TYPE, job, scope);
+            if (response == null) {
+                throw new IllegalStateException("Structured model response was null");
+            }
+        } catch (RuntimeException modelFailure) {
+            String detail = "Corpus entity-classification model call failed for snapshot "
+                    + corpusSnapshotId + " batch " + batchIndex + ": "
+                    + conciseMessage(modelFailure);
+            log.error("[Job {}] {}; stopping schema prepass",
+                    job == null || job.getJobId() == null ? "crawl" : job.getJobId(),
+                    detail, modelFailure);
+            throw new ClassificationModelFailure(detail, modelFailure);
+        }
+        try {
             CorpusSchemaResponseParser.EntityClassificationResult classification =
                     CorpusSchemaResponseParser.parseEntityClassifications(
                             responseArguments(response, ENTITY_CLASSIFICATION_TOOL_NAME),
@@ -2303,6 +2326,13 @@ final class CorpusSchemaUnifier {
             logClassificationOutcome(job, corpusSnapshotId, batchIndex, 0, 0,
                     List.of(), conciseMessage(classificationFailure));
             return 0;
+        }
+    }
+
+    /** Model failures must escape optional sample and per-batch validation recovery. */
+    private static final class ClassificationModelFailure extends IllegalStateException {
+        ClassificationModelFailure(String message, RuntimeException cause) {
+            super(message, cause);
         }
     }
 

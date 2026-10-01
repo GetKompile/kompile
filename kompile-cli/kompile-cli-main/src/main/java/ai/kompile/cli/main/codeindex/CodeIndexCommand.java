@@ -87,6 +87,8 @@ public class CodeIndexCommand implements Callable<Integer> {
                     Paths.get(System.getProperty("user.dir"));
 
             String projectId = ProjectIdResolver.resolve(project, dir).projectId();
+            Path requested = dir;
+            dir = ProjectIdResolver.indexRoot(projectId, requested);
 
             LocalCodeIndexer indexer = new LocalCodeIndexer();
             LocalCodeIndexer.IndexResult result = indexer.index(
@@ -98,13 +100,21 @@ public class CodeIndexCommand implements Callable<Integer> {
             System.out.println("Index Summary:");
             System.out.println("  Project:              " + result.projectId());
             System.out.println("  Root:                 " + result.rootPath());
+            if (!dir.equals(requested)) {
+                System.out.println("  Indexed project root: " + requested + " is part of project '"
+                        + projectId + "', whose index covers " + dir);
+            }
             System.out.println("  Files (total):        " + result.filesProcessed());
             System.out.println("  Files (skipped):      " + result.filesSkipped());
             System.out.println("  Files (re-indexed):   " + (result.filesProcessed() - result.filesSkipped() - result.filesDeleted()));
             System.out.println("  Files (deleted):      " + result.filesDeleted());
             System.out.println("  Entities:             " + result.entitiesFound());
-            System.out.println("  Knowledge base:       " + projection.knowledgeBaseId());
-            System.out.println("  KGraph:               " + projection.graphPath());
+            if (projection.published()) {
+                System.out.println("  Knowledge base:       " + projection.knowledgeBaseId());
+                System.out.println("  KGraph:               " + projection.graphPath());
+            } else {
+                System.out.println("  KGraph:               not published — " + projection.skippedReason());
+            }
             if (result.errors() > 0) {
                 System.out.println("  Errors:               " + result.errors());
             }
@@ -596,18 +606,27 @@ public class CodeIndexCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             try {
-                Path dir = directory != null ?
+                Path requested = directory != null ?
                         Paths.get(directory).toAbsolutePath() :
                         Paths.get(System.getProperty("user.dir"));
 
-                String projectId = ProjectIdResolver.resolve(project, dir).projectId();
+                String projectId = ProjectIdResolver.resolve(project, requested).projectId();
+                Path dir = ProjectIdResolver.indexRoot(projectId, requested);
+                if (!dir.equals(requested)) {
+                    System.out.println("Watching the project root " + dir + ": " + requested
+                            + " is part of project '" + projectId + "'");
+                }
 
                 LocalCodeIndexer indexer = new LocalCodeIndexer();
 
                 // Do an initial index first
                 System.out.println("Running initial index...");
                 indexer.index(dir, projectId, null, null, System.out);
-                LocalCodeKGraphPublisher.publish(dir, projectId, null, null);
+                LocalCodeKGraphPublisher.ProjectionResult projection =
+                        LocalCodeKGraphPublisher.publish(dir, projectId, null, null);
+                if (!projection.published()) {
+                    System.out.println("KGraph not published: " + projection.skippedReason());
+                }
 
                 // Start watching
                 IndexFileWatcher watcher = indexer.createWatcher(dir, projectId, System.out);

@@ -16,7 +16,6 @@ class ProviderThinkingConfigTest {
             "openai-codex",
             "anthropic",
             "gemini",
-            "ollama",
             "openrouter",
             "xai",
             "github-copilot",

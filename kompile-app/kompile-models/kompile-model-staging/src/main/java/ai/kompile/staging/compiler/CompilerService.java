@@ -62,7 +62,7 @@ public class CompilerService {
     private static final Logger log = LoggerFactory.getLogger(CompilerService.class);
 
     @Value(StagingPropertyKeys.MODELS_DIR_VALUE)
-    private String modelsDir;
+    String modelsDir;
 
     private final RegistryService registryService;
 

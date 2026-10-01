@@ -23,9 +23,9 @@ import com.fasterxml.jackson.databind.JsonNode;
  * <p>
  * Three execution modes:
  * <ul>
- *   <li><b>remote</b> — HTTP call to a remote provider (Anthropic, OpenAI, etc.) or local API server (ollama)</li>
+ *   <li><b>remote</b> — HTTP call to a remote provider (Anthropic, OpenAI, etc.) or an OpenAI-compatible endpoint</li>
  *   <li><b>local</b> — in-process inference via SameDiff TextGenerator / GenerationPipeline</li>
- *   <li><b>auto-server</b> — dynamically start a local server (ollama, kompile-app), then delegate to remote</li>
+ *   <li><b>auto-server</b> — delegate over HTTP to a running kompile-model-staging server</li>
  * </ul>
  * <p>
  * {@link JudgeLlmEvaluator} owns the prompt construction and response parsing;
@@ -97,6 +97,14 @@ public interface JudgeBackend {
      * {@code true} when the value was accepted and applied.
      */
     default boolean modify(String selection) throws Exception {
+        return false;
+    }
+
+    /**
+     * Whether each request starts a provider CLI process (Claude Code, OpenCode), so the
+     * process start counts against the request's deadline.
+     */
+    default boolean startsProviderProcess() {
         return false;
     }
 

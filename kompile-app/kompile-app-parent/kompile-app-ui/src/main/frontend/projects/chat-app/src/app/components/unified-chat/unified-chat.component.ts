@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, NgZone, HostListener, Optional, Inject } from '@angular/core';
+import { Component, OnInit, OnDestroy, OnChanges, Input, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, NgZone, HostListener, Optional, Inject } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { HttpClient } from '@angular/common/http';
@@ -154,7 +154,21 @@ interface ChatSession {
   styleUrls: ['./unified-chat.component.css'],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked, AfterViewInit {
+export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, AfterViewChecked, AfterViewInit {
+  @Input() workingDirectory?: string;
+  @Input() workspaceChat?: { id: string; name: string };
+  @Input() viewActive = true;
+  private readonly sessionConfigOpener = () => this.openCommandConfig();
+
+  ngOnChanges(): void {
+    if (this.viewActive) this.registerSessionConfigOpener();
+    else this.unregisterSessionConfigOpener();
+  }
+
+  private get sessionStorageKey(): string {
+    return this.workspaceChat ? 'unified_chat_workspace:' + this.workspaceChat.id : 'unified_chat_sessions';
+  }
+
   @ViewChild('conversationArea') private conversationArea!: ElementRef;
 
   // Destroy subject for cleanup
@@ -338,6 +352,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   pendingAttachments: MessageAttachment[] = [];
   isDragOver: boolean = false;
   agentSupportsVision: boolean = false;
+  /** The CLI loader's image types (ChatAttachmentLoader.IMAGE_MIME_TYPES) and their extensions. */
+  private static readonly IMAGE_EXTENSIONS = new Map<string, string>([
+    ['image/png', 'png'], ['image/jpeg', 'jpg'], ['image/gif', 'gif'], ['image/webp', 'webp']]);
 
   // Active Model Context state
   activeModelContext: ActiveModelContext | null = null;
@@ -739,7 +756,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private loadSessions(): void {
-    const stored = localStorage.getItem('unified_chat_sessions');
+    const stored = localStorage.getItem(this.sessionStorageKey);
     if (stored) {
       try {
         this.sessions = JSON.parse(stored);
@@ -748,6 +765,14 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       }
     }
 
+    if (this.workspaceChat) {
+      this.showHistorySidebar = false;
+      if (this.sessions.length) {
+        const active = localStorage.getItem(this.sessionStorageKey + ':active');
+        this.loadSession(this.sessions.find(s => s.id === active) || this.sessions[0]);
+      } else this.newChat();
+      return;
+    }
     // Also load synced sessions from backend
     this.loadSyncedSessions();
   }
@@ -1072,7 +1097,19 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   private saveSessions(): void {
-    localStorage.setItem('unified_chat_sessions', JSON.stringify(this.sessions));
+    // Attachment payloads stay in this page's memory: base64 images soon exhaust the
+    // storage quota, and a failed write must never stop a message from sending.
+    try {
+      if (this.workspaceChat && this.currentSession)
+        localStorage.setItem(this.sessionStorageKey + ':active', this.currentSession.id);
+      localStorage.setItem(this.sessionStorageKey, JSON.stringify(this.sessions,
+        (key, value) => key === 'attachments' && Array.isArray(value)
+          ? value.map((attachment: MessageAttachment) => ({
+              ...attachment, base64Data: undefined, previewUrl: undefined, textContent: undefined }))
+          : value));
+    } catch (err) {
+      console.warn('Could not persist chat sessions:', err);
+    }
   }
 
   newChat(): void {
@@ -1081,8 +1118,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.resetHarnessDisplay();
     this.queuedMessages = []; // a fresh conversation drops locally parked follow-ups
     const session: ChatSession = {
-      id: this.generateId(),
-      name: 'New Chat',
+      id: this.workspaceChat && this.sessions.length === 0 ? this.workspaceChat.id : this.generateId(),
+      name: this.workspaceChat?.name || 'New Chat',
       messages: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1106,6 +1143,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.invalidateLifecycle();
     this.resetHarnessDisplay();
     this.currentSession = session;
+    if (this.workspaceChat) this.saveSessions();
     this.messages = [...session.messages];
     this.currentConversationId = session.conversationId || null;
     this.pendingAttachments = [];
@@ -1429,6 +1467,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   @HostListener('document:keydown', ['$event'])
   handleHarnessHotkey(event: KeyboardEvent): void {
+    if (this.viewActive === false) return;
     if (event.defaultPrevented || event.isComposing || event.repeat || event.altKey || event.metaKey) return;
     // Do not capture keystrokes inside dialogs or steal Ctrl+C text selection/copy.
     if ((event.target as HTMLElement | null)?.closest?.('[role="dialog"], .cdk-overlay-pane')) return;
@@ -1757,6 +1796,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         {
           sessionId: this.currentSession?.id || this.agentSession.id,
           skipPermissions: this.skipPermissions,
+          workingDirectory: this.agentWorkingDirectory(),
           enableMemory: true,
           systemPromptOverride: this.systemPrompt.trim() || undefined,
           enableRag: this.ragEnabled,
@@ -2196,7 +2236,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.agentsLoading = true;
     this.agentsError = null;
     this.cdr.markForCheck();
-    this.agentService.getChatHarnessAgents().subscribe({
+    this.agentService.getChatHarnessAgents(false, this.agentWorkingDirectory()).subscribe({
       next: (agents: AgentProvider[]) => {
         this.ngZone.run(() => {
           this.agents = agents;
@@ -2243,7 +2283,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.agentsLoading = true;
     this.agentsError = null;
     this.cdr.markForCheck();
-    this.agentService.refreshChatHarnessAgents().subscribe({
+    this.agentService.refreshChatHarnessAgents(this.agentWorkingDirectory()).subscribe({
       next: (agents: AgentProvider[]) => {
         this.ngZone.run(() => {
           this.agents = agents;
@@ -2304,7 +2344,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       this.contextBudget = null;
       return;
     }
-    this.agentChatService.getContextBudget(agent.name).subscribe({
+    this.agentChatService.getContextBudget(agent.name, this.agentWorkingDirectory()).subscribe({
       next: budget => {
         this.contextBudget = budget;
         this.cdr.markForCheck();
@@ -2975,10 +3015,20 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       }
 
       const lowerName = file.name.toLowerCase();
-      const isImage = file.type.startsWith('image/');
+      // The CLI's attachment loader decides every route's types by extension: its four image
+      // types go as images, an SVG is XML text, and any other image is refused.
+      const imageExtension = UnifiedChatComponent.IMAGE_EXTENSIONS.get(file.type);
+      const isImage = imageExtension !== undefined;
       const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf');
-      const isText = file.type.startsWith('text/') ||
-        /\.(txt|md|markdown|json|jsonl|csv|tsv|xml|ya?ml|log|properties|ini|java|kt|py|ts|tsx|js|jsx|html|css|scss|sql|sh|c|cc|cpp|cu|cuh|h|hpp|rs|go|toml|gradle)$/i.test(lowerName);
+      const isText = file.type.startsWith('text/') || file.type === 'image/svg+xml' ||
+        /\.(txt|md|markdown|json|jsonl|csv|tsv|xml|svg|ya?ml|log|properties|ini|java|kt|py|ts|tsx|js|jsx|html|css|scss|sql|sh|c|cc|cpp|cu|cuh|h|hpp|rs|go|toml|gradle)$/i.test(lowerName);
+      if (!isImage && !isText && file.type.startsWith('image/')) {
+        this.snackBar.open(
+          `${file.name} is not a supported image type (attach PNG, JPEG, GIF or WebP)`,
+          'Dismiss',
+          { duration: 4000 });
+        continue;
+      }
       if (!isImage && !isPdf && !isText) {
         this.snackBar.open(
           `${file.name} is not a supported image, PDF, or text file`,
@@ -2999,7 +3049,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       const reader = new FileReader();
       reader.onload = () => {
         const attachment: MessageAttachment = {
-          filename: file.name,
+          // A pasted or dragged image can arrive without its extension, which would make
+          // the CLI send it as an opaque file.
+          filename: isImage && !/\.(png|jpe?g|gif|webp)$/i.test(file.name)
+            ? `${file.name}.${imageExtension}` : file.name,
           mimeType: file.type || 'application/octet-stream',
           isImage,
           size: file.size
@@ -3481,18 +3534,19 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   /** Working directory passed to chat requests (project-scoped CLI state). */
   private agentWorkingDirectory(): string | undefined {
-    return undefined;
+    return this.workingDirectory;
   }
   /**
    * Header gear hook (app.component): the gear opens this dialog in place so the
    * stream is never torn down by clicking away.
    */
   private registerSessionConfigOpener(): void {
-    (window as any).__kompileOpenSessionConfig = () => this.openCommandConfig();
+    if (this.viewActive !== false) (window as any).__kompileOpenSessionConfig = this.sessionConfigOpener;
   }
 
   private unregisterSessionConfigOpener(): void {
-    delete (window as any).__kompileOpenSessionConfig;
+    if ((window as any).__kompileOpenSessionConfig === this.sessionConfigOpener)
+      delete (window as any).__kompileOpenSessionConfig;
   }
 
   /**

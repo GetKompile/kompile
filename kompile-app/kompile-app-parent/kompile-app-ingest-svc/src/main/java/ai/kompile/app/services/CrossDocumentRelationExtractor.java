@@ -748,8 +748,14 @@ public class CrossDocumentRelationExtractor {
     }
 
     private String documentSourcePath(Map<String, Object> meta) {
-        String sourcePath = (String) meta.get(GraphConstants.META_SOURCE);
-        if (sourcePath == null) sourcePath = (String) meta.get(GraphConstants.META_SOURCE_PATH);
+        // Must match the precedence DOCUMENT nodes are actually created under
+        // (CrawlDocumentTracker.META_KEYS_SOURCE_PATH / META_KEYS_GRAPH_SOURCE_PATH: source_path
+        // before source). Loaders such as Slack/Discord/Gmail set "source" to a constant shared by
+        // every item but "source_path" to a per-item unique value; checking source first collapses
+        // every such document onto the same lookup key, which never matches a real DOCUMENT node
+        // and causes resolveDocumentNodeIds to silently skip them.
+        String sourcePath = (String) meta.get(GraphConstants.META_SOURCE_PATH);
+        if (sourcePath == null) sourcePath = (String) meta.get(GraphConstants.META_SOURCE);
         if (sourcePath == null) sourcePath = (String) meta.get(GraphConstants.META_FILE_NAME);
         return sourcePath;
     }

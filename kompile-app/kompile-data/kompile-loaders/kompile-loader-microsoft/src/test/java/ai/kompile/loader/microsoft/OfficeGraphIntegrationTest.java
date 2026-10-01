@@ -572,6 +572,78 @@ class OfficeGraphIntegrationTest {
                 }
             }
         }
+
+        @Test
+        void pptxTableTextIsIncludedInSlideText() throws Exception {
+            // XSLFTable is a graphic frame, not an XSLFTextShape, so the plain shape-text loop
+            // used to silently drop table content from a slide's extracted text.
+            Path pptxFile = tempDir.resolve("with-table.pptx");
+            try (XMLSlideShow ppt = new XMLSlideShow()) {
+                XSLFSlide slide = ppt.createSlide();
+                XSLFTextBox intro = slide.createTextBox();
+                intro.setText("Budget Overview");
+                intro.setAnchor(new java.awt.Rectangle(50, 20, 600, 60));
+
+                XSLFTable table = slide.createTable(2, 2);
+                table.setAnchor(new java.awt.Rectangle(50, 100, 400, 150));
+                table.getRows().get(0).getCells().get(0).setText("Item");
+                table.getRows().get(0).getCells().get(1).setText("Cost");
+                table.getRows().get(1).getCells().get(0).setText("Widgets");
+                table.getRows().get(1).getCells().get(1).setText("42 USD");
+
+                try (FileOutputStream fos = new FileOutputStream(pptxFile.toFile())) {
+                    ppt.write(fos);
+                }
+            }
+
+            List<Document> docs = loadFile(pptxFile);
+            Document slideDoc = docs.stream()
+                    .filter(d -> "slide".equals(d.getMetadata().get(GraphConstants.META_CONTENT_TYPE)))
+                    .findFirst().orElseThrow(() -> new AssertionError("No slide documents found"));
+
+            assertTrue(slideDoc.getText().contains("Budget Overview"), "got: " + slideDoc.getText());
+            assertTrue(slideDoc.getText().contains("Widgets"),
+                    "table cell text must be included in slide text, got: " + slideDoc.getText());
+            assertTrue(slideDoc.getText().contains("42 USD"),
+                    "table cell text must be included in slide text, got: " + slideDoc.getText());
+        }
+
+        @Test
+        void pptxRealTitlePlaceholderIsUsedForSlideTitle() throws Exception {
+            // A slide built from a layout that actually has a TITLE placeholder: slideTitle
+            // metadata must come from XSLFSlide#getTitle() (the real placeholder), not a guess
+            // based on shape order.
+            Path pptxFile = tempDir.resolve("with-real-title.pptx");
+            try (XMLSlideShow ppt = new XMLSlideShow()) {
+                XSLFSlideMaster master = ppt.getSlideMasters().get(0);
+                XSLFSlideLayout layout = master.getLayout(SlideLayout.TITLE_AND_CONTENT);
+                assertNotNull(layout, "default POI template should provide a Title and Content layout");
+                XSLFSlide slide = ppt.createSlide(layout);
+
+                XSLFTextShape titlePlaceholder = null;
+                for (XSLFTextShape ph : slide.getPlaceholders()) {
+                    if (ph.getTextType() == org.apache.poi.sl.usermodel.Placeholder.TITLE) {
+                        titlePlaceholder = ph;
+                        break;
+                    }
+                }
+                assertNotNull(titlePlaceholder, "layout should provide a TITLE placeholder");
+                titlePlaceholder.setText("Real Title Placeholder");
+
+                try (FileOutputStream fos = new FileOutputStream(pptxFile.toFile())) {
+                    ppt.write(fos);
+                }
+            }
+
+            List<Document> docs = loadFile(pptxFile);
+            Document slideDoc = docs.stream()
+                    .filter(d -> "slide".equals(d.getMetadata().get(GraphConstants.META_CONTENT_TYPE)))
+                    .findFirst().orElseThrow(() -> new AssertionError("No slide documents found"));
+
+            assertEquals("Real Title Placeholder", slideDoc.getMetadata().get("slideTitle"),
+                    "slideTitle should come from the real title placeholder (XSLFSlide#getTitle()), "
+                            + "not a guess based on shape order");
+        }
     }
 
     // ================================================================

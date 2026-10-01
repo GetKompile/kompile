@@ -20,15 +20,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class KompileProjectStoreTest {
 
@@ -473,6 +479,148 @@ class KompileProjectStoreTest {
     }
 
     @Test
+    void codingProjectRegistrationRejectsAMissingRoot() {
+        KompileProjectStore store = initCodingHost("missing-root");
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> store.registerCodingProject(tempDir,
+                        codingProject("ghost-code", tempDir.resolve("does-not-exist").toString())));
+
+        assertTrue(error.getMessage().contains("not an existing directory"), error.getMessage());
+        assertTrue(store.load(tempDir).getCodingProjects().isEmpty());
+    }
+
+    @Test
+    void codingProjectRegistrationRejectsTheHomeDirectoryAndItsParents() {
+        KompileProjectStore store = initCodingHost("home-root");
+        Path home = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize();
+        assumeTrue(Files.isDirectory(home), "needs an existing home directory");
+        List<Path> refused = new ArrayList<>(List.of(home));
+        if (home.getParent() != null) {
+            refused.add(home.getParent());
+        }
+
+        for (Path root : refused) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> store.registerCodingProject(tempDir, codingProject("home-code", root.toString())));
+            assertTrue(error.getMessage().contains("home directory"), error.getMessage());
+        }
+        assertTrue(store.load(tempDir).getCodingProjects().isEmpty());
+    }
+
+    @Test
+    void codingProjectRegistrationRefusesASecondIdForAnOwnedRoot() throws Exception {
+        KompileProjectStore store = initCodingHost("one-owner");
+        Path first = Files.createDirectories(tempDir.resolve("first"));
+        Path second = Files.createDirectories(tempDir.resolve("second"));
+        store.registerCodingProject(tempDir, codingProject("first-code", first.toString()));
+        store.registerCodingProject(tempDir, codingProject("second-code", second.toString()));
+
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
+                () -> store.registerCodingProject(tempDir,
+                        codingProject("fork-code", tempDir.resolve("second/../first").toString())));
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class,
+                () -> store.registerCodingProject(tempDir, codingProject("second-code", first.toString())));
+
+        assertTrue(duplicate.getMessage().contains("'first-code'"), duplicate.getMessage());
+        assertTrue(moved.getMessage().contains("'first-code'"), moved.getMessage());
+        KompileProjectManifest manifest = store.load(tempDir);
+        assertEquals(List.of("first-code", "second-code"), codingProjectIds(manifest));
+        assertEquals(second.toString(), codingProject(manifest, "second-code").getRootPath());
+    }
+
+    @Test
+    void relativeCodingProjectRootResolvesAgainstTheProjectRoot() throws Exception {
+        KompileProjectStore store = initCodingHost("relative-root");
+        Path module = Files.createDirectories(tempDir.resolve("modules/app"));
+
+        KompileProjectManifest manifest = store.registerCodingProject(tempDir,
+                codingProject("app-code", "modules/app"));
+
+        assertEquals(module.toAbsolutePath().normalize().toString(),
+                codingProject(manifest, "app-code").getRootPath());
+    }
+
+    @Test
+    void reinitKeepsTheExistingOwnerOfACodingRoot() throws Exception {
+        KompileProjectStore store = new KompileProjectStore();
+        Path code = Files.createDirectories(tempDir.resolve("code"));
+        KompileProjectInitRequest first = new KompileProjectInitRequest();
+        first.setName("owner");
+        first.setIncludeStandardComponents(false);
+        first.setCodingProjects(List.of(codingProject("first-code", code.toString())));
+        store.init(tempDir, first);
+
+        KompileProjectInitRequest again = new KompileProjectInitRequest();
+        again.setName("owner");
+        again.setIncludeStandardComponents(false);
+        again.setCodingProjects(List.of(codingProject("renamed-code", code.toString())));
+        store.init(tempDir, again);
+
+        assertEquals(List.of("first-code"), codingProjectIds(store.load(tempDir)));
+    }
+
+    @Test
+    void initThatRefusesACodingProjectWritesNothing() throws Exception {
+        KompileProjectStore store = new KompileProjectStore();
+        Path fresh = Files.createDirectories(tempDir.resolve("fresh"));
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("refused");
+        request.setCodingProjects(List.of(codingProject("ghost-code", fresh.resolve("does-not-exist").toString())));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> store.init(fresh, request));
+
+        assertTrue(error.getMessage().contains("not an existing directory"), error.getMessage());
+        assertEquals(List.of(), Arrays.asList(fresh.toFile().list()));
+    }
+
+    @Test
+    void staleCodingProjectStaysUpdatableAndReleasesItsRootOnceArchived() throws Exception {
+        KompileProjectStore store = initCodingHost("stale-root");
+        Path code = Files.createDirectories(tempDir.resolve("code"));
+        store.registerCodingProject(tempDir, codingProject("stale-code", code.toString()));
+        Files.delete(code);
+
+        KompileCodingProject archived = codingProject("stale-code", code.toString());
+        archived.setLifecycle(KompileProjectLifecycleState.ARCHIVED);
+        store.registerCodingProject(tempDir, archived);
+        Files.createDirectories(code);
+        KompileProjectManifest manifest = store.registerCodingProject(tempDir,
+                codingProject("fresh-code", code.toString()));
+
+        assertEquals(KompileProjectLifecycleState.ARCHIVED, codingProject(manifest, "stale-code").getLifecycle());
+        assertEquals(KompileProjectLifecycleState.ACTIVE, codingProject(manifest, "fresh-code").getLifecycle());
+    }
+
+    private KompileProjectStore initCodingHost(String name) {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName(name);
+        request.setIncludeStandardComponents(false);
+        store.init(tempDir, request);
+        return store;
+    }
+
+    private static KompileCodingProject codingProject(String id, String rootPath) {
+        KompileCodingProject codingProject = new KompileCodingProject();
+        codingProject.setId(id);
+        codingProject.setCodeProjectId(id);
+        codingProject.setRootPath(rootPath);
+        return codingProject;
+    }
+
+    private static KompileCodingProject codingProject(KompileProjectManifest manifest, String id) {
+        return manifest.getCodingProjects().stream()
+                .filter(project -> id.equals(project.getId()))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private static List<String> codingProjectIds(KompileProjectManifest manifest) {
+        return manifest.getCodingProjects().stream().map(KompileCodingProject::getId).toList();
+    }
+
+    @Test
     void listMarkdownReturnsEmptyWhenNoFiles() {
         KompileProjectStore store = new KompileProjectStore();
         KompileProjectInitRequest request = new KompileProjectInitRequest();
@@ -725,15 +873,81 @@ class KompileProjectStoreTest {
         assertEquals("staged", entry.path("status").asText());
     }
 
+    @Test
+    void autoCommitIsOffByDefaultAndCommitsOnlyProjectStateWhenEnabled() throws Exception {
+        Path repo = Files.createDirectories(tempDir.resolve("code-repo"));
+        runGit(repo, "init");
+        Files.createDirectories(repo.resolve("src"));
+        Files.writeString(repo.resolve("src/Main.java"), "class Main {}\n");
+        runGit(repo, "add", "-A");
+        runGit(repo, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "user work");
+        Files.writeString(repo.resolve("src/Main.java"), "class Main { int edited; }\n");
+        Files.writeString(repo.resolve("notes.txt"), "staged by the user\n");
+        runGit(repo, "add", "notes.txt");
+        Files.writeString(repo.resolve("scratch.txt"), "untracked\n");
+
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("code-repo");
+        KompileProjectManifest manifest = store.init(repo, request);
+
+        assertFalse(manifest.getRepository().isAutoCommit());
+        assertEquals("1", git(repo, "rev-list", "--count", "HEAD").trim());
+
+        store.updateManifest(repo, current -> current.getRepository().setAutoCommit(true));
+
+        assertEquals("Auto-commit: update project state", git(repo, "log", "-1", "--format=%s").trim());
+        List<String> committed = committedFiles(repo);
+        assertTrue(committed.contains(KompileProjectStore.MANIFEST_FILE), committed.toString());
+        assertTrue(KompileProjectStore.PROJECT_STATE_FILES.containsAll(committed), committed.toString());
+        assertEquals(List.of("notes.txt"), git(repo, "diff", "--cached", "--name-only").lines().toList());
+        String status = git(repo, "status", "--porcelain");
+        assertTrue(status.contains(" M src/Main.java"), status);
+        assertTrue(status.contains("?? scratch.txt"), status);
+    }
+
+    @Test
+    void autoCommitInFreshProjectRepositoryCommitsOnlyProjectState() throws Exception {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("generated");
+        request.setInitializeGit(true);
+        store.init(tempDir, request);
+
+        store.updateManifest(tempDir, current -> current.getRepository().setAutoCommit(true));
+
+        List<String> committed = committedFiles(tempDir);
+        assertTrue(committed.contains(KompileProjectStore.MANIFEST_FILE), committed.toString());
+        assertTrue(KompileProjectStore.PROJECT_STATE_FILES.containsAll(committed), committed.toString());
+    }
+
+    @Test
+    void porcelainPathsSkipsTheSourceOfARename() {
+        assertEquals(Set.of("data/models/registry.json", "kompile.project.json"),
+                KompileProjectStore.porcelainPaths(
+                        "R  data/models/registry.json\0old-registry.json\0?? kompile.project.json\0"));
+    }
+
+    private static List<String> committedFiles(Path repo) throws Exception {
+        return git(repo, "show", "--name-only", "--format=", "HEAD").lines()
+                .filter(line -> !line.isBlank())
+                .toList();
+    }
+
     private static void runGit(Path directory, String... args) throws Exception {
-        List<String> command = new java.util.ArrayList<>();
+        git(directory, args);
+    }
+
+    private static String git(Path directory, String... args) throws Exception {
+        List<String> command = new ArrayList<>();
         command.add("git");
-        command.addAll(java.util.Arrays.asList(args));
+        command.addAll(Arrays.asList(args));
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(directory.toFile());
-        pb.redirectErrorStream(true);
+        pb.redirectError(ProcessBuilder.Redirect.DISCARD);
         Process p = pb.start();
-        p.getInputStream().readAllBytes();
+        String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         assertEquals(0, p.waitFor(), "git " + String.join(" ", args) + " failed");
+        return output;
     }
 }

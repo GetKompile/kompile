@@ -28,6 +28,7 @@ import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.fol.InferredFactStore;
 import ai.kompile.graph.reasoning.fol.MebnInferenceService;
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
+import ai.kompile.graph.reasoning.learning.FileWeightStore;
 import ai.kompile.graph.reasoning.learning.HybridConsensusTrainer;
 import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
 import ai.kompile.graph.reasoning.learning.MebnWeightSerializer;
@@ -315,7 +316,7 @@ public class IncrementalReasoningOrchestrator {
      * finite-difference over every edge, O(edges × epochs), so we gate it to every
      * {@link #MEBN_LEARNING_INTERVAL} cascades rather than every cascade).
      */
-    private final ConcurrentHashMap<Long, AtomicLong> cascadeCounters = new ConcurrentHashMap<>();
+    final ConcurrentHashMap<Long, AtomicLong> cascadeCounters = new ConcurrentHashMap<>();
 
     /**
      * Per-factSheet MEBN theories, registered by callers via {@link #registerMTheory}.
@@ -343,14 +344,14 @@ public class IncrementalReasoningOrchestrator {
 
     /**
      * Optional out-of-process reasoning learning executor (PSL + MEBN).
-     * When non-null (app-main context with {@code kompile.learning.subprocess.enabled=true}),
-     * {@link #doReground} offloads the weight-learning steps to the managed learning subprocess,
-     * bounding SameDiff native memory growth in the main JVM. Null in plain-Java test contexts
-     * and when the subprocess is disabled.
+     * When non-null (the app-main context), {@link #doReground} runs the weight-learning steps in
+     * the managed learning subprocess and never in this JVM: a failed run fails the step and is
+     * not retried in-process. Null in plain-Java test contexts and in processes without the
+     * learning launcher, which train in-JVM. Package-private so tests can wire a fake.
      */
     @Nullable
     @Autowired(required = false)
-    private ReasoningLearningExecutor reasoningLearningExecutor;
+    ReasoningLearningExecutor reasoningLearningExecutor;
 
     /**
      * How many cascades between MEBN weight-learning runs.
@@ -1063,10 +1064,11 @@ public class IncrementalReasoningOrchestrator {
         // sheets of ≤5000 atoms).
         // Uses cascadeWeightStore resolved above (DualStore preferred; falls back to file-backed).
         //
-        // ── SUBPROCESS ROUTING: when the ReasoningLearningExecutor is wired (app-main with
-        // kompile.learning.subprocess.enabled=true), the compute-heavy weight-learning step is
-        // offloaded to the managed learning subprocess (same JVM as KGE training) so that the
-        // main app is not burdened. The in-JVM path is the unchanged fallback.
+        // ── SUBPROCESS ROUTING: when the ReasoningLearningExecutor is wired (app-main), the
+        // weight-learning step runs in the managed learning subprocess (same JVM as KGE training)
+        // so ND4J/SameDiff never runs in the app JVM. A failed run is NOT retried in-process: the
+        // step reports STATUS_ERROR and the current weights stand until the next cascade. The
+        // in-JVM learner runs only in a process with no executor.
         //
         // ── RESUME CHECKPOINT: track the PSL weight version and MEBN backup ID so we can
         // durably record the training position after each successful cascade for restart-safety.
@@ -1088,95 +1090,98 @@ public class IncrementalReasoningOrchestrator {
                 String programKey = factSheetId + ":cascade";
 
                 // ── SUBPROCESS PATH ──────────────────────────────────────────────────────────
-                // When the learning subprocess is enabled, export the program to the subprocess
+                // When the learning subprocess is wired, export the program to the subprocess
                 // which runs StructuredPerceptronLearner and writes the weights to the store.
                 // The main JVM then reads back the new weights and applies them in-memory.
-                // Falls through to the in-JVM path on subprocess failure (non-fatal).
+                // A failed run throws to the catch below: STATUS_ERROR, weights unchanged.
                 boolean ranInSubprocess = false;
-                if (reasoningLearningExecutor != null && fileBackedWeightStore != null) {
-                    try {
-                        // Serialize the PSL program as rule texts + atom declarations.
-                        List<String> ruleTexts = new ArrayList<>(program.rules().size());
-                        for (PslRule r : program.rules()) {
-                            ruleTexts.add(r.toString());
-                        }
-                        Map<String, Double> observedAtomMap = new LinkedHashMap<>();
-                        for (String key : program.observedKeys()) {
-                            observedAtomMap.put(key, program.value(key));
-                        }
-                        List<String> targetAtomList = new ArrayList<>(program.targetKeys());
-
-                        // The weight store base directory for the subprocess to write into.
-                        String weightStoreDirPath = fileBackedWeightStore
-                                .fileWeightStoreFor(String.valueOf(factSheetId))
-                                .baseDir()
-                                .toString();
-
-                        // Per-iteration crawl UI callback: update the LEARNING step with PSL progress.
-                        final String pslCrawlJobId = runId; // use runId as job key for cascade events
-                        ReasoningLearningExecutor.ProgressCallback pslCallback =
-                                (cJobId, epoch, totalEpochs, loss) -> {
-                                    publishProgress(factSheetId, runId, trigger,
-                                            GroundingProgressEvent.STAGE_PSL_LEARNING,
-                                            GroundingProgressEvent.STATUS_RUNNING,
-                                            "PSL iteration " + epoch + "/" + totalEpochs
-                                                    + " loss=" + String.format("%.4f", loss),
-                                            7, null);
-                                };
-
-                        log.info("Grounding cascade factSheet={}: routing PSL weight learning to subprocess",
-                                factSheetId);
-                        ReasoningLearningExecutor.LearningResult pslResult =
-                                reasoningLearningExecutor.runPslLearning(
-                                        pslCrawlJobId, factSheetId,
-                                        ruleTexts, observedAtomMap, targetAtomList, softTargets,
-                                        programKey, weightStoreDirPath,
-                                        1, kbCfg().getPslLearningRate(),
-                                        1e-4, 64, 0L, 0.1, 0.5, null,
-                                        pslCallback);
-
-                        if (pslResult.success()) {
-                            // Reload the weights the subprocess just wrote and apply in-memory.
-                            Optional<Map<String, Double>> updatedWeights =
-                                    cascadeWeightStore.latest(programKey);
-                            if (updatedWeights.isPresent()) {
-                                trainedProgram = PslWeightLearningService.applyWeights(
-                                        program, updatedWeights.get());
-                            }
-                            checkpointPslVersion = cascadeWeightStore.latestVersion(programKey);
-                            ranInSubprocess = true;
-                            // Transparent loss=0 diagnosis: when loss is exactly 0.0, this means
-                            // MAP posteriors match the consensus targets perfectly — most often because
-                            // ALL facts were projected as hard-observed (value=1.0), the MAP solve
-                            // pushes derived_X atoms to 1.0, and the consensus is also 1.0.
-                            // The learner gradient is zero so weights are not updated.
-                            // This is NOT a learner bug but a data signal: the graph needs edges
-                            // with confidence < 1.0 for the gradient to be non-zero.
-                            if (pslResult.finalLoss() == 0.0) {
-                                log.info("Grounding cascade factSheet={}: PSL subprocess done (loss=0.0). "
-                                        + "Zero loss indicates MAP posteriors == consensus targets "
-                                        + "(likely all-1.0 hard facts). PSL weights unchanged. "
-                                        + "No action needed — this is the correct fixed-point for a "
-                                        + "fully-certain graph. Weights will update when soft-truth edges appear.",
-                                        factSheetId);
-                            } else {
-                                log.info("Grounding cascade factSheet={}: PSL subprocess done (loss={})",
-                                        factSheetId, pslResult.finalLoss());
-                            }
-                        } else {
-                            log.warn("Grounding cascade factSheet={}: PSL subprocess failed ({}), "
-                                    + "falling through to in-JVM path",
-                                    factSheetId, pslResult.errorMessage());
-                        }
-                    } catch (Exception subEx) {
-                        log.warn("Grounding cascade factSheet={}: PSL subprocess error ({}), "
-                                + "falling through to in-JVM path",
-                                factSheetId, subEx.getMessage());
+                if (reasoningLearningExecutor != null) {
+                    if (fileBackedWeightStore == null) {
+                        throw new IllegalStateException(
+                                "no file-backed weight store for the learning subprocess to write into");
                     }
-                }
+                    // Serialize the PSL program as rule texts + atom declarations.
+                    List<String> ruleTexts = new ArrayList<>(program.rules().size());
+                    for (PslRule r : program.rules()) {
+                        ruleTexts.add(r.toString());
+                    }
+                    Map<String, Double> observedAtomMap = new LinkedHashMap<>();
+                    for (String key : program.observedKeys()) {
+                        observedAtomMap.put(key, program.value(key));
+                    }
+                    List<String> targetAtomList = new ArrayList<>(program.targetKeys());
 
-                // ── IN-JVM PATH (fallback or when subprocess is absent) ──────────────────────
-                if (!ranInSubprocess) {
+                    // The weight store base directory for the subprocess to write into, and the
+                    // version already there, so a run that wrote nothing cannot pass as learned.
+                    FileWeightStore storeBeforeRun =
+                            fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
+                    String weightStoreDirPath = storeBeforeRun.baseDir().toString();
+                    int versionBeforeRun = storeBeforeRun.latestVersion(programKey);
+
+                    // Per-iteration crawl UI callback: update the LEARNING step with PSL progress.
+                    final String pslCrawlJobId = runId; // use runId as job key for cascade events
+                    ReasoningLearningExecutor.ProgressCallback pslCallback =
+                            (cJobId, epoch, totalEpochs, loss) -> {
+                                publishProgress(factSheetId, runId, trigger,
+                                        GroundingProgressEvent.STAGE_PSL_LEARNING,
+                                        GroundingProgressEvent.STATUS_RUNNING,
+                                        "PSL iteration " + epoch + "/" + totalEpochs
+                                                + " loss=" + String.format("%.4f", loss),
+                                        7, null);
+                            };
+
+                    log.info("Grounding cascade factSheet={}: routing PSL weight learning to subprocess",
+                            factSheetId);
+                    ReasoningLearningExecutor.LearningResult pslResult =
+                            reasoningLearningExecutor.runPslLearning(
+                                    pslCrawlJobId, factSheetId,
+                                    ruleTexts, observedAtomMap, targetAtomList, softTargets,
+                                    programKey, weightStoreDirPath,
+                                    1, kbCfg().getPslLearningRate(),
+                                    1e-4, 64, 0L, 0.1, 0.5, null,
+                                    pslCallback);
+                    if (!pslResult.success()) {
+                        throw new IllegalStateException("learning subprocess: " + pslResult.errorMessage());
+                    }
+
+                    // Read the new version back through a FRESH store: a FileWeightStore indexes
+                    // its directory once, at construction, so any instance built before the run
+                    // (cascadeWeightStore included) cannot see what the subprocess wrote.
+                    FileWeightStore storeAfterRun =
+                            fileBackedWeightStore.fileWeightStoreFor(String.valueOf(factSheetId));
+                    int learnedVersion = storeAfterRun.latestVersion(programKey);
+                    Optional<Map<String, Double>> learnedWeights = storeAfterRun.latest(programKey);
+                    if (learnedVersion <= versionBeforeRun || learnedWeights.isEmpty()) {
+                        throw new IllegalStateException("learning subprocess reported success but wrote no "
+                                + "new weights for " + programKey + " under " + weightStoreDirPath);
+                    }
+                    trainedProgram = PslWeightLearningService.applyWeights(program, learnedWeights.get());
+                    // The subprocess writes only files. When the cascade reloads from the dual store,
+                    // save the learned weights there as well, or the next cascade starts over.
+                    checkpointPslVersion = dualStoreFactory != null
+                            ? cascadeWeightStore.save(programKey, trainedProgram.rules())
+                            : learnedVersion;
+                    ranInSubprocess = true;
+                    // Transparent loss=0 diagnosis: when loss is exactly 0.0, this means
+                    // MAP posteriors match the consensus targets perfectly — most often because
+                    // ALL facts were projected as hard-observed (value=1.0), the MAP solve
+                    // pushes derived_X atoms to 1.0, and the consensus is also 1.0.
+                    // The learner gradient is zero so weights are not updated.
+                    // This is NOT a learner bug but a data signal: the graph needs edges
+                    // with confidence < 1.0 for the gradient to be non-zero.
+                    if (pslResult.finalLoss() == 0.0) {
+                        log.info("Grounding cascade factSheet={}: PSL subprocess done (loss=0.0). "
+                                + "Zero loss indicates MAP posteriors == consensus targets "
+                                + "(likely all-1.0 hard facts). PSL weights unchanged. "
+                                + "No action needed — this is the correct fixed-point for a "
+                                + "fully-certain graph. Weights will update when soft-truth edges appear.",
+                                factSheetId);
+                    } else {
+                        log.info("Grounding cascade factSheet={}: PSL subprocess done (loss={})",
+                                factSheetId, pslResult.finalLoss());
+                    }
+                } else {
+                    // ── IN-JVM PATH (no learning subprocess in this process) ─────────────────
                     double[] perRuleMeans = computePerRulePriorMeans(program, factStore);
                     trainedProgram = pslWeightLearner(perRuleMeans).updateOnBatch(program, softTargets, 1);
                     int savedVersion = cascadeWeightStore.save(programKey, trainedProgram.rules());
@@ -1358,86 +1363,83 @@ public class IncrementalReasoningOrchestrator {
                             ? new HashMap<>(result.values()) : consensusTargets;
 
                     // ── SUBPROCESS PATH ──────────────────────────────────────────────────────
-                    // When the learning subprocess is enabled, export the edge strengths and the
-                    // pre-computed tensor batch to the subprocess, which runs the SameDiff autodiff
-                    // gradient step in a bounded native JVM, then writes mebn-weights.json. The
-                    // main JVM reloads via mebnWeightAdapter.load() after.
+                    // When the learning subprocess is wired, export the edge strengths and the
+                    // pre-computed [E × M] matrices to the subprocess, which runs the SameDiff
+                    // autodiff gradient step in a bounded native JVM, then writes mebn-weights.json.
+                    // The main JVM reloads via mebnWeightAdapter.load() after. A failed run throws
+                    // to the catch below: STATUS_ERROR, strengths unchanged and not persisted.
                     boolean mebnRanInSubprocess = false;
                     if (reasoningLearningExecutor != null) {
-                        try {
-                            // Collect edges and current strengths.
-                            List<MebnWeightLearner.Edge> edges =
-                                    SameDiffMebnStrengthLearner.collectEdges(theory);
-                            if (!edges.isEmpty()) {
-                                int M = edges.size();
-                                List<String> edgeKeys = new ArrayList<>(M);
-                                List<Double> currentStrengthsList = new ArrayList<>(M);
-                                for (MebnWeightLearner.Edge e : edges) {
-                                    edgeKeys.add(MebnWeightSerializer.edgeKey(
-                                            e.mfrag().getName(), e.parent(), e.child()));
-                                    currentStrengthsList.add(e.mfrag().getEdgeStrength(e.parent(), e.child()));
-                                }
-
-                                // Pre-compute the [E × M] tensor batch in the main JVM
-                                // (requires one MEBN inference call — stays in main JVM).
-                                MebnInferenceService inferSvc = new MebnInferenceService();
-                                Map<String, Double> posteriors = inferSvc.infer(mebnGraph, theory, Map.of());
-
-                                SameDiffMebnStrengthLearner.TensorBatch batch =
-                                        SameDiffMebnStrengthLearner.buildTensorBatch(
-                                                edges, posteriors, observations);
-
-                                if (batch.rowCount() > 0) {
-                                    Path mebnWeightsPath = mebnWeightAdapter.mebnArtifactPath(factSheetId);
-
-                                    final String mebnCrawlJobId = runId;
-                                    ReasoningLearningExecutor.ProgressCallback mebnCallback =
-                                            (cJobId, epoch, totalEpochs, loss) -> {
-                                                publishProgress(factSheetId, runId, trigger,
-                                                        GroundingProgressEvent.STAGE_MEBN_LEARNING,
-                                                        GroundingProgressEvent.STATUS_RUNNING,
-                                                        "MEBN epoch " + epoch + "/" + totalEpochs
-                                                                + " loss=" + String.format("%.4f", loss),
-                                                        11, null);
-                                            };
-
-                                    log.info("Grounding cascade factSheet={}: routing MEBN strength learning to subprocess",
-                                            factSheetId);
-                                    ReasoningLearningExecutor.LearningResult mebnResult =
-                                            reasoningLearningExecutor.runMebnLearning(
-                                                    mebnCrawlJobId, factSheetId,
-                                                    edgeKeys, currentStrengthsList,
-                                                    batch.pParentMatrix(), batch.targetMatrix(),
-                                                    mebnWeightsPath.toString(),
-                                                    1, kbCfg().getPslLearningRate(), mebnCallback);
-
-                                    if (mebnResult.success()) {
-                                        // Reload the updated strengths the subprocess wrote.
-                                        mebnWeightAdapter.load(factSheetId, theory);
-                                        checkpointMebnBackupId = "cascade-" + cascadeCount;
-                                        mebnRanInSubprocess = true;
-                                        log.info("Grounding cascade factSheet={}: MEBN subprocess done (loss={})",
-                                                factSheetId, mebnResult.finalLoss());
-                                    } else {
-                                        log.warn("Grounding cascade factSheet={}: MEBN subprocess failed ({}), "
-                                                + "falling through to in-JVM path",
-                                                factSheetId, mebnResult.errorMessage());
-                                    }
-                                } else {
-                                    log.debug("Grounding cascade factSheet={}: MEBN tensor batch empty, "
-                                            + "falling through to in-JVM path", factSheetId);
-                                }
+                        // Collect edges and current strengths.
+                        List<MebnWeightLearner.Edge> edges =
+                                SameDiffMebnStrengthLearner.collectEdges(theory);
+                        if (!edges.isEmpty()) {
+                            int M = edges.size();
+                            List<String> edgeKeys = new ArrayList<>(M);
+                            List<Double> currentStrengthsList = new ArrayList<>(M);
+                            for (MebnWeightLearner.Edge e : edges) {
+                                edgeKeys.add(MebnWeightSerializer.edgeKey(
+                                        e.mfrag().getName(), e.parent(), e.child()));
+                                currentStrengthsList.add(e.mfrag().getEdgeStrength(e.parent(), e.child()));
                             }
-                        } catch (Exception subEx) {
-                            log.warn("Grounding cascade factSheet={}: MEBN subprocess error ({}), "
-                                    + "falling through to in-JVM path",
-                                    factSheetId, subEx.getMessage());
+
+                            // Pre-compute the [E × M] matrices in the main JVM (one MEBN inference
+                            // call). Plain arrays: this JVM allocates no ND4J memory for a step
+                            // that runs in the subprocess.
+                            MebnInferenceService inferSvc = new MebnInferenceService();
+                            Map<String, Double> posteriors = inferSvc.infer(mebnGraph, theory, Map.of());
+
+                            SameDiffMebnStrengthLearner.MatrixBatch batch =
+                                    SameDiffMebnStrengthLearner.buildMatrixBatch(
+                                            edges, posteriors, observations);
+
+                            if (batch.rowCount() > 0) {
+                                Path mebnWeightsPath = mebnWeightAdapter.mebnArtifactPath(factSheetId);
+
+                                final String mebnCrawlJobId = runId;
+                                ReasoningLearningExecutor.ProgressCallback mebnCallback =
+                                        (cJobId, epoch, totalEpochs, loss) -> {
+                                            publishProgress(factSheetId, runId, trigger,
+                                                    GroundingProgressEvent.STAGE_MEBN_LEARNING,
+                                                    GroundingProgressEvent.STATUS_RUNNING,
+                                                    "MEBN epoch " + epoch + "/" + totalEpochs
+                                                            + " loss=" + String.format("%.4f", loss),
+                                                    11, null);
+                                        };
+
+                                log.info("Grounding cascade factSheet={}: routing MEBN strength learning to subprocess",
+                                        factSheetId);
+                                ReasoningLearningExecutor.LearningResult mebnResult =
+                                        reasoningLearningExecutor.runMebnLearning(
+                                                mebnCrawlJobId, factSheetId,
+                                                edgeKeys, currentStrengthsList,
+                                                batch.pParent(), batch.target(),
+                                                mebnWeightsPath.toString(),
+                                                1, kbCfg().getPslLearningRate(), mebnCallback);
+                                if (!mebnResult.success()) {
+                                    throw new IllegalStateException(
+                                            "learning subprocess: " + mebnResult.errorMessage());
+                                }
+
+                                // Reload the updated strengths the subprocess wrote.
+                                mebnWeightAdapter.load(factSheetId, theory);
+                                checkpointMebnBackupId = "cascade-" + cascadeCount;
+                                mebnRanInSubprocess = true;
+                                log.info("Grounding cascade factSheet={}: MEBN subprocess done (loss={})",
+                                        factSheetId, mebnResult.finalLoss());
+                            } else {
+                                log.debug("Grounding cascade factSheet={}: no observation matches a MEBN edge, "
+                                        + "nothing to learn", factSheetId);
+                            }
                         }
+                    } else {
+                        // ── IN-JVM PATH (no learning subprocess in this process) ────────────
+                        mebnWeightLearner.learn(theory, mebnGraph, observations, 1);
                     }
 
-                    // ── IN-JVM PATH (fallback or when subprocess is absent) ─────────────────
+                    // Persist the in-JVM result, or the unchanged strengths when the subprocess
+                    // had nothing to learn, so the MEBN artifact always exists after a step.
                     if (!mebnRanInSubprocess) {
-                        mebnWeightLearner.learn(theory, mebnGraph, observations, 1);
                         mebnWeightAdapter.persist(factSheetId, theory);
                         checkpointMebnBackupId = "cascade-" + cascadeCount;
                     }
@@ -1807,7 +1809,7 @@ public class IncrementalReasoningOrchestrator {
      * @param factStore the projected FactStore (already populated by buildProgramFromFactStore)
      * @return map of atomKey → observed value; empty map if factStore is empty or null
      */
-    private Map<String, Double> buildObservedTargets(@Nullable FactStore factStore) {
+    Map<String, Double> buildObservedTargets(@Nullable FactStore factStore) {
         if (factStore == null) return new HashMap<>();
         Map<String, Double> targets = new HashMap<>();
         for (Fact f : factStore.allFacts()) {

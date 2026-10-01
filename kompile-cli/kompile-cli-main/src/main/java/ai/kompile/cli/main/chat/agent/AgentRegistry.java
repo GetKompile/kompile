@@ -20,6 +20,7 @@ import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelDiscoveryHttp;
+import ai.kompile.cli.main.chat.tools.CodeSearchTool;
 
 import java.util.*;
 
@@ -106,11 +107,12 @@ public class AgentRegistry {
                 .systemPrompt(PLANNER_SYSTEM_PROMPT)
                 .enabledTools(Set.of("read", "grep", "glob", "list", "bash", "webfetch", "websearch",
                         "task", "todowrite", "todoread", "transcript_search", "rag_search",
-                        "graph_search", "process", "exit_plan_mode"))
+                        "graph_search", "code_search", "file_context", "process", "exit_plan_mode"))
                 .permissionOverrides(Map.of(
                         "edit", PermissionService.PermissionLevel.DENY,
                         "write", PermissionService.PermissionLevel.DENY,
-                        "patch", PermissionService.PermissionLevel.DENY
+                        "patch", PermissionService.PermissionLevel.DENY,
+                        CodeSearchTool.INDEX_PERMISSION_KEY, PermissionService.PermissionLevel.DENY
                 ))
                 .canSpawnSubagents(true)
                 .build());
@@ -131,7 +133,8 @@ public class AgentRegistry {
         // -- Quick explorer: fast file/code lookups (like Claude Code's Explore "quick") --
         register(AgentConfig.builder("explore-quick")
                 .displayName("Quick Explorer")
-                .description("Fast file discovery and targeted code lookups")
+                .description("Fast file discovery and targeted code lookups, code index first "
+                        + "(code_search, file_context)")
                 .systemPrompt(EXPLORE_QUICK_PROMPT)
                 .modelHint("fast")
                 .enabledTools(READ_ONLY_EXPLORE_TOOLS)
@@ -142,7 +145,8 @@ public class AgentRegistry {
         // -- Deep explorer: thorough codebase analysis (like Claude Code's Explore "very thorough") --
         register(AgentConfig.builder("explore-deep")
                 .displayName("Deep Explorer")
-                .description("Comprehensive codebase exploration across multiple locations and naming conventions")
+                .description("Comprehensive codebase exploration across multiple locations and naming "
+                        + "conventions, code index first (code_search, file_context)")
                 .systemPrompt(EXPLORE_DEEP_PROMPT)
                 .modelHint("default")
                 .enabledTools(READ_ONLY_EXPLORE_TOOLS)
@@ -178,7 +182,8 @@ public class AgentRegistry {
                 .systemPrompt(ARCHITECT_PROMPT)
                 .modelHint("default")
                 .enabledTools(Set.of("read", "grep", "glob", "list", "bash", "webfetch", "websearch",
-                        "todowrite", "todoread", "transcript_search", "rag_search", "graph_search"))
+                        "todowrite", "todoread", "transcript_search", "rag_search", "graph_search",
+                        "code_search", "file_context"))
                 .isSubagent(true)
                 .permissionOverrides(EXPLORE_PERMISSION_OVERRIDES)
                 .build());
@@ -307,14 +312,19 @@ public class AgentRegistry {
     // Shared tool sets and permission overrides
     // ========================================================================
 
+    // Of the code-index tools only code_search and file_context are listed: local_code_index (replace),
+    // lsp (rename) and code_graph (learn, learning_config_update) have write actions. code_search's own
+    // index action is denied below; DENY overrides do not bind auto-approve sessions, where this
+    // allow-list is the only boundary.
     private static final Set<String> READ_ONLY_EXPLORE_TOOLS = Set.of(
             "read", "grep", "glob", "list", "bash", "webfetch", "websearch",
-            "transcript_search", "rag_search", "graph_search");
+            "transcript_search", "rag_search", "graph_search", "code_search", "file_context");
 
     private static final Map<String, PermissionService.PermissionLevel> EXPLORE_PERMISSION_OVERRIDES = Map.of(
             "edit", PermissionService.PermissionLevel.DENY,
             "write", PermissionService.PermissionLevel.DENY,
-            "patch", PermissionService.PermissionLevel.DENY
+            "patch", PermissionService.PermissionLevel.DENY,
+            CodeSearchTool.INDEX_PERMISSION_KEY, PermissionService.PermissionLevel.DENY
     );
 
     // ========================================================================
@@ -328,7 +338,7 @@ public class AgentRegistry {
 
             Guidelines:
             - Read files before modifying them to understand existing code
-            - Use grep and glob to search the codebase efficiently
+            - %s
             - Use the edit tool for targeted changes, write tool for new files
             - Use bash for running builds, tests, and system commands
             - Delegate research and analysis to subagents via the task tool
@@ -338,8 +348,8 @@ public class AgentRegistry {
 
             Subagent Delegation:
             Use the task tool to delegate work to specialized subagents:
-            - explore-quick: Fast file/code lookups (3-5 tool calls, uses fast model)
-            - explore-deep: Comprehensive codebase analysis across multiple locations
+            - explore-quick: Fast file/code lookups, code index first (3-5 tool calls, uses fast model)
+            - explore-deep: Comprehensive codebase analysis across multiple locations, code index first
             - code-reviewer: Reviews changes for bugs, security, and quality
             - architect: Architecture analysis and implementation planning
             - researcher: Web search and documentation lookup (uses fast model)
@@ -359,7 +369,7 @@ public class AgentRegistry {
             - After context compaction, compacted tool results include the file path where the full output was saved
             - Use the `read` tool with the saved file path to access any previous tool output
             - Use `glob` to list all saved result files in the tool-results/ directory
-            """;
+            """.formatted(CodeNavigationGuidance.RULE);
 
     private static final String PLANNER_SYSTEM_PROMPT = """
             You are an expert software architect in planning mode. You can read and search the codebase
@@ -367,7 +377,8 @@ public class AgentRegistry {
             detailed implementation plans.
 
             Guidelines:
-            - Thoroughly explore the codebase using read, grep, and glob tools
+            - %s
+            - Use glob to find files by name and read the relevant sections
             - Use bash only for non-destructive commands (git log, find, etc.)
             - Delegate deep research to explorer subagents
             - Create clear, actionable plans with specific file paths and changes
@@ -376,7 +387,7 @@ public class AgentRegistry {
             - When your plan is complete, call exit_plan_mode with a summary
 
             Planning workflow:
-            1. Analyze the task using read-only tools (read, grep, glob, bash)
+            1. Analyze the task using read-only tools (code_search, file_context, read, grep, glob, bash)
             2. Break the work into discrete steps using todowrite (action: add)
             3. For each step, include the specific file path and what to change
             4. Call exit_plan_mode when all steps are planned
@@ -385,7 +396,7 @@ public class AgentRegistry {
             - Use transcript_search to recall context from previous conversations
             - Use rag_search to query the knowledge base for relevant documentation
             - Use graph_search to find entities and relationships in the knowledge graph
-            """;
+            """.formatted(CodeNavigationGuidance.READ_ONLY_RULE);
 
     private static final String GENERAL_SUBAGENT_PROMPT = """
             You are a subagent handling a delegated task. You have full tool access to complete
@@ -393,10 +404,11 @@ public class AgentRegistry {
 
             Guidelines:
             - Stay focused on the delegated task
+            - %s
             - Return your findings/results clearly
             - Use tools efficiently to complete the work
             - Don't spawn additional subagents unless necessary
-            """;
+            """.formatted(CodeNavigationGuidance.RULE);
 
     // -- Explore Quick: targeted fast lookups --
     private static final String EXPLORE_QUICK_PROMPT = """
@@ -404,15 +416,15 @@ public class AgentRegistry {
             files, functions, classes, or patterns in the codebase and return precise answers.
 
             Strategy:
-            - Start with glob to find files by name patterns
-            - Use grep for targeted content search with specific patterns
+            - %s
+            - Use glob to find files by name patterns
             - Read only the relevant sections of files (use offset/limit for large files)
             - Prefer direct lookups over broad scans
             - Return file paths with line numbers for every finding
 
             Keep it fast: aim for 3-5 tool calls maximum. Don't explore broadly —
             find exactly what was asked for and return immediately.
-            """;
+            """.formatted(CodeNavigationGuidance.READ_ONLY_RULE);
 
     // -- Explore Deep: comprehensive codebase analysis --
     private static final String EXPLORE_DEEP_PROMPT = """
@@ -421,7 +433,8 @@ public class AgentRegistry {
             codebase, read files, and return detailed findings.
 
             Strategy:
-            - Start with glob and grep to discover relevant files across the entire project
+            - %s
+            - Use glob and grep to discover relevant files across the entire project
             - Search multiple locations and naming conventions (camelCase, snake_case, etc.)
             - Read full files when needed to understand context
             - Check imports, references, and call sites to trace code flow
@@ -437,7 +450,7 @@ public class AgentRegistry {
 
             Be thorough: check all potential locations, even unusual ones. It's better
             to return too much information than to miss something important.
-            """;
+            """.formatted(CodeNavigationGuidance.READ_ONLY_RULE);
 
     // -- Code Reviewer: analyzes code for quality --
     private static final String CODE_REVIEWER_PROMPT = """
@@ -454,7 +467,9 @@ public class AgentRegistry {
             - API design: backwards compatibility, proper error codes, documentation
 
             Use bash with `git diff`, `git log`, and `git show` to examine changes.
-            Use grep to check for patterns (e.g. find all callers of a changed method).
+            %s
+            For each changed file, file_context shows what depends on it; use grep to confirm
+            the call sites of a changed method and to check other patterns.
             Read related test files to verify coverage.
 
             Format your review as:
@@ -462,7 +477,7 @@ public class AgentRegistry {
             - **Important** (should fix): performance, error handling, design issues
             - **Minor** (nice to fix): style, naming, documentation
             - **Positive**: good patterns, well-written code worth highlighting
-            """;
+            """.formatted(CodeNavigationGuidance.READ_ONLY_RULE);
 
     // -- Architect: design and planning --
     private static final String ARCHITECT_PROMPT = """
@@ -476,7 +491,8 @@ public class AgentRegistry {
             - Evaluate trade-offs between approaches
             - Create step-by-step implementation plans with specific file paths
 
-            Use read/grep/glob to understand existing code. Use bash for `git log`
+            %s
+            Use read/grep/glob to understand existing code in detail. Use bash for `git log`
             to understand history and `find`/`wc` for structural analysis.
 
             Return structured plans including:
@@ -486,7 +502,7 @@ public class AgentRegistry {
             - Migration/compatibility strategy if needed
             - Testing approach
             - Risks and mitigation
-            """;
+            """.formatted(CodeNavigationGuidance.READ_ONLY_RULE);
 
     // ========================================================================
     // Model capability lookup

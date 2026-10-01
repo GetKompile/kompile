@@ -30,7 +30,7 @@ import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
 import ai.kompile.graph.reasoning.domain.MpeResult;
 import ai.kompile.graph.reasoning.domain.PslInferenceResult;
 import ai.kompile.graph.reasoning.domain.SensitivityResult;
-import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.RelationalMTheoryArtifactCodec;
 import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
@@ -45,6 +45,7 @@ import ai.kompile.knowledgegraph.generation.GraphGenerationJournal;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.matrix.store.VectorStoreMatrixGraphStore;
+import ai.kompile.knowledgegraph.service.BoundedKnowledgeGraphReader;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JavaType;
@@ -80,6 +81,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -122,6 +124,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>{@code Map.Entry<K,V>} → {@code {"key":...,"value":...}}</li>
  *   <li>{@code saveGraph} argument is interpreted as {@code {"__saveGraphId":"<id>"}} —
  *       the subprocess looks up the REAL in-memory graph by id and persists it.</li>
+ *   <li>Bounded reads return maps, not the interface records: {@code getIncidentEdges} →
+ *       {@code {"edges":[...],"truncated":b}}, {@code getNeighborhood} →
+ *       {@code {"nodes":[...],"edges":[...],"truncated":b}}. The direction argument is the enum
+ *       name or null (BOTH).</li>
  * </ul>
  */
 public class GraphMatrixSubprocessMain {
@@ -131,6 +137,26 @@ public class GraphMatrixSubprocessMain {
     static final long DEFAULT_MAX_RESPONSE_BYTES = 16L * 1024 * 1024;
     static final int DEFAULT_RPC_THREADS = 8;
     static final int DEFAULT_RPC_QUEUE_CAPACITY = 32;
+
+    /*
+     * The RPC limits. The app's client, this server and the distributed-graph gateway read the byte
+     * caps under the same keys and defaults, and the app's launcher forwards all four to this JVM, so
+     * one setting on the app governs every hop.
+     */
+    public static final String MAX_REQUEST_BYTES_PROPERTY = "kompile.graph.subprocess.max-request-bytes";
+    public static final String MAX_RESPONSE_BYTES_PROPERTY = "kompile.graph.subprocess.max-response-bytes";
+    public static final String RPC_THREADS_PROPERTY = "kompile.graph.subprocess.rpc-threads";
+    public static final String RPC_QUEUE_CAPACITY_PROPERTY = "kompile.graph.subprocess.rpc-queue-capacity";
+    public static final List<String> RPC_LIMIT_PROPERTIES = List.of(MAX_REQUEST_BYTES_PROPERTY,
+            MAX_RESPONSE_BYTES_PROPERTY, RPC_THREADS_PROPERTY, RPC_QUEUE_CAPACITY_PROPERTY);
+
+    public static long maxRequestBytes() {
+        return positiveLongProperty(MAX_REQUEST_BYTES_PROPERTY, DEFAULT_MAX_REQUEST_BYTES);
+    }
+
+    public static long maxResponseBytes() {
+        return positiveLongProperty(MAX_RESPONSE_BYTES_PROPERTY, DEFAULT_MAX_RESPONSE_BYTES);
+    }
 
     /** Signals that rehydrateGraphsOnStartup() has returned successfully. */
     private static volatile boolean rehydrationDone = false;
@@ -194,11 +220,11 @@ public class GraphMatrixSubprocessMain {
             return;
         }
 
-        long maxRequestBytes = positiveLongProperty("kompile.graph.subprocess.max-request-bytes", DEFAULT_MAX_REQUEST_BYTES);
-        long maxResponseBytes = positiveLongProperty("kompile.graph.subprocess.max-response-bytes", DEFAULT_MAX_RESPONSE_BYTES);
+        long maxRequestBytes = maxRequestBytes();
+        long maxResponseBytes = maxResponseBytes();
         responseByteCap = maxResponseBytes;
-        int rpcThreads = (int) positiveLongProperty("kompile.graph.subprocess.rpc-threads", DEFAULT_RPC_THREADS);
-        int rpcQueueCapacity = (int) positiveLongProperty("kompile.graph.subprocess.rpc-queue-capacity", DEFAULT_RPC_QUEUE_CAPACITY);
+        int rpcThreads = (int) positiveLongProperty(RPC_THREADS_PROPERTY, DEFAULT_RPC_THREADS);
+        int rpcQueueCapacity = (int) positiveLongProperty(RPC_QUEUE_CAPACITY_PROPERTY, DEFAULT_RPC_QUEUE_CAPACITY);
         ThreadPoolExecutor rpcExecutor = new ThreadPoolExecutor(
                 rpcThreads, rpcThreads, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(rpcQueueCapacity),
@@ -286,7 +312,7 @@ public class GraphMatrixSubprocessMain {
             ObjectNode err = mapper.createObjectNode();
             err.put("ok", false);
             err.put("protocolVersion", 2);
-            err.put("code", generationErrorCode(e));
+            err.put("code", rpcErrorCode(e));
             err.put("error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
             responseJson = mapper.writeValueAsString(err);
         }
@@ -319,8 +345,21 @@ public class GraphMatrixSubprocessMain {
         return response == null ? "unknown" : "serialized";
     }
 
-    private static String generationErrorCode(Exception error) {
-        String message = error.getMessage() == null ? "" : error.getMessage().toLowerCase();
+    /**
+     * The reply's {@code code}. The app's client throws UNKNOWN_METHOD as an
+     * UnsupportedOperationException and INVALID_ARGUMENT as an IllegalArgumentException, so a
+     * caller sees what it would see in-process. The type decides first: an argument's text
+     * (an evidence name, say) must not select a generation code.
+     */
+    public static String rpcErrorCode(Exception error) {
+        String raw = error.getMessage() == null ? "" : error.getMessage();
+        if (error instanceof IllegalArgumentException) {
+            // The dispatchers' default branches: the app is newer than this subprocess.
+            boolean unknown = raw.startsWith("[graph-matrix] ")
+                    && (raw.contains(": unknown method: ") || raw.contains("unknown service FQCN: "));
+            return unknown ? "UNKNOWN_METHOD" : "INVALID_ARGUMENT";
+        }
+        String message = raw.toLowerCase();
         if (message.contains("conflict") || message.contains("stale")) return "STALE_REVISION";
         if (message.contains("unsupported") || message.contains("not supported")) return "UNSUPPORTED";
         if (message.contains("generation") || message.contains("journal")) return "INVALID_GENERATION";
@@ -718,21 +757,15 @@ public class GraphMatrixSubprocessMain {
 
     // ── Reasoning service dispatchers ─────────────────────────────────────────
 
-    private static String dispatchBayesianNetworkService(BayesianNetworkService svc, String method,
-                                                         List<JsonNode> args,
-                                                         ObjectMapper mapper) throws Exception {
+    public static String dispatchBayesianNetworkService(BayesianNetworkService svc, String method,
+                                                        List<JsonNode> args,
+                                                        ObjectMapper mapper) throws Exception {
         Object rawResult = switch (method) {
-            case "queryMebnFromKg" -> {
-                Collection<String> seeds = argList(args, 0, String.class, mapper);
-                Map<String, Integer> evidence = argMapStrInt(args, 1, mapper);
-                int maxDepth = argInt(args, 2);
-                int maxNodes = argInt(args, 3);
-                if (args.size() <= 4 || isNullArg(args, 4)) {
-                    yield svc.queryMebnFromKg(seeds, evidence, maxDepth, maxNodes);
-                }
-                TypeHierarchy hierarchy = argObj(args, 4, TypeHierarchy.class, mapper);
-                yield svc.queryMebnFromKg(seeds, evidence, maxDepth, maxNodes, hierarchy);
-            }
+            // The 4- and 5-arg overloads pass null for the hierarchy and fact sheet they omit.
+            case "queryMebnFromKg" -> svc.queryMebnFromKg(
+                    argList(args, 0, String.class, mapper), argMapStrInt(args, 1, mapper),
+                    argInt(args, 2), argInt(args, 3),
+                    argObj(args, 4, TypeHierarchy.class, mapper), argLong(args, 5));
             case "queryAllPosteriors" -> svc.queryAllPosteriors(
                     argList(args, 0, String.class, mapper),
                     argMapStrInt(args, 1, mapper),
@@ -748,8 +781,17 @@ public class GraphMatrixSubprocessMain {
                     argMapStrInt(args, 2, mapper), argDouble(args, 3), argInt(args, 4), argInt(args, 5));
             case "getMebnStatistics" -> svc.getMebnStatistics(
                     argList(args, 0, String.class, mapper), argInt(args, 1), argInt(args, 2));
-            case "buildMebnTheory" -> svc.buildMebnTheory(
+            case "describeMebnTheory" -> svc.describeMebnTheory(
                     argList(args, 0, String.class, mapper), argInt(args, 1), argInt(args, 2));
+            case "whatIfQuery" -> svc.whatIfQuery(
+                    argList(args, 0, String.class, mapper), argMapStrInt(args, 1, mapper),
+                    argInt(args, 2), argInt(args, 3));
+            case "getNetworkStatistics" -> svc.getNetworkStatistics(
+                    argList(args, 0, String.class, mapper), argInt(args, 1), argInt(args, 2));
+            // The theory arrives in its relational-v1 artifact form; only canonical theories are sent.
+            case "queryWithMTheory" -> svc.queryWithMTheory(
+                    RelationalMTheoryArtifactCodec.fromJson(argStr(args, 0)), argMapStrInt(args, 1, mapper),
+                    argObj(args, 2, TypeHierarchy.class, mapper), argLong(args, 3));
             default -> throw new IllegalArgumentException(
                     "[graph-matrix] BayesianNetworkService: unknown method: " + method);
         };
@@ -1201,10 +1243,13 @@ public class GraphMatrixSubprocessMain {
     // ── KnowledgeGraphService dispatcher ─────────────────────────────────────
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    static String dispatchKnowledgeGraphService(KnowledgeGraphService svc,
+    public static String dispatchKnowledgeGraphService(KnowledgeGraphService svc,
                                                 GraphGenerationCoordinator coordinator,
                                                 String method, List<JsonNode> args,
                                                 ObjectMapper mapper) throws Exception {
+        if ("getNeighborhood".equals(method)) {
+            return serializeNeighborhood(boundedReader(svc), args, mapper);
+        }
         Object rawResult = switch (method) {
 
             // ── Authoritative graph-generation lifecycle ───────────────────────
@@ -1285,6 +1330,18 @@ public class GraphMatrixSubprocessMain {
                     svc.createSnippetNodesBatch(decodeSnippetSpecs(arg(args, 0)));
 
             case "getNode" -> svc.getNode(argStr(args, 0));
+
+            case "getNodeInScope" -> boundedReader(svc).getNodeInScope(argStr(args, 0), argLong(args, 1));
+
+            case "getIncidentEdges" -> {
+                BoundedKnowledgeGraphReader.IncidentEdges incident = boundedReader(svc).getIncidentEdges(
+                        argStr(args, 0), argLong(args, 1), argDirection(args, 2),
+                        Math.min(argInt(args, 3), BOUNDED_READ_WIRE_MAX_EDGES));
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("edges", incident.edges());
+                result.put("truncated", incident.truncated());
+                yield result;
+            }
 
             case "getNodeByExternalId" -> {
                 String extId   = argStr(args, 0);
@@ -1649,6 +1706,76 @@ public class GraphMatrixSubprocessMain {
         return serializeResult(method, rawResult, mapper);
     }
 
+    // ── Bounded reads ─────────────────────────────────────────────────────────
+
+    /**
+     * Wire ceilings for one bounded read. A serialized node is ~1.1KB and an edge ~2.2KB, so a full
+     * reply stays near 13MB, under the default 16MB response cap, and the JSON tree built before the
+     * capped write stays bounded whatever budget the caller asked for.
+     */
+    static final int BOUNDED_READ_WIRE_MAX_NODES = 2_000;
+    static final int BOUNDED_READ_WIRE_MAX_EDGES = 5_000;
+
+    private static BoundedKnowledgeGraphReader boundedReader(KnowledgeGraphService svc) {
+        if (svc instanceof BoundedKnowledgeGraphReader reader) return reader;
+        throw new IllegalArgumentException(
+                "[graph-matrix] KnowledgeGraphService has no bounded reads: " + svc.getClass().getName());
+    }
+
+    private static BoundedKnowledgeGraphReader.Direction argDirection(List<JsonNode> args, int idx) {
+        String name = argStr(args, idx);
+        return name == null ? BoundedKnowledgeGraphReader.Direction.BOTH
+                : BoundedKnowledgeGraphReader.Direction.valueOf(name);
+    }
+
+    /**
+     * Runs the whole bounded traversal where the store lives, so the caller pays one RPC instead of
+     * a point read and an incident read per node. Budgets above the wire ceilings are lowered to
+     * them, and the traversal marks the result truncated if that cut it short. A reply that still
+     * crosses the response cap keeps the first half of the nodes (discovery order: the seeds and
+     * their nearest neighbors) and half of the edges among them, marked truncated, instead of
+     * failing the read.
+     */
+    static String serializeNeighborhood(BoundedKnowledgeGraphReader reader, List<JsonNode> args,
+                                        ObjectMapper mapper) throws Exception {
+        BoundedKnowledgeGraphReader.Neighborhood hood = reader.getNeighborhood(
+                argLong(args, 0),
+                argList(args, 1, String.class, mapper),
+                argList(args, 2, String.class, mapper),
+                argInt(args, 3),
+                Math.min(argInt(args, 4), BOUNDED_READ_WIRE_MAX_NODES),
+                argDirection(args, 5),
+                Math.min(argInt(args, 6), BOUNDED_READ_WIRE_MAX_EDGES));
+        List<GraphNode> nodes = hood.nodes();
+        List<GraphEdge> edges = hood.edges();
+        boolean truncated = hood.truncated();
+        while (true) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("nodes", nodes);
+            result.put("edges", edges);
+            result.put("truncated", truncated);
+            try {
+                return serializeResult("getNeighborhood", result, mapper);
+            } catch (ResponseTooLargeException e) {
+                if (nodes.isEmpty() && edges.isEmpty()) throw e;
+                logger.warn("[graph-matrix] getNeighborhood reply with {} nodes and {} edges exceeds the "
+                        + "response cap; halving it", nodes.size(), edges.size());
+                nodes = nodes.subList(0, nodes.size() / 2);
+                Set<String> kept = new HashSet<>();
+                for (GraphNode node : nodes) kept.add(node.getNodeId());
+                List<GraphEdge> closed = new ArrayList<>();
+                for (GraphEdge edge : edges) {
+                    if (closed.size() >= edges.size() / 2) break;
+                    if (kept.contains(edge.getSourceNodeId()) && kept.contains(edge.getTargetNodeId())) {
+                        closed.add(edge);
+                    }
+                }
+                edges = closed;
+                truncated = true;
+            }
+        }
+    }
+
     /**
      * Special-case saveGraph: look up the real in-memory graph by id and persist it.
      * The real graph is in the VectorStoreMatrixGraphStore cache; the client only has a shell.
@@ -1781,8 +1908,8 @@ public class GraphMatrixSubprocessMain {
      *   <li>Everything else → standard Jackson</li>
      * </ul>
      */
-    private static String serializeResult(String methodName, Object rawResult,
-                                          ObjectMapper mapper) throws JsonProcessingException {
+    static String serializeResult(String methodName, Object rawResult,
+                                  ObjectMapper mapper) throws JsonProcessingException {
         ObjectNode response = mapper.createObjectNode();
         response.put("ok", true);
         response.put("protocolVersion", 2);
@@ -1824,10 +1951,9 @@ public class GraphMatrixSubprocessMain {
         if (rawResult instanceof Optional<?> opt) {
             if (opt.isEmpty()) {
                 response.putNull("result");
-            } else {
-                response.set("result", mapper.valueToTree(opt.get()));
+                return writeCapped(mapper, response);
             }
-            return writeCapped(mapper, response);
+            return writeCappedResult(mapper, opt.get());
         }
 
         // AdjacencyMatrixGraph must never be serialized across the wire — return an ack shell.
@@ -1859,7 +1985,20 @@ public class GraphMatrixSubprocessMain {
         }
 
         // Default: standard Jackson serialisation.
-        response.set("result", mapper.valueToTree(rawResult));
+        return writeCappedResult(mapper, rawResult);
+    }
+
+    /**
+     * The ok envelope around a result, streamed into the capped buffer. A tree copy of the result
+     * ({@code valueToTree}) costs the whole result before the cap can stop it, and reports a
+     * serializer failure as an IllegalArgumentException, which the client would answer as the
+     * caller's mistake.
+     */
+    private static String writeCappedResult(ObjectMapper mapper, Object result) throws JsonProcessingException {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("ok", true);
+        response.put("protocolVersion", 2);
+        response.put("result", result);
         return writeCapped(mapper, response);
     }
 
@@ -1950,7 +2089,7 @@ public class GraphMatrixSubprocessMain {
      * Boot the matrix Spring context.  Mirrors {@code IngestSubprocessMain#createContext} for the
      * vector-store property setup.
      */
-    private static AnnotationConfigApplicationContext createContext() {
+    static AnnotationConfigApplicationContext createContext() {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
 
         // Activate SubprocessGraphConfiguration (conditional on this property).

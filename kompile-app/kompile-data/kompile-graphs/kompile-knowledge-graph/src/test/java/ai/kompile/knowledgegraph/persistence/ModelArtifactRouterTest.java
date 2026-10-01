@@ -19,7 +19,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -85,14 +84,14 @@ class ModelArtifactRouterTest {
         StagingModelArtifactBackend backend = new StagingModelArtifactBackend();
 
         // With blank stagingUrl: supports nothing
-        setStagingUrl(backend, "");
+        backend.stagingUrl = "";
         for (ModelArtifactType type : ModelArtifactType.values()) {
             assertFalse(backend.supports(type),
                     "With blank stagingUrl, staging backend must not support type: " + type);
         }
 
         // With a real stagingUrl: only SAMEDIFF_CHECKPOINT is supported
-        setStagingUrl(backend, "http://staging.example.com");
+        backend.stagingUrl = "http://staging.example.com";
         for (ModelArtifactType type : ModelArtifactType.values()) {
             if (type == ModelArtifactType.SAMEDIFF_CHECKPOINT) {
                 assertTrue(backend.supports(type),
@@ -102,13 +101,5 @@ class ModelArtifactRouterTest {
                         "Staging backend must NOT support type " + type + " even when stagingUrl is set");
             }
         }
-    }
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private void setStagingUrl(StagingModelArtifactBackend backend, String url) throws Exception {
-        Field f = StagingModelArtifactBackend.class.getDeclaredField("stagingUrl");
-        f.setAccessible(true);
-        f.set(backend, url);
     }
 }

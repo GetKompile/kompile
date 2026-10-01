@@ -12,6 +12,7 @@ package ai.kompile.graph.reasoning.fol.grounding;
 import ai.kompile.graph.reasoning.fol.InferredFact;
 import ai.kompile.graph.reasoning.psl.PslAtom;
 import ai.kompile.graph.reasoning.psl.Term;
+import ai.kompile.graph.reasoning.query.PredicateNames;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -105,10 +106,9 @@ final class JoinKernel {
      */
     static Map<String, String> unify(PslAtom template, PslAtom candidate,
                                      Map<String, String> binding) {
-        // Predicate match is case-insensitive so a camelCase / UPPER_SNAKE query predicate unifies
-        // with the lower-cased predicate the projector stored (RecursiveQueryEngine passes template
-        // and candidate built from the same predicate string, so this never changes its behaviour).
-        if (!template.predicate().equalsIgnoreCase(candidate.predicate())) return null;
+        // The grounding service may combine equivalent stored spelling buckets. Keep predicate
+        // matching consistent with its index resolution, without folding argument constants.
+        if (!PredicateNames.same(template.predicate(), candidate.predicate())) return null;
         if (template.args().size() != candidate.args().size()) return null;
         Map<String, String> extended = null;
         for (int i = 0; i < template.args().size(); i++) {

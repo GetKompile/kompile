@@ -433,6 +433,7 @@ public class AgentChatService {
                 // Add environment variables
                 Map<String, String> env = pb.environment();
                 env.putAll(agent.safeEnvironment());
+                preparedCliCommand.applyEnvironment(env);
 
                 // turnStartMs was recorded above (before retrieval) so both retrieval-time and
                 // subprocess-time reasoning traces are drained for this turn.
@@ -856,7 +857,8 @@ public class AgentChatService {
                 // reasoning was folded into the LLM prompt as plain text with no structured evidence.
                 if (reasoningTraceStore != null && reasoning.trail() != null) {
                     try {
-                        reasoningTraceStore.storeTrace(ReasoningTrailMapper.toTrailDto(reasoning.trail()));
+                        reasoningTraceStore.storeTrace(
+                                factSheetId, ReasoningTrailMapper.toTrailDto(reasoning.trail()));
                     } catch (Exception e) {
                         log.debug("Could not push reasoning trail to trace store: {}", e.getMessage());
                     }
@@ -1136,6 +1138,15 @@ public class AgentChatService {
     }
 
     /**
+     * The base interactive command with what its launch needs besides the command line.
+     * Delegates to {@link AgentSubprocessExecutor#prepareInteractiveCommand}.
+     */
+    public AgentSubprocessExecutor.PreparedCommand prepareInteractiveCommand(
+            AgentProvider agent, boolean skipPermissions, boolean injectMcpTools, List<String> agentArgs) {
+        return subprocessExecutor.prepareInteractiveCommand(agent, skipPermissions, injectMcpTools, agentArgs);
+    }
+
+    /**
      * Build the CLI command for the agent, including MCP server configuration if
      * supported.
      * Handles Gemini CLI workspace restrictions by creating prompt files in the
@@ -1161,7 +1172,10 @@ public class AgentChatService {
             ProvisionedTurn turn,
             int effectiveTimeoutSeconds) {
         if (turn == null) {
-            return new PreparedCliCommand(buildCommand(agent, request, prompt), null, null);
+            AgentSubprocessExecutor.PreparedCommand prepared = subprocessExecutor.prepareCommand(
+                    agent, request.isSkipPermissions(), request.isInjectMcpTools(),
+                    request.getAgentArgs(), prompt, request.getWorkingDirectory());
+            return new PreparedCliCommand(prepared.command(), prepared, null);
         }
 
         // Provisioned turns fail closed unless the provider can suppress user/project MCP config.
@@ -1577,6 +1591,13 @@ public class AgentChatService {
             command = List.copyOf(command);
         }
 
+        /** Set the launch's variables over the agent's; see {@link AgentSubprocessExecutor.PreparedCommand#applyEnvironment}. */
+        void applyEnvironment(Map<String, String> environment) {
+            if (commandResources != null) {
+                commandResources.applyEnvironment(environment);
+            }
+        }
+
         @Override
         public void close() {
             if (commandResources != null) {
@@ -1966,6 +1987,7 @@ public class AgentChatService {
             }
 
             pb.environment().putAll(agent.safeEnvironment());
+            preparedCliCommand.applyEnvironment(pb.environment());
 
             Process process = pb.start();
             closeProcessStdin(process, agent.getName(), processId);

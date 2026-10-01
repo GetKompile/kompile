@@ -25,9 +25,9 @@ import java.util.Map;
 /**
  * MCP tool: {@code ask_graph_verify}
  *
- * <p>Verify a factual claim against the production knowledge base via
- * {@code POST /api/kb-grounding/verify}. Returns SUPPORTED, REFUTED, or UNKNOWN with
- * calibrated confidence and evidence atoms.</p>
+ * <p>Verify a factual claim against the knowledge base: the current folder's graph in local
+ * stdio, or {@code POST /api/kb-grounding/verify} on a configured server. Returns SUPPORTED,
+ * REFUTED, or UNKNOWN with a confidence and the evidence behind the verdict.</p>
  */
 public class AskGraphVerifyTool implements CliTool {
 
@@ -50,10 +50,9 @@ public class AskGraphVerifyTool implements CliTool {
 
     @Override
     public String description() {
-        return "Verify a factual claim against the production knowledge base. " +
-                "Returns SUPPORTED, REFUTED, or UNKNOWN with a calibrated confidence " +
-                "score [0,1] and the supporting evidence keys + activated rules that justify " +
-                "the verdict. Use this before accepting any LLM-generated claim as fact. " +
+        return "Verify a factual claim against the knowledge base (the current folder's in local stdio). " +
+                "Returns SUPPORTED, REFUTED, or UNKNOWN with a confidence in [0,1] and the evidence " +
+                "behind the verdict. Use this before accepting any LLM-generated claim as fact. " +
                 "Specify asOf for temporal point-in-time verification.";
     }
 
@@ -66,7 +65,9 @@ public class AskGraphVerifyTool implements CliTool {
         props.putObject("atom")
                 .put("type", "string")
                 .put("description", "Canonical atom key, e.g. 'isEmployedBy(Alice, Acme)'. "
-                        + "Predicate name is case-sensitive. Arguments separated by ', ' (comma-space).");
+                        + "Arguments separated by ', ' (comma-space). Locally the predicate matches stored "
+                        + "relation types in any case or word style (worksFor = works_for = WORKS_FOR); "
+                        + "the remote backend needs the exact name.");
         props.putObject("factSheetId")
                 .put("type", "integer")
                 .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
@@ -95,17 +96,8 @@ public class AskGraphVerifyTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Verify a factual claim: POST /api/kb-grounding/verify {atom, factSheetId?, minConfidence?}. " +
-               "atom format: 'predicate(arg1, arg2)' — case-sensitive predicate name, e.g. 'worksFor(Alice, Acme)'. " +
-               "Discover predicate names with knowledge_graph list_predicates. " +
-               "Returns verdict (SUPPORTED/REFUTED/UNKNOWN), confidence, supporting evidence, counter-evidence, " +
-               "unknownReason (entity-not-in-graph|no-evidence|contested|near-miss), " +
-               "opinion (support/counter-evidence/uncertainty), " +
-               "nearMissSuggestions (facts to assert to make this claim provable — appears once the knowledge base " +
-               "has learned reasoning rules), " +
-               "fragility{wouldFlipIf,minimalSupportSize,robustness} (for SUPPORTED verdicts: " +
-               "robustness 0=only one fact supports it, 1=many independent supports). " +
-               "Local stdio verifies against the current folder; factSheetId is an optional remote/legacy override.";
+        return "Check a claim before stating it: atom='worksFor(Alice, Acme)'. Returns SUPPORTED/REFUTED/UNKNOWN, "
+                + "confidence and evidence. Local predicates match any case; see knowledge_graph list_predicates.";
     }
 
     @Override

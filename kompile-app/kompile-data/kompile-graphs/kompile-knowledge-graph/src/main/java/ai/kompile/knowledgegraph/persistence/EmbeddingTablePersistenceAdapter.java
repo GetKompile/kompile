@@ -43,7 +43,7 @@ public class EmbeddingTablePersistenceAdapter {
     private static final long SIZE_THRESHOLD_BYTES = 50L * 1024 * 1024; // 50 MB
 
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    String dataDir;
 
     /**
      * Serialize {@code table} and write it to

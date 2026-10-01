@@ -52,7 +52,8 @@ class CodeToolBackendRoutingTest {
         // Both probes look healthy, so a URL-less tool must actively avoid the server.
         when(backend.isAvailable()).thenReturn(true);
         when(backend.isAvailable(anyString())).thenReturn(true);
-        when(maintenance.prepareForRead(any(LocalCodeIndexer.class), eq(PROJECT))).thenReturn(FRESHNESS);
+        when(maintenance.prepareForRead(any(LocalCodeIndexer.class), eq(PROJECT), eq(directory)))
+                .thenReturn(FRESHNESS);
 
         backendSingleton = mockStatic(KompileBackendClient.class);
         backendSingleton.when(KompileBackendClient::getInstance).thenReturn(backend);
@@ -112,7 +113,7 @@ class CodeToolBackendRoutingTest {
             assertTrue(invalid.isError(), invalid.getOutput());
             assertTrue(invalid.getOutput().contains(FRESHNESS));
         }
-        verify(maintenance, times(4)).prepareForRead(any(LocalCodeIndexer.class), eq(PROJECT));
+        verify(maintenance, times(4)).prepareForRead(any(LocalCodeIndexer.class), eq(PROJECT), eq(directory));
         verifyNoInteractions(backend);
     }
 

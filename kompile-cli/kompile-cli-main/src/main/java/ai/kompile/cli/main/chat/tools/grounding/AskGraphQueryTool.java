@@ -46,15 +46,9 @@ public class AskGraphQueryTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Conjunctive pattern query: find all ?-variable bindings matching a set of predicates. "
-                + "CRITICAL: prefix variables with '?' or they are treated as constants (zero bindings). "
-                + "Example — who works for Acme: conjuncts=[{\"predicate\":\"worksFor\",\"args\":[\"?x\",\"Acme\"]}] "
-                + "returns rows like {x: \"Alice\", confidence: 0.91}. "
-                + "Multi-conjunct: [{\"predicate\":\"worksFor\",\"args\":[\"?x\",\"?org\"]},{\"predicate\":\"locatedIn\",\"args\":[\"?org\",\"London\"]}] "
-                + "finds all people whose employer is in London. "
-                + "Local stdio queries the current folder; factSheetId is an optional remote/legacy override. "
-                + "minConfidence default 0.3; raise to 0.7+ to see only well-supported facts. "
-                + "Zero results? Check predicate names with knowledge_graph list_predicates.";
+        return "Pattern query: conjuncts=[{\"predicate\":\"worksFor\",\"args\":[\"?x\",\"Acme\"]}] binds ?x. "
+                + "Variables MUST start with '?'. Zero rows? Read unknownPredicates/didYouMean or call "
+                + "knowledge_graph list_predicates.";
     }
 
     @Override
@@ -84,7 +78,8 @@ public class AskGraphQueryTool implements CliTool {
         items.put("type", "object");
         ObjectNode itemProps = items.putObject("properties");
         itemProps.putObject("predicate").put("type", "string")
-                .put("description", "Predicate name, e.g. 'worksFor'. Case-sensitive.");
+                .put("description", "Predicate name, e.g. 'worksFor'. Locally matches stored relation types in any "
+                        + "case or word style (worksFor = works_for = WORKS_FOR); the remote backend needs the exact name.");
         ObjectNode argsNode = itemProps.putObject("args");
         argsNode.put("type", "array");
         argsNode.putObject("items").put("type", "string");

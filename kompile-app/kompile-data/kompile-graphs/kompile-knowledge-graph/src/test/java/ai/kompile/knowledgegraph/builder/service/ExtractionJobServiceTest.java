@@ -73,18 +73,11 @@ class ExtractionJobServiceTest {
 
     private ExtractionJob pendingJob(String jobId, Long factSheetId) {
         ExtractionJob job = ExtractionJob.builder()
+                .jobId(jobId) // the id @PrePersist would assign on save
                 .factSheetId(factSheetId)
                 .builderType("llm")
                 .status(JobStatus.PENDING)
                 .build();
-        // Simulate what @PrePersist would set
-        try {
-            var f = ExtractionJob.class.getDeclaredField("jobId");
-            f.setAccessible(true);
-            f.set(job, jobId);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
         when(jobRepository.findByJobIdForUpdate(jobId)).thenReturn(Optional.of(job));
         return job;
     }
@@ -98,6 +91,7 @@ class ExtractionJobServiceTest {
 
     private TripleProposal pendingProposal(String proposalId, ExtractionJob job) {
         TripleProposal proposal = TripleProposal.builder()
+                .proposalId(proposalId)
                 .job(job)
                 .factSheetId(job.getFactSheetId())
                 .subjectName("Apple")
@@ -108,13 +102,6 @@ class ExtractionJobServiceTest {
                 .confidence(0.9)
                 .status(ProposalStatus.PENDING)
                 .build();
-        try {
-            var f = TripleProposal.class.getDeclaredField("proposalId");
-            f.setAccessible(true);
-            f.set(proposal, proposalId);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
         return proposal;
     }
 

@@ -349,6 +349,8 @@ public class MatrixGraphRagService implements GraphRagService {
                 Do not use outside knowledge, prior conversation, or unstated assumptions.
                 Cite node IDs and source IDs for factual claims. Cite reasoning trace and step IDs
                 when explaining an inference. If the JSON is insufficient, say exactly what is missing.
+                A learnedScore is a score learned by graph reasoning, not recorded evidence: the recorded
+                confidence and the sources are the evidence, so say so whenever a claim rests on a learnedScore.
 
                 Question: %s
 

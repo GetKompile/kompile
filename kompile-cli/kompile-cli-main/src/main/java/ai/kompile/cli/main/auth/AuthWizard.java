@@ -7,6 +7,7 @@ package ai.kompile.cli.main.auth;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.ChatProvider;
 import ai.kompile.cli.main.chat.config.ChatProviderRegistry;
 import ai.kompile.core.agent.AgentProvider;
@@ -73,11 +74,6 @@ final class AuthWizard implements AutoCloseable {
         }
         LoginKind kind = kinds.get(kindIndex);
         if (kind == LoginKind.NATIVE) {
-            return new LoginRequest(providerId, null, kind, null, null, true);
-        }
-        if (kind == LoginKind.OAUTH && "anthropic".equalsIgnoreCase(providerId)) {
-            // Claude Code owns Anthropic's subscription login: there is no Kompile
-            // credential to name or activate.
             return new LoginRequest(providerId, null, kind, null, null, true);
         }
         String credentialProviderId = kind == LoginKind.OAUTH ? oauthProviderId : providerId;
@@ -155,6 +151,7 @@ final class AuthWizard implements AutoCloseable {
             return List.of(LoginKind.NATIVE);
         }
         List<LoginKind> kinds = new ArrayList<>();
+        // Anthropic has no Kompile OAuth flow: its subscription login is Claude Code's.
         if (oauthProviderId != null) {
             kinds.add(LoginKind.OAUTH);
         }
@@ -178,7 +175,10 @@ final class AuthWizard implements AutoCloseable {
 
     SwitchRequest promptForSwitch(CredentialStore store) throws IOException {
         prompter.header("Kompile Auth Switch", "Choose the provider credential, including for open chats");
-        List<CredentialStore.CredentialInfo> all = CredentialMenu.unexpired(store.list());
+        List<CredentialStore.CredentialInfo> all = CredentialMenu.unexpired(store.list()).stream()
+                // A stored Anthropic OAuth sign-in is never sent (Claude Code owns that login).
+                .filter(info -> !ChatConfig.isAnthropicOAuthSignIn(info.providerId(), info.type()))
+                .toList();
         if (all.isEmpty()) {
             prompter.message("No unexpired credentials. Run 'kompile auth login' first.");
             return null;

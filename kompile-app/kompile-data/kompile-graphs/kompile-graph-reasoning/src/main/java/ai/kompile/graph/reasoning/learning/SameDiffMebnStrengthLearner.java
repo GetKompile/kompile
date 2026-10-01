@@ -33,6 +33,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -434,9 +435,7 @@ public final class SameDiffMebnStrengthLearner {
         for (Map.Entry<String, Double> obs : observations.entrySet()) {
             String obsKey = obs.getKey();
             for (MebnWeightLearner.Edge edge : edges) {
-                if (obsKey.startsWith(edge.child())) {
-                    keys.add(edge.parent() + obsKey.substring(edge.child().length()));
-                }
+                edge.parentKeyFor(obsKey).ifPresent(keys::add);
             }
         }
         return keys;
@@ -445,30 +444,31 @@ public final class SameDiffMebnStrengthLearner {
     /**
      * Build the {@code [E, M]} pParent and target arrays from the posteriors and observations.
      *
-     * <p>For each edge {@code m} (child prefix {@code cPfx}, parent prefix {@code pPfx}),
-     * we gather every observation key that starts with {@code cPfx}. Entity E is the number
-     * of distinct such observations across all edges (row-union). For entities that match
+     * <p>For each edge {@code m} we gather every observation key that grounds its child RV and
+     * read the posterior of the parent the SSBN wires to that grounding
+     * ({@link MebnWeightLearner.Edge#parentKeyFor}). Entity E is the number of distinct such
+     * observations across all edges (row-union). For entities that match
      * only some edges, the missing columns carry {@code pParent=0, target=0} (zero gradient
      * contribution, same as the scalar fallback returning 0 when no parent key matches).</p>
+     *
+     * <p>Plain Java, no ND4J: a caller that hands the gradient step to the learning subprocess
+     * builds the arrays without allocating native memory in its own JVM.</p>
      */
-    public static TensorBatch buildTensorBatch(List<MebnWeightLearner.Edge> edges,
-                                        Map<String, Double> posteriors,
-                                        Map<String, Double> observations) {
+    public static MatrixBatch buildMatrixBatch(List<MebnWeightLearner.Edge> edges,
+                                               Map<String, Double> posteriors,
+                                               Map<String, Double> observations) {
         int M = edges.size();
 
-        // Union of all observation keys that match at least one edge's child prefix.
+        // Union of all observation keys that ground at least one edge's child RV.
         List<String> rowKeys = new ArrayList<>();
         for (Map.Entry<String, Double> obs : observations.entrySet()) {
             String k = obs.getKey();
             for (MebnWeightLearner.Edge e : edges) {
-                if (k.startsWith(e.child())) {
+                if (e.parentKeyFor(k).isPresent()) {
                     rowKeys.add(k);
                     break;
                 }
             }
-        }
-        if (rowKeys.isEmpty()) {
-            return TensorBatch.empty(M);
         }
 
         int E = rowKeys.size();
@@ -478,23 +478,36 @@ public final class SameDiffMebnStrengthLearner {
         for (int r = 0; r < E; r++) {
             String obsKey = rowKeys.get(r);
             for (int m = 0; m < M; m++) {
-                MebnWeightLearner.Edge edge = edges.get(m);
-                if (!obsKey.startsWith(edge.child())) {
+                Optional<String> parentKey = edges.get(m).parentKeyFor(obsKey);
+                if (parentKey.isEmpty()) {
                     // This observation does not touch this edge — zero contribution.
                     continue;
                 }
-                String parentKey = edge.parent() + obsKey.substring(edge.child().length());
-                pParArr[r][m] = posteriors.getOrDefault(parentKey, 0.5);
+                pParArr[r][m] = posteriors.getOrDefault(parentKey.get(), 0.5);
                 tgtArr[r][m]  = observations.getOrDefault(obsKey, 0.0);
             }
+        }
+        return new MatrixBatch(pParArr, tgtArr);
+    }
+
+    /**
+     * Build the {@code [E, M]} arrays with {@link #buildMatrixBatch} and wrap them in owned ND4J
+     * copies for the in-process gradient step.
+     */
+    public static TensorBatch buildTensorBatch(List<MebnWeightLearner.Edge> edges,
+                                        Map<String, Double> posteriors,
+                                        Map<String, Double> observations) {
+        MatrixBatch matrices = buildMatrixBatch(edges, posteriors, observations);
+        if (matrices.rowCount() == 0) {
+            return TensorBatch.empty(edges.size());
         }
 
         INDArray pParND = null;
         INDArray tgtND = null;
         try {
-            pParND = Nd4j.create(pParArr);
-            tgtND = Nd4j.create(tgtArr);
-            return new TensorBatch(pParND, tgtND, pParArr, tgtArr);
+            pParND = Nd4j.create(matrices.pParent());
+            tgtND = Nd4j.create(matrices.target());
+            return new TensorBatch(pParND, tgtND, matrices.pParent(), matrices.target());
         } catch (RuntimeException | Error e) {
             closeOwnedArrays(pParND, tgtND);
             throw e;
@@ -519,6 +532,18 @@ public final class SameDiffMebnStrengthLearner {
     }
 
     // ─── TensorBatch ──────────────────────────────────────────────────────────
+
+    /**
+     * The {@code [E, M]} arrays for one gradient step, plain Java (see {@link #buildMatrixBatch}).
+     *
+     * @param pParent parent posterior per entity×edge
+     * @param target  child target per entity×edge
+     */
+    public record MatrixBatch(double[][] pParent, double[][] target) {
+        public int rowCount() {
+            return pParent.length;
+        }
+    }
 
     /**
      * Pre-built {@code [E, M]} tensor pair for one gradient step.

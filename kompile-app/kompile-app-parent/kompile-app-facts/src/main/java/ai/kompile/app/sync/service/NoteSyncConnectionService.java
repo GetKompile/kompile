@@ -51,16 +51,16 @@ public class NoteSyncConnectionService {
     private static final Logger log = LoggerFactory.getLogger(NoteSyncConnectionService.class);
 
     @Autowired
-    private NoteSyncConnectionRepository connectionRepository;
+    NoteSyncConnectionRepository connectionRepository;
 
     @Autowired
     private NoteSyncRecordRepository syncRecordRepository;
 
     @Autowired
-    private NoteSyncRunRepository syncRunRepository;
+    NoteSyncRunRepository syncRunRepository;
 
     @Autowired
-    private ApplicationEventPublisher eventPublisher;
+    ApplicationEventPublisher eventPublisher;
 
     @Autowired(required = false)
     private ai.kompile.oauth.service.TokenEncryptionService tokenEncryptionService;

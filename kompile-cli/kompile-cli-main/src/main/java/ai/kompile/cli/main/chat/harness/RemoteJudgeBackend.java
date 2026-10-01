@@ -22,7 +22,7 @@ import ai.kompile.cli.main.chat.config.DirectLlmClient;
  * Judge backend that calls a remote LLM provider via HTTP.
  * <p>
  * Wraps {@link DirectLlmClient#streamOneShot(String, String, String)} for
- * providers like Anthropic, OpenAI, Gemini, ollama, OpenRouter, etc.
+ * providers like Anthropic, OpenAI, Gemini, OpenRouter, etc.
  */
 public class RemoteJudgeBackend implements JudgeBackend {
 
@@ -60,6 +60,11 @@ public class RemoteJudgeBackend implements JudgeBackend {
     @Override
     public boolean isAvailable() {
         return client != null;
+    }
+
+    @Override
+    public boolean startsProviderProcess() {
+        return client != null && client.startsProviderProcess();
     }
 
     @Override

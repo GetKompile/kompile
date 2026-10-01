@@ -68,6 +68,7 @@ import { FolderSidebarComponent } from './components/folder-sidebar/folder-sideb
 import { ProjectManagerComponent } from './components/project-manager/project-manager.component';
 import { ProjectPageComponent } from './components/project-page/project-page.component';
 import { UnifiedChatComponent } from './components/unified-chat/unified-chat.component';
+import { ChatWorkspaceComponent, WorkspaceChatPaneComponent } from './components/chat-workspace/chat-workspace.component';
 
 // Standalone components referenced from the templates above. Standalone components
 // reached only from other standalone components carry their own imports and are not
@@ -93,7 +94,9 @@ import { SourceCitationComponent } from '@shared/components/source-citation/sour
     FolderSidebarComponent,
     ProjectManagerComponent,
     ProjectPageComponent,
-    UnifiedChatComponent
+    UnifiedChatComponent,
+    ChatWorkspaceComponent,
+    WorkspaceChatPaneComponent
   ],
   imports: [
     BrowserModule,

@@ -272,6 +272,7 @@ public class PassthroughCommand implements Callable<Integer> {
                             pb.environment().putAll(extraEnv);
                         }
                     }
+                    McpToolInjection.applyLaunchEnvironment(pb.environment(), injectedSettingsFile);
 
                     Process process = pb.start();
                     // Begin realtime enforcement tailing now that the agent (and its native session
@@ -818,10 +819,13 @@ public class PassthroughCommand implements Callable<Integer> {
                             // Token usage from usageMetadata
                             JsonNode usage = node.path("usageMetadata");
                             if (!usage.isMissingNode()) {
-                                long inputTok = usage.path("promptTokenCount").asLong(0);
-                                long outputTok = usage.path("candidatesTokenCount").asLong(0);
-                                long cacheTok = usage.path("cachedContentTokenCount").asLong(0);
-                                metrics.recordTokenUsage(inputTok, outputTok, cacheTok, 0);
+                                long inputTok = Math.max(0, usage.path("promptTokenCount").asLong(0));
+                                long outputTok = Math.max(0, usage.path("candidatesTokenCount").asLong(0))
+                                        + Math.max(0, usage.path("thoughtsTokenCount").asLong(0));
+                                long cacheTok = Math.max(0, usage.path("cachedContentTokenCount").asLong(0));
+                                // Native Google usage includes cached tokens in the prompt,
+                                // but reports thinking separately from candidate output.
+                                metrics.recordTokenUsage(Math.max(0, inputTok - cacheTok), outputTok, cacheTok, 0);
                             }
 
                             // Extract text and tool calls from parts

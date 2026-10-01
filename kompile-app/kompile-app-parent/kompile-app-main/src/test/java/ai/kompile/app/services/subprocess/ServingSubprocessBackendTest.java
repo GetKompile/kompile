@@ -17,15 +17,24 @@ package ai.kompile.app.services.subprocess;
 
 import ai.kompile.core.llm.StructuredChatLanguageModel;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
+import org.junit.jupiter.api.function.Executable;
 
-import java.lang.reflect.Modifier;
+import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -45,7 +54,7 @@ class ServingSubprocessBackendTest {
         when(launcher.getActiveModelId()).thenReturn("confirmed-active");
 
         ServingSubprocessBackend backend = new ServingSubprocessBackend();
-        ReflectionTestUtils.setField(backend, "launcher", launcher);
+        backend.launcher = launcher;
 
         assertTrue(backend.matchesModel("confirmed-active"));
         assertFalse(backend.matchesModel("requested-but-not-loaded"));
@@ -60,7 +69,7 @@ class ServingSubprocessBackendTest {
                 .thenReturn("{\"finishReason\":\"stop\",\"generatedText\":\"answer\"}");
 
         ServingSubprocessBackend backend = new ServingSubprocessBackend();
-        ReflectionTestUtils.setField(backend, "launcher", launcher);
+        backend.launcher = launcher;
 
         assertEquals("answer", backend.generateForModel("lfm2.5-1.2b-instruct", "prompt"));
         verify(launcher).generateForModel("lfm2.5-1.2b-instruct", "prompt");
@@ -74,7 +83,7 @@ class ServingSubprocessBackendTest {
                 .thenReturn("{\"finishReason\":\"stop\",\"generatedText\":\"answer\"}");
 
         ServingSubprocessBackend backend = new ServingSubprocessBackend();
-        ReflectionTestUtils.setField(backend, "launcher", launcher);
+        backend.launcher = launcher;
 
         assertEquals("answer",
                 backend.generateForModel("lfm2.5-1.2b-instruct", "prompt", 1536));
@@ -100,7 +109,7 @@ class ServingSubprocessBackendTest {
                         + "\"relations\":[]}}],\"parseErrors\":[]}");
 
         ServingSubprocessBackend backend = new ServingSubprocessBackend();
-        ReflectionTestUtils.setField(backend, "launcher", launcher);
+        backend.launcher = launcher;
 
         StructuredChatLanguageModel.Response response = backend.generateChatForModel(
                 "lfm2.5-1.2b-instruct", request, 256);
@@ -124,41 +133,139 @@ class ServingSubprocessBackendTest {
         ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
         Process exited = mock(Process.class);
         when(exited.exitValue()).thenReturn(137);
-        ReflectionTestUtils.setField(launcher, "process", exited);
-        ReflectionTestUtils.setField(launcher, "activeModelId", "lfm2.5-1.2b-instruct");
-        ((java.util.concurrent.atomic.AtomicBoolean) ReflectionTestUtils.getField(launcher, "running")).set(true);
+        launcher.process = exited;
+        launcher.activeModelId = "lfm2.5-1.2b-instruct";
+        launcher.running.set(true);
 
         launcher.handleProcessExit(exited);
 
         assertFalse(launcher.isRunning());
         assertNull(launcher.getActiveModelId());
         launcher.stop();
-        assertNull(ReflectionTestUtils.getField(launcher, "process"));
+        assertNull(launcher.process);
     }
 
     @Test
-    void modelSwapAndModelBoundGenerationShareTheLifecycleMonitor() throws Exception {
-        int loadModifiers = ServingSubprocessLauncher.class
-                .getDeclaredMethod("loadModel", String.class, String.class, Map.class)
-                .getModifiers();
-        int generateModifiers = ServingSubprocessLauncher.class
-                .getDeclaredMethod("generateForModel", String.class, String.class)
-                .getModifiers();
-        int boundedGenerateModifiers = ServingSubprocessLauncher.class
-                .getDeclaredMethod("generateForModel", String.class, String.class, int.class)
-                .getModifiers();
-        int structuredGenerateModifiers = ServingSubprocessLauncher.class
-                .getDeclaredMethod("generateChatForModel", String.class,
-                        StructuredChatLanguageModel.Request.class, int.class)
-                .getModifiers();
+    void modelLoadHoldsLifecycleMonitorAcrossChildStartup() {
+        AtomicBoolean held = new AtomicBoolean();
+        IOException intercepted = new IOException("test startup intercepted");
+        ServingSubprocessLauncher launcher = new ServingSubprocessLauncher() {
+            @Override
+            public void start(String modelId, String modelPath, String tokenizerPath) throws IOException {
+                // Deliberately not synchronized: loadModel itself must own the monitor.
+                held.set(Thread.holdsLock(this));
+                throw intercepted;
+            }
+        };
 
-        assertTrue(Modifier.isSynchronized(loadModifiers),
-                "loadModel must serialize model transitions");
-        assertTrue(Modifier.isSynchronized(generateModifiers),
-                "generateForModel must keep the identity check and generation atomic");
-        assertTrue(Modifier.isSynchronized(boundedGenerateModifiers),
-                "bounded generateForModel must keep the identity check and generation atomic");
-        assertTrue(Modifier.isSynchronized(structuredGenerateModifiers),
-                "structured generateChatForModel must keep identity and protocol atomic");
+        assertSame(intercepted, assertThrows(IOException.class,
+                () -> launcher.loadModel("model", "/unused", Map.of())));
+        assertTrue(held.get(), "model loading must serialize child startup");
+    }
+
+    @Test
+    void modelBoundGenerationWaitsForLifecycleMonitorAndRechecksIdentity() throws Exception {
+        ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
+        assertWaitsForModelSwap(launcher, () -> launcher.generateForModel("before-swap", "prompt"));
+    }
+
+    @Test
+    void boundedGenerationWaitsForLifecycleMonitorAndRechecksIdentity() throws Exception {
+        ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
+        assertWaitsForModelSwap(launcher, () -> launcher.generateForModel("before-swap", "prompt", 256));
+    }
+
+    @Test
+    void structuredGenerationWaitsForLifecycleMonitorAndRechecksIdentity() throws Exception {
+        ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
+        StructuredChatLanguageModel.Request request = new StructuredChatLanguageModel.Request(
+                List.of(new StructuredChatLanguageModel.Message("user", "source")), List.of());
+        assertWaitsForModelSwap(launcher,
+                () -> launcher.generateChatForModel("before-swap", request, 256));
+    }
+
+    @Test
+    void modelBoundGenerationHoldsLifecycleMonitorThroughRequest() {
+        assertRequestHoldsLifecycleMonitor("/api/llm/generate", Map.of("prompt", "prompt"),
+                launcher -> launcher.generateForModel("model", "prompt"));
+    }
+
+    @Test
+    void boundedGenerationHoldsLifecycleMonitorThroughRequest() {
+        assertRequestHoldsLifecycleMonitor("/api/llm/generate",
+                Map.of("prompt", "prompt", "maxTokens", 256),
+                launcher -> launcher.generateForModel("model", "prompt", 256));
+    }
+
+    @Test
+    void structuredGenerationHoldsLifecycleMonitorThroughRequest() {
+        StructuredChatLanguageModel.Request request = new StructuredChatLanguageModel.Request(
+                List.of(new StructuredChatLanguageModel.Message("user", "source")), List.of());
+        assertRequestHoldsLifecycleMonitor("/api/llm/chat", Map.of("request", request, "maxTokens", 256),
+                launcher -> launcher.generateChatForModel("model", request, 256));
+    }
+
+    private static void assertRequestHoldsLifecycleMonitor(
+            String expectedPath, Map<String, Object> expectedBody, ModelBoundRequest operation) {
+        IOException intercepted = new IOException("test request intercepted before HTTP");
+        ServingSubprocessLauncher launcher = new ServingSubprocessLauncher() {
+            @Override
+            String postJson(String path, Object body, Duration timeout) throws IOException {
+                // Deliberately not synchronized: the model-bound operation must retain the monitor.
+                assertTrue(Thread.holdsLock(this),
+                        "generation must hold the lifecycle monitor through check-and-use");
+                assertEquals(expectedPath, path);
+                assertEquals(expectedBody, body);
+                throw intercepted;
+            }
+        };
+        launcher.activeModelId = "model";
+        launcher.running.set(true);
+
+        assertSame(intercepted, assertThrows(IOException.class, () -> operation.execute(launcher)));
+    }
+
+    @FunctionalInterface
+    private interface ModelBoundRequest {
+        void execute(ServingSubprocessLauncher launcher) throws IOException, InterruptedException;
+    }
+
+    private static void assertWaitsForModelSwap(ServingSubprocessLauncher launcher, Executable operation)
+            throws Exception {
+        launcher.activeModelId = "before-swap";
+        // Leave running=false: even a broken serialization path cannot issue a network request.
+        CountDownLatch attempting = new CountDownLatch(1);
+        CompletableFuture<Throwable> outcome = new CompletableFuture<>();
+        Thread worker = new Thread(() -> {
+            attempting.countDown();
+            try {
+                operation.execute();
+                outcome.complete(null);
+            } catch (Throwable failure) {
+                outcome.complete(failure);
+            }
+        }, "serving-model-swap-test");
+        worker.setDaemon(true); // A failed bounded join must not keep the test JVM alive.
+        try {
+            synchronized (launcher) {
+                worker.start();
+                assertTrue(attempting.await(5, TimeUnit.SECONDS), "generation worker did not start");
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (worker.getState() != Thread.State.BLOCKED && !outcome.isDone()
+                        && System.nanoTime() < deadline) {
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+                }
+                assertEquals(Thread.State.BLOCKED, worker.getState(),
+                        "generation must wait for the lifecycle monitor before checking model identity");
+                launcher.activeModelId = "after-swap";
+            }
+        } finally {
+            worker.join(5000);
+            assertFalse(worker.isAlive(), "generation worker did not terminate after monitor release");
+        }
+        IllegalStateException failure = assertInstanceOf(IllegalStateException.class,
+                outcome.get(5, TimeUnit.SECONDS));
+        assertEquals("Requested serving model 'before-swap' is not active (active=after-swap)",
+                failure.getMessage());
     }
 }

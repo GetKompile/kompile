@@ -97,8 +97,7 @@ final class AdmissionEvidenceCollector {
                 List<String> entityPath = append(state.entityPath(), otherId);
                 List<String> relationPath = append(state.relationPath(), relation.id());
                 List<String> predicatePath = append(state.predicatePath(), normalizedType(relation));
-                double strength = clamp(state.strength()
-                        * clamp(relation.weight() * relation.confidence()));
+                double strength = clamp(state.strength() * relation.strength());
                 String pathSummary = state.pathSummary()
                         + arrow(relation, state.entityId())
                         + label(other)

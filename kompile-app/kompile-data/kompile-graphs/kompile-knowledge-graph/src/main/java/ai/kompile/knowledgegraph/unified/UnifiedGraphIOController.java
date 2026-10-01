@@ -35,7 +35,7 @@ public class UnifiedGraphIOController {
     private final UnifiedGraphBridge bridge;
 
     @Value("${kompile.graph.import.profile:COMPATIBILITY}")
-    private String importProfile = "COMPATIBILITY";
+    String importProfile = "COMPATIBILITY";
 
     public UnifiedGraphIOController(UnifiedGraphBridge bridge) {
         this.bridge = bridge;

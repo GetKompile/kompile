@@ -222,7 +222,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     /** Optional application-layer hard barrier for managed structural code projection. */
     @Autowired(required = false)
-    private ManagedCodeProjectionCallback managedCodeProjectionCallback;
+    ManagedCodeProjectionCallback managedCodeProjectionCallback;
 
     /** Optional app-main hook that derives/binds crawl schema and materializes type hierarchy metadata. */
     @Autowired(required = false)

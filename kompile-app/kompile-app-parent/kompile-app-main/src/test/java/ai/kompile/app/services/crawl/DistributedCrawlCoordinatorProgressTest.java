@@ -27,7 +27,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 
@@ -45,8 +44,8 @@ class DistributedCrawlCoordinatorProgressTest {
         coordinator = new DistributedCrawlCoordinator(
                 List.of(new DistributedCrawlCoordinatorTest.MockExternalDelegate()), null, new ObjectMapper());
         publisher = mock(ApplicationEventPublisher.class);
-        ReflectionTestUtils.setField(coordinator, "eventPublisher", publisher);
-        ReflectionTestUtils.setField(coordinator, "aggregator", new DistributedCrawlAggregator());
+        coordinator.eventPublisher = publisher;
+        coordinator.aggregator = new DistributedCrawlAggregator();
     }
 
     private DistributedCrawlSession start1() {

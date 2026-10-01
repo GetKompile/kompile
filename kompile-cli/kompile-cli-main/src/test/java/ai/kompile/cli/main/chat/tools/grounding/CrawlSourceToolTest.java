@@ -15,6 +15,9 @@ import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.project.KompileProjectInitRequest;
+import ai.kompile.project.KompileProjectManifest;
+import ai.kompile.project.KompileProjectStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -167,6 +170,16 @@ class CrawlSourceToolTest {
         });
         server.start();
         try {
+            // A loopback server is a private-network URL, which the crawl refuses unless the
+            // project opts in through its manifest.
+            KompileProjectStore projectStore = new KompileProjectStore();
+            KompileProjectInitRequest initRequest = new KompileProjectInitRequest();
+            initRequest.setName("crawl-source-url-test");
+            initRequest.setIncludeStandardComponents(false);
+            KompileProjectManifest manifest = projectStore.init(tempDir, initRequest);
+            manifest.getMetadata().put("crawl.allowPrivateNetworkUrls", "true");
+            projectStore.save(tempDir, manifest);
+
             CrawlSourceTool tool = new CrawlSourceTool((String) null, om);
             ObjectNode params = om.createObjectNode();
             params.put("url", "http://127.0.0.1:" + server.getAddress().getPort() + "/notes.txt");
@@ -309,9 +322,7 @@ class CrawlSourceToolTest {
         ToolResult result = tool.execute(params, ctx);
 
         assertTrue(result.isError(), "Expected error for HTTP 503");
-        String out = result.getOutput();
-        assertTrue(out.contains("busy") || out.contains("unavailable") || out.contains("503"),
-                "Error must mention busy/unavailable/503: " + out);
+        assertEquals("crawl_source: backend busy or unavailable (HTTP 503): Queue full", result.getOutput());
         mockServer.verify();
     }
 
@@ -336,8 +347,8 @@ class CrawlSourceToolTest {
         ToolResult result = tool.execute(params, ctx);
 
         assertTrue(result.isError(), "Expected error for HTTP 400");
-        assertTrue(result.getOutput().contains("Valid"),
-                "Error must contain 'Valid' from server message: " + result.getOutput());
+        assertEquals("crawl_source failed (HTTP 400): Unknown step X. Valid: GRAPH_EXTRACTION, VECTOR_INDEXING",
+                result.getOutput());
         mockServer.verify();
     }
 

@@ -63,7 +63,7 @@ public class McpCliInjectionController {
             ),
             "agy", new AgentConfig(
                     "Antigravity CLI",
-                    ".agy/settings.json",
+                    ".gemini/config/mcp_config.json",
                     "mcpServers.kompile",
                     "Antigravity CLI"
             ),

@@ -62,7 +62,8 @@ public class AskGraphRetractTool implements CliTool {
 
     @Override
     public String description() {
-        return "Locally removes exact facts and invalidates learned state; no dependency analysis or automatic cascade, " +
+        return "Retract a fact (atomKey) from the knowledge base. " +
+                "Locally removes exact facts and invalidates learned state; no dependency analysis or automatic cascade, " +
                 "and mode=revise is unsupported. Managed backends provide true TMS retraction: physically removes an atom from the knowledge base and " +
                 "returns which dependent atoms became unsupported or weakened. A background " +
                 "re-reasoning cascade is always triggered. " +
@@ -73,10 +74,8 @@ public class AskGraphRetractTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Local stdio removes exact facts only, invalidates learned state, and rejects mode=revise; no dependency analysis or cascade. " +
-                "Managed backends physically remove an atom from the KB; return which dependent atoms became unsupported or weakened. " +
-                "Triggers re-reasoning. Use mode=revise for synchronous propagation. " +
-                "Local stdio retracts from the current folder; factSheetId is an optional remote/legacy override.";
+        return "Remove a fact by atomKey. Locally: exact removal that marks learning stale; no dependency analysis, "
+                + "and mode=revise is rejected. Managed backends report dependents left unsupported or weakened.";
     }
 
     @Override

@@ -12,6 +12,7 @@ import ai.kompile.cli.main.chat.PassthroughStreamParser;
 import ai.kompile.cli.main.chat.ChatSessionContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
@@ -28,7 +29,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
@@ -146,6 +149,20 @@ final class OpenCodeServeClient implements AutoCloseable {
     synchronized String send(String model, String variant, String systemPrompt,
                               String userMessage, Consumer<String> output,
                               ActivityListener activityListener) throws Exception {
+        return send(model, variant, systemPrompt, userMessage, List.of(), output, activityListener);
+    }
+
+    /**
+     * Send one turn with attachments. Images ride as OpenCode file parts carrying data
+     * URLs after the text part, as OpenCode's own clients send them; text files ride as
+     * further text parts.
+     *
+     * @param attachments this turn's images and text files; empty sends the text part alone
+     */
+    synchronized String send(String model, String variant, String systemPrompt,
+                              String userMessage, List<DirectLlmClient.AttachmentInput> attachments,
+                              Consumer<String> output,
+                              ActivityListener activityListener) throws Exception {
         if (closed) {
             throw new TurnNotStartedException("OpenCode chat transport is closed");
         }
@@ -179,9 +196,23 @@ final class OpenCodeServeClient implements AutoCloseable {
         if (variant != null && !variant.isBlank()) {
             body.put("variant", variant.trim());
         }
-        body.putArray("parts").addObject()
+        ArrayNode parts = body.putArray("parts");
+        parts.addObject()
                 .put("type", "text")
                 .put("text", prompt);
+        for (DirectLlmClient.AttachmentInput attachment : attachments) {
+            if (attachment.isImage()) {
+                parts.addObject()
+                        .put("type", "file")
+                        .put("mime", attachment.mimeType())
+                        .put("filename", fileName(attachment.path()))
+                        .put("url", DirectLlmClient.dataUrl(attachment));
+            } else {
+                parts.addObject()
+                        .put("type", "text")
+                        .put("text", DirectLlmClient.attachmentText(attachment));
+            }
+        }
 
         HttpRequest request = HttpRequest.newBuilder(
                         URI.create(baseUrl + "/session/" + sessionId + "/message"))
@@ -223,6 +254,9 @@ final class OpenCodeServeClient implements AutoCloseable {
                 throw new IllegalStateException("OpenCode turn failed (HTTP "
                         + response.statusCode() + "): " + trimForError(response.body()));
             }
+            // The SSE subscription can miss the final update (or be unavailable).
+            // Reconcile the REST snapshot through the same per-message counters.
+            listener.handleTokens(objectMapper.readTree(response.body()).path("info"));
             String text = extractText(objectMapper, response.body());
             if (text.isBlank()) {
                 throw new IllegalStateException("OpenCode returned no assistant text");
@@ -314,8 +348,10 @@ final class OpenCodeServeClient implements AutoCloseable {
         private final Set<String> startedCalls = new HashSet<>();
         private final Set<String> completedCalls = new HashSet<>();
         private final Set<String> startedSteps = new HashSet<>();
+        private final Map<String, long[]> reportedUsage = new HashMap<>();
         private final AtomicBoolean degraded = new AtomicBoolean(false);
         private volatile InputStream eventStream;
+        private volatile boolean stopped;
 
         EventBusListener(String sessionId, Consumer<String> output, ActivityListener activity) {
             this.sessionId = sessionId;
@@ -329,7 +365,8 @@ final class OpenCodeServeClient implements AutoCloseable {
             thread.start();
         }
 
-        void stop() {
+        synchronized void stop() {
+            stopped = true;
             try {
                 InputStream stream = eventStream;
                 if (stream != null) stream.close();
@@ -357,7 +394,8 @@ final class OpenCodeServeClient implements AutoCloseable {
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(eventStream, StandardCharsets.UTF_8))) {
                     String line;
-                    while ((line = reader.readLine()) != null) {
+                    // stop() may have run while the event HTTP request was connecting.
+                    while (!stopped && (line = reader.readLine()) != null) {
                         lastActivity.set(System.nanoTime());
                         if (line.startsWith("data:")) {
                             handleEvent(line.substring(5).trim());
@@ -371,8 +409,8 @@ final class OpenCodeServeClient implements AutoCloseable {
             }
         }
 
-        private void handleEvent(String payload) {
-            if (payload.isEmpty()) return;
+        private synchronized void handleEvent(String payload) {
+            if (stopped || payload.isEmpty()) return;
             JsonNode node;
             try {
                 node = objectMapper.readTree(payload);
@@ -380,8 +418,9 @@ final class OpenCodeServeClient implements AutoCloseable {
                 return;
             }
             JsonNode properties = node.path("properties");
-            String eventSession = properties.path("sessionID").asText(
-                    node.path("sessionID").asText(""));
+            String eventSession = properties.path("info").path("sessionID").asText(
+                    properties.path("part").path("sessionID").asText(
+                            properties.path("sessionID").asText(node.path("sessionID").asText(""))));
             if (!sessionId.equals(eventSession)) {
                 return;
             }
@@ -440,16 +479,31 @@ final class OpenCodeServeClient implements AutoCloseable {
             }
         }
 
-        private void handleTokens(JsonNode info) {
-            if (activity == null || !"assistant".equals(info.path("role").asText(""))) return;
+        private synchronized void handleTokens(JsonNode info) {
+            if (stopped || activity == null || !"assistant".equals(info.path("role").asText(""))) return;
+            String infoSession = info.path("sessionID").asText(sessionId);
+            if (!sessionId.equals(infoSession)) return;
             JsonNode tokens = info.path("tokens");
-            long input = tokens.path("input").asLong(0);
-            long outputTokens = tokens.path("output").asLong(0);
-            long cacheRead = tokens.path("cache").path("read").asLong(0);
-            long cacheWrite = tokens.path("cache").path("write").asLong(0);
-            if (input > 0 || outputTokens > 0 || cacheRead > 0 || cacheWrite > 0) {
-                activity.onTokenUsage(input, outputTokens, cacheRead, cacheWrite);
+            if (!tokens.isObject()) return;
+            // OpenCode has already normalized cache buckets. Message updates are
+            // cumulative snapshots, not increments. REST and SSE share this lock
+            // so a late/repeated/stale update cannot count the same usage twice.
+            long[] current = {Math.max(0, tokens.path("input").asLong(0)),
+                    Math.max(0, tokens.path("output").asLong(0)),
+                    Math.max(0, tokens.path("cache").path("read").asLong(0)),
+                    Math.max(0, tokens.path("cache").path("write").asLong(0))};
+            String messageId = info.path("id").asText("");
+            // Legacy frames without identity cannot safely be merged with another request.
+            long[] previous = messageId.isBlank() ? new long[4]
+                    : reportedUsage.computeIfAbsent(messageId, key -> new long[4]);
+            long[] delta = new long[4];
+            boolean changed = false;
+            for (int i = 0; i < current.length; i++) {
+                delta[i] = Math.max(0, current[i] - previous[i]);
+                previous[i] = Math.max(previous[i], current[i]);
+                changed |= delta[i] > 0;
             }
+            if (changed) activity.onTokenUsage(delta[0], delta[1], delta[2], delta[3]);
         }
     }
 
@@ -736,6 +790,13 @@ final class OpenCodeServeClient implements AutoCloseable {
                 + systemPrompt.trim()
                 + "\n[End Kompile Chat system instructions]\n\n"
                 + (userMessage == null ? "" : userMessage);
+    }
+
+    /** The last segment of an attachment path, which OpenCode shows as the file's name. */
+    private static String fileName(String path) {
+        if (path == null || path.isBlank()) return "attachment";
+        String name = path.substring(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
+        return name.isBlank() ? "attachment" : name;
     }
 
     private static String trimForError(String value) {

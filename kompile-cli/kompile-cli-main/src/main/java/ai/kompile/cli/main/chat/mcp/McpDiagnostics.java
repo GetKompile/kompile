@@ -49,7 +49,8 @@ public final class McpDiagnostics {
      * Keep the owner's lines in one virtual {@link BackgroundProcessManager.ProcessKind#MCP}
      * entry of its process browser, registered on the first line and again after it is
      * stopped. The entry stores plain text; {@code echo} also keeps the styled stderr
-     * line while no browser is on screen (headless runs, before or after the TUI).
+     * line while no browser is on screen (headless runs, before or after the TUI). A
+     * line the manager refuses (closed, or its log unwritable) keeps the stderr route.
      */
     public static Runnable installProcessLog(ChatUiSession owner, BackgroundProcessManager processes,
                                              BooleanSupplier echo) {
@@ -113,7 +114,10 @@ public final class McpDiagnostics {
                             BackgroundProcessManager.ProcessKind.MCP, "mcp",
                             "MCP tool bridge log", Map.of()).getId();
                 }
-                processes.appendVirtualOutput(processId, AnsiConstants.stripAnsi(line));
+                if (!processes.appendVirtualOutput(processId, AnsiConstants.stripAnsi(line))) {
+                    // log() falls back to stderr.
+                    throw new IllegalStateException("MCP log " + processId + " refused a line");
+                }
             }
             if (echo.getAsBoolean()) {
                 System.err.println(line);

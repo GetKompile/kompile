@@ -13,13 +13,17 @@ import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolRegistryFactory;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.graph.reasoning.unified.UnifiedGraphArchive;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -40,6 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * HTTP fixture. The production local loader, chunker, enrichment, persistence, search, reasoning,
  * and mutation components execute in the ordinary JVM.</p>
  */
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class McpToolBusinessLogicTest {
     private static final String KNOWLEDGE_BASE = "jvm-business-it";
     private static final String EVIDENCE = "JVM_MCP_BUSINESS_EVIDENCE_6A42";
@@ -60,9 +65,12 @@ class McpToolBusinessLogicTest {
 
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
     private JvmToolHarness harness;
+    private String previousAdmissionMode;
 
     @BeforeEach
     void setUp() {
+        previousAdmissionMode = System.getProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, "off");
         AgentConfig agent = AgentConfig.builder("jvm-mcp-business-it")
                 .enabledTools(Set.of("*"))
                 .build();
@@ -83,6 +91,15 @@ class McpToolBusinessLogicTest {
         ToolContext context = new ToolContext(
                 "jvm-mcp-business-it", agent, permissions, project, registry);
         harness = new JvmToolHarness(registry, context);
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (previousAdmissionMode == null) {
+            System.clearProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY);
+        } else {
+            System.setProperty(LocalSubprocessWatchdog.ADMISSION_MODE_PROPERTY, previousAdmissionMode);
+        }
     }
 
     @Test

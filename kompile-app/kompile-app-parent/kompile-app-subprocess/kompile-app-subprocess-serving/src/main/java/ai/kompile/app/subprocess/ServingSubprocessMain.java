@@ -403,9 +403,12 @@ public class ServingSubprocessMain {
                              ServingSubprocessArgs args,
                              Nd4jEnvironmentConfig config) throws Exception {
         Path modelPath = Paths.get(args.modelPath());
+        // A model directory (a vision-language package) carries its own tokenizer.json.
         Path tokenizerPath = args.tokenizerPath() != null
                 ? Paths.get(args.tokenizerPath())
-                : modelPath.getParent().resolve("tokenizer.json");
+                : Files.isDirectory(modelPath)
+                        ? modelPath.resolve("tokenizer.json")
+                        : modelPath.getParent().resolve("tokenizer.json");
 
         Map<String, Object> opts = new HashMap<>();
         opts.put("maxNewTokens", args.maxNewTokens() > 0 ? args.maxNewTokens() : 256);

@@ -54,11 +54,11 @@ public final class OpportunityCalculator {
 
     /**
      * Connection occurrence — "connections produce observed events". The per-observation strength is
-     * the edge's {@code weight * confidence}; repeated observation across crawls reinforces it and
+     * the edge's {@code min(weight, confidence)}; repeated observation across crawls reinforces it and
      * decay forgets stale connections.
      *
      * @param model            the configured opportunity model
-     * @param strength         edge weight * confidence in [0,1]
+     * @param strength         edge min(weight, confidence) in [0,1]
      * @param totalConnections total connection edges in scope (relative-frequency denominator)
      */
     public static Observation forConnection(OpportunityModel model, double strength, long totalConnections) {

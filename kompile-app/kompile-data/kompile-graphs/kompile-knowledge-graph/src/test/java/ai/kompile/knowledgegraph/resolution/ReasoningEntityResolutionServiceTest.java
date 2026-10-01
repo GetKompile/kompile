@@ -13,6 +13,7 @@ import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -138,6 +139,43 @@ class ReasoningEntityResolutionServiceTest {
     }
 
     @Test
+    void negatedIdentityAtomsAreEvidenceForTheOtherSide() {
+        Map<String, Double> positive = new LinkedHashMap<>();
+        Map<String, Double> negative = new LinkedHashMap<>();
+
+        ReasoningEntityResolutionService.collectIdentityAtom("~sameAs(person-a, person-b)", 0.9, positive, negative);
+        ReasoningEntityResolutionService.collectIdentityAtom("notIdenticalTo(person-a, person-c)", 0.8, positive, negative);
+        ReasoningEntityResolutionService.collectIdentityAtom("!differentFrom(person-b, person-c)", 0.7, positive, negative);
+        ReasoningEntityResolutionService.collectIdentityAtom("SAME_AS(person-d, person-e)", 0.6, positive, negative);
+        ReasoningEntityResolutionService.collectIdentityAtom("derived_sameAs(person-f, person-g)", 0.5, positive, negative);
+        ReasoningEntityResolutionService.collectIdentityAtom("worksFor(person-a, acme)", 1.0, positive, negative);
+
+        assertEquals(Map.of(pair("person-a", "person-b"), 0.9, pair("person-a", "person-c"), 0.8), negative,
+                "a negated sameAs is an identity conflict, not identity");
+        assertEquals(Map.of(pair("person-b", "person-c"), 0.7, pair("person-d", "person-e"), 0.6,
+                pair("person-f", "person-g"), 0.5), positive);
+    }
+
+    @Test
+    void nonLatinRelationTypesKeepDistinctSignatures() {
+        MutableReasoningGraph graph = new MutableReasoningGraph()
+                .addEntity("person-a", "PERSON", "Aiko")
+                .addEntity("person-b", "PERSON", "Aiko S.")
+                .addEntity("person-c", "PERSON", "A. Sato")
+                .addEntity("org-1", "ORGANIZATION", "Acme")
+                .addRelation("r-a", "person-a", "org-1", "所属", 1.0)
+                .addRelation("r-b", "person-b", "org-1", "勤務", 1.0)
+                .addRelation("r-c", "person-c", "org-1", "所属", 1.0);
+
+        ReasoningEntityResolutionService.Snapshot snapshot = snapshot(graph);
+
+        assertEquals(0.0, snapshot.evaluate(node("person-a", "Aiko"), node("person-b", "Aiko S."))
+                .neighborhoodSimilarity(), 1.0e-9, "different relations to one neighbour do not overlap");
+        assertEquals(1.0, snapshot.evaluate(node("person-a", "Aiko"), node("person-c", "A. Sato"))
+                .neighborhoodSimilarity(), 1.0e-9);
+    }
+
+    @Test
     void probabilisticContextAloneCannotInventIdentity() {
         ReasoningEntityResolutionService.Evidence evidence =
                 new ReasoningEntityResolutionService.Evidence(
@@ -147,6 +185,10 @@ class ReasoningEntityResolutionServiceTest {
 
         assertFalse(evidence.vetoMerge());
         assertEquals(0.0, evidence.mergeScore(0.0), 1.0e-9);
+    }
+
+    private static String pair(String left, String right) {
+        return left + '\0' + right;
     }
 
     private static ReasoningEntityResolutionService.Snapshot snapshot(MutableReasoningGraph graph) {

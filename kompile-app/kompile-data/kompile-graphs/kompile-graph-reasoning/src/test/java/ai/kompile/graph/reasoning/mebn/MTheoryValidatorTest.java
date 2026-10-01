@@ -14,9 +14,7 @@ import ai.kompile.graph.reasoning.mebn.MTheoryValidator.Violation;
 import ai.kompile.graph.reasoning.mebn.RelationalMTheoryBuilder.RelationDescriptor;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -65,10 +63,10 @@ class MTheoryValidatorTest {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /**
-     * Simulates a theory loaded from serialised form where two MFrags both claim the same
-     * resident RV. Since {@link MTheory#addMFrag} enforces the invariant at build time, we
-     * inject the second MFrag directly into the private {@code mFrags} map via reflection —
-     * exactly the scenario the validator is designed to catch post-deserialisation.
+     * Simulates a theory where two MFrags both claim the same resident RV, as a theory loaded
+     * from serialised form or mutated after construction can. {@link MTheory#addMFrag} checks
+     * the invariant only when a fragment is added, so the second MFrag is registered empty and
+     * given the duplicate resident afterwards — exactly the state the validator must catch.
      */
     @Test
     void duplicateHomeMFragCaughtByValidator() throws Exception {
@@ -81,11 +79,11 @@ class MTheoryValidatorTest {
         fragA.addResidentNode(RandomVariable.unary("isActive", et, RandomVariable.NodeRole.RESIDENT));
         theory.addMFrag(fragA);
 
-        // Second MFrag with the identical resident-RV signature — bypasses addMFrag guard
-        // via reflection (simulates a deserialised theory with a corrupt duplicate).
+        // Second MFrag with the identical resident-RV signature. addMFrag checks residents only
+        // on insertion, so FragB is registered empty and then given the duplicate.
         MFrag fragB = new MFrag("FragB");
+        theory.addMFrag(fragB);
         fragB.addResidentNode(RandomVariable.unary("isActive", et, RandomVariable.NodeRole.RESIDENT));
-        injectMFragDirectly(theory, fragB);
 
         ValidationResult result = MTheoryValidator.validate(theory);
 
@@ -112,8 +110,8 @@ class MTheoryValidatorTest {
         theory.addMFrag(fragA);
 
         MFrag fragB = new MFrag("FragB");
+        theory.addMFrag(fragB);
         fragB.addResidentNode(RandomVariable.propositional("globalFlag", RandomVariable.NodeRole.RESIDENT));
-        injectMFragDirectly(theory, fragB);
 
         ValidationResult result = MTheoryValidator.validate(theory);
 
@@ -259,21 +257,5 @@ class MTheoryValidatorTest {
                 () -> MTheoryValidator.validateOrThrow(theory));
         assertTrue(ex.getMessage().contains("DEPENDENCY_CYCLE"),
                 "exception message must identify the violation kind");
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Bypass the {@link MTheory#addMFrag} duplicate guard and inject an MFrag directly into
-     * the internal {@code mFrags} map. Used to simulate a deserialised theory that violated
-     * the unique-home invariant so we can test the validator independently of addMFrag.
-     */
-    @SuppressWarnings("unchecked")
-    private static void injectMFragDirectly(MTheory theory, MFrag frag) throws Exception {
-        Field field = MTheory.class.getDeclaredField("mFrags");
-        field.setAccessible(true);
-        ((Map<String, MFrag>) field.get(theory)).put(frag.getName(), frag);
     }
 }

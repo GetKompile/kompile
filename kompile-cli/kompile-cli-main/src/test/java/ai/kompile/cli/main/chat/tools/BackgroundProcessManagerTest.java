@@ -29,12 +29,14 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -53,8 +55,11 @@ class BackgroundProcessManagerTest {
     private BackgroundProcessManager manager;
 
     @BeforeEach
-    void setUp() {
-        manager = new BackgroundProcessManager("test-session-" + System.nanoTime());
+    void setUp(@TempDir Path projectDir) throws IOException {
+        // A project .kompile keeps the process logs inside the temp dir, not the
+        // enclosing checkout's .kompile or ~/.kompile.
+        Files.createDirectories(projectDir.resolve(".kompile"));
+        manager = new BackgroundProcessManager("test-session-" + System.nanoTime(), projectDir);
     }
 
     @AfterEach
@@ -859,6 +864,81 @@ class BackgroundProcessManagerTest {
         }
 
         @Test
+        void launchAfterCloseIsRefusedWithoutALogDirectoryOrAProcess(@TempDir Path scratch)
+                throws Exception {
+            Path marker = scratch.resolve("started");
+            manager.close();
+            assertFalse(Files.exists(manager.getOutputDir()));
+
+            IOException refused = assertThrows(IOException.class, () -> manager.launch(
+                    "touch '" + marker + "'", "launched after close", scratch));
+
+            assertTrue(refused.getMessage().contains("is closed"), refused.getMessage());
+            assertFalse(Files.exists(manager.getOutputDir()),
+                    "a closed manager must not recreate its log directory");
+            assertTrue(manager.listAll().isEmpty(), "a refused launch must not be listed");
+            Thread.sleep(500);
+            assertFalse(Files.exists(marker), "a closed manager must not start the process");
+        }
+
+        @Test
+        void closeRacingALaunchLoopLeavesNoProcessRunning(@TempDir Path scratch) throws Exception {
+            // Each process records its pid before it sleeps, so one started past close() is
+            // found even when its launch threw instead of returning an entry.
+            Path pids = Files.createDirectories(scratch.resolve("pids"));
+            CountDownLatch firstLaunched = new CountDownLatch(1);
+            Thread launcher = new Thread(() -> {
+                for (int i = 0; i < 200; i++) {
+                    try {
+                        manager.launch("echo $$ > '" + pids.resolve("p" + i) + "'; exec sleep 60",
+                                "racing close", scratch);
+                    } catch (IOException | RuntimeException stopped) {
+                        return;
+                    }
+                    firstLaunched.countDown();
+                }
+            }, "launch-racing-close");
+            launcher.start();
+            assertTrue(firstLaunched.await(10, TimeUnit.SECONDS), "no launch succeeded");
+            Path firstPid = pids.resolve("p0");
+            long running = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while ((!Files.exists(firstPid) || Files.readString(firstPid).isBlank())
+                    && System.nanoTime() < running) {
+                Thread.sleep(10);
+            }
+
+            manager.close();
+            launcher.join(TimeUnit.SECONDS.toMillis(30));
+            assertFalse(launcher.isAlive(), "launches must stop once the manager is closed");
+            // A process started past close() writes its pid meanwhile.
+            Thread.sleep(500);
+
+            List<Long> recorded = new ArrayList<>();
+            try (var files = Files.list(pids)) {
+                for (Path file : files.toList()) {
+                    String pid = Files.readString(file).trim();
+                    if (!pid.isEmpty()) recorded.add(Long.parseLong(pid));
+                }
+            }
+            assertFalse(recorded.isEmpty(), "the first launch must have recorded its pid");
+            List<ProcessHandle> survivors = new ArrayList<>();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            for (ProcessHandle child : ProcessHandle.current().children()
+                    .filter(child -> recorded.contains(child.pid())).toList()) {
+                try {
+                    child.onExit().get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                } catch (TimeoutException stillRunning) {
+                    survivors.add(child);
+                }
+            }
+            try {
+                assertTrue(survivors.isEmpty(), "processes outlived close(): " + survivors);
+            } finally {
+                survivors.forEach(ProcessHandle::destroyForcibly);
+            }
+        }
+
+        @Test
         void closePublishesExitEvenWhenAKilledProcesssDescendantKeepsTheStdoutPipeOpen() throws Exception {
             // killProcess() only signals the direct child pid. A backgrounded grandchild that
             // inherited the same stdout pipe survives the parent's SIGTERM/SIGKILL and keeps the
@@ -1115,6 +1195,31 @@ class BackgroundProcessManagerTest {
             } finally {
                 local.kill(owned.getId());
             }
+        }
+
+        @Test
+        void appendVirtualOutput_shouldRefuseAfterCloseWithoutRecreatingTheLogDirectory() throws IOException {
+            ProcessEntry entry = local.registerVirtual(
+                    ProcessKind.MCP, "mcp", "MCP tool bridge log", Map.of());
+            assertTrue(local.appendVirtualOutput(entry.getId(), "[MCP] open"));
+            Path logDir = entry.getOutputFile().getParent();
+
+            // The directory can be deleted with its session (a temporary home) while a
+            // stale writer still holds the entry.
+            local.close();
+            assertTrue(entry.isRunning(), "close leaves a virtual entry to its owner");
+            try (var walk = Files.walk(logDir)) {
+                walk.sorted((a, b) -> b.compareTo(a))
+                        .forEach(path -> {
+                            try {
+                                Files.deleteIfExists(path);
+                            } catch (Exception ignored) {}
+                        });
+            }
+            assertFalse(Files.exists(logDir), "precondition: the log directory is gone");
+
+            assertFalse(local.appendVirtualOutput(entry.getId(), "[MCP] after close"));
+            assertFalse(Files.exists(logDir), "a closed manager must not recreate its log directory");
         }
 
         @Test

@@ -48,13 +48,14 @@ final class LegacyGraphTranscoder {
     private LegacyGraphTranscoder() { }
 
     static void transcode(
-            Path source, Path target, String sourceHash, int sourceVersion) throws IOException {
+            Path source, Path target, String sourceHash, int sourceVersion, Path scratchDirectory)
+            throws IOException {
         if (sourceVersion < UnifiedGraphFormat.MIN_READABLE_VERSION || sourceVersion >= 3) {
             throw new IOException("Legacy transcoder requires unified-graph format v1 or v2");
         }
-        Path links = Files.createTempFile("kompile-kgraph-transcode-", ".links");
-        Path properties = Files.createTempFile("kompile-kgraph-transcode-", ".properties");
-        Path adjacency = Files.createTempFile("kompile-kgraph-transcode-", ".adjacency");
+        Path links = Files.createTempFile(scratchDirectory, "kompile-kgraph-transcode-", ".links");
+        Path properties = Files.createTempFile(scratchDirectory, "kompile-kgraph-transcode-", ".properties");
+        Path adjacency = Files.createTempFile(scratchDirectory, "kompile-kgraph-transcode-", ".adjacency");
         try (ZipFile zip = new ZipFile(source.toFile())) {
             Map<String, Object> manifest = readManifest(zip);
             Counts counts = counts(manifest);
@@ -65,7 +66,7 @@ final class LegacyGraphTranscoder {
                     analysis.endpoints(), analysis.relationTypes(), counts.relations(), adjacencyPass);
             try (OutputStream out = Files.newOutputStream(
                     adjacency, StandardOpenOption.TRUNCATE_EXISTING)) {
-                CompactAdjacencyCodec.write(adjacencyPlan, adjacencyPass, out);
+                CompactAdjacencyCodec.write(adjacencyPlan, adjacencyPass, out, scratchDirectory);
             }
             Map<String, Object> targetManifest = targetManifest(
                     manifest, analysis, counts, adjacencyPlan, sourceHash, sourceVersion);
@@ -78,7 +79,7 @@ final class LegacyGraphTranscoder {
         validateTarget(target);
     }
 
-    static void copyCurrent(Path source, Path target) throws IOException {
+    static void copyCurrent(Path source, Path target, Path scratchDirectory) throws IOException {
         Map<String, Object> manifest;
         LinkedHashMap<String, Integer> endpoints = new LinkedHashMap<>();
         LinkedHashMap<String, Integer> types = new LinkedHashMap<>();
@@ -110,10 +111,10 @@ final class LegacyGraphTranscoder {
         CompactAdjacencyCodec.LinkPass pass = currentLinkPass(source, endpoints, types, links);
         CompactAdjacencyCodec.Plan adjacency = CompactAdjacencyCodec.plan(
                 endpoints, types, links, pass);
-        Path staged = Files.createTempFile("kompile-kgraph-current-adjacency-", ".bin");
+        Path staged = Files.createTempFile(scratchDirectory, "kompile-kgraph-current-adjacency-", ".bin");
         try {
             try (OutputStream output = Files.newOutputStream(staged)) {
-                CompactAdjacencyCodec.write(adjacency, pass, output);
+                CompactAdjacencyCodec.write(adjacency, pass, output, scratchDirectory);
             }
             addAdjacencyDescriptor(manifest, adjacency);
             rewriteCurrentWithAdjacency(source, target, manifest, staged);

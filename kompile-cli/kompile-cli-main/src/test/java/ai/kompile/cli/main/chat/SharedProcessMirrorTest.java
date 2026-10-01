@@ -30,7 +30,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -218,6 +221,74 @@ class SharedProcessMirrorTest {
         mine.updateProcessMonitor("proc-fast", true, null);
         mirror.pollOnce();
         assertEquals(List.of("proc-fast"), woken);
+    }
+
+    @Test
+    void owesAWakeWhileAMonitoredProcessLaunchedForThisChatRunsUntilTheWakeGoesOut() {
+        List<Boolean> owedAtDelivery = new CopyOnWriteArrayList<>();
+        mirror.setMonitorListener((entry, monitor) -> owedAtDelivery.add(mirror.owesWake()));
+        CoordinationStateManager mine = childOwner("mcp-mine", "local-chat");
+        CoordinationStateManager other = childOwner("mcp-other", "other-chat");
+        publish("mcp-other", "proc-other", "other", "Another chat's build", "RUNNING", 0);
+        other.updateProcessMonitor("proc-other", true, null);
+        publish("mcp-mine", "proc-quiet", "quiet", "Never monitored", "RUNNING", 0);
+        mirror.pollOnce();
+        assertFalse(mirror.owesWake(), "another chat's process and an unmonitored one owe this chat nothing");
+
+        publish("mcp-mine", "proc-build", "mvn -o verify", "Verify", "RUNNING", 0);
+        mine.updateProcessMonitor("proc-build", true, "check the report");
+        mirror.pollOnce();
+        assertTrue(mirror.owesWake());
+
+        mine.updateProcessState("proc-build", "COMPLETED", Instant.now(), 0);
+        mirror.pollOnce();
+        // Delivered while still owed: a host always sees either the debt or the wake-up.
+        assertEquals(List.of(true), owedAtDelivery);
+        assertFalse(mirror.owesWake());
+
+        publish("mcp-mine", "proc-next", "mvn -o test", "Next", "RUNNING", 0);
+        mine.updateProcessMonitor("proc-next", true, null);
+        mirror.pollOnce();
+        assertTrue(mirror.owesWake());
+        mirror.close();
+        assertFalse(mirror.owesWake(), "a closed mirror wakes nobody");
+    }
+
+    @Test
+    void aRequestedPassWaitsForThePassUnderWayAndReadsTheStateAsItStandsThen() throws Exception {
+        CountDownLatch delivering = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        mirror.setMonitorListener((entry, monitor) -> {
+            delivering.countDown();
+            try {
+                release.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        CoordinationStateManager mine = childOwner("mcp-mine", "local-chat");
+        publish("mcp-mine", "proc-first", "true", "First", "RUNNING", 0);
+        mine.updateProcessMonitor("proc-first", true, null);
+        mirror.pollOnce();
+        mine.updateProcessState("proc-first", "COMPLETED", Instant.now(), 0);
+        CompletableFuture<Void> underWay = CompletableFuture.runAsync(mirror::pollOnce);
+        assertTrue(delivering.await(5, TimeUnit.SECONDS));
+
+        // Launched after the pass under way read coordination state.
+        publish("mcp-mine", "proc-second", "mvn -o verify", "Second", "RUNNING", 0);
+        mine.updateProcessMonitor("proc-second", true, null);
+        Thread requested = new Thread(mirror::pollOnce, "requested-pass");
+        requested.start();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (requested.getState() != Thread.State.BLOCKED && requested.isAlive() && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertEquals(Thread.State.BLOCKED, requested.getState(), "it returned without reading");
+
+        release.countDown();
+        underWay.get(5, TimeUnit.SECONDS);
+        requested.join(5_000);
+        assertTrue(mirror.owesWake(), "the requested pass read the process launched after the first began");
     }
 
     private BackgroundProcessManager.ProcessEntry sharedMirror(String sharedProcessId) {

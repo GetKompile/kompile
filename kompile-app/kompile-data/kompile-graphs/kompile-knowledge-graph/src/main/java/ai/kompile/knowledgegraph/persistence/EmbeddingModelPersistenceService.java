@@ -42,10 +42,10 @@ import java.util.Optional;
 public class EmbeddingModelPersistenceService {
 
     @Value("${kompile.data.dir:}")
-    private String dataDir;
+    String dataDir;
 
     /** Explicit test override; production resolves the managed endpoint when writing a pointer. */
-    private String stagingUrl;
+    String stagingUrl;
 
     private final ObjectMapper objectMapper;
     private final ModelArtifactRouter router;

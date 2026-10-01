@@ -32,8 +32,8 @@ import java.util.Map;
  * {@code adj[v][u]} symmetrically. Multiple relations between the same pair of nodes are
  * aggregated by summing their effective weights.</p>
  *
- * <p>Effective weight of a single relation is {@code weight * confidence} (element-wise product).
- * For unit-confidence graphs this reduces to bare {@code weight}. For graphs where no explicit
+ * <p>Effective weight of a single relation is its {@link GraphRelation#strength() strength},
+ * {@code min(weight, confidence)}; for unit-confidence graphs this reduces to bare {@code weight}. For graphs where no explicit
  * weight is set ({@code weight == 0.0}), a unit weight {@code 1.0} is substituted so that
  * presence of a relation always contributes positive affinity.</p>
  *
@@ -88,10 +88,10 @@ final class GraphUndirectedView {
                 // Self-loop — not counted in the null model
                 continue;
             }
-            // Effective weight: use weight*confidence; substitute 1.0 when weight is zero
+            // Effective weight: the relation's strength; substitute 1.0 when weight is zero
             double w = rel.weight();
             if (w <= 0.0) w = 1.0;
-            double eff = w * rel.confidence();
+            double eff = GraphRelation.strength(w, rel.confidence());
             if (eff <= 0.0) eff = 1.0;
 
             this.adj[srcIdx][tgtIdx] += eff;

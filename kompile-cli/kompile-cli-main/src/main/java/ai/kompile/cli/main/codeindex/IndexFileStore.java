@@ -21,6 +21,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.Instant;
 import java.util.*;
@@ -29,15 +32,42 @@ import java.util.*;
  * Manages on-disk storage for a single project's code index.
  * Handles fingerprint tracking, per-file entity shards, and metadata.
  * All writes use atomic rename to prevent corruption during concurrent reads.
+ * The project state files ({@code metadata.json}, {@code fingerprints.json} and the
+ * {@code update.pending} marker) are also forced to disk around the rename: the rename
+ * can reach the disk before the data, and a crash in between leaves an empty file.
+ * Shards are not forced; they are rewritten whenever their source changes.
  *
  * <p>Layout under {@code ~/.kompile/code-index/<projectId>/}:
  * <pre>
  *   metadata.json         — project-level stats
  *   fingerprints.json     — Map&lt;relativePath, FileFingerprint&gt;
  *   files/&lt;hash&gt;.json     — per-file entity shard
+ *   update.pending        — present until an update has published its metadata
  * </pre>
  */
 public class IndexFileStore {
+
+    static final String METADATA_FILE = "metadata.json";
+    static final String FINGERPRINTS_FILE = "fingerprints.json";
+    static final String UPDATE_PENDING_FILE = "update.pending";
+
+    /**
+     * A state file that exists but does not parse, typically one a crash left empty.
+     * Indexing treats it as missing and rebuilds the index from source.
+     */
+    public static final class UnreadableIndexStateException extends IOException {
+        private final transient Path file;
+
+        UnreadableIndexStateException(Path file, Throwable cause) {
+            super("Code index state file " + file + " is empty or unreadable; run local_code_index "
+                    + "action=index from the project root to rebuild it from source", cause);
+            this.file = file;
+        }
+
+        public Path file() {
+            return file;
+        }
+    }
 
     private final Path indexDir;
     private final ObjectMapper objectMapper;
@@ -59,11 +89,11 @@ public class IndexFileStore {
 
     /**
      * Load stored fingerprints. Returns empty map if no fingerprints file exists.
+     *
+     * @throws UnreadableIndexStateException if the file exists but does not parse
      */
     public Map<String, FileFingerprint> loadFingerprints() throws IOException {
-        Path fp = indexDir.resolve("fingerprints.json");
-        if (!Files.exists(fp)) return new LinkedHashMap<>();
-        return objectMapper.readValue(fp.toFile(),
+        return readState(indexDir.resolve(FINGERPRINTS_FILE),
                 new TypeReference<LinkedHashMap<String, FileFingerprint>>() {});
     }
 
@@ -73,8 +103,8 @@ public class IndexFileStore {
      * changed pass, and nothing human reads it.
      */
     public void saveFingerprints(Map<String, FileFingerprint> fingerprints) throws IOException {
-        atomicWrite(indexDir.resolve("fingerprints.json"),
-                objectMapper.writeValueAsBytes(fingerprints));
+        atomicWrite(indexDir.resolve(FINGERPRINTS_FILE),
+                objectMapper.writeValueAsBytes(fingerprints), true);
     }
 
     // -----------------------------------------------------------------------
@@ -107,7 +137,7 @@ public class IndexFileStore {
         Path filesDir = indexDir.resolve("files");
         FileShard shard = new FileShard(relativePath, fp, Instant.now().toString(), entities);
         Path target = filesDir.resolve(shardName(relativePath));
-        atomicWrite(target, objectMapper.writeValueAsBytes(shard));
+        atomicWrite(target, objectMapper.writeValueAsBytes(shard), false);
     }
 
     /**
@@ -167,19 +197,58 @@ public class IndexFileStore {
      * Save project metadata atomically.
      */
     public void saveMetadata(Map<String, Object> metadata) throws IOException {
-        atomicWrite(indexDir.resolve("metadata.json"),
+        atomicWrite(indexDir.resolve(METADATA_FILE),
                 objectMapper.writerWithDefaultPrettyPrinter()
-                        .writeValueAsBytes(metadata));
+                        .writeValueAsBytes(metadata), true);
     }
 
     /**
      * Load project metadata. Returns empty map if not found.
+     *
+     * @throws UnreadableIndexStateException if the file exists but does not parse
      */
-    @SuppressWarnings("unchecked")
     public Map<String, Object> loadMetadata() throws IOException {
-        Path meta = indexDir.resolve("metadata.json");
-        if (!Files.exists(meta)) return new LinkedHashMap<>();
-        return objectMapper.readValue(meta.toFile(), Map.class);
+        return readState(indexDir.resolve(METADATA_FILE),
+                new TypeReference<LinkedHashMap<String, Object>>() {});
+    }
+
+    /** An absent file is an empty map; one that exists must parse to a JSON object. */
+    private <V> Map<String, V> readState(Path file, TypeReference<LinkedHashMap<String, V>> type)
+            throws IOException {
+        if (!Files.exists(file)) return new LinkedHashMap<>();
+        byte[] content = Files.readAllBytes(file);
+        Map<String, V> state;
+        try {
+            state = objectMapper.readValue(content, type);
+        } catch (IOException unparseable) {
+            // Parsing bytes in memory does no I/O, so this is the content: empty, zeroed or cut short.
+            throw new UnreadableIndexStateException(file, unparseable);
+        }
+        if (state == null) throw new UnreadableIndexStateException(file, null);
+        return state;
+    }
+
+    // -----------------------------------------------------------------------
+    // Update marker
+    // -----------------------------------------------------------------------
+
+    /**
+     * Record, durably, that an update is about to change {@code index.db}. Until
+     * {@link #clearUpdatePending()} runs, the next pass rebuilds instead of trusting
+     * the JSON state.
+     */
+    public void markUpdatePending(String generation) throws IOException {
+        atomicWrite(indexDir.resolve(UPDATE_PENDING_FILE),
+                generation.getBytes(StandardCharsets.UTF_8), true);
+    }
+
+    /** Not forced: a delete lost in a crash costs one extra rebuild. */
+    public void clearUpdatePending() throws IOException {
+        Files.deleteIfExists(indexDir.resolve(UPDATE_PENDING_FILE));
+    }
+
+    public boolean hasPendingUpdate() {
+        return Files.exists(indexDir.resolve(UPDATE_PENDING_FILE));
     }
 
     // -----------------------------------------------------------------------
@@ -191,7 +260,7 @@ public class IndexFileStore {
      */
     public boolean hasLegacyIndex() {
         return Files.exists(indexDir.resolve("entities.json"))
-                && !Files.exists(indexDir.resolve("fingerprints.json"));
+                && !Files.exists(indexDir.resolve(FINGERPRINTS_FILE));
     }
 
     /**
@@ -245,20 +314,41 @@ public class IndexFileStore {
     }
 
     /**
-     * Write bytes to a target path atomically via temp file + rename.
+     * Write bytes to a target path atomically via temp file + rename. A durable write
+     * forces the data to disk before the rename and the directory entry after it, so
+     * a crash leaves the old content or the new, never an empty file. The fixed temp
+     * name is safe because writers hold the project write lock.
      */
-    private void atomicWrite(Path target, byte[] content) throws IOException {
-        Files.createDirectories(target.getParent());
+    private void atomicWrite(Path target, byte[] content, boolean durable) throws IOException {
+        Path dir = target.getParent();
+        Files.createDirectories(dir);
         Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
         try {
-            Files.write(tmp, content);
-            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            // Fallback for filesystems that don't support atomic move
-            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            try (FileChannel channel = FileChannel.open(tmp, StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                ByteBuffer buffer = ByteBuffer.wrap(content);
+                while (buffer.hasRemaining()) channel.write(buffer);
+                if (durable) channel.force(true);
+            }
+            try {
+                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                // Fallback for filesystems that don't support atomic move
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            if (durable) forceDirectory(dir);
         } finally {
             Files.deleteIfExists(tmp);
+        }
+    }
+
+    /** Persist a rename. Best effort: Windows cannot open a directory as a channel. */
+    private static void forceDirectory(Path dir) {
+        try (FileChannel channel = FileChannel.open(dir, StandardOpenOption.READ)) {
+            channel.force(true);
+        } catch (IOException unsupported) {
+            // The data was forced before the rename; only the rename itself may be lost.
         }
     }
 }

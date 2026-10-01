@@ -649,7 +649,7 @@ final class CorpusSchemaPromptBuilder {
         }
     }
 
-    private static String serializeValue(Object value) {
+    static String serializeValue(Object value) {
         try {
             return OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(value);
         } catch (JsonProcessingException exception) {

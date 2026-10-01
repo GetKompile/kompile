@@ -21,7 +21,6 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.crawl.graph.VectorIndexConfig;
 import ai.kompile.core.embeddings.VectorStore;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.concurrent.CancellationException;
@@ -86,7 +85,7 @@ class VectorIndexingHelperTest {
         VectorIndexingHelper helper = new VectorIndexingHelper();
         VectorStore vectorStore = mock(VectorStore.class);
         when(vectorStore.switchIndexPath("fact-sheet-41")).thenReturn(false);
-        ReflectionTestUtils.setField(helper, "vectorStore", vectorStore);
+        helper.vectorStore = vectorStore;
 
         IllegalStateException error = assertThrows(IllegalStateException.class,
                 () -> helper.switchToEffectiveCollection("fact-sheet-41", null));

@@ -91,16 +91,14 @@ class JudgeBackendFactoryTest {
 
     @Test
     void serverJudgeUsesSavedDefaultButExplicitModelStillWinsWithoutStartingServer() throws Exception {
-        JudgeDefaults.save(ChatConfig.Scope.PROJECT, project, "ollama",
+        JudgeDefaults.save(ChatConfig.Scope.PROJECT, project, "kompile",
                 new JudgeDefaults.Selection("saved-local-model", null));
         {
-            var server = new ServerJudgeBackend(ServerJudgeBackend.ServerType.OLLAMA,
-                    null, 11434, new ObjectMapper());
-            assertTrue(server.describe().contains("saved-local-model"));
+            var server = new ServerJudgeBackend(null, 8090, new ObjectMapper());
+            assertEquals("kompile-staging(model:saved-local-model:8090)", server.describe());
         }
         {
-            var server = new ServerJudgeBackend(ServerJudgeBackend.ServerType.OLLAMA,
-                    "explicit-model", 11434, new ObjectMapper());
+            var server = new ServerJudgeBackend("explicit-model", 8090, new ObjectMapper());
             assertTrue(server.describe().contains("explicit-model"));
             assertFalse(server.describe().contains("saved-local-model"));
         }
@@ -109,9 +107,9 @@ class JudgeBackendFactoryTest {
     @Test
     void mainChatFactoryUsesOwningProjectRatherThanProcessDirectory() throws Exception {
         Path owner = project.resolve("other-project");
-        selectProfile(project, "ollama", "ambient-model", null);
-        selectProfile(owner, "ollama", "owner-model", "minimal");
-        ChatConfig main = new ChatConfig("ollama", null, "main-model", "http://unused.invalid");
+        selectProfile(project, "custom", "ambient-model", null);
+        selectProfile(owner, "custom", "owner-model", "minimal");
+        ChatConfig main = new ChatConfig("custom", null, "main-model", "http://unused.invalid");
         main.setThinking("high");
         HarnessConfig config = new HarnessConfig();
         config.setJudgeMode("remote");
@@ -135,12 +133,12 @@ class JudgeBackendFactoryTest {
     @Test
     void headlessFactoryUsesProjectProfileForDedicatedAndInheritedRoutes() throws Exception {
         Path owner = project.resolve("other-project");
-        selectProfile(project, "ollama", "ambient-model", null);
-        selectProfile(owner, "ollama", "owner-model", "minimal");
+        selectProfile(project, "custom", "ambient-model", null);
+        selectProfile(owner, "custom", "owner-model", "minimal");
         HarnessConfig config = new HarnessConfig();
         config.setJudgeMode("remote");
         config.setJudgeDeadlineMs(0);
-        config.setJudgeProvider("ollama");
+        config.setJudgeProvider("custom");
         config.setJudgeBaseUrl("http://unused.invalid");
         var backend = JudgeBackendFactory.create(config, new ObjectMapper(), owner);
         try {
@@ -158,7 +156,7 @@ class JudgeBackendFactoryTest {
         } finally {
             backend.close();
         }
-        new ChatConfig("ollama", null, "main-model", "http://project-route.invalid").saveProject(owner);
+        new ChatConfig("custom", null, "main-model", "http://project-route.invalid").saveProject(owner);
         config.setJudgeProvider(null);
         config.setJudgeBaseUrl(null);
         config.setJudgeModel(null);
@@ -174,12 +172,12 @@ class JudgeBackendFactoryTest {
     @Test
     void cliAndServerFactoriesRetainProjectScopeWithoutLaunchingAnything() throws Exception {
         Path owner = project.resolve("other-project");
-        selectProfile(project, "ollama", "ambient-model", null);
-        selectProfile(owner, "ollama", "owner-model", null);
+        selectProfile(project, "kompile", "ambient-model", null);
+        selectProfile(owner, "kompile", "owner-model", null);
         selectProfile(owner, "codex", "o3", null);
         HarnessConfig config = new HarnessConfig();
         config.setJudgeMode("auto-server");
-        config.setJudgeServerType("ollama");
+        config.setJudgeServerType("kompile");
         config.setJudgeDeadlineMs(0);
         var backend = JudgeBackendFactory.create(config, new ObjectMapper(), owner);
         try {
@@ -196,6 +194,24 @@ class JudgeBackendFactoryTest {
             assertTrue(backend.describe().contains("model=o3"));
             var command = ((CliJudgeBackend) backend).buildSingleShotCommand("codex", "question", null);
             assertEquals("o3", command.get(command.indexOf("--model") + 1));
+        } finally {
+            backend.close();
+        }
+    }
+
+    @Test
+    void autoServerFailsClosedForUnsupportedServerType() {
+        HarnessConfig config = new HarnessConfig();
+        config.setJudgeMode("auto-server");
+        config.setJudgeServerType("ollama");
+        config.setJudgeDeadlineMs(0);
+        JudgeBackend backend = JudgeBackendFactory.create(config, new ObjectMapper(), project);
+        try {
+            assertFalse(backend.isAvailable());
+            assertTrue(backend.describe().contains("unsupported"));
+            assertTrue(backend.failureReason().contains("kompile-model-staging"));
+            assertThrows(IllegalStateException.class,
+                    () -> backend.generate("request", "system"));
         } finally {
             backend.close();
         }
@@ -305,5 +321,54 @@ class JudgeBackendFactoryTest {
         assertTrue(wrapped instanceof ResilientJudgeBackend);
         assertTrue(((ResilientJudgeBackend) wrapped).hasBackups());
         wrapped.close();
+    }
+
+    @Test
+    void aBackendThatStartsAProviderProcessGetsTheProcessDeadline() {
+        HarnessConfig config = new HarnessConfig();
+        config.setJudgeDeadlineMs(15_000);
+        config.setJudgeProcessDeadlineMs(45_000);
+        JudgeBackend process = backend(true);
+        JudgeBackend http = backend(false);
+
+        assertEquals(45_000, JudgeBackendFactory.deadlineMs(process, config),
+                "a verdict that starts Claude Code or OpenCode pays the process start inside its deadline");
+        assertEquals(15_000, JudgeBackendFactory.deadlineMs(http, config));
+        config.setJudgeProcessDeadlineMs(0);
+        assertEquals(15_000, JudgeBackendFactory.deadlineMs(process, config),
+                "no process deadline: the judge deadline applies to every route");
+        config.setJudgeProcessDeadlineMs(45_000);
+        config.setJudgeDeadlineMs(0);
+        assertEquals(0, JudgeBackendFactory.deadlineMs(process, config),
+                "a disabled deadline stays disabled");
+    }
+
+    @Test
+    void aClaudeCodeJudgeStartsAProviderProcessAndPrefersTheJudgeEffort() {
+        ChatConfig claude = new ChatConfig("anthropic", null, "claude-opus-5-5", null);
+        claude.setAuthenticationMethod("oauth");
+        try (DirectLlmClient judge = JudgeBackendFactory.createDirectJudgeClient(
+                claude, null, null, null, null, "low", new ObjectMapper(), project)) {
+            assertTrue(judge.startsProviderProcess());
+            assertEquals("low", judge.preferredToolFreeEffort());
+        }
+        ChatConfig http = new ChatConfig("custom", "test-key", "custom-model", "http://unused.invalid");
+        http.setAuthenticationMethod("api-key");
+        try (DirectLlmClient judge = JudgeBackendFactory.createDirectJudgeClient(
+                http, null, null, null, null, "low", new ObjectMapper(), project)) {
+            assertFalse(judge.startsProviderProcess());
+            assertEquals("", judge.preferredToolFreeEffort(),
+                    "only the Claude Code route takes a preferred effort");
+        }
+    }
+
+    private static JudgeBackend backend(boolean startsProviderProcess) {
+        return new JudgeBackend() {
+            @Override public String generate(String userPrompt, String systemPrompt) {
+                return "{\"compliant\":true}";
+            }
+            @Override public boolean isAvailable() { return true; }
+            @Override public boolean startsProviderProcess() { return startsProviderProcess; }
+        };
     }
 }

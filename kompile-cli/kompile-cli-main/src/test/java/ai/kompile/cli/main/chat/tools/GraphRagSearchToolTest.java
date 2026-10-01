@@ -31,14 +31,14 @@ class GraphRagSearchToolTest {
         result.put("inferenceInvoked", false);
         result.putObject("data")
                 .put("scoreBasis", "lexical + stored entity prior")
-                .put("storedPrior", "clamp01(weight * confidence)")
+                .put("storedPrior", "clamp01(min(weight, confidence))")
                 .put("inferenceInvoked", false);
 
         ToolResult formatted = formatResults("service", result, "LOCAL");
 
         assertFalse(formatted.isError());
         assertTrue(formatted.getOutput().contains("Score basis: lexical + stored entity prior"));
-        assertTrue(formatted.getOutput().contains("Stored prior: clamp01(weight * confidence)"));
+        assertTrue(formatted.getOutput().contains("Stored prior: clamp01(min(weight, confidence))"));
         assertTrue(formatted.getOutput().contains("Inference invoked: false"));
         assertEquals("lexical + stored entity prior", formatted.getMetadata().get("ranking"));
         assertEquals(false, formatted.getMetadata().get("inferenceInvoked"));
@@ -47,7 +47,7 @@ class GraphRagSearchToolTest {
 
         Map<?, ?> data = (Map<?, ?>) formatted.getMetadata().get("data");
         assertEquals("lexical + stored entity prior", data.get("scoreBasis"));
-        assertEquals("clamp01(weight * confidence)", data.get("storedPrior"));
+        assertEquals("clamp01(min(weight, confidence))", data.get("storedPrior"));
         assertEquals(false, data.get("inferenceInvoked"));
     }
 
@@ -58,7 +58,7 @@ class GraphRagSearchToolTest {
         result.put("inferenceInvoked", false);
         result.putObject("data")
                 .put("scoreBasis", "lexical + stored entity prior")
-                .put("storedPrior", "clamp01(weight * confidence)")
+                .put("storedPrior", "clamp01(min(weight, confidence))")
                 .put("inferenceInvoked", false);
 
         ToolResult formatted = formatResults("missing", result, "LOCAL");

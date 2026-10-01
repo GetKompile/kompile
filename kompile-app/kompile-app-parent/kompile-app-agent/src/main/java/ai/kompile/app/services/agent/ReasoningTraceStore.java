@@ -37,6 +37,10 @@ import java.util.concurrent.ConcurrentLinkedDeque;
  * <p>The buffer is capped at 200 entries; oldest entries are evicted when
  * the cap is exceeded to prevent unbounded growth if {@code drainSince} is
  * never called (e.g. after an error exit).</p>
+ *
+ * <p>Each trace records the fact sheet it was reasoned over, so {@link #snapshot(Long)} can hand a
+ * fact-sheet export only that fact sheet's traces. A trace stored without one belongs to the
+ * global graph.</p>
  */
 @Component
 public class ReasoningTraceStore {
@@ -44,48 +48,80 @@ public class ReasoningTraceStore {
     private static final Logger log = LoggerFactory.getLogger(ReasoningTraceStore.class);
     private static final int MAX_BUFFER = 200;
 
-    private record Entry(long timestampMs, Map<String, Object> trailDto) {}
+    /** {@code factSheetId} is null for a trace of the global graph. */
+    private record Entry(long timestampMs, Long factSheetId, Map<String, Object> trailDto) {}
 
     private final ConcurrentLinkedDeque<Entry> buffer = new ConcurrentLinkedDeque<>();
 
     /**
      * Push a trace DTO (field names matching the frontend {@code ReasoningTrailDto})
-     * into the buffer. Thread-safe; called from MCP tool handler threads.
+     * into the buffer as a trace of the global graph. Thread-safe; called from MCP tool handler threads.
      */
     public void storeTrace(Map<String, Object> trailDto) {
-        buffer.addLast(new Entry(System.currentTimeMillis(), trailDto));
+        storeTrace(null, trailDto);
+    }
+
+    /**
+     * Push a trace DTO reasoned over {@code factSheetId}; null or a non-positive id means the global
+     * graph. Thread-safe; called from MCP tool handler threads.
+     */
+    public void storeTrace(Long factSheetId, Map<String, Object> trailDto) {
+        buffer.addLast(new Entry(System.currentTimeMillis(), scope(factSheetId), trailDto));
         // Evict oldest when over cap
         while (buffer.size() > MAX_BUFFER) {
             buffer.pollFirst();
         }
-        log.debug("ReasoningTraceStore: stored trace for target='{}', buffer size={}",
-                trailDto.get("targetId"), buffer.size());
+        log.debug("ReasoningTraceStore: stored trace for target='{}', factSheet={}, buffer size={}",
+                trailDto.get("targetId"), factSheetId, buffer.size());
     }
 
     /**
-     * Push a canonical {@link ReasoningTrace}, converting it to the frontend DTO shape via
-     * {@link ReasoningTrailMapper#toTrailDto(ReasoningTrace)}. This is the entry point producers
-     * (MCP tools and others) should prefer once they hold a unified trace — every reasoning kind
-     * that can produce a {@code ReasoningTrace} reaches the SSE buffer through this one method.
+     * Push a canonical {@link ReasoningTrace} of the global graph; see
+     * {@link #storeTrace(Long, ReasoningTrace)}.
      */
     public void storeTrace(ReasoningTrace trace) {
-        storeTrace(ReasoningTrailMapper.toTrailDto(trace));
+        storeTrace(null, trace);
     }
 
     /**
-     * Return a non-destructive snapshot of all currently buffered trace DTOs.
+     * Push a canonical {@link ReasoningTrace} reasoned over {@code factSheetId}, converting it to the
+     * frontend DTO shape via {@link ReasoningTrailMapper#toTrailDto(ReasoningTrace)}. This is the
+     * entry point producers (MCP tools and others) should prefer once they hold a unified trace —
+     * every reasoning kind that can produce a {@code ReasoningTrace} reaches the SSE buffer through
+     * this one method.
+     */
+    public void storeTrace(Long factSheetId, ReasoningTrace trace) {
+        storeTrace(factSheetId, ReasoningTrailMapper.toTrailDto(trace));
+    }
+
+    /** Snapshot of every buffered trace; see {@link #snapshot(Long)}. */
+    public List<Map<String, Object>> snapshot() {
+        return snapshot(null);
+    }
+
+    /**
+     * Return a non-destructive snapshot of the buffered trace DTOs for one scope. Null or a
+     * non-positive id (the global graph) returns every trace; a fact sheet gets only the traces
+     * stored for it, so its export never carries another fact sheet's reasoning.
      * Unlike {@link #drainSince} this does NOT remove entries from the buffer.
      * Used by export/persistence code that needs to bundle retained traces without
      * interrupting the normal drain-after-turn flow.
      *
-     * @return an immutable snapshot of all currently buffered trace DTOs (may be empty)
+     * @return an immutable snapshot of the matching trace DTOs (may be empty)
      */
-    public List<Map<String, Object>> snapshot() {
+    public List<Map<String, Object>> snapshot(Long factSheetId) {
+        Long scope = scope(factSheetId);
         List<Map<String, Object>> result = new ArrayList<>();
         for (Entry e : buffer) {
-            result.add(e.trailDto());
+            if (scope == null || scope.equals(e.factSheetId())) {
+                result.add(e.trailDto());
+            }
         }
         return List.copyOf(result);
+    }
+
+    private static Long scope(Long factSheetId) {
+        return factSheetId == null || factSheetId <= 0 ? null : factSheetId;
     }
 
     /**

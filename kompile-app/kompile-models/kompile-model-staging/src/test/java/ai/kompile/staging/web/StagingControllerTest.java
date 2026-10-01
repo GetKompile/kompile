@@ -32,7 +32,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -73,10 +72,9 @@ class StagingControllerTest {
     private StagingSettingsService stagingSettingsService;
 
     private StagingController controller;
-    private Method resolveModelType;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         controller = new StagingController(
                 registryService,
                 stagingService,
@@ -86,8 +84,6 @@ class StagingControllerTest {
                 archiveModelManager,
                 modelSourceConfig,
                 stagingSettingsService);
-        resolveModelType = StagingController.class.getDeclaredMethod("resolveModelType", CatalogModel.class);
-        resolveModelType.setAccessible(true);
     }
 
     @Test
@@ -592,7 +588,7 @@ class StagingControllerTest {
                 content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
-    private ModelType resolve(CatalogModel model) throws Exception {
-        return (ModelType) resolveModelType.invoke(controller, model);
+    private ModelType resolve(CatalogModel model) {
+        return controller.resolveModelType(model);
     }
 }

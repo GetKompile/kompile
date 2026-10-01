@@ -15,10 +15,13 @@
  */
 package ai.kompile.knowledgegraph.matrix.service;
 
+import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
 import ai.kompile.graph.reasoning.explain.ReasoningTraceJsonCodec;
+import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.query.GraphQueryEngine;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphProvenanceKeys;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
@@ -26,13 +29,23 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class CompactGraphContextServiceTest {
@@ -41,44 +54,7 @@ class CompactGraphContextServiceTest {
 
     @Test
     void emitsDeterministicBoundedGraphSourcesAndCanonicalTracesWithoutRawPayloads() throws Exception {
-        UnifiedGraph graph = new UnifiedGraph().graphId("factsheet_7").factSheetId(7L);
-        graph.addEntity(GraphEntity.builder("metric:revenue")
-                .type("METRIC")
-                .label("Revenue")
-                .confidence(0.91)
-                .attributes(Map.ofEntries(
-                        Map.entry("description", "Revenue decreased by 12 percent"),
-                        Map.entry("amount", 12),
-                        Map.entry("currency", "USD"),
-                        Map.entry(GraphProvenanceKeys.SOURCE, "crawl"),
-                        Map.entry(GraphProvenanceKeys.SOURCE_DOCUMENT_ID, "doc-22"),
-                        Map.entry(GraphProvenanceKeys.SOURCE_CHUNK_ID, "chunk-4"),
-                        Map.entry(GraphProvenanceKeys.CRAWL_RUN_ID, "crawl-9"),
-                        Map.entry(GraphProvenanceKeys.EXTRACTION_MODEL, "extractor-small"),
-                        Map.entry("content_preview", "RAW_CONTENT_SENTINEL"),
-                        Map.entry("embedding", "RAW_VECTOR_SENTINEL"),
-                        Map.entry("prompt", "RAW_PROMPT_SENTINEL")))
-                .build());
-        graph.addEntity(GraphEntity.builder("company:acme")
-                .type("ORGANIZATION")
-                .label("Acme")
-                .attribute("description", "The reporting organization")
-                .build());
-        graph.addEntity(GraphEntity.builder("unselected")
-                .type("OTHER").label("Unselected sentinel").build());
-        graph.addRelation(GraphRelation.builder(
-                        "edge:reports", "company:acme", "metric:revenue")
-                .type("REPORTS")
-                .weight(0.8)
-                .confidence(0.88)
-                .attribute("description", "Acme reports revenue")
-                .attribute("metadataJson", objectMapper.writeValueAsString(Map.of(
-                        GraphProvenanceKeys.SOURCE_DOCUMENT_ID, "edge-doc",
-                        GraphProvenanceKeys.SOURCE_CHUNK_ID, "edge-chunk",
-                        "basis", "reported",
-                        "content_preview", "EDGE_RAW_SENTINEL")))
-                .build());
-
+        List<String> retrieved = List.of("metric:revenue", "company:acme");
         ReasoningTrace trace = ReasoningTrace.of(ReasoningTrace.Step.derived(
                 ReasoningTrace.StepKind.INFERENCE,
                 "revenue_drop(company:acme)",
@@ -91,19 +67,18 @@ class CompactGraphContextServiceTest {
         String revenueTrace = "process/reasoning-traces/v1/revenue-drop.json";
         String selectedTrace = "process/reasoning-traces/v1/selected.json";
         String unrelatedTrace = "process/reasoning-traces/v1/unrelated.json";
-        graph.putArtifactText(revenueTrace, ReasoningTraceJsonCodec.encode(
-                "process-trace:revenue-drop", "revenue-drop", trace));
-        graph.putArtifactText(selectedTrace, ReasoningTraceJsonCodec.encode(
+        Map<String, byte[]> artifacts = new LinkedHashMap<>();
+        artifacts.put(revenueTrace, utf8(ReasoningTraceJsonCodec.encode(
+                "process-trace:revenue-drop", "revenue-drop", trace)));
+        artifacts.put(selectedTrace, utf8(ReasoningTraceJsonCodec.encode(
                 "process-trace:selected", "selected", ReasoningTrace.of(
                         ReasoningTrace.Step.fact(
-                                "complete the selected workflow", 0.84, "process-log:selected"))));
-        graph.putArtifactText(unrelatedTrace, ReasoningTraceJsonCodec.encode(
+                                "complete the selected workflow", 0.84, "process-log:selected")))));
+        artifacts.put(unrelatedTrace, utf8(ReasoningTraceJsonCodec.encode(
                 "process-trace:unrelated", "unrelated", ReasoningTrace.of(
                         ReasoningTrace.Step.fact(
-                                "complete an unrelated workflow", 0.83, "process-log:unrelated"))));
-        graph.putModel("trace:legacy-java", ReasoningTrace.of(
-                ReasoningTrace.Step.fact("LEGACY_JAVA_TRACE_SENTINEL", 1.0, "legacy")));
-        graph.putArtifact(CompactGraphContextService.PROCESS_SUGGESTIONS_ARTIFACT,
+                                "complete an unrelated workflow", 0.83, "process-log:unrelated")))));
+        artifacts.put(CompactGraphContextService.PROCESS_SUGGESTIONS_ARTIFACT,
                 objectMapper.writeValueAsBytes(List.of(
                         Map.of(
                                 "id", "selected",
@@ -115,7 +90,7 @@ class CompactGraphContextServiceTest {
                                 "reasoningTraceArtifactName", unrelatedTrace,
                                 "sourceGraphNodeIds", List.of("unselected"),
                                 "sourceGraphRelationIds", List.of()))));
-        graph.putArtifact(CompactGraphContextService.TRACE_DTO_ARTIFACT,
+        artifacts.put(CompactGraphContextService.TRACE_DTO_ARTIFACT,
                 objectMapper.writeValueAsBytes(List.of(Map.ofEntries(
                         Map.entry("targetId", "company:acme"),
                         Map.entry("confidence", 0.82),
@@ -131,13 +106,21 @@ class CompactGraphContextServiceTest {
                                 "children", List.of()))))));
 
         UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
-        when(bridge.export(7L)).thenReturn(graph);
+        when(bridge.exportNeighborhood(eq(7L), eq(retrieved), eq(retrieved), eq(1), eq(2),
+                eq(GraphQueryEngine.Direction.BOTH), anyInt()))
+                .thenAnswer(invocation -> revenueNeighborhood());
+        when(bridge.exportArtifacts(7L, CompactGraphContextService.TRACE_ARTIFACT_PREFIXES))
+                .thenReturn(artifacts);
         CompactGraphContextService service = new CompactGraphContextService(bridge, objectMapper);
 
-        CompactGraphContextService.CompactContext first = service.build(
-                7L, List.of("metric:revenue", "company:acme"));
-        CompactGraphContextService.CompactContext second = service.build(
-                7L, List.of("metric:revenue", "company:acme"));
+        CompactGraphContextService.CompactContext first = service.build(7L, retrieved);
+        CompactGraphContextService.CompactContext second = service.build(7L, retrieved);
+
+        // Only the retrieved nodes and their relations are read, never the whole fact sheet.
+        verify(bridge, times(2)).exportNeighborhood(eq(7L), eq(retrieved), eq(retrieved), eq(1), eq(2),
+                eq(GraphQueryEngine.Direction.BOTH), anyInt());
+        verify(bridge, never()).export(any());
+        verify(bridge, never()).export(any(), any());
 
         assertEquals(first.json(), second.json(), "compact serialization must be deterministic");
         JsonNode json = objectMapper.readTree(first.json());
@@ -176,7 +159,7 @@ class CompactGraphContextServiceTest {
                 "supportingEvidence", List.of(
                         Map.of("sourceChunkId", "chunk-a", "evidenceQuote", "first support"),
                         Map.of("sourceChunkId", "chunk-b", "evidenceQuote", "second support")));
-        UnifiedGraph graph = new UnifiedGraph().graphId("round-trip");
+        UnifiedGraph graph = new UnifiedGraph().graphId("global:bounded");
         graph.addEntity(GraphEntity.builder("left").type("ENTITY").label("Left")
                 .attribute("metadataJson", objectMapper.writeValueAsString(provenance)).build());
         graph.addEntity(GraphEntity.builder("right").type("ENTITY").label("Right")
@@ -185,7 +168,9 @@ class CompactGraphContextServiceTest {
                 .attribute("metadataJson", objectMapper.writeValueAsString(provenance)).build());
 
         UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
-        when(bridge.export(null)).thenReturn(graph);
+        when(bridge.exportNeighborhood(isNull(), eq(List.of("left", "right")), eq(List.of("left", "right")),
+                eq(1), eq(2), eq(GraphQueryEngine.Direction.BOTH), anyInt()))
+                .thenReturn(graph);
         CompactGraphContextService.CompactContext context =
                 new CompactGraphContextService(bridge, objectMapper).build(null, List.of("left", "right"));
         JsonNode json = objectMapper.readTree(context.json());
@@ -204,5 +189,214 @@ class CompactGraphContextServiceTest {
         assertFalse(json.at("/relations/0/attributes").has("supportingEvidence"));
         assertFalse(json.at("/relations/0/attributes").has("sourceChunkIds"));
         assertFalse(context.json().contains("metadataJson"));
+    }
+
+    @Test
+    void liftsDescriptionValidityAndProvenanceOutOfTheLiveStoreRecord() throws Exception {
+        // The shape the bridge gives a live node and edge: everything nested under "kompile.store".
+        Map<String, Object> nodeStore = new LinkedHashMap<>();
+        nodeStore.put("externalId", "STORE_INTERNAL_SENTINEL");
+        nodeStore.put("description", "Stored node description");
+        nodeStore.put("contentPreview", "STORE_PREVIEW_SENTINEL");
+        nodeStore.put("metadataJson", "{\"restore\":\"STORE_RESTORE_SENTINEL\"}");
+        nodeStore.put("metadata", Map.of(
+                GraphProvenanceKeys.SOURCE_DOCUMENT_ID, "doc-9",
+                GraphProvenanceKeys.SOURCE_CHUNK_ID, "chunk-3",
+                "unit", "USD"));
+        nodeStore.put("stale", true);
+        nodeStore.put("validUntil", "2026-12-31T00:00:00Z");
+        Map<String, Object> edgeStore = new LinkedHashMap<>();
+        edgeStore.put("edgeId", "STORE_EDGE_INTERNAL_SENTINEL");
+        edgeStore.put("description", "Stored edge description");
+        edgeStore.put("metadata", Map.of(
+                GraphProvenanceKeys.SOURCE_DOCUMENT_ID, "doc-9",
+                GraphProvenanceKeys.SOURCE_CHUNK_ID, "chunk-4"));
+        edgeStore.put("stale", false);
+        UnifiedGraph graph = new UnifiedGraph().graphId("factsheet_7:bounded").factSheetId(7L);
+        graph.addEntity(GraphEntity.builder("left").type("ENTITY").label("Left")
+                .attribute(CompactGraphContextService.STORE_ATTRIBUTE, nodeStore).build());
+        graph.addEntity(GraphEntity.builder("right").type("ENTITY").label("Right").build());
+        graph.addRelation(GraphRelation.builder("edge", "left", "right").type("LINKS")
+                .attribute(CompactGraphContextService.STORE_ATTRIBUTE, edgeStore).build());
+
+        CompactGraphContextService.CompactContext context =
+                new CompactGraphContextService(boundedBridge(graph), objectMapper)
+                        .build(7L, List.of("left", "right"));
+        JsonNode json = objectMapper.readTree(context.json());
+
+        assertEquals("Stored node description", json.at("/nodes/0/description").asText());
+        assertEquals(List.of("doc-9#chunk-3"), objectMapper.convertValue(
+                json.at("/nodes/0/sourceIds"), List.class));
+        assertTrue(json.at("/nodes/0/attributes/stale").asBoolean());
+        assertEquals("2026-12-31T00:00:00Z", json.at("/nodes/0/attributes/validUntil").asText());
+        assertEquals("USD", json.at("/nodes/0/attributes/unit").asText());
+        assertEquals("Stored edge description", json.at("/relations/0/attributes/description").asText());
+        assertEquals(List.of("doc-9#chunk-4"), objectMapper.convertValue(
+                json.at("/relations/0/sourceIds"), List.class));
+        assertFalse(json.at("/relations/0/attributes").has("stale"));
+        assertEquals(2, context.sourceCount());
+        assertFalse(context.json().contains(CompactGraphContextService.STORE_ATTRIBUTE));
+        assertFalse(context.json().contains("STORE_INTERNAL_SENTINEL"));
+        assertFalse(context.json().contains("STORE_EDGE_INTERNAL_SENTINEL"));
+        assertFalse(context.json().contains("STORE_PREVIEW_SENTINEL"));
+        assertFalse(context.json().contains("STORE_RESTORE_SENTINEL"));
+    }
+
+    @Test
+    void labelsStoredOpinionsAsLearnedScoresAndWithholdsThemWhenStale() throws Exception {
+        UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
+        when(bridge.exportNeighborhood(eq(7L), anyCollection(), anyCollection(), eq(1), anyInt(),
+                eq(GraphQueryEngine.Direction.BOTH), anyInt()))
+                .thenReturn(opinionatedPair(false), opinionatedPair(true));
+        CompactGraphContextService service = new CompactGraphContextService(bridge, objectMapper);
+
+        JsonNode fresh = objectMapper.readTree(service.build(7L, List.of("node:alpha", "node:beta")).json());
+        assertEquals(0.4, fresh.at("/nodes/0/confidence").asDouble(), 1e-9);
+        assertEquals(0.7, fresh.at("/nodes/0/learnedScore").asDouble(), 1e-9);
+        assertTrue(fresh.at("/nodes/1/learnedScore").isMissingNode(), "no stored opinion, no learned score");
+        assertEquals(0.3, fresh.at("/relations/0/confidence").asDouble(), 1e-9);
+        assertEquals(0.2, fresh.at("/relations/0/learnedScore").asDouble(), 1e-9);
+        assertTrue(fresh.at("/scope/opinionsStale").isMissingNode());
+
+        JsonNode stale = objectMapper.readTree(service.build(7L, List.of("node:alpha", "node:beta")).json());
+        assertTrue(stale.at("/scope/opinionsStale").asBoolean());
+        assertEquals(0.4, stale.at("/nodes/0/confidence").asDouble(), 1e-9);
+        assertTrue(stale.at("/nodes/0/learnedScore").isMissingNode());
+        assertEquals(0.3, stale.at("/relations/0/confidence").asDouble(), 1e-9);
+        assertTrue(stale.at("/relations/0/learnedScore").isMissingNode());
+    }
+
+    @Test
+    void includesNoTraceThatReferencesNoRetrievedNode() throws Exception {
+        String elsewhereTrace = "process/reasoning-traces/v1/elsewhere.json";
+        Map<String, byte[]> artifacts = new LinkedHashMap<>();
+        artifacts.put(elsewhereTrace, utf8(ReasoningTraceJsonCodec.encode(
+                "process-trace:elsewhere", "elsewhere", ReasoningTrace.of(
+                        ReasoningTrace.Step.fact(
+                                "complete an unrelated workflow", 0.83, "process-log:elsewhere")))));
+        artifacts.put(CompactGraphContextService.PROCESS_SUGGESTIONS_ARTIFACT,
+                objectMapper.writeValueAsBytes(List.of(Map.of(
+                        "id", "elsewhere",
+                        "reasoningTraceArtifactName", elsewhereTrace,
+                        "sourceGraphNodeIds", List.of("node:gamma"),
+                        "sourceGraphRelationIds", List.of()))));
+        artifacts.put(CompactGraphContextService.TRACE_DTO_ARTIFACT,
+                objectMapper.writeValueAsBytes(List.of(Map.of(
+                        "targetId", "node:gamma",
+                        "confidence", 0.8,
+                        "derivationTree", Map.of(
+                                "stepId", "trace.root",
+                                "atom", "gamma is overdue",
+                                "confidence", 0.8,
+                                "children", List.of())))));
+        UnifiedGraphBridge bridge = boundedBridge(opinionatedPair(false));
+        when(bridge.exportArtifacts(7L, CompactGraphContextService.TRACE_ARTIFACT_PREFIXES))
+                .thenReturn(artifacts);
+
+        CompactGraphContextService.CompactContext context = new CompactGraphContextService(bridge, objectMapper)
+                .build(7L, List.of("node:alpha", "node:beta"));
+        JsonNode json = objectMapper.readTree(context.json());
+
+        assertEquals(2, json.get("nodes").size());
+        assertEquals(0, context.traceCount(), "an unrelated trace is never a stand-in for a relevant one");
+        assertEquals(0, json.get("reasoningTraces").size());
+        assertFalse(context.json().contains("elsewhere"));
+        assertFalse(context.json().contains("gamma"));
+    }
+
+    @Test
+    void emitsNothingAndReadsNoArtifactsWhenNoRetrievedNodeIsInScope() throws Exception {
+        UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
+        when(bridge.exportNeighborhood(eq(7L), anyCollection(), anyCollection(), eq(1), anyInt(),
+                eq(GraphQueryEngine.Direction.BOTH), anyInt()))
+                .thenAnswer(invocation -> new UnifiedGraph().graphId("factsheet_7:bounded").factSheetId(7L));
+        CompactGraphContextService service = new CompactGraphContextService(bridge, objectMapper);
+
+        for (CompactGraphContextService.CompactContext context : List.of(
+                service.build(7L, null),
+                service.build(7L, List.of()),
+                service.build(7L, List.of("missing")))) {
+            JsonNode json = objectMapper.readTree(context.json());
+            assertEquals(0, json.get("nodes").size());
+            assertEquals(0, json.get("relations").size());
+            assertEquals(0, json.get("reasoningTraces").size());
+            assertEquals(0, json.get("sources").size());
+            assertEquals(List.of(), context.retrievedNodeIds());
+        }
+        verify(bridge, never()).exportArtifacts(any(), any());
+        verify(bridge, never()).export(any());
+    }
+
+    /** The bounded read of the two retrieved revenue nodes, as a fresh graph per call. */
+    private UnifiedGraph revenueNeighborhood() throws Exception {
+        UnifiedGraph graph = new UnifiedGraph().graphId("factsheet_7:bounded").factSheetId(7L);
+        graph.addEntity(GraphEntity.builder("metric:revenue")
+                .type("METRIC")
+                .label("Revenue")
+                .confidence(0.91)
+                .attributes(Map.ofEntries(
+                        Map.entry("description", "Revenue decreased by 12 percent"),
+                        Map.entry("amount", 12),
+                        Map.entry("currency", "USD"),
+                        Map.entry(GraphProvenanceKeys.SOURCE, "crawl"),
+                        Map.entry(GraphProvenanceKeys.SOURCE_DOCUMENT_ID, "doc-22"),
+                        Map.entry(GraphProvenanceKeys.SOURCE_CHUNK_ID, "chunk-4"),
+                        Map.entry(GraphProvenanceKeys.CRAWL_RUN_ID, "crawl-9"),
+                        Map.entry(GraphProvenanceKeys.EXTRACTION_MODEL, "extractor-small"),
+                        Map.entry("content_preview", "RAW_CONTENT_SENTINEL"),
+                        Map.entry("embedding", "RAW_VECTOR_SENTINEL"),
+                        Map.entry("prompt", "RAW_PROMPT_SENTINEL")))
+                .build());
+        graph.addEntity(GraphEntity.builder("company:acme")
+                .type("ORGANIZATION")
+                .label("Acme")
+                .attribute("description", "The reporting organization")
+                .build());
+        // A node the service did not ask for is never emitted, even if a read returns it.
+        graph.addEntity(GraphEntity.builder("unselected")
+                .type("OTHER").label("Unselected sentinel").build());
+        graph.addRelation(GraphRelation.builder(
+                        "edge:reports", "company:acme", "metric:revenue")
+                .type("REPORTS")
+                .weight(0.8)
+                .confidence(0.88)
+                .attribute("description", "Acme reports revenue")
+                .attribute("metadataJson", objectMapper.writeValueAsString(Map.of(
+                        GraphProvenanceKeys.SOURCE_DOCUMENT_ID, "edge-doc",
+                        GraphProvenanceKeys.SOURCE_CHUNK_ID, "edge-chunk",
+                        "basis", "reported",
+                        "content_preview", "EDGE_RAW_SENTINEL")))
+                .build());
+        graph.putModel("trace:legacy-java", ReasoningTrace.of(
+                ReasoningTrace.Step.fact("LEGACY_JAVA_TRACE_SENTINEL", 1.0, "legacy")));
+        return graph;
+    }
+
+    /** Two retrieved nodes and their relation, with stored opinions on one node and the relation. */
+    private static UnifiedGraph opinionatedPair(boolean stale) {
+        UnifiedGraph graph = new UnifiedGraph().graphId("factsheet_7:bounded").factSheetId(7L);
+        graph.addEntity(GraphEntity.builder("node:alpha").type("ENTITY").label("Alpha Holdings")
+                .confidence(0.4).build());
+        graph.addEntity(GraphEntity.builder("node:beta").type("ENTITY").label("Beta Freight").build());
+        graph.addRelation(GraphRelation.builder("rel:ships", "node:alpha", "node:beta").type("SHIPS")
+                .confidence(0.3).build());
+        graph.putEntityOpinion("node:alpha", new Opinion(0.6, 0.2, 0.2, 0.5));
+        graph.putRelationOpinion("rel:ships", new Opinion(0.1, 0.7, 0.2, 0.5));
+        if (stale) {
+            graph.meta(UnifiedGraphReasoningLifecycle.REASONING_STALE_META, true);
+        }
+        return graph;
+    }
+
+    private static UnifiedGraphBridge boundedBridge(UnifiedGraph graph) {
+        UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
+        when(bridge.exportNeighborhood(eq(graph.factSheetId()), anyCollection(), anyCollection(), eq(1),
+                anyInt(), eq(GraphQueryEngine.Direction.BOTH), anyInt()))
+                .thenReturn(graph);
+        return bridge;
+    }
+
+    private static byte[] utf8(String text) {
+        return text.getBytes(StandardCharsets.UTF_8);
     }
 }

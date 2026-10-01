@@ -16,7 +16,6 @@
 
 package ai.kompile.app.config;
 
-import ai.kompile.app.services.GpuResourceManager;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -24,7 +23,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 
@@ -34,24 +32,19 @@ import java.nio.file.Paths;
 import java.util.List;
 
 /**
- * Configures GPU device properties that cannot be auto-detected.
+ * Warns about the obsolete GPU index override file {@code ~/.kompile/config/gpu-device-config.json}.
  *
- * <p>On systems where the nvidia-smi device index differs from the CUDA runtime
- * device index (as seen by the JVM), this configuration applies the correct mapping.
- * The mapping is persisted at {@code ~/.kompile/config/gpu-device-config.json}.</p>
- *
- * <p>If no config file exists, no mapping override is applied; ND4J discovery remains the source of truth.</p>
- *
- * <p>Service placement is left to ND4J and the resource manager unless a project supplies an explicit route.</p>
+ * <p>That file mapped nvidia-smi device indices to CUDA runtime indices while GPUs were discovered
+ * through nvidia-smi. GPUs are now discovered through ND4J, and a device's ND4J index is already the
+ * index placement uses, so there is nothing left to remap. Applying the old mappings to ND4J-indexed
+ * devices pointed each record at the other card: on a 4090 + 3070 Ti host the 4090's record placed
+ * jobs on the 3070 Ti. The file is only read to warn that it is ignored.</p>
  */
 @Configuration(proxyBeanMethods = false)
 public class GpuDeviceConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(GpuDeviceConfiguration.class);
     private static final String CONFIG_FILENAME = "gpu-device-config.json";
-
-    @Autowired
-    private GpuResourceManager gpuResourceManager;
 
     private final Path configFilePath;
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
@@ -67,45 +60,30 @@ public class GpuDeviceConfiguration {
 
     @PostConstruct
     public void configure() {
-        applyCudaRuntimeIndexMapping();
+        int ignored = obsoleteMappingCount();
+        if (ignored > 0) {
+            log.warn("Ignoring {} GPU index mapping(s) in {}: GPUs are discovered through ND4J, whose device "
+                    + "index is already the placement index, so nvidia-smi -> CUDA mappings no longer apply. "
+                    + "Delete the file to silence this warning.", ignored, configFilePath);
+        }
     }
 
     /**
-     * Apply CUDA runtime index overrides from persisted config, if present.
-     * The GpuResourceManager already auto-detects the mapping using compute capabilities,
-     * so this config file serves as a manual override for edge cases where the
-     * auto-detection is wrong.
+     * Number of mappings in the obsolete override file; 0 when the file is absent or unreadable.
      */
-    private void applyCudaRuntimeIndexMapping() {
+    int obsoleteMappingCount() {
         GpuDeviceConfig config = loadConfig();
-        if (config == null || config.cudaIndexMappings() == null) {
-            return;
-        }
-
-        for (CudaIndexMapping mapping : config.cudaIndexMappings()) {
-            gpuResourceManager.setCudaRuntimeIndex(mapping.nvidiaSmiIndex(), mapping.cudaRuntimeIndex());
-            log.info("Applied CUDA runtime index mapping: nvidia-smi {} -> CUDA runtime {}",
-                    mapping.nvidiaSmiIndex(), mapping.cudaRuntimeIndex());
-        }
+        return config == null || config.cudaIndexMappings() == null ? 0 : config.cudaIndexMappings().size();
     }
 
-    /**
-     * Load a persisted GPU mapping override, if present.
-     */
     private GpuDeviceConfig loadConfig() {
         if (!Files.exists(configFilePath)) {
-            log.debug("No GPU device mapping override found at {}; using ND4J device discovery", configFilePath);
             return null;
         }
         try {
-            String json = Files.readString(configFilePath);
-            GpuDeviceConfig config = objectMapper.readValue(json, GpuDeviceConfig.class);
-            log.info("Loaded GPU device config from {} with {} mapping(s)",
-                    configFilePath,
-                    config.cudaIndexMappings() != null ? config.cudaIndexMappings().size() : 0);
-            return config;
+            return objectMapper.readValue(Files.readString(configFilePath), GpuDeviceConfig.class);
         } catch (Exception e) {
-            log.warn("Failed to load GPU device config from {}: {}", configFilePath, e.getMessage());
+            log.warn("Failed to read obsolete GPU device config {}: {}", configFilePath, e.getMessage());
             return null;
         }
     }

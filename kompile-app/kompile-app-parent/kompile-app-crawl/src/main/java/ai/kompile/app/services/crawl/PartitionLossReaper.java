@@ -51,7 +51,7 @@ public class PartitionLossReaper {
 
     /** Optional: present when this node is a cluster orchestrator. */
     @Autowired(required = false)
-    private CrawlWorkerRegistry registry;
+    CrawlWorkerRegistry registry;
 
     private ScheduledExecutorService scheduler;
 

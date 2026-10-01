@@ -41,8 +41,6 @@ import java.util.stream.Collectors;
  */
 public class ModelPerformanceStore {
 
-    private static final Path STORE_FILE = Path.of(System.getProperty("user.home"),
-            ".kompile", "perf-data.json");
     private static final Object JVM_PERSISTENCE_LOCK = new Object();
 
     private final ObjectMapper mapper;
@@ -60,7 +58,7 @@ public class ModelPerformanceStore {
     /** The file path to load from when deferred loading triggers. */
     private volatile Path deferredLoadPath;
     /** Persistence target captured by loadFromFile; null selects an in-memory-only store. */
-    private volatile Path persistencePath = STORE_FILE;
+    private volatile Path persistencePath = getStoreFilePath();
 
     public ModelPerformanceStore(int maxRecordAge, int maxRecords) {
         this.mapper = JsonUtils.standardMapper();
@@ -80,7 +78,7 @@ public class ModelPerformanceStore {
         if (loaded) return;
         synchronized (this) {
             if (loaded) return;
-            Path file = deferredLoadPath != null ? deferredLoadPath : STORE_FILE;
+            Path file = deferredLoadPath != null ? deferredLoadPath : persistencePath;
             doLoadFromFile(file);
             loaded = true;
         }
@@ -392,7 +390,7 @@ public class ModelPerformanceStore {
      * Actual deserialization is deferred until data is needed.
      */
     public void loadFromFile() {
-        loadFromFile(STORE_FILE);
+        loadFromFile(getStoreFilePath());
     }
 
     /**
@@ -400,7 +398,7 @@ public class ModelPerformanceStore {
      * Actual deserialization is deferred until data is needed.
      */
     public synchronized void loadFromFile(Path file) {
-        Path normalized = file == null ? STORE_FILE : file.toAbsolutePath().normalize();
+        Path normalized = file == null ? getStoreFilePath() : file.toAbsolutePath().normalize();
         this.deferredLoadPath = normalized;
         this.persistencePath = normalized;
         this.loaded = false;
@@ -439,12 +437,12 @@ public class ModelPerformanceStore {
      * Save to disk.
      */
     public void saveToFile() {
-        Path target = persistencePath != null ? persistencePath : STORE_FILE;
+        Path target = persistencePath != null ? persistencePath : getStoreFilePath();
         saveToFile(target);
     }
 
     public synchronized void saveToFile(Path file) {
-        persistMerged(file == null ? STORE_FILE : file);
+        persistMerged(file == null ? getStoreFilePath() : file);
     }
 
     private boolean persistMerged(Path file) {
@@ -558,8 +556,9 @@ public class ModelPerformanceStore {
         }
     }
 
+    /** Resolved on each call, so a {@code user.home} changed after class load is honoured. */
     public static Path getStoreFilePath() {
-        return STORE_FILE;
+        return Path.of(System.getProperty("user.home"), ".kompile", "perf-data.json");
     }
 
     private static float avg(List<Float> values) {

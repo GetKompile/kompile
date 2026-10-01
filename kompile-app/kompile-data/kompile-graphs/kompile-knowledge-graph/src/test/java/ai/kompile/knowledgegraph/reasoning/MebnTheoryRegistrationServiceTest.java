@@ -24,7 +24,6 @@ import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.nd4j.linalg.api.ndarray.INDArray;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.file.Path;
 import java.util.LinkedHashSet;
@@ -285,7 +284,7 @@ class MebnTheoryRegistrationServiceTest {
         IncrementalReasoningOrchestrator orchestrator = mock(IncrementalReasoningOrchestrator.class);
         KnowledgeGraphService graphService = mock(KnowledgeGraphService.class);
         MebnTheoryRegistrationService service = new MebnTheoryRegistrationService(orchestrator);
-        ReflectionTestUtils.setField(service, "knowledgeGraphService", graphService);
+        service.knowledgeGraphService = graphService;
 
         INDArray nodeEmbedding = mock(INDArray.class);
         when(nodeEmbedding.toDoubleVector()).thenReturn(new double[]{0.2, 0.4, 0.6});

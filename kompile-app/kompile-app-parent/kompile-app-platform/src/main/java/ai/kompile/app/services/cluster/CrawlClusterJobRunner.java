@@ -60,10 +60,10 @@ public class CrawlClusterJobRunner implements ClusterJobRunner {
     private static final long PROGRESS_EMIT_INTERVAL_MS = 4_000L;
 
     @Autowired(required = false)
-    private UnifiedCrawlService unifiedCrawlService;
+    UnifiedCrawlService unifiedCrawlService;
 
     @Autowired
-    private ObjectMapper objectMapper;
+    ObjectMapper objectMapper;
 
     /** Optional — used only to attach the cluster auth token to progress reports. */
     @Autowired(required = false)
@@ -71,7 +71,7 @@ public class CrawlClusterJobRunner implements ClusterJobRunner {
 
     /** Optional — reads this worker's local LLM transcripts so they can be forwarded to the coordinator. */
     @Autowired(required = false)
-    private JobLogService jobLogService;
+    JobLogService jobLogService;
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))

@@ -24,6 +24,9 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
  *
  * <p>The launcher reads lines from the subprocess's stdout, strips the prefix,
  * and deserialises the remaining JSON as one of these subtypes.</p>
+ *
+ * <p>Jackson writes each message's subtype name as its {@code type} property. The
+ * records carry no {@code type} of their own, which would be written a second time.</p>
  */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
 @JsonSubTypes({
@@ -42,40 +45,24 @@ public sealed interface LearningSubprocessMessage
     String MESSAGE_PREFIX = "LEARNING_MSG:";
 
     /** Per-epoch progress update. */
-    record Progress(String type,
-                    int epoch,
+    record Progress(int epoch,
                     int totalEpochs,
                     double loss,
                     double progressPercent) implements LearningSubprocessMessage {
-        public Progress(int epoch, int totalEpochs, double loss, double progressPercent) {
-            this("PROGRESS", epoch, totalEpochs, loss, progressPercent);
-        }
     }
 
     /** Periodic heartbeat so the watchdog knows the process is still alive. */
-    record Heartbeat(String type,
-                     long timestampMs) implements LearningSubprocessMessage {
-        public Heartbeat(long timestampMs) {
-            this("HEARTBEAT", timestampMs);
-        }
+    record Heartbeat(long timestampMs) implements LearningSubprocessMessage {
     }
 
     /** Training completed successfully. */
-    record Completed(String type,
-                     double finalLoss,
+    record Completed(double finalLoss,
                      String outputPath,
                      int entities,
                      int relations) implements LearningSubprocessMessage {
-        public Completed(double finalLoss, String outputPath, int entities, int relations) {
-            this("COMPLETED", finalLoss, outputPath, entities, relations);
-        }
     }
 
     /** Training failed (OOM, exception, cancellation). */
-    record Failed(String type,
-                  String reason) implements LearningSubprocessMessage {
-        public Failed(String reason) {
-            this("FAILED", reason);
-        }
+    record Failed(String reason) implements LearningSubprocessMessage {
     }
 }

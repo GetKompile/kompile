@@ -31,8 +31,10 @@ import ai.kompile.knowledgegraph.reasoning.FactPromotionTracker;
 import ai.kompile.knowledgegraph.reasoning.IncrementalReasoningOrchestrator;
 import ai.kompile.knowledgegraph.reasoning.MebnTheoryRegistrationService;
 import ai.kompile.knowledgegraph.reasoning.RegroundResult;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
@@ -197,6 +199,14 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
     @Autowired(required = false)
     @Nullable
     private OntologyProjectionProvider ontologyProjectionProvider;
+
+    /**
+     * Optional: publishes the derivation's learned posteriors as relation opinions into the
+     * analysis asset store, where claim/verify decide from them. Resolved lazily so the bridge's
+     * artifact contributors cannot form a bean cycle through this orchestrator.
+     */
+    @Autowired(required = false)
+    private ObjectProvider<UnifiedGraphBridge> unifiedGraphBridges;
 
     /** Return the current KB config (defaults when no manager is wired). */
     private KbConfig kbCfg() {
@@ -533,6 +543,23 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
             stagesRun++;
             safeCallback(progressCallback, STAGE_HEALTH,
                     "HEALTH: health snapshot persisted by PRUNE_COMPACT; factSheet=" + factSheetId);
+        }
+
+        // Publish after PRUNE_COMPACT so only surviving edges carry a learned relation opinion.
+        if (derivationSucceeded) {
+            UnifiedGraphBridge bridge = unifiedGraphBridges == null ? null : unifiedGraphBridges.getIfAvailable();
+            if (bridge != null) {
+                try {
+                    int published = bridge.publishLearnedRelationOpinions(factSheetId);
+                    String msg = "Published " + published
+                            + " learned relation opinion(s) to the analysis asset store";
+                    log.info("[Hydration factSheet={}] {}", factSheetId, msg);
+                    safeCallback(progressCallback, STAGE_DERIVATION, msg);
+                } catch (Exception e) {
+                    log.warn("[Hydration factSheet={}] relation-opinion publish failed (non-fatal): {}",
+                            factSheetId, e.getMessage(), e);
+                }
+            }
         }
 
         return new HydrationResult(

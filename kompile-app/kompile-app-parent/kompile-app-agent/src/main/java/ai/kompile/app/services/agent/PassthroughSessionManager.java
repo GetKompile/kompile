@@ -133,11 +133,14 @@ public class PassthroughSessionManager {
         }
 
         String sessionId = UUID.randomUUID().toString();
+        AgentSubprocessExecutor.PreparedCommand prepared = null;
+        boolean started = false;
 
         try {
             // Build the interactive command (no -p flag), with optional pass-through args
-            List<String> command = agentChatService.buildInteractiveCommand(
+            prepared = agentChatService.prepareInteractiveCommand(
                     agent, request.isSkipPermissions(), request.isInjectMcpTools(), request.getAgentArgs());
+            List<String> command = prepared.command();
 
             log.info("Starting passthrough session {} with command: {} (mcpTools={})", sessionId, command, request.isInjectMcpTools());
 
@@ -152,8 +155,12 @@ public class PassthroughSessionManager {
             }
 
             pb.environment().putAll(agent.safeEnvironment());
+            prepared.applyEnvironment(pb.environment());
 
             Process process = pb.start();
+            started = true;
+            AgentSubprocessExecutor.PreparedCommand launch = prepared;
+            process.onExit().whenComplete((exited, failure) -> launch.close());
 
             // Create chat history session
             String chatHistorySessionId = null;
@@ -205,6 +212,10 @@ public class PassthroughSessionManager {
             log.error("Failed to start passthrough session", e);
             sendEvent(emitter, "error", Map.of("message", "Failed to start session: " + e.getMessage()));
             return null;
+        } finally {
+            if (!started && prepared != null) {
+                prepared.close();
+            }
         }
     }
 

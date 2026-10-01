@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.*;
 
 import java.io.*;
@@ -16,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * <p>Indexes a mixed-language project (Java + splan + YAML config) and
  * exercises cross-component workflows that an MCP tool consumer would use.</p>
  */
+@TemporaryUserHome
 class UnifiedCodeIndexIntegrationTest {
 
     private static final String PROJECT_ID = "unified-test-project";

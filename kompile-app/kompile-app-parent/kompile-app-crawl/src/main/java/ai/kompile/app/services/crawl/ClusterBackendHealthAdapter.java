@@ -61,7 +61,7 @@ public class ClusterBackendHealthAdapter implements ClusterBackendHealth {
     /** Orchestrator-authoritative per-backend breakers. */
     private final Map<String, ClusterBreaker> breakers = new ConcurrentHashMap<>();
     /** Worker-side cache of the cluster open-set, refreshed from report responses. */
-    private volatile Set<String> cachedOpen = Set.of();
+    volatile Set<String> cachedOpen = Set.of();
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10)).build();
@@ -191,7 +191,7 @@ public class ClusterBackendHealthAdapter implements ClusterBackendHealth {
         private final int threshold;
         private final long cooldownMs;
         private int failures;
-        private long openedAtMs;
+        long openedAtMs;
 
         ClusterBreaker(int threshold, int cooldownSeconds) {
             this.threshold = Math.max(1, threshold);

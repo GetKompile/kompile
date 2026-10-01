@@ -186,7 +186,7 @@ public class KbGroundingController {
         long factSheetId = resolveFactSheetId(req.factSheetId());
         Instant asOf = req.asOf() != null ? req.asOf() : Instant.now();
 
-        String atom = resolveAtom(req.atom());
+        String atom = resolveAtom(factSheetId, req.atom());
         double threshold = (req.minConfidence() != null && req.minConfidence() > 0.0)
                 ? req.minConfidence() : 0.0;
 
@@ -460,7 +460,7 @@ public class KbGroundingController {
                 ? Math.min(req.depth(), DerivationTree.DEFAULT_MAX_DEPTH)
                 : DerivationTree.DEFAULT_MAX_DEPTH;
 
-        String atom = resolveAtom(req.atom());
+        String atom = resolveAtom(factSheetId, req.atom());
         DerivationTree tree = groundingService.explain(factSheetId, atom, depth);
         VerifyResult verdict = groundingService.verify(factSheetId, atom);
 
@@ -529,7 +529,7 @@ public class KbGroundingController {
 
         // Build source ID from sessionId + source per the spec's provenance convention
         String sourceId = buildSourceId(req.sessionId(), req.source());
-        Fact fact = Fact.soft(resolveAtom(req.atom()), req.value(), sourceId);
+        Fact fact = Fact.soft(resolveAtom(factSheetId, req.atom()), req.value(), sourceId);
 
         KbGroundingService.AssertResult result;
         if (req.expectedVersion() != null) {
@@ -614,7 +614,7 @@ public class KbGroundingController {
         }
 
         long factSheetId = req.factSheetId();
-        String atomKey = resolveAtom(req.atomKey().trim());
+        String atomKey = resolveAtom(factSheetId, req.atomKey().trim());
         String mode = (req.mode() == null || req.mode().isBlank()) ? "retract" : req.mode().trim();
 
         KbGroundingService.RetractResult retractResult;
@@ -1125,15 +1125,17 @@ public class KbGroundingController {
      * store is keyed by atom keys built by {@link GraphToFactStoreProjector} (e.g.
      * {@code entity(country_usa)}). Without this, KB-Context "Verify"/"Why?" always returned UNKNOWN
      * for graph-selected nodes. Already atom-shaped inputs — and inputs that resolve to no node —
-     * pass through unchanged, so existing atom-key callers (e.g. MCP tools) are unaffected.</p>
+     * keep their arguments, and their predicate is matched to the stored spelling
+     * ({@link KbGroundingService#resolveAtomKey}): {@code worksFor(alice, acme)} finds a stored
+     * {@code works_for(alice, acme)}, and a key stored exactly as given is returned unchanged.</p>
      */
-    private String resolveAtom(String input) {
+    private String resolveAtom(long factSheetId, String input) {
         if (input == null || input.isBlank()) return input;
         String trimmed = input.trim();
         if (ATOM_SHAPE.matcher(trimmed).matches()) {
-            return trimmed; // already an atom key
+            return groundingService.resolveAtomKey(factSheetId, trimmed); // already an atom key
         }
-        if (graphService == null) return trimmed;
+        if (graphService == null) return groundingService.resolveAtomKey(factSheetId, trimmed);
         // Try as an internal node id (the form the graph visualizer emits).
         String byNodeId = graphService.getNode(trimmed)
                 .map(GraphToFactStoreProjector::atomKeyForNode)
@@ -1146,7 +1148,7 @@ public class KbGroundingController {
                     .orElse(null);
             if (byExt != null) return byExt;
         }
-        return trimmed;
+        return groundingService.resolveAtomKey(factSheetId, trimmed);
     }
 
     /**

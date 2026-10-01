@@ -19,6 +19,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 
@@ -92,6 +93,18 @@ class DefaultKbVerifierRefutationTest {
             assertFalse(ContradictionDetector.isFunctionalPredicate(null));
             assertFalse(ContradictionDetector.isFunctionalPredicate(""));
             assertFalse(ContradictionDetector.isFunctionalPredicate("   "));
+        }
+
+        @Test
+        @DisplayName("isFunctionalPredicate adds a configured set to the defaults, in any spelling")
+        void isFunctionalPredicate_configuredSet() {
+            Set<String> configured = Set.of("reportsTo");
+            assertTrue(ContradictionDetector.isFunctionalPredicate("REPORTS_TO", configured));
+            assertTrue(ContradictionDetector.isFunctionalPredicate("reports-to", configured));
+            assertTrue(ContradictionDetector.isFunctionalPredicate("CEO", configured));
+            assertTrue(ContradictionDetector.isFunctionalPredicate("headquarteredIn", null));
+            assertFalse(ContradictionDetector.isFunctionalPredicate("REPORTS_TO"));
+            assertFalse(ContradictionDetector.isFunctionalPredicate("worksAt", configured));
         }
     }
 
@@ -187,6 +200,76 @@ class DefaultKbVerifierRefutationTest {
         }
     }
 
+    // ─── E5: functional conflicts across predicate spellings ─────────────────────
+
+    @Nested
+    @DisplayName("E5: functional conflicts across predicate spellings")
+    class FunctionalConflictSpellings {
+
+        @Test
+        @DisplayName("a camelCase claim is refuted by a competing fact in the graph's spelling")
+        void refuted_acrossPredicateSpellings() {
+            factStore.assertFact(Fact.observed("HEADQUARTERED_IN(acme, london)", "registry"));
+
+            VerifyResult result = new DefaultKbVerifier(inferredStore, factStore)
+                    .verify("headquarteredIn(acme, paris)");
+
+            assertEquals(VerifyResult.Status.REFUTED, result.status());
+            assertEquals(List.of("HEADQUARTERED_IN(acme, london)"), result.counterEvidence());
+        }
+
+        @Test
+        @DisplayName("a respelling of the claim itself never competes with it")
+        void respellingOfTheClaim_neverCompetes() {
+            factStore.assertFact(Fact.observed("HEADQUARTERED_IN(acme, paris)", "registry"));
+            inferredStore.store(InferredFact.of(
+                    "headquarteredIn(ACME, Paris)", 0.9,
+                    List.of(), List.of(), "run-1", 1L));
+
+            VerifyResult result = new DefaultKbVerifier(inferredStore, factStore)
+                    .verify("headquartered_in(acme,paris)");
+
+            assertNotEquals(VerifyResult.Status.REFUTED, result.status());
+            assertTrue(result.counterEvidence().isEmpty(),
+                    "the stored respellings must not be reported as counter-evidence");
+        }
+
+        @Test
+        @DisplayName("negated facts and negated claims never compete")
+        void negations_neverCompete() {
+            // Denying London says nothing against Paris.
+            factStore.assertFact(Fact.observed("~HEADQUARTERED_IN(acme, london)", "registry"));
+            // Bob being CEO never refutes "Alice is not the CEO".
+            inferredStore.store(InferredFact.of(
+                    "CEO(acme, bob)", 0.9,
+                    List.of(), List.of(), "run-1", 1L));
+            DefaultKbVerifier verifier = new DefaultKbVerifier(inferredStore, factStore);
+
+            assertEquals(VerifyResult.Status.UNKNOWN, verifier.verify("headquarteredIn(acme, paris)").status());
+            assertNotEquals(VerifyResult.Status.REFUTED, verifier.verify("~CEO(acme, alice)").status());
+        }
+
+        @Test
+        @DisplayName("configured functional predicates are honoured alongside the defaults, in any spelling")
+        void configuredFunctionalPredicates_areHonoured() {
+            factStore.assertFact(Fact.observed("REPORTS_TO(alice, bob)", "hr-system"));
+            factStore.assertFact(Fact.observed("CEO(acme, bob)", "hr-system"));
+            DefaultKbVerifier configured = new DefaultKbVerifier(inferredStore, factStore,
+                    DefaultKbVerifier.DEFAULT_THRESHOLD, Set.of("reportsTo"),
+                    DefaultKbVerifier.DEFAULT_FUNCTIONAL_CONFLICT_THRESHOLD);
+
+            VerifyResult refuted = configured.verify("reports_to(alice, carol)");
+            assertEquals(VerifyResult.Status.REFUTED, refuted.status());
+            assertEquals(List.of("REPORTS_TO(alice, bob)"), refuted.counterEvidence());
+            assertEquals(VerifyResult.Status.REFUTED, configured.verify("ceo(acme, alice)").status(),
+                    "the default functional predicates still apply");
+
+            // Without the configuration REPORTS_TO may hold many values, so nothing competes.
+            assertEquals(VerifyResult.Status.UNKNOWN,
+                    new DefaultKbVerifier(inferredStore, factStore).verify("reports_to(alice, carol)").status());
+        }
+    }
+
     // ─── E4: counter-evidence for SUPPORTED results ───────────────────────────────
 
     @Nested
@@ -271,7 +354,7 @@ class DefaultKbVerifierRefutationTest {
         void refuted_hardFalseFact() {
             // Explicitly false hard fact (value = 0.0)
             factStore.assertFact(new Fact("isEmployedBy(Alice, Rival)", 0.0,
-                    "hr-system", java.time.Instant.now(), true));
+                    "hr-system", Instant.now(), true));
 
             DefaultKbVerifier verifier = new DefaultKbVerifier(inferredStore, factStore);
             VerifyResult result = verifier.verify("isEmployedBy(Alice, Rival)");

@@ -66,9 +66,9 @@ public class ModelDeploymentHook {
     private static final Logger log = LoggerFactory.getLogger(ModelDeploymentHook.class);
 
     /** Explicit test override; normal operation resolves the managed endpoint per event. */
-    private String stagingUrl;
+    String stagingUrl;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    RestTemplate restTemplate = new RestTemplate();
 
     /**
      * Optional: project backend service for resolving the current projectId.

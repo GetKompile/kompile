@@ -138,10 +138,13 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
         String model = modelOverride == null || modelOverride.isBlank()
                 ? client.getConfiguredModel() : modelOverride;
         String thinking = client.getChatConfig().effectiveEffort();
+        String preferredEffort = client.preferredToolFreeEffort();
         String description = (provider == null || provider.isBlank() ? "provider" : provider)
                 + "/" + (model == null || model.isBlank() ? "default" : model)
                 + " · thinking/effort: "
-                + (thinking == null || thinking.isBlank() ? "provider default" : thinking.trim());
+                + (thinking != null && !thinking.isBlank() ? thinking.trim()
+                        : preferredEffort.isBlank() ? "provider default"
+                        : preferredEffort + " where offered");
         // ResilientJudgeBackend enforces a hard deadline by interrupting its worker.
         // Make that interruption visible to every direct-provider stream parser.
         client.setCancellationCheck(() -> Thread.currentThread().isInterrupted());
@@ -288,6 +291,12 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
             @Override
             public boolean isAvailable() {
                 return verdictRunner != null && AuxiliaryChatRepl.this.isAvailable();
+            }
+
+            @Override
+            public boolean startsProviderProcess() {
+                // Every verdict is a one-shot request: a provider CLI route starts a process for it.
+                return ownedResource instanceof DirectLlmClient client && client.startsProviderProcess();
             }
 
             @Override

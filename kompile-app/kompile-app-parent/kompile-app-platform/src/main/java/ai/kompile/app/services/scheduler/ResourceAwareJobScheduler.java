@@ -368,39 +368,66 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                 try {
                     modelLifecycleManager.releaseGpuForJob(jobId);
                     job.setGpuHeld(false);
-                    job.setState(ScheduledJob.JobState.PHASE_YIELDING);
+                    job.advanceState(ScheduledJob.JobState.PHASE_YIELDING);
                     log.info("Job '{}' GPU released, state=PHASE_YIELDING", jobId);
                     triggerDispatch();
                 } catch (Exception e) {
                     log.warn("Failed to release GPU for job '{}' during phase yield: {}",
                             jobId, e.getMessage());
                 }
-            } else if (requiresGpu && !job.isGpuHeld()) {
+            } else if (requiresGpu && !job.isGpuHeld() && !job.isTerminal()) {
                 // Re-acquire GPU — entering GPU phase
-                log.info("Job '{}' re-acquiring GPU for phase '{}' ({}MB)",
-                        jobId, phaseName, gpuMemoryBytes / (1024L * 1024L));
-                try {
-                    String serviceType = job.getResourceProfile().serviceType();
-                    GpuDevice device = modelLifecycleManager.acquireGpuForJob(
-                            jobId, serviceType,
-                            String.format("Phase %s of %s", phaseName, job.getDescription()),
-                            job.isLongLivedGpuHold()
-                                    ? ModelLifecycleManager.HoldLifetime.LONG_LIVED
-                                    : ModelLifecycleManager.HoldLifetime.BOUNDED);
-                    job.setGpuHeld(true);
-                    job.setState(ScheduledJob.JobState.RUNNING);
-                    log.info("Job '{}' GPU re-acquired on device '{}' for phase '{}'",
-                            jobId, device.name(), phaseName);
-                } catch (Exception e) {
-                    log.error("Failed to re-acquire GPU for job '{}' at phase '{}': {}",
-                            jobId, phaseName, e.getMessage());
-                    // Don't fail the job — let it continue without GPU if possible
-                }
+                reacquireGpuForPhase(job, phaseName, gpuMemoryBytes);
             }
         }
 
         publishEvent(JobSchedulerEvent.jobPhaseTransition(this, jobId, job.getJobType(),
                 previousPhase, phaseName, requiresGpu, queue.size(), runningJobs.size()));
+    }
+
+    /**
+     * Re-acquire a yielded job's GPU for a GPU phase, sized to the phase and on the job's own device —
+     * its child already runs there. The phase runs either way, so when the device can't fit it the job
+     * gets an over-committed row rather than using memory the ledger can't see.
+     */
+    private void reacquireGpuForPhase(ScheduledJob job, String phaseName, long gpuMemoryBytes) {
+        String jobId = job.getJobId();
+        String serviceType = job.getResourceProfile().serviceType();
+        String description = String.format("Phase %s of %s", phaseName, job.getDescription());
+        ModelLifecycleManager.HoldLifetime lifetime = holdLifetime(job);
+        long phaseBytes = gpuMemoryBytes > 0 ? gpuMemoryBytes : gpuCapBytes(job.getResourceProfile());
+        GpuDevice jobDevice = placementDevice(job);
+
+        log.info("Job '{}' re-acquiring GPU for phase '{}' ({}MB)",
+                jobId, phaseName, phaseBytes / (1024L * 1024L));
+        try {
+            GpuDevice device = modelLifecycleManager.acquireGpuForJob(
+                    jobId, serviceType, description, lifetime, phaseBytes, jobDevice);
+            job.setGpuHeld(true);
+            log.info("Job '{}' GPU re-acquired on device '{}' for phase '{}'",
+                    jobId, device.name(), phaseName);
+        } catch (Exception e) {
+            GpuDevice device = jobDevice != null
+                    ? jobDevice
+                    : modelLifecycleManager.admitJob(serviceType, phaseBytes, null).device();
+            if (device == null) {
+                log.error("Failed to re-acquire GPU for job '{}' at phase '{}': {}",
+                        jobId, phaseName, e.getMessage());
+                return;
+            }
+            long bytes = ModelLifecycleManager.clampToDevice(phaseBytes, device);
+            log.warn("Job '{}' can't re-acquire {}MB on '{}' for phase '{}' ({}) — the phase runs there anyway; " +
+                            "recording an over-committed reservation",
+                    jobId, bytes / (1024L * 1024L), device.name(), phaseName, e.getMessage());
+            modelLifecycleManager.recordOverCommitHold(jobId, serviceType, device, bytes, description, lifetime);
+            job.setGpuHeld(true);
+        }
+
+        if (!job.advanceState(ScheduledJob.JobState.RUNNING)) {
+            // Cancelled meanwhile — the cancel may have released before this hold existed
+            modelLifecycleManager.releaseGpuForJob(jobId);
+            job.setGpuHeld(false);
+        }
     }
 
     // ==================== Status / Monitoring ====================
@@ -631,7 +658,9 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                 }
             }
 
-            // Check GPU availability for GPU-requiring jobs
+            // Check GPU availability for GPU-requiring jobs — the same admission acquireGpuForJob
+            // applies, for the job's whole cap. Only a shortfall waits: with no GPU at all the
+            // acquire fails the job.
             if (blockReason == null) {
                 JobResourceProfile profile = candidate.getResourceProfile();
                 boolean needsGpuNow = profile.requiresGpu();
@@ -641,18 +670,10 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                 }
 
                 if (needsGpuNow) {
-                    Optional<GpuDevice> bestDeviceOpt = gpuResourceManager.findBestDevice(profile.serviceType());
-                    if (bestDeviceOpt.isEmpty()) {
-                        blockReason = "No GPU device available";
-                    } else {
-                        GpuDevice bestDevice = bestDeviceOpt.get();
-                        if (!gpuResourceManager.canFit(profile.serviceType(), bestDevice)) {
-                            List<String> evictionCandidates =
-                                    gpuResourceManager.findEvictionCandidates(profile.serviceType(), bestDevice);
-                            if (evictionCandidates.isEmpty()) {
-                                blockReason = "Insufficient GPU memory on " + bestDevice.name();
-                            }
-                        }
+                    ModelLifecycleManager.GpuAdmission admission =
+                            modelLifecycleManager.admitJob(profile.serviceType(), gpuCapBytes(profile), null);
+                    if (admission.shortfall()) {
+                        blockReason = admission.blockReason();
                     }
                 }
             }
@@ -712,7 +733,10 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
     private record BlockedCandidate(String jobId, String jobType, int priority, String blockReason) {}
 
     private void dispatchJob(ScheduledJob job) {
-        job.setState(ScheduledJob.JobState.ACQUIRING);
+        // A cancel that won since the gate already ended the job
+        if (!job.advanceState(ScheduledJob.JobState.ACQUIRING)) {
+            return;
+        }
         runningJobs.put(job.getJobId(), job);
 
         log.info("Job DISPATCHED: id='{}', type='{}', desc='{}', " +
@@ -734,7 +758,10 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
             });
             executionFutures.put(job.getJobId(), future);
             if (job.getCancellationRequested().get()) {
+                // Cancelled while being dispatched — the cancel may have missed these entries
                 future.cancel(true);
+                executionFutures.remove(job.getJobId());
+                runningJobs.remove(job.getJobId());
             } else {
                 jobExecutionPool.execute(future);
             }
@@ -747,8 +774,12 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
      * at {@code POST /api/scheduler/callback} to complete the job.
      */
     private void dispatchToExternal(ScheduledJob job, ExternalJobSchedulerDelegate delegate) {
+        if (!job.advanceState(ScheduledJob.JobState.RUNNING)) {
+            // Cancelled since dispatch — nothing to submit
+            runningJobs.remove(job.getJobId());
+            return;
+        }
         job.setExternallyDelegated(true);
-        job.setState(ScheduledJob.JobState.RUNNING);
         job.setStartedAt(Instant.now());
         job.setCurrentPhase("EXTERNAL_SUBMITTED");
 
@@ -792,6 +823,12 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
         Instant start = Instant.now();
         job.setStartedAt(start);
 
+        // Every run ends in exactly one completeJob, from the finally block — even when the executor
+        // throws an Error — so its GPU hold is released and it leaves runningJobs. Only a job that
+        // goes back to the queue skips it.
+        boolean succeeded = false;
+        boolean requeued = false;
+        String error = null;
         try {
             // Acquire GPU if needed
             JobResourceProfile profile = job.getResourceProfile();
@@ -801,33 +838,44 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                 needsGpuNow = firstPhase.requiresGpu();
             }
 
+            long capBytes = gpuCapBytes(profile);
             GpuDevice acquiredDevice = null;
             if (needsGpuNow) {
-                log.info("Job '{}' ({}) acquiring GPU for service type '{}'",
-                        job.getJobId(), job.getJobType(), profile.serviceType());
+                log.info("Job '{}' ({}) acquiring GPU for service type '{}' ({}MB)",
+                        job.getJobId(), job.getJobType(), profile.serviceType(), capBytes / (1024L * 1024L));
                 try {
                     acquiredDevice = modelLifecycleManager.acquireGpuForJob(
                             job.getJobId(), profile.serviceType(), job.getDescription(),
-                            job.isLongLivedGpuHold()
-                                    ? ModelLifecycleManager.HoldLifetime.LONG_LIVED
-                                    : ModelLifecycleManager.HoldLifetime.BOUNDED);
+                            holdLifetime(job), capBytes, null);
                     job.setGpuHeld(true);
+                } catch (ModelLifecycleManager.GpuShortfallException e) {
+                    // Admitted at dispatch, but the memory went elsewhere since: wait in the queue
+                    requeued = requeue(job, e.getMessage());
+                    if (!requeued) {
+                        error = "GPU acquisition failed: " + e.getMessage();
+                    }
+                    return;
                 } catch (Exception e) {
                     log.error("Job '{}' failed to acquire GPU: {}", job.getJobId(), e.getMessage());
-                    completeJob(job, false, "GPU acquisition failed: " + e.getMessage(), start);
+                    error = "GPU acquisition failed: " + e.getMessage();
                     return;
                 }
             }
 
-            job.setState(ScheduledJob.JobState.RUNNING);
+            // A cancel that won meanwhile already ended the job — don't start the work
+            if (!job.advanceState(ScheduledJob.JobState.RUNNING)) {
+                return;
+            }
             job.setCurrentPhase("RUNNING");
 
             // Device-agnostic placement from the acquired device (previously discarded — the return of
             // acquireGpuForJob was dropped): pins the subprocess to that device via ND4J placement and
-            // applies the profile's memory bound. CPU placement when no GPU was needed. Rides the
-            // per-invocation execution context so concurrent dispatch of one launcher type can't race.
+            // bounds it to exactly what the job reserved there. CPU placement when no GPU was needed.
+            // Rides the per-invocation execution context so concurrent dispatch of one launcher type
+            // can't race.
             SubprocessPlacement placement = acquiredDevice != null
-                    ? SubprocessPlacement.gpu(acquiredDevice.cudaRuntimeIndex(), Math.max(0L, profile.peakGpuMemoryBytes()))
+                    ? SubprocessPlacement.gpu(acquiredDevice.cudaRuntimeIndex(),
+                            ModelLifecycleManager.clampToDevice(capBytes, acquiredDevice))
                     : SubprocessPlacement.cpu();
             job.setAssignedPlacement(placement);
 
@@ -844,26 +892,77 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
 
             // Execute the actual work
             job.getExecutor().execute(context);
+            succeeded = true;
 
-            // Cancellation can race with a cooperative executor returning. Never overwrite the
-            // terminal CANCELLED state with COMPLETED after the executor unwinds.
-            if (job.getState() != ScheduledJob.JobState.CANCELLED) {
-                completeJob(job, true, null, start);
-            }
-
-        } catch (Exception e) {
+        } catch (Throwable t) {
+            error = errorMessage(t);
             if (job.getState() == ScheduledJob.JobState.CANCELLED) {
-                log.debug("Cancelled job '{}' executor stopped with: {}", job.getJobId(), e.getMessage());
-                return;
+                log.debug("Cancelled job '{}' executor stopped with: {}", job.getJobId(), error);
+            } else {
+                log.error("Job '{}' ({}) failed: {}", job.getJobId(), job.getJobType(), error, t);
             }
-            log.error("Job '{}' ({}) failed: {}", job.getJobId(), job.getJobType(), e.getMessage(), e);
-            completeJob(job, false, e.getMessage(), start);
+        } finally {
+            // For a job a cancel already ended, completeJob only cleans up
+            if (!requeued) {
+                completeJob(job, succeeded, error, start);
+            }
         }
+    }
+
+    /**
+     * Put a job whose GPU acquire lost a race after the gate admitted it back in the queue — QUEUED,
+     * blocked with the reason — instead of failing it. False when a cancel ended the job first.
+     */
+    private boolean requeue(ScheduledJob job, String reason) {
+        if (!job.transitionState(ScheduledJob.JobState.ACQUIRING, ScheduledJob.JobState.QUEUED)) {
+            return false;
+        }
+        runningJobs.remove(job.getJobId());
+        executionFutures.remove(job.getJobId());
+        job.setBlockedReason(reason);
+        queue.offer(job);
+        if (job.isTerminal()) {
+            // A cancel ended it while it was on its way back — its queue.remove may have come first
+            queue.remove(job);
+            return true;
+        }
+        log.info("Job REQUEUED: id='{}', type='{}', reason='{}'", job.getJobId(), job.getJobType(), reason);
+        publishEvent(JobSchedulerEvent.jobBlocked(this, job.getJobId(), job.getJobType(),
+                reason, queue.size(), runningJobs.size()));
+        return true;
+    }
+
+    /**
+     * The most GPU memory a job's child may use — its profile's peak, else its service's budget. The job
+     * reserves this (clamped to its device) and its placement bounds the child to the same number.
+     */
+    private long gpuCapBytes(JobResourceProfile profile) {
+        return profile.peakGpuMemoryBytes() > 0
+                ? profile.peakGpuMemoryBytes()
+                : gpuResourceManager.getMemoryBudget(profile.serviceType());
+    }
+
+    private static ModelLifecycleManager.HoldLifetime holdLifetime(ScheduledJob job) {
+        return job.isLongLivedGpuHold()
+                ? ModelLifecycleManager.HoldLifetime.LONG_LIVED
+                : ModelLifecycleManager.HoldLifetime.BOUNDED;
+    }
+
+    /** The GPU a job was placed on (its child runs there), or null for a CPU placement. */
+    private GpuDevice placementDevice(ScheduledJob job) {
+        SubprocessPlacement placement = job.getAssignedPlacement();
+        if (placement == null || !placement.isGpu()) {
+            return null;
+        }
+        return gpuResourceManager.getDeviceByCudaRuntimeIndex(placement.deviceId()).orElse(null);
+    }
+
+    private static String errorMessage(Throwable t) {
+        return t.getMessage() != null ? t.getMessage() : t.toString();
     }
 
     private void completeJob(ScheduledJob job, boolean success, String error, Instant start) {
         long durationMs = Duration.between(start, Instant.now()).toMillis();
-        job.setCompletedAt(Instant.now());
 
         // Release GPU if still held
         if (job.isGpuHeld()) {
@@ -875,22 +974,36 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
             }
         }
 
+        runningJobs.remove(job.getJobId());
+        executionFutures.remove(job.getJobId());
+
+        // A requested cancel is never reported as success
+        if (success && job.getCancellationRequested().get()) {
+            success = false;
+            error = "Cancellation requested";
+        }
+        // Only the terminal transition's winner records the outcome and completes the future — a cancel
+        // that got there first already did
+        if (!job.tryTransitionToTerminal(success
+                ? ScheduledJob.JobState.COMPLETED : ScheduledJob.JobState.FAILED)) {
+            log.debug("Job '{}' already {} — not recording its {}", job.getJobId(), job.getState(),
+                    success ? "completion" : "failure");
+            triggerDispatch();
+            return;
+        }
+        job.setCompletedAt(Instant.now());
+
         if (success) {
-            job.setState(ScheduledJob.JobState.COMPLETED);
             job.setCurrentPhase("COMPLETED");
             totalCompleted.incrementAndGet();
             log.info("Job COMPLETED: id='{}', type='{}', desc='{}', duration={}ms",
                     job.getJobId(), job.getJobType(), job.getDescription(), durationMs);
         } else {
-            job.setState(ScheduledJob.JobState.FAILED);
             job.setCurrentPhase("FAILED");
             totalFailed.incrementAndGet();
             log.error("Job FAILED: id='{}', type='{}', desc='{}', duration={}ms, error='{}'",
                     job.getJobId(), job.getJobType(), job.getDescription(), durationMs, error);
         }
-
-        runningJobs.remove(job.getJobId());
-        executionFutures.remove(job.getJobId());
 
         // Store error on the job so recordFromJob can read it (future not yet complete)
         if (!success && error != null) {
@@ -923,11 +1036,13 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
     }
 
     private boolean cancelJob(ScheduledJob job, String reason) {
-        if (job.isTerminal()) return false;
+        // Win the terminal transition BEFORE interrupting anything: a completion racing this cancel then
+        // records nothing, and the job is reported once — as cancelled
+        if (!job.tryTransitionToTerminal(ScheduledJob.JobState.CANCELLED)) return false;
 
+        job.getCancellationRequested().set(true);
         queue.remove(job);
         runningJobs.remove(job.getJobId());
-        job.getCancellationRequested().set(true);
         Future<?> execution = executionFutures.remove(job.getJobId());
         if (execution != null) {
             execution.cancel(true);
@@ -942,7 +1057,6 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
             }
         }
 
-        job.setState(ScheduledJob.JobState.CANCELLED);
         job.setCurrentPhase("CANCELLED");
         job.setCompletedAt(Instant.now());
         job.setCancelReason(reason);
@@ -978,7 +1092,11 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
 
         Instant start = Instant.now();
         job.setStartedAt(start);
-        job.setState(ScheduledJob.JobState.RUNNING);
+        if (!job.advanceState(ScheduledJob.JobState.RUNNING)) {
+            // Cancelled as it was submitted — the cancel recorded it
+            runningJobs.remove(job.getJobId());
+            return job.getResultFuture();
+        }
         job.setCurrentPhase("DISPATCHED");
 
         log.info("Job DISPATCHED (bypass): id='{}', type='{}', desc='{}'",
@@ -986,6 +1104,8 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
         publishEvent(JobSchedulerEvent.jobDispatched(this, job.getJobId(), job.getJobType(),
                 job.getDescription(), queue.size(), runningJobs.size()));
 
+        // Any Throwable — an Error too — ends the job as FAILED; it always leaves runningJobs
+        Throwable failure = null;
         try {
             ScheduledJob.PhaseCallback phaseCallback = (jobId, phaseName, requiresGpu, gpuMem) -> {
                 String previousPhase = job.getCurrentPhase();
@@ -995,67 +1115,61 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                         previousPhase, phaseName, requiresGpu, queue.size(), runningJobs.size()));
             };
 
+            // The job's own cancel flag, so a cancel reaches a cooperative executor in bypass mode too
             ScheduledJob.JobExecutionContext context = new ScheduledJob.JobExecutionContext(
-                    job.getJobId(), job.getResourceProfile(), phaseCallback);
+                    job.getJobId(), job.getResourceProfile(), phaseCallback, null, job.getCancellationRequested());
 
             job.getExecutor().execute(context);
-
-            long durationMs = Duration.between(start, Instant.now()).toMillis();
-            job.setState(ScheduledJob.JobState.COMPLETED);
-            job.setCurrentPhase("COMPLETED");
-            job.setCompletedAt(Instant.now());
-            totalCompleted.incrementAndGet();
+        } catch (Throwable t) {
+            failure = t;
+        } finally {
             runningJobs.remove(job.getJobId());
+        }
 
-            log.info("Job COMPLETED (bypass): id='{}', type='{}', desc='{}', duration={}ms",
-                    job.getJobId(), job.getJobType(), job.getDescription(), durationMs);
-
-            // Record BEFORE publishing event to populate fullyRecordedIds (prevents double-recording)
-            if (historyService != null) {
-                try {
-                    historyService.recordFromJob(job);
-                } catch (Exception he) {
-                    log.debug("Failed to record bypass job history for '{}': {}", job.getJobId(), he.getMessage());
-                }
-            }
-
-            publishEvent(JobSchedulerEvent.jobCompleted(this, job.getJobId(), job.getJobType(),
-                    job.getDescription(), durationMs, queue.size(), runningJobs.size()));
-
-            // resultFuture.complete LAST — callers waiting on it see final state
-            job.getResultFuture().complete(new ScheduledJob.JobResult(true, null, durationMs));
-            return job.getResultFuture();
-
-        } catch (Exception e) {
-            long durationMs = Duration.between(start, Instant.now()).toMillis();
-            job.setState(ScheduledJob.JobState.FAILED);
-            job.setCurrentPhase("FAILED");
-            job.setCompletedAt(Instant.now());
-            totalFailed.incrementAndGet();
-            runningJobs.remove(job.getJobId());
-
-            log.error("Job FAILED (bypass): id='{}', type='{}', desc='{}', duration={}ms, error='{}'",
-                    job.getJobId(), job.getJobType(), job.getDescription(), durationMs, e.getMessage());
-
-            // Store error on the job so recordFromJob can read it (future not yet complete)
-            job.setErrorMessage(e.getMessage());
-
-            // Record BEFORE publishing event to populate fullyRecordedIds (prevents double-recording)
-            if (historyService != null) {
-                try {
-                    historyService.recordFromJob(job);
-                } catch (Exception he) {
-                    log.debug("Failed to record bypass job history for '{}': {}", job.getJobId(), he.getMessage());
-                }
-            }
-
-            publishEvent(JobSchedulerEvent.jobFailed(this, job.getJobId(), job.getJobType(),
-                    job.getDescription(), e.getMessage(), queue.size(), runningJobs.size()));
-
-            // resultFuture.complete LAST — callers waiting on it see final state
-            job.getResultFuture().complete(new ScheduledJob.JobResult(false, e.getMessage(), durationMs));
+        long durationMs = Duration.between(start, Instant.now()).toMillis();
+        String error = failure != null ? errorMessage(failure)
+                : job.getCancellationRequested().get() ? "Cancellation requested" : null;
+        boolean success = error == null;
+        // Only the terminal transition's winner records the outcome — a cancel that won already did
+        if (!job.tryTransitionToTerminal(success
+                ? ScheduledJob.JobState.COMPLETED : ScheduledJob.JobState.FAILED)) {
             return job.getResultFuture();
         }
+        job.setCompletedAt(Instant.now());
+
+        if (success) {
+            job.setCurrentPhase("COMPLETED");
+            totalCompleted.incrementAndGet();
+            log.info("Job COMPLETED (bypass): id='{}', type='{}', desc='{}', duration={}ms",
+                    job.getJobId(), job.getJobType(), job.getDescription(), durationMs);
+        } else {
+            job.setCurrentPhase("FAILED");
+            totalFailed.incrementAndGet();
+            log.error("Job FAILED (bypass): id='{}', type='{}', desc='{}', duration={}ms, error='{}'",
+                    job.getJobId(), job.getJobType(), job.getDescription(), durationMs, error);
+
+            // Store error on the job so recordFromJob can read it (future not yet complete)
+            job.setErrorMessage(error);
+        }
+
+        // Record BEFORE publishing event to populate fullyRecordedIds (prevents double-recording)
+        if (historyService != null) {
+            try {
+                historyService.recordFromJob(job);
+            } catch (Exception he) {
+                log.debug("Failed to record bypass job history for '{}': {}", job.getJobId(), he.getMessage());
+            }
+        }
+
+        publishEvent(success
+                ? JobSchedulerEvent.jobCompleted(this, job.getJobId(), job.getJobType(),
+                        job.getDescription(), durationMs, queue.size(), runningJobs.size())
+                : JobSchedulerEvent.jobFailed(this, job.getJobId(), job.getJobType(),
+                        job.getDescription(), error, queue.size(), runningJobs.size()));
+
+        // resultFuture.complete LAST — callers waiting on it see final state
+        job.getResultFuture().complete(new ScheduledJob.JobResult(success, error, durationMs));
+        return job.getResultFuture();
     }
 
     private void cleanupTimedOutJobs(ResourceSchedulerConfig config) {

@@ -345,3 +345,5 @@ kompile-app/kompile-app-parent/kompile-app-main/src/main/resources/static/
 
 # Generated asciidoc man pages
 src/docs/mantemplates/
+# Kompile runtime credentials
+config/channel-admin.token

@@ -62,10 +62,10 @@ public class DiagramGenerationService {
     private ProcessEngineService processEngineService;
 
     @Autowired(required = false)
-    private KnowledgeGraphService knowledgeGraphService;
+    KnowledgeGraphService knowledgeGraphService;
 
     @Autowired(required = false)
-    private McpToolRegistry mcpToolRegistry;
+    McpToolRegistry mcpToolRegistry;
 
     public DiagramGenerationService(DiagramSessionRepository sessionRepository,
                                      AgentChatService agentChatService,
@@ -378,7 +378,7 @@ public class DiagramGenerationService {
         return ctx;
     }
 
-    private String buildDiagramPrompt(String userPrompt, Long factSheetId) {
+    String buildDiagramPrompt(String userPrompt, Long factSheetId) {
         Map<String, Object> ctx = gatherOperatingContext(factSheetId);
         String baseUrl = (String) ctx.get("baseUrl");
         boolean kgAvailable = Boolean.TRUE.equals(ctx.get("knowledgeGraphAvailable"));

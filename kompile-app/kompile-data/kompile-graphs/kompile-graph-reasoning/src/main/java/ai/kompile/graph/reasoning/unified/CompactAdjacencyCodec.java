@@ -130,8 +130,8 @@ final class CompactAdjacencyCodec {
                 (int) adjacencyEntries, idBytes[0], outRows, inRows);
     }
 
-    static void write(Plan plan, LinkPass pass, OutputStream output) throws IOException {
-        Path ids = Files.createTempFile("kompile-kgraph-adjacency-ids-", ".bin");
+    static void write(Plan plan, LinkPass pass, OutputStream output, Path scratchDirectory) throws IOException {
+        Path ids = KGraphScratch.temporaryFile(scratchDirectory, "kompile-kgraph-adjacency-ids-", ".bin");
         try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(output))) {
             out.writeInt(MAGIC);
             out.writeInt(VERSION);

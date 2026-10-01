@@ -10,11 +10,9 @@
 package ai.kompile.event.attribution.controller;
 
 import ai.kompile.graph.reasoning.domain.BayesianInferenceResult;
+import ai.kompile.graph.reasoning.domain.MTheoryStructure;
 import ai.kompile.graph.reasoning.domain.MpeResult;
 import ai.kompile.graph.reasoning.domain.SensitivityResult;
-import ai.kompile.graph.reasoning.mebn.MFrag;
-import ai.kompile.graph.reasoning.mebn.MTheory;
-import ai.kompile.graph.reasoning.mebn.RandomVariable;
 import ai.kompile.event.attribution.service.BayesianNetworkService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -116,7 +114,9 @@ public class BayesianNetworkController {
 
     /**
      * Build an MTheory from a KG subgraph and run MEBN inference.
-     * Returns entity-specific posteriors like P(isRisky(node_42) | evidence).
+     * Returns entity-specific posteriors like P(isRisky(node_42) | evidence), where evidence maps
+     * grounded variable names (the posterior keys) to observed states; a name the network lacks or
+     * a state outside the variable's states is a 400. {@code factSheetId} scopes it as on the GET.
      */
     @PostMapping("/mebn/query")
     public ResponseEntity<BayesianInferenceResult> queryMebn(
@@ -126,7 +126,7 @@ public class BayesianNetworkController {
         Map<String, Integer> evidence = request.evidence() != null ? request.evidence() : Map.of();
 
         BayesianInferenceResult result = bayesianService.queryMebnFromKg(
-                request.seedNodeIds(), evidence, maxDepth, maxNodes);
+                request.seedNodeIds(), evidence, maxDepth, maxNodes, null, request.factSheetId());
         return ResponseEntity.ok(result);
     }
 
@@ -186,13 +186,12 @@ public class BayesianNetworkController {
      * with no inference run.
      */
     @GetMapping("/mebn/theory")
-    public ResponseEntity<MTheoryStructureDto> mebnTheory(
+    public ResponseEntity<MTheoryStructure> mebnTheory(
             @RequestParam(required = false) String nodeId,
             @RequestParam(defaultValue = "3") int maxDepth,
             @RequestParam(defaultValue = "100") int maxNodes) {
         List<String> seeds = (nodeId == null || nodeId.isBlank()) ? List.of() : List.of(nodeId);
-        MTheory theory = bayesianService.buildMebnTheory(seeds, maxDepth, maxNodes);
-        return ResponseEntity.ok(MTheoryStructureDto.from(theory));
+        return ResponseEntity.ok(bayesianService.describeMebnTheory(seeds, maxDepth, maxNodes));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -248,7 +247,8 @@ public class BayesianNetworkController {
 
     /**
      * Query MEBN posteriors filtered by entity type.
-     * E.g. "give me all isRisky posteriors for entities of type ENTITY"
+     * E.g. "give me all isRisky posteriors for entities of type ENTITY". Evidence and
+     * {@code factSheetId} work as on {@code POST /mebn/query}; the filter applies after inference.
      */
     @PostMapping("/mebn/query/byType")
     public ResponseEntity<BayesianInferenceResult> queryMebnByType(
@@ -258,7 +258,7 @@ public class BayesianNetworkController {
         Map<String, Integer> evidence = request.evidence() != null ? request.evidence() : Map.of();
 
         BayesianInferenceResult fullResult = bayesianService.queryMebnFromKg(
-                request.seedNodeIds(), evidence, maxDepth, maxNodes);
+                request.seedNodeIds(), evidence, maxDepth, maxNodes, null, request.factSheetId());
 
         // Filter posteriors to only variables whose KG node matches the entity type
         if (request.entityType() != null && !request.entityType().isBlank()) {
@@ -313,7 +313,8 @@ public class BayesianNetworkController {
             List<String> seedNodeIds,
             Map<String, Integer> evidence,
             Integer maxDepth,
-            Integer maxNodes
+            Integer maxNodes,
+            Long factSheetId
     ) {}
 
     record SensitivityRequest(
@@ -337,48 +338,7 @@ public class BayesianNetworkController {
             String entityType,
             Map<String, Integer> evidence,
             Integer maxDepth,
-            Integer maxNodes
+            Integer maxNodes,
+            Long factSheetId
     ) {}
-
-    // ─── MEBN theory-structure response DTOs ────────────────────────────────
-
-    /** A serialized MEBN theory: its fragments and their structure. */
-    record MTheoryStructureDto(String name, List<MFragDto> fragments) {
-        static MTheoryStructureDto from(MTheory t) {
-            return new MTheoryStructureDto(
-                    t.getName(),
-                    t.getMFrags().stream().map(MFragDto::from).toList());
-        }
-    }
-
-    /** One MEBN fragment: variables by role, context constraints, and parent→child edges. */
-    record MFragDto(String name, List<RvDto> residentNodes, List<RvDto> inputNodes,
-                    List<String> contexts, List<EdgeDto> edges) {
-        static MFragDto from(MFrag f) {
-            return new MFragDto(
-                    f.getName(),
-                    f.getResidentNodes().stream().map(RvDto::from).toList(),
-                    f.getInputNodes().stream().map(RvDto::from).toList(),
-                    f.getContextConstraints().stream().map(Object::toString).toList(),
-                    f.getEdgeStrengths().entrySet().stream()
-                            .map(e -> EdgeDto.parse(e.getKey(), e.getValue())).toList());
-        }
-    }
-
-    /** A parameterized random variable: name, entity-type signature, states, and MEBN role. */
-    record RvDto(String name, String signature, List<String> states, String role) {
-        static RvDto from(RandomVariable rv) {
-            return new RvDto(rv.getName(), rv.toString(), rv.getStates(), rv.getRole().name());
-        }
-    }
-
-    /** A directed parent→child edge inside a fragment with its learned noisy-OR strength. */
-    record EdgeDto(String parent, String child, double strength) {
-        static EdgeDto parse(String key, double strength) {
-            int idx = key.indexOf("->");
-            String p = idx >= 0 ? key.substring(0, idx).trim() : key;
-            String c = idx >= 0 ? key.substring(idx + 2).trim() : "";
-            return new EdgeDto(p, c, strength);
-        }
-    }
 }

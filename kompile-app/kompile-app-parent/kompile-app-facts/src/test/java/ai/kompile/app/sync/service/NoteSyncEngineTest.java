@@ -19,7 +19,6 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
 
-import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -59,13 +58,13 @@ class NoteSyncEngineTest {
         adapter = mock(SyncAdapter.class);
 
         engine = new NoteSyncEngine();
-        setField(engine, "connectionRepository", connectionRepository);
-        setField(engine, "syncRecordRepository", recordRepository);
-        setField(engine, "noteRepository", noteRepository);
-        setField(engine, "noteService", mock(NoteService.class));
-        setField(engine, "progressTracker", progressTracker);
-        setField(engine, "eventPublisher", eventPublisher);
-        setField(engine, "adapters", List.of(adapter));
+        engine.connectionRepository = connectionRepository;
+        engine.syncRecordRepository = recordRepository;
+        engine.noteRepository = noteRepository;
+        engine.noteService = mock(NoteService.class);
+        engine.progressTracker = progressTracker;
+        engine.eventPublisher = eventPublisher;
+        engine.adapters = List.of(adapter);
 
         connection = NoteSyncConnection.builder()
                 .id(42L)
@@ -264,15 +263,5 @@ class NoteSyncEngineTest {
                 "Cafe\u0301", "alpha,beta", "first line\r\nsecond line");
 
         assertEquals(unix, windows);
-    }
-
-    private static void setField(Object target, String name, Object value) {
-        try {
-            Field field = target.getClass().getDeclaredField(name);
-            field.setAccessible(true);
-            field.set(target, value);
-        } catch (ReflectiveOperationException failure) {
-            throw new AssertionError(failure);
-        }
     }
 }

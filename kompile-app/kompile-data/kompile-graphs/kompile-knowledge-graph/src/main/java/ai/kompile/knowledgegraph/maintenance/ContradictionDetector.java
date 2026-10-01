@@ -19,6 +19,7 @@ import ai.kompile.core.graphrag.maintenance.model.Contradiction;
 import ai.kompile.core.graphrag.maintenance.model.ContradictionResolutionStrategy;
 import ai.kompile.core.graphrag.maintenance.model.MaintenanceTask;
 import ai.kompile.core.graphrag.maintenance.model.TaskReport;
+import ai.kompile.graph.reasoning.query.PredicateNames;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
@@ -45,7 +46,8 @@ import java.util.stream.Collectors;
  * suggesting conflicting facts about the relationship between those entities.
  * For example: {@code A --WORKS_AT--> B} and {@code A --LEFT--> B} recorded in
  * different source documents would be flagged as a
- * {@link Contradiction.ContradictionType#CONFLICTING_RELATIONSHIP}.</p>
+ * {@link Contradiction.ContradictionType#CONFLICTING_RELATIONSHIP}. Labels are compared by
+ * {@link PredicateNames#key}, so {@code worksAt} and {@code WORKS_AT} are one relation.</p>
  *
  * <p>Resolution strategies are applied by {@link #resolve}: newer-wins and
  * higher-confidence-wins automate the decision; the other strategies leave the
@@ -86,25 +88,19 @@ public class ContradictionDetector {
             List<GraphEdge> group = entry.getValue();
             if (group.size() <= 1) continue;
 
-            // Check whether the group contains edges of different types or labels
-            boolean hasMultipleTypes = group.stream()
-                    .map(e -> e.getEdgeType() != null ? e.getEdgeType().name() : "UNKNOWN")
+            // Check whether the group names more than one relation: a different type, or a
+            // label that differs in more than spelling
+            boolean hasMultipleRelations = group.stream()
+                    .map(ContradictionDetector::relationKey)
                     .distinct()
                     .count() > 1;
+            if (!hasMultipleRelations) continue;
 
-            if (!hasMultipleTypes) {
-                // Same type on all edges — check labels for finer distinctions
-                boolean hasMultipleLabels = group.stream()
-                        .map(e -> e.getLabel() != null ? e.getLabel().toLowerCase() : "")
-                        .distinct()
-                        .count() > 1;
-                if (!hasMultipleLabels) continue;
-            }
-
-            // Found a contradiction; report each conflicting pair
+            // Found a contradiction; report each adjacent pair that names different relations
             for (int i = 0; i < group.size() - 1; i++) {
                 GraphEdge edgeA = group.get(i);
                 GraphEdge edgeB = group.get(i + 1);
+                if (relationKey(edgeA).equals(relationKey(edgeB))) continue;
 
                 String existingFact = describeEdge(edgeA);
                 String newFact = describeEdge(edgeB);
@@ -244,6 +240,12 @@ public class ContradictionDetector {
             pairGroups.computeIfAbsent(key, k -> new ArrayList<>()).add(edge);
         }
         return pairGroups;
+    }
+
+    /** Edge type plus the label's {@link PredicateNames#key}: the spellings of one relation share it. */
+    private static String relationKey(GraphEdge edge) {
+        String type = edge.getEdgeType() != null ? edge.getEdgeType().name() : "UNKNOWN";
+        return type + "|" + PredicateNames.key(edge.getLabel());
     }
 
     private static String describeEdge(GraphEdge edge) {

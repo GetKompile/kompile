@@ -2,7 +2,7 @@ package ai.kompile.cli.main.auth;
 
 import ai.kompile.cli.main.MainCommand;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
-import ai.kompile.cli.main.chat.config.ClaudeCodeSignIn;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -12,14 +12,12 @@ import picocli.CommandLine;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -27,8 +25,6 @@ import static org.junit.jupiter.api.Assertions.*;
 @ResourceLock("SYSTEM_IN")
 @ResourceLock("SYSTEM_ERR")
 class AuthCommandTest {
-    private static final String CLAUDE_SIGN_IN_LINK = "https://claude.example/oauth/authorize?code=true&state=abc";
-
     @TempDir
     Path tempDir;
 
@@ -79,7 +75,7 @@ class AuthCommandTest {
             assertEquals(0, auth.execute(
                     "login", "openai", "--stdin", "--name", "personal"));
 
-            var open = new ai.kompile.cli.main.chat.config.ChatConfig("openai", null, "model", null);
+            var open = new ChatConfig("openai", null, "model", null);
             open.bindSession("open-chat");
             var firstSelection = CredentialStore.create().sessionSelections().get("openai");
             assertNotNull(firstSelection);
@@ -151,92 +147,53 @@ class AuthCommandTest {
     }
 
     @Test
-    @ResourceLock(Resources.SYSTEM_OUT)
-    void anthropicOauthLoginRunsClaudeCodesSignInAndStoresNoKompileCredential() throws Exception {
+    void anthropicOauthLoginLeavesTheLoginToClaudeCodeWithoutSigningIn() throws Exception {
         String originalHome = System.getProperty("user.home");
-        InputStream originalIn = System.in;
-        PrintStream originalOut = System.out;
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalError = System.err;
+        ByteArrayOutputStream errors = new ByteArrayOutputStream();
         System.setProperty("user.home", tempDir.resolve("anthropic-claude-code").toString());
-        useFakeClaudeCode(tempDir.resolve("claude-signed-in"));
-        try (PrintStream captured = new PrintStream(output, true, StandardCharsets.UTF_8)) {
-            // The code the sign-in page shows, pasted on a machine without a browser.
-            System.setIn(input("pasted-code#state\n"));
-            System.setOut(captured);
-
-            int exit = new CommandLine(new AuthCommand()).execute("login", "anthropic", "--oauth");
-
-            String shown = output.toString(StandardCharsets.UTF_8);
-            assertEquals(0, exit, shown);
-            assertTrue(shown.contains(CLAUDE_SIGN_IN_LINK), shown);
-            assertTrue(shown.contains("Claude Code login verified"), shown);
-            // Claude Code keeps the login; no managed credential is minted for anthropic OAuth.
-            assertTrue(CredentialStore.create().list("anthropic").isEmpty());
-        } finally {
-            restoreClaudeCode();
-            System.setIn(originalIn);
-            System.setOut(originalOut);
-            System.setProperty("user.home", originalHome);
-        }
-    }
-
-    @Test
-    @ResourceLock(Resources.SYSTEM_OUT)
-    void anthropicOauthLoginFailsClosedWhenClaudeCodeStaysSignedOut() throws Exception {
-        String originalHome = System.getProperty("user.home");
-        InputStream originalIn = System.in;
-        PrintStream originalOut = System.out;
-        PrintStream originalError = System.err;
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        ByteArrayOutputStream errors = new ByteArrayOutputStream();
-        System.setProperty("user.home", tempDir.resolve("anthropic-claude-code-ended").toString());
-        useFakeClaudeCode(tempDir.resolve("claude-never-signed-in"));
-        try (PrintStream capturedOut = new PrintStream(output, true, StandardCharsets.UTF_8);
-             PrintStream capturedError = new PrintStream(errors, true, StandardCharsets.UTF_8)) {
-            System.setIn(input(""));
-            System.setOut(capturedOut);
-            System.setErr(capturedError);
-
-            int exit = new CommandLine(new AuthCommand()).execute("login", "anthropic", "--oauth");
-
-            assertEquals(1, exit);
-            String shown = output.toString(StandardCharsets.UTF_8);
-            assertTrue(shown.contains("Claude Code sign-in cancelled."), shown);
-            String error = errors.toString(StandardCharsets.UTF_8);
-            assertTrue(error.contains("Claude Code is still not signed in."), error);
-            assertTrue(CredentialStore.create().list("anthropic").isEmpty());
-        } finally {
-            restoreClaudeCode();
-            System.setIn(originalIn);
-            System.setOut(originalOut);
-            System.setErr(originalError);
-            System.setProperty("user.home", originalHome);
-        }
-    }
-
-    @Test
-    void kompileCredentialOptionsDoNotApplyToClaudeCodesLogin() throws Exception {
-        String originalHome = System.getProperty("user.home");
-        InputStream originalIn = System.in;
-        PrintStream originalError = System.err;
-        ByteArrayOutputStream errors = new ByteArrayOutputStream();
-        System.setProperty("user.home", tempDir.resolve("anthropic-claude-code-options").toString());
-        useFakeClaudeCode(tempDir.resolve("claude-options-signed-in"));
+        AtomicInteger loginChecks = new AtomicInteger();
+        LiveModelDiscovery.useClaudeCodeLoginProbe(() -> {
+            loginChecks.incrementAndGet();
+            return new LiveModelDiscovery.ClaudeCodeLogin(false, null, null, false);
+        });
         try (PrintStream captured = new PrintStream(errors, true, StandardCharsets.UTF_8)) {
-            System.setIn(input(""));
             System.setErr(captured);
 
-            int exit = new CommandLine(new AuthCommand()).execute(
-                    "login", "anthropic", "--oauth", "--name", "work");
+            assertEquals(2, new CommandLine(new AuthCommand()).execute("login", "anthropic", "--oauth"));
+            assertEquals(2, new CommandLine(new AuthCommand()).execute(
+                    "login", "anthropic", "--oauth", "--name", "work"));
 
-            assertEquals(2, exit);
             String error = errors.toString(StandardCharsets.UTF_8);
-            assertTrue(error.contains("Kompile credential options do not apply"), error);
-            assertTrue(CredentialStore.create().list("anthropic").isEmpty());
+            assertTrue(error.contains("belongs to Claude Code"), error);
+            assertTrue(error.contains("`claude auth login`"), error);
+            assertTrue(error.contains("`kompile auth login anthropic`"), error);
+            // Kompile neither checks nor drives Claude Code's login, and stores nothing for it.
+            assertEquals(0, loginChecks.get());
+            assertTrue(CredentialStore.create().list().isEmpty());
         } finally {
-            restoreClaudeCode();
-            System.setIn(originalIn);
+            LiveModelDiscovery.useClaudeCodeLoginProbe(null);
             System.setErr(originalError);
+            System.setProperty("user.home", originalHome);
+        }
+    }
+
+    @Test
+    void anthropicApiKeyLoginStaysAManagedCredential() throws Exception {
+        String originalHome = System.getProperty("user.home");
+        InputStream originalInput = System.in;
+        System.setProperty("user.home", tempDir.resolve("anthropic-api-key").toString());
+        try {
+            System.setIn(input("anthropic-fixture-key\n"));
+            assertEquals(0, new CommandLine(new AuthCommand()).execute(
+                    "login", "anthropic", "--stdin", "--name", "work"));
+
+            CredentialStore store = CredentialStore.create();
+            assertEquals("work", store.activeCredentialName("anthropic"));
+            assertFalse(store.read("anthropic", "work").isOAuth());
+            assertEquals("anthropic-fixture-key", store.resolveApiKey("anthropic", name -> null));
+        } finally {
+            System.setIn(originalInput);
             System.setProperty("user.home", originalHome);
         }
     }
@@ -280,35 +237,5 @@ class AuthCommandTest {
 
     private static ByteArrayInputStream input(String value) {
         return new ByteArrayInputStream(value.getBytes(StandardCharsets.UTF_8));
-    }
-
-    /**
-     * Stand in for Claude Code: a fake `claude auth login` that shows its sign-in
-     * link and accepts a pasted code containing '#', and a `claude auth status`
-     * probe that reports signed in once it has.
-     */
-    private void useFakeClaudeCode(Path signedIn) throws IOException {
-        Path script = tempDir.resolve("claude-auth-login-" + signedIn.getFileName());
-        Files.writeString(script, "#!/usr/bin/env bash\n"
-                        + "echo \"If the browser didn't open, visit: " + CLAUDE_SIGN_IN_LINK + "\"\n"
-                        + "printf 'Paste code here if prompted > '\n"
-                        + "while IFS= read -r code; do\n"
-                        + "  case \"$code\" in *'#'*) touch " + signedIn + "; echo 'Login successful.'; exit 0 ;; esac\n"
-                        + "  echo 'Invalid code. Please make sure the full code was copied.' >&2\n"
-                        + "done\n"
-                        + "exit 1\n",
-                StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(script, Set.of(
-                PosixFilePermission.OWNER_READ,
-                PosixFilePermission.OWNER_WRITE,
-                PosixFilePermission.OWNER_EXECUTE));
-        ClaudeCodeSignIn.useClaudeBinary(script.toString());
-        LiveModelDiscovery.useClaudeCodeLoginProbe(() ->
-                new LiveModelDiscovery.ClaudeCodeLogin(Files.exists(signedIn), "claude.ai", "max", false));
-    }
-
-    private static void restoreClaudeCode() {
-        ClaudeCodeSignIn.useClaudeBinary(null);
-        LiveModelDiscovery.useClaudeCodeLoginProbe(null);
     }
 }

@@ -69,6 +69,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
@@ -1160,9 +1161,15 @@ public class AgenticChatLoop {
         // until its result arrives (or the replay ends) and then closed with a
         // synthetic cancellation result.
         Map<String, CompactionService.ConversationEntry> pendingToolCalls = new LinkedHashMap<>();
+        // A model known to take no images gets them as markers: one rejected image would
+        // fail every later request of the conversation.
+        boolean imagesAsMarkers = entries.stream().anyMatch(AgenticChatLoop::carriesImage)
+                && contextResolver.resolveImageInput(directLlmClient.getChatConfig(), replayModel)
+                        .equals(Optional.of(false));
         for (int index = 0; index < entries.size();) {
             CompactionService.ConversationEntry entry = entries.get(index);
             if (entry == null || ((entry.content == null || entry.content.isBlank())
+                    && (entry.type != CompactionService.EntryType.USER || entry.attachments.isEmpty())
                     && entry.type != CompactionService.EntryType.TOOL_CALL
                     && entry.type != CompactionService.EntryType.TOOL_RESULT)) {
                 index++;
@@ -1215,7 +1222,11 @@ public class AgenticChatLoop {
                             "assistant", "Understood. I will continue from that conversation summary.");
                     replayed += 2;
                 }
-                case USER, ASSISTANT -> {
+                case USER -> {
+                    replayUserTurn(entry, answered(entries, index), imagesAsMarkers, replayModel);
+                    replayed++;
+                }
+                case ASSISTANT -> {
                     directLlmClient.addToHistory(entry.role, entry.content);
                     replayed++;
                 }
@@ -1238,6 +1249,87 @@ public class AgenticChatLoop {
         }
         resetReportedContextUsage();
         return replayed;
+    }
+
+    /**
+     * Replay a user turn with what it attached. An attachment goes back as bytes only when
+     * the turn was answered: a provider that rejected an attachment must not receive it
+     * again with every later request. It is a marker instead, as it is when its bytes are
+     * gone or when it is an image and the model takes none.
+     */
+    private void replayUserTurn(CompactionService.ConversationEntry entry, boolean answered,
+                                boolean imagesAsMarkers, String replayModel) {
+        if (entry.attachments.isEmpty()) {
+            directLlmClient.addToHistory(entry.role, entry.content);
+            return;
+        }
+        List<DirectLlmClient.AttachmentInput> attachments = new ArrayList<>();
+        StringBuilder markers = new StringBuilder();
+        for (CompactionService.Attachment attachment : entry.attachments) {
+            byte[] data = !answered || (attachment.image() && imagesAsMarkers)
+                    ? null : conversationLedger.readAttachment(attachment);
+            if (data == null) {
+                if (!markers.isEmpty()) markers.append('\n');
+                markers.append(attachment.image() ? "[Attached image: " : "[Attached file: ")
+                        .append(attachment.path()).append(']');
+            } else if (attachment.image()) {
+                attachments.add(new DirectLlmClient.AttachmentInput(attachment.path(),
+                        attachment.mimeType(), true, Base64.getEncoder().encodeToString(data), null));
+            } else {
+                attachments.add(new DirectLlmClient.AttachmentInput(attachment.path(),
+                        attachment.mimeType(), false, null, new String(data, StandardCharsets.UTF_8)));
+            }
+        }
+        // After the text: a turn's leading envelopes are recognised only as its prefix.
+        String content = entry.content == null ? "" : entry.content;
+        if (!markers.isEmpty()) {
+            content = content.isEmpty() ? markers.toString() : content + "\n" + markers;
+        }
+        directLlmClient.addReplayedUserTurn(content, attachments, replayModel);
+    }
+
+    /** Whether the model answered this user turn: anything but a user turn follows it first. */
+    private static boolean answered(List<CompactionService.ConversationEntry> entries, int index) {
+        for (int next = index + 1; next < entries.size(); next++) {
+            CompactionService.ConversationEntry entry = entries.get(next);
+            if (entry == null || entry.type == CompactionService.EntryType.SYSTEM) continue;
+            return entry.type != CompactionService.EntryType.USER;
+        }
+        return false;
+    }
+
+    private static boolean carriesImage(CompactionService.ConversationEntry entry) {
+        return entry != null && entry.attachments.stream().anyMatch(CompactionService.Attachment::image);
+    }
+
+    /** Store a turn's attachments with the ledger, which keeps each one's bytes once. */
+    private List<CompactionService.Attachment> ledgerAttachments(
+            List<DirectLlmClient.AttachmentInput> attachments) {
+        if (attachments == null || attachments.isEmpty()) return List.of();
+        List<CompactionService.Attachment> recorded = new ArrayList<>(attachments.size());
+        for (DirectLlmClient.AttachmentInput attachment : attachments) {
+            byte[] data = attachmentBytes(attachment);
+            if (data != null) {
+                recorded.add(conversationLedger.storeAttachment(
+                        attachment.path(), attachment.mimeType(), attachment.isImage(), data));
+            }
+        }
+        return recorded;
+    }
+
+    /** An attachment's bytes: the decoded image, or the text file as UTF-8; null when it has none. */
+    private static byte[] attachmentBytes(DirectLlmClient.AttachmentInput attachment) {
+        if (attachment == null) return null;
+        if (!attachment.isImage()) {
+            return attachment.textContent() == null
+                    ? null : attachment.textContent().getBytes(StandardCharsets.UTF_8);
+        }
+        if (attachment.base64Data() == null) return null;
+        try {
+            return Base64.getMimeDecoder().decode(attachment.base64Data());
+        } catch (IllegalArgumentException malformed) {
+            return null;
+        }
     }
 
     /**
@@ -1843,6 +1935,33 @@ public class AgenticChatLoop {
         return compactionService.getMaxTokens();
     }
 
+    /**
+     * The active model's context window resolved now, the same way a turn resolves its
+     * budget, so it is right before the first turn and after a model switch.
+     */
+    public int resolvedContextWindowTokens() {
+        if (directLlmClient == null) return contextWindowTokens();
+        String override = activeModelOverride();
+        return contextResolver.resolveLimits(directLlmClient.getChatConfig(), override,
+                directLlmClient.claudeReportedLimits(override)).contextWindow();
+    }
+
+    /**
+     * Whether the active model accepts images: the serving status for a staged model,
+     * else the catalogs. Empty when nothing knows.
+     */
+    public Optional<Boolean> imageInputSupport() {
+        if (directLlmClient == null) return Optional.empty();
+        return contextResolver.resolveImageInput(directLlmClient.getChatConfig(), activeModelOverride());
+    }
+
+    /** The model the next turn talks to: the active agent's override, else the configured model. */
+    public String activeModel() {
+        String override = activeModelOverride();
+        if (override != null || directLlmClient == null) return override;
+        return directLlmClient.getChatConfig().getModel();
+    }
+
     /** Most recent provider-measured request size, from exact counting or usage (0 if none yet). */
     public long lastReportedInputTokens() {
         return lastReportedInputTokens;
@@ -2108,8 +2227,10 @@ public class AgenticChatLoop {
                 message, systemPrompt, initialToolDefs, agent.getModelOverride());
         resumeClaudeNativeSessionIfCurrent();
 
-        // Track conversation for compaction
-        conversationLedger.append(CompactionService.ConversationEntry.user(message));
+        // Track conversation for compaction. The turn's attachments are recorded with it
+        // so a resumed or re-projected conversation resends them.
+        conversationLedger.append(CompactionService.ConversationEntry.user(
+                message, ledgerAttachments(isDirectMode() ? pendingAttachments : null)));
 
         // A chat turn runs until the model finishes, the user interrupts it,
         // or an explicit tool/plan decision ends it. There is no arbitrary step
@@ -3747,18 +3868,26 @@ public class AgenticChatLoop {
         Map<String, String> providerToolNames = new HashMap<>();
         // Model requests of the agent loop the provider runs for this call.
         AtomicInteger providerSteps = new AtomicInteger();
+        // Live usage is per-call. Reconcile the final result against these deltas
+        // rather than counting both the callbacks and the completed turn total.
+        AtomicLong reportedInput = new AtomicLong();
+        AtomicLong reportedOutput = new AtomicLong();
+        AtomicLong reportedCacheRead = new AtomicLong();
+        AtomicLong reportedCacheCreation = new AtomicLong();
+        ForegroundRequestProgress requestProgress = foregroundProgress;
+        long progressSequence = requestProgress == null ? -1 : requestProgress.sequence();
         directLlmClient.setOutputConsumer(sessionContext.wrapConsumer(chunk -> {
             fireFirstOutput();
             reconnecting.set(false);
             setForegroundActivity("Responding");
-            ForegroundRequestProgress progress = foregroundProgress;
-            if (progress != null && chunk != null) progress.recordTextDelta(chunk);
+            if (requestProgress != null) requestProgress.recordTextDelta(progressSequence, chunk);
             thinkingRenderer.flush();
             markdownRenderer.accept(chunk);
         }));
         directLlmClient.setThinkingConsumer(sessionContext.wrapConsumer(chunk -> {
             if (chunk == null || chunk.isEmpty()) return;
             setForegroundActivity("Thinking");
+            if (requestProgress != null) requestProgress.recordTextDelta(progressSequence, chunk);
             thinkingRenderer.accept(chunk);
         }));
         directLlmClient.setConnectivityEventConsumer(sessionContext.wrapConsumer(event -> {
@@ -3876,8 +4005,15 @@ public class AgenticChatLoop {
                     public void onTokenUsage(long input, long output,
                                              long cacheRead, long cacheCreation) {
                         sessionContext.wrap(() -> {
-                            ForegroundRequestProgress progress = foregroundProgress;
-                            if (progress != null && output > 0) progress.recordExactOutput(output);
+                            reportedInput.addAndGet(Math.max(0, input));
+                            reportedOutput.addAndGet(Math.max(0, output));
+                            reportedCacheRead.addAndGet(Math.max(0, cacheRead));
+                            reportedCacheCreation.addAndGet(Math.max(0, cacheCreation));
+                            if (sessionMetrics != null) {
+                                sessionMetrics.recordTokenUsage(input, output, cacheRead, cacheCreation);
+                            }
+                            // A usage callback can be an incomplete snapshot or precede
+                            // REST fallback text. Settle foreground output at return below.
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onTokenUsage(
                                         input, output, cacheRead, cacheCreation);
@@ -3966,12 +4102,33 @@ public class AgenticChatLoop {
             directLlmClient.setProviderActivityListener(previousProviderActivityListener);
         }
 
-        // Record token usage from API response
+        // Some routes only return totals; others already reported live per-call
+        // deltas. Retain compaction usage and any unreported remainder exactly once.
+        long remainingInput = Math.max(0, directResult.inputTokens
+                + directResult.compactionInputTokens - reportedInput.get());
+        long remainingOutput = Math.max(0, directResult.outputTokens
+                + directResult.compactionOutputTokens - reportedOutput.get());
+        long remainingCacheRead = Math.max(0, directResult.cacheReadTokens
+                + directResult.compactionCacheReadTokens - reportedCacheRead.get());
+        long remainingCacheCreation = Math.max(0, directResult.cacheCreationTokens
+                + directResult.compactionCacheCreationTokens - reportedCacheCreation.get());
         if (sessionMetrics != null) {
-            sessionMetrics.recordTokenUsage(
-                    directResult.inputTokens + directResult.compactionInputTokens,
-                    directResult.outputTokens + directResult.compactionOutputTokens,
-                    directResult.cacheReadTokens, directResult.cacheCreationTokens);
+            sessionMetrics.recordTokenUsage(remainingInput, remainingOutput,
+                    remainingCacheRead, remainingCacheCreation);
+        }
+        if (requestProgress != null) {
+            boolean hasUsage = reportedInput.get() > 0 || reportedOutput.get() > 0
+                    || reportedCacheRead.get() > 0 || reportedCacheCreation.get() > 0
+                    || remainingInput > 0 || remainingOutput > 0
+                    || remainingCacheRead > 0 || remainingCacheCreation > 0;
+            long output = directResult.outputTokens + directResult.compactionOutputTokens;
+            // Failed/cancelled streams can report only message_start usage. Keep
+            // the estimate as well as that lower bound, never label it exact.
+            if (!hasUsage || directResult.failed || directResult.cancelled) {
+                requestProgress.recordIncompleteOutput(progressSequence, output);
+            } else {
+                requestProgress.recordExactOutput(progressSequence, output);
+            }
         }
         long contextInputTokens = directResult.contextInputTokens();
         if (contextInputTokens > 0) {

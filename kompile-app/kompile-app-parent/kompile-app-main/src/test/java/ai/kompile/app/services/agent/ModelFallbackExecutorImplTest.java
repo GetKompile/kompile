@@ -28,7 +28,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
-import java.lang.reflect.Field;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -49,16 +48,10 @@ class ModelFallbackExecutorImplTest {
     private ModelFallbackExecutorImpl executor;
 
     @BeforeEach
-    void setUp() throws Exception {
+    void setUp() {
         executor = new ModelFallbackExecutorImpl();
-        inject("agentRegistry", agentRegistry);
-        inject("modelService", modelService);
-    }
-
-    private void inject(String field, Object value) throws Exception {
-        Field f = ModelFallbackExecutorImpl.class.getDeclaredField(field);
-        f.setAccessible(true);
-        f.set(executor, value);
+        executor.agentRegistry = agentRegistry;
+        executor.modelService = modelService;
     }
 
     private AgentProvider agent(String name) {

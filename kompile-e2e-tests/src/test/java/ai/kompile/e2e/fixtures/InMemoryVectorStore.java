@@ -13,6 +13,10 @@ import java.util.stream.Collectors;
  * In-memory vector store backed by a ConcurrentHashMap.
  * Uses brute-force cosine similarity for search.
  * Suitable for small test datasets only.
+ *
+ * <p>Scores use the same [0, 1] scale as the Anserini store (Lucene's COSINE similarity,
+ * {@code (1 + cos) / 2}), so the 0.0 threshold of {@link #similaritySearch(String, int)}
+ * accepts every document there as it does in production.</p>
  */
 public class InMemoryVectorStore implements VectorStore {
 
@@ -109,7 +113,7 @@ public class InMemoryVectorStore implements VectorStore {
     private List<ScoredDocument> scoredSearch(float[] queryVec, int k, double threshold) {
         return store.entrySet().stream()
                 .map(e -> {
-                    double score = cosineSimilarity(queryVec, e.getValue().vector);
+                    double score = (1.0 + cosineSimilarity(queryVec, e.getValue().vector)) / 2.0;
                     return new ScoredDocument(e.getValue().document, score);
                 })
                 .filter(sd -> sd.score() >= threshold)

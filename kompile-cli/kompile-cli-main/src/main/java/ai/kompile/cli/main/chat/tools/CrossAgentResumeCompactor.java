@@ -49,10 +49,15 @@ public final class CrossAgentResumeCompactor {
         ConversationExporter.ResolvedTargetModel targetModel =
                 ConversationExporter.resolveTargetModel(targetAgent, sourceAgent, workingDirectory);
         String modelId = targetModel.modelId();
-        int contextWindow = ModelContextWindows.getContextWindow(modelId);
-        int maxOutput = ModelContextWindows.getMaxOutputTokens(modelId);
+        String providerId = targetModel.providerId();
+        // Provider-qualified lookup: the same bare model id can be listed by several CLI-catalog
+        // aggregators with different limits, and an unqualified lookup would take whichever one
+        // happens to load first. resolveTargetModel already knows the real provider the target
+        // agent talks to, so use it the same way ModelContextResolver.resolveLimits does.
+        int contextWindow = ModelContextWindows.getContextWindow(providerId, modelId);
+        int maxOutput = ModelContextWindows.getMaxOutputTokens(providerId, modelId);
         if (targetAgent != null && "opencode".equalsIgnoreCase(targetAgent)) {
-            var liveMetadata = OpenCodeModelMetadataResolver.resolve(targetModel.providerId(), modelId);
+            var liveMetadata = OpenCodeModelMetadataResolver.resolve(providerId, modelId);
             if (liveMetadata.isPresent()) {
                 OpenCodeModelMetadataResolver.ModelMetadata metadata = liveMetadata.get();
                 contextWindow = metadata.contextWindow();

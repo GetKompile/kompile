@@ -333,6 +333,56 @@ class OwlRlReasonerTest {
                 "Direct edge c→d must not be re-emitted by BFS");
     }
 
+    @Test
+    @DisplayName("prp-trp BFS: a crawl's spellings of ancestorOf close, in the graph's own spelling")
+    void prpTrp_followsTheGraphsSpellingsOfTheProperty() {
+        OwlOntology ontology = OwlOntology.anonymous()
+                .addObjectProperty(OwlObjectProperty.of(ANCESTOR_OF_IRI).transitive(true).build())
+                .build();
+
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        for (String id : List.of("a", "b", "c", "d", "e")) {
+            graph.addEntity(id, "Person", id);
+        }
+        graph.addRelation(SimpleGraphRelation.directed("r-ab", "a", "b", "ANCESTOR_OF", 1.0));
+        graph.addRelation(SimpleGraphRelation.directed("r-bc", "b", "c", "ancestor-of", 1.0));
+        graph.addRelation(SimpleGraphRelation.directed("r-cd", "c", "d", ANCESTOR_OF_IRI, 1.0));
+        // The negated spelling is another relation, so the BFS must not walk it to e.
+        graph.addRelation(SimpleGraphRelation.directed("r-de", "d", "e", "NOT_ANCESTOR_OF", 1.0));
+
+        Map<String, String> inferred = reasoner.reason(graph, ontology).inferredRelations().stream()
+                .collect(Collectors.toMap(r -> r.sourceId() + "→" + r.targetId(), GraphRelation::type));
+
+        assertEquals(Map.of("a→c", "ANCESTOR_OF", "a→d", "ANCESTOR_OF", "b→d", "ancestor-of"), inferred);
+    }
+
+    @Test
+    @DisplayName("prp-dom/rng: MANAGES and directly_manages edges type their ends like manages")
+    void prpDomRng_followTheGraphsSpellingsOfTheProperty() {
+        OwlOntology ontology = OwlOntology.anonymous()
+                .addClass(OwlClass.of(EMPLOYEE_IRI).build())
+                .addClass(OwlClass.of(PERSON_IRI).build())
+                .addObjectProperty(OwlObjectProperty.of(MANAGES_IRI).domain(EMPLOYEE_IRI).range(PERSON_IRI).build())
+                .addObjectProperty(OwlObjectProperty.of(DIRECTLY_MANAGES_IRI).subPropertyOf(MANAGES_IRI).build())
+                .build();
+
+        MutableReasoningGraph graph = new MutableReasoningGraph();
+        for (String id : List.of("alice", "bob", "carol", "dave", "erin", "frank")) {
+            graph.addEntity(id, "Unknown", id);
+        }
+        graph.addRelation("r1", "alice", "bob", "MANAGES", 1.0);
+        graph.addRelation("r2", "carol", "dave", "directly_manages", 1.0);
+        graph.addRelation("r3", "erin", "frank", "MISMANAGES", 1.0);
+
+        Map<String, List<String>> types = reasoner.reason(graph, ontology).inferredTypeCandidates();
+        assertTrue(types.getOrDefault("alice", List.of()).contains(EMPLOYEE_IRI), "MANAGES source: " + types);
+        assertTrue(types.getOrDefault("bob", List.of()).contains(PERSON_IRI), "MANAGES target: " + types);
+        assertTrue(types.getOrDefault("carol", List.of()).contains(EMPLOYEE_IRI), "directly_manages source: " + types);
+        assertTrue(types.getOrDefault("dave", List.of()).contains(PERSON_IRI), "directly_manages target: " + types);
+        assertEquals(List.of(), types.getOrDefault("erin", List.of()), "MISMANAGES is another relation");
+        assertEquals(List.of(), types.getOrDefault("frank", List.of()), "MISMANAGES is another relation");
+    }
+
     // ─── T6: prp-symp — symmetric property rule compiled ────────────────────────
 
     /**

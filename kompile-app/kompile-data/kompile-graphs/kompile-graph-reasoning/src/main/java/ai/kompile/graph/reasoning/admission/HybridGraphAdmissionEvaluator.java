@@ -286,7 +286,7 @@ public final class HybridGraphAdmissionEvaluator implements GraphAdmissionEvalua
                 .filter(relation -> entityId.equals(relation.sourceId())
                         || entityId.equals(relation.targetId()))
                 .filter(relation -> isConflictType(relation.type()))
-                .filter(relation -> relation.weight() * relation.confidence() >= 0.05)
+                .filter(relation -> relation.strength() >= 0.05)
                 .anyMatch(relation -> conflictAppliesToBallot(request, entityId, relation));
     }
 
@@ -313,7 +313,7 @@ public final class HybridGraphAdmissionEvaluator implements GraphAdmissionEvalua
                 .filter(relation -> entityId.equals(relation.sourceId())
                         || entityId.equals(relation.targetId()))
                 .filter(relation -> !isConflictType(relation.type()))
-                .anyMatch(relation -> relation.weight() * relation.confidence() >= 0.50);
+                .anyMatch(relation -> relation.strength() >= 0.50);
     }
 
     private static boolean isConflictType(String type) {

@@ -28,6 +28,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Bundles the in-JVM reasoning trace buffer ({@link ReasoningTraceStore}) inside a
@@ -35,17 +36,16 @@ import java.util.Map;
  * graph on snapshot/export.
  *
  * <h3>Export (contribute)</h3>
- * <p>Takes a non-destructive {@link ReasoningTraceStore#snapshot()} of all retained trace DTOs
- * and serialises them as a JSON array stored under the {@value #ARTIFACT_NAME} artifact key.
+ * <p>Takes a non-destructive {@link ReasoningTraceStore#snapshot(Long)} of the retained trace DTOs
+ * of the exported scope — a fact sheet's own traces, or every trace for the global graph — and
+ * serialises them as a JSON array stored under the {@value #ARTIFACT_NAME} artifact key.
  * The buffer is <em>not</em> cleared — the normal {@link ReasoningTraceStore#drainSince} call
  * path used by {@code AgentChatService} after each turn is unaffected.</p>
  *
  * <h3>Import (restore)</h3>
- * <p>Deserialises the JSON array and pushes each DTO back into the
- * {@link ReasoningTraceStore} buffer via {@link ReasoningTraceStore#storeTrace(Map)}.  This
- * makes the traces available to the SSE/reasoning-trace endpoint on the importing instance.
- * Idempotent in the sense that the buffer is bounded (200 entries by default)
- * and oldest entries are evicted automatically.</p>
+ * <p>The artifact stays in the imported graph but is not pushed back into the
+ * {@link ReasoningTraceStore} buffer: that buffer is append-only and bounded, so activating
+ * historical traces could not be rolled back exactly.</p>
  *
  * <h3>Dependency direction</h3>
  * <p>This class lives in {@code kompile-app-agent} which already depends on
@@ -77,9 +77,9 @@ public class ReasoningTraceArtifactAdapter
         if (graph == null || traceStore == null) {
             return;
         }
-        // Take a non-destructive snapshot of all retained entries; the normal
+        // Take a non-destructive snapshot of this scope's retained entries; the normal
         // drainSince() path used by AgentChatService is unaffected.
-        List<Map<String, Object>> traces = traceStore.snapshot();
+        List<Map<String, Object>> traces = traceStore.snapshot(factSheetId);
         if (traces.isEmpty()) {
             return;
         }
@@ -109,7 +109,7 @@ public class ReasoningTraceArtifactAdapter
     }
 
     @Override
-    public java.util.Set<String> managedArtifactPrefixes() {
-        return java.util.Set.of(ARTIFACT_NAME);
+    public Set<String> managedArtifactPrefixes() {
+        return Set.of(ARTIFACT_NAME);
     }
 }

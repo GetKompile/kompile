@@ -94,6 +94,12 @@ public class CodeGraphTool implements CliTool {
     }
 
     @Override
+    public String compactHint() {
+        return "Who depends on what - use BEFORE grepping for usages: action=impact file_paths=<a,b>; " +
+                "symbol fqn=<X>; file file_path=<f>. project_id auto-resolves from the working directory.";
+    }
+
+    @Override
     public JsonNode parameterSchema() {
         ObjectMapper om = JsonUtils.standardMapper();
         ObjectNode schema = om.createObjectNode();
@@ -212,7 +218,7 @@ public class CodeGraphTool implements CliTool {
             String refreshNote = null;
             if (REFRESHABLE_ACTIONS.contains(action) && params.path("auto_refresh").asBoolean(true)) {
                 refreshNote = BackgroundIndexService.getInstance()
-                        .prepareForRead(new LocalCodeIndexer(), projectId);
+                        .prepareForRead(new LocalCodeIndexer(), projectId, context.getWorkingDirectory());
             }
             ToolResult result = executeLocal(action, params, projectId, cwd, context);
             return withBackend(result, "folder-local", refreshNote);
@@ -647,25 +653,36 @@ public class CodeGraphTool implements CliTool {
 
             return switch (action) {
                 case "build", "add_directory" -> {
-                    String dirPath = params.path("directory_path").asText("");
-                    if (dirPath.isEmpty()) dirPath = cwd;
+                    String requestedDir = params.path("directory_path").asText("");
+                    if (requestedDir.isEmpty()) requestedDir = cwd;
+                    Path requested = Path.of(requestedDir).toAbsolutePath();
+                    Path root = ProjectIdResolver.indexRoot(projectId, requested);
                     LocalCodeIndexer.IndexResult result =
-                            localIndexer.index(Path.of(dirPath), projectId,
+                            localIndexer.index(root, projectId,
                                     params.path("include_patterns").asText(null),
                                     params.path("exclude_patterns").asText(null),
                                     ProgressPrintStream.from(context));
                     LocalCodeKGraphPublisher.ProjectionResult projection =
-                            LocalCodeKGraphPublisher.publish(Path.of(dirPath), projectId,
+                            LocalCodeKGraphPublisher.publish(root, projectId,
                                     params.path("include_patterns").asText(null),
                                     params.path("exclude_patterns").asText(null));
                     StringBuilder sb = new StringBuilder();
                     sb.append("Codebase indexed locally with graph\n\n");
                     sb.append("- **Project**: ").append(result.projectId()).append("\n");
                     sb.append("- **Root**: ").append(result.rootPath()).append("\n");
+                    if (!root.equals(requested)) {
+                        sb.append("- **Indexed the project root**: ").append(requested)
+                                .append(" is part of project '").append(projectId)
+                                .append("', whose index covers ").append(root).append("\n");
+                    }
                     sb.append("- **Files processed**: ").append(result.filesProcessed()).append("\n");
                     sb.append("- **Entities found**: ").append(result.entitiesFound()).append("\n");
-                    sb.append("- **Knowledge base**: ").append(projection.knowledgeBaseId()).append("\n");
-                    sb.append("- **KGraph**: ").append(projection.graphPath()).append("\n");
+                    if (projection.published()) {
+                        sb.append("- **Knowledge base**: ").append(projection.knowledgeBaseId()).append("\n");
+                        sb.append("- **KGraph**: ").append(projection.graphPath()).append("\n");
+                    } else {
+                        sb.append("- **KGraph**: not published — ").append(projection.skippedReason()).append("\n");
+                    }
                     if (result.errors() > 0) sb.append("- **Errors**: ").append(result.errors()).append("\n");
 
                     // Report relation counts from the graph
@@ -687,17 +704,21 @@ public class CodeGraphTool implements CliTool {
                         result.languageCounts().forEach((lang, count) ->
                                 sb.append("  - ").append(lang).append(": ").append(count).append("\n"));
                     }
-                    // Opt-in learning pass (KGE + PSL/MEBN) over the projected
-                    // graph so ask_graph_* tools fuse real signals on code.
-                    String learningStatus = runLearningIfTriggered(
-                            Path.of(dirPath), projection.graphPath(), "build", sb);
                     Map<String, Object> data = new java.util.HashMap<>();
                     data.put("projectId", projectId);
                     data.put("filesProcessed", result.filesProcessed());
-                    data.put("knowledgeBase", projection.knowledgeBaseId());
-                    data.put("graphPath", projection.graphPath().toString());
-                    data.put("learningStatus", learningStatus);
-                    yield ToolResult.success("code_index: " + dirPath, sb.toString(), data);
+                    if (projection.published()) {
+                        // Opt-in learning pass (KGE + PSL/MEBN) over the projected
+                        // graph so ask_graph_* tools fuse real signals on code.
+                        String learningStatus = runLearningIfTriggered(
+                                root, projection.graphPath(), "build", sb);
+                        data.put("knowledgeBase", projection.knowledgeBaseId());
+                        data.put("graphPath", projection.graphPath().toString());
+                        data.put("learningStatus", learningStatus);
+                    } else {
+                        data.put("kgraphSkipped", projection.skippedReason());
+                    }
+                    yield ToolResult.success("code_index: " + root, sb.toString(), data);
                 }
                 case "search" -> {
                     String query = params.path("query").asText("");

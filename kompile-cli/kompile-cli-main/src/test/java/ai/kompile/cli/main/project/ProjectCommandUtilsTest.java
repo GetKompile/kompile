@@ -20,6 +20,8 @@ import ai.kompile.project.KompileProjectStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.charset.UnsupportedCharsetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -29,14 +31,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Unit tests for {@link ProjectCommandUtils#requireExistingProjectRoot}.
+ * Unit tests for {@link ProjectCommandUtils#requireExistingProjectRoot} and
+ * {@link ProjectCommandUtils#failureDetail}.
  *
- * <p>Covers three cases:
+ * <p>Covers four cases:
  * <ol>
  *   <li>A directory with no {@code kompile.project.json} throws {@link IllegalStateException}
  *       with a clear, actionable message (not a raw Jackson error).</li>
  *   <li>A directory that IS a project root resolves correctly.</li>
  *   <li>A nested subdirectory of a project root also resolves correctly (walk-up behaviour).</li>
+ *   <li>A failure without a message reports its type and root cause instead of {@code null}.</li>
  * </ol>
  */
 class ProjectCommandUtilsTest {
@@ -99,5 +103,22 @@ class ProjectCommandUtilsTest {
         Path resolved = ProjectCommandUtils.requireExistingProjectRoot(store, deepSubdir.toFile());
         assertEquals(tmp.toAbsolutePath().normalize(), resolved.toAbsolutePath().normalize(),
                 "Should walk up from nested subdir and find the project root at " + tmp);
+    }
+
+    // ── 4. Failure detail never reports null ──────────────────────────────────
+
+    @Test
+    void failureDetail_prefersTheErrorsOwnMessage() {
+        assertEquals("disk full", ProjectCommandUtils.failureDetail(new IOException("disk full")));
+    }
+
+    @Test
+    void failureDetail_namesTheTypeAndRootCauseOfMessagelessErrors() {
+        ExceptionInInitializerError initFailure =
+                new ExceptionInInitializerError(new UnsupportedCharsetException("cp1252"));
+
+        assertEquals("ExceptionInInitializerError caused by UnsupportedCharsetException: cp1252",
+                ProjectCommandUtils.failureDetail(initFailure));
+        assertEquals("IllegalStateException", ProjectCommandUtils.failureDetail(new IllegalStateException()));
     }
 }

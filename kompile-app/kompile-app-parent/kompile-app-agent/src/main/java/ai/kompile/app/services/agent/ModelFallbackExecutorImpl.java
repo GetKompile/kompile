@@ -66,10 +66,10 @@ public class ModelFallbackExecutorImpl implements LlmFallbackExecutor {
     private ModelFallbackConfigManager configManager;
 
     @Autowired(required = false)
-    private CliAgentModelService modelService;
+    CliAgentModelService modelService;
 
     @Autowired(required = false)
-    private AgentRegistryService agentRegistry;
+    AgentRegistryService agentRegistry;
 
     /** Resolves per-model context-window metadata for the chain guard; absent in library slices. */
     @Autowired(required = false)

@@ -333,13 +333,13 @@ final class UnifiedGraphReader {
 
     static UnifiedGraph read(Path file, Limits limits) throws IOException {
         try (StableArchiveReference stable = stableArchiveReference(file, limits)) {
-            UnifiedGraph graph = readStable(stable.path(), limits);
+            UnifiedGraph graph = readStable(stable.path(), stable.scratchDirectory(), limits);
             stable.requireUnchanged();
             return graph;
         }
     }
 
-    private static UnifiedGraph readStable(Path file, Limits limits) throws IOException {
+    private static UnifiedGraph readStable(Path file, Path scratchDirectory, Limits limits) throws IOException {
         long archiveBytes = Files.size(file);
         if (archiveBytes > limits.maxArchiveBytes()) {
             throw new IOException("Unified graph exceeds compressed archive size limit of "
@@ -419,7 +419,7 @@ final class UnifiedGraphReader {
             RowSource entityRows = rowsFromZip(zf, entityEntry, budget, limits);
             RowSource relationRows = rowsFromZip(zf, relationEntry, budget, limits);
             CompactLinkSource compactSource = linksFromZip(
-                    zf, compactLinks, relationProperties, budget, limits, header.layout());
+                    zf, compactLinks, relationProperties, budget, limits, header.layout(), scratchDirectory);
             return reconstruct(
                     accumulator.entries, entityRows, relationRows, compactSource, limits, header);
         }
@@ -432,8 +432,8 @@ final class UnifiedGraphReader {
         if (!before.isRegularFile() || before.size() > limits.maxArchiveBytes()) {
             throw new IOException("Unified graph is not a regular file or exceeds compressed archive size limit");
         }
-        Path temporaryDirectory = createStableReadDirectory(source);
-        Path reference = temporaryDirectory.resolve("archive.kgraph");
+        KGraphScratch scratch = KGraphScratch.forRead(source);
+        Path reference = scratch.directory().resolve("archive.kgraph");
         boolean retained = false;
         try {
             try {
@@ -449,33 +449,9 @@ final class UnifiedGraphReader {
             BasicFileAttributes referenceState = Files.readAttributes(
                     reference, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
             retained = true;
-            return new StableArchiveReference(reference, temporaryDirectory, referenceState);
+            return new StableArchiveReference(reference, scratch, referenceState);
         } finally {
-            if (!retained) {
-                Files.deleteIfExists(reference);
-                Files.deleteIfExists(temporaryDirectory);
-            }
-        }
-    }
-
-    private static Path createStableReadDirectory(Path source) throws IOException {
-        IOException adjacentFailure = null;
-        Path parent = source.getParent();
-        if (parent != null) {
-            try {
-                // Android native images default java.io.tmpdir to /tmp, which is not writable by
-                // applications. Keeping the transient reference beside an app-owned graph also
-                // lets the hard-link fast path remain on the same filesystem.
-                return Files.createTempDirectory(parent, ".kompile-kgraph-read-");
-            } catch (IOException failure) {
-                adjacentFailure = failure;
-            }
-        }
-        try {
-            return Files.createTempDirectory("kompile-kgraph-read-");
-        } catch (IOException fallbackFailure) {
-            if (adjacentFailure != null) fallbackFailure.addSuppressed(adjacentFailure);
-            throw fallbackFailure;
+            if (!retained) scratch.close();
         }
     }
 
@@ -489,17 +465,20 @@ final class UnifiedGraphReader {
 
     static final class StableArchiveReference implements AutoCloseable {
         private final Path path;
-        private final Path temporaryDirectory;
+        private final KGraphScratch scratch;
         private final BasicFileAttributes state;
 
         private StableArchiveReference(
-                Path path, Path temporaryDirectory, BasicFileAttributes state) {
+                Path path, KGraphScratch scratch, BasicFileAttributes state) {
             this.path = path;
-            this.temporaryDirectory = temporaryDirectory;
+            this.scratch = scratch;
             this.state = state;
         }
 
         Path path() { return path; }
+
+        /** Private directory for this read's staging files; deleted with the reference. */
+        Path scratchDirectory() { return scratch.directory(); }
 
         void requireUnchanged() throws IOException {
             BasicFileAttributes current = Files.readAttributes(
@@ -511,8 +490,11 @@ final class UnifiedGraphReader {
 
         @Override
         public void close() throws IOException {
-            Files.deleteIfExists(path);
-            Files.deleteIfExists(temporaryDirectory);
+            try {
+                Files.deleteIfExists(path);
+            } finally {
+                scratch.close();
+            }
         }
     }
 
@@ -683,7 +665,8 @@ final class UnifiedGraphReader {
             ZipEntry properties,
             ExpansionBudget budget,
             Limits limits,
-            GraphLayout layout) {
+            GraphLayout layout,
+            Path scratchDirectory) {
         if (links == null) return consumer -> { };
         return consumer -> {
             try (InputStream linkInput = new BudgetInputStream(
@@ -698,6 +681,7 @@ final class UnifiedGraphReader {
                         layout.relationCount(),
                         limits.maxJsonlRowChars(),
                         limits.maxJsonlRowChars(),
+                        scratchDirectory,
                         consumer::accept);
             }
         };

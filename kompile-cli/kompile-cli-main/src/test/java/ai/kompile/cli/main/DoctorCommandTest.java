@@ -60,7 +60,7 @@ class DoctorCommandTest {
 
     @Test
     void checkResultWarn_isNotCritical() {
-        DoctorCommand.CheckResult r = DoctorCommand.CheckResult.warn("Ollama", "not reachable", "ollama serve");
+        DoctorCommand.CheckResult r = DoctorCommand.CheckResult.warn("Disk space", "3 GB usable", "Free up disk space");
         assertEquals(DoctorCommand.Status.WARN, r.status());
         assertFalse(r.critical());
     }
@@ -310,13 +310,24 @@ class DoctorCommandTest {
         DoctorCommand cmd = new DoctorCommand();
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) return; // skip on Windows
-        // sleep 10 will never finish in 100ms
+        // sleep 10 will never finish in 100ms; the timeout must be enforced
+        // well before the child's 10s lifetime elapses.
+        long start = System.nanoTime();
         String result = cmd.runWithTimeout(new String[]{"sleep", "10"}, 100);
-        // After timeout the process is destroyed; result may be null or the
-        // empty output captured before timeout — either is acceptable
-        // (we only verify no exception is thrown and it returns)
-        // result can be null or blank
-        assertTrue(result == null || result.isBlank());
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        assertNull(result);
+        assertTrue(elapsedMs < 5000,
+                "expected runWithTimeout to return well under the child's 10s lifetime, took " + elapsedMs + "ms");
+    }
+
+    // ── Agent checks ──────────────────────────────────────────────────────────
+
+    @Test
+    void checkAgents_reportsOnlyAgentClis() {
+        // Kompile serves its own models, so the agent check probes no model server.
+        List<DoctorCommand.CheckResult> results = new DoctorCommand().checkAgents();
+        assertEquals(1, results.size(), results.toString());
+        assertEquals("Agent CLIs", results.get(0).name());
     }
 
     // ── Project checks ────────────────────────────────────────────────────────
