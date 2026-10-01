@@ -1076,6 +1076,8 @@ class BuildPlatformParityTest(unittest.TestCase):
             env.update({
                 "KOMPILE_MAVEN_REPO": str(repository),
                 "MVN": maven,
+                # Assembly-only fixtures need a JDK, not a local SDKMAN GraalVM.
+                "GRAALVM_HOME": str(pathlib.Path(shutil.which("java")).resolve().parents[1]),
             })
             result = subprocess.run(
                 [
@@ -1193,6 +1195,8 @@ class BuildPlatformParityTest(unittest.TestCase):
             env.update({
                 "KOMPILE_MAVEN_REPO": str(repository),
                 "MVN": maven,
+                # Assembly-only fixtures need a JDK, not a local SDKMAN GraalVM.
+                "GRAALVM_HOME": str(pathlib.Path(shutil.which("java")).resolve().parents[1]),
             })
             result = subprocess.run(
                 [
@@ -1546,6 +1550,7 @@ class BuildPlatformParityTest(unittest.TestCase):
                 "DL4J_MAVEN_REPOSITORY_URL": (root / "maven").as_uri(),
                 "KOMPILE_MAVEN_REPO": str(root / "m2"),
                 "MVN": maven,
+                "GRAALVM_HOME": str(pathlib.Path(shutil.which("java")).resolve().parents[1]),
             })
             result = subprocess.run(
                 [
@@ -3520,12 +3525,16 @@ esac
             local_repository = root / "maven repo"
             libnd4j = root / "lib nd4j"
             script = REPOSITORY / "build-scripts" / "build-dl4j-backend.sh"
+            env = os.environ.copy()
+            # Dry-run prints the command without executing the compiler cache.
+            env["CCACHE_BIN"] = shutil.which("true")
             completed = subprocess.run([
                 "bash", str(script), "--dl4j-dir", str(dl4j), "--chip", "cuda",
                 "--cuda-version", "12.9", "--helper", "cudnn",
                 "--maven-repo-local", str(local_repository),
                 "--libnd4j-home", str(libnd4j), "--dry-run",
-            ], text=True, capture_output=True, check=True)
+            ], env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
             escaped_repository = str(local_repository).replace(" ", "\\ ")
             escaped_libnd4j = str(libnd4j).replace(" ", "\\ ")
             self.assertIn(
