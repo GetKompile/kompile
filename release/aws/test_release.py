@@ -2066,6 +2066,26 @@ class BuildPlatformParityTest(unittest.TestCase):
 
 
 class GithubWorkflowParityTest(unittest.TestCase):
+    def test_release_contracts_run_in_github_actions(self):
+        source = (REPOSITORY / ".github" / "workflows" / "release-contracts.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("  push:\n", source)
+        self.assertIn("  pull_request:\n", source)
+        self.assertEqual(2, source.count("      - 'release/**'"))
+        self.assertEqual(2, source.count("      - '.github/**'"))
+        self.assertEqual(2, source.count("      - 'build-dist.sh'"))
+        self.assertIn("permissions:\n  contents: read\n", source)
+        self.assertNotIn("secrets.", source)
+        jobs = self.workflow_jobs(source)
+        self.assertEqual({"contracts"}, set(jobs))
+        body = jobs["contracts"]
+        self.assertIn("runs-on: ubuntu-24.04", body)
+        self.assertIn("timeout-minutes: 10", body)
+        self.assertTrue(body.split("    steps:\n", 1)[1].startswith(self.RUNNER_GUARD))
+        self.assertIn("working-directory: release/aws", body)
+        self.assertIn("run: python3 -m unittest -v test_release", body)
+        self.assertIn("python3 mvn java bash jar zip unzip node sha256sum", body)
+
     def test_java_distribution_smoke_covers_supported_release_platforms(self):
         source = (
             REPOSITORY / ".github" / "workflows" /
@@ -2254,13 +2274,14 @@ class GithubWorkflowParityTest(unittest.TestCase):
         return {job: "\n".join(body) + "\n" for job, body in jobs.items()}
 
     def release_workflows(self):
-        """Maps every workflow the release entry points reach to (text, jobs).
+        """Maps release entry points, their callees and contract CI to (text, jobs).
 
         Follows each local reusable-workflow call, so a workflow a release starts
         calling is checked too. Comment lines are removed from the text.
         """
         workflows = REPOSITORY / ".github" / "workflows"
-        pending = ["release.yml", "publish-release.yml", "publish-external-aws-release.yml"]
+        pending = ["release.yml", "publish-release.yml", "publish-external-aws-release.yml",
+                   "release-contracts.yml"]
         reached = {}
         while pending:
             name = pending.pop()

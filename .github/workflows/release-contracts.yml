@@ -1,0 +1,68 @@
+name: Release contracts
+
+# Fast local-fixture checks; no cloud credentials, VM provisioning or product build.
+on:
+  push:
+    paths:
+      - '.github/**'
+      - 'release/**'
+      - 'build-scripts/**'
+      - 'build-dist.sh'
+      - 'install.sh'
+      - 'pom.xml'
+      - 'kompile-dist/**'
+      - 'kompile-app/**/pom.xml'
+      - 'kompile-chat-local/**'
+      - 'skills/**'
+  pull_request:
+    paths:
+      - '.github/**'
+      - 'release/**'
+      - 'build-scripts/**'
+      - 'build-dist.sh'
+      - 'install.sh'
+      - 'pom.xml'
+      - 'kompile-dist/**'
+      - 'kompile-app/**/pom.xml'
+      - 'kompile-chat-local/**'
+      - 'skills/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Release packaging and workflow contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Require fixture tools (do not silently skip checks)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in python3 mvn java bash jar zip unzip node sha256sum; do
+            command -v "${tool}"
+          done
+
+      - name: Test release contracts
+        working-directory: release/aws
+        shell: bash
+        run: python3 -m unittest -v test_release
