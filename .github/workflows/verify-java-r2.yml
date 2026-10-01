@@ -1,0 +1,76 @@
+name: Verify Java distributions in R2 (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing Java release version (no uploads or builds)
+        required: true
+        default: 0.1.0-java-proof.2
+        type: string
+      commit:
+        description: Full source SHA expected in every distribution record
+        required: true
+        default: 7069f060efda462d93ee9ce26afbaeebfcf7ba15
+        type: string
+      release_run_id:
+        description: Existing release run ID expected in the manifest
+        required: true
+        default: '36798278039'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: exit 1
+      - name: Check out the verifier
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate release identity before source checkout
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: |
+          python3 -c 'import os,re; assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*",os.environ["VERSION"]); assert re.fullmatch(r"[0-9a-f]{40}",os.environ["COMMIT"]); assert re.fullmatch(r"[1-9][0-9]*",os.environ["RELEASE_RUN_ID"])'
+      - name: Check out the exact release matrix and resolvers
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          path: catalog-source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run no-network verifier regressions
+        env:
+          RELEASE_SOURCE_ROOT: catalog-source
+        run: python release/github/test_verify_java_r2.py
+      - name: Install the R2 S3-compatible read client
+        run: python -m pip install boto3==1.40.45
+      - name: Read manifest, records, checksums and every archive byte
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: |
+          python release/github/verify_java_r2.py \
+            --version "${VERSION}" --commit "${COMMIT}" --run-id "${RELEASE_RUN_ID}" \
+            --source-root catalog-source --output "${RUNNER_TEMP}/r2-java-verification"
+      - name: Retain the stored manifest and successful readback receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-java-readback-${{ github.run_id }}
+          path: ${{ runner.temp }}/r2-java-verification/
+          if-no-files-found: error
+          retention-days: 30
