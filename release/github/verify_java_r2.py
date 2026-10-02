@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 ENDPOINT = "https://318204901782458555a243ad96f80e3f.r2.cloudflarestorage.com"
@@ -37,12 +38,19 @@ def decode_json(raw):
     return data
 
 
-def read_object(client, key, limit, versions, *, digest_only=False):
+def read_object(client, key, limit, versions, *, digest_only=False, expected_etag=None):
     """Only GetObject; never buffer archives, and fail on excess bytes."""
-    response = client.get_object(Bucket=BUCKET, Key=key)
+    request = {"Bucket": BUCKET, "Key": key}
+    if expected_etag is not None:
+        request["IfMatch"] = expected_etag
+    response = client.get_object(**request)
     body = response["Body"]
     digest, size, parts = hashlib.sha256(), 0, []
     try:
+        etag = response.get("ETag")
+        require(isinstance(etag, str) and etag, f"{key}: missing ETag")
+        if expected_etag is not None:
+            require(etag == expected_etag, f"{key}: changed before/during archive read")
         while True:
             block = body.read(CHUNK)
             if not block:
@@ -56,10 +64,28 @@ def read_object(client, key, limit, versions, *, digest_only=False):
         body.close()
     require(type(response.get("ContentLength")) is int and size == response["ContentLength"],
             f"{key}: incomplete/invalid response length")
-    etag = response.get("ETag")
-    require(isinstance(etag, str) and etag, f"{key}: missing ETag")
     versions[key] = etag
     return (size, digest.hexdigest()) if digest_only else b"".join(parts)
+
+
+def read_archive(client, key, size, versions):
+    """Restart only interrupted transfers, pinned to one object version, at most three times."""
+    etag = client.head_object(Bucket=BUCKET, Key=key).get("ETag")
+    require(isinstance(etag, str) and etag, f"{key}: missing archive ETag")
+    for attempt in range(1, 4):
+        try:
+            return read_object(client, key, size, versions, digest_only=True, expected_etag=etag)
+        except VerificationError:
+            raise
+        except Exception as error:
+            # SDK request retries do not cover errors raised while consuming a response body.
+            from botocore.exceptions import (ConnectionClosedError, IncompleteReadError,
+                                            ReadTimeoutError, ResponseStreamingError)
+            if attempt == 3 or not isinstance(error, (ConnectionClosedError, IncompleteReadError,
+                                                     ReadTimeoutError, ResponseStreamingError)):
+                raise
+            print(f"RETRY archive stream {key}: attempt {attempt + 1}/3; restarting hash", flush=True)
+            time.sleep(2 ** (attempt - 1))
 
 
 def verify(client, planner, matrix, rows, version, commit, run_id):
@@ -130,7 +156,7 @@ def verify(client, planner, matrix, rows, version, commit, run_id):
         sidecar = read_object(client, entry["checksum_key"], 4096, versions).decode("utf-8").split()
         require(len(sidecar) == 2 and sidecar[0].lower() == archive["sha256"]
                 and sidecar[1].lstrip("*") == name, f"{classifier}: checksum mismatch")
-        size, digest = read_object(client, key, archive["size"], versions, digest_only=True)
+        size, digest = read_archive(client, key, archive["size"], versions)
         require(size == archive["size"] and digest == archive["sha256"],
                 f"{classifier}: archive bytes/hash mismatch")
         verified.append({"classifier": classifier, "key": key, "size": size, "sha256": digest,

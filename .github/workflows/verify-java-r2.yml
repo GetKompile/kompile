@@ -25,7 +25,8 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # Twelve multi-GB archives took 45 minutes; allow the full serial readback plus bounded retries.
+    timeout-minutes: 240
     steps:
       - name: Require a GitHub-hosted runner
         if: runner.environment != 'github-hosted'

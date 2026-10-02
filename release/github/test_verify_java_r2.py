@@ -25,7 +25,7 @@ class ReadOnlyS3:
         self.bodies = []
         self.changed = False
 
-    def get_object(self, *, Bucket, Key):
+    def get_object(self, *, Bucket, Key, IfMatch=None):
         assert Bucket == verifier.BUCKET
         self.calls.append(("get", Key))
         raw = self.objects[Key]
@@ -162,8 +162,17 @@ class VerificationTests(unittest.TestCase):
             self.reject()
 
     def test_concurrent_object_change_rejected(self):
-        self.client.changed = True
-        self.reject()
+        original = self.client.head_object
+        def changed_during_final_heads(**kwargs):
+            response = original(**kwargs)
+            if sum(op == "get" for op, _ in self.client.calls) == 3 * len(self.rows) + 1:
+                response["ETag"] = "changed"
+            return response
+        self.client.head_object = changed_during_final_heads
+        with self.assertRaisesRegex(verifier.VerificationError, "changed during verification"):
+            self.verify()
+        self.assertEqual(3 * len(self.rows) + 1, sum(op == "get" for op, _ in self.client.calls))
+        self.assertTrue(all(body.closed for body in self.client.bodies))
 
     def test_truncated_response_rejected_and_closed(self):
         client = self.client
@@ -228,7 +237,7 @@ class VerificationTests(unittest.TestCase):
     def test_read_exception_closes_body(self):
         body = mock.Mock()
         body.read.side_effect = OSError("read interrupted")
-        client = types.SimpleNamespace(get_object=lambda **kw: {"Body": body})
+        client = types.SimpleNamespace(get_object=lambda **kw: {"Body": body, "ETag": "stable", "ContentLength": 10})
         with self.assertRaises(OSError):
             verifier.read_object(client, "broken", 10, {}, digest_only=True)
         body.close.assert_called_once()
@@ -238,6 +247,119 @@ class VerificationTests(unittest.TestCase):
         client = types.SimpleNamespace(get_object=lambda **kw: {"Body": body, "ContentLength": 3})
         with self.assertRaises(verifier.VerificationError):
             verifier.read_object(client, "missing-etag", 3, {})
+        self.assertTrue(body.closed)
+
+    def archive_retry_fixture(self):
+        exceptions = types.ModuleType("botocore.exceptions")
+        for name in ("ConnectionClosedError", "IncompleteReadError", "ReadTimeoutError", "ResponseStreamingError"):
+            setattr(exceptions, name, type(name, (OSError,), {}))
+        StreamError = exceptions.ResponseStreamingError
+        body = mock.Mock()
+        body.read.side_effect = [b"wrong", StreamError("connection broken")]
+        return StreamError, exceptions, body
+
+    def test_interrupted_archive_restarts_hash_with_same_etag(self):
+        error, exceptions, interrupted = self.archive_retry_fixture()
+        complete = io.BytesIO(b"correct bytes")
+        client = mock.Mock()
+        client.head_object.return_value = {"ETag": "pinned"}
+        client.get_object.side_effect = [
+            {"Body": interrupted, "ContentLength": 13, "ETag": "pinned"},
+            {"Body": complete, "ContentLength": 13, "ETag": "pinned"}]
+        versions = {}
+        with mock.patch.dict(sys.modules, {"botocore.exceptions": exceptions}), mock.patch.object(verifier.time, "sleep"):
+            size, digest = verifier.read_archive(client, "archive", 13, versions)
+        self.assertEqual(13, size)
+        self.assertEqual(hashlib.sha256(b"correct bytes").hexdigest(), digest)
+        self.assertEqual({"archive": "pinned"}, versions)
+        self.assertEqual(2, client.get_object.call_count)
+        for call in client.get_object.call_args_list:
+            self.assertEqual("pinned", call.kwargs["IfMatch"])
+        interrupted.close.assert_called_once()
+        self.assertTrue(complete.closed)
+
+    def test_archive_transport_retries_are_bounded_and_fail_closed(self):
+        error, exceptions, _ = self.archive_retry_fixture()
+        bodies = [mock.Mock() for _ in range(3)]
+        for body in bodies:
+            body.read.side_effect = error("connection broken")
+        client = mock.Mock()
+        client.head_object.return_value = {"ETag": "pinned"}
+        client.get_object.side_effect = [{"Body": body, "ContentLength": 13, "ETag": "pinned"}
+                                         for body in bodies]
+        versions = {}
+        with mock.patch.dict(sys.modules, {"botocore.exceptions": exceptions}), mock.patch.object(verifier.time, "sleep") as sleep:
+            with self.assertRaises(error):
+                verifier.read_archive(client, "archive", 13, versions)
+        self.assertEqual([mock.call(1), mock.call(2)], sleep.call_args_list)
+        client.head_object.assert_called_once_with(Bucket=verifier.BUCKET, Key="archive")
+        self.assertEqual(3, client.get_object.call_count)
+        self.assertTrue(all(call.kwargs["IfMatch"] == "pinned" for call in client.get_object.call_args_list))
+        self.assertEqual({}, versions)
+        for body in bodies:
+            body.close.assert_called_once()
+
+    def test_archive_retry_rejects_changed_etag(self):
+        error, exceptions, interrupted = self.archive_retry_fixture()
+        changed = mock.Mock()
+        client = mock.Mock()
+        client.head_object.return_value = {"ETag": "pinned"}
+        client.get_object.side_effect = [
+            {"Body": interrupted, "ContentLength": 13, "ETag": "pinned"},
+            {"Body": changed, "ContentLength": 13, "ETag": "changed"}]
+        with mock.patch.dict(sys.modules, {"botocore.exceptions": exceptions}), mock.patch.object(verifier.time, "sleep"):
+            with self.assertRaisesRegex(verifier.VerificationError, "changed"):
+                verifier.read_archive(client, "archive", 13, {})
+        self.assertEqual(2, client.get_object.call_count)
+        changed.read.assert_not_called()
+        changed.close.assert_called_once()
+
+    def test_each_transport_error_can_restart(self):
+        _, exceptions, _ = self.archive_retry_fixture()
+        for name in ("ConnectionClosedError", "IncompleteReadError", "ReadTimeoutError", "ResponseStreamingError"):
+            with self.subTest(error=name):
+                client = mock.Mock()
+                client.head_object.return_value = {"ETag": "pinned"}
+                body = io.BytesIO(b"abc")
+                client.get_object.side_effect = [getattr(exceptions, name)("interrupted"),
+                                                {"Body": body, "ETag": "pinned", "ContentLength": 3}]
+                with mock.patch.dict(sys.modules, {"botocore.exceptions": exceptions}), mock.patch.object(verifier.time, "sleep"):
+                    self.assertEqual((3, hashlib.sha256(b"abc").hexdigest()),
+                                     verifier.read_archive(client, "archive", 3, {}))
+                self.assertEqual(2, client.get_object.call_count)
+                self.assertTrue(body.closed)
+
+    def test_precondition_failure_is_not_retried(self):
+        _, exceptions, _ = self.archive_retry_fixture()
+        class ClientError(Exception):
+            response = {"ResponseMetadata": {"HTTPStatusCode": 412}}
+        client = mock.Mock()
+        client.head_object.return_value = {"ETag": "pinned"}
+        client.get_object.side_effect = ClientError("precondition failed")
+        with mock.patch.dict(sys.modules, {"botocore.exceptions": exceptions}), mock.patch.object(verifier.time, "sleep") as sleep:
+            with self.assertRaises(ClientError):
+                verifier.read_archive(client, "archive", 13, {})
+        client.get_object.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_archive_nontransport_error_is_not_retried(self):
+        error, exceptions, _ = self.archive_retry_fixture()
+        client = mock.Mock()
+        client.head_object.return_value = {"ETag": "pinned"}
+        client.get_object.side_effect = KeyError("not a transport failure")
+        with mock.patch.dict(sys.modules, {"botocore.exceptions": exceptions}):
+            with self.assertRaises(KeyError):
+                verifier.read_archive(client, "archive", 13, {})
+        client.get_object.assert_called_once()
+
+    def test_archive_validation_failure_is_not_retried(self):
+        client = mock.Mock()
+        client.head_object.return_value = {"ETag": "pinned"}
+        body = io.BytesIO(b"short")
+        client.get_object.return_value = {"Body": body, "ContentLength": 13, "ETag": "pinned"}
+        with self.assertRaisesRegex(verifier.VerificationError, "response length"):
+            verifier.read_archive(client, "archive", 13, {})
+        client.get_object.assert_called_once()
         self.assertTrue(body.closed)
 
     def test_explicit_repo_secrets_need_no_profile(self):
