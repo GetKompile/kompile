@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.codeindex;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
@@ -24,6 +25,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -44,12 +47,15 @@ public class IndexLockManager {
 
     /**
      * Acquire a write lock for indexing operations.
-     * Blocks if another thread holds a read or write lock.
-     * Also acquires a cross-process file lock.
+     * Waits with a bounded, interruptible budget if another thread holds a lock.
+     * Also acquires a cross-process file lock without waiting.
      */
     public static LockToken acquireWriteLock(String projectId, Path indexDir) throws IOException {
         ReentrantReadWriteLock rwLock = lockFor(projectId);
-        rwLock.writeLock().lock();
+        if (rwLock.getReadHoldCount() > 0 && !rwLock.isWriteLockedByCurrentThread()) {
+            throw new IOException("Cannot upgrade a code-index read lock to a write lock for '" + projectId + "'.");
+        }
+        acquire(rwLock.writeLock(), projectId);
 
         FileChannel channel = null;
         try {
@@ -77,13 +83,30 @@ public class IndexLockManager {
     }
 
     /**
-     * Acquire a read lock for search operations.
-     * In-process only — SQLite WAL handles cross-process reads.
+     * Fence a projection against in-process writes. Ordinary searches must use SQLite WAL
+     * snapshots instead, so they never wait for a complete indexing pass.
      */
-    public static LockToken acquireReadLock(String projectId) {
+    public static LockToken acquireReadLock(String projectId) throws IOException {
         ReentrantReadWriteLock rwLock = lockFor(projectId);
-        rwLock.readLock().lock();
+        acquire(rwLock.readLock(), projectId);
         return new ReadLockToken(rwLock);
+    }
+
+    private static void acquire(Lock lock, String projectId) throws IOException {
+        long waitMs = Math.max(0, Math.min(30_000,
+                Long.getLong("kompile.codeIndex.lockWaitMs", 2000L)));
+        try {
+            if (!lock.tryLock(waitMs, TimeUnit.MILLISECONDS)) {
+                throw new IOException("Index is locked by another thread in this process for project '"
+                        + projectId + "'; lock wait exceeded " + waitMs + " ms. Retry after indexing finishes.");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            InterruptedIOException failure = new InterruptedIOException(
+                    "Interrupted waiting for code-index lock for project '" + projectId + "'.");
+            failure.initCause(interrupted);
+            throw failure;
+        }
     }
 
     /**

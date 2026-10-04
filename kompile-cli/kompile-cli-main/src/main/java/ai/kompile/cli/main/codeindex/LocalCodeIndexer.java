@@ -242,7 +242,7 @@ public class LocalCodeIndexer {
         Files.createDirectories(indexDir);
         IndexFileStore store = new IndexFileStore(indexDir, objectMapper);
 
-        // Acquire write lock (blocks other indexers, not readers)
+        // Serialize writers and projection fences; ordinary SQLite WAL readers do not join this lock.
         try (IndexLockManager.LockToken ignored = IndexLockManager.acquireWriteLock(projectId, indexDir)) {
             if (isRemoved(projectId)) {
                 throw new IOException("Code index was removed for '" + projectId
@@ -616,8 +616,8 @@ public class LocalCodeIndexer {
 
         // Check for DB-backed index first
         if (Files.exists(indexDir.resolve("index.db"))) {
-            try (IndexLockManager.LockToken ignored = IndexLockManager.acquireReadLock(projectId);
-                 IndexDatabase db = IndexDatabase.open(indexDir)) {
+            // WAL readers see the last committed generation without joining a long index pass.
+            try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
                 return db.search(query, entityType, maxResults);
             } catch (java.sql.SQLException e) {
                 // Fall through to legacy search
@@ -635,8 +635,7 @@ public class LocalCodeIndexer {
                                                       int maxResults) throws IOException {
         Path indexDir = getIndexDir(projectId);
         if (!Files.isRegularFile(indexDir.resolve("index.db"))) return List.of();
-        try (IndexLockManager.LockToken ignored = IndexLockManager.acquireReadLock(projectId);
-             IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             List<Map<String, Object>> entities = db.getEntitiesForFile(filePath);
             return entities.size() <= maxResults
                     ? entities : new ArrayList<>(entities.subList(0, maxResults));
@@ -678,15 +677,14 @@ public class LocalCodeIndexer {
      */
     public Map<String, Object> getStats(String projectId) throws IOException {
         Path indexDir = getIndexDir(projectId);
-        IndexFileStore store = new IndexFileStore(indexDir, objectMapper);
-        Map<String, Object> meta = store.loadMetadata();
+        Map<String, Object> meta = getMetadata(projectId);
         if (meta.isEmpty()) {
             throw new IOException("No index found for project '" + projectId + "'");
         }
 
-        // Enrich with live DB stats if available
+        // Stats must not migrate or vacuum an index on a foreground caller's thread.
         if (Files.exists(indexDir.resolve("index.db"))) {
-            try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+            try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
                 meta.put("entitiesFound", db.getEntityCount());
                 meta.put("filesIndexed", db.getFileCount());
                 meta.put("entityCountsByType", db.getEntityCountsByType());
@@ -695,6 +693,11 @@ public class LocalCodeIndexer {
         }
 
         return meta;
+    }
+
+    /** Cheap root/scope discovery: no JDBC opens, scans, migration, or vacuum. */
+    Map<String, Object> getMetadata(String projectId) throws IOException {
+        return new IndexFileStore(getIndexDir(projectId), objectMapper).loadMetadata();
     }
 
     /**

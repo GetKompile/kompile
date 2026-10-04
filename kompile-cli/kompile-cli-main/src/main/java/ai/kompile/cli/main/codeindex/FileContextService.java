@@ -206,8 +206,9 @@ public final class FileContextService {
         String indexStatus = "AVAILABLE";
         String snapshotGeneration = "";
 
-        try (IndexLockManager.LockToken ignored = IndexLockManager.acquireReadLock(descriptor.codeProjectId());
-             IndexDatabase database = IndexDatabase.openReadOnly(descriptor.indexDirectory())) {
+        // The explicit WAL transaction below pins entities and generation together; a JVM
+        // read lock would instead wait for the entire background indexing pass.
+        try (IndexDatabase database = IndexDatabase.openReadOnly(descriptor.indexDirectory())) {
             database.beginTransaction();
             Map<String, Object> fileGraph;
             try {

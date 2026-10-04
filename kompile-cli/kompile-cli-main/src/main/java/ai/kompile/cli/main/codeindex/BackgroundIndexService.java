@@ -188,6 +188,7 @@ public final class BackgroundIndexService {
         volatile IndexFileWatcher watcher;
         volatile boolean watcherFailed;
         final AtomicBoolean watcherStartQueued = new AtomicBoolean();
+        final AtomicBoolean watcherStarting = new AtomicBoolean();
         volatile long lastTouchedMs;
         volatile boolean refreshRunning;
         /** Last time THIS process wrote into the project (read-your-writes window). */
@@ -242,6 +243,7 @@ public final class BackgroundIndexService {
     private final ScheduledThreadPoolExecutor learningExecutor;
     private volatile ProjectionPublisher projectionPublisher = LocalCodeKGraphPublisher::publish;
     private volatile ConfiguredLearning configuredLearning = BackgroundIndexService::runConfiguredLearning;
+    private volatile WatcherStarter watcherStarter = IndexFileWatcher::start;
     private final ConcurrentHashMap<String, ProjectState> projects = new ConcurrentHashMap<>();
     /** Canonical projection graph path → one serialized/coalesced learning batch. */
     private final ConcurrentHashMap<Path, LearningBatch> learningBatches = new ConcurrentHashMap<>();
@@ -296,15 +298,18 @@ public final class BackgroundIndexService {
         if (!closed.compareAndSet(false, true)) return;
         List<IndexJob> strandedProjectionJobs = new ArrayList<>();
         for (ProjectState state : projects.values()) {
-            IndexFileWatcher w = state.watcher;
-            if (w != null) {
-                try { w.stop(); } catch (Exception ignored) {}
-            }
+            IndexFileWatcher w;
             synchronized (state) {
+                w = state.watcher;
+                state.watcher = null;
                 strandedProjectionJobs.addAll(state.projectionJobs);
                 strandedProjectionJobs.addAll(state.runningProjectionJobs);
                 state.projectionJobs.clear();
                 state.runningProjectionJobs = List.of();
+            }
+            // Registration publishes under the same monitor; stop/flush outside it.
+            if (w != null) {
+                try { w.stop(); } catch (Exception ignored) {}
             }
         }
         assignLearningFailure(strandedProjectionJobs, "graph projection cancelled");
@@ -347,6 +352,16 @@ public final class BackgroundIndexService {
         List<IndexJob> represented = jobs == null ? List.of() : List.of(jobs);
         for (IndexJob job : represented) job.projection = projection;
         scheduleLearning(state, projection, represented);
+    }
+
+    @FunctionalInterface
+    interface WatcherStarter {
+        void start(IndexFileWatcher watcher) throws Exception;
+    }
+
+    /** Deterministically pause directory registration without delaying state-monitor acquisition. */
+    void setWatcherStarterForTests(WatcherStarter starter) {
+        watcherStarter = starter == null ? IndexFileWatcher::start : starter;
     }
 
     // ── Configuration ───────────────────────────────────────────────────────
@@ -1139,13 +1154,17 @@ public final class BackgroundIndexService {
         Path root = state.root;
         if (root == null || !Files.isDirectory(root)) return false;
 
-        synchronized (state) {
-            if (LocalCodeIndexer.isRemoved(state.projectId)) return false;
+        // Registration walks the tree and eviction may flush an entire index pass. Neither
+        // belongs under the monitor that foreground freshness/job waits need to acquire.
+        if (!state.watcherStarting.compareAndSet(false, true)) return false;
+        IndexFileWatcher watcher = null;
+        try {
+            if (closed.get() || LocalCodeIndexer.isRemoved(state.projectId)) return false;
             existing = state.watcher;
             if (existing != null && existing.isRunning()) return true;
             evictWatchersOverCap(state.projectId);
             try {
-                IndexFileWatcher watcher = indexer.createWatcher(root, state.projectId, silentStream());
+                watcher = indexer.createWatcher(root, state.projectId, silentStream());
                 watcher.setListener(new IndexFileWatcher.WatchListener() {
                     @Override
                     public void onFilesChanged(Set<String> changedPaths) {
@@ -1196,10 +1215,21 @@ public final class BackgroundIndexService {
                         if (!successful) scheduleRefresh(state, WRITE_DEBOUNCE_MS);
                     }
                 });
-                watcher.start();
-                state.watcher = watcher;
-                return true;
+                watcherStarter.start(watcher);
+                synchronized (state) {
+                    if (!closed.get() && !LocalCodeIndexer.isRemoved(state.projectId)
+                            && root.equals(state.root)) {
+                        state.watcher = watcher;
+                        return true;
+                    }
+                }
+                // Closed/removed during registration: do not resurrect maintenance.
+                watcher.stop();
+                return false;
             } catch (Exception e) {
+                if (watcher != null) {
+                    try { watcher.stop(); } catch (Exception ignored) { }
+                }
                 // Typically inotify watch exhaustion — degrade to polling.
                 state.watcherFailed = true;
                 CodeIndexDiagnostics.alert("[code-index] watcher unavailable for '"
@@ -1207,6 +1237,8 @@ public final class BackgroundIndexService {
                         + diagnosticMessage(e));
                 return false;
             }
+        } finally {
+            state.watcherStarting.set(false);
         }
     }
 
@@ -1223,8 +1255,11 @@ public final class BackgroundIndexService {
         watching.sort(Comparator.comparingLong(s -> s.lastTouchedMs));
         for (int i = 0; i <= watching.size() - cap; i++) {
             ProjectState evict = watching.get(i);
-            IndexFileWatcher w = evict.watcher;
-            evict.watcher = null;
+            IndexFileWatcher w;
+            synchronized (evict) {
+                w = evict.watcher;
+                evict.watcher = null;
+            }
             if (w != null) {
                 try { w.stop(); } catch (Exception ignored) {}
             }
@@ -1306,7 +1341,7 @@ public final class BackgroundIndexService {
     private Path lookupRoot(String projectId) {
         try {
             if (!Files.isDirectory(LocalCodeIndexer.getIndexDir(projectId))) return null;
-            Map<String, Object> stats = indexer.getStats(projectId);
+            Map<String, Object> stats = indexer.getMetadata(projectId);
             Object rootPath = stats == null ? null : stats.get("rootPath");
             if (rootPath == null) return null;
             Path root = Path.of(rootPath.toString()).toAbsolutePath().normalize();
@@ -1330,7 +1365,7 @@ public final class BackgroundIndexService {
         try {
             Map<String, Object> stats;
             try {
-                stats = indexer.getStats(state.projectId);
+                stats = indexer.getMetadata(state.projectId);
             } catch (IndexFileStore.UnreadableIndexStateException torn) {
                 if (workingDirectory == null) return false;
                 Path declared = ProjectIdResolver.declaredRoot(state.projectId, workingDirectory);

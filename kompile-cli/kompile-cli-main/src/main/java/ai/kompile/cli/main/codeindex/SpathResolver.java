@@ -121,8 +121,8 @@ public class SpathResolver {
                     "'. Run 'kompile code-index' first.");
         }
 
-        try (IndexLockManager.LockToken ignored = IndexLockManager.acquireReadLock(projectId);
-             IndexDatabase db = IndexDatabase.open(indexDir)) {
+        // SQLite WAL provides a committed snapshot even while this JVM is indexing.
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
 
             List<SpathMatch> matches = executeQuery(db, query, maxResults);
 
