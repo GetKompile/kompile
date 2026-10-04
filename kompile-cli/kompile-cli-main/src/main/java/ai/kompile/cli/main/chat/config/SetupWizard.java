@@ -2021,7 +2021,10 @@ public class SetupWizard {
                         .forEach(credentials::add);
             }
             if (credentials.isEmpty()) {
-                return StoredCredentialChoice.USE_EXISTING;
+                // Nothing stored to choose: an API-key route asks for the key (offering an
+                // environment key) as the session flow does, never reusing one unasked.
+                return authMethod == AuthMethod.OAUTH
+                        ? StoredCredentialChoice.USE_EXISTING : StoredCredentialChoice.ADD;
             }
             List<String> labels = new ArrayList<>(credentials.stream()
                     .map(info -> info.credentialName() + " — "
