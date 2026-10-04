@@ -129,7 +129,8 @@ class ChatModelPickerTest {
     void authCommandStartsAtVendorAndReusesTargetCredentials() throws Exception {
         store.putApiKey("zai", "target", "target-key", true);
         try (Picker picker = new Picker(config("openai", "source-key", "api-key", null), models("target-model"))) {
-            picker.choose("/auth", answer("picker provider", "zai"), answer("picker model", "1"));
+            picker.choose("/auth", answer("picker provider", "zai"), answer("picker auth", ""),
+                    answer(">", ""), answer("picker model", "1"));
             ChatConfig active = picker.repl.getChatConfig();
             assertEquals("zai", active.getProvider());
             assertEquals("target-model", active.getModel());
@@ -159,7 +160,8 @@ class ChatModelPickerTest {
     void cancellingAuthAfterVendorSelectionLeavesSessionUnchanged() throws Exception {
         store.putApiKey("zai", "target", "target-key", true);
         try (Picker picker = new Picker(config("openai", "source-key", "api-key", null), models("next-model"))) {
-            picker.choose("/auth", answer("picker provider", "zai"), answer("picker model", "cancel"));
+            picker.choose("/auth", answer("picker provider", "zai"), answer("picker auth", ""),
+                    answer(">", ""), answer("picker model", "cancel"));
             assertEquals("openai", picker.repl.getChatConfig().getProvider());
             assertEquals("original-model", picker.repl.getChatConfig().getModel());
             assertEquals("openai", ChatConfig.loadSession("model-picker-test").getProvider());
@@ -186,9 +188,102 @@ class ChatModelPickerTest {
         config.setAuthenticationMethod("none");
         config.setBaseUrl("http://endpoint.invalid/v1");
         try (Picker picker = new Picker(config, models("next-model"))) {
-            picker.choose("/provider", answer("picker provider", "zai"), answer("picker model", "1"));
+            picker.choose("/provider", answer("picker provider", "zai"), answer("picker auth", ""),
+                    answer(">", ""), answer("picker model", "1"));
             assertEquals("pinned", picker.repl.getChatConfig().getCredentialName());
             assertEquals("pinned-key", picker.calls.get(0).auth().token());
+            assertEquals("global", store.activeCredentialName("zai"));
+        }
+    }
+
+    @Test
+    void authCommandChoosesWhichStoredCredentialTheSessionUses() throws Exception {
+        store.putApiKey("zai", "first", "first-key", true);
+        store.putApiKey("zai", "second", "second-key", false);
+        try (Picker picker = new Picker(config("openai", "source-key", "api-key", null), models("next-model"))) {
+            picker.choose("/auth", answer("picker provider", "zai"), answer("picker auth", ""),
+                    answer(">", "2"), answer("picker model", "1"));
+            ChatConfig active = picker.repl.getChatConfig();
+            assertEquals("zai", active.getProvider());
+            assertEquals("second", active.getCredentialName());
+            assertEquals("second-key", picker.calls.get(0).auth().token());
+            assertEquals("first", store.activeCredentialName("zai"), "a session choice keeps the global default");
+            assertEquals("second", ChatConfig.loadSession("model-picker-test").getCredentialName());
+        }
+    }
+
+    @Test
+    void authCommandAddsAnotherCredentialForThisSession() throws Exception {
+        store.putApiKey("custom", "existing", "existing-key", true);
+        ChatConfig config = config("custom", null, "api-key", "http://endpoint.invalid/v1");
+        config.setCredentialName("existing");
+        try (Picker picker = new Picker(config, models("next-model"))) {
+            picker.choose("/auth", answer("picker provider", ""), answer("picker auth", ""),
+                    answer(">", "2"), answer("  API key", "fixture-added-key"), answer("picker model", "1"));
+            ChatConfig active = picker.repl.getChatConfig();
+            assertEquals("custom", active.getProvider());
+            assertTrue(active.getCredentialName().startsWith("session-"), active.getCredentialName());
+            assertEquals("fixture-added-key", picker.calls.get(0).auth().token());
+            assertEquals("http://endpoint.invalid/v1", active.getBaseUrl());
+            assertEquals(2, store.list("custom").size());
+            assertEquals("existing", store.activeCredentialName("custom"));
+            assertEquals(active.getCredentialName(), ChatConfig.loadSession("model-picker-test").getCredentialName());
+        }
+    }
+
+    @Test
+    void leavingTheCredentialPageReturnsToTheRoutePage() throws Exception {
+        store.putApiKey("zai", "target", "target-key", true);
+        try (Picker picker = new Picker(config("openai", "source-key", "api-key", null), models("next-model"))) {
+            picker.choose("/auth", answer("picker provider", "zai"), answer("picker auth", ""),
+                    answer(">", "q"), answer("picker auth", "cancel"));
+            assertTrue(picker.calls.isEmpty());
+            assertEquals("openai", picker.repl.getChatConfig().getProvider());
+            assertEquals("original-model", picker.repl.getChatConfig().getModel());
+        }
+    }
+
+    @Test
+    void backReturnsFromTheModelThroughTheAuthenticationPagesToTheVendor() throws Exception {
+        store.putApiKey("zai", "target", "target-key", true);
+        try (Picker picker = new Picker(config("openai", "source-key", "api-key", null), models("next-model"))) {
+            picker.choose("/auth", answer("picker provider", "zai"), answer("picker auth", ""), answer(">", ""),
+                    answer("picker model", "back"), answer("picker auth", "back"), answer("picker provider", "back"));
+            assertEquals(1, picker.calls.size());
+            assertEquals("openai", picker.repl.getChatConfig().getProvider());
+            assertEquals("original-model", picker.repl.getChatConfig().getModel());
+        }
+    }
+
+    @Test
+    void globalScopeAuthMakesTheChosenCredentialTheVendorDefault() throws Exception {
+        store.putApiKey("zai", "first", "first-key", true);
+        store.putApiKey("zai", "second", "second-key", false);
+        ChatConfig config = config("openai", "source-key", "api-key", null);
+        config.setAuthenticationScope("global");
+        try (Picker picker = new Picker(config, models("next-model"))) {
+            picker.choose("/auth", answer("picker provider", "zai"), answer("picker auth", ""),
+                    answer(">", "2"), answer("picker model", "1"));
+            ChatConfig active = picker.repl.getChatConfig();
+            assertEquals("zai", active.getProvider());
+            assertNull(active.getCredentialName());
+            assertEquals("second", store.activeCredentialName("zai"));
+            assertEquals("second-key", picker.calls.get(0).auth().token());
+        }
+    }
+
+    @Test
+    void authCommandUsesTheClaudeCodeLoginWithoutACredentialPage() throws Exception {
+        try (Picker picker = new Picker(config("openai", "source-key", "api-key", null), models("claude-opus-5-5"))) {
+            picker.choose("/auth", answer("picker provider", "anthropic"), answer("picker auth", "1"),
+                    answer("picker model", "1"));
+            ChatConfig active = picker.repl.getChatConfig();
+            assertEquals("anthropic", active.getProvider());
+            assertEquals("oauth", active.getAuthenticationMethod());
+            assertEquals("claude-opus-5-5", active.getModel());
+            assertTrue(picker.calls.isEmpty(), "the Claude Code route needs no API-key discovery");
+            picker.discovery.verify(ModelDiscoveryHttp::discoverClaudeCliResult);
+            assertTrue(store.list("anthropic").isEmpty(), "Claude Code owns authentication");
         }
     }
 

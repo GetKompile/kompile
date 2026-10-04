@@ -48,6 +48,7 @@ import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiConsumer;
 
 /**
  * Interactive setup wizard for kompile chat.
@@ -124,7 +125,16 @@ public class SetupWizard {
     }
 
     public static AuthenticationSelection authenticateSession(LineReader reader, String vendor, AuthMethod method,
-            java.util.function.BiConsumer<String, List<String>> pageRenderer) {
+            BiConsumer<String, List<String>> pageRenderer) {
+        return authenticateSession(reader, vendor, method, pageRenderer, null);
+    }
+
+    /**
+     * {@code preferredCredential} is the credential the session already uses for this
+     * route. It is the menu default, so pressing Enter keeps the current choice.
+     */
+    public static AuthenticationSelection authenticateSession(LineReader reader, String vendor, AuthMethod method,
+            BiConsumer<String, List<String>> pageRenderer, String preferredCredential) {
         String provider = resolveProviderForAuth(vendor, method);
         if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
         if (isClaudeCodeRoute(vendor, method)) {
@@ -133,10 +143,13 @@ public class SetupWizard {
         }
         if (method == AuthMethod.NATIVE) {
             // Native CLI credentials are owned by the provider CLI and are
-            // machine-global; they cannot be pinned per session. Route them
-            // through the startup flow so session-scope callers (notably the
-            // in-session model picker) cannot dead-end on a guaranteed null.
-            return authenticate(reader, vendor, method, pageRenderer);
+            // machine-global; they cannot be pinned per session. Keep the CLI's
+            // current login, or sign in again through the startup flow.
+            int choice = CredentialMenu.select(reader, vendorLabel(vendor) + " login:",
+                    List.of("Use the existing CLI login", "Sign in again through the CLI"), 0, pageRenderer);
+            if (choice < 0) return null;
+            return choice == 0 ? new AuthenticationSelection(provider, method, null)
+                    : authenticate(reader, vendor, method, pageRenderer);
         }
         try {
             CredentialStore store = CredentialStore.create();
@@ -147,9 +160,13 @@ public class SetupWizard {
             List<String> labels = new ArrayList<>(credentials.stream()
                     .map(CredentialStore.CredentialInfo::displayLabel).toList());
             labels.add("Sign in / add another credential");
+            int defaultIndex = CredentialMenu.defaultIndex(store, provider, credentials);
+            for (int i = 0; i < credentials.size(); i++) {
+                if (credentials.get(i).credentialName().equalsIgnoreCase(preferredCredential)) defaultIndex = i;
+            }
             int choice = credentials.isEmpty() && method != AuthMethod.OAUTH ? 0
                     : CredentialMenu.select(reader, "Authentication for this session:", labels,
-                    CredentialMenu.defaultIndex(store, provider, credentials), pageRenderer);
+                    defaultIndex, pageRenderer);
             if (choice < 0) return null;
             String name;
             if (choice < credentials.size()) {
@@ -1433,7 +1450,7 @@ public class SetupWizard {
 
     public static AuthenticationSelection authenticate(
             LineReader reader, String vendor, AuthMethod authMethod,
-            java.util.function.BiConsumer<String, List<String>> pageRenderer) {
+            BiConsumer<String, List<String>> pageRenderer) {
         if (vendor == null || vendor.isBlank() || authMethod == null) {
             return null;
         }
@@ -1460,11 +1477,14 @@ public class SetupWizard {
             }
             return new AuthenticationSelection(provider, authMethod, null);
         }
-        if (!selectManagedCredential(reader, provider, authMethod, pageRenderer)) {
+        StoredCredentialChoice stored = selectManagedCredential(reader, provider, authMethod, pageRenderer);
+        if (stored == StoredCredentialChoice.CANCELLED) {
             return null;
         }
 
-        OAuthProviderFlow.RequestAuth existing = resolveExistingCredential(provider, authMethod);
+        // Adding another credential signs in anew instead of reusing the active one.
+        OAuthProviderFlow.RequestAuth existing = stored == StoredCredentialChoice.ADD
+                ? null : resolveExistingCredential(provider, authMethod);
         if (authMethod == AuthMethod.OAUTH) {
             if (existing != null && existing.oauth()) {
                 System.out.println(GREEN + "  ✓ Using existing OAuth credential for "
@@ -1981,11 +2001,13 @@ public class SetupWizard {
 
     // ── API key prompt ──────────────────────────────────────────────────────
 
-    private static boolean selectManagedCredential(
+    private enum StoredCredentialChoice { CANCELLED, USE_EXISTING, ADD }
+
+    private static StoredCredentialChoice selectManagedCredential(
             LineReader reader,
             String provider,
             AuthMethod authMethod,
-            java.util.function.BiConsumer<String, List<String>> pageRenderer) {
+            BiConsumer<String, List<String>> pageRenderer) {
         try {
             CredentialStore store = CredentialStore.create();
             List<CredentialStore.CredentialInfo> allCredentials = CredentialMenu.unexpired(store.list(provider));
@@ -1999,40 +2021,44 @@ public class SetupWizard {
                         .forEach(credentials::add);
             }
             if (credentials.isEmpty()) {
-                return true;
+                return StoredCredentialChoice.USE_EXISTING;
             }
-            List<String> labels = credentials.stream()
+            List<String> labels = new ArrayList<>(credentials.stream()
                     .map(info -> info.credentialName() + " — "
                             + (isLegacyOpenAiCodexCredential(store, provider, info)
                             ? ManagedCredential.OAUTH
                             : info.type())
                             + (info.identity() == null ? "" : " — " + info.identity())
                             + " (" + info.status() + ")")
-                    .toList();
+                    .toList());
+            labels.add("Sign in / add another credential");
             String prompt = authMethod == AuthMethod.OAUTH
                     ? "Select Subscription:"
                     : "Select Stored Credential:";
             int selected = CredentialMenu.select(reader, prompt, labels,
                     CredentialMenu.defaultIndex(store, provider, credentials), pageRenderer);
             if (selected < 0) {
-                return false;
+                return StoredCredentialChoice.CANCELLED;
+            }
+            if (selected == credentials.size()) {
+                return StoredCredentialChoice.ADD;
             }
             CredentialStore.CredentialInfo selectedCredential = credentials.get(selected);
             String credentialName = selectedCredential.credentialName();
             if (selectedCredential.active()) {
                 store.recordUsed(provider, credentialName);
-                return true;
+                return StoredCredentialChoice.USE_EXISTING;
             }
             if (!store.switchCredential(provider, credentialName)) {
                 System.err.println("  Could not switch to credential '" + credentialName + "'.");
-                return false;
+                return StoredCredentialChoice.CANCELLED;
             }
             System.out.println(GREEN + "  ✓ Using credential '" + credentialName
                     + "' for " + provider + RESET);
-            return true;
+            return StoredCredentialChoice.USE_EXISTING;
         } catch (IOException e) {
             System.err.println("  Could not read managed credentials: " + e.getMessage());
-            return false;
+            return StoredCredentialChoice.CANCELLED;
         }
     }
 

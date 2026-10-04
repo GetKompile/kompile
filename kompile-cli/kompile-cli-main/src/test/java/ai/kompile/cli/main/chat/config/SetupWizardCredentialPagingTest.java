@@ -97,7 +97,7 @@ class SetupWizardCredentialPagingTest {
                     "openai", SetupWizard.AuthMethod.API_KEY));
             assertEquals("account-13", store.activeCredentialName("openai"));
             String rendered = output.toString(StandardCharsets.UTF_8);
-            assertTrue(rendered.contains("Showing 13-24 of 25"));
+            assertTrue(rendered.contains("Showing 13-24 of 26"));
             assertPagesBounded(rendered);
             int standaloneOutputSize = output.size();
             List<List<String>> modalPages = new ArrayList<>();
@@ -107,6 +107,7 @@ class SetupWizardCredentialPagingTest {
             assertEquals(standaloneOutputSize, output.size());
             assertEquals(3, modalPages.size());
             modalPages.forEach(page -> assertPagesBounded(String.join("\n", page)));
+            assertTrue(String.join("\n", modalPages.get(2)).contains("Sign in / add another credential"));
         }
     }
 
@@ -222,7 +223,7 @@ class SetupWizardCredentialPagingTest {
             assertTrue(rendered.contains("expires 2099-07-08T09:10:11Z"), rendered);
             assertFalse(rendered.contains("renewable"), rendered);
             assertFalse(rendered.contains("1970-01-01"), rendered);
-            assertTrue(rendered.contains(global ? "Showing 1-2 of 2" : "Showing 1-3 of 3"), rendered);
+            assertTrue(rendered.contains("Showing 1-3 of 3"), rendered);
             assertNotNull(store.read("openai-codex", "renewable"));
             assertTrue(rendered.contains("non-expiring"), rendered);
             assertTrue(rendered.contains("[default]"), rendered);
@@ -304,6 +305,34 @@ class SetupWizardCredentialPagingTest {
             assertEquals(second.credentialName(), reused.credentialName());
             assertEquals(first.credentialName(), store.activeCredentialName("custom"));
             assertEquals(2, store.list("custom").size());
+        }
+    }
+
+    @Test
+    void globalAddAnotherSavesANewActiveKeyAndKeepsTheStoredOne() throws Exception {
+        store.putApiKey("custom", "existing", "fixture-existing-key", true);
+        try (var terminal = terminal(new ByteArrayOutputStream())) {
+            assertNotNull(SetupWizard.authenticate(reader(terminal, "2", "fixture-added"),
+                    "custom", SetupWizard.AuthMethod.API_KEY));
+            String active = store.activeCredentialName("custom");
+            assertNotEquals("existing", active);
+            assertEquals("fixture-added", store.resolveApiKey("custom", active, ignored -> null));
+            assertEquals("fixture-existing-key", store.resolveApiKey("custom", "existing", ignored -> null));
+            assertEquals(2, store.list("custom").size());
+        }
+    }
+
+    @Test
+    void nativeCliLoginKeepsTheExistingLoginOrStepsBack() throws Exception {
+        try (var terminal = terminal(new ByteArrayOutputStream())) {
+            // Never choose the second option here: a new sign-in starts the real CLI.
+            var existing = SetupWizard.authenticateSession(reader(terminal, ""),
+                    "opencode", SetupWizard.AuthMethod.NATIVE);
+            assertNotNull(existing);
+            assertEquals("opencode", existing.provider());
+            assertNull(existing.credentialName());
+            assertNull(SetupWizard.authenticateSession(reader(terminal, "q"),
+                    "opencode", SetupWizard.AuthMethod.NATIVE));
         }
     }
 

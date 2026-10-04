@@ -906,9 +906,9 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
             body.append("  ").append(renderer.cyan("/resume-all [options]")).append(" Restore recent exited/crashed conversations\n");
             body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
-            body.append("  ").append(renderer.cyan("/auth")).append("               Choose vendor/model; reuse or change authentication\n");
+            body.append("  ").append(renderer.cyan("/auth")).append("               Choose vendor, auth route, credential, then model\n");
             body.append("  ").append(renderer.cyan("/auth list|session|global")).append("  Manage credential scope/accounts\n");
-            body.append("  ").append(renderer.cyan("/provider")).append("           Alias for the /auth vendor/model picker\n");
+            body.append("  ").append(renderer.cyan("/provider")).append("           Alias for /auth\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure provider/runtime\n");
             body.append("  ").append(renderer.cyan("/clear")).append("              Start a new conversation in this process\n");
             body.append("  ").append(renderer.cyan("/reset")).append("              Restart this session in a new process\n");

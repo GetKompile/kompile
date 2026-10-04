@@ -55,8 +55,8 @@ public class ChatCompleter implements Completer {
         // Chat & agents
         COMMANDS.put("/help", "Show help message");
         COMMANDS.put("/setup", "Run setup wizard");
-        COMMANDS.put("/auth", "Choose vendor and model; reuse or change authentication");
-        COMMANDS.put("/provider", "Alias for the /auth vendor/model picker");
+        COMMANDS.put("/auth", "Choose vendor, authentication route, credential, then model");
+        COMMANDS.put("/provider", "Alias for /auth");
         COMMANDS.put("/status", "Connection and session info");
         COMMANDS.put("/agent", "Switch or show current agent");
         COMMANDS.put("/agents", "List available agents");

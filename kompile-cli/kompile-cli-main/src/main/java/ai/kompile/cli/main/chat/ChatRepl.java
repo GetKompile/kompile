@@ -3683,8 +3683,13 @@ public class ChatRepl implements AutoCloseable {
         openModelProviderPicker(false);
     }
 
-    /** /model starts at models; /auth (and /provider) starts at vendors. */
-    void openModelProviderPicker(boolean chooseProvider) {
+    /**
+     * /model starts at the model page for the current vendor. /auth (and its /provider
+     * alias) walks the whole authentication flow: vendor, authentication route, which
+     * stored credential to use (or sign in / add another), a base URL where one is
+     * needed, then the model. Nothing is committed until a model is chosen.
+     */
+    void openModelProviderPicker(boolean authenticationFlow) {
         if (!localMode || chatConfig == null) {
             ChatCompleter.printAbove("Provider/model switching is only available in local standard chat.");
             return;
@@ -3705,7 +3710,15 @@ public class ChatRepl implements AutoCloseable {
         String selectedVendor = SetupWizard.vendorForProvider(selectedProvider);
         String selectedModel = chatConfig.getModel();
         ChatConfig discoveryConfig = chatConfig.copy();
+        boolean chooseProvider = authenticationFlow;
         boolean changeCredentials = false;
+        // Where "back" leads: the authentication pages return to the vendor page when
+        // they follow it, and the vendor page to the model page it was opened from.
+        boolean authBackToVendor = false;
+        boolean vendorBackToModel = false;
+        // Each page replaces the modal window at once, so a problem is shown at the
+        // top of the next page rather than in a window that is never seen.
+        List<String> notice = new ArrayList<>();
         boolean committed = false;
         // Menu answers (option numbers, model ids, credential prompts) are
         // transient picker input: swap in a throwaway history so they never
@@ -3717,47 +3730,59 @@ public class ChatRepl implements AutoCloseable {
             ChatCompleter.setTemporaryWindowActive(true);
             while (true) {
                 if (chooseProvider) {
-                    tui.updateTemporaryWindow("Provider and model", pickerLines(
+                    tui.updateTemporaryWindow("Provider and model", withNotice(notice, pickerLines(
                             "Choose a provider", providers, selectedVendor, selectedVendor, selectedProvider, selectedModel,
-                            discoveryConfig));
-                    String providerInput = reader.readLine("picker provider (number/name, back, Esc cancels): ");
-                    if (providerInput == null || providerInput.isBlank()
-                            || "cancel".equalsIgnoreCase(providerInput.trim())) {
+                            discoveryConfig)));
+                    String providerInput = reader.readLine(
+                            "picker provider (number/name, blank uses default, back, Esc cancels): ");
+                    if (providerInput == null || "cancel".equalsIgnoreCase(providerInput.trim())) {
                         return;
                     }
                     if ("back".equalsIgnoreCase(providerInput.trim())) {
+                        if (!vendorBackToModel) return;
                         chooseProvider = false;
                         continue;
                     }
-                    String providerChoice = parsePickerChoice(providerInput, providers);
+                    String providerChoice = parsePickerChoice(
+                            providerInput.isBlank() ? selectedVendor : providerInput, providers);
                     if (providerChoice == null) {
-                        tui.updateTemporaryWindow("Provider and model", List.of(
-                                "Invalid provider: " + providerInput.trim(),
-                                "Choose a numbered provider or its exact name.",
-                                "Current: " + activeModelDisplayName()));
+                        if (!providerInput.isBlank()) notice.add("Invalid provider: " + providerInput.trim() + ".");
+                        notice.add("Choose a numbered provider or its exact name.");
                         continue;
                     }
                     ChatConfig vendorConfig = providerChoice.equalsIgnoreCase(
                             SetupWizard.vendorForProvider(chatConfig.getProvider()))
                             && !providerChoice.equalsIgnoreCase(selectedVendor) ? chatConfig : discoveryConfig;
-                    discoveryConfig = SetupWizard.modelPickerConfigForVendor(vendorConfig, providerChoice);
+                    try {
+                        discoveryConfig = SetupWizard.modelPickerConfigForVendor(vendorConfig, providerChoice);
+                    } catch (IOException unavailable) {
+                        notice.add("Could not prepare " + SetupWizard.vendorLabel(providerChoice) + ": "
+                                + unavailable.getMessage());
+                        continue;
+                    }
                     selectedVendor = providerChoice;
                     selectedProvider = discoveryConfig.getProvider();
                     selectedModel = discoveryConfig.getModel();
                     chooseProvider = false;
+                    if (authenticationFlow) {
+                        // The vendor page opened this pass, so the authentication pages follow it.
+                        changeCredentials = true;
+                        authBackToVendor = true;
+                        vendorBackToModel = false;
+                    }
                 }
                 SetupWizard.AuthenticationSelection authentication = new SetupWizard.AuthenticationSelection(
                         selectedProvider, SetupWizard.authMethodForProvider(selectedProvider, discoveryConfig),
                         null, discoveryConfig.getCredentialName());
                 String selectedBaseUrl = discoveryConfig.getBaseUrl();
                 if (changeCredentials) {
+                    changeCredentials = false;
                     List<SetupWizard.AuthMethod> authMethods = SetupWizard.authMethodsForPicker(selectedVendor);
                     if (authMethods.isEmpty()) {
-                        tui.updateTemporaryWindow("Provider and model", List.of(
-                                "No configured authentication route exists for "
-                                        + SetupWizard.vendorLabel(selectedVendor) + ".",
-                                "Run /setup to configure this provider."));
-                        changeCredentials = false;
+                        notice.add("No configured authentication route exists for "
+                                + SetupWizard.vendorLabel(selectedVendor) + ".");
+                        notice.add("Run /setup to configure this provider.");
+                        chooseProvider = authBackToVendor;
                         continue;
                     }
                     SetupWizard.AuthMethod selectedAuth =
@@ -3765,30 +3790,31 @@ public class ChatRepl implements AutoCloseable {
                     if (!authMethods.contains(selectedAuth)) selectedAuth = authMethods.get(0);
                     if (authMethods.size() > 1) {
                         List<String> authChoices = SetupWizard.authOptions(selectedVendor);
-                        boolean backToModels = false;
+                        boolean leaveAuthentication = false;
                         while (true) {
-                            tui.updateTemporaryWindow("Provider and model", pickerLines(
+                            tui.updateTemporaryWindow("Provider and model", withNotice(notice, pickerLines(
                                     "Choose authentication for " + SetupWizard.vendorLabel(selectedVendor),
                                     authChoices, SetupWizard.authMethodLabel(selectedVendor, selectedAuth),
-                                    selectedVendor, selectedProvider, selectedModel, discoveryConfig));
-                            String authInput = reader.readLine("picker auth (number/name, back, Esc cancels): ");
+                                    selectedVendor, selectedProvider, selectedModel, discoveryConfig)));
+                            String authInput = reader.readLine(
+                                    "picker auth (number/name, blank uses default, back, Esc cancels): ");
                             if (authInput == null || "cancel".equalsIgnoreCase(authInput.trim())) return;
                             if ("back".equalsIgnoreCase(authInput.trim())) {
-                                backToModels = true;
+                                leaveAuthentication = true;
                                 break;
                             }
-                            String authChoice = parsePickerChoice(authInput, authChoices);
+                            String authChoice = parsePickerChoice(authInput.isBlank()
+                                    ? SetupWizard.authMethodLabel(selectedVendor, selectedAuth) : authInput, authChoices);
                             if (authChoice == null) {
-                                tui.updateTemporaryWindow("Provider and model", List.of(
-                                        "Invalid authentication method: " + authInput.trim(),
-                                        "Choose a numbered method or its exact name."));
+                                notice.add("Invalid authentication method: " + authInput.trim() + ".");
+                                notice.add("Choose a numbered method or its exact name.");
                                 continue;
                             }
                             selectedAuth = authMethods.get(authChoices.indexOf(authChoice));
                             break;
                         }
-                        if (backToModels) {
-                            changeCredentials = false;
+                        if (leaveAuthentication) {
+                            chooseProvider = authBackToVendor;
                             continue;
                         }
                     }
@@ -3799,12 +3825,21 @@ public class ChatRepl implements AutoCloseable {
                                     + SetupWizard.authMethodLabel(selectedVendor, selectedAuth)));
                     String authVendor = selectedVendor;
                     SetupWizard.AuthMethod authMethod = selectedAuth;
+                    // A native CLI login is machine-wide, so it always takes the session page.
+                    boolean globalScope = "global".equals(chatConfig.getAuthenticationScope())
+                            && authMethod != SetupWizard.AuthMethod.NATIVE;
+                    String sessionCredential = sessionCredentialFor(discoveryConfig, authVendor, authMethod);
                     authentication = withNativeMouseDuringAuthentication(
-                            reader.getTerminal(), () -> "global".equals(chatConfig.getAuthenticationScope())
+                            reader.getTerminal(), () -> globalScope
                                     ? SetupWizard.authenticate(reader, authVendor, authMethod, tui::updateTemporaryWindow)
-                                    : SetupWizard.authenticateSession(reader, authVendor, authMethod, tui::updateTemporaryWindow));
+                                    : SetupWizard.authenticateSession(reader, authVendor, authMethod,
+                                    tui::updateTemporaryWindow, sessionCredential));
                     if (authentication == null) {
-                        changeCredentials = false;
+                        notice.add("Authentication was not completed for "
+                                + SetupWizard.vendorLabel(selectedVendor) + ".");
+                        // Step back one page: the route choice, else whatever preceded the auth pages.
+                        if (authMethods.size() > 1) changeCredentials = true;
+                        else chooseProvider = authBackToVendor;
                         continue;
                     }
                     selectedProvider = authentication.provider();
@@ -3829,7 +3864,6 @@ public class ChatRepl implements AutoCloseable {
                     }
                     selectedBaseUrl = discoveryConfig.getBaseUrl();
                     selectedModel = discoveryConfig.getModel();
-                    changeCredentials = false;
                 }
                 if ("custom".equalsIgnoreCase(selectedProvider)
                         && (selectedBaseUrl == null || selectedBaseUrl.isBlank())) {
@@ -3878,10 +3912,10 @@ public class ChatRepl implements AutoCloseable {
                         modelPickerLines.add(discovery.message());
                     }
                     if (!authenticationBlocked) {
-                        modelPickerLines.add("Credentials are reused. Type provider or credentials to change them.");
+                        modelPickerLines.add("Type credentials to change authentication, or provider to change vendor.");
                         modelPickerLines.add("Reasoning/fast/ultracode settings are kept where supported; use /thinking, /fast or /ultracode to change them.");
                     }
-                    tui.updateTemporaryWindow("Provider and model", modelPickerLines);
+                    tui.updateTemporaryWindow("Provider and model", withNotice(notice, modelPickerLines));
                     String modelInput = reader.readLine(
                             authenticationBlocked
                                     ? "Authentication failed (credentials, provider, refresh, Esc cancels): "
@@ -3889,17 +3923,30 @@ public class ChatRepl implements AutoCloseable {
                     if (modelInput == null || "cancel".equalsIgnoreCase(modelInput.trim())) {
                         return;
                     }
-                    if ("provider".equalsIgnoreCase(modelInput.trim())
-                            || ("back".equalsIgnoreCase(modelInput.trim()) && !authenticationBlocked)) {
+                    String command = modelInput.trim();
+                    if ("back".equalsIgnoreCase(command)) {
+                        // /auth came through the authentication pages, and a failed login
+                        // is fixed there, so back returns to them when the vendor has any.
+                        if ((authenticationFlow || authenticationBlocked) && hasAuthenticationPages(selectedVendor)) {
+                            changeCredentials = true;
+                            authBackToVendor = authenticationFlow;
+                        } else {
+                            chooseProvider = true;
+                            vendorBackToModel = true;
+                        }
+                        break;
+                    }
+                    if ("provider".equalsIgnoreCase(command)) {
                         chooseProvider = true;
+                        vendorBackToModel = true;
                         break;
                     }
-                    if ("credentials".equalsIgnoreCase(modelInput.trim())
-                            || ("back".equalsIgnoreCase(modelInput.trim()) && authenticationBlocked)) {
+                    if ("credentials".equalsIgnoreCase(command)) {
                         changeCredentials = true;
+                        authBackToVendor = false;
                         break;
                     }
-                    if ("refresh".equalsIgnoreCase(modelInput.trim())) {
+                    if ("refresh".equalsIgnoreCase(command)) {
                         discovery = SetupWizard.refreshModelDiscovery(
                                 selectedProvider, authentication.apiKey(), discoveryConfig);
                         ModelCatalogSelection.CatalogList refreshed =
@@ -3917,10 +3964,8 @@ public class ChatRepl implements AutoCloseable {
                             // full ids itself — accept the raw entry verbatim.
                             selectedModel = modelInput.trim();
                         } else {
-                            tui.updateTemporaryWindow("Provider and model", List.of(
-                                    "Invalid model selection for " + providerLabel(selectedVendor) + ".",
-                                    "Numbers must match a listed choice. Enter a model id, refresh, or go back.",
-                                    "Current: " + activeModelDisplayName()));
+                            notice.add("Invalid model selection for " + providerLabel(selectedVendor) + ".");
+                            notice.add("Numbers must match a listed choice. Enter a model id, refresh, or go back.");
                             continue;
                         }
                     } else {
@@ -3936,17 +3981,14 @@ public class ChatRepl implements AutoCloseable {
                         candidate.setUltracode(false);
                     }
                     if (!canHotSwitchLocalProvider(candidate)) {
-                        tui.updateTemporaryWindow("Provider and model", List.of(
-                                "That provider owns a separate runtime and cannot be replaced in-place:",
-                                "  " + providerLabel(selectedVendor),
-                                "Use /setup and restart the session for this provider."));
+                        notice.add(providerLabel(selectedVendor)
+                                + " owns a separate runtime and cannot be replaced in-place.");
+                        notice.add("Use /setup and restart the session for this provider.");
                         continue;
                     }
                     if (!candidate.isValid()) {
-                        tui.updateTemporaryWindow("Provider and model", List.of(
-                                "Credentials are not configured for " + providerLabel(selectedVendor) + ".",
-                                "Type credentials to configure authentication, or provider to change vendor.",
-                                "The current provider/model is still active."));
+                        notice.add("Credentials are not configured for " + providerLabel(selectedVendor) + ".");
+                        notice.add("Type credentials to configure authentication, or provider to change vendor.");
                         continue;
                     }
                     if (commitModelProviderSelection(candidate)) {
@@ -3963,8 +4005,6 @@ public class ChatRepl implements AutoCloseable {
         } catch (UserInterruptException | EndOfFileException ignored) {
             // Escape/EOF closes only the temporary picker. The active turn's cancel
             // widget has already requested interruption when Escape was pressed.
-        } catch (IOException error) {
-            ChatCompleter.printAbove("Could not reuse provider credentials. The current model is unchanged.");
         } finally {
             endPickerHistory(reader, pickerHistory);
             modelPickerActive = false;
@@ -4100,7 +4140,7 @@ public class ChatRepl implements AutoCloseable {
                     ChatCompleter.printAbove("Authentication: Claude Code route — "
                             + LiveModelDiscovery.claudeCodeLogin().describe());
                     ChatCompleter.printAbove("Kompile-managed Anthropic credentials apply to the API-key route; "
-                            + "/auth opens vendor selection; type credentials to switch routes.");
+                            + "/auth lets you choose the route and credential.");
                     return;
                 }
                 ChatCompleter.printAbove("Authentication: " + chatConfig.getAuthenticationScope()
@@ -4111,8 +4151,8 @@ public class ChatRepl implements AutoCloseable {
                             + (info.active() ? " [global default]" : ""));
                 ChatCompleter.printAbove("/auth session [name] — pin this session; /auth global — follow vendor default\n"
                         + "/auth global <provider> <name> — select credential for all global-mode sessions of that provider\n"
-                        + "/auth default session|global — default mode for new sessions; /auth — choose vendor/model\n"
-                        + "/auth list — show credentials; type credentials in the picker to change authentication");
+                        + "/auth default session|global — default mode for new sessions; /auth list — show credentials\n"
+                        + "/auth — choose vendor, authentication route, credential (or add one), then model");
                 return;
             }
             if (args.length == 2 && "default".equals(args[0])) {
@@ -4135,7 +4175,7 @@ public class ChatRepl implements AutoCloseable {
             if (chatConfig.isClaudeCliNative()) {
                 // The route's credential is the Claude Code login; Kompile has none to pin.
                 ChatCompleter.printAbove("The Claude Code route uses your Claude Code login, so there is no "
-                        + "Kompile credential to pin. Use /auth, then credentials, to choose Anthropic's API-key route.");
+                        + "Kompile credential to pin. Use /auth and choose Anthropic's API-key route.");
                 return;
             }
             ChatConfig candidate = chatConfig.copy();
@@ -4279,6 +4319,36 @@ public class ChatRepl implements AutoCloseable {
         return null;
     }
 
+    /** Prefix a picker page with the pending notice lines, then clear them. */
+    private List<String> withNotice(List<String> notice, List<String> page) {
+        if (notice.isEmpty()) return page;
+        List<String> lines = new ArrayList<>();
+        for (String line : notice) lines.add(renderer.yellow(line));
+        lines.add("");
+        lines.addAll(page);
+        notice.clear();
+        return lines;
+    }
+
+    /** The credential this session pins for the route's wire provider, or null. */
+    static String sessionCredentialFor(ChatConfig config, String vendor, SetupWizard.AuthMethod method) {
+        ChatConfig probe = config.copy();
+        try {
+            probe.setProvider(SetupWizard.resolveProviderForAuth(vendor, method));
+        } catch (IllegalArgumentException unsupported) {
+            return null;
+        }
+        return probe.getCredentialName();
+    }
+
+    /** Whether the vendor has a route or credential page that "back" can return to. */
+    static boolean hasAuthenticationPages(String vendor) {
+        List<SetupWizard.AuthMethod> methods = SetupWizard.authMethodsForPicker(vendor);
+        if (methods.size() > 1) return true;
+        return methods.size() == 1 && methods.get(0) != SetupWizard.AuthMethod.NONE
+                && !SetupWizard.isClaudeCodeRoute(vendor, methods.get(0));
+    }
+
     private List<String> pickerLines(String heading, List<String> choices,
                                      String defaultChoice, String vendor,
                                      String provider, String model, ChatConfig selection) {
@@ -4295,8 +4365,10 @@ public class ChatRepl implements AutoCloseable {
         lines.add("");
         String auth = SetupWizard.authMethodLabel(vendor,
                 SetupWizard.authMethodForProvider(provider, selection));
+        String credential = selection == null ? null : selection.getCredentialName();
         lines.add("Provider: " + SetupWizard.vendorLabel(vendor)
-                + " (" + provider + ")   Auth: " + auth + "   Model: " + model);
+                + " (" + provider + ")   Auth: " + auth + (credential == null ? "" : " · " + credential)
+                + "   Model: " + model);
         String commands = heading.startsWith("Choose a model")
                 ? "number/name, model id, provider, credentials, refresh, or Esc to cancel"
                 : "number/name, back, or Esc to cancel";
