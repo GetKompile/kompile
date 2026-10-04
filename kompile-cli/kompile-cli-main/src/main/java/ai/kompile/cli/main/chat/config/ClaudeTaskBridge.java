@@ -37,6 +37,7 @@ final class ClaudeTaskBridge {
     private final BackgroundProcessManager processes;
     private final Consumer<String> stopTask;
     private final Map<String, Row> rows = new ConcurrentHashMap<>();
+    private final Map<Object, Row> processRows = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Object logLock = new Object();
     private volatile String logRow;
@@ -48,6 +49,22 @@ final class ClaudeTaskBridge {
     ClaudeTaskBridge(BackgroundProcessManager processes, Consumer<String> stopTask) {
         this.processes = processes;
         this.stopTask = stopTask;
+    }
+
+    /** A killable session row, independent of which provider the chat selects. */
+    void processStarted(Object source, long pid, String sessionId, Runnable stopProcess) {
+        if (closed.get()) return;
+        Row row = new Row("", source, Map.of("source", "claude-code",
+                "pid", Long.toString(pid), "session_id", sessionId));
+        if (processRows.putIfAbsent(source, row) != null) return;
+        String id = processes.registerVirtual(ProcessKind.COMMAND, "claude",
+                "Claude Code session", row.metadata,
+                () -> CompletableFuture.runAsync(stopProcess)).getId();
+        row.registered(id);
+        // Closing can race registration; Row also handles exit-before-registration.
+        if (closed.get() && processRows.remove(source, row)) {
+            row.end(entry -> processes.fail(entry, -1));
+        }
     }
 
     /** Record a task event reported by the Claude Code process {@code source}. */
@@ -80,6 +97,11 @@ final class ClaudeTaskBridge {
     /** The Claude Code process {@code source} exited, and its tasks with it. */
     void processExited(Object source, int exitCode) {
         endAll(source, "Claude Code exited (exit " + exitCode + ") before this task finished");
+        Row process = processRows.remove(source);
+        if (process != null) process.end(id -> {
+            if (exitCode == 0) processes.complete(id);
+            else processes.fail(id, exitCode);
+        });
         onLog("Claude Code exited (exit " + exitCode + ")");
     }
 
@@ -87,6 +109,9 @@ final class ClaudeTaskBridge {
     void close() {
         if (!closed.compareAndSet(false, true)) return;
         endAll(null, "Claude Code was closed before this task finished");
+        for (Row row : processRows.values()) {
+            if (processRows.remove(row.source, row)) row.end(id -> processes.fail(id, -1));
+        }
         completeLog();
     }
 
@@ -202,7 +227,7 @@ final class ClaudeTaskBridge {
     }
 
     /**
-     * One task's row. Whoever takes it out of {@code rows} ends it; the end waits
+     * One task or session row. Whoever takes it out of its map ends it; the end waits
      * for the process entry when that is still being made.
      */
     private static final class Row {

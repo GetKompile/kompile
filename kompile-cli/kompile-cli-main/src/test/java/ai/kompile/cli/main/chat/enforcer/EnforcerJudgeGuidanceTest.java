@@ -18,7 +18,9 @@ package ai.kompile.cli.main.chat.enforcer;
 
 import ai.kompile.cli.main.chat.harness.JudgeBackend;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -167,7 +169,7 @@ class EnforcerJudgeGuidanceTest {
     void activeRemindersAreDistinctLiveConstraintsAcrossEveryJudgeLane() throws Exception {
         RecordingBackend backend = new RecordingBackend();
         AtomicReference<String> reminders = new AtomicReference<>(
-                "1. [project] Plan before making changes\n2. [session] Run focused tests");
+                "1. [project] Plan before making changes\n2. [session] Keep the todo list current");
         EnforcerJudge judge = new EnforcerJudge(
                 backend, new com.fasterxml.jackson.databind.ObjectMapper());
         judge.setReminderSupplier(reminders::get);
@@ -185,11 +187,11 @@ class EnforcerJudgeGuidanceTest {
         judge.chatWithJudge("Which reminders are enforced?");
 
         assertEquals(4, backend.userPrompts.size(),
-                "a reminder must prevent the routine-tool fast path from skipping judge review");
+                "a task-list reminder must prevent the routine-tool fast path from skipping judge review");
         for (String prompt : backend.userPrompts) {
             assertTrue(prompt.contains("[ACTIVE REMINDER CONSTRAINTS]"));
             assertTrue(prompt.contains("[project] Plan before making changes"));
-            assertTrue(prompt.contains("[session] Run focused tests"));
+            assertTrue(prompt.contains("[session] Keep the todo list current"));
         }
         assertTrue(backend.userPrompts.get(1).contains("user: implement it"));
         assertTrue(backend.userPrompts.get(1).contains("assistant: I planned first"));
@@ -201,6 +203,30 @@ class EnforcerJudgeGuidanceTest {
         judge.evaluate("next", "done", policy, 2);
         assertFalse(backend.userPrompts.get(4).contains("ACTIVE REMINDER CONSTRAINTS"),
                 "the supplier must be live rather than snapshotted at judge construction");
+    }
+
+    @Test
+    void unrelatedRemindersKeepRoutineFastPathAndLogItAsPolicy(@TempDir Path dir) throws Exception {
+        RecordingBackend backend = new RecordingBackend();
+        EnforcerJudge judge = new EnforcerJudge(
+                backend, new com.fasterxml.jackson.databind.ObjectMapper());
+        judge.setReminderSupplier(() -> "1. [project] Plan before making changes\n"
+                + "2. [project] When unsure, use the glob tool to find the files");
+        Path file = dir.resolve("judgements.jsonl");
+        judge.setJudgementLog(new JudgementLog("s1", file));
+
+        EnforcerToolCallDecision decision = judge.evaluateToolCall("mcp__kompile__todowrite",
+                "{\"action\":\"update\"}", new EnforcerPolicy(RULES, 2, false));
+
+        assertTrue(decision.isAllowed());
+        assertTrue(backend.userPrompts.isEmpty(),
+                "reminders that never mention the task list must not cost a todo update an LLM review");
+        List<JudgementRecord> records = JudgementLog.readFile(file);
+        assertEquals(1, records.size());
+        assertEquals("JUDGE_TOOL", records.get(0).getPhase());
+        assertEquals("policy", records.get(0).getJudgeMode(),
+                "a deterministic verdict must not be logged as an LLM judgement");
+        assertEquals(0L, records.get(0).getLatencyMs());
     }
 
     @Test
@@ -241,17 +267,17 @@ class EnforcerJudgeGuidanceTest {
     }
 
     @Test
-    void chatExchangeIsRecordedAsJudgeChatPhase() throws Exception {
+    void chatExchangeIsRecordedAsJudgeChatPhase(@TempDir Path dir) throws Exception {
         RecordingBackend backend = new RecordingBackend();
         EnforcerJudge judge = new EnforcerJudge(backend,
                 new com.fasterxml.jackson.databind.ObjectMapper(), () -> null);
-        JudgementLog log = JudgementLog.forSession(
-                "judge-chat-test-" + System.nanoTime());
-        judge.setJudgementLog(log);
+        // A temp file, not JudgementLog.forSession: that writes under the real ~/.kompile/sessions.
+        Path file = dir.resolve("judgements.jsonl");
+        judge.setJudgementLog(new JudgementLog("judge-chat-test", file));
 
         judge.chatWithJudge("why did you block the last turn?");
 
-        List<JudgementRecord> records = JudgementLog.readAll(log.getSessionId());
+        List<JudgementRecord> records = JudgementLog.readFile(file);
         assertEquals(1, records.size());
         assertEquals("JUDGE_CHAT", records.get(0).getPhase());
         assertTrue(records.get(0).getJudgeRawResponse().contains("why did you block")

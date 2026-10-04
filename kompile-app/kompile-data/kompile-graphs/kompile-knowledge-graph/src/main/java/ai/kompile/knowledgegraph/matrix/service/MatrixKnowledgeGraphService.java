@@ -3028,8 +3028,8 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService, Bound
      * top-K nodes by score desc, and returns the induced subgraph (edges with BOTH endpoints
      * in the top-K set) in the standard viz shape.
      *
-     * <p>ND4J stays inside the subprocess — this method is invoked via the existing JDK-proxy
-     * client seam and never runs in-heap in the main app.</p>
+     * <p>ND4J stays inside the subprocess: the apps reach this method through the graph
+     * subprocess RPC client and it never runs in-heap in an app process.</p>
      */
     @Override
     public Map<String, Object> getTopKVisualizationData(Long factSheetId, int k, String metric) {
@@ -3124,17 +3124,22 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService, Bound
     }
 
     /**
-     * 1-hop neighborhood expand for a single node. Reads the node's direct neighbors from the
-     * in-memory adjacency store (no full-graph scan), sorts by edge weight desc, caps at
-     * {@code maxNeighbors}, then returns the seed + neighbors + connecting edges in viz shape.
+     * 1-hop neighborhood expand for a single node. Reads the node's direct neighbors over outgoing
+     * and incoming edges from the in-memory adjacency store (no full-graph scan), sorts by edge
+     * weight desc, caps at {@code maxNeighbors}, then returns the seed + neighbors + connecting
+     * edges in viz shape.
      *
      * <p>The induced edges include not just seed→neighbor but also neighbor→neighbor links that
      * are both in the returned set, so the visualizer can render the local cluster.</p>
+     *
+     * <p>With a fact sheet the expand reads that sheet's graph. Without one it reads the first graph
+     * holding the node, which for an id shared by two sheets need not be the caller's sheet.</p>
      */
     @Override
     public Map<String, Object> expandNeighborhoodVisualization(String nodeId, int maxNeighbors,
-                                                                 List<String> edgeTypeFilter) {
-        String graphId = graphIdHolding(nodeId);
+                                                                 List<String> edgeTypeFilter,
+                                                                 Long factSheetId) {
+        String graphId = factSheetId == null ? graphIdHolding(nodeId) : graphIdForFactSheet(factSheetId);
         Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(graphId);
         if (graphOpt.isEmpty() || graphOpt.get().getNode(nodeId).isEmpty()) {
             Map<String, Object> empty = new LinkedHashMap<>();
@@ -3153,16 +3158,20 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService, Bound
                 ? graph.getEdgeTypes().stream().filter(typeFilter::contains).collect(Collectors.toList())
                 : new ArrayList<>(graph.getEdgeTypes());
 
-        // Collect all unique neighbors across requested edge types.
-        List<Map.Entry<String, Double>> allNeighbors = new ArrayList<>();
-        Set<String> seenNeighborIds = new HashSet<>();
+        // Collect all unique neighbors across requested edge types, in both directions: a node that
+        // is only ever an edge target still shows its sources. A neighbor reached by several edges
+        // keeps its heaviest weight.
+        Map<String, Double> neighborWeights = new LinkedHashMap<>();
         for (String et : effectiveTypes) {
             for (Map.Entry<String, Double> nb : graph.getNeighbors(nodeId, et)) {
-                if (seenNeighborIds.add(nb.getKey())) {
-                    allNeighbors.add(nb);
-                }
+                neighborWeights.merge(nb.getKey(), nb.getValue(), Math::max);
+            }
+            for (Map.Entry<String, Double> nb : graph.getIncomingNeighbors(nodeId, et)) {
+                neighborWeights.merge(nb.getKey(), nb.getValue(), Math::max);
             }
         }
+        neighborWeights.remove(nodeId); // a self-loop is not a neighbor
+        List<Map.Entry<String, Double>> allNeighbors = new ArrayList<>(neighborWeights.entrySet());
 
         // Sort by weight desc, cap at maxNeighbors.
         allNeighbors.sort((a, b) -> Double.compare(b.getValue(), a.getValue()));

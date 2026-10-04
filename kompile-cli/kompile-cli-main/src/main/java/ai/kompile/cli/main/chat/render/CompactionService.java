@@ -287,14 +287,17 @@ public class CompactionService {
      * labeled, tool results collapse to their one-line summaries, and long turns
      * are clipped, so the digest is safe to inject as replacement history. An
      * earlier compacted summary is kept whole: it already stands for the history
-     * before it, which clipping would lose.
+     * before it, which clipping would lose. A user turn keeps what it attached,
+     * after its clipped text, even when it attached an image and wrote nothing.
      */
     public String renderDigest(List<ConversationEntry> entries) {
         StringBuilder digest = new StringBuilder();
         for (ConversationEntry entry : entries) {
-            if (entry.content == null || entry.content.isBlank()) continue;
+            boolean blank = entry.content == null || entry.content.isBlank();
+            if (blank && (entry.type != EntryType.USER || entry.attachments.isEmpty())) continue;
             switch (entry.type) {
-                case USER -> digest.append("User: ").append(clip(entry.content, 400)).append('\n');
+                case USER -> digest.append("User: ").append(withAttachmentMarkers(
+                        blank ? "" : clip(entry.content, 400), entry.attachments)).append('\n');
                 case ASSISTANT -> digest.append("Assistant: ").append(clip(entry.content, 400)).append('\n');
                 case SYSTEM -> {
                     if (entry.content.startsWith(ConversationLedger.SUMMARY_MARKER)) {
@@ -316,6 +319,21 @@ public class CompactionService {
     private static String clip(String text, int maxChars) {
         String flat = text.strip();
         return flat.length() <= maxChars ? flat : flat.substring(0, maxChars) + "…";
+    }
+
+    /**
+     * A turn's text followed by one {@code [Attached image: path]} or
+     * {@code [Attached file: path]} line per attachment: the form a replayed turn takes
+     * when its bytes are not resent, so summaries name what the user sent.
+     */
+    public static String withAttachmentMarkers(String text, List<Attachment> attachments) {
+        StringBuilder rendered = new StringBuilder(text == null ? "" : text);
+        for (Attachment attachment : attachments) {
+            if (!rendered.isEmpty()) rendered.append('\n');
+            rendered.append(attachment.image() ? "[Attached image: " : "[Attached file: ")
+                    .append(attachment.path()).append(']');
+        }
+        return rendered.toString();
     }
 
     /**

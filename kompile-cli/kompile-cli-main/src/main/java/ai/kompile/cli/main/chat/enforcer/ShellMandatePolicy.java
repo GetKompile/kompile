@@ -54,8 +54,12 @@ import java.util.regex.Pattern;
  *       directory. Must use the {@code grep} tool.</li>
  *   <li><b>Direct file reads</b> — {@code cat}/head/tail/less/more/tac on a file. Must use
  *       the {@code read} tool.</li>
+ *   <li><b>Shell sed</b> — blocked on files, piped streams, and stdin alike. Search/filter
+ *       with the {@code grep} tool; rewrite files with {@code edit}.</li>
  *   <li><b>Directory listings</b> — {@code ls}. Must use the {@code list} tool.</li>
  *   <li><b>File discovery</b> — {@code find}/fd/locate. Must use the {@code glob} tool.</li>
+ *   <li><b>Shell loops</b> — {@code for}, {@code while}, {@code until}, and {@code select},
+ *       including nested shell scripts. Use host-monitored processes or dedicated job-status tools.</li>
  * </ul>
  *
  * <p>Filesystem administration (rm/rmdir, moves, copies, links, directory creation, and
@@ -71,9 +75,10 @@ import java.util.regex.Pattern;
      *       ({@code cat build.log | grep error}) is still a violation — it is semantically
      *       {@code grep error build.log}. The exception is stream slicing: {@code head}/{@code tail}
      *       as pipeline filters are banned too — page results with {@code fetch_result},
-     *       {@code process action=output} + {@code tail_lines}, or native flags ({@code git log -5}).</li>
+     *       {@code process action=output} + {@code tail_lines}, or native flags ({@code git log -5}).
+     *       {@code sed} is also banned as a stream filter — use the {@code grep} tool.</li>
  *   <li><b>Stdin sources</b> — {@code <} redirects, herestrings/heredocs, {@code -} stdin
- *       placeholders.</li>
+ *       placeholders, except for {@code sed}.</li>
  *   <li><b>Null-device redirects</b> — {@code 2>/dev/null} and equivalent forms suppress
  *       process output without creating or modifying an artifact.</li>
  *   <li><b>Non-shell tools</b> — the dedicated {@code grep}/{@code read}/{@code edit}/...
@@ -109,7 +114,7 @@ public final class ShellMandatePolicy {
             Map.entry("find", "glob"), Map.entry("fd", "glob"), Map.entry("locate", "glob"),
             Map.entry("grep", "grep"), Map.entry("egrep", "grep"), Map.entry("fgrep", "grep"),
             Map.entry("rg", "grep"), Map.entry("ag", "grep"), Map.entry("ack", "grep"),
-            Map.entry("sed", "read/edit"), Map.entry("awk", "read/edit"), Map.entry("gawk", "read/edit"));
+            Map.entry("awk", "read/edit"), Map.entry("gawk", "read/edit"));
 
     /** Content operations with actual dedicated-tool equivalents. Filesystem administration
      * (directory removal, moves, modes, links) instead passes through command risk and user policy. */
@@ -128,6 +133,10 @@ public final class ShellMandatePolicy {
             "usleep", "process monitor",
             "snooze", "process monitor",
             "at", "process monitor");
+
+    /** Shell reserved words, not arbitrary occurrences in arguments or quoted text. */
+    private static final Set<String> LOOP_HEADS = Set.of("for", "while", "until", "select");
+    private static final Set<String> CONTROL_PREFIXES = Set.of("if", "then", "elif", "else", "do", "!");
 
     /** One-or-more GNU sleep duration terms: 5, 0.5, 30s, 5ms, 1h30m. */
     private static final Pattern SLEEP_SUFFIX =
@@ -194,6 +203,12 @@ public final class ShellMandatePolicy {
         }
 
         Set<String> violations = new LinkedHashSet<>();
+        if (containsShellLoop(commandText)) {
+            violations.add("Shell loops (`for`/`while`/`until`/`select`) are banned — launch work with "
+                    + "`process action=launch` and use its host-enforced completion monitor or a dedicated job-status tool; "
+                    + "do not sleep or busy-poll in a shell script");
+            return buildDecision(violations);
+        }
         for (Segment segment : splitPipeline(commandText)) {
             analyzeSegment(segment, violations);
         }
@@ -220,6 +235,33 @@ public final class ShellMandatePolicy {
             return null;
         }
         return evaluateCommand(toolName, extractCommandFromJson(toolInput));
+    }
+
+    /** Shared deterministic loop check for the mandate and enforced workflow gates. */
+    public static boolean containsShellLoop(String command) {
+        if (command == null || command.isBlank()) return false;
+        for (Segment segment : splitPipeline(command)) {
+            String text = segment.text.replace("\\\n", "").trim();
+            while (text.startsWith("(") || text.startsWith("{")) {
+                text = text.substring(1).trim();
+            }
+            List<Token> tokens = tokenize(text);
+            for (Token token : tokens) {
+                if (token.quotedStart) break;
+                if (LOOP_HEADS.contains(token.text)) return true;
+                if (!CONTROL_PREFIXES.contains(token.text)) break;
+            }
+            String head = headCommand(tokens);
+            if (head != null && NESTED_SHELL_HEADS.contains(head)) {
+                for (String body : collectNestedShellBodies(tokens)) {
+                    if (containsShellLoop(body)) return true;
+                }
+            }
+        }
+        for (String substitution : collectSubstitutions(command)) {
+            if (containsShellLoop(substitution)) return true;
+        }
+        return false;
     }
 
     public static boolean isShellTool(String toolName) {
@@ -291,6 +333,13 @@ public final class ShellMandatePolicy {
         }
 
         String head = headCommand(tokens);
+        // Unlike grep/awk, sed must not bypass the mandate via a pipe or stdin source.
+        if ("sed".equals(head)) {
+            violations.add("Shell `sed` is banned, including pipeline and stdin filtering — use the kompile"
+                    + " `grep` tool for searching/filtering, `read` for line ranges, or `edit` for file rewrites"
+                    + (text.length() > 120 ? "" : ": `" + text + "`"));
+            return;
+        }
         if (head != null && SLEEP_COMMANDS.containsKey(head) && isSleepInvocation(head, tokens)) {
             violations.add("Shell `" + head + "` just burns a turn waiting — use the `process` tool instead: "
                     + "launch with `process action=launch`, then `process action=monitor` (wake me on exit), "
@@ -463,7 +512,12 @@ public final class ShellMandatePolicy {
     /** Resolve the head command of a token list, skipping env assignments and wrappers. */
     private static String headCommand(List<Token> tokens) {
         String head = stripPrefixes(tokens);
-        return head == null ? null : basename(head);
+        if (head == null) return null;
+        // tokenize omits the opening quote but retains the closing one, even on executables.
+        if (head.endsWith("'") || head.endsWith("\"")) {
+            head = head.substring(0, head.length() - 1);
+        }
+        return basename(head);
     }
 
     private static String stripPrefixes(List<Token> tokens) {
@@ -477,7 +531,8 @@ public final class ShellMandatePolicy {
                 }
                 return text;
             }
-            if (!token.quotedStart && ENV_ASSIGNMENT.matcher(text).matches()) {
+            if (!token.quotedStart && (ENV_ASSIGNMENT.matcher(text).matches()
+                    || CONTROL_PREFIXES.contains(text))) {
                 continue;
             }
             if (COMMAND_PREFIXES.contains(text)) {
@@ -856,18 +911,22 @@ public final class ShellMandatePolicy {
         correction.append("\n## The Rule\n");
         correction.append("Use the dedicated kompile MCP tools for file operations:\n");
         correction.append("- File content search → `grep` tool (never `grep`/`rg`/`ag` in bash)\n");
+        correction.append("- `sed` search/filtering → `grep` tool; line ranges → `read` offset/limit"
+                + " (never shell `sed`, even in pipelines or on stdin)\n");
         correction.append("- Reading files → `read` tool (never `cat`/`head`/`tail` on files)\n");
         correction.append("- Editing files → `edit` tool (never `sed -i`/`perl -i`/`awk -i inplace`)\n");
         correction.append("- Creating/replacing files → `write`/`patch` (never shell redirects, `tee`, `cp`, `mv`, etc.)\n");
         correction.append("- Persistent memory → `memory` tool (`todowrite` for task state); never generic file tools\n");
         correction.append("- Listing directories → `list` tool; finding files by pattern → `glob` tool\n");
         correction.append("`bash`/`process` remain available for builds/tests/git/system commands and for\n");
-        correction.append("filtering piped streams (e.g. `mvn test | grep ERROR`, `ps aux | grep java`).\n");
+        correction.append("filtering piped streams with allowed filters (e.g. `mvn test | grep ERROR`,"
+                + " `ps aux | grep java`), never `sed`.\n");
 
         correction.append("\n## How to Re-Comply\n");
         correction.append("1. Re-issue the operation with the dedicated tool named above.\n");
         correction.append("2. Do NOT retry the shell form or an equivalent shell workaround.\n");
-        correction.append("3. NEVER wait with `sleep`: launch work with `process action=launch` and add\n");
+        correction.append("3. NEVER wait with `sleep` or shell loops (`for`/`while`/`until`/`select`):\n");
+        correction.append("   launch work with `process action=launch` and add\n");
         correction.append("   `action=monitor` (or rely on the default completion monitor) so the harness wakes you\n");
         correction.append("   when the process exits; poll `action=status`/`output`/`stream` between other work instead.\n");
         return new EnforcerToolCallDecision(

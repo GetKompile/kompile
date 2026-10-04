@@ -663,6 +663,42 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
     }
 
     /**
+     * Gets the sources of a node's incoming edges. Reads the reverse index, so it costs
+     * O(in-degree) rather than a scan of the adjacency data.
+     *
+     * @param nodeId   The node ID
+     * @param edgeType Edge type (null for all types)
+     * @return List of source node IDs with their edge weights
+     */
+    public List<Map.Entry<String, Double>> getIncomingNeighbors(String nodeId, String edgeType) {
+        MatrixGraphNode node = nodeById.get(nodeId);
+        if (node == null) {
+            return Collections.emptyList();
+        }
+
+        int nodeIndex = node.getMatrixIndex();
+        List<Map.Entry<String, Double>> sources = new ArrayList<>();
+        Collection<String> types = edgeType != null
+                ? Collections.singleton(edgeType)
+                : reverseIndex.keySet();
+        for (String type : types) {
+            Map<Integer, Set<Integer>> rev = reverseIndex.get(type);
+            Map<Integer, Map<Integer, Float>> typeMap = adjacencyData.get(type);
+            Set<Integer> srcs = rev != null ? rev.get(nodeIndex) : null;
+            if (srcs == null || typeMap == null) continue;
+            for (Integer srcIdx : srcs) {
+                Map<Integer, Float> targets = typeMap.get(srcIdx);
+                Float weight = targets != null ? targets.get(nodeIndex) : null;
+                String sourceId = indexToNodeId.get(srcIdx);
+                if (weight != null && sourceId != null) {
+                    sources.add(new AbstractMap.SimpleEntry<>(sourceId, (double) weight));
+                }
+            }
+        }
+        return sources;
+    }
+
+    /**
      * Builds a compact dense {@link INDArray} of shape {@code [n × n]} (where {@code n = getNodeCount()})
      * summing all edge types. This is created on demand for algorithm use and must be closed by the
      * caller after use to release native memory. It is <strong>not</strong> kept resident.

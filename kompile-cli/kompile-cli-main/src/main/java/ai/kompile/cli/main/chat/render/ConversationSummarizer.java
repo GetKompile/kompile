@@ -114,7 +114,7 @@ public class ConversationSummarizer {
         sb.append("Technologies, frameworks, libraries, protocols, and patterns referenced.\n\n");
 
         sb.append("## 3. Files and Code Sections\n");
-        sb.append("Every file path examined or modified, with a one-line note on what was ");
+        sb.append("Every file path examined, modified, or attached by the user, with a one-line note on what was ");
         sb.append("done or learned about each. Include line ranges where discussed.\n\n");
 
         sb.append("## 4. Errors and Fixes\n");
@@ -149,13 +149,17 @@ public class ConversationSummarizer {
     private String serializeHistory(List<CompactionService.ConversationEntry> history) {
         StringBuilder sb = new StringBuilder();
         for (CompactionService.ConversationEntry entry : history) {
-            if (entry.content == null) continue;
+            boolean attached = entry.type == CompactionService.EntryType.USER
+                    && !entry.attachments.isEmpty();
+            if (entry.content == null && !attached) continue;
             switch (entry.type) {
                 case SYSTEM:
                     sb.append("[SYSTEM]\n").append(entry.content).append("\n\n");
                     break;
                 case USER:
-                    sb.append("[USER]\n").append(entry.content).append("\n\n");
+                    // What the turn attached is named after its text; the bytes stay out.
+                    sb.append("[USER]\n").append(CompactionService.withAttachmentMarkers(
+                            entry.content, entry.attachments)).append("\n\n");
                     break;
                 case ASSISTANT:
                     sb.append("[ASSISTANT]\n").append(entry.content).append("\n\n");

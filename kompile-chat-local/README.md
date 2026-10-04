@@ -46,7 +46,15 @@ same 16-tool catalog used by the chat engine, including graph loading, search,
 reasoning, explanation, assertions, validation, and export operations. Start it
 with an empty graph and call `graph_load`, or preload a graph with `--kgraph`.
 Both the JVM shaded jar and the GraalVM executable speak MCP over stdio and keep
-stdout reserved for protocol messages.
+stdout reserved for protocol messages. This does **not** mean the Android APK exposes
+an external MCP endpoint: Android currently uses the native graph dispatcher internally.
+
+See [the KGraph portability contract](../docs/architecture/kgraph-portability.md) for
+the container/runtime distinction and artifact-by-artifact support. `graph_load` and
+`graph_reasoning_query` with `operation=ASSETS` or `OVERVIEW` return a `portability`
+inventory: `ACTIVE`, `INSPECTION_ONLY`, or `INVALID`. Unknown/binary artifacts are retained,
+not silently interpreted as executable models. Existing mobile native libraries must be
+rebuilt to receive these consumer changes; JVM tests alone are not a device receipt.
 
 ## Conventions (identical across JVM/Android/iOS)
 

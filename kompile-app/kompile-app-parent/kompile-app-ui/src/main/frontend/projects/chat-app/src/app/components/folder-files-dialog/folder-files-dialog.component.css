@@ -18,45 +18,48 @@
   min-width: 550px;
 }
 
-/* Tab Navigation */
+:host-context(body.dark-theme) {
+  color-scheme: dark;
+}
+
+/* Material's M2 dark dialog surface (#424242) is lighter than the chat palette these
+   styles use: borders, hints and the drop zone lose contrast on it. Paint the chat's
+   elevated surface instead, as the command-config dialog does. */
+:host-context(body.dark-theme) .folder-files-dialog {
+  background: var(--bg-surface-elevated);
+}
+
+/* Tab Navigation (mat-tab-nav-bar) */
 .tab-navigation {
-  display: flex;
-  gap: 4px;
   margin-bottom: 16px;
   border-bottom: 1px solid var(--border-color, #e0e0e0);
-  padding-bottom: 8px;
 }
 
-.tab-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary, #666);
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  border-radius: 4px 4px 0 0;
-  transition: all 0.2s ease;
+/* The M2 theme colors tabs with its primary, indigo 500, which is barely legible on the
+   chat's dark surfaces. It declares those tokens on the nav bar itself, under
+   body.dark-theme, so they are overridden on the links, in the chat palette. */
+.tab-navigation .mat-mdc-tab-link {
+  --mat-tab-header-inactive-label-text-color: var(--text-secondary, #666);
+  --mat-tab-header-inactive-hover-label-text-color: var(--text-primary, #333);
+  --mat-tab-header-inactive-focus-label-text-color: var(--text-primary, #333);
+  --mat-tab-header-active-label-text-color: var(--color-primary, #1976d2);
+  --mat-tab-header-active-hover-label-text-color: var(--color-primary, #1976d2);
+  --mat-tab-header-active-focus-label-text-color: var(--color-primary, #1976d2);
+  --mdc-tab-indicator-active-indicator-color: var(--color-primary, #1976d2);
+  --mat-tab-header-active-hover-indicator-color: var(--color-primary, #1976d2);
+  --mat-tab-header-active-focus-indicator-color: var(--color-primary, #1976d2);
 }
 
-.tab-btn:hover {
-  background: rgba(0, 0, 0, 0.04);
-  color: var(--text-primary, #333);
-}
-
-.tab-btn.active {
-  color: var(--primary-color, #1976d2);
-  border-bottom: 2px solid var(--primary-color, #1976d2);
-  margin-bottom: -9px;
-}
-
-.tab-btn mat-icon {
+.tab-navigation mat-icon {
+  margin-right: 6px;
   font-size: 18px;
   width: 18px;
   height: 18px;
+}
+
+/* Material ships no styles for the panel element, which would otherwise be inline. */
+mat-tab-nav-panel {
+  display: block;
 }
 
 .tab-content {
@@ -72,7 +75,7 @@ h2[mat-dialog-title] {
 }
 
 h2[mat-dialog-title] mat-icon {
-  color: var(--primary-color, #1976d2);
+  color: var(--color-primary, #1976d2);
 }
 
 /* Error Message */
@@ -82,9 +85,9 @@ h2[mat-dialog-title] mat-icon {
   gap: 8px;
   padding: 12px;
   margin-bottom: 16px;
-  background: #ffebee;
+  background: var(--status-error-bg, #ffebee);
   border-radius: 4px;
-  color: #c62828;
+  color: var(--status-error-text, #c62828);
   font-size: 13px;
 }
 
@@ -104,17 +107,17 @@ h2[mat-dialog-title] mat-icon {
   text-align: center;
   cursor: pointer;
   transition: all 0.2s ease;
-  background: var(--surface-color, #fafafa);
+  background: var(--bg-body, #fafafa);
   margin-bottom: 16px;
 }
 
 .drop-zone:hover {
-  border-color: var(--primary-color, #1976d2);
+  border-color: var(--color-primary, #1976d2);
   background: rgba(25, 118, 210, 0.04);
 }
 
 .drop-zone.drag-over {
-  border-color: var(--primary-color, #1976d2);
+  border-color: var(--color-primary, #1976d2);
   background: rgba(25, 118, 210, 0.08);
   transform: scale(1.02);
 }
@@ -170,7 +173,7 @@ h2[mat-dialog-title] mat-icon {
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--status-neutral-bg, rgba(0, 0, 0, 0.05));
   border-radius: 4px;
   font-size: 12px;
   color: var(--text-secondary, #666);
@@ -240,7 +243,7 @@ h2[mat-dialog-title] mat-icon {
 }
 
 .file-item:hover {
-  background: var(--hover-color, rgba(0, 0, 0, 0.04));
+  background: var(--status-neutral-bg, rgba(0, 0, 0, 0.04));
 }
 
 .file-icon {
@@ -253,7 +256,7 @@ h2[mat-dialog-title] mat-icon {
   font-size: 24px;
   width: 24px;
   height: 24px;
-  color: var(--primary-color, #1976d2);
+  color: var(--color-primary, #1976d2);
 }
 
 .file-info {
@@ -284,7 +287,7 @@ h2[mat-dialog-title] mat-icon {
   gap: 4px;
   margin-top: 4px;
   padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--status-neutral-bg, rgba(0, 0, 0, 0.04));
   border-radius: 4px;
   cursor: pointer;
   transition: background-color 0.2s ease;
@@ -322,15 +325,21 @@ h2[mat-dialog-title] mat-icon {
   opacity: 1;
 }
 
-.file-actions button {
-  width: 32px;
-  height: 32px;
+/* Material's icon-button rule sets a 48px size token and 12px padding on the element;
+   resize through the token so the icon stays centred. */
+.file-actions .mat-mdc-icon-button.mat-mdc-button-base,
+.session-actions .mat-mdc-icon-button.mat-mdc-button-base {
+  --mdc-icon-button-state-layer-size: 32px;
+  --mdc-icon-button-icon-size: 18px;
+  --mat-icon-button-touch-target-display: none;
+  padding: 7px;
 }
 
 .file-actions mat-icon {
   font-size: 18px;
   width: 18px;
   height: 18px;
+  line-height: 18px;
 }
 
 /* Info Message */
@@ -351,7 +360,7 @@ h2[mat-dialog-title] mat-icon {
   font-size: 18px;
   width: 18px;
   height: 18px;
-  color: var(--primary-color, #1976d2);
+  color: var(--color-primary, #1976d2);
 }
 
 /* Dialog Actions */
@@ -376,7 +385,7 @@ mat-dialog-actions {
 
 /* Add Chat Panel */
 .add-chat-panel {
-  background: var(--surface-color, #fafafa);
+  background: var(--bg-body, #fafafa);
   border: 1px solid var(--border-color, #e0e0e0);
   border-radius: 8px;
   padding: 12px;
@@ -407,6 +416,7 @@ mat-dialog-actions {
   outline: none;
   font-size: 14px;
   background: transparent;
+  color: var(--text-primary, #333);
 }
 
 .available-sessions-list {
@@ -455,7 +465,7 @@ mat-dialog-actions {
 }
 
 .available-session-item .add-icon {
-  color: var(--primary-color, #1976d2);
+  color: var(--color-primary, #1976d2);
   opacity: 0;
   transition: opacity 0.2s ease;
 }
@@ -487,7 +497,7 @@ mat-dialog-actions {
 }
 
 .session-item:hover {
-  background: var(--hover-color, rgba(0, 0, 0, 0.04));
+  background: var(--status-neutral-bg, rgba(0, 0, 0, 0.04));
 }
 
 .session-icon {
@@ -500,7 +510,7 @@ mat-dialog-actions {
   font-size: 24px;
   width: 24px;
   height: 24px;
-  color: var(--primary-color, #1976d2);
+  color: var(--color-primary, #1976d2);
 }
 
 .session-info {
@@ -537,15 +547,11 @@ mat-dialog-actions {
   opacity: 1;
 }
 
-.session-actions button {
-  width: 32px;
-  height: 32px;
-}
-
 .session-actions mat-icon {
   font-size: 18px;
   width: 18px;
   height: 18px;
+  line-height: 18px;
 }
 
 /* Small empty state (for add chat panel) */
@@ -577,10 +583,5 @@ mat-dialog-actions {
 
   .file-path code {
     max-width: 200px;
-  }
-
-  .tab-btn {
-    padding: 8px 12px;
-    font-size: 13px;
   }
 }

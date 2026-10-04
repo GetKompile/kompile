@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy, OnChanges, Input, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, NgZone, HostListener, Optional, Inject } from '@angular/core';
+import { Component, OnInit, OnDestroy, OnChanges, Input, Output, EventEmitter, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, NgZone, HostListener, Optional, Inject } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { HttpClient } from '@angular/common/http';
@@ -157,6 +157,7 @@ interface ChatSession {
 export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, AfterViewChecked, AfterViewInit {
   @Input() workingDirectory?: string;
   @Input() workspaceChat?: { id: string; name: string };
+  @Output() workspaceNewChat = new EventEmitter<void>();
   @Input() viewActive = true;
   private readonly sessionConfigOpener = () => this.openCommandConfig();
 
@@ -767,14 +768,77 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
 
     if (this.workspaceChat) {
       this.showHistorySidebar = false;
-      if (this.sessions.length) {
-        const active = localStorage.getItem(this.sessionStorageKey + ':active');
-        this.loadSession(this.sessions.find(s => s.id === active) || this.sessions[0]);
-      } else this.newChat();
+      this.refreshWorkspaceTranscript();
       return;
     }
     // Also load synced sessions from backend
     this.loadSyncedSessions();
+  }
+
+  private workspaceTranscriptLoading = false;
+  private workspaceTranscriptFailed = false;
+
+  /** The CLI transcript owns workspace history; browser storage only supplies UI metadata. */
+  refreshWorkspaceTranscript(): void {
+    if (!this.workspaceChat || !this.workingDirectory || this.lifecycleBusy || this.harnessViewDestroyed) return;
+    const chat = this.workspaceChat;
+    const revision = this.invalidateLifecycle();
+    const sameSession = this.currentSession?.id === chat.id;
+    const cached = this.sessions.find(session => session.id === chat.id);
+    const session: ChatSession = {
+      ...cached,
+      id: chat.id,
+      name: cached?.name || chat.name,
+      messages: [],
+      createdAt: cached?.createdAt || new Date().toISOString(),
+      updatedAt: cached?.updatedAt || new Date().toISOString(),
+      source: 'kompile',
+      synced: false
+    };
+    this.resetHarnessDisplay();
+    this.currentSession = session;
+    this.sessions = [session, ...this.sessions.filter(item => item.id !== chat.id)];
+    this.messages = [];
+    this.currentConversationId = session.conversationId || null;
+    this.agentSession = null;
+    if (!sameSession) this.pendingAttachments = [];
+    this.workspaceTranscriptLoading = true;
+    this.workspaceTranscriptFailed = false;
+    this.updateMonitorSubscription();
+    this.cdr.markForCheck();
+    const failed = () => {
+      this.workspaceTranscriptLoading = false;
+      this.workspaceTranscriptFailed = true;
+      this.snackBar.open('Failed to load CLI transcript. Open the chat again to retry.', 'Dismiss', { duration: 4000 });
+      this.cdr.markForCheck();
+    };
+    this.http.get<{ sessionId: string; turns: { role: string; content: string }[] }>(
+      `${this.agentChatService.backendUrl}/agents/chat/workspace/transcript`,
+      { params: { workingDirectory: this.workingDirectory, sessionId: chat.id } }
+    ).pipe(takeUntil(this.destroy$)).subscribe({
+      next: transcript => {
+        if (revision !== this.lifecycleRevision || this.harnessViewDestroyed) return;
+        // A workspace entry already carries the canonical identity (including legacy web- IDs).
+        if (transcript.sessionId !== chat.id) { failed(); return; }
+        this.workspaceTranscriptLoading = false;
+        this.messages = transcript.turns.map(turn => ({
+          id: this.generateId(),
+          role: turn.role.toLowerCase() === 'user' ? 'user' as const
+            : turn.role.toLowerCase() === 'assistant' ? 'assistant' as const : 'system' as const,
+          content: turn.content,
+          timestamp: new Date()
+        }));
+        session.messages = [...this.messages];
+        session.messageCount = this.messages.length;
+        this.saveSessions();
+        this.shouldScrollToBottom = true;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        if (revision !== this.lifecycleRevision || this.harnessViewDestroyed) return;
+        failed();
+      }
+    });
   }
 
   loadSyncedSessions(): void {
@@ -1032,7 +1096,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   private lifecycleRevision = 0;
 
   get lifecycleBusy(): boolean {
-    return this.isStreaming || this.isLoading || this.isCompacting || this.harnessControlPending;
+    return this.isStreaming || this.isLoading || this.isCompacting || this.harnessControlPending || this.workspaceTranscriptLoading;
   }
 
   get transcriptReadOnly(): boolean {
@@ -1048,7 +1112,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   }
 
   continueAsNewConversation(): void {
-    if (this.lifecycleBusy || !this.transcriptReadOnly) return;
+    if (this.lifecycleBusy || this.workspaceChat || !this.transcriptReadOnly) return;
     // Copy text, not database IDs, tool state, attachments or a native session identity.
     const context = this.messages.filter(m => !m.commandOnly && (m.role === 'user' || m.role === 'assistant'))
       .map(m => ({ id: this.generateId(), role: m.role, content: m.content, timestamp: new Date(m.timestamp) }));
@@ -1114,12 +1178,17 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
 
   newChat(): void {
     if (this.lifecycleBusy) return; // one live transport owns this view
+    if (this.workspaceChat) {
+      // The folder manager registers the new identity; this pane keeps its existing transcript.
+      this.workspaceNewChat.emit();
+      return;
+    }
     this.invalidateLifecycle();
     this.resetHarnessDisplay();
     this.queuedMessages = []; // a fresh conversation drops locally parked follow-ups
     const session: ChatSession = {
-      id: this.workspaceChat && this.sessions.length === 0 ? this.workspaceChat.id : this.generateId(),
-      name: this.workspaceChat?.name || 'New Chat',
+      id: this.generateSessionId(),
+      name: 'New Chat',
       messages: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1370,6 +1439,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   private harnessSessionKey(): string | undefined {
     return this.currentSession?.id || this.agentSession?.id;
   }
+  /** The session the insights drawer reads, keyed as the harness keys this chat. */
+  get insightsSessionId(): string | undefined {
+    return this.harnessSessionKey();
+  }
   /** The workflow team the displayed session was started with, or null when it has none. */
   get workflowTeam(): WorkflowTeam | null {
     return this.agentChatService.getWorkflowTeam?.(this.harnessSessionKey()) ?? null;
@@ -1532,7 +1605,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   }
 
   sendMessage(): void {
-    if (!this.userInput.trim() || this.isLoading || this.isCompacting || this.transcriptReadOnly) return;
+    if (!this.userInput.trim() || this.isLoading || this.isCompacting || this.transcriptReadOnly
+        || this.workspaceTranscriptLoading || this.workspaceTranscriptFailed) return;
     if (this.isStreaming) {
       if (this.liveControlsReady) {
         // Live run: a /command goes to the harness as typed in the CLI; other text joins the
@@ -1585,7 +1659,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   }
 
   private async sendAgentMessage(content: string, attachments?: MessageAttachment[], reconnect = false): Promise<void> {
-    if (!this.selectedAgent || this.transcriptReadOnly || this.lifecycleBusy) return;
+    if (!this.selectedAgent || this.transcriptReadOnly || this.lifecycleBusy || this.workspaceTranscriptFailed) return;
     const saved = reconnect ? this.reconnectBookmark : null;
     if (!reconnect && this.reconnectBookmark) {
       this.harnessControlMessage = 'Reconnect or stop the saved run before starting another.';
@@ -1797,6 +1871,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
           sessionId: this.currentSession?.id || this.agentSession.id,
           skipPermissions: this.skipPermissions,
           workingDirectory: this.agentWorkingDirectory(),
+          // Canonical workspace sessions resume in the CLI; never inject a browser history copy.
+          includeHistory: this.workspaceChat?.id === this.currentSession?.id ? false : undefined,
           enableMemory: true,
           systemPromptOverride: this.systemPrompt.trim() || undefined,
           enableRag: this.ragEnabled,
@@ -3559,13 +3635,14 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   }
 
   // Web-supported builtins from ChatCommandCatalog, not an execution allowlist. Unknown commands and skills
-  // still go through sendMessage unchanged; the CLI owns validation and dispatch.
+  // still go through sendMessage unchanged; the CLI owns validation and dispatch. Descriptions are the CLI's
+  // ChatCompleter text, so a command reads the same in both front ends.
   readonly slashCommands = [
-    { command: '/help', description: 'Show available commands' },
-    { command: '/model', description: 'Show or switch model' },
-    { command: '/role', description: 'Show or switch role' },
-    { command: '/fast', description: 'Show or toggle fast mode' },
-    { command: '/ultracode', description: 'Show or toggle Claude Code ultracode' },
+    { command: '/help', description: 'Show help message' },
+    { command: '/model', description: 'Switch or show model' },
+    { command: '/role', description: 'Show or assign role' },
+    { command: '/fast', description: 'Toggle premium fast mode (supported models only)' },
+    { command: '/ultracode', description: 'Toggle Claude Code ultracode workflows (Claude Code route only)' },
     { command: '/skills', description: 'List available skills' }
   ];
   // Process commands: the live harness answers them mid-run (WebHarnessControls.command); between runs the CLI
@@ -3654,6 +3731,16 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     }
   }
 
+  private generateSessionId(): string {
+    // randomUUID requires a secure context; getRandomValues also works on plain-HTTP hosts.
+    if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
   private generateId(): string {
     return Date.now().toString(36) + Math.random().toString(36).substring(2);
   }
@@ -3727,7 +3814,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
    * @param messageIndex Index of message to fork from
    */
   forkFromMessage(messageIndex: number): void {
-    if (this.lifecycleBusy || this.transcriptReadOnly) return;
+    if (this.lifecycleBusy || this.workspaceChat || this.transcriptReadOnly) return;
     const revision = this.invalidateLifecycle();
     const message = this.messages[messageIndex];
 
@@ -3763,7 +3850,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.invalidateLifecycle();
     // Create new session with messages from backend
     const forkSession: ChatSession = {
-      id: this.generateId(),
+      id: this.generateSessionId(),
       name: `Fork: ${this.currentSession?.name || 'Chat'}`,
       messages: backendMessages.map(msg => ({
         id: this.generateId(),
@@ -3795,7 +3882,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     }));
 
     const forkSession: ChatSession = {
-      id: this.generateId(),
+      id: this.generateSessionId(),
       name: `Fork: ${this.currentSession?.name || 'Chat'}`,
       messages: forkedMessages,
       createdAt: new Date().toISOString(),

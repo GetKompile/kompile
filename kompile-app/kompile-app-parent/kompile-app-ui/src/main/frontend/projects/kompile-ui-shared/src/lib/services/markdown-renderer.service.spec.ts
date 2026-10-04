@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { SafeHtml } from '@angular/platform-browser';
 
 import { MarkdownRendererService } from './markdown-renderer.service';
-import { ToolCallDetail, ToolCallRun, ToolUseEvent } from '../models/api-models';
+import { ToolCallChart, ToolCallDetail, ToolCallRun, ToolUseEvent } from '../models/api-models';
 
 describe('MarkdownRendererService harness tool calls', () => {
   let renderer: MarkdownRendererService;
@@ -100,6 +100,20 @@ describe('MarkdownRendererService harness tool calls', () => {
     expect(renderer.renderToolCall({ tool: 'exec', input: '', status: 'started' }, true).name).toBe('Exec');
     const failed = renderer.renderToolCall(completed({ displayName: 'Bash', error: 'exit 2' }, { ok: false }), false);
     expect([failed.name, failed.state, failed.error]).toEqual(['Bash', 'failed', 'exit 2']);
+  });
+
+  it('hands a completed call\'s chart to the card, and none before it completes', () => {
+    const chart: ToolCallChart = {
+      v: 1, kind: 'bar', title: 'Test runs', unit: 'runs', labels: ['mon', 'tue'],
+      series: [{ name: 'passing', values: [3, null] }]
+    };
+    const started: ToolUseEvent = {
+      tool: 'insights', input: '{}', callId: 'c', status: 'started', detail: { displayName: 'Insights', chart }
+    };
+
+    expect(renderer.renderToolCall(completed({ displayName: 'Insights', chart }), false).chart).toBe(chart);
+    expect(renderer.renderToolCall(started, true).chart).toBeUndefined();
+    expect(renderer.renderToolCall(completed({}), false).chart).toBeUndefined();
   });
 
   it('prettifies tool names as the CLI does', () => {

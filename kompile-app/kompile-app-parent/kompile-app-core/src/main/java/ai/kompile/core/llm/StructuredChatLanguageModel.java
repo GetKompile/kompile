@@ -34,6 +34,19 @@ public interface StructuredChatLanguageModel {
      */
     int MAX_INLINE_IMAGES_PER_REQUEST = 8;
 
+    /**
+     * Largest decoded size of one inline image: the per-file limit chat clients attach at.
+     * Local vision serving refuses a larger image by name.
+     */
+    long MAX_INLINE_IMAGE_BYTES = 5L * 1024L * 1024L;
+
+    /**
+     * Largest serialized chat request local serving accepts: the full image allowance at its
+     * base64 size, plus room for the conversation text and the JSON around it.
+     */
+    long MAX_CHAT_REQUEST_BYTES = MAX_INLINE_IMAGES_PER_REQUEST
+            * (((MAX_INLINE_IMAGE_BYTES + 2L) / 3L) * 4L) + 8L * 1024L * 1024L;
+
     enum ToolDefinitionFormat {
         STANDARD,
         FLAT

@@ -67,6 +67,13 @@ class BackgroundProcessManagerTest {
         manager.close();
     }
 
+    private static void awaitExit(ProcessEntry entry) throws InterruptedException {
+        for (int attempts = 0; entry.isRunning() && attempts < 50; attempts++) {
+            Thread.sleep(100);
+        }
+        assertFalse(entry.isRunning(), entry.getId() + " should have exited");
+    }
+
     // ===================================================================
     // Virtual process registration
     // ===================================================================
@@ -810,6 +817,40 @@ class BackgroundProcessManagerTest {
             assertEquals(ProcessState.KILLED, notifiedState.get(),
                     "exit listeners must be able to filter user-killed processes");
         }
+
+        @Test
+        void killStopsTheShellsChildrenAndPublishesTheExitPromptly(@TempDir Path scratch) throws Exception {
+            // The shell waits on a child of its own instead of exec'ing it, as it does for
+            // `cd dir && mvn ...`. A kill that signals only the shell leaves that child
+            // running, re-parented away from the manager and holding the stdout pipe open,
+            // so the exit is not published until the child ends on its own.
+            Path pidFile = scratch.resolve("child.pid");
+            CountDownLatch exitNotified = new CountDownLatch(1);
+            manager.addExitListener(exited -> exitNotified.countDown());
+            ProcessEntry entry = manager.launch(
+                    "sleep 300 & echo $! > '" + pidFile + "'; wait", "Shell with a child", scratch);
+            long pidWritten = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while ((!Files.exists(pidFile) || Files.readString(pidFile).isBlank())
+                    && System.nanoTime() < pidWritten) {
+                Thread.sleep(20);
+            }
+            ProcessHandle child = ProcessHandle.of(Long.parseLong(Files.readString(pidFile).trim()))
+                    .orElseThrow();
+            try {
+                assertTrue(manager.kill(entry.getId()));
+
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (child.isAlive() && System.nanoTime() < deadline) {
+                    Thread.sleep(20);
+                }
+                assertFalse(child.isAlive(), "the shell's child must not outlive the kill");
+                assertTrue(exitNotified.await(5, TimeUnit.SECONDS),
+                        "with no child left holding the stdout pipe, the exit must be published");
+                assertEquals(ProcessState.KILLED, entry.getState());
+            } finally {
+                if (child.isAlive()) child.destroyForcibly();
+            }
+        }
     }
 
     // ===================================================================
@@ -940,13 +981,14 @@ class BackgroundProcessManagerTest {
 
         @Test
         void closePublishesExitEvenWhenAKilledProcesssDescendantKeepsTheStdoutPipeOpen() throws Exception {
-            // killProcess() only signals the direct child pid. A backgrounded grandchild that
-            // inherited the same stdout pipe survives the parent's SIGTERM/SIGKILL and keeps the
-            // bg-proc-io capture thread blocked in a read() that will not see EOF on its own.
-            // close()'s bounded executor drain (~1s) cannot cover this case: only
+            // killProcess() stops the descendants it finds under the launched pid, but this
+            // grandchild's parent (the subshell) has already exited, so it was re-parented away
+            // and is not one of them. It inherited the same stdout pipe, survives the kill and
+            // keeps the bg-proc-io capture thread blocked in a read() that will not see EOF on
+            // its own. close()'s bounded executor drain (~1s) cannot cover this case: only
             // killAllRunning()'s own self-publish (fireExit) can still publish the exit on time.
             ProcessEntry entry = manager.launch(
-                    "sleep 5 & echo GRANDCHILD_PID=$! ; wait",
+                    "( sleep 5 & echo GRANDCHILD_PID=$! ) ; sleep 60",
                     "grandchild keeps the pipe open past the parent's death",
                     Path.of(System.getProperty("user.dir")));
 
@@ -1127,13 +1169,6 @@ class BackgroundProcessManagerTest {
             Files.writeString(dir.resolve("proc-abc.log"), "");
             assertEquals(41, BackgroundProcessManager.highestUsedIdNumber(dir));
         }
-
-        private void awaitExit(ProcessEntry entry) throws InterruptedException {
-            for (int attempts = 0; entry.isRunning() && attempts < 50; attempts++) {
-                Thread.sleep(100);
-            }
-            assertFalse(entry.isRunning(), entry.getId() + " should have exited");
-        }
     }
 
     // ===================================================================
@@ -1187,7 +1222,7 @@ class BackgroundProcessManagerTest {
                     ProcessKind.MCP, "mcp", "MCP tool bridge log", Map.of());
             assertTrue(local.kill(stopped.getId()));
             assertFalse(local.appendVirtualOutput(stopped.getId(), "after kill"));
-            assertFalse(Files.exists(stopped.getOutputFile()));
+            assertEquals(0L, Files.size(stopped.getOutputFile()), "a killed entry writes nothing");
 
             ProcessEntry owned = local.launch("sleep 5", "owned", workDir);
             try {
@@ -1275,6 +1310,167 @@ class BackgroundProcessManagerTest {
             assertTrue(local.kill(task.getId()));
             assertEquals(ProcessState.KILLED, task.getState());
             assertEquals(-1, task.getExitCode());
+        }
+    }
+
+    // ===================================================================
+    // Two managers in one session folder (a chat JVM and its MCP stdio JVM)
+    // ===================================================================
+
+    @Nested
+    class SharedSessionFolder {
+
+        @TempDir Path workDir;
+        private BackgroundProcessManager chat;
+        private BackgroundProcessManager mcp;
+
+        @BeforeEach
+        void setUpManagers() throws IOException {
+            // The MCP stdio server takes the chat's session id, so both number ids in one
+            // folder, each with its own counter.
+            Files.createDirectories(workDir.resolve(".kompile"));
+            String sid = "shared-folder-" + System.nanoTime();
+            chat = new BackgroundProcessManager(sid, workDir);
+            mcp = new BackgroundProcessManager(sid, workDir);
+            assertEquals(chat.getOutputDir(), mcp.getOutputDir());
+        }
+
+        @AfterEach
+        void closeManagers() {
+            chat.close();
+            mcp.close();
+        }
+
+        @Test
+        void aRowNeverWritesIntoAJobTheOtherManagerLaunched() throws Exception {
+            ProcessEntry job = mcp.launch("echo job-output", "job", workDir);
+            awaitExit(job);
+
+            ProcessEntry row = chat.registerVirtual(
+                    ProcessKind.COMMAND, "claude local_bash", "Claude: build", Map.of());
+            assertTrue(chat.appendVirtualOutput(row.getId(), "Claude Code started local_bash task t1"));
+
+            assertNotEquals(job.getId(), row.getId());
+            assertEquals(List.of("job-output"), Files.readAllLines(job.getOutputFile()));
+            assertEquals(List.of("Claude Code started local_bash task t1"),
+                    Files.readAllLines(row.getOutputFile()));
+        }
+
+        @Test
+        void aJobNeverTakesTheIdOfARowTheOtherManagerHolds() throws Exception {
+            ProcessEntry written = chat.registerVirtual(
+                    ProcessKind.COMMAND, "claude local_bash", "Claude: build", Map.of());
+            assertTrue(chat.appendVirtualOutput(written.getId(), "row output"));
+            // A row that has written nothing yet holds its id all the same.
+            ProcessEntry silent = chat.registerVirtual(
+                    ProcessKind.COMMAND, "claude local_agent", "Claude: review", Map.of());
+
+            ProcessEntry job = mcp.launch("echo job-output", "job", workDir);
+            awaitExit(job);
+            assertTrue(chat.appendVirtualOutput(silent.getId(), "late row output"));
+
+            assertNotEquals(written.getId(), job.getId());
+            assertNotEquals(silent.getId(), job.getId());
+            assertEquals(List.of("job-output"), Files.readAllLines(job.getOutputFile()));
+            assertEquals(List.of("row output"), Files.readAllLines(written.getOutputFile()));
+            assertEquals(List.of("late row output"), Files.readAllLines(silent.getOutputFile()));
+        }
+
+        @Test
+        void concurrentLaunchesAndRows_shouldGetDistinctIdsAndKeepEachLogToItsWriter() throws Exception {
+            int perWorker = 6;
+            List<Map.Entry<ProcessEntry, String>> written = new CopyOnWriteArrayList<>();
+            List<Throwable> failures = new CopyOnWriteArrayList<>();
+            CountDownLatch go = new CountDownLatch(1);
+            List<Thread> workers = new ArrayList<>();
+            for (BackgroundProcessManager owner : List.of(chat, mcp)) {
+                String name = owner == chat ? "chat" : "mcp";
+                workers.add(new Thread(() -> {
+                    try {
+                        go.await();
+                        for (int i = 0; i < perWorker; i++) {
+                            String line = name + "-job-" + i;
+                            written.add(Map.entry(owner.launch("echo " + line, line, workDir), line));
+                        }
+                    } catch (Throwable t) {
+                        failures.add(t);
+                    }
+                }));
+                workers.add(new Thread(() -> {
+                    try {
+                        go.await();
+                        for (int i = 0; i < perWorker; i++) {
+                            String line = name + "-row-" + i;
+                            ProcessEntry row = owner.registerVirtual(
+                                    ProcessKind.COMMAND, "claude local_bash", line, Map.of());
+                            assertTrue(owner.appendVirtualOutput(row.getId(), line), row.getId());
+                            written.add(Map.entry(row, line));
+                        }
+                    } catch (Throwable t) {
+                        failures.add(t);
+                    }
+                }));
+            }
+            workers.forEach(Thread::start);
+            go.countDown();
+            for (Thread worker : workers) {
+                worker.join(TimeUnit.SECONDS.toMillis(30));
+            }
+
+            assertEquals(List.of(), failures);
+            assertEquals(4 * perWorker, written.size());
+            assertEquals(written.size(), written.stream().map(w -> w.getKey().getId()).distinct().count(),
+                    "an id was handed out twice");
+            for (Map.Entry<ProcessEntry, String> w : written) {
+                if (!w.getKey().isVirtual()) {
+                    awaitExit(w.getKey());
+                }
+                assertEquals(List.of(w.getValue()), Files.readAllLines(w.getKey().getOutputFile()),
+                        w.getKey().getId());
+            }
+        }
+
+        @Test
+        void close_shouldRemoveOnlyTheReservedLogsNoOneWrote() throws Exception {
+            ProcessEntry silent = chat.registerVirtual(ProcessKind.JUDGE, "judge", "Judge", Map.of());
+            ProcessEntry written = chat.registerVirtual(
+                    ProcessKind.MCP, "mcp", "MCP tool bridge log", Map.of());
+            assertTrue(chat.appendVirtualOutput(written.getId(), "[MCP] line"));
+            ProcessEntry quiet = chat.launch("true", "a job with no output", workDir);
+            awaitExit(quiet);
+            ProcessEntry othersRow = mcp.registerVirtual(ProcessKind.JUDGE, "judge", "Judge", Map.of());
+            assertTrue(Files.exists(silent.getOutputFile()), "registering a row reserves its log");
+
+            chat.close();
+
+            assertFalse(Files.exists(silent.getOutputFile()), "a reserved log no one wrote goes with its manager");
+            assertEquals(List.of("[MCP] line"), Files.readAllLines(written.getOutputFile()));
+            assertTrue(Files.exists(quiet.getOutputFile()), "a launched job keeps its log, empty or not");
+            assertTrue(Files.exists(othersRow.getOutputFile()), "the other manager's reservation stays");
+        }
+
+        @Test
+        void close_shouldRemoveAFolderLeftHoldingOnlyItsUnwrittenReservations() throws Exception {
+            Path folder = chat.getOutputDir();
+            chat.registerVirtual(ProcessKind.JUDGE, "judge", "Judge", Map.of());
+            assertTrue(Files.isDirectory(folder));
+
+            chat.close();
+            assertFalse(Files.exists(folder), "a manager that wrote nothing leaves no folder behind");
+
+            ProcessEntry late = chat.registerVirtual(ProcessKind.ENFORCER, "enforcer", "Enforcer", Map.of());
+            assertFalse(chat.appendVirtualOutput(late.getId(), "after close"));
+            assertFalse(Files.exists(folder), "a closed manager must not recreate its folder");
+        }
+
+        @Test
+        void aLaunchThatCannotStartLeavesNoLogBehind() throws Exception {
+            assertThrows(IOException.class, () -> chat.launch(
+                    new String[]{workDir.resolve("no-such-program").toString()}, "missing", workDir));
+
+            try (var logs = Files.list(chat.getOutputDir())) {
+                assertEquals(List.of(), logs.toList());
+            }
         }
     }
 }

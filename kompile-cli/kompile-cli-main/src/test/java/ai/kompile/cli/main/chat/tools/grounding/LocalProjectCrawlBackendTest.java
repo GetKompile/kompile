@@ -103,6 +103,21 @@ class LocalProjectCrawlBackendTest {
     }
 
     @Test
+    void callerSuppliedWorkerIdentityFailsBeforeAnyProjectMutation() {
+        LocalProjectCrawlBackend backend = new LocalProjectCrawlBackend(mapper, (LocalProjectGraphBackend) null);
+        for (ObjectNode request : List.of(
+                mapper.createObjectNode().put("_asyncWorker", true).put("_asyncJobId", LocalCrawlJobRegistry.newJobId()),
+                mapper.createObjectNode().put("_asyncWorker", false),
+                mapper.createObjectNode().put("_asyncJobId", LocalCrawlJobRegistry.newJobId()))) {
+            request.put("dryRun", true);
+            ToolResult result = backend.crawlDocuments(request, context);
+            assertTrue(result.isError(), result.getOutput());
+            assertFalse(Files.exists(projectRoot.resolve("kompile.project.json")));
+            assertFalse(Files.exists(projectRoot.resolve("data")));
+        }
+    }
+
+    @Test
     void archiveLearningReportsNonArchivableTargetWithoutDisablingRun() throws Exception {
         Files.writeString(projectRoot.resolve("archive-alias.md"),
                 "# Archive alias\nThe local archive warning must remain accurate.\n",

@@ -31,10 +31,8 @@
     "src/lib/components/composite-entity-dialog/**",
     "src/lib/components/graph-hierarchy/graph-hierarchy.component.spec.ts",
     "src/lib/components/graph-overview/**",
-    "src/lib/components/graph-visualizer/graph-visualizer.component.spec.ts",
     "src/lib/components/graph-visualizer/source-linking-panel.component.spec.ts",
     "src/lib/services/evaluation.service.spec.ts",
-    "src/lib/services/graph.service.spec.ts",
     "src/lib/services/process-engine.service.spec.ts"
   ]
 }

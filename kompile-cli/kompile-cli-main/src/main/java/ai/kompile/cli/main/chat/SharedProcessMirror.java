@@ -80,6 +80,8 @@ public final class SharedProcessMirror implements AutoCloseable {
     private boolean seeded;
     /** Monitored processes launched for this session that were running at the last pass. */
     private volatile int owedWakes;
+    /** Processes launched for this session, monitored or not, that were running at the last pass. */
+    private volatile List<SessionProcess> runningForSession = List.of();
 
     /**
      * @param processes       the session-local manager that backs the activity panel
@@ -129,8 +131,10 @@ public final class SharedProcessMirror implements AutoCloseable {
             if (closed.get()) return;
             try {
                 refreshQueued.set(false);
-                poll();
+                // Cleared first: a pass that keeps the previous state (no snapshot)
+                // records why itself, and that must survive the pass.
                 pollFailure = "";
+                poll();
             } catch (RuntimeException failure) {
                 // Mirroring is best-effort observability; never break the host session,
                 // but record why so a silent mirror is still diagnosable.
@@ -164,6 +168,7 @@ public final class SharedProcessMirror implements AutoCloseable {
         }
         Map<String, String> kept = new HashMap<>();
         List<Wake> due = new ArrayList<>();
+        List<SessionProcess> running = new ArrayList<>();
         int owed = 0;
         for (ProcessCoordEntry entry : entries) {
             if (entry == null || entry.getProcessId() == null || entry.getProcessId().isBlank()) {
@@ -193,6 +198,10 @@ public final class SharedProcessMirror implements AutoCloseable {
             } else if (mirrored != null && awaitsWake(key, entry)) {
                 owed++;
             }
+            if (entry.isRunningState() && localSessionId != null
+                    && localSessionId.equals(entry.getParentSessionId())) {
+                running.add(new SessionProcess(entry.getProcessId(), entry.getPid(), label(entry)));
+            }
         }
         processes.pruneShared(kept.keySet());
         wakes.keySet().retainAll(kept.keySet());
@@ -210,6 +219,7 @@ public final class SharedProcessMirror implements AutoCloseable {
         // Updated only after the wake-ups went out, so a host that sees nothing owed
         // has already been handed every wake-up this pass found.
         owedWakes = owed;
+        runningForSession = List.copyOf(running);
     }
 
     /**
@@ -220,6 +230,21 @@ public final class SharedProcessMirror implements AutoCloseable {
      */
     public boolean owesWake() {
         return !closed.get() && owedWakes > 0;
+    }
+
+    /**
+     * Processes other sessions launched on this session's behalf (their owners
+     * registered this session as their parent) that were running at the last
+     * pass, monitored or not. Such a process ends with its owner: the jobs
+     * Kompile's MCP server runs for this session's agent stop when that server
+     * stops. A closed mirror reports none.
+     */
+    public List<SessionProcess> runningForSession() {
+        return closed.get() ? List.of() : runningForSession;
+    }
+
+    /** A process launched on this session's behalf: its owner's id for it, its pid and its label. */
+    public record SessionProcess(String processId, long pid, String label) {
     }
 
     /**
@@ -266,6 +291,14 @@ public final class SharedProcessMirror implements AutoCloseable {
     }
 
     private String describe(ProcessCoordEntry entry) {
+        String label = label(entry);
+        String owner = entry.getAgentName() != null && !entry.getAgentName().isBlank()
+                ? entry.getAgentName() : entry.getSessionId();
+        return owner == null || owner.isBlank() ? label : label + " · " + truncate(owner, 24);
+    }
+
+    /** The entry's description, else its command, else a placeholder. */
+    private static String label(ProcessCoordEntry entry) {
         String label = entry.getDescription();
         if (label == null || label.isBlank()) {
             label = entry.getCommand();
@@ -273,9 +306,7 @@ public final class SharedProcessMirror implements AutoCloseable {
         if (label == null || label.isBlank()) {
             label = "shared process";
         }
-        String owner = entry.getAgentName() != null && !entry.getAgentName().isBlank()
-                ? entry.getAgentName() : entry.getSessionId();
-        return owner == null || owner.isBlank() ? label : label + " · " + truncate(owner, 24);
+        return label;
     }
 
     private static String truncate(String value, int max) {

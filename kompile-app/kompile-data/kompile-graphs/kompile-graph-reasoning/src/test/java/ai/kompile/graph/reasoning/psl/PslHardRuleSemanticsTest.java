@@ -56,6 +56,25 @@ class PslHardRuleSemanticsTest {
     }
 
     @Test
+    void scalarLineSearchExhaustionIsNotConvergence() {
+        PslProgram program = new PslProgram().observe("Prior", 0.6, "x")
+                .target("State", "x")
+                .addRule(PslRule.weighted(1e308, true,
+                        List.of(PslAtom.parse("Prior(X)")), List.of(PslAtom.parse("State(X)"))))
+                .addRule(PslRule.weighted(1e308, true,
+                        List.of(PslAtom.parse("State(X)")), List.of(PslAtom.parse("Prior(X)"))));
+        assertFalse(new ScalarHlMrfInference().solve(program, program.ground()).converged());
+    }
+
+    @Test
+    void scalarRecognizesProjectedBoundaryOptimum() {
+        PslProgram program = new PslProgram().observe("A", 1.0, "x").target("B", "x")
+                .addRule(PslRule.weighted(10, false,
+                        List.of(PslAtom.parse("A(X)")), List.of(PslAtom.parse("B(X)"))));
+        assertTrue(new ScalarHlMrfInference().solve(program, program.ground()).converged());
+    }
+
+    @Test
     @DisplayName("ArithmeticRule.weighted(+Infinity) is normalized to hard")
     void infiniteWeightedArithmeticRuleIsHard() {
         ArithmeticRule rule = ArithmeticRule.weighted(

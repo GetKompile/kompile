@@ -19,9 +19,13 @@ public record ErpSourceConfiguration(String type, URI root, String entitySet, Ma
     public static boolean isErp(String type) {
         return type != null && TYPES.contains(type.toUpperCase(Locale.ROOT));
     }
-    public static final Set<String> TYPES = Set.of("SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE");
+    public static final Set<String> TYPES = Set.of("SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE",
+            "ORACLE_FUSION", "ORACLE_EBS", "JD_EDWARDS", "INFOR_MONGOOSE", "ACUMATICA");
+    public static boolean requiresBasic(String type) {
+        return "SAP_NETWEAVER".equalsIgnoreCase(type) || "ORACLE_EBS".equalsIgnoreCase(type);
+    }
     public static boolean requiresBearer(String type) {
-        return isErp(type) && !Set.of("SAP_NETWEAVER", "ODATA").contains(type.toUpperCase(Locale.ROOT));
+        return isErp(type) && !Set.of("SAP_NETWEAVER", "ODATA", "ORACLE_FUSION", "ORACLE_EBS", "JD_EDWARDS").contains(type.toUpperCase(Locale.ROOT));
     }
     public static void validateProfileRoot(String type, URI root) {
         String path = root.getPath();
@@ -30,6 +34,11 @@ public record ErpSourceConfiguration(String type, URI root, String entitySet, Ma
             case "NETSUITE" -> path.endsWith("/services/rest/record/v1/");
             case "ODOO" -> path.endsWith("/json/2/");
             case "SALESFORCE" -> path.matches(".*/services/data/v[0-9]+\\.[0-9]+/");
+            case "ORACLE_FUSION" -> path.matches(".*/fscmRestApi/resources/[0-9]+(\\.[0-9]+)+/");
+            case "ORACLE_EBS" -> path.matches(".*/webservices/rest/[A-Za-z_][A-Za-z0-9_]*/");
+            case "JD_EDWARDS" -> path.endsWith("/jderest/v2/dataservice/table/");
+            case "INFOR_MONGOOSE" -> path.endsWith("/IDORequestService/ido/");
+            case "ACUMATICA" -> path.matches(".*/entity/[A-Za-z_][A-Za-z0-9_]*/[0-9]+(\\.[0-9]+)+/");
             default -> true;
         };
         if (!valid) throw new IllegalArgumentException("ERP serviceRoot does not match the selected API profile");
@@ -48,6 +57,39 @@ public record ErpSourceConfiguration(String type, URI root, String entitySet, Ma
         String entity = text(p, "entitySet", "");
         if (!entity.matches(type.equals("ODOO") ? "[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*" : "[A-Za-z_][A-Za-z0-9_]*"))
             throw new IllegalArgumentException("ERP entitySet must be one collection identifier, not a path or action");
+        if (type.equals("JD_EDWARDS") && !entity.matches("F[0-9]+")
+                || type.equals("ORACLE_EBS") && !entity.matches("[A-Z][A-Z0-9_]*"))
+            throw new IllegalArgumentException("ERP entitySet must identify a table for this Oracle profile");
+        if (Set.of("ORACLE_FUSION", "ORACLE_EBS", "JD_EDWARDS").contains(type)) {
+            String identifiers = "[A-Za-z_][A-Za-z0-9_]*(\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*";
+            if (!text(p, "keyFields", "").matches(identifiers))
+                throw new IllegalArgumentException("Oracle ERP profiles require explicit comma-separated keyFields");
+            String select = text(p, "select", "");
+            if (!select.isEmpty() && (!select.matches(identifiers) || type.equals("JD_EDWARDS")))
+                throw new IllegalArgumentException("Invalid select for this Oracle ERP profile");
+            String order = text(p, "orderBy", "");
+            if (!text(p, "filter", "").isEmpty() || !order.isEmpty() && (!type.equals("ORACLE_FUSION")
+                    || !order.matches("[A-Za-z_][A-Za-z0-9_]*(:asc|:desc)?(\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*(:asc|:desc)?)*")))
+                throw new IllegalArgumentException("Unsupported filter or orderBy for this Oracle ERP profile");
+            if (type.equals("JD_EDWARDS") && (p.containsKey("pageSize") || p.containsKey("maxPages")))
+                throw new IllegalArgumentException("JD Edwards supports one bounded table read, not cursor pagination");
+        }
+        if (type.equals("INFOR_MONGOOSE")) {
+            String identifiers = "[A-Za-z_][A-Za-z0-9_]*(\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*";
+            if (!text(p, "keyFields", "").matches(identifiers) || !text(p, "select", "").matches(identifiers))
+                throw new IllegalArgumentException("Infor Mongoose requires simple select and keyFields identifiers");
+            if (!text(p, "filter", "").isEmpty() || !text(p, "orderBy", "").isEmpty())
+                throw new IllegalArgumentException("Infor Mongoose does not expose filters or custom ordering");
+            validateMongooseConfig(text(p, "tenant", ""));
+        }
+        if (type.equals("ACUMATICA")) {
+            String identifiers = "[A-Za-z_][A-Za-z0-9_]*(\\s*,\\s*[A-Za-z_][A-Za-z0-9_]*)*";
+            String select = text(p, "select", "");
+            if (!text(p, "keyFields", "").matches(identifiers) || !select.isEmpty() && !select.matches(identifiers))
+                throw new IllegalArgumentException("Acumatica requires explicit business keyFields and simple select identifiers");
+            if (!text(p, "filter", "").isEmpty() || !text(p, "orderBy", "").isEmpty())
+                throw new IllegalArgumentException("Acumatica does not expose filters or custom ordering");
+        }
         String sapClient = text(p, "sapClient", "");
         if (!sapClient.isEmpty() && (!"SAP_NETWEAVER".equals(type) || !sapClient.matches("[0-9]{3}")))
             throw new IllegalArgumentException("sapClient requires SAP_NETWEAVER and a three-digit client");
@@ -56,6 +98,10 @@ public record ErpSourceConfiguration(String type, URI root, String entitySet, Ma
         String password = text(p, "password", "");
         if (requiresBearer(type) && (token.isBlank() || !user.isEmpty() || !password.isEmpty()))
             throw new IllegalArgumentException("This ERP profile requires a bearer credential");
+        if (type.equals("ORACLE_EBS") && (user.isBlank() || password.isBlank() || !token.isEmpty()))
+            throw new IllegalArgumentException("Oracle EBS interface GETs require basic credentials");
+        if (Set.of("ORACLE_FUSION", "JD_EDWARDS").contains(type) && token.isBlank() && user.isBlank())
+            throw new IllegalArgumentException("This Oracle ERP profile requires basic or bearer credentials");
         String tenant = text(p, "tenant", "");
         if (tenant.contains("\r") || tenant.contains("\n")) throw new IllegalArgumentException("Invalid ERP tenant");
         if (Set.of("NETSUITE", "ODOO", "SALESFORCE").contains(type)) {
@@ -78,6 +124,11 @@ public record ErpSourceConfiguration(String type, URI root, String entitySet, Ma
         return new ErpSourceConfiguration(type, root, entity, Map.copyOf(p), records,
                 Math.min(records, number(p, "pageSize", 100, type.equals("NETSUITE") ? 1000 : 10_000)), number(p, "maxPages", 20, 1000),
                 number(p, "timeoutMillis", 30_000, 120_000), number(p, "maxResponseBytes", 4_194_304, 16_777_216));
+    }
+    /** ION configuration is a required, credential-bound header, not a routing expression. */
+    public static void validateMongooseConfig(String value) {
+        if (value == null || value.isBlank() || value.contains("\r") || value.contains("\n"))
+            throw new IllegalArgumentException("Infor Mongoose requires tenant as the X-Infor-MongooseConfig value");
     }
     /** HTTPS is mandatory except literal loopback addresses for local fixture/dev services. */
     public static URI serviceRoot(String value) {
@@ -146,7 +197,10 @@ public record ErpSourceConfiguration(String type, URI root, String entitySet, Ma
         return values;
     }
     public URI firstPage() {
-        if (type.equals("NETSUITE")) return recordPage(0);
+        if (type.equals("INFOR_MONGOOSE")) return mongoosePage(null, maxRecords);
+        if (type.equals("ACUMATICA")) return acumaticaPage(0);
+        if (Set.of("NETSUITE", "ORACLE_FUSION", "ORACLE_EBS").contains(type)) return recordPage(0);
+        if (type.equals("JD_EDWARDS")) return URI.create(root.resolve(entitySet) + "?%24limit=" + maxRecords);
         if (type.equals("ODOO")) return root.resolve(entitySet + "/search_read");
         if (type.equals("SALESFORCE")) {
             String fields = String.join(",", selectedFields("Id"));
@@ -167,11 +221,36 @@ public record ErpSourceConfiguration(String type, URI root, String entitySet, Ma
         return URI.create(root.resolve(entitySet) + "?" + encoded);
     }
     public URI recordPage(int offset) {
-        return URI.create(root.resolve(entitySet) + "?limit=" + pageSize + "&offset=" + offset);
+        StringBuilder query = new StringBuilder(root.resolve(entitySet + (type.equals("ORACLE_EBS") ? "/" : "")).toString())
+                .append("?limit=").append(pageSize).append("&offset=").append(offset);
+        if (Set.of("ORACLE_FUSION", "ORACLE_EBS").contains(type) && !text(properties, "select", "").isEmpty())
+            query.append(type.equals("ORACLE_FUSION") ? "&fields=" : "&select=")
+                    .append(encode(String.join(",", selectedFields(text(properties, "keyFields", "")))));
+        if (type.equals("ORACLE_FUSION")) {
+            String order = text(properties, "orderBy", "");
+            query.append("&onlyData=true&orderBy=")
+                    .append(encode(order.isEmpty() ? text(properties, "keyFields", "") : order));
+        }
+        return URI.create(query.toString());
+    }
+    public URI acumaticaPage(int offset) {
+        String query = "?%24top=" + Math.min(pageSize, maxRecords - offset) + "&%24skip=" + offset;
+        if (!text(properties, "select", "").isEmpty())
+            query += "&%24select=" + encode(String.join(",", selectedFields(text(properties, "keyFields", ""))));
+        return URI.create(root.resolve(entitySet) + query);
+    }
+    public URI mongoosePage(String bookmark, int remaining) {
+        String keys = text(properties, "keyFields", "");
+        // Never send recordcap=0 (unbounded), clm, pqc or a user-supplied route/method.
+        String query = "?properties=" + encode(String.join(",", selectedFields(keys)))
+                + "&recordcap=" + Math.min(pageSize, remaining) + "&orderby=" + encode(keys)
+                + "&readonly=true&loadtype=" + (bookmark == null ? "FIRST" : "NEXT");
+        if (bookmark != null) query += "&bookmark=" + encode(bookmark);
+        return URI.create(root.resolve("load/" + entitySet) + query);
     }
     public java.util.List<String> selectedFields(String id) {
         var fields = new java.util.LinkedHashSet<String>();
-        fields.add(id);
+        for (String field : id.split(",")) if (!field.isBlank()) fields.add(field.trim());
         for (String field : text(properties, "select", "").split(",")) if (!field.isBlank()) fields.add(field.trim());
         return java.util.List.copyOf(fields);
     }

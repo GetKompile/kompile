@@ -155,6 +155,24 @@ class WorkflowControllerTest {
     }
 
     @Test
+    void shellLoopsWithoutSleepAreRejectedByEnforcedWorkflow() {
+        WorkflowController controller = new WorkflowController(skills(), tools(),
+                new WorkflowPolicy(WorkflowPolicy.Mode.ENFORCED, List.of(), false, 2));
+        controller.beginTurn();
+        controller.beginToolBatch();
+        for (String command : List.of("until false; do :; done", "while true; do :; done",
+                "for item in a b; do true; done", "bash -c 'until false; do :; done'")) {
+            WorkflowController.Decision decision = controller.beforeTool("bash",
+                    mapper.createObjectNode().put("command", command));
+            assertFalse(decision.allowed(), command);
+            assertTrue(decision.correctionPrompt().contains("host-backgrounded and monitored"));
+        }
+        assertTrue(controller.beforeTool("bash",
+                mapper.createObjectNode().put("command", "echo until while for")).allowed());
+        controller.completeTurn();
+    }
+
+    @Test
     void processMonitoringIsHostEnforcedAndProductionCrawlsRequireAsyncLifecycle() {
         WorkflowController controller = new WorkflowController(skills(), tools(),
                 new WorkflowPolicy(WorkflowPolicy.Mode.ENFORCED, List.of(), false, 2));

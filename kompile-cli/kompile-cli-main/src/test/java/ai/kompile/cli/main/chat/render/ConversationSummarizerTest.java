@@ -98,6 +98,24 @@ class ConversationSummarizerTest {
         }
     }
 
+    @Test
+    void transcriptNamesWhatEachTurnAttached() {
+        CompactionService.Attachment image = new CompactionService.Attachment(
+                "report.png", "image/png", true, "a".repeat(64), 10);
+        CompactionService.Attachment notes = new CompactionService.Attachment(
+                "notes.txt", "text/plain", false, "b".repeat(64), 10);
+        try (SummaryClient client = new SummaryClient()) {
+            new ConversationSummarizer(client).summarize(List.of(
+                    CompactionService.ConversationEntry.user("what is in it?", List.of(image, notes)),
+                    CompactionService.ConversationEntry.assistant("The code is ZEBRA-7319."),
+                    CompactionService.ConversationEntry.user(null, List.of(image))), null, null);
+
+            assertTrue(client.prompt.endsWith("[USER]\nwhat is in it?\n[Attached image: report.png]\n"
+                    + "[Attached file: notes.txt]\n\n[ASSISTANT]\nThe code is ZEBRA-7319.\n\n"
+                    + "[USER]\n[Attached image: report.png]\n\n"), client.prompt);
+        }
+    }
+
     private static ConversationSummarizer.SummaryResult summarize(SummaryClient client) {
         return new ConversationSummarizer(client).summarize(
                 List.of(CompactionService.ConversationEntry.user("old conversation")), null, null);
@@ -106,6 +124,7 @@ class ConversationSummarizerTest {
     private static final class SummaryClient extends DirectLlmClient {
         final StreamResult result = new StreamResult();
         RuntimeException failure;
+        String prompt;
 
         SummaryClient() {
             super(new ChatConfig("custom", null, "summary-test", "http://unused.invalid"),
@@ -119,6 +138,7 @@ class ConversationSummarizerTest {
 
         @Override
         public StreamResult streamOneShot(String prompt, String systemPrompt, String modelOverride) {
+            this.prompt = prompt;
             emit(result.text);
             if (failure != null) throw failure;
             return result;

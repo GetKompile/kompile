@@ -1420,6 +1420,19 @@ public class GraphServiceSubprocessClients {
         }
 
         @Override
+        public Map<String, Object> getTopKVisualizationData(Long factSheetId, int k, String metric) {
+            return rpc("getTopKVisualizationData", new Object[]{factSheetId, k, metric},
+                    typeMapStringObject);
+        }
+
+        @Override
+        public Map<String, Object> expandNeighborhoodVisualization(String nodeId, int maxNeighbors,
+                                                                   List<String> edgeTypes, Long factSheetId) {
+            return rpc("expandNeighborhoodVisualization",
+                    new Object[]{nodeId, maxNeighbors, edgeTypes, factSheetId}, typeMapStringObject);
+        }
+
+        @Override
         public Map<String, Object> getVisualizationDataInTimeRange(LocalDateTime from, LocalDateTime to,
                                                                     int maxNodes) {
             return rpc("getVisualizationDataInTimeRange", new Object[]{from, to, maxNodes},

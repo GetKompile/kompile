@@ -18,8 +18,8 @@ import { describeRouteTable } from '@shared/testing/route-table-harness';
 import { routes } from './app-routing.module';
 
 describeRouteTable('chat-app', routes, {
-  declared: ['/chat', '/workspace', '/project', '/fact-sheets', '/graph', '/settings'],
-  redirects: { '/knowledge': '/fact-sheets' },
+  declared: ['/chat', '/single-chat', '/project', '/fact-sheets', '/graph', '/insights', '/settings'],
+  redirects: { '/knowledge': '/fact-sheets', '/workspace': '/chat' },
   fallback: '/chat',
   // Crawl-manager and admin surfaces. Chat is an end-user app: none of these may resolve here.
   foreign: ['/crawl', '/data', '/developer', '/agents', '/enforcer',

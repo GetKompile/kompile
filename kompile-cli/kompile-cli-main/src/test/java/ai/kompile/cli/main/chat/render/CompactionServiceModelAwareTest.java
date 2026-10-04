@@ -273,6 +273,25 @@ class CompactionServiceModelAwareTest {
     }
 
     @Test
+    void renderDigestNamesWhatATurnAttached() {
+        CompactionService service = new CompactionService(mapper, 8_192);
+        CompactionService.Attachment image = new CompactionService.Attachment(
+                "report.png", "image/png", true, "a".repeat(64), 10);
+        CompactionService.Attachment notes = new CompactionService.Attachment(
+                "notes.txt", "text/plain", false, "b".repeat(64), 10);
+        String digest = service.renderDigest(List.of(
+                CompactionService.ConversationEntry.user("what is in it?", List.of(image, notes)),
+                CompactionService.ConversationEntry.assistant("The code is ZEBRA-7319."),
+                CompactionService.ConversationEntry.user("", List.of(image)),
+                CompactionService.ConversationEntry.user("q".repeat(500), List.of(notes))));
+        assertEquals("User: what is in it?\n[Attached image: report.png]\n[Attached file: notes.txt]\n"
+                        + "Assistant: The code is ZEBRA-7319.\n"
+                        + "User: [Attached image: report.png]\n"
+                        + "User: " + "q".repeat(400) + "…\n[Attached file: notes.txt]",
+                digest, "an image-only turn stays, and clipping never cuts a marker");
+    }
+
+    @Test
     void attachmentsCountTowardTheEstimate() {
         CompactionService service = new CompactionService(mapper, 8_192);
         CompactionService.Attachment image = new CompactionService.Attachment(

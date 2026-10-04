@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.workflow;
 
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
+import ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.tools.BashTool;
@@ -700,7 +701,8 @@ public final class WorkflowController {
     private static String dedicatedToolReplacement(String command) {
         if (command == null || command.isBlank()) return null;
         String lower = command.toLowerCase(Locale.ROOT);
-        if (lower.matches("(?s).*\\bsleep\\s+[0-9]+.*")
+        if (ShellMandatePolicy.containsShellLoop(command)
+                || lower.matches("(?s).*\\bsleep\\s+[0-9]+.*")
                 || lower.contains("gh run watch")
                 || lower.contains("gh pr checks --watch")) {
             return "Use process action='launch' (host-backgrounded and monitored) or a dedicated "

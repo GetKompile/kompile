@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalCorpusPublication;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.unified.UnifiedGraphArchive;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -119,7 +120,7 @@ final class LocalProjectRagSearch {
     private ToolResult searchChunks(Path root, List<Path> localKnowledgeBases,
                                     String query, String topic, int limit) {
         try {
-            List<Chunk> chunks = loadChunks(localKnowledgeBases);
+            List<Chunk> chunks = loadChunks(root, localKnowledgeBases);
             if (chunks.isEmpty()) {
                 return emptyResult(query, localKnowledgeBases.size(), "hybrid", null);
             }
@@ -207,16 +208,20 @@ final class LocalProjectRagSearch {
         return ToolResult.success("knowledge_search: " + query, output.toString(), metadata);
     }
 
-    private List<Chunk> loadChunks(List<Path> knowledgeBases) throws IOException {
+    private List<Chunk> loadChunks(Path root, List<Path> knowledgeBases) throws IOException {
         List<Chunk> chunks = new ArrayList<>();
         for (Path directoryValue : knowledgeBases) {
             Path directory = directoryValue.toRealPath();
             int chunksBeforeDirectory = chunks.size();
-            Path documentsPath = containedRegularFile(directory, "documents.jsonl");
+            String knowledgeBase = directory.getFileName().toString();
+            Path corpusDirectory = LocalCorpusPublication.resolveReadDirectory(root, knowledgeBase);
+            if (!directory.equals(root.resolve("data/crawls").resolve(knowledgeBase))) {
+                throw new IOException("Local RAG requires a direct folder-local knowledge base");
+            }
+            Path documentsPath = containedRegularFile(corpusDirectory, "documents.jsonl");
             Map<String, String> sources = documentsPath == null
                     ? Map.of() : documentSources(documentsPath);
-            String knowledgeBase = directory.getFileName().toString();
-            Path chunksPath = containedRegularFile(directory, "chunks.jsonl");
+            Path chunksPath = containedRegularFile(corpusDirectory, "chunks.jsonl");
             if (chunksPath != null) {
                 try (Stream<String> lines = Files.lines(chunksPath, StandardCharsets.UTF_8)) {
                     lines.filter(line -> !line.isBlank()).forEach(line -> {
@@ -239,7 +244,12 @@ final class LocalProjectRagSearch {
                     });
                 }
             }
-            if (chunks.size() == chunksBeforeDirectory) {
+            // Recheck immutable integrity after materializing rows. Never fall back to mutable
+            // projections or an older graph when a published lexical generation is damaged.
+            if (!corpusDirectory.equals(LocalCorpusPublication.resolveReadDirectory(root, knowledgeBase))) {
+                throw new IOException("Corpus generation changed during knowledge search; retry");
+            }
+            if (directory.equals(corpusDirectory) && chunks.size() == chunksBeforeDirectory) {
                 try {
                     loadGraphChunks(directory, knowledgeBase, chunks);
                 } catch (IOException e) {

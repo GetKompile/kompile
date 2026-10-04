@@ -316,6 +316,25 @@
   margin-left: auto;
 }
 
+/* Failed request banner */
+.catalog-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  margin-bottom: 12px;
+  background: rgba(244, 67, 54, 0.1);
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  border-radius: 4px;
+  color: var(--accent-red);
+  font-size: 13px;
+}
+
+.catalog-error .retry-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 /* Sort field */
 .sort-field {
   width: 140px;

@@ -19,49 +19,44 @@ import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { HttpClientTestingModule } from '@angular/common/http/testing';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatMenuModule } from '@angular/material/menu';
 import { of, Subject } from 'rxjs';
 
 import { UnifiedChatComponent } from './unified-chat.component';
-import { ConversationalRagService } from '@shared/services/conversational-rag.service';
-import { LocalAgentChatService } from '@shared/services/local-agent-chat.service';
+import { AgentProvider } from '@shared/models/api-models';
 import { AgentService } from '@shared/services/agent.service';
-import { ChatStorageService } from '@shared/services/chat-storage.service';
 import { ChatHistoryService } from '@shared/services/chat-history.service';
+import { ChatStorageService } from '@shared/services/chat-storage.service';
 import { CliTranscriptService } from '@shared/services/cli-transcript.service';
+import { ConversationalRagService } from '@shared/services/conversational-rag.service';
 import { FolderService } from '@shared/services/folder.service';
+import { HarnessActivity, LocalAgentChatService } from '@shared/services/local-agent-chat.service';
 import { ModelContextService } from '@shared/services/model-context.service';
 import { WebSocketService } from '@shared/services/websocket.service';
-import { MatDialog } from '@angular/material/dialog';
-import { MatMenuModule } from '@angular/material/menu';
-import { RagServiceStatus } from '@shared/models/api-models';
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Test helpers
-// ═══════════════════════════════════════════════════════════════════════════════
-
+/** Service doubles for a mounted chat with one available persona (mirrors unified-chat-commands.spec.ts). */
 function createTestBed() {
-  const ragServiceSpy = jasmine.createSpyObj('ConversationalRagService', [
-    'getStatus', 'chat', 'chatStream', 'getHistory', 'clearConversation', 'buildOptions'
-  ]);
   const agentChatServiceSpy = jasmine.createSpyObj('LocalAgentChatService', [
     'getStreamingContent', 'getStreamingComplete', 'getStreamingError',
     'getChatStats', 'getSources', 'getFilesModified', 'sendMessage',
-    'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction'
+    'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction', 'getContextBudget',
+    'getCommandOutcomes'
   ]);
   const agentServiceSpy = jasmine.createSpyObj('AgentService', [
     'getAllAgents', 'getAvailableAgents', 'getChatHarnessAgents',
     'refreshChatHarnessAgents', 'getKompileLocalStatus'
-  ], { agents$: new Subject<any[]>().asObservable() });
+  ], { agents$: new Subject<AgentProvider[]>().asObservable() });
   const chatStorageServiceSpy = jasmine.createSpyObj('ChatStorageService', [
     'getSessions', 'saveSession', 'deleteSession', 'getSession'
   ]);
   const chatHistoryServiceSpy = jasmine.createSpyObj('ChatHistoryService', [
     'getSessions', 'createSession', 'getSession', 'addMessage',
-    'getSessionMessages', 'deleteSession', 'updateSessionTitle',
-    'getMessageContent'
+    'getSessionMessages', 'deleteSession', 'updateSessionTitle', 'getMessageContent'
   ]);
   const cliTranscriptServiceSpy = jasmine.createSpyObj('CliTranscriptService', [
-    'listSessions', 'discoverSources', 'getTranscript'
+    'listSessions', 'discoverSources', 'getTranscript', 'getSyncStatus'
   ]);
   const folderServiceSpy = jasmine.createSpyObj('FolderService', [
     'getFolders', 'getFolderFiles', 'associateSession', 'disassociateSession'
@@ -80,20 +75,9 @@ function createTestBed() {
     'getMonitorEvents', 'connect', 'disconnect', 'subscribeToMonitor', 'unsubscribeFromMonitor'
   ]);
   webSocketServiceSpy.subscribeToMonitor.and.returnValue(new Subject<any>().asObservable());
+  const ragServiceSpy = jasmine.createSpyObj('ConversationalRagService', ['getStatus']);
+  ragServiceSpy.getStatus.and.returnValue(of({ available: false, service: '' }));
   const dialogSpy = jasmine.createSpyObj('MatDialog', ['open']);
-
-  ragServiceSpy.getStatus.and.returnValue(of({ available: true, service: 'rag' } as RagServiceStatus));
-  ragServiceSpy.buildOptions.and.returnValue({});
-  agentServiceSpy.getAllAgents.and.returnValue(of([]));
-  agentServiceSpy.getAvailableAgents.and.returnValue(of([]));
-  agentServiceSpy.getChatHarnessAgents.and.returnValue(of([]));
-  agentServiceSpy.refreshChatHarnessAgents.and.returnValue(of([]));
-  agentServiceSpy.getKompileLocalStatus.and.returnValue(of({ connected: false, modelLoaded: false, stagingUrl: null } as any));
-  chatStorageServiceSpy.getSessions.and.returnValue([]);
-  chatHistoryServiceSpy.getSessions.and.returnValue(of([]));
-  cliTranscriptServiceSpy.listSessions.and.returnValue(of([]));
-  cliTranscriptServiceSpy.discoverSources.and.returnValue(of({}));
-  folderServiceSpy.getFolders.and.returnValue(of([]));
 
   agentChatServiceSpy.getStreamingContent.and.returnValue(new Subject<string>().asObservable());
   agentChatServiceSpy.getStreamingComplete.and.returnValue(new Subject<any>().asObservable());
@@ -105,8 +89,24 @@ function createTestBed() {
   agentChatServiceSpy.getCompaction.and.returnValue(new Subject<any>().asObservable());
   agentChatServiceSpy.sendMessage.and.returnValue(Promise.resolve());
   agentChatServiceSpy.createSession.and.returnValue({
-    id: 'session-1', name: 'Test', messages: [], createdAt: new Date().toISOString()
+    id: 'agent-session-1', name: 'Test Session', messages: [],
+    createdAt: new Date().toISOString()
   });
+  agentServiceSpy.getAllAgents.and.returnValue(of([]));
+  agentServiceSpy.getAvailableAgents.and.returnValue(of([]));
+  agentServiceSpy.getChatHarnessAgents.and.returnValue(of([
+    { name: 'coder', displayName: 'Coder', available: true, agentType: 'HARNESS' } as AgentProvider
+  ]));
+  agentChatServiceSpy.getContextBudget.and.returnValue(of(null));
+  agentServiceSpy.refreshChatHarnessAgents.and.returnValue(of([]));
+  chatStorageServiceSpy.getSessions.and.returnValue([]);
+  chatHistoryServiceSpy.getSessions.and.returnValue(of([]));
+  cliTranscriptServiceSpy.listSessions.and.returnValue(of([]));
+  cliTranscriptServiceSpy.discoverSources.and.returnValue(of({}));
+  cliTranscriptServiceSpy.getSyncStatus.and.returnValue(of({
+    running: false, sourceIndex: 0, totalSources: 0, sourcePending: 0, sourceImported: 0
+  } as any));
+  folderServiceSpy.getFolders.and.returnValue(of([]));
 
   return {
     providers: [
@@ -124,253 +124,153 @@ function createTestBed() {
   };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
+/**
+ * Buttons that should render as Material. Two kinds stay native on purpose: slash-menu entries
+ * are listbox options styled by the chat tokens, and code-block copy buttons are injected into
+ * rendered markdown, outside Angular.
+ */
+function materialCandidates(root: HTMLElement): HTMLButtonElement[] {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
+    .filter(button => button.getAttribute('role') !== 'option' && !button.classList.contains('code-copy-btn'));
+}
 
-describe('UnifiedChatComponent - Dark Mode & CSS Variables', () => {
-  let component: UnifiedChatComponent;
+function nonMaterial(root: HTMLElement): string[] {
+  return materialCandidates(root)
+    .filter(button => !button.classList.contains('mat-mdc-button-base'))
+    .map(button => `${button.className} "${(button.textContent ?? '').trim()}"`);
+}
+
+function buttonWithText(root: HTMLElement, text: string): HTMLButtonElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
+    .find(button => (button.textContent ?? '').includes(text));
+}
+
+describe('UnifiedChatComponent Material buttons and dark mode', () => {
   let fixture: ComponentFixture<UnifiedChatComponent>;
+  let component: UnifiedChatComponent;
+  let host: HTMLElement;
+  let savedStorage: string | null;
 
   beforeEach(async () => {
-    const spies = createTestBed();
-
+    savedStorage = localStorage.getItem('unified_chat_sessions');
     await TestBed.configureTestingModule({
-      imports: [FormsModule, NoopAnimationsModule, HttpClientTestingModule, MatMenuModule],
+      // MatButtonModule renders the mat-*-button attributes as Material and makes disabledInteractive
+      // a real input; the other unified-chat specs leave these buttons native.
+      imports: [FormsModule, NoopAnimationsModule, HttpClientTestingModule, MatMenuModule, MatButtonModule],
       declarations: [UnifiedChatComponent],
-      providers: spies.providers,
+      providers: createTestBed().providers,
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).compileComponents();
-
     fixture = TestBed.createComponent(UnifiedChatComponent);
     component = fixture.componentInstance;
-    fixture.detectChanges();
+    host = fixture.nativeElement as HTMLElement;
+    component.selectedAgent = { name: 'coder', displayName: 'Coder' } as AgentProvider;
   });
 
   afterEach(() => {
-    // Clean up dark-theme class if applied
-    document.body.classList.remove('dark-theme');
-    document.body.classList.remove('light-theme');
+    document.body.classList.remove('dark-theme', 'light-theme');
+    document.body.style.removeProperty('--color-primary');
+    document.body.style.removeProperty('--color-primary-dark');
+    if (savedStorage === null) localStorage.removeItem('unified_chat_sessions');
+    else localStorage.setItem('unified_chat_sessions', savedStorage);
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // 1. WRAPPER USES CSS VARIABLES
-  // ─────────────────────────────────────────────────────────────────────────────
+  function rerender(): void {
+    (component as any).cdr.markForCheck();
+    fixture.detectChanges();
+  }
 
-  describe('CSS variable usage in template', () => {
-    it('should render the unified-chat-wrapper element', () => {
-      const wrapper = fixture.nativeElement.querySelector('.unified-chat-wrapper');
-      expect(wrapper).toBeTruthy();
-    });
+  /** Puts the composer into a live harness turn reporting the given activity. */
+  function showHarnessActivity(activity: HarnessActivity): void {
+    component.isStreaming = true;
+    const service = TestBed.inject(LocalAgentChatService);
+    service.liveControlsReady = true;
+    service.harnessActivity = activity;
+    rerender();
+  }
 
-    it('should render the chat-container main area', () => {
-      const container = fixture.nativeElement.querySelector('.chat-container');
-      expect(container).toBeTruthy();
-    });
-
-    it('should render the history-sidebar', () => {
-      const sidebar = fixture.nativeElement.querySelector('.history-sidebar');
-      expect(sidebar).toBeTruthy();
-    });
-
-    it('should render the conversation-area', () => {
-      const area = fixture.nativeElement.querySelector('.conversation-area');
-      expect(area).toBeTruthy();
-    });
-
-    it('should render the input-area', () => {
-      const input = fixture.nativeElement.querySelector('.input-area');
-      expect(input).toBeTruthy();
-    });
+  it('renders every chat button through Angular Material', () => {
+    fixture.detectChanges();
+    expect(materialCandidates(host).length).toBeGreaterThan(0);
+    expect(nonMaterial(host)).toEqual([]);
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // 2. DARK MODE CLASS PROPAGATION
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  describe('Dark mode class propagation', () => {
-    it('should render without dark-theme class on body by default', () => {
-      expect(document.body.classList.contains('dark-theme')).toBeFalse();
+  it('renders the live harness controls through Angular Material', () => {
+    fixture.detectChanges();
+    showHarnessActivity({
+      backgroundable: true, turnActive: true, tasks: [],
+      processes: [{ id: 'proc-1', description: 'build', state: 'RUNNING' }],
+      subagents: [{ id: 'child-1', type: 'coder', description: 'review', state: 'thinking',
+        running: true, canSend: true, canCancel: true }]
     });
-
-    it('should apply dark-theme styles when body has dark-theme class', () => {
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
-
-      // The component itself doesn't add the class — it reads from body via CSS vars
-      // We just verify the component renders under the dark body
-      const wrapper = fixture.nativeElement.querySelector('.unified-chat-wrapper');
-      expect(wrapper).toBeTruthy();
-    });
-
-    it('should apply light-theme class removal correctly', () => {
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
-      expect(document.body.classList.contains('dark-theme')).toBeTrue();
-
-      document.body.classList.remove('dark-theme');
-      document.body.classList.add('light-theme');
-      fixture.detectChanges();
-      expect(document.body.classList.contains('light-theme')).toBeTrue();
-      expect(document.body.classList.contains('dark-theme')).toBeFalse();
-    });
+    expect(buttonWithText(host, 'Stop process')).toBeDefined();
+    expect(buttonWithText(host, 'Send to child')).toBeDefined();
+    expect(nonMaterial(host)).toEqual([]);
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // 3. CONTEXT PANEL DARK MODE
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  describe('Context panel in dark mode', () => {
-    it('should render context panel under dark-theme without errors', () => {
-      document.body.classList.add('dark-theme');
-
-      const source = {
-        sourceName: 'test.pdf', content: 'Test content', score: 0.8,
-        sourceType: 'pdf', chunkIndex: 0, documentId: 'doc-1'
-      };
-      const message = {
-        id: 'msg-1', role: 'assistant', content: 'Test', timestamp: new Date(),
-        sources: [source], _sourcesExpanded: false
-      };
-      component.openContextPanel(message.id, message.sources as any[]);
-      fixture.detectChanges();
-
-      const panel = fixture.nativeElement.querySelector('.context-panel:not(.hidden)');
-      expect(panel).toBeTruthy();
-
-      const card = fixture.nativeElement.querySelector('.source-card');
-      expect(card).toBeTruthy();
-    });
+  it('names every icon-only button for hover and screen readers', () => {
+    fixture.detectChanges();
+    const iconButtons = Array.from(host.querySelectorAll<HTMLButtonElement>('.mat-mdc-icon-button, .mat-mdc-mini-fab'));
+    expect(iconButtons.length).toBeGreaterThan(0);
+    expect(iconButtons.filter(button => !button.title && !button.getAttribute('aria-label'))
+      .map(button => button.className)).toEqual([]);
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // 4. WELCOME MESSAGE RENDERS IN BOTH THEMES
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  describe('Welcome message rendering', () => {
-    it('should render welcome message in light theme', () => {
-      const welcome = fixture.nativeElement.querySelector('.welcome-message');
-      expect(welcome).toBeTruthy();
-    });
-
-    it('should render welcome message in dark theme', () => {
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
-
-      const welcome = fixture.nativeElement.querySelector('.welcome-message');
-      expect(welcome).toBeTruthy();
-    });
-
-    it('should render prompt suggestions in both themes', () => {
-      // Light
-      let suggestions = fixture.nativeElement.querySelectorAll('.suggestion-chip');
-      // No agent selected, so suggestions may not render
-      // Just verify no errors
-      expect(fixture.nativeElement.querySelector('.welcome-message')).toBeTruthy();
-
-      // Dark
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
-      expect(fixture.nativeElement.querySelector('.welcome-message')).toBeTruthy();
-    });
+  it('titles each welcome command chip with the CLI description of its command', () => {
+    fixture.detectChanges();
+    const chips = Array.from(host.querySelectorAll<HTMLButtonElement>('.welcome-command-chip'));
+    expect(chips.map(chip => (chip.textContent ?? '').trim())).toEqual(component.slashCommands.map(item => item.command));
+    expect(chips.map(chip => chip.title)).toEqual(component.slashCommands.map(item => item.description));
+    chips[0].click();
+    expect(component.userInput).toBe(component.slashCommands[0].command + ' ');
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // 5. INPUT AREA IN BOTH THEMES
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  describe('Input area rendering', () => {
-    it('should render textarea in light mode', () => {
-      const textarea = fixture.nativeElement.querySelector('.input-container textarea');
-      expect(textarea).toBeTruthy();
-    });
-
-    it('should render textarea in dark mode without errors', () => {
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
-
-      const textarea = fixture.nativeElement.querySelector('.input-container textarea');
-      expect(textarea).toBeTruthy();
-    });
-
-    it('should render send button in both modes', () => {
-      const btn = fixture.nativeElement.querySelector('.send-btn');
-      expect(btn).toBeTruthy();
-
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
-
-      const btnDark = fixture.nativeElement.querySelector('.send-btn');
-      expect(btnDark).toBeTruthy();
-    });
-
-    it('should render input hints in both modes', () => {
-      const hints = fixture.nativeElement.querySelector('.input-hints');
-      expect(hints).toBeTruthy();
-
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
-
-      const hintsDark = fixture.nativeElement.querySelector('.input-hints');
-      expect(hintsDark).toBeTruthy();
-    });
+  it('keeps chip titles hoverable but ignores clicks before a persona is selected', () => {
+    fixture.detectChanges();
+    component.selectedAgent = null;
+    rerender();
+    const chip = host.querySelector<HTMLButtonElement>('.welcome-command-chip')!;
+    // A natively disabled Material button gets pointer-events: none, which also hides its title.
+    expect(chip.disabled).toBeFalse();
+    expect(chip.getAttribute('aria-disabled')).toBe('true');
+    expect(getComputedStyle(chip).pointerEvents).not.toBe('none');
+    expect(chip.title).toBe(component.slashCommands[0].description);
+    const before = component.userInput;
+    chip.click();
+    expect(component.userInput).toBe(before);
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // 6. HEADER IN BOTH THEMES
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  describe('Header rendering', () => {
-    it('should render chat header in light mode', () => {
-      const header = fixture.nativeElement.querySelector('.chat-header');
-      expect(header).toBeTruthy();
+  it('shows why a shared process cannot be stopped and never sends its kill', () => {
+    fixture.detectChanges();
+    showHarnessActivity({
+      backgroundable: false, turnActive: true, tasks: [],
+      processes: [{ id: 'proc-2', description: 'shared build', state: 'RUNNING', kind: 'shared',
+        killable: false, owner: 'session-b' }]
     });
-
-    it('should render chat header in dark mode', () => {
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
-
-      const header = fixture.nativeElement.querySelector('.chat-header');
-      expect(header).toBeTruthy();
-    });
-
-    it('should render settings button in both modes', () => {
-      const btn = fixture.nativeElement.querySelector('.icon-btn');
-      expect(btn).toBeTruthy();
-
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
-
-      const btnDark = fixture.nativeElement.querySelector('.icon-btn');
-      expect(btnDark).toBeTruthy();
-    });
+    const send = spyOn(component, 'sendHarnessControl').and.resolveTo();
+    const stop = buttonWithText(host, 'Stop process')!;
+    expect(stop.disabled).toBeFalse();
+    expect(stop.getAttribute('aria-disabled')).toBe('true');
+    expect(stop.title).toBe('Shared by session-b; only its owner can stop it');
+    stop.click();
+    expect(send).not.toHaveBeenCalled();
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // 7. SETTINGS SIDEBAR IN BOTH THEMES
-  // ─────────────────────────────────────────────────────────────────────────────
+  it('applies the dark color scheme and accent fill only under the dark theme', () => {
+    fixture.detectChanges();
+    document.body.style.setProperty('--color-primary', 'rgb(1, 2, 3)');
+    document.body.style.setProperty('--color-primary-dark', 'rgb(4, 5, 6)');
+    const style = () => getComputedStyle(host);
 
-  describe('Settings sidebar rendering', () => {
-    it('should render settings sidebar (hidden) in light mode', () => {
-      const sidebar = fixture.nativeElement.querySelector('.settings-sidebar');
-      expect(sidebar).toBeTruthy();
-    });
+    expect(style().getPropertyValue('color-scheme').trim()).not.toBe('dark');
+    expect(style().getPropertyValue('--chat-accent-fill').trim()).toBe('rgb(1, 2, 3)');
 
-    it('should render settings sidebar (hidden) in dark mode', () => {
-      document.body.classList.add('dark-theme');
-      fixture.detectChanges();
+    document.body.classList.add('dark-theme');
+    expect(style().getPropertyValue('color-scheme').trim()).toBe('dark');
+    // User bubbles carry white text, so they take the darker primary rather than the light text tone.
+    expect(style().getPropertyValue('--chat-accent-fill').trim()).toBe('rgb(4, 5, 6)');
 
-      const sidebar = fixture.nativeElement.querySelector('.settings-sidebar');
-      expect(sidebar).toBeTruthy();
-    });
-
-    it('should show settings sidebar when toggled in dark mode', () => {
-      document.body.classList.add('dark-theme');
-      component.showSettings = true;
-      fixture.detectChanges();
-
-      const sidebar = fixture.nativeElement.querySelector('.settings-sidebar.visible');
-      expect(sidebar).toBeTruthy();
-    });
+    document.body.classList.replace('dark-theme', 'light-theme');
+    expect(style().getPropertyValue('color-scheme').trim()).not.toBe('dark');
   });
 });

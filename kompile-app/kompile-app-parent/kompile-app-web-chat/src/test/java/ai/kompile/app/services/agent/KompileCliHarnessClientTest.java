@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -29,6 +30,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -42,6 +44,7 @@ class KompileCliHarnessClientTest {
     @TempDir
     Path tempDir;
 
+    private String previousHome;
     private String previousDataDir;
     private String previousMaxConcurrent;
     private ThreadPoolExecutor executor;
@@ -52,6 +55,8 @@ class KompileCliHarnessClientTest {
 
     @BeforeEach
     void setUp() {
+        previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
         previousDataDir = System.getProperty("kompile.data.dir");
         previousMaxConcurrent = System.getProperty("kompile.web.chat.harness.maxConcurrent");
         System.setProperty("kompile.data.dir", tempDir.toString());
@@ -63,6 +68,7 @@ class KompileCliHarnessClientTest {
     @AfterEach
     void tearDown() {
         if (client != null) client.close();
+        System.setProperty("user.home", previousHome);
         if (previousDataDir == null) System.clearProperty("kompile.data.dir");
         else System.setProperty("kompile.data.dir", previousDataDir);
         if (previousMaxConcurrent == null) {
@@ -96,17 +102,57 @@ class KompileCliHarnessClientTest {
     }
 
     @Test
-    void sessionIdentityIsStableAndProjectScoped() {
+    void sessionIdentityIsNativeAndNeverAddsOrStripsPrefixes() throws Exception {
         String first = KompileCliHarnessClient.harnessSessionId(tempDir, "browser-42");
         String repeated = KompileCliHarnessClient.harnessSessionId(tempDir, "browser-42");
         String otherSession = KompileCliHarnessClient.harnessSessionId(tempDir, "browser-43");
         String otherProject = KompileCliHarnessClient.harnessSessionId(
-                tempDir.resolve("nested"), "browser-42");
+                Files.createDirectory(tempDir.resolve("nested")), "browser-42");
 
         assertEquals(first, repeated);
         assertNotEquals(first, otherSession);
-        assertNotEquals(first, otherProject);
-        assertTrue(first.matches("web-[0-9a-f]{40}"), first);
+        assertEquals(first, otherProject);
+        assertEquals("browser-42", first);
+        assertEquals("web-existing", KompileCliHarnessClient.harnessSessionId(tempDir, "web-existing"));
+        assertThrows(IllegalArgumentException.class,
+                () -> KompileCliHarnessClient.harnessSessionId(tempDir, "../escape"));
+    }
+
+    @Test
+    void existingCliTranscriptResumesTheSameIdWithoutReimportingBrowserHistory() throws Exception {
+        Path root = Path.of(System.getProperty("kompile.data.dir")).toRealPath();
+        Path conversations = Files.createDirectories(ai.kompile.cli.common.KompileHome.homeDirectory().toPath().resolve("conversations"));
+        String id = java.util.UUID.randomUUID().toString();
+        Files.writeString(conversations.resolve(id + ".txt"), "CWD: " + root + "\n> original\n\n< reply\n");
+        FakeProcess fake = new FakeProcess("{\"seq\":1,\"type\":\"result\",\"text\":\"done\",\"exit\":0}\n", "", 0);
+        client = clientWith(fake);
+        var request = request("continue");
+        request.setSessionId(id);
+        request.setWorkingDirectory(root.toString());
+        request.setChatHistory(List.of(new AgentChatRequest.ChatHistoryEntry("user", "original")));
+        RecordingSink sink = new RecordingSink();
+        client.runTurn("native-resume", request, sink);
+        List<String> command = capturedCommand.get();
+        assertEquals(id, command.get(command.indexOf("--resume") + 1));
+        assertFalse(command.contains("--session-id"));
+        JsonNode input = new ObjectMapper().readTree(fake.stdin.toByteArray());
+        assertEquals(id, input.path("sessionId").asText());
+        assertFalse(input.path("supplementalContext").asText().contains("original"));
+        assertEquals(id, ((Map<?, ?>) sink.events.get(0).data()).get("sessionId"));
+        assertEquals(2, new ai.kompile.cli.common.chat.sources.adapters.KompileAdapter().readTurns(id).size());
+    }
+
+    @Test
+    void legacyBrowserTranscriptIsResumedOnceAndWrongProjectIsRejected() throws Exception {
+        var adapter = new ai.kompile.cli.common.chat.sources.adapters.KompileAdapter();
+        Path conversations = Files.createDirectories(ai.kompile.cli.common.KompileHome.homeDirectory().toPath().resolve("conversations"));
+        String legacy = ai.kompile.cli.common.chat.sources.adapters.KompileAdapter.legacyBrowserSessionId(tempDir.toRealPath(), "old-browser");
+        Files.writeString(conversations.resolve(legacy + ".txt"), "CWD: " + tempDir.toRealPath() + "\n> history\n");
+        assertEquals(legacy, KompileCliHarnessClient.harnessSessionId(tempDir, "old-browser"));
+        assertEquals(legacy, KompileCliHarnessClient.harnessSessionId(tempDir, legacy));
+        Path other = Files.createDirectory(tempDir.resolve("different-project"));
+        assertThrows(IllegalArgumentException.class, () -> KompileCliHarnessClient.harnessSessionId(other, legacy));
+        assertEquals("old-browser", adapter.resolveSessionId(other, "old-browser"));
     }
 
     @Test
@@ -526,8 +572,7 @@ class KompileCliHarnessClientTest {
         // /model persistence and MODEL_INPUT application share one state file.
         assertEquals(4, input.size());
         assertTrue(input.path("sessionId").isTextual());
-        assertTrue(input.path("sessionId").asText().matches("web-[0-9a-f]{40}"),
-                input.path("sessionId").asText());
+        assertEquals(request.getSessionId(), input.path("sessionId").asText());
         String context = input.path("supplementalContext").asText();
         for (String expected : List.of("system-context", "history-context", "knowledge_search",
                 "graph_reasoning_query", "folder-context", "fact sheet id 42", "<browser_attachment_files>", "context.txt")) {
@@ -872,6 +917,282 @@ class KompileCliHarnessClientTest {
     }
 
     @Test
+    void sessionInsightsAskAOneShotHarnessForTheSessionsRows() throws Exception {
+        String directoryKey = WebChatContext.WORKING_DIRECTORY;
+        String oldDirectory = System.getProperty(directoryKey);
+        Path project = Files.createDirectories(tempDir.resolve("insights project"));
+        var mapper = new ObjectMapper();
+        try {
+            System.setProperty(directoryKey, project.toString());
+            String data = "{\"menu\":\"insights\",\"sessionId\":\"s\",\"available\":true,"
+                    + "\"schemaVersion\":\"kompile.dashboard.v1\",\"title\":\"Session insights\","
+                    + "\"contextVersion\":\"2026-10-03T12:34:56Z\","
+                    + "\"lines\":[\"Judge: 1 flagged of 1 verdict\",\"Crawl: no recent crawl jobs\"],\"live\":false}";
+            FakeProcess insights = new FakeProcess("{\"seq\":1,\"type\":\"started\",\"session_id\":\"s\"}\n"
+                    + "{\"seq\":2,\"type\":\"command\",\"session_id\":\"s\",\"command\":\"/insights\","
+                    + "\"status\":\"COMPLETED\",\"text\":\"Judge: 1 flagged of 1 verdict\",\"data\":" + data + "}\n"
+                    + "{\"seq\":3,\"type\":\"completed\",\"exit\":0}\n", "", 0);
+            client = clientWith(insights);
+            for (String missing : new String[] {null, " "}) {
+                assertEquals(unavailableInsights("Session insights need the chat session id"),
+                        client.insightsSnapshot(missing, null));
+            }
+            assertEquals(unavailableInsights("This CLI web chat is bound to: " + project.toRealPath()),
+                    client.insightsSnapshot("browser-session", tempDir.toString()));
+            assertNull(capturedCommand.get(), "a refused request never starts a harness");
+
+            assertEquals(mapper.readTree(data), client.insightsSnapshot("browser-session", null));
+
+            JsonNode input = mapper.readTree(insights.stdin.toString(StandardCharsets.UTF_8));
+            assertEquals(mapper.createObjectNode().put("version", 1)
+                    .put("sessionId", KompileCliHarnessClient.harnessSessionId(project.toRealPath(), "browser-session"))
+                    .put("insightsQuery", true), input, "a read carries the session and no prompt");
+            List<String> command = capturedCommand.get();
+            assertEquals("web-json", command.get(command.indexOf("--input-format") + 1));
+            assertEquals(project.toRealPath().toString(), command.get(command.indexOf("--working-dir") + 1));
+            for (String flag : List.of("--web-controls", "--session-id", "--resume", "--local")) {
+                assertFalse(command.contains(flag), command.toString());
+            }
+
+            // A refusal exits non-zero yet carries the harness's reason.
+            process.set(new FakeProcess("{\"seq\":1,\"type\":\"command\",\"command\":\"/insights\","
+                    + "\"status\":\"INVALID\",\"text\":\"Session insights need a session id.\"}\n", "", 2));
+            assertEquals(unavailableInsights("Session insights need a session id."),
+                    client.insightsSnapshot("browser-session", null));
+            // A CLI that predates the read rejects the frame with an error event.
+            process.set(new FakeProcess("{\"seq\":1,\"type\":\"error\","
+                    + "\"message\":\"Unknown web input field: insightsQuery\",\"exit\":2}\n", "", 2));
+            assertEquals(unavailableInsights("Unknown web input field: insightsQuery"),
+                    client.insightsSnapshot("browser-session", null));
+            // Without an outcome, the last diagnostic says why, and failing that the exit code.
+            process.set(new FakeProcess("", "Picked up JAVA_TOOL_OPTIONS\nError: Unable to access jarfile\n", 1));
+            assertEquals(unavailableInsights("Error: Unable to access jarfile"),
+                    client.insightsSnapshot("browser-session", null));
+            process.set(new FakeProcess("", "", 0));
+            assertEquals(unavailableInsights("Harness returned no session insights (exit 0)"),
+                    client.insightsSnapshot("browser-session", null));
+        } finally {
+            if (oldDirectory == null) System.clearProperty(directoryKey); else System.setProperty(directoryKey, oldDirectory);
+        }
+    }
+
+    @Test
+    void overlappingInsightRefreshesOfOneSessionShareOneHarness() throws Exception {
+        String directoryKey = WebChatContext.WORKING_DIRECTORY;
+        String oldDirectory = System.getProperty(directoryKey);
+        Path project = Files.createDirectories(tempDir.resolve("shared project"));
+        AtomicInteger starts = new AtomicInteger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        String outcome = "{\"seq\":1,\"type\":\"command\",\"status\":\"COMPLETED\",\"text\":\"Tools: 1 call\","
+                + "\"data\":{\"menu\":\"insights\",\"available\":true,\"lines\":[\"Tools: 1 call\"],\"live\":true}}\n";
+        try {
+            System.setProperty(directoryKey, project.toString());
+            client = new KompileCliHarnessClient(new ObjectMapper(), () -> List.of("fake-kompile"),
+                    (command, directory) -> {
+                        starts.incrementAndGet();
+                        entered.countDown();
+                        try {
+                            release.await(10, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return new FakeProcess(outcome, "", 0);
+                    }, executor, scheduler);
+            CompletableFuture<JsonNode> first = CompletableFuture.supplyAsync(
+                    () -> client.insightsSnapshot("browser-session", null));
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "the first refresh starts a harness");
+            AtomicReference<JsonNode> second = new AtomicReference<>();
+            Thread refresh = new Thread(() -> second.set(client.insightsSnapshot("browser-session", null)));
+            refresh.start();
+            // Parked either on the running probe, or (were it not shared) in a harness of its own.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (refresh.getState() != Thread.State.WAITING && refresh.getState() != Thread.State.TIMED_WAITING
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            release.countDown();
+            JsonNode shared = first.get(5, TimeUnit.SECONDS);
+            refresh.join(5_000L);
+
+            assertEquals(1, starts.get(), "the overlapping refresh shared the running probe");
+            assertEquals(shared, second.get());
+            assertTrue(shared.path("live").asBoolean(), shared.toString());
+            client.insightsSnapshot("browser-session", null);
+            assertEquals(2, starts.get(), "a refresh after the probe ended reads afresh");
+        } finally {
+            release.countDown();
+            if (oldDirectory == null) System.clearProperty(directoryKey); else System.setProperty(directoryKey, oldDirectory);
+        }
+    }
+
+    @Test
+    void topicReportsAskAOneShotHarnessForTheTopicAndNoSession() throws Exception {
+        String directoryKey = WebChatContext.WORKING_DIRECTORY;
+        String oldDirectory = System.getProperty(directoryKey);
+        Path project = Files.createDirectories(tempDir.resolve("report project"));
+        var mapper = new ObjectMapper();
+        try {
+            System.setProperty(directoryKey, project.toString());
+            String data = "{\"menu\":\"insights\",\"topic\":\"crawl\",\"available\":true,"
+                    + "\"headline\":\"Crawls: 1 failed of 3\",\"text\":\"Crawls: 1 failed of 3\\n\","
+                    + "\"chart\":{\"type\":\"bar\",\"series\":[{\"name\":\"failed\",\"values\":[0,1]}]}}";
+            FakeProcess report = new FakeProcess("{\"seq\":1,\"type\":\"command\",\"command\":\"/insights\","
+                    + "\"status\":\"COMPLETED\",\"text\":\"Crawls: 1 failed of 3\\n\",\"data\":" + data + "}\n", "", 0);
+            client = clientWith(report);
+            for (String topic : new String[] {null, " ", "t".repeat(65), "cr\tawl"}) {
+                assertThrows(IllegalArgumentException.class, () -> client.insightsReport(topic, null, null), topic);
+            }
+            for (String question : new String[] {"q".repeat(1_001), "failed\ncrawls"}) {
+                assertThrows(IllegalArgumentException.class, () -> client.insightsReport("crawl", question, null));
+            }
+            assertEquals(unavailableReport("crawl", "This CLI web chat is bound to: " + project.toRealPath()),
+                    client.insightsReport("crawl", null, tempDir.toString()));
+            assertNull(capturedCommand.get(), "a refused request never starts a harness");
+
+            assertEquals(mapper.readTree(data), client.insightsReport(" crawl ", " failed crawls last 7 days ", null));
+
+            assertEquals(mapper.createObjectNode().put("version", 1).put("insightsQuery", true)
+                            .put("insightsTopic", "crawl").put("insightsQuestion", "failed crawls last 7 days"),
+                    mapper.readTree(report.stdin.toString(StandardCharsets.UTF_8)),
+                    "a report names the topic and the question, and no session");
+            List<String> command = capturedCommand.get();
+            assertEquals("web-json", command.get(command.indexOf("--input-format") + 1));
+            assertEquals(project.toRealPath().toString(), command.get(command.indexOf("--working-dir") + 1));
+            for (String flag : List.of("--web-controls", "--session-id", "--resume", "--local")) {
+                assertFalse(command.contains(flag), command.toString());
+            }
+            FakeProcess overview = new FakeProcess("{\"seq\":1,\"type\":\"command\",\"status\":\"COMPLETED\","
+                    + "\"text\":\"\",\"data\":{\"menu\":\"insights\",\"topic\":\"overview\",\"available\":true}}\n", "", 0);
+            process.set(overview);
+            client.insightsReport("overview", "  ", null);
+            assertEquals(mapper.createObjectNode().put("version", 1).put("insightsQuery", true)
+                            .put("insightsTopic", "overview"),
+                    mapper.readTree(overview.stdin.toString(StandardCharsets.UTF_8)), "a blank question is left out");
+
+            // A topic the CLI does not know is the caller's error, and the CLI's message lists the topics.
+            process.set(new FakeProcess("{\"seq\":1,\"type\":\"command\",\"command\":\"/insights\",\"status\":\"INVALID\","
+                    + "\"text\":\"Unknown insights topic 'crawls'. Topics: crawl, graph\"}\n", "", 2));
+            IllegalArgumentException unknown = assertThrows(IllegalArgumentException.class,
+                    () -> client.insightsReport("crawls", null, null));
+            assertEquals("Unknown insights topic 'crawls'. Topics: crawl, graph", unknown.getMessage());
+            // A CLI that predates topic reports rejects the frame with an error event.
+            process.set(new FakeProcess("{\"seq\":1,\"type\":\"error\","
+                    + "\"message\":\"Unknown web input field: insightsTopic\",\"exit\":2}\n", "", 2));
+            assertEquals(unavailableReport("crawl", "Unknown web input field: insightsTopic"),
+                    client.insightsReport("crawl", null, null));
+            // Without an outcome, the last diagnostic says why, and failing that the exit code.
+            process.set(new FakeProcess("", "Picked up JAVA_TOOL_OPTIONS\nError: Unable to access jarfile\n", 1));
+            assertEquals(unavailableReport("graph", "Error: Unable to access jarfile"),
+                    client.insightsReport("graph", null, null));
+            process.set(new FakeProcess("", "", 0));
+            assertEquals(unavailableReport("graph", "Harness returned no insights report (exit 0)"),
+                    client.insightsReport("graph", null, null));
+        } finally {
+            if (oldDirectory == null) System.clearProperty(directoryKey); else System.setProperty(directoryKey, oldDirectory);
+        }
+    }
+
+    @Test
+    void aTopicReportIsReadWholeUpToItsOwnLimit() throws Exception {
+        String directoryKey = WebChatContext.WORKING_DIRECTORY;
+        String oldDirectory = System.getProperty(directoryKey);
+        Path project = Files.createDirectories(tempDir.resolve("large report"));
+        try {
+            System.setProperty(directoryKey, project.toString());
+            // Far past the 16 KiB kept of a diagnostic: a long ranked table, its text twice on one line.
+            String table = "row ".repeat(25_000);
+            client = clientWith(new FakeProcess("{\"seq\":1,\"type\":\"command\",\"status\":\"COMPLETED\",\"text\":\""
+                    + table + "\",\"data\":{\"menu\":\"insights\",\"topic\":\"graph\",\"available\":true,\"text\":\""
+                    + table + "\"}}\n", "", 0));
+            assertEquals(table, client.insightsReport("graph", null, null).path("text").asText());
+
+            process.set(new FakeProcess("{\"seq\":1,\"type\":\"command\",\"status\":\"COMPLETED\",\"text\":\""
+                    + "x".repeat(4 * 1024 * 1024) + "\",\"data\":{\"menu\":\"insights\",\"available\":true}}\n", "", 0));
+            assertEquals(unavailableReport("graph", "The insights report is larger than 4 MiB; lower maxRows or "
+                    + "maxExamples in insights.json"), client.insightsReport("graph", null, null));
+        } finally {
+            if (oldDirectory == null) System.clearProperty(directoryKey); else System.setProperty(directoryKey, oldDirectory);
+        }
+    }
+
+    @Test
+    void overlappingRequestsForOneReportShareOneHarnessAndItsAnswer() throws Exception {
+        String directoryKey = WebChatContext.WORKING_DIRECTORY;
+        String oldDirectory = System.getProperty(directoryKey);
+        Path project = Files.createDirectories(tempDir.resolve("shared report"));
+        AtomicInteger starts = new AtomicInteger();
+        AtomicReference<CountDownLatch> entered = new AtomicReference<>();
+        AtomicReference<CountDownLatch> release = new AtomicReference<>();
+        AtomicReference<String> outcome = new AtomicReference<>();
+        try {
+            System.setProperty(directoryKey, project.toString());
+            client = new KompileCliHarnessClient(new ObjectMapper(), () -> List.of("fake-kompile"),
+                    (command, directory) -> {
+                        starts.incrementAndGet();
+                        entered.get().countDown();
+                        try {
+                            release.get().await(10, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return new FakeProcess(outcome.get(), "", 0);
+                    }, executor, scheduler);
+
+            outcome.set("{\"seq\":1,\"type\":\"command\",\"status\":\"COMPLETED\",\"text\":\"Graphs: 2\",\"data\":"
+                    + "{\"menu\":\"insights\",\"topic\":\"graph\",\"available\":true,\"headline\":\"Graphs: 2\"}}\n");
+            List<Object> answers = overlapping(() -> client.insightsReport("graph", "biggest graphs", null),
+                    entered, release);
+            assertEquals(1, starts.get(), "the overlapping request shared the running harness");
+            assertEquals(answers.get(0), answers.get(1));
+            assertEquals("Graphs: 2", ((JsonNode) answers.get(0)).path("headline").asText(), answers.toString());
+
+            outcome.set("{\"seq\":1,\"type\":\"command\",\"status\":\"INVALID\","
+                    + "\"text\":\"Unknown insights topic 'graphs'.\"}\n");
+            List<Object> refusals = overlapping(() -> client.insightsReport("graphs", null, null), entered, release);
+            assertEquals(2, starts.get(), "a request after the harness ended reads afresh, and shares the refusal");
+            for (Object refusal : refusals) {
+                assertTrue(refusal instanceof IllegalArgumentException, String.valueOf(refusal));
+                assertEquals("Unknown insights topic 'graphs'.", ((Exception) refusal).getMessage());
+            }
+        } finally {
+            if (release.get() != null) release.get().countDown();
+            if (oldDirectory == null) System.clearProperty(directoryKey); else System.setProperty(directoryKey, oldDirectory);
+        }
+    }
+
+    /** Two overlapping calls of {@code read}: each one's answer, or the exception it threw. */
+    private static List<Object> overlapping(Supplier<JsonNode> read, AtomicReference<CountDownLatch> entered,
+                                            AtomicReference<CountDownLatch> release) throws Exception {
+        entered.set(new CountDownLatch(1));
+        release.set(new CountDownLatch(1));
+        CompletableFuture<Object> first = CompletableFuture.supplyAsync(() -> outcomeOf(read));
+        assertTrue(entered.get().await(5, TimeUnit.SECONDS), "the first request starts a harness");
+        AtomicReference<Object> second = new AtomicReference<>();
+        Thread overlap = new Thread(() -> second.set(outcomeOf(read)));
+        overlap.start();
+        // Parked either on the running harness, or (were it not shared) in a harness of its own.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (overlap.getState() != Thread.State.WAITING && overlap.getState() != Thread.State.TIMED_WAITING
+                && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        release.get().countDown();
+        Object answer = first.get(5, TimeUnit.SECONDS);
+        overlap.join(5_000L);
+        return Arrays.asList(answer, second.get());
+    }
+
+    private static Object outcomeOf(Supplier<JsonNode> read) {
+        try {
+            return read.get();
+        } catch (RuntimeException thrown) {
+            return thrown;
+        }
+    }
+
+    @Test
     void toolResultsCarryTheTerminalRowAndHighlightedBody() throws Exception {
         String detail = "{\"displayName\":\"Read\",\"title\":\"src/App.java\",\"sections\":[{\"label\":\"content\","
                 + "\"runs\":[{\"text\":\"class App {}\",\"file\":\"App.java\",\"family\":\"clike\"}]}]}";
@@ -906,6 +1227,16 @@ class KompileCliHarnessClientTest {
                 },
                 executor,
                 scheduler);
+    }
+
+    private static JsonNode unavailableInsights(String status) {
+        return new ObjectMapper().createObjectNode()
+                .put("menu", "insights").put("available", false).put("status", status);
+    }
+
+    private static JsonNode unavailableReport(String topic, String status) {
+        return new ObjectMapper().createObjectNode().put("menu", "insights").put("topic", topic)
+                .put("available", false).put("status", status);
     }
 
     private static AgentChatRequest request(String message) {

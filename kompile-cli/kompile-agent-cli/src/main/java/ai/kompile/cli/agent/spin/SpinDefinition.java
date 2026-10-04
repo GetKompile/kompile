@@ -56,6 +56,7 @@ public final class SpinDefinition {
     private final String roleName;
     private final List<ModelAsset> models;
     private final List<McpServerAsset> mcpServers;
+    private final SpinProjectComposition project;
 
     private SpinDefinition(Path root,
                            JsonNode spinManifest,
@@ -68,7 +69,8 @@ public final class SpinDefinition {
                            String delivery,
                            String roleName,
                            List<ModelAsset> models,
-                           List<McpServerAsset> mcpServers) {
+                           List<McpServerAsset> mcpServers,
+                           SpinProjectComposition project) {
         this.root = root;
         this.spinManifest = spinManifest;
         this.agentManifest = agentManifest;
@@ -81,6 +83,7 @@ public final class SpinDefinition {
         this.roleName = roleName;
         this.models = List.copyOf(models);
         this.mcpServers = List.copyOf(mcpServers);
+        this.project = project;
     }
 
     public static SpinDefinition load(Path source) throws IOException {
@@ -109,8 +112,12 @@ public final class SpinDefinition {
             throw new IOException(MANIFEST + " must contain an object");
         }
         String schema = spin.path("schemaVersion").asText("1").trim();
-        if (!("1".equals(schema) || "v1".equalsIgnoreCase(schema))) {
+        boolean projectBacked = "2".equals(schema) || "v2".equalsIgnoreCase(schema);
+        if (!("1".equals(schema) || "v1".equalsIgnoreCase(schema) || projectBacked)) {
             throw new IOException("Unsupported spin schema: " + schema);
+        }
+        if (!projectBacked && spin.has("project")) {
+            throw new IOException("project composition requires spin schemaVersion: 2");
         }
 
         Path agentPath = Files.isRegularFile(root.resolve(AgentBundleLoader.MANIFEST),
@@ -141,7 +148,7 @@ public final class SpinDefinition {
         String commandName = firstNonBlank(metadata.path("command").asText(null), id);
         requireMatch("metadata.command", commandName, ID);
 
-        String delivery = spin.path("runtime").path("delivery").asText("thin")
+        String delivery = spin.path("runtime").path("delivery").asText(projectBacked ? "embedded" : "thin")
                 .trim().toLowerCase(Locale.ROOT);
         if (!Set.of("thin", "embedded").contains(delivery)) {
             throw new IOException("runtime.delivery must be thin or embedded");
@@ -152,18 +159,61 @@ public final class SpinDefinition {
         validateToolNames(role.path("tools"), "role.tools");
         validateToolNames(role.path("denyTools"), "role.denyTools");
 
-        List<ModelAsset> models = parseModels(root, agent.path("models"));
-        boolean needsLocalModelRuntime = requiresLocalModelRuntime(models);
+        SpinProjectComposition project = projectBacked
+                ? SpinProjectComposition.load(root, spin.path("project")) : null;
+        if (projectBacked && agent.has("models") && !agent.path("models").isEmpty()) {
+            throw new IOException("Project-backed spins declare models in kompile.project.json, not agent.yaml");
+        }
+        if (projectBacked && !"embedded".equals(delivery)) {
+            throw new IOException("Project-backed bundle delivery requires an embedded runtime");
+        }
+        List<ModelAsset> models = project == null ? parseModels(root, agent.path("models")) : project.models();
+        boolean needsLocalModelRuntime = projectBacked
+                ? models.stream().anyMatch(model -> "kompile-local".equalsIgnoreCase(model.provider()))
+                : requiresLocalModelRuntime(models);
         if ("embedded".equals(delivery) && !embeddedRuntimeProvided
                 && !hasRuntimeDistribution(root.resolve("runtime"), needsLocalModelRuntime)) {
             throw new IOException(needsLocalModelRuntime
                     ? "Embedded spin with a default local model must include Kompile, kompile-agent, and model-serving"
                     : "Embedded spin must include both Kompile and kompile-agent runtime launchers");
         }
+        if (projectBacked && !embeddedRuntimeProvided) {
+            validateProjectRuntime(project, root.resolve("runtime"), needsLocalModelRuntime);
+        }
         List<McpServerAsset> servers = parseMcpServers(root, agent.path("mcp").path("servers"));
 
         return new SpinDefinition(root, spin.deepCopy(), agent, entries, id, version,
-                displayName, commandName, delivery, roleName, models, servers);
+                displayName, commandName, delivery, roleName, models, servers, project);
+    }
+
+    static void validateProjectRuntime(SpinProjectComposition project, Path runtime,
+                                       boolean needsServing) throws IOException {
+        String delivery = project.distribution().getDelivery();
+        if ("native".equals(delivery)) {
+            requireNative(runtime, "kompile");
+            requireNative(runtime, "kompile-agent");
+            if (needsServing) requireNative(runtime, "kompile-model-serving");
+            if (project.distribution().getWeb().isEnabled()) requireNative(runtime, "kompile-chat");
+        } else if (project.distribution().getWeb().isEnabled()) {
+            throw new IOException("Project spin web delivery currently requires native executables");
+        }
+    }
+
+    private static void requireNative(Path runtime, String name) throws IOException {
+        for (String filename : List.of(name, name + ".exe")) {
+            Path binary = runtime.resolve("bin").resolve(filename);
+            if (!Files.isRegularFile(binary, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(binary)) continue;
+            try (var input = Files.newInputStream(binary)) {
+                byte[] header = input.readNBytes(4);
+                if (header.length == 4) {
+                    int magic = java.nio.ByteBuffer.wrap(header).getInt();
+                    if (magic == 0x7f454c46 || magic == 0xfeedface || magic == 0xfeedfacf
+                            || magic == 0xcefaedfe || magic == 0xcffaedfe || magic == 0xcafebabe
+                            || magic == 0xbebafeca || (header[0] == 'M' && header[1] == 'Z')) return;
+                }
+            }
+        }
+        throw new IOException("Native spin requires a native-image executable (not a shell/JAR launcher): " + name);
     }
 
     private static List<ModelAsset> parseModels(Path root, JsonNode node) throws IOException {
@@ -404,8 +454,13 @@ public final class SpinDefinition {
     public String delivery() { return delivery; }
     public String roleName() { return roleName; }
     public List<ModelAsset> models() { return models; }
+    public SpinProjectComposition project() { return project; }
+    public boolean projectBacked() { return project != null; }
     public List<McpServerAsset> mcpServers() { return mcpServers; }
-    public boolean requiresLocalModelRuntime() { return requiresLocalModelRuntime(models); }
+    public boolean requiresLocalModelRuntime() {
+        return projectBacked() ? models.stream().anyMatch(model -> "kompile-local".equalsIgnoreCase(model.provider()))
+                : requiresLocalModelRuntime(models);
+    }
 
     public ModelAsset defaultModel() {
         return models.stream().filter(ModelAsset::isDefault).findFirst().orElse(null);

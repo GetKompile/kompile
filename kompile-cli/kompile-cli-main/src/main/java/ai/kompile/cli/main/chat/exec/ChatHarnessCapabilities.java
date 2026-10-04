@@ -204,7 +204,8 @@ public final class ChatHarnessCapabilities {
         webInput.put("option", "--input-format");
         webInput.putArray("requiredFields").add("version").add("rawInput");
         webInput.putArray("optionalFields").add("supplementalContext").add("sessionId").add("configQuery")
-                .add("modelVendor").add("workflowApprove");
+                .add("modelVendor").add("workflowApprove").add("insightsQuery").add("insightsTopic")
+                .add("insightsQuestion");
         webInput.put("commandEvent", "command");
         webInput.putArray("commandLifecycle").add("session").add("command").add("result");
         webInput.putArray("commandStatuses").add("COMPLETED").add("UNKNOWN_COMMAND")

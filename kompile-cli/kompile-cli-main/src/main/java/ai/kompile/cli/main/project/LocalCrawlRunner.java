@@ -62,11 +62,21 @@ public final class LocalCrawlRunner {
             ObjectMapper mapper,
             ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor,
             LocalProjectGraphBackend graphBackend) throws IOException {
+        return execute(profile, projectRoot, dryRun, request, graphContext, mapper,
+                modelPipelineExecutor, graphBackend, null);
+    }
+
+    public static ExecutionResult execute(
+            KompileProjectCrawlProfile profile, Path projectRoot, boolean dryRun, JsonNode request,
+            GraphContext graphContext, ObjectMapper mapper,
+            ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor,
+            LocalProjectGraphBackend graphBackend, LocalCorpusPublication.Context publication)
+            throws IOException {
         checkCancellation();
-        ProjectCrawlCommand.LocalCrawlExecution execution = modelPipelineExecutor == null
-                ? ProjectCrawlCommand.executeLocalCrawl(profile, projectRoot, dryRun, request)
-                : ProjectCrawlCommand.executeLocalCrawl(
-                        profile, projectRoot, dryRun, request, modelPipelineExecutor);
+        ProjectCrawlCommand.LocalCrawlExecution execution = ProjectCrawlCommand.executeLocalCrawl(
+                profile, projectRoot, dryRun, request,
+                modelPipelineExecutor == null ? LocalModelPipelineRunner::extract : modelPipelineExecutor,
+                publication);
         checkCancellation();
         LocalProjectGraphBackend.GraphUpdate graphUpdate =
                 updateGraph(projectRoot, dryRun, request, graphContext, execution, mapper, graphBackend);
@@ -92,7 +102,8 @@ public final class LocalCrawlRunner {
             ProjectCrawlCommand.LocalCrawlExecution execution,
             ObjectMapper mapper,
             LocalProjectGraphBackend graphBackend) throws IOException {
-        if (dryRun || graphContext == null || "FAILED".equals(execution.status())) return null;
+        if (dryRun || graphContext == null || "FAILED".equals(execution.status())
+                || LocalCorpusPublication.isRequested(request)) return null;
         try {
             LocalProjectGraphBackend effectiveBackend = graphBackend == null
                     ? new LocalProjectGraphBackend(mapper) : graphBackend;

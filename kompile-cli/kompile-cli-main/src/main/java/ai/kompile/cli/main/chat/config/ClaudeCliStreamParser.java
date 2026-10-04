@@ -19,13 +19,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Stateful decoder for the {@code claude -p --output-format stream-json} protocol
  * used by Standard Chat. Deliberately separate from the passthrough decoder:
  * provider-side tools are observed and rendered, never re-dispatched locally.
  * A subagent's own messages (those carrying {@code parent_tool_use_id}) are not
- * the answer and decode to nothing; its task events report its progress.
+ * the answer and decode to their usage only; its task events report its progress.
  */
 final class ClaudeCliStreamParser {
 
@@ -38,6 +39,75 @@ final class ClaudeCliStreamParser {
     record ToolInput(String callId, String name, String input) implements Event { }
     record ToolOutput(String callId, String name, String output) implements Event { }
     record ToolComplete(String callId, String name, String output, boolean error) implements Event { }
+    /**
+     * A fragment of the arguments the main thread's model is writing for a tool
+     * call. Its tokens are output the request reports when it ends.
+     */
+    record ToolInputDelta(String delta) implements Event { }
+    /**
+     * Tokens by category. The API counts input without the cache reads and
+     * writes, so the categories are disjoint. A negative count reads as 0.
+     */
+    record TokenCounts(long input, long output, long cacheRead, long cacheCreation) {
+        static final TokenCounts ZERO = new TokenCounts(0, 0, 0, 0);
+
+        TokenCounts {
+            input = Math.max(0L, input);
+            output = Math.max(0L, output);
+            cacheRead = Math.max(0L, cacheRead);
+            cacheCreation = Math.max(0L, cacheCreation);
+        }
+
+        /** The counts of an API {@code usage} object; a missing or null count is 0. */
+        static TokenCounts of(JsonNode usage) {
+            return new TokenCounts(usage.path("input_tokens").asLong(0L),
+                    usage.path("output_tokens").asLong(0L),
+                    usage.path("cache_read_input_tokens").asLong(0L),
+                    usage.path("cache_creation_input_tokens").asLong(0L));
+        }
+
+        boolean isZero() {
+            return input == 0 && output == 0 && cacheRead == 0 && cacheCreation == 0;
+        }
+
+        TokenCounts plus(TokenCounts other) {
+            return new TokenCounts(input + other.input, output + other.output,
+                    cacheRead + other.cacheRead, cacheCreation + other.cacheCreation);
+        }
+
+        /** Per category, how far these counts exceed {@code other}'s; 0 where they do not. */
+        TokenCounts above(TokenCounts other) {
+            return new TokenCounts(input - other.input, output - other.output,
+                    cacheRead - other.cacheRead, cacheCreation - other.cacheCreation);
+        }
+
+        /** The higher count of each category. */
+        TokenCounts max(TokenCounts other) {
+            return new TokenCounts(Math.max(input, other.input), Math.max(output, other.output),
+                    Math.max(cacheRead, other.cacheRead),
+                    Math.max(cacheCreation, other.cacheCreation));
+        }
+
+        /** True when no category is below {@code other}'s. */
+        boolean covers(TokenCounts other) {
+            return input >= other.input && output >= other.output
+                    && cacheRead >= other.cacheRead && cacheCreation >= other.cacheCreation;
+        }
+
+        TokenCounts withoutOutput() {
+            return new TokenCounts(input, 0, cacheRead, cacheCreation);
+        }
+    }
+    /**
+     * The usage one model request reported so far. The API reports a request's
+     * input and cache counts when it starts and its output when it ends, both
+     * cumulatively; each message aggregate repeats what was known when its block
+     * ended. A subagent's requests report only through their aggregates, so their
+     * output is the count at the request's start. {@code sequence} is the event's
+     * position in the process's output.
+     */
+    record RequestUsage(long sequence, String requestId, boolean mainThread,
+                        TokenCounts usage) implements Event { }
     record Notice(String text) implements Event { }
     /**
      * Claude Code reported a failed API request ("Prompt is too long", an overload
@@ -89,19 +159,29 @@ final class ClaudeCliStreamParser {
     /**
      * The terminal result of a turn. {@code started} is false when Claude Code
      * refused the turn before any model request ({@code num_turns: 0}), for
-     * example an unknown {@code --resume} session. The token counts add up every
-     * request of the turn; {@code contextTokens} is the input size of its last
+     * example an unknown {@code --resume} session. The token counts add up the
+     * turn's main-thread requests; {@code contextTokens} is the input size of its last
      * request, 0 when no request reported usage after the last compaction.
      * {@code contextWindow} and {@code maxOutputTokens} are the limits Claude Code
      * applies to the session's model, 0 when not reported. {@code requests} counts
      * the main-thread model requests the turn made, one per message id, 0 when no
      * frame carried an id; a subagent's requests are its task's, not the turn's.
+     * {@code totals} adds up the result's {@code modelUsage}: the process's running
+     * totals over every model, with subagents, compaction and side requests, and
+     * for a resumed session the totals it was saved with; null when the result
+     * has none. {@code sequence} is the result's position in the process's output.
      */
     record TurnComplete(String result, boolean error, String errorMessage, boolean started,
                         long inputTokens, long outputTokens,
                         long cacheReadTokens, long cacheCreationTokens,
                         long contextTokens, int contextWindow, int maxOutputTokens,
-                        int requests) implements Event { }
+                        int requests, TokenCounts totals, long sequence) implements Event {
+
+        /** The usage of the turn's main-thread requests. */
+        TokenCounts usage() {
+            return new TokenCounts(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens);
+        }
+    }
 
     private static final Set<String> TERMINAL_TASK_STATUSES = Set.of("completed", "failed", "killed", "stopped");
 
@@ -120,6 +200,17 @@ final class ClaudeCliStreamParser {
     // Main-thread requests of the current turn: new message ids since the last result.
     // num_turns is not used: a process that keeps its session may report it cumulatively.
     private int turnRequests;
+    // Positions usage and results in the process's output; a process's parsers share it.
+    private final AtomicLong sequences;
+
+    ClaudeCliStreamParser() {
+        this(new AtomicLong());
+    }
+
+    /** A parser for one turn of a process whose parsers share {@code sequences}. */
+    ClaudeCliStreamParser(AtomicLong sequences) {
+        this.sequences = sequences;
+    }
 
     /**
      * Decode one stream-json line. Well-formed protocol lines with nothing to show
@@ -314,7 +405,11 @@ final class ClaudeCliStreamParser {
             blocks.clear();
             streamedText.clear();
             streamedThinking.clear();
-            return List.of();
+            return requestUsage(startedMessageId, true, message.path("usage"));
+        }
+        if ("message_delta".equals(type)) {
+            // The request's final output count.
+            return requestUsage(messageId, true, event.path("usage"));
         }
         if ("content_block_start".equals(type)) {
             int index = event.path("index").asInt(0);
@@ -347,10 +442,12 @@ final class ClaudeCliStreamParser {
                 return text.isEmpty() ? List.of() : List.of(new Thinking(text));
             }
             if ("input_json_delta".equals(deltaType)) {
+                String partial = delta.path("partial_json").asText("");
                 Block block = blocks.get(index);
                 if (block != null && "tool_use".equals(block.type)) {
-                    block.partialInput.append(delta.path("partial_json").asText(""));
+                    block.partialInput.append(partial);
                 }
+                return partial.isEmpty() ? List.of() : List.of(new ToolInputDelta(partial));
             }
             return List.of();
         }
@@ -377,8 +474,11 @@ final class ClaudeCliStreamParser {
             if (text.isEmpty()) return List.of();
             return List.of(mainThread ? new ApiError(text) : new Notice(text));
         }
-        if (!mainThread) return List.of();
         String aggregateMessageId = message.path("id").asText("");
+        // A subagent's requests report their usage only through its aggregates.
+        List<Event> events = new ArrayList<>(
+                requestUsage(aggregateMessageId, mainThread, message.path("usage")));
+        if (!mainThread) return events;
         if (!aggregateMessageId.isBlank() && !aggregateMessageId.equals(messageId)) {
             // Older CLI versions may emit aggregate messages without stream events.
             turnRequests++;
@@ -388,8 +488,7 @@ final class ClaudeCliStreamParser {
             streamedThinking.clear();
         }
         JsonNode content = message.path("content");
-        if (!content.isArray()) return List.of();
-        List<Event> events = new ArrayList<>();
+        if (!content.isArray()) return events;
         // The CLI emits one aggregate per finished block, carrying just that block
         // at content[0], so an aggregate's array index says nothing about its stream
         // index. A block is a repeat when this message already streamed its text.
@@ -462,13 +561,35 @@ final class ClaudeCliStreamParser {
         JsonNode turns = node.path("num_turns");
         boolean started = !turns.isNumber() || turns.asLong() > 0;
         String result = node.path("result").asText("");
-        JsonNode limits = mainModelUsage(node.path("modelUsage"));
+        JsonNode modelUsage = node.path("modelUsage");
+        JsonNode limits = mainModelUsage(modelUsage);
         int requests = turnRequests;
         turnRequests = 0;
         return List.of(new TurnComplete(result, error, errorMessage, started, input,
                 usage.path("output_tokens").asLong(0), cacheRead, cacheCreation,
                 requestContextTokens, limits.path("contextWindow").asInt(0),
-                limits.path("maxOutputTokens").asInt(0), requests));
+                limits.path("maxOutputTokens").asInt(0), requests,
+                totals(modelUsage), sequences.incrementAndGet()));
+    }
+
+    /** The {@code modelUsage} counts added up over every model; null when there are none. */
+    private static TokenCounts totals(JsonNode modelUsage) {
+        if (!modelUsage.isObject()) return null;
+        TokenCounts totals = TokenCounts.ZERO;
+        for (JsonNode model : modelUsage) {
+            totals = totals.plus(new TokenCounts(model.path("inputTokens").asLong(0L),
+                    model.path("outputTokens").asLong(0L),
+                    model.path("cacheReadInputTokens").asLong(0L),
+                    model.path("cacheCreationInputTokens").asLong(0L)));
+        }
+        return totals;
+    }
+
+    /** A request's usage as an event; none without counts or a request id to tell repeats by. */
+    private List<Event> requestUsage(String requestId, boolean mainThread, JsonNode usage) {
+        TokenCounts counts = TokenCounts.of(usage);
+        if (requestId.isBlank() || counts.isZero()) return List.of();
+        return List.of(new RequestUsage(sequences.incrementAndGet(), requestId, mainThread, counts));
     }
 
     /**

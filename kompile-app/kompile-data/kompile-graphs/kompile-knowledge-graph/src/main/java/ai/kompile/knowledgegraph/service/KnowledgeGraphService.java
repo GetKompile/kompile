@@ -1477,9 +1477,10 @@ public interface KnowledgeGraphService {
 
     /**
      * Level-of-detail: 1-hop neighborhood expand for a single node. Returns the seed node plus its
-     * immediate neighbors (capped at maxNeighbors, sorted by edge weight desc) and all connecting
-     * edges, in the standard viz shape. The default returns an empty result; matrix stores override
-     * with a direct adjacency-list expansion (no full-graph scan).
+     * immediate neighbors over outgoing and incoming edges (capped at maxNeighbors, sorted by edge
+     * weight desc) and all connecting edges, in the standard viz shape. Reads the first graph that
+     * holds the node; {@link #expandNeighborhoodVisualization(String, int, List, Long)} reads one
+     * fact sheet's graph.
      *
      * @param nodeId       the seed node id
      * @param maxNeighbors cap on returned neighbors (sorted by edge weight desc)
@@ -1488,6 +1489,19 @@ public interface KnowledgeGraphService {
      */
     default Map<String, Object> expandNeighborhoodVisualization(String nodeId, int maxNeighbors,
                                                                   List<String> edgeTypes) {
+        return expandNeighborhoodVisualization(nodeId, maxNeighbors, edgeTypes, null);
+    }
+
+    /**
+     * {@link #expandNeighborhoodVisualization(String, int, List)} within one fact sheet's graph. The
+     * same node id can live in several sheets, so a caller showing one sheet passes it. The default
+     * returns an empty result; matrix stores override with a direct adjacency-list expansion (no
+     * full-graph scan).
+     *
+     * @param factSheetId the fact sheet whose graph to read, or null for the first graph holding the node
+     */
+    default Map<String, Object> expandNeighborhoodVisualization(String nodeId, int maxNeighbors,
+                                                                  List<String> edgeTypes, Long factSheetId) {
         return Map.of("nodes", List.of(), "edges", List.of(), "links", List.of(),
                 "statistics", Map.of("totalAvailableNodes", 0));
     }

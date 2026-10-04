@@ -94,8 +94,13 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--web", description = "Start a fresh installed CHAT web UI (LAN-accessible by default) and print its local URL using CLI config (CHAT JAR tier only). Combine with --setup to configure first.")
     private boolean web;
 
-    @CommandLine.Option(names = "--workspace", description = "Launch the multi-project web workspace; select and run independent CLI chats concurrently (requires --web).")
+    @CommandLine.Option(names = "--workspace", description = "Manage folder-based projects and independent chats (the default with --web).")
     private boolean workspace;
+
+    @CommandLine.Option(names = "--single-chat", description = "Open only this folder's single chat view (requires --web).")
+    private boolean singleWebChat;
+
+    boolean webWorkspace() { return !singleWebChat; }
 
     @CommandLine.Option(names = "--open-browser", description = "Also open the web UI in a local browser (requires --web).")
     private boolean openBrowser;
@@ -370,6 +375,8 @@ public class ChatCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         if (workspace && !web) return printError("--workspace requires --web.", 2);
+        if (singleWebChat && !web) return printError("--single-chat requires --web.", 2);
+        if (workspace && singleWebChat) return printError("Choose --workspace or --single-chat, not both.", 2);
         if (openBrowser && !web) return printError("--open-browser requires --web.", 2);
         if (web) return runWebHandoff();
         if (multiSession) {
@@ -674,8 +681,8 @@ public class ChatCommand implements Callable<Integer> {
         return routeFromConfig(config, isResume, resolvedRole, configSelectedInThisRun,
                 startInstalledChatSubprocess);
         } catch (IOException e) {
-            System.err.println("Cannot start chat without a transcript log: " + e.getMessage());
-            return 1;
+            String message = "Cannot start chat: " + e.getMessage();
+            return headless ? headlessError(message, 1) : printError(message, 1);
         } finally {
             transcriptLogScope = null;
         }
@@ -684,7 +691,7 @@ public class ChatCommand implements Callable<Integer> {
     String webOptionError() {
         if (!promptParts.isEmpty()) return "--web does not accept a prompt; send it in the browser.";
         if (commandSpec != null && commandSpec.commandLine().getParseResult() != null) {
-            var allowed = java.util.Set.of("--web", "--workspace", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout", "--workflow");
+            var allowed = java.util.Set.of("--web", "--workspace", "--single-chat", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout", "--workflow");
             for (var option : commandSpec.commandLine().getParseResult().matchedOptions()) {
                 if (!allowed.contains(option.longestName())) {
                     return "--web cannot be combined with " + option.longestName()
@@ -713,7 +720,7 @@ public class ChatCommand implements Callable<Integer> {
 
     /** {@code workflowName} is the team new web sessions start with, or {@code null}. */
     ChatInstanceBootstrap.StartupResult startWeb(Path directory, String workflowName) throws Exception {
-        return ChatInstanceBootstrap.startWeb(directory, globalConfig, workflowName, startupTimeoutSeconds, workspace);
+        return ChatInstanceBootstrap.startWeb(directory, globalConfig, workflowName, startupTimeoutSeconds, webWorkspace());
     }
 
     void openWebBrowser(String address) {
@@ -767,9 +774,9 @@ public class ChatCommand implements Callable<Integer> {
                         + " creation wizard; rename the team or continue in the terminal.", 2);
             }
             ChatInstanceBootstrap.StartupResult result = startWeb(directory, teamName);
-            String address = result.chatUrl() + (workspace ? "/#/workspace" : "");
+            String address = result.chatUrl() + (webWorkspace() ? "/#/chat" : "/#/single-chat");
             System.out.println("Web chat: " + address);
-            if (workspace) System.out.println("Multi-project workspace; tracked projects: ~/.kompile/chat-workspace.json");
+            if (webWorkspace()) System.out.println("Folder-based chat manager; add existing folders or create new projects in the browser.");
             System.out.println("Working directory: " + directory + "; config scope: "
                     + (globalConfig ? "global" : "project")
                     + ". New sessions bind current CLI config on their first turn; resumed sessions retain their pins.");

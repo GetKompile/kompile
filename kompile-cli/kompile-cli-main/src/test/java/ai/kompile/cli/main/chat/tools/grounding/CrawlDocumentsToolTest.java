@@ -93,6 +93,7 @@ class CrawlDocumentsToolTest {
         assertTrue(schema.path("properties").has("routeRules"));
         assertTrue(schema.path("properties").has("runtimeConfig"));
         assertTrue(schema.path("properties").has("embeddingTraining"));
+        assertEquals("preserve-unselected-v1", schema.path("properties").path("corpusUpdate").path("enum").get(0).asText());
         assertTrue(schema.path("properties").has("config"));
         assertTrue(schema.path("properties").path("documents").path("items")
                 .path("properties").has("pipelineId"));
@@ -125,6 +126,17 @@ class CrawlDocumentsToolTest {
                 .contains("configured direct chat provider"));
         assertTrue(schema.path("properties").path("processingRoute").path("description").asText()
                 .contains("semantic graph-extraction"));
+    }
+
+    @Test
+    void preservingCorpusNeverRoutesThroughManagedDto() {
+        ObjectNode request = mapper.createObjectNode().put("corpusUpdate", "preserve-unselected-v1");
+        assertTrue(CrawlDocumentsTool.requiresLocalExecution(request));
+        ObjectNode configured = mapper.createObjectNode();
+        configured.putObject("config").put("corpusUpdate", "preserve-unselected-v1");
+        assertTrue(CrawlDocumentsTool.requiresLocalExecution(configured));
+        request.put("corpusUpdate", "unsupported-update");
+        assertTrue(CrawlDocumentsTool.requiresLocalExecution(request), "invalid opt-in must fail local validation, not bypass it");
     }
 
     @Test

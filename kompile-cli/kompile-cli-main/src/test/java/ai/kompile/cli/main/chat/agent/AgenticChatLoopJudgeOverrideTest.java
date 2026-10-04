@@ -24,6 +24,8 @@ import ai.kompile.cli.main.chat.enforcer.EnforcerJudge;
 import ai.kompile.cli.main.chat.enforcer.EnforcerPolicy;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
 import ai.kompile.cli.main.chat.enforcer.JudgeControl;
+import ai.kompile.cli.main.chat.enforcer.JudgementLog;
+import ai.kompile.cli.main.chat.enforcer.JudgementRecord;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.CliTool;
@@ -103,6 +105,13 @@ class AgenticChatLoopJudgeOverrideTest {
                 "a judge override must not bypass the active enforcer's MCP block");
         assertTrue(client.calls >= 2);
         assertTrue(overriddenOutput.contains("done"));
+        assertEquals(List.of("OVERRIDE_ARMED"),
+                logged(control, "CONTROL").stream().map(JudgementRecord::getStatus).toList());
+        List<JudgementRecord> overridden = logged(control, "OVERRIDE");
+        assertEquals(1, overridden.size(), "the neutralized turn verdict is recorded once");
+        assertEquals("OVERRIDDEN", overridden.get(0).getStatus());
+        assertEquals(List.of("dangerous tool call refused"), overridden.get(0).getViolations());
+        assertFalse(overridden.get(0).isStop(), "the override let the turn finish");
 
         // Turn 2: override consumed — output enforcement is fully active again,
         // while MCP enforcement remains unchanged.
@@ -125,6 +134,8 @@ class AgenticChatLoopJudgeOverrideTest {
         assertEquals(executionsBeforeTurn2, executions.get(),
                 "the enforcer blocks MCP execution both with and without judge override");
         assertTrue(enforcedOutput.contains("Blocked by judge policy"));
+        assertEquals(1, logged(control, "OVERRIDE").size(),
+                "a fully enforced turn is not recorded as an override");
     }
 
     @Test
@@ -255,6 +266,18 @@ class AgenticChatLoopJudgeOverrideTest {
         assertEquals(allowed ? 1 : 0, executions.get(), command);
         assertEquals(expectedReviews, reviews.get(), command);
         assertEquals("", control.getApprovedCommandNext());
+        List<JudgementRecord> approvals = logged(control, "OVERRIDE");
+        assertEquals(allowed ? 1 : 0, approvals.size(), command);
+        for (JudgementRecord approval : approvals) {
+            assertEquals("APPROVED", approval.getStatus(), command);
+            assertEquals("bash", approval.getToolName(), command);
+        }
+    }
+
+    private static List<JudgementRecord> logged(JudgeControl control, String phase) {
+        return JudgementLog.readFile(control.getFile().resolveSibling(JudgementLog.FILE_NAME)).stream()
+                .filter(r -> phase.equals(r.getPhase()))
+                .toList();
     }
 
     // ── fixtures ──────────────────────────────────────────────────────────────

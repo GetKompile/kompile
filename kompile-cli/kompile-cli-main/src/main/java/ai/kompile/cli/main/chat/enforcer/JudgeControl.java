@@ -25,6 +25,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Session-scoped user control over the chat judge.
@@ -46,6 +48,10 @@ import java.nio.file.StandardCopyOption;
  * <p>The guidance is persisted to {@code ~/.kompile/sessions/<sessionId>/judge-control.json}
  * so it survives process restarts. The one-shot override is deliberately NOT persisted: a
  * decision to disable judge teeth must never silently outlive the session that made it.</p>
+ *
+ * <p>Every user change to the posture is recorded in the session's {@code judgements.jsonl}
+ * as a {@code CONTROL} record, and every call or turn a decision let through as an
+ * {@code OVERRIDE} record, so overrides sit beside the verdicts they neutralized.</p>
  */
 public class JudgeControl {
 
@@ -80,22 +86,44 @@ public class JudgeControl {
     private final String sessionId;
     private final Path file;
     private final ObjectMapper mapper;
+    private final JudgementLog judgementLog;
 
     private volatile String guidance = "";
     private volatile boolean overrideNext;
     private String approvedCommandNext = "";
     private CommandApprovalPattern approvalPatternNext;
 
-    /** User-owned, non-persistent approval; expires at the end of the next turn. */
-    public synchronized void approveCommandNext(String command) {
-        approvedCommandNext = normalize(command);
-        approvalPatternNext = null;
+    /** User-owned, non-persistent approval; expires at the end of the next turn. Blank cancels it. */
+    public void approveCommandNext(String command) {
+        String next = normalize(command);
+        String previous;
+        boolean previousWasPattern;
+        synchronized (this) {
+            previous = approvedCommandNext;
+            previousWasPattern = approvalPatternNext != null;
+            approvedCommandNext = next;
+            approvalPatternNext = null;
+        }
+        if (!next.isEmpty() && (previousWasPattern || !next.equals(previous))) {
+            recordControl("APPROVAL_SET", "Exact bash command approved for the next turn: " + next);
+        } else if (next.isEmpty() && !previous.isEmpty()) {
+            recordControl("APPROVAL_CLEARED", "Pending " + approvalKind(previousWasPattern)
+                    + " approval cancelled: " + previous);
+        }
     }
 
-    public synchronized void approvePatternNext(String expression) {
+    public void approvePatternNext(String expression) {
         CommandApprovalPattern compiled = new CommandApprovalPattern(expression);
-        approvedCommandNext = normalize(expression);
-        approvalPatternNext = compiled;
+        String next = normalize(expression);
+        boolean changed;
+        synchronized (this) {
+            changed = approvalPatternNext == null || !next.equals(approvedCommandNext);
+            approvedCommandNext = next;
+            approvalPatternNext = compiled;
+        }
+        if (changed) {
+            recordControl("APPROVAL_SET", "Bash token pattern approved for the next turn: " + next);
+        }
     }
 
     public synchronized boolean isApprovalPatternNext() {
@@ -110,12 +138,14 @@ public class JudgeControl {
 
     /**
      * Creates the control for a session and best-effort loads previously persisted
-     * guidance from {@code <sessionsDir>/<sessionId>/judge-control.json}.
+     * guidance from {@code <sessionsDir>/<sessionId>/judge-control.json}. Decisions are
+     * recorded to {@code judgements.jsonl} in the same directory.
      */
     public JudgeControl(String sessionId, Path sessionsDir) {
         this.sessionId = sessionId;
         this.file = sessionsDir.resolve(sessionId).resolve("judge-control.json");
         this.mapper = JsonUtils.newStandardMapper();
+        this.judgementLog = new JudgementLog(sessionId, file.resolveSibling(JudgementLog.FILE_NAME));
         load();
     }
 
@@ -137,25 +167,42 @@ public class JudgeControl {
 
     /** Replace the durable guidance injected into every future judge prompt. */
     public void setGuidance(String text) {
-        this.guidance = normalize(text);
-        save();
+        String next = normalize(text);
+        String previous;
+        synchronized (this) {
+            previous = guidance;
+            guidance = next;
+            save();
+        }
+        if (!next.equals(previous)) {
+            recordControl(next.isEmpty() ? "GUIDANCE_CLEARED" : "GUIDANCE_SET",
+                    next.isEmpty() ? "Judge guidance cleared" : "Judge guidance set: " + next);
+        }
     }
 
     /** Remove the durable guidance. */
     public void clearGuidance() {
-        this.guidance = "";
-        save();
+        setGuidance("");
     }
 
     // ── One-shot override ────────────────────────────────────────────────────
 
     /** Arm (or explicitly disarm) the report-only override for the next turn. */
     public void setOverrideNext(boolean override) {
-        this.overrideNext = override;
+        boolean previous;
+        synchronized (this) {
+            previous = overrideNext;
+            overrideNext = override;
+        }
+        if (previous != override) {
+            recordControl(override ? "OVERRIDE_ARMED" : "OVERRIDE_DISARMED", override
+                    ? "Report-only override armed for the next turn"
+                    : "Report-only override disarmed before it was used");
+        }
     }
 
     public void clearOverrideNext() {
-        this.overrideNext = false;
+        setOverrideNext(false);
     }
 
     public boolean isOverrideNextSet() {
@@ -166,14 +213,44 @@ public class JudgeControl {
         return enabled;
     }
 
-    public synchronized void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-        if (!enabled) {
-            // A stale one-shot override must not unexpectedly fire after re-enabling.
-            this.overrideNext = false;
-            this.approvedCommandNext = "";
-            this.approvalPatternNext = null;
+    /** A user switch: recorded when it changes the posture or discards a pending one-shot. */
+    public void setEnabled(boolean enabled) {
+        boolean changed;
+        String discarded;
+        synchronized (this) {
+            changed = this.enabled != enabled;
+            discarded = applyEnabled(enabled);
         }
+        if (changed || !discarded.isEmpty()) {
+            recordControl(enabled ? "JUDGE_ENABLED" : "JUDGE_DISABLED",
+                    (enabled ? "Judge enabled" : "Judge disabled") + " for this session"
+                            + (discarded.isEmpty() ? "" : "; discarded the pending " + discarded));
+        }
+    }
+
+    /** Applies the configured default at session start: not a user decision, so not recorded. */
+    public synchronized void initEnabled(boolean enabled) {
+        applyEnabled(enabled);
+    }
+
+    /** Caller holds the monitor. Returns the pending one-shot state that disabling discarded. */
+    private String applyEnabled(boolean enabled) {
+        this.enabled = enabled;
+        if (enabled) {
+            return "";
+        }
+        // A stale one-shot override must not unexpectedly fire after re-enabling.
+        List<String> discarded = new ArrayList<>();
+        if (overrideNext) {
+            discarded.add("report-only override");
+        }
+        if (!approvedCommandNext.isEmpty()) {
+            discarded.add(approvalKind(approvalPatternNext != null) + " approval (" + approvedCommandNext + ")");
+        }
+        this.overrideNext = false;
+        this.approvedCommandNext = "";
+        this.approvalPatternNext = null;
+        return String.join(" and ", discarded);
     }
 
     /**
@@ -206,6 +283,72 @@ public class JudgeControl {
     /** Persistence file for this session's guidance (also shown by /judge status). */
     public Path getFile() {
         return file;
+    }
+
+    // ── Judgement log: user decisions beside the verdicts they shaped ────────
+
+    /** An explicit approval let this call through without judge review ({@code OVERRIDE}/{@code APPROVED}). */
+    public void recordApprovalUsed(TurnSnapshot snapshot, String toolName, String toolInput) {
+        judgementLog.record(JudgementRecord.builder()
+                .phase("OVERRIDE")
+                .judgeMode("user")
+                .status("APPROVED")
+                .compliant(true)
+                .severity("info")
+                .toolName(toolName)
+                .agentOutputExcerpt(toolInput)
+                .reasoning(JudgementLog.clampExcerpt("User " + approvalKind(snapshot.approvalPattern() != null)
+                        + " approval let this call through without judge review: " + snapshot.approvedCommand()))
+                .build());
+    }
+
+    /** The report-only override let a non-compliant turn through ({@code OVERRIDE}/{@code OVERRIDDEN}). */
+    public void recordReportOnlyOverride(EnforcerDecision decision) {
+        recordOverridden(null, null, decision.getSeverity(), decision.getViolations(),
+                "Report-only override let this turn through; the judge would have "
+                        + (decision.isStop() ? "stopped" : "corrected") + " it" + reasonSuffix(decision.getReasoning()));
+    }
+
+    /** The report-only override let a blocked or rewritten tool call through as requested. */
+    public void recordReportOnlyOverride(String toolName, String toolInput, EnforcerToolCallDecision decision) {
+        recordOverridden(toolName, toolInput, "error", decision.getViolations(),
+                "Report-only override let this call through; the judge would have "
+                        + (decision.isRewrite() ? "rewritten" : "blocked") + " it" + reasonSuffix(decision.getReason()));
+    }
+
+    private void recordOverridden(String toolName, String toolInput, String severity, List<String> violations,
+                                  String detail) {
+        // compliant=false keeps the neutralized verdict; stop=false because nothing was stopped.
+        judgementLog.record(JudgementRecord.builder()
+                .phase("OVERRIDE")
+                .judgeMode("user")
+                .status("OVERRIDDEN")
+                .compliant(false)
+                .severity(severity)
+                .violations(violations)
+                .toolName(toolName)
+                .agentOutputExcerpt(toolInput)
+                .reasoning(JudgementLog.clampExcerpt(detail))
+                .build());
+    }
+
+    private void recordControl(String action, String detail) {
+        judgementLog.record(JudgementRecord.builder()
+                .phase("CONTROL")
+                .judgeMode("user")
+                .status(action)
+                .compliant(true)
+                .severity("info")
+                .reasoning(JudgementLog.clampExcerpt(detail))
+                .build());
+    }
+
+    private static String approvalKind(boolean pattern) {
+        return pattern ? "bash token pattern" : "exact bash command";
+    }
+
+    private static String reasonSuffix(String reason) {
+        return reason == null || reason.isBlank() ? "" : ": " + reason;
     }
 
     // ── Persistence (guidance only) ──────────────────────────────────────────

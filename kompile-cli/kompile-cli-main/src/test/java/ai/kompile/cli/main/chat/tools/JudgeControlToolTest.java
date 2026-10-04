@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -31,6 +32,12 @@ class JudgeControlToolTest {
 
     ToolResult call(ToolContext context, String json) throws Exception {
         return tool.execute(mapper.readTree(json), context);
+    }
+
+    List<JudgementRecord> logged(JudgeControl control, String phase) {
+        return JudgementLog.readFile(control.getFile().resolveSibling(JudgementLog.FILE_NAME)).stream()
+                .filter(r -> phase.equals(r.getPhase()))
+                .toList();
     }
 
     @Test void statusDoesNotConsumeApprovalAndForkSharesLiveState() throws Exception {
@@ -109,6 +116,10 @@ class JudgeControlToolTest {
             call(context, "{\"action\":\"approve\",\"command\":\"rm -rf .kompile/memory\",\"confirmed\":true}");
             assertFalse(EnforcerToolCallGuard.evaluateSession(guard, "bash", Map.of("command", "rm -rf .kompile/memory"), control, mapper).isAllowed());
             assertEquals("", control.getApprovedCommandNext());
+            List<JudgementRecord> approvals = logged(control, "OVERRIDE");
+            assertEquals(1, approvals.size(), "only the call an approval let through is recorded");
+            assertEquals("APPROVED", approvals.get(0).getStatus());
+            assertEquals("{\"command\":\"rm -rf target/cache-42\"}", approvals.get(0).getAgentOutputExcerpt());
         }
     }
 
@@ -127,6 +138,13 @@ class JudgeControlToolTest {
             call(context, "{\"action\":\"override\",\"confirmed\":true}");
             call(context, "{\"action\":\"cancel_override\",\"confirmed\":true}");
             assertFalse(context.getJudgeControl().isOverrideNextSet());
+            List<JudgementRecord> overrides = logged(context.getJudgeControl(), "OVERRIDE");
+            assertEquals(1, overrides.size(), "keyword bans cannot be overridden, so they leave no override record");
+            assertEquals("OVERRIDDEN", overrides.get(0).getStatus());
+            assertEquals("read", overrides.get(0).getToolName());
+            assertTrue(overrides.get(0).getReasoning().endsWith("would have blocked it: fixture verdict"));
+            assertEquals(List.of("GUIDANCE_SET", "OVERRIDE_ARMED", "OVERRIDE_ARMED", "OVERRIDE_ARMED", "OVERRIDE_DISARMED"),
+                    logged(context.getJudgeControl(), "CONTROL").stream().map(JudgementRecord::getStatus).toList());
         }
     }
 

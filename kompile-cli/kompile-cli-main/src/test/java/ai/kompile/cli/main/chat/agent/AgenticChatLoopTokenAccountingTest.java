@@ -16,6 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -42,6 +43,48 @@ class AgenticChatLoopTokenAccountingTest {
     @Test
     void textFallbackAfterUsageDoesNotAddAnEstimateToExactOutput() throws Exception {
         verifyAccounting(true, false);
+    }
+
+    @Test
+    void toolArgumentsCountWhileTheModelStreamsThem() throws Exception {
+        var mapper = JsonUtils.standardMapper();
+        var config = new ChatConfig("openai", "test-key", "test-model", null);
+        config.setDefaultMemory(false);
+        config.setContextWindowTokens(200_000);
+        var metrics = new ChatSessionMetrics("tool-arguments");
+        var progress = new ForegroundRequestProgress();
+        progress.begin();
+        AtomicReference<ForegroundRequestProgress.Snapshot> streaming = new AtomicReference<>();
+        ChatCompleter.setContentOutput(ignored -> { });
+        try (var client = new DirectLlmClient(config, mapper, directory) {
+            @Override
+            public StreamResult streamChat(String message, String systemPrompt, ArrayNode tools,
+                                           List<ToolCallResultInput> results, String model,
+                                           List<AttachmentInput> attachments) {
+                // A tool call's arguments are output; the request's usage counts them at its end.
+                getProviderActivityListener().onToolInputDelta("x".repeat(400));
+                streaming.set(progress.snapshot());
+                var result = new StreamResult();
+                result.text = "done";
+                result.inputTokens = 10;
+                result.outputTokens = 20;
+                return result;
+            }
+        }) {
+            var loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            loop.configureConversationSession("tool-arguments");
+            loop.setSessionMetrics(metrics);
+            loop.setForegroundProgress(progress);
+            loop.chat("hello", "tool-arguments", "coder", "default", false);
+        }
+        assertNotNull(streaming.get());
+        assertEquals(100, streaming.get().tokens(), streaming.get().toString());
+        assertTrue(streaming.get().estimate(), streaming.get().toString());
+        assertEquals(20, metrics.getOutputTokens());
+        assertEquals(30, metrics.getTotalTokens());
+        assertEquals(20, progress.snapshot().tokens(), "the request's usage replaces the estimate");
+        assertFalse(progress.snapshot().estimate());
     }
 
     @Test

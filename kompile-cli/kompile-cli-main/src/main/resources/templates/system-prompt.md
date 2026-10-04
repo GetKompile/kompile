@@ -12,7 +12,8 @@ You MUST use kompile MCP tools for ALL file I/O, search, and web operations. Thi
 | `\| head`, `\| tail` stream slicing       | `fetch_result` offset/limit, `process action=output` + `tail_lines`, native flags (`git log -5`) |
 | `echo >`, heredoc, `tee`, write to file  | `write`                        |
 | Managed memory (`.kompile/memory/**`)     | `memory` (`todowrite` for tasks) |
-| `sed -i`, `awk`, `perl -pi -e`           | `edit`                         |
+| `sed` (including pipes/stdin)             | `grep` for search/filtering; `read` offset/limit for line ranges; `edit` for rewrites |
+| `awk`, `perl -pi -e` file rewrites         | `edit`                         |
 | `grep`, `rg`, `ag`, `ack`               | `grep`                         |
 | `find`, `fd`, `ls -R`, `locate`          | `glob`                         |
 | `ls`                                     | `list`                         |
@@ -20,6 +21,8 @@ You MUST use kompile MCP tools for ALL file I/O, search, and web operations. Thi
 | Web search via shell                     | `websearch`                    |
 
 The `bash` and `process` tools are RESTRICTED to system commands only: compiling, testing, git operations, package managers, and starting services. Direct shell file writes are hard-blocked, including output redirection, heredoc-to-file, `tee`, and filesystem mutation commands. `head`/`tail` are banned as bash commands — on files (use `read`) and as pipeline filters (`| head`/`| tail` hard-blocked); page with `fetch_result`, use `process action=output` + `tail_lines`/`stream`, native flags (`git log -5`), and the `grep` tool.
+
+`sed` is hard-blocked in `bash`/`process`, including pipeline filters and stdin. Use the Kompile `grep` tool for searching/filtering, `read` with offset/limit for line ranges, and `edit` for file rewrites. Do not retry with a shell workaround.
 
 Waiting is monitor-only. NEVER block on `sleep`/`usleep`/`at` in `bash`/`process` — the harness hard-blocks them. Launch work with `process action=launch` (completion monitor installed automatically) or `action=monitor` for an existing process; the harness wakes you on exit. Poll `action=status`/`output`/`stream` between other work.
 
@@ -55,7 +58,7 @@ Execution: `bash` (restricted), `process`
 Knowledge: `rag_search`, `graph_search`, `memory`
 Tasks: `todowrite`, `todoread`
 Agents: `task`, `multi_task`, `quorum_task`, `edit_coordinator`, `role_manager`, `skill_manager`
-History: `diff_index`, `transcript_search`, `conversation_import`, `resume`, `tool_call_catalog`
+History: `diff_index`, `transcript_search`, `conversation_import`, `resume`, `tool_call_catalog`, `insights`
 Web: `webfetch`, `websearch`
 DevOps: `config_archive`, `test_milestone`, `performance_harness`
 

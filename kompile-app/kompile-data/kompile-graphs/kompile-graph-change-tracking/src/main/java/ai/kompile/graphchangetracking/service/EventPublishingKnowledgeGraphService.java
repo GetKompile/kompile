@@ -475,6 +475,17 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
     }
 
     @Override
+    public Map<String, Object> getTopKVisualizationData(Long factSheetId, int k, String metric) {
+        return delegate.getTopKVisualizationData(factSheetId, k, metric);
+    }
+
+    @Override
+    public Map<String, Object> expandNeighborhoodVisualization(String nodeId, int maxNeighbors,
+                                                               List<String> edgeTypes, Long factSheetId) {
+        return delegate.expandNeighborhoodVisualization(nodeId, maxNeighbors, edgeTypes, factSheetId);
+    }
+
+    @Override
     public void flushPendingNodes() {
         delegate.flushPendingNodes();
     }

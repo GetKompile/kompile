@@ -21,7 +21,7 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { Router, ActivatedRoute } from '@angular/router';
-import { Subject, takeUntil } from 'rxjs';
+import { Observable, Subject, catchError, distinctUntilChanged, map, of, switchMap, takeUntil } from 'rxjs';
 
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { FactSheet } from '../../models/api-models';
@@ -59,6 +59,12 @@ const EXPLORE_TABS: ExploreTab[] = ['visualizer', 'hierarchy', 'overview', 'comm
  * Deep links are compatible with admin's hub: `?tab=hierarchy` and `?focusNode=<id>` behave
  * identically, and a `?section=explore` from an admin link is honoured. Links naming an
  * admin-only section or tab are ignored rather than erroring — the explorer just stays put.
+ *
+ * A link may also name the fact sheet its node lives in (`?factSheetId=7&focusNode=<id>`, as the
+ * chat's insights cards write them). That sheet is fetched and shown here without being activated,
+ * because activation is server-wide: it would also switch the sheet chat and crawls work against.
+ * The link holds until the user picks another sheet or asks for the active one. Admin's hub ignores
+ * `factSheetId` and shows its active sheet.
  */
 @Component({
   selector: 'app-graph-explore-hub',
@@ -93,6 +99,12 @@ export class GraphExploreHubComponent implements OnInit, OnDestroy, OnChanges {
   activeFactSheet: FactSheet | null = null;
   activeFactSheetId: number | null = null;
 
+  /** The fact sheet a link named (`?factSheetId=`), shown in place of the active one. */
+  linkedFactSheet: FactSheet | null = null;
+
+  /** True while a linked fact sheet is being fetched. No sheet is shown until it arrives. */
+  openingLinkedSheet = false;
+
   /**
    * Cold-start banner: true when a fact sheet is active but has no facts (nothing crawled yet).
    * Dismissed locally; reappears if the user switches to another empty sheet.
@@ -103,6 +115,11 @@ export class GraphExploreHubComponent implements OnInit, OnDestroy, OnChanges {
   readonly tabs = EXPLORE_TABS;
 
   private destroy$ = new Subject<void>();
+
+  /** The sheet the panels show: the linked sheet when there is one, else the active sheet. */
+  get shownSheet(): FactSheet | null {
+    return this.openingLinkedSheet ? null : this.linkedFactSheet ?? this.activeFactSheet;
+  }
 
   constructor(
     private factSheetService: FactSheetService,
@@ -115,10 +132,16 @@ export class GraphExploreHubComponent implements OnInit, OnDestroy, OnChanges {
     this.factSheetService.activeSheet$
       .pipe(takeUntil(this.destroy$))
       .subscribe(sheet => {
+        const switched = this.activeFactSheetId != null && sheet?.id !== this.activeFactSheetId;
         this.activeFactSheet = sheet;
         this.activeFactSheetId = sheet ? sheet.id : null;
-        this.coldStartBannerDismissed = false;
-        this.showColdStartBanner = sheet != null && (sheet.factCount ?? 0) === 0;
+        if (switched) {
+          // Another sheet was picked, so the sheet and node a link named no longer apply.
+          this.leaveLink();
+        } else if (this.linkedFactSheet && this.linkedFactSheet.id === this.activeFactSheetId) {
+          this.linkedFactSheet = null; // the link named the sheet that has turned out to be active
+        }
+        this.updateColdStartBanner();
       });
 
     // Deep-linking (?tab=hierarchy&focusNode=<id>). Tabs outside Explore belong to the admin
@@ -136,6 +159,80 @@ export class GraphExploreHubComponent implements OnInit, OnDestroy, OnChanges {
           this.activeTab = 'visualizer';
         }
       });
+
+    // ?factSheetId=<id>: show the sheet a link names, without activating it (see the class doc).
+    this.route.queryParams
+      .pipe(
+        map(params => params['factSheetId'] as string | undefined),
+        distinctUntilChanged(),
+        switchMap(param => this.openLinkedSheet(param)),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(sheet => {
+        this.openingLinkedSheet = false;
+        this.linkedFactSheet = sheet;
+        this.updateColdStartBanner();
+      });
+  }
+
+  /**
+   * The sheet a link names, or null when it names none, names the active sheet, or cannot be
+   * opened. A sheet that cannot be opened takes the link's node with it, since that node belongs
+   * to the sheet rather than to the active one shown instead.
+   */
+  private openLinkedSheet(param: string | undefined): Observable<FactSheet | null> {
+    if (!param) {
+      return of(null);
+    }
+    const id = /^[0-9]+$/.test(param) ? Number(param) : NaN;
+    if (!Number.isSafeInteger(id)) {
+      this.linkedSheetFailed(param);
+      return of(null);
+    }
+    if (id === this.activeFactSheetId) {
+      return of(null);
+    }
+    this.openingLinkedSheet = true;
+    return this.factSheetService.getSheet(id).pipe(
+      catchError(() => {
+        this.linkedSheetFailed(param);
+        return of(null);
+      })
+    );
+  }
+
+  private linkedSheetFailed(param: string): void {
+    this.focusNodeId = null;
+    this.snackBar.open(`Fact sheet ${param} could not be opened; showing the active fact sheet`, 'Dismiss',
+      { duration: 5000 });
+  }
+
+  /** Leaves the sheet a link named for the active one. */
+  showActiveSheet(): void {
+    this.leaveLink();
+    this.updateColdStartBanner();
+  }
+
+  /** Drops the sheet and node a link named, and the query parameters that named them. */
+  private leaveLink(): void {
+    this.linkedFactSheet = null;
+    this.focusNodeId = null;
+    const params = this.route.snapshot.queryParamMap;
+    if (params.has('factSheetId') || params.has('focusNode')) {
+      this.router.navigate([], {
+        relativeTo: this.route,
+        queryParams: { factSheetId: null, focusNode: null },
+        queryParamsHandling: 'merge',
+        replaceUrl: true
+      });
+    }
+  }
+
+  /** Shows the cold-start banner, even a dismissed one, when the sheet on screen has no facts. */
+  private updateColdStartBanner(): void {
+    const sheet = this.shownSheet;
+    this.coldStartBannerDismissed = false;
+    this.showColdStartBanner = sheet != null && (sheet.factCount ?? 0) === 0;
   }
 
   private isExploreTab(tab: string): tab is ExploreTab {

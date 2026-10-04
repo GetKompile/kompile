@@ -41,6 +41,42 @@ public final class ChatWorkspaceStore {
         return updated.projects().stream().filter(p -> p.workingDirectory().equals(real.toString())).findFirst().orElseThrow();
     }
 
+    /** Create one new folder under an existing parent; never adopt or overwrite an existing target. */
+    public Project createProject(Path parent, String name) throws IOException {
+        if (parent == null || !parent.isAbsolute())
+            throw new IllegalArgumentException("Select an absolute parent directory on this host");
+        String folder = name == null ? "" : name.strip();
+        if (folder.isEmpty() || folder.length() > 128 || folder.equals(".") || folder.equals("..")
+                || folder.contains("/") || folder.contains("\\") || folder.chars().anyMatch(Character::isISOControl))
+            throw new IllegalArgumentException("Project name must be a single folder name (1–128 characters)");
+        Path realParent = parent.toRealPath();
+        if (!Files.isDirectory(realParent)) throw new IOException("Parent is not a directory: " + realParent);
+        Path target = realParent.resolve(folder);
+        // Read/validate the index and capacity before creating anything on disk.
+        boolean[] created = {false};
+        Workspace updated;
+        try {
+            updated = locked(true, workspace -> {
+                if (workspace.projects().size() >= 64) throw new IOException("Workspace project limit (64) reached");
+                Files.createDirectory(target);
+                created[0] = true;
+                Path real = target.toRealPath();
+                if (!real.getParent().equals(realParent)) throw new IOException("Project folder escaped its parent");
+                List<Project> projects = new ArrayList<>(workspace.projects());
+                String id = UUID.nameUUIDFromBytes(real.toString().getBytes(StandardCharsets.UTF_8)).toString();
+                projects.add(new Project(id, folder, real.toString(), List.of()));
+                return new Workspace(1, List.copyOf(projects));
+            });
+        } catch (IOException failure) {
+            // Never delete a folder another process could already be using. Offer a non-destructive retry.
+            if (created[0]) throw new IOException("Created project folder at " + target
+                    + " but registration failed. Use Add existing folder to register it after fixing the error: "
+                    + failure.getMessage(), failure);
+            throw failure;
+        }
+        return updated.projects().stream().filter(p -> p.workingDirectory().equals(target.toString())).findFirst().orElseThrow();
+    }
+
     public Chat createChat(String projectId, String name) throws IOException {
         String title = name == null || name.isBlank() ? "New Chat" : name.strip();
         if (title.length() > 256 || title.chars().anyMatch(Character::isISOControl))

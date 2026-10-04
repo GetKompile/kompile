@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
@@ -60,8 +61,12 @@ public final class ImageClipboardSupport {
             }
             String waylandDisplay = System.getenv("WAYLAND_DISPLAY");
             if (waylandDisplay != null && !waylandDisplay.isEmpty()) {
-                Optional<Path> staged = readWaylandImage();
-                if (staged.isPresent()) return staged;
+                try {
+                    Optional<Path> staged = readWaylandImage();
+                    if (staged.isPresent()) return staged;
+                } catch (IOException noWlPaste) {
+                    // Without wl-clipboard an XWayland session still has xclip below.
+                }
             }
             String display = System.getenv("DISPLAY");
             if (display != null && !display.isEmpty()) {
@@ -77,9 +82,10 @@ public final class ImageClipboardSupport {
     }
 
     private static Optional<Path> readMacImage() throws IOException, InterruptedException {
-        // PNGf covers screenshots and most app copies; JPEG and TIFF are fallbacks
-        // for apps that place those flavors instead.
-        for (String flavor : new String[]{"«class PNGf»", "«class JPEG»", "«class TIFF»"}) {
+        // PNGf covers screenshots and most app copies; JPEG is the fallback for apps
+        // that place only that flavor. TIFF is not tried: chat attachments carry PNG,
+        // JPEG, GIF and WebP only, so staged() would reject it anyway.
+        for (String flavor : new String[]{"«class PNGf»", "«class JPEG»"}) {
             Path target = newTempFile(".png");
             String script = "set pngData to (the clipboard as " + flavor + ")\n"
                     + "set imgFile to open for access POSIX file \"" + target + "\" with write permission\n"
@@ -145,7 +151,45 @@ public final class ImageClipboardSupport {
 
     private static boolean staged(Path target) throws IOException {
         return Files.isRegularFile(target) && Files.size(target) > 0
-                && Files.size(target) <= MAX_IMAGE_BYTES;
+                && Files.size(target) <= MAX_IMAGE_BYTES
+                && imageMimeType(target).isPresent();
+    }
+
+    /**
+     * The attachable image type (PNG, JPEG, GIF or WebP) named by a file's leading
+     * bytes. A helper's exit code proves nothing here: xclip serves the selection's
+     * text for any requested target, so after text was copied in the chat, Ctrl+V
+     * staged that text as {@code image/png} and attached it as {@code [Image #1]}
+     * instead of pasting it.
+     */
+    static Optional<String> imageMimeType(Path file) throws IOException {
+        try (InputStream in = Files.newInputStream(file)) {
+            return imageMimeType(in.readNBytes(12));
+        }
+    }
+
+    static Optional<String> imageMimeType(byte[] head) {
+        if (startsWith(head, 0, 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n')) {
+            return Optional.of("image/png");
+        }
+        if (startsWith(head, 0, 0xFF, 0xD8, 0xFF)) {
+            return Optional.of("image/jpeg");
+        }
+        if (startsWith(head, 0, 'G', 'I', 'F', '8')) {
+            return Optional.of("image/gif");
+        }
+        if (startsWith(head, 0, 'R', 'I', 'F', 'F') && startsWith(head, 8, 'W', 'E', 'B', 'P')) {
+            return Optional.of("image/webp");
+        }
+        return Optional.empty();
+    }
+
+    private static boolean startsWith(byte[] bytes, int offset, int... expected) {
+        if (bytes.length < offset + expected.length) return false;
+        for (int i = 0; i < expected.length; i++) {
+            if ((bytes[offset + i] & 0xFF) != expected[i]) return false;
+        }
+        return true;
     }
 
     private static boolean runHelper(String[] command) throws IOException, InterruptedException {

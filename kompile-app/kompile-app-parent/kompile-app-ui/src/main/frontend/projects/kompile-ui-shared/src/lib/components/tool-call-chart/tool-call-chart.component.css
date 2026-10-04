@@ -1,0 +1,100 @@
+/*
+ * A tool's answer as a chart, indented under its row like the card's detail sections. d3 builds
+ * the SVG at runtime, outside this component's view encapsulation, so those rules use ::ng-deep.
+ */
+:host {
+  display: block;
+  padding-left: 1.2em;
+}
+
+figure {
+  max-width: 640px;
+  margin: 2px 0 4px;
+  padding: 6px 10px;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+figcaption {
+  color: var(--text-primary);
+}
+
+.dim {
+  color: var(--text-tertiary);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1em;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legend i {
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-right: 0.4em;
+  border-radius: 2px;
+}
+
+.graph-footer {
+  display: flex;
+  gap: 1em;
+}
+
+.graph-footer a {
+  margin-left: auto;
+  color: var(--color-primary);
+}
+
+:host ::ng-deep svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+:host ::ng-deep .edge line,
+:host ::ng-deep .edge circle {
+  fill: none;
+  stroke: var(--text-tertiary);
+  stroke-width: 1.25;
+}
+
+:host ::ng-deep .arrow {
+  fill: var(--text-tertiary);
+}
+
+:host ::ng-deep .node circle {
+  fill: var(--text-tertiary);
+  stroke: var(--bg-surface-elevated);
+  stroke-width: 1.5;
+}
+
+:host ::ng-deep .focus circle {
+  stroke: var(--text-primary);
+  stroke-width: 2;
+}
+
+/* A halo in the panel's color keeps a label readable where it crosses a line. */
+:host ::ng-deep .node-label,
+:host ::ng-deep .edge-label {
+  paint-order: stroke;
+  stroke: var(--bg-surface-elevated);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+:host ::ng-deep .node-label {
+  fill: var(--text-primary);
+}
+
+:host ::ng-deep .edge-label {
+  fill: currentColor;
+  font-size: 9px;
+}

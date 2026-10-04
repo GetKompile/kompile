@@ -10,28 +10,34 @@
     <div class="error-message" *ngIf="error">
       <mat-icon>error</mat-icon>
       <span>{{ error }}</span>
-      <button mat-icon-button (click)="error = null">
+      <button mat-icon-button
+              (click)="error = null"
+              matTooltip="Dismiss error"
+              aria-label="Dismiss error">
         <mat-icon>close</mat-icon>
       </button>
     </div>
 
     <!-- Tab Navigation -->
-    <div class="tab-navigation">
-      <button
-        class="tab-btn"
-        [class.active]="activeTab === 'files'"
-        (click)="switchTab('files')">
+    <nav mat-tab-nav-bar
+         class="tab-navigation"
+         [tabPanel]="folderTabPanel"
+         aria-label="Folder contents">
+      <a mat-tab-link
+         [active]="activeTab === 'files'"
+         (click)="switchTab('files')">
         <mat-icon>insert_drive_file</mat-icon>
         Files ({{ files.length }})
-      </button>
-      <button
-        class="tab-btn"
-        [class.active]="activeTab === 'chats'"
-        (click)="switchTab('chats')">
+      </a>
+      <a mat-tab-link
+         [active]="activeTab === 'chats'"
+         (click)="switchTab('chats')">
         <mat-icon>chat</mat-icon>
         Chats ({{ folderSessions.length }})
-      </button>
-    </div>
+      </a>
+    </nav>
+
+    <mat-tab-nav-panel #folderTabPanel>
 
     <!-- FILES TAB -->
     <div class="tab-content" *ngIf="activeTab === 'files'">
@@ -234,6 +240,8 @@
       </div>
 
     </div><!-- End CHATS TAB -->
+
+    </mat-tab-nav-panel>
 
   </mat-dialog-content>
 

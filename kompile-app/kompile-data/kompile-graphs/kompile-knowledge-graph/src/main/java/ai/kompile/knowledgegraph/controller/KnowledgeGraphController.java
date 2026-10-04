@@ -424,22 +424,25 @@ public class KnowledgeGraphController {
     /**
      * LOD endpoint 2 — 1-hop neighborhood expand.
      *
-     * <p>Returns the seed node plus its immediate neighbors (capped at {@code maxNeighbors},
-     * sorted by edge weight desc) and all connecting edges in the standard viz shape. Used by
-     * the Sigma.js visualizer to progressively expand the graph on node-click without
-     * triggering a full-graph dump.</p>
+     * <p>Returns the seed node plus its immediate neighbors over outgoing and incoming edges
+     * (capped at {@code maxNeighbors}, sorted by edge weight desc) and all connecting edges in the
+     * standard viz shape. Used by the Sigma.js visualizer to progressively expand the graph on
+     * node-click without triggering a full-graph dump.</p>
      *
      * @param nodeId       the node to expand
      * @param maxNeighbors cap on returned neighbors (default 50, capped at 500)
      * @param edgeTypes    optional comma-separated edge-type filter (omit = all types)
+     * @param factSheetId  optional fact-sheet scope; omit to read the first graph holding the node
      */
     @GetMapping("/nodes/{nodeId}/expand")
     public ResponseEntity<Map<String, Object>> expandNeighborhood(
             @PathVariable("nodeId") String nodeId,
             @RequestParam(defaultValue = "50", name = "maxNeighbors") int maxNeighbors,
-            @RequestParam(required = false, name = "edgeTypes") List<String> edgeTypes) {
+            @RequestParam(required = false, name = "edgeTypes") List<String> edgeTypes,
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId) {
         maxNeighbors = Math.min(Math.max(maxNeighbors, 1), 500);
-        return ResponseEntity.ok(graphService.expandNeighborhoodVisualization(nodeId, maxNeighbors, edgeTypes));
+        return ResponseEntity.ok(graphService.expandNeighborhoodVisualization(
+                nodeId, maxNeighbors, edgeTypes, factSheetId));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

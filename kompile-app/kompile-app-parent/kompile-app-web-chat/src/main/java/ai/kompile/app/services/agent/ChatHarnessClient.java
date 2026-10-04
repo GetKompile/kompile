@@ -54,6 +54,30 @@ public interface ChatHarnessClient {
         throw new IllegalStateException("Workflow gate approval unavailable");
     }
 
+    /**
+     * The session's insights as the terminal's dashboard area shows them (judge flags, tool
+     * counts and latency, the last test milestone, crawl progress), read headlessly through the
+     * CLI. Starts no model work and writes no transcript entry. Returns the rows ({@code lines},
+     * {@code live}, ...) or {@code available:false} with a {@code status}.
+     */
+    default JsonNode insightsSnapshot(String browserSessionId, String workingDirectory) {
+        throw new IllegalStateException("Session insights unavailable");
+    }
+
+    /**
+     * One topic's insights report over every session, as the CLI's {@code insights} tool answers it
+     * ({@code headline}, {@code text}, optional {@code chart}), read headlessly through the CLI. For
+     * the topics only the CLI reads, such as the project's crawls and graphs, and the overview.
+     * Starts no model work and writes no transcript entry. Returns {@code available:false} with a
+     * {@code status} when the CLI cannot answer.
+     *
+     * @throws IllegalArgumentException when the topic or question is invalid, or the CLI knows no
+     *                                  such topic
+     */
+    default JsonNode insightsReport(String topic, String question, String workingDirectory) {
+        throw new IllegalStateException("Insights reports unavailable");
+    }
+
     /** Model context budget projected from {@link #capabilities}. */
     Map<String, Object> contextBudget(String agentName, String workingDirectory);
 }

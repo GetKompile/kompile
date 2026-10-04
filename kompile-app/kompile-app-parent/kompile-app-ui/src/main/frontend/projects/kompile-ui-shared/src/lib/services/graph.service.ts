@@ -159,7 +159,7 @@ export class GraphService extends BaseService {
    * Get a specific node by ID
    */
   getNode(nodeId: string): Observable<GraphNode> {
-    return this.http.get<GraphNode>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}`)
+    return this.http.get<GraphNode>(`${this.backendUrl}${this.apiPath}/nodes/${encodeURIComponent(nodeId)}`)
       .pipe(catchError(this.handleError));
   }
 
@@ -167,7 +167,7 @@ export class GraphService extends BaseService {
    * Get children of a node
    */
   getNodeChildren(nodeId: string): Observable<GraphNode[]> {
-    return this.http.get<GraphNode[]>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}/children`)
+    return this.http.get<GraphNode[]>(`${this.backendUrl}${this.apiPath}/nodes/${encodeURIComponent(nodeId)}/children`)
       .pipe(catchError(this.handleError));
   }
 
@@ -176,7 +176,7 @@ export class GraphService extends BaseService {
    */
   getConnectedNodes(nodeId: string, depth: number = 2): Observable<GraphNode[]> {
     const params = new HttpParams().set('depth', depth.toString());
-    return this.http.get<GraphNode[]>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}/connected`, { params })
+    return this.http.get<GraphNode[]>(`${this.backendUrl}${this.apiPath}/nodes/${encodeURIComponent(nodeId)}/connected`, { params })
       .pipe(catchError(this.handleError));
   }
 
@@ -185,7 +185,7 @@ export class GraphService extends BaseService {
    */
   getRelatedNodes(nodeId: string, maxResults: number = 10): Observable<GraphNode[]> {
     const params = new HttpParams().set('maxResults', maxResults.toString());
-    return this.http.get<GraphNode[]>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}/related`, { params })
+    return this.http.get<GraphNode[]>(`${this.backendUrl}${this.apiPath}/nodes/${encodeURIComponent(nodeId)}/related`, { params })
       .pipe(catchError(this.handleError));
   }
 
@@ -201,7 +201,7 @@ export class GraphService extends BaseService {
    * Update an existing node
    */
   updateNode(nodeId: string, request: UpdateNodeRequest): Observable<GraphNode> {
-    return this.http.patch<GraphNode>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}`, request)
+    return this.http.patch<GraphNode>(`${this.backendUrl}${this.apiPath}/nodes/${encodeURIComponent(nodeId)}`, request)
       .pipe(catchError(this.handleError));
   }
 
@@ -209,7 +209,7 @@ export class GraphService extends BaseService {
    * Delete a node
    */
   deleteNode(nodeId: string): Observable<void> {
-    return this.http.delete<void>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}`)
+    return this.http.delete<void>(`${this.backendUrl}${this.apiPath}/nodes/${encodeURIComponent(nodeId)}`)
       .pipe(catchError(this.handleError));
   }
 
@@ -236,7 +236,7 @@ export class GraphService extends BaseService {
    * Get a specific edge by ID
    */
   getEdge(edgeId: string): Observable<GraphEdge> {
-    return this.http.get<GraphEdge>(`${this.backendUrl}${this.apiPath}/edges/${edgeId}`)
+    return this.http.get<GraphEdge>(`${this.backendUrl}${this.apiPath}/edges/${encodeURIComponent(edgeId)}`)
       .pipe(catchError(this.handleError));
   }
 
@@ -252,7 +252,7 @@ export class GraphService extends BaseService {
    * Update an existing edge
    */
   updateEdge(edgeId: string, request: UpdateEdgeRequest): Observable<GraphEdge> {
-    return this.http.patch<GraphEdge>(`${this.backendUrl}${this.apiPath}/edges/${edgeId}`, request)
+    return this.http.patch<GraphEdge>(`${this.backendUrl}${this.apiPath}/edges/${encodeURIComponent(edgeId)}`, request)
       .pipe(catchError(this.handleError));
   }
 
@@ -260,7 +260,7 @@ export class GraphService extends BaseService {
    * Delete an edge
    */
   deleteEdge(edgeId: string): Observable<void> {
-    return this.http.delete<void>(`${this.backendUrl}${this.apiPath}/edges/${edgeId}`)
+    return this.http.delete<void>(`${this.backendUrl}${this.apiPath}/edges/${encodeURIComponent(edgeId)}`)
       .pipe(catchError(this.handleError));
   }
 
@@ -320,15 +320,21 @@ export class GraphService extends BaseService {
   }
 
   /**
-   * Get the 1-hop neighborhood of a node for load-on-demand expansion.
-   * Backend: GET /api/knowledge-graph/nodes/{nodeId}/expand?maxNeighbors=&edgeTypes=
+   * Get the 1-hop neighborhood of a node for load-on-demand expansion: the node plus its
+   * neighbors along incoming and outgoing edges. Pass the fact sheet being viewed, because each
+   * sheet is its own graph and a node id can exist in more than one.
+   * Backend: GET /api/knowledge-graph/nodes/{nodeId}/expand?maxNeighbors=&edgeTypes=&factSheetId=
    */
-  getNodeNeighborhood(nodeId: string, maxNeighbors: number = 50, edgeTypes?: EdgeType[] | string[]): Observable<D3VisualizationData> {
+  getNodeNeighborhood(nodeId: string, maxNeighbors: number = 50, edgeTypes?: EdgeType[] | string[],
+                      factSheetId?: number | null): Observable<D3VisualizationData> {
     let params = new HttpParams().set('maxNeighbors', maxNeighbors.toString());
     if (edgeTypes && edgeTypes.length > 0) {
       params = params.set('edgeTypes', edgeTypes.join(','));
     }
-    return this.http.get<RawVisualizationResponse>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}/expand`, { params })
+    if (factSheetId != null) {
+      params = params.set('factSheetId', factSheetId.toString());
+    }
+    return this.http.get<RawVisualizationResponse>(`${this.backendUrl}${this.apiPath}/nodes/${encodeURIComponent(nodeId)}/expand`, { params })
       .pipe(
         map(response => this.transformVisualizationData(response)),
         catchError(this.handleError)
@@ -536,7 +542,7 @@ export class GraphService extends BaseService {
     const params = new HttpParams()
       .set('minSharedConcepts', minShared.toString())
       .set('limit', limit.toString());
-    return this.http.get<GraphNode[]>(`${this.backendUrl}/fact-sheets/${factSheetId}/graph/documents/${documentNodeId}/related`, { params })
+    return this.http.get<GraphNode[]>(`${this.backendUrl}/fact-sheets/${factSheetId}/graph/documents/${encodeURIComponent(documentNodeId)}/related`, { params })
       .pipe(catchError(this.handleError));
   }
 
@@ -613,7 +619,7 @@ export class GraphService extends BaseService {
    */
   getHierarchy(nodeId: string, depth: number = 2): Observable<HierarchyTreeNode> {
     const params = new HttpParams().set('depth', depth.toString());
-    return this.http.get<HierarchyTreeNode>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}/hierarchy`, { params })
+    return this.http.get<HierarchyTreeNode>(`${this.backendUrl}${this.apiPath}/nodes/${encodeURIComponent(nodeId)}/hierarchy`, { params })
       .pipe(catchError(this.handleError));
   }
 
@@ -621,7 +627,7 @@ export class GraphService extends BaseService {
    * Get ancestors of a node
    */
   getAncestors(nodeId: string): Observable<GraphNode[]> {
-    return this.http.get<GraphNode[]>(`${this.backendUrl}${this.apiPath}/nodes/${nodeId}/ancestors`)
+    return this.http.get<GraphNode[]>(`${this.backendUrl}${this.apiPath}/nodes/${encodeURIComponent(nodeId)}/ancestors`)
       .pipe(catchError(this.handleError));
   }
 

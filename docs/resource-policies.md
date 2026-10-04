@@ -157,3 +157,65 @@ Explicit `edit_coordinator` checks accept `action: "preflight_activity"` or
 `"watch_activity"`, `tool_name: "bash"`, and `tool_arguments: {"command": "..."}`.
 The old kind-only form remains a high-resource check (it has no arguments to classify).
 Execution/preflight results include `resourceClassification` evidence.
+
+## Runtime system-pressure auto-kill monitor
+
+This is independent of admission and the crawl subprocess RSS watchdog. It is **off
+by default**. When enabled, the chat's background process manager samples host CPU,
+RAM (`MemAvailable` on Linux), swap, the project filesystem, and each NVIDIA GPU's
+memory and utilization. GPU metrics use UUIDs so a device-order change cannot
+transfer momentum between devices. Unsupported/missing metrics are omitted, not
+assumed healthy or used to justify a kill. Non-NVIDIA GPU telemetry is not yet supported.
+
+Configure in standard chat or emulated passthrough:
+
+```text
+/resources monitor show
+/resources monitor set ram 90
+/resources monitor set cpu 95
+/resources monitor set gpuMemory 96
+/resources monitor set gpuUtilization 98
+/resources monitor set breachCount 3
+/resources monitor set projectionSeconds 10
+/resources monitor enable
+/resources monitor disable
+/resources global monitor set ram 92
+```
+
+Resource names: `cpu`, `ram`, `swap`, `disk`, `gpuMemory`, `gpuUtilization`.
+All thresholds are percentages in `[0,100]`; **0 disables that resource**. Defaults
+are RAM 90 and GPU memory 95; CPU, swap, disk and GPU utilization are disabled
+because saturation can be normal productive work. Enabling the monitor explicitly
+opts owned commands into termination even if unrelated work caused the host pressure.
+
+Settings inherit independently from `~/.kompile/resource-monitor.json` to
+`<project>/.kompile/resource-monitor.json`, including individual resource thresholds.
+Edits take effect at the next poll. Malformed configuration disables enforcement
+with an observable error; it never supplies a fabricated kill threshold.
+
+Momentum is the exponential moving average of percentage-point changes **per
+second**, using actual elapsed monotonic time (`momentumAlpha`, default 0.3).
+A resource breaches when it is at/above its limit, or when at least two consecutive
+rising samples exceed `minMomentumPercentPerSecond` (default 0.5) and its smoothed
+rate projects reaching the limit within `projectionSeconds` (default 10). Set the
+projection to 0 for threshold-only enforcement. A falling/flat sample cancels the
+momentum trigger. `breachCount` (default 3) consecutive breaches are required;
+missing/invalid telemetry, changed policy, or a long sampling gap resets history.
+Sampling interval is `intervalMs` (default 2000, minimum 1000).
+
+The monitor kills **one newest live command owned by this manager** per decision,
+then enforces `cooldownMs` (default 30000) before another kill. It uses the existing
+process-kill lifecycle and force-stops captured descendant process handles, not
+unrelated PIDs or process-name patterns. Shared mirrors, virtual watchers, restored
+history entries, other sessions and the chat JVM are never auto-kill targets.
+Only commands launched through the background process manager are covered; crawl
+runtime children continue to use their existing subprocess watchdog. This is not
+a cgroup/job-object containment boundary: detached or newly spawned descendants
+outside the captured tree are not guaranteed to be stopped.
+
+The `process` tool's `resource_status` action reports per-resource usage, smoothed
+momentum, projected usage, consecutive breaches, kill count and last kill reason.
+The killed process metadata contains `resourceMonitorReason`, available in process
+status/list. Callback errors have an explicit unknown outcome and still enforce
+cooldown, since signalling may already have happened. The monitor is a daemon and
+is closed with its owning process manager; status reads never advance enforcement.

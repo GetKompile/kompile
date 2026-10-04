@@ -19,7 +19,9 @@ import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.psl.GraphPslProgramBuilder;
+import ai.kompile.graph.reasoning.psl.GraphPslWeightsArtifactCodec;
 import ai.kompile.graph.reasoning.psl.PslProgram;
+import ai.kompile.graph.reasoning.psl.PslProgramArtifactCodec;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 
 import java.util.ArrayList;
@@ -44,11 +46,14 @@ import java.util.TreeSet;
 public final class UnifiedGraphReasoningLifecycle {
 
     public static final String FOL_PSL_PROGRAM_ARTIFACT = "reasoning/fol-psl-program.bin";
+    public static final String FOL_PSL_PROGRAM_JSON_ARTIFACT = PslProgramArtifactCodec.ARTIFACT;
     public static final String PSL_WEIGHTS_ARTIFACT = "reasoning/psl-weights.json";
     public static final String MEBN_THEORY_ARTIFACT = "reasoning/mebn-theory.bin";
     public static final String MEBN_THEORY_JSON_ARTIFACT = "reasoning/mebn-theory.v1.json";
     public static final String MEBN_STRENGTHS_ARTIFACT = "reasoning/mebn-strengths.json";
     public static final String CONSENSUS_TARGETS_ARTIFACT = "reasoning/consensus-targets.bin";
+    /** Portable training-target snapshot, including the producing builder's entity alias map. */
+    public static final String CONSENSUS_TARGETS_JSON_ARTIFACT = ConsensusTargetsArtifactCodec.ARTIFACT_NAME;
     /** Weight map holding each learned PSL rule weight, keyed like {@link #PSL_WEIGHTS_ARTIFACT}. */
     public static final String PSL_WEIGHT_MAP = "pslWeights";
     /** Weight map holding each learned MEBN strength, keyed like {@link #MEBN_STRENGTHS_ARTIFACT}. */
@@ -138,6 +143,9 @@ public final class UnifiedGraphReasoningLifecycle {
             return Summary.disabled();
         }
 
+        // Hybrid/MEBN groundings still use comma-delimited raw IDs. Reject ambiguity before
+        // any training or artifact/opinion publication; JSON snapshots do not repair those keys.
+        validateConsensusIdentifiers(graph);
         GraphPslProgramBuilder pslBuilder = new GraphPslProgramBuilder();
         PslProgram pslProgram = applyLearnedPslWeights(graph, pslBuilder.build(graph));
         MTheory mTheory = buildMTheory(graph, effective.maxRelationTypes());
@@ -189,16 +197,26 @@ public final class UnifiedGraphReasoningLifecycle {
         HybridConsensusTrainer.Result learned = HybridConsensusTrainer.train(
                 graph, pslProgram, observed, plan);
 
+        // Portable execution is additive: unsupported/oversized programs publish an explicit
+        // diagnostic instead of aborting legacy learning or retaining an older executable program.
+        String portablePslProgram = PslProgramArtifactCodec.encodeForStorage(learned.trainedProgram());
         String pslWeights = PslWeightLearningService.weightsToJson(learned.trainedProgram().rules());
+        String portablePslWeights = GraphPslWeightsArtifactCodec.toJson(learned.trainedProgram());
         String mebnStrengths = MebnWeightSerializer.strengthsToJson(mTheory);
+        String consensusTargetsJson = ConsensusTargetsArtifactCodec.encode(
+                learned.consensusTargets(), pslBuilder.constantToEntityId());
         graph.putModel(FOL_PSL_PROGRAM_ARTIFACT, learned.trainedProgram());
+        graph.putArtifactText(FOL_PSL_PROGRAM_JSON_ARTIFACT, portablePslProgram);
         graph.putArtifactText(PSL_WEIGHTS_ARTIFACT, pslWeights);
+        graph.putArtifactText(GraphPslWeightsArtifactCodec.ARTIFACT, portablePslWeights);
         graph.putArtifactText(PSL_RULE_LEGEND_ARTIFACT, pslRuleLegend(graph));
         graph.putArtifactText(MEBN_THEORY_JSON_ARTIFACT,
                 RelationalMTheoryArtifactCodec.toJson(mTheory));
         graph.putArtifactText(MEBN_STRENGTHS_ARTIFACT, mebnStrengths);
         graph.putModel(CONSENSUS_TARGETS_ARTIFACT,
                 new LinkedHashMap<>(learned.consensusTargets()));
+        // Additive portable snapshot: these are training targets, not new posteriors or facts.
+        graph.putArtifactText(CONSENSUS_TARGETS_JSON_ARTIFACT, consensusTargetsJson);
         // The same weights as named maps, so readers that walk weightMaps() (graph queries, asset
         // summaries, exports) see them without parsing the JSON artifacts.
         graph.putWeightMap(PSL_WEIGHT_MAP, PslWeightLearningService.parseWeights(pslWeights));
@@ -261,12 +279,7 @@ public final class UnifiedGraphReasoningLifecycle {
     public static PslProgram applyLearnedPslWeights(UnifiedGraph graph, PslProgram program) {
         Objects.requireNonNull(graph, "graph");
         Objects.requireNonNull(program, "program");
-        String weights = graph.artifactText(PSL_WEIGHTS_ARTIFACT);
-        if (weights == null || weights.isBlank()) {
-            return program;
-        }
-        return PslWeightLearningService.applyWeights(
-                program, PslWeightLearningService.parseWeights(weights));
+        return GraphPslWeightsArtifactCodec.apply(graph, program);
     }
 
     /** Reconstruct the learned portable MEBN theory, if one was stored with the graph. */
@@ -340,7 +353,36 @@ public final class UnifiedGraphReasoningLifecycle {
      * the predicate, so a lookup finds the target however the question was phrased.
      */
     public static String relationTargetKey(String relationType, String sourceId, String targetId) {
+        if (!isConsensusArgument(sourceId) || !isConsensusArgument(targetId)) {
+            throw new IllegalArgumentException("Consensus grounding requires nonempty entity IDs without "
+                    + "commas, parentheses, control characters or surrounding whitespace; use stable safe IDs");
+        }
         return sanitizeIdentifier(relationType, "relation") + "(" + sourceId + "," + targetId + ")";
+    }
+
+    /** Whether an ID can round-trip through the current hybrid/MEBN grounding syntax. */
+    public static boolean isConsensusArgument(String id) {
+        return id != null && !id.isBlank() && id.equals(id.strip())
+                && id.indexOf(',') < 0 && id.indexOf('(') < 0 && id.indexOf(')') < 0
+                && id.chars().noneMatch(Character::isISOControl);
+    }
+
+    private static void validateConsensusIdentifiers(UnifiedGraph graph) {
+        for (GraphEntity entity : graph.entities()) {
+            if (!isConsensusArgument(entity.id())) {
+                throw new IllegalArgumentException("Unsafe consensus entity ID: use stable safe IDs before learning");
+            }
+        }
+        Map<String, String> predicateTypes = new LinkedHashMap<>();
+        for (GraphRelation relation : graph.relations()) {
+            relationTargetKey(relation.type(), relation.sourceId(), relation.targetId());
+            String predicate = sanitizeIdentifier(relation.type(), "relation");
+            String previous = predicateTypes.putIfAbsent(predicate, relation.type());
+            if (previous != null && !previous.equals(relation.type())) {
+                throw new IllegalArgumentException("Consensus relation types normalize to the same predicate: "
+                        + previous + " and " + relation.type());
+            }
+        }
     }
 
     private static String sanitizeIdentifier(String raw, String fallback) {
@@ -387,7 +429,7 @@ public final class UnifiedGraphReasoningLifecycle {
         sb.append("PSL rule legend (rule keys in reasoning/psl-weights.json)\n");
         sb.append("========================================================\n");
         sb.append("State(N)       : latent truth of entity N (learning target).\n");
-        sb.append("Link(X, Y)     : observed positive relation X->Y (weight*confidence).\n");
+        sb.append("Link(X, Y)     : observed positive relation X->Y (min(weight, confidence)).\n");
         sb.append("Conflict(X, Y) : observed contradictory relation X->Y (penalizes State).\n");
         sb.append("Prior(N)       : structural prior from entity confidence + out-degree.\n");
         sb.append("Rule suffix ^2 : hinge-loss weight of the rule; higher = trusted more.\n\n");

@@ -135,6 +135,45 @@ class DirectLlmClientFailureClassificationTest {
     }
 
     @Test
+    void resettingQuotasRetainAllowlistedTimingThroughHttpAndSse() throws Exception {
+        for (String provider : new String[]{"zai", "openai-codex"}) {
+            String fields = provider.equals("zai") ? "\"code\":\"1308\"" : "\"type\":\"usage_limit_reached\"";
+            String error = "{" + fields + ",\"message\":\"Usage limit reached; resets at 2026-10-02T18:30:00Z\","
+                    + "\"resets_at\":1790965800,\"resets_in_seconds\":7200,\"private\":\"secret-token\"}";
+            for (int status : new int[]{429, 200}) {
+                String body = status == 429 ? "{\"error\":" + error + "}"
+                        : event(provider.equals("zai") ? "{\"error\":" + error + "}"
+                        : "{\"type\":\"response.failed\",\"response\":{\"error\":" + error + "}}");
+                try (var fixture = new Fixture(provider, status, body, false,
+                        Map.of("Retry-After", "7200", "Set-Cookie", "private-cookie"))) {
+                    var result = fixture.run();
+                    assertEquals(QUOTA_EXHAUSTED, result.failureKind, provider + "/" + status);
+                    assertTrue(result.failureMessage.contains("resets_at=1790965800"), result.failureMessage);
+                    assertTrue(result.failureMessage.contains("resets_in_seconds=7200"));
+                    assertFalse(result.failureMessage.contains("secret-token"));
+                    assertFalse(result.failureMessage.contains("private-cookie"));
+                    if (status == 429) assertTrue(result.failureMessage.contains("retry_after=7200"));
+                    assertEquals(1, fixture.requests.get());
+                }
+            }
+        }
+    }
+
+    @Test
+    void anthropicQuotaHeadersSurviveConnectivityFailure() throws Exception {
+        try (var fixture = new Fixture("anthropic", 429,
+                "{\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Rate limit reached\"}}", false,
+                Map.of("Retry-After", "Fri, 2 Oct 2026 18:00:00 GMT",
+                        "anthropic-ratelimit-unified-5h-status", "rejected",
+                        "anthropic-ratelimit-unified-5h-reset", "1790964000"))) {
+            var result = fixture.run();
+            assertTrue(result.failed);
+            assertTrue(result.failureMessage.contains("reset_at=1790964000"), result.failureMessage);
+            assertFalse(result.failureMessage.contains("GMT"));
+        }
+    }
+
+    @Test
     void zaiEmptyInformationIsValidationNotQuota() throws Exception {
         try (var fixture = new Fixture("zai", 400,
                 "{\"error\":{\"code\":\"1214\",\"message\":\"Information can not be empty\"}}", false)) {
@@ -238,6 +277,25 @@ class DirectLlmClientFailureClassificationTest {
             var result = fixture.run();
             assertTrue(result.cancelled);
             assertEquals(0, fixture.refreshes.get());
+        }
+    }
+
+    @Test
+    void quotaClockTimezoneSurvivesHttpDiagnosticSanitization() throws Exception {
+        try (var fixture = new Fixture("zai", 429,
+                "{\"error\":{\"code\":\"1308\",\"message\":\"Usage limit reached, resets 5pm (America/New_York)\"}}", false)) {
+            var result = fixture.run();
+            assertEquals(QUOTA_EXHAUSTED, result.failureKind);
+            assertTrue(result.failureMessage.contains("_America/New_York_"), result.failureMessage);
+            Class<?> watchdog = Class.forName("ai.kompile.cli.main.chat.UsageLimitAutoContinue");
+            var classify = watchdog.getDeclaredMethod("classify", String.class, String.class, java.time.Clock.class);
+            classify.setAccessible(true);
+            Object verdict = classify.invoke(null, "zai", result.failureMessage,
+                    java.time.Clock.fixed(java.time.Instant.parse("2026-10-02T16:00:00Z"), java.time.ZoneId.of("UTC")));
+            var horizon = verdict.getClass().getDeclaredMethod("horizon");
+            horizon.setAccessible(true);
+            assertEquals(Duration.ofHours(5), horizon.invoke(verdict), "reset is 17:00 New York, not 17:00 UTC");
+            assertEquals(1, fixture.requests.get());
         }
     }
 

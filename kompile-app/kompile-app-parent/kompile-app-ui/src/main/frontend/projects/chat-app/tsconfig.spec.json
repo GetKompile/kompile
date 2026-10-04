@@ -23,7 +23,6 @@
     "../kompile-ui-shared/src/**/*.d.ts"
   ],
   "exclude": [
-    "src/app/components/unified-chat/unified-chat-dark-mode.spec.ts",
     "src/app/components/unified-chat/unified-chat-token-usage.spec.ts",
     "src/app/components/unified-chat/unified-chat-context-panel.spec.ts"
   ]

@@ -514,12 +514,19 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   @Input() reasoningEdgeLayerMap: Map<string, ReasoningLayerVisualOverlay> = new Map();
   @Input() processEvidenceNodeIds: ReadonlySet<string> = new Set<string>();
   @Input() processEvidenceEdgeIds: ReadonlySet<string> = new Set<string>();
+  /**
+   * Node to select and centre once it is drawn, such as a deep link's focus. The request waits
+   * until a data change brings the node in; {@link focused} reports it applied.
+   */
+  @Input() focusNodeId: string | null = null;
 
   @Output() nodeSelected = new EventEmitter<D3Node | null>();
   @Output() nodeDoubleClicked = new EventEmitter<D3Node>();
   @Output() edgeCreated = new EventEmitter<{ source: string; target: string }>();
   @Output() nodeContextMenu = new EventEmitter<{ node: D3Node; event: MouseEvent }>();
   @Output() linkSourceChanged = new EventEmitter<D3Node | null>();
+  /** The {@link focusNodeId} node, once it has been selected and centred. */
+  @Output() focused = new EventEmitter<D3Node>();
 
   nodeColors = NODE_COLORS;
   edgeColors = EDGE_COLORS;
@@ -538,6 +545,8 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
 
   private selectedNodeKey: string | null = null;
   private linkSourceKey: string | null = null;
+  /** A focus request whose node is not drawn yet. */
+  private pendingFocusKey: string | null = null;
 
   // Drag interaction state
   private isDragging = false;
@@ -559,6 +568,7 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     if (this.data) {
       this.updateGraph();
     }
+    this.applyPendingFocus();
     // Re-apply colors whenever the theme toggles
     this.themeService.theme$
       .pipe(takeUntil(this.destroy$))
@@ -566,6 +576,9 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   ngOnChanges(changes: SimpleChanges): void {
+    if (changes['focusNodeId']) {
+      this.pendingFocusKey = this.focusNodeId;
+    }
     if (changes['data'] && this.data && this.sigmaInstance) {
       this.updateGraph();
     }
@@ -587,6 +600,7 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
       }
       this.refreshNodeColors();
     }
+    this.applyPendingFocus();
   }
 
   ngOnDestroy(): void {
@@ -604,15 +618,7 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
   private initializeSigma(): void {
     this.graph = new Graph({ multi: true, allowSelfLoops: false });
 
-    this.sigmaInstance = new Sigma(this.graph, this.sigmaContainerRef.nativeElement, {
-      renderEdgeLabels: false,
-      labelFont: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      labelSize: 11,
-      labelWeight: '500',
-      defaultEdgeType: 'line',
-      minCameraRatio: 0.05,
-      maxCameraRatio: 20,
-    });
+    this.sigmaInstance = this.createRenderer(this.graph, this.sigmaContainerRef.nativeElement);
 
     // ── Node click — selection / link-mode ────────────────────────────────────
     this.sigmaInstance.on('clickNode', ({ node }) => {
@@ -651,6 +657,19 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
 
     // ── Node dragging ─────────────────────────────────────────────────────────
     this.setupDragging();
+  }
+
+  /** Builds the renderer that draws the graph. Sigma draws with WebGL, so a test supplies its own. */
+  protected createRenderer(graph: Graph, container: HTMLElement): Sigma {
+    return new Sigma(graph, container, {
+      renderEdgeLabels: false,
+      labelFont: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      labelSize: 11,
+      labelWeight: '500',
+      defaultEdgeType: 'line',
+      minCameraRatio: 0.05,
+      maxCameraRatio: 20,
+    });
   }
 
   private setupDragging(): void {
@@ -891,6 +910,29 @@ export class GraphCanvasComponent implements OnInit, OnChanges, OnDestroy {
     }
 
     this.sigmaInstance.refresh();
+    this.applyPendingFocus();
+  }
+
+  /**
+   * Selects and centres the pending focus node once it is drawn. The selection is the one a click
+   * makes, but the host hears of it through {@link focused}, emitted after the current change
+   * detection pass rather than inside it.
+   */
+  private applyPendingFocus(): void {
+    const key = this.pendingFocusKey;
+    if (!key || !this.graph || !this.sigmaInstance || !this.graph.hasNode(key)) return;
+    const node = this.nodeMap.get(key);
+    if (!node) return;
+    this.pendingFocusKey = null;
+    this.selectedNodeKey = key;
+    this.refreshNodeColors();
+    // Display data is in the normalized frame the camera uses; refresh() has just updated it.
+    const position = this.sigmaInstance.getNodeDisplayData(key);
+    if (position) {
+      const camera = this.sigmaInstance.getCamera();
+      camera.animate({ x: position.x, y: position.y, ratio: Math.min(camera.ratio, 0.5) }, { duration: 400 });
+    }
+    Promise.resolve().then(() => this.ngZone.run(() => this.focused.emit(node)));
   }
 
   /**

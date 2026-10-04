@@ -19,7 +19,7 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked, Renderer, Tokens } from 'marked';
 import hljs from 'highlight.js';
 import DOMPurify, { Config as DOMPurifyConfig } from 'dompurify';
-import { ToolCallRun, ToolCallSection, ToolUseEvent } from '../models/api-models';
+import { ToolCallChart, ToolCallRun, ToolCallSection, ToolUseEvent } from '../models/api-models';
 
 /**
  * Represents a parsed segment of a message — either text content (which may contain markdown),
@@ -58,6 +58,8 @@ export interface ToolCallView {
   metadata?: string;
   preview?: string;
   sections: ToolCallSectionView[];
+  /** The tool's chart of the same answer, drawn by ToolCallChartComponent. */
+  chart?: ToolCallChart;
 }
 
 /** One detail section: sanitized highlighted runs, or diff lines colored by prefix. */
@@ -359,7 +361,8 @@ export class MarkdownRendererService {
         diff: section.diff === true,
         html: this.sanitizeAndTrust(section.diff === true ? this.diffHtml(section) : this.highlightRuns(section)),
         note: section.note
-      }))
+      })),
+      chart: detail?.chart
     };
   }
 

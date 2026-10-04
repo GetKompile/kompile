@@ -60,6 +60,9 @@ public final class SyncSession implements AutoCloseable {
     private Map<String, List<SyncEntry>> remoteInventory;
     private SyncPlan plan;
     private int nextRequestId = 10;
+    private String remoteMountIdentity;
+
+    String remoteMountIdentity() { return remoteMountIdentity; }
 
     public SyncSession(SyncTransport transport,
                        Map<String, List<SyncEntry>> localInventory,
@@ -103,6 +106,7 @@ public final class SyncSession implements AutoCloseable {
             throw new IOException("Incompatible sync peer: " + protocol + " v" + version
                     + " (expected " + SyncCatalog.PROTOCOL + " v" + SyncCatalog.PROTOCOL_VERSION + ")");
         }
+        remoteMountIdentity = response.path("mountIdentity").asText("");
         return response.path("hostname").asText(transport.describe());
     }
 
@@ -113,7 +117,14 @@ public final class SyncSession implements AutoCloseable {
         var array = request.putArray("components");
         components.forEach(array::add);
         var response = SyncProtocol.exchange(reader(), writer(), request);
-        this.remoteInventory = SyncProtocol.parseInventory(response.path("inventory"));
+        var received = SyncProtocol.parseInventory(response.path("inventory"));
+        for (var component : received.entrySet()) {
+            if (!components.contains(component.getKey())) throw new IOException("Peer returned an unrequested component.");
+            for (SyncEntry entry : component.getValue()) {
+                if (!component.getKey().equals(entry.component())) throw new IOException("Peer inventory component mismatch.");
+            }
+        }
+        this.remoteInventory = received;
         return remoteInventory;
     }
 
@@ -132,16 +143,23 @@ public final class SyncSession implements AutoCloseable {
      * Deletions run only when {@code allowDelete} is set.
      */
     public void apply(LocalSink localSink, Direction direction, boolean allowDelete) throws IOException {
-        if (plan == null) {
+        apply(plan, localSink, direction, allowDelete);
+    }
+
+    void apply(SyncPlan selectedPlan, LocalSink localSink, Direction direction, boolean allowDelete) throws IOException {
+        if (selectedPlan == null) {
             throw new IllegalStateException("call computePlan() before apply()");
         }
-        for (SyncPlan.Item item : plan.items()) {
+        for (SyncPlan.Item item : selectedPlan.items()) {
             switch (item.action()) {
                 case COPY_TO_REMOTE: {
                     if (direction == Direction.PULL) {
                         continue;
                     }
                     byte[] bytes = localSource.read(item.entry());
+                    if (!sha256(bytes).equals(item.localHash())) {
+                        throw new IOException("Sync source changed since inventory; retry: " + item.entry().packagePath());
+                    }
                     ObjectNode apply = SyncProtocol.request(nextRequestId++, SyncProtocol.OP_APPLY);
                     apply.put("action", "write");
                     apply.set("entry", entryNode(item.entry()));

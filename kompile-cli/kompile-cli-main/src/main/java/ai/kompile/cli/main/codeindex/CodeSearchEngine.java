@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -114,8 +115,9 @@ public class CodeSearchEngine {
         int filesWithMatches = 0;
         boolean truncated = false;
 
+        Predicate<String> inScope = fileFilter(options.filePattern());
         for (String relPath : fingerprints.keySet()) {
-            if (options.filePattern() != null && !matchesGlob(relPath, options.filePattern())) {
+            if (!inScope.test(relPath)) {
                 continue;
             }
 
@@ -185,8 +187,9 @@ public class CodeSearchEngine {
         List<Replacement> replacements = new ArrayList<>();
         Set<Path> modifiedFiles = new LinkedHashSet<>();
 
+        Predicate<String> inScope = fileFilter(options.filePattern());
         for (String relPath : fingerprints.keySet()) {
-            if (options.filePattern() != null && !matchesGlob(relPath, options.filePattern())) {
+            if (!inScope.test(relPath)) {
                 continue;
             }
 
@@ -610,15 +613,35 @@ public class CodeSearchEngine {
         return store.loadFingerprints();
     }
 
-    private boolean matchesGlob(String path, String globPattern) {
-        // Simple glob matching
-        if (globPattern.startsWith("*.")) {
-            return path.endsWith(globPattern.substring(1));
+    /**
+     * The filter a find or replace applies to indexed paths. The forms it has always
+     * taken keep their meaning: {@code *.ext} matches the end of the path,
+     * {@code prefix*} its start, and a plain string any part of it. Anything else is a
+     * {@link PathPatterns} glob, so {@code **} spans directories and {@code src/**}
+     * is anchored at the project root.
+     */
+    private static Predicate<String> fileFilter(String filePattern) {
+        if (filePattern == null) {
+            return path -> true;
         }
-        if (globPattern.endsWith("*")) {
-            return path.startsWith(globPattern.substring(0, globPattern.length() - 1));
+        String glob = filePattern.replace('\\', '/');
+        if (glob.startsWith("*.") && isPlain(glob.substring(2))) {
+            String suffix = glob.substring(1);
+            return path -> path.replace('\\', '/').endsWith(suffix);
         }
-        return path.contains(globPattern);
+        if (glob.endsWith("*") && isPlain(glob.substring(0, glob.length() - 1))) {
+            String prefix = glob.substring(0, glob.length() - 1);
+            return path -> path.replace('\\', '/').startsWith(prefix);
+        }
+        if (isPlain(glob)) {
+            return path -> path.replace('\\', '/').contains(glob);
+        }
+        return PathPatterns.parse(glob)::matchesFile;
+    }
+
+    /** True if {@code text} has none of the characters that make a pattern a glob or a list. */
+    private static boolean isPlain(String text) {
+        return text.chars().noneMatch(c -> "*?[{,".indexOf(c) >= 0);
     }
 
     private String detectLanguageFromPath(String path) {

@@ -18,6 +18,9 @@ package ai.kompile.cli.main.chat.enforcer;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.harness.JudgeBackend;
+import ai.kompile.cli.main.chat.tools.BashTool;
+import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
+import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -93,6 +96,78 @@ class ShellMandatePolicyTest {
         })
         void blockedForms(String command) {
             assertBlocked("bash", command);
+        }
+    }
+
+    @Nested
+    @DisplayName("Sed is blocked on files, streams, and stdin — use dedicated tools")
+    class SedBan {
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "sed -n '1,20p' build.log",
+                "sed '/ERROR/!d' build.log",
+                "mvn test 2>&1 | sed -n '/ERROR/p'",
+                "printf '%s\\n' hello | sed 's/hello/world/'",
+                "sed -n '1,20p' < build.log",
+                "sed -n '/ERROR/p' -",
+                "sed -n '/ERROR/p' <<< 'ERROR inline'",
+                "sed -n '/ERROR/p' <<'EOF'\nERROR inline\nEOF",
+                "/usr/bin/sed -n '1p' build.log",
+                "\"sed\" -n '1p' build.log",
+                "'/usr/bin/sed' -n '1p' build.log",
+                "env LC_ALL=C sed -n '/ERROR/p' < build.log",
+                "sudo sed -n '1p' build.log",
+                "timeout 5 sed -n '1p' build.log",
+                "nohup sed -n '1p' build.log",
+                "command sed -n '1p' build.log",
+                "true && sed -n '1p' build.log",
+                "false || sed -n '1p' build.log",
+                "true; sed -n '1p' build.log",
+                "if true; then sed -n '1p' build.log; fi",
+                "if sed -n '1p' build.log; then true; fi",
+                "if false; then true; else sed -n '1p' build.log; fi",
+                "! sed -n '1p' build.log",
+                "echo $(printf hello | sed -n '1p')",
+                "echo `printf hello | sed -n '1p'`",
+                "bash -c 'printf hello | sed -n 1p'",
+                "env FLAG=1 /bin/sh -lc 'sed -n 1p < build.log'"
+        })
+        void blockedForms(String command) {
+            assertBlocked("bash", command);
+            assertBlocked("process", command);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"bash", "mcp__kompile__bash", "process", "mcp__kompile__process"})
+        void serializedToolCallsRouteToGrep(String tool) {
+            EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs(
+                    tool, "{\"command\":\"mvn test | sed -n '/ERROR/p'\"}");
+            assertNotNull(decision);
+            assertFalse(decision.isAllowed());
+            assertTrue(decision.getViolations().get(0).contains("`grep` tool"));
+            assertTrue(decision.getCorrectionPrompt().contains("never shell `sed`"));
+        }
+
+        @Test
+        void inPlaceRewritesStillRouteToEdit() {
+            EnforcerToolCallDecision decision = eval("bash", "sed -i 's/old/new/' file.txt");
+            assertNotNull(decision);
+            assertTrue(decision.getViolations().get(0).contains("`edit` tool"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "echo sed",
+                "printf '%s' 'sed -n 1p build.log'",
+                "mvn test -Dlabel=sed",
+                "bash -c 'echo sed'",
+                "if true; then echo sed; fi",
+                "if true; then printf '%s' 'sed -n 1p build.log'; fi",
+                "mvn test | grep ERROR",
+                "ps aux | awk '{print $2}'"
+        })
+        void textMentionsAndOtherStreamFiltersStayAllowed(String command) {
+            assertAllowed("bash", command);
         }
     }
 
@@ -378,6 +453,60 @@ class ShellMandatePolicyTest {
     }
 
     @Nested
+    @DisplayName("Shell loops are blocked, including until without sleep")
+    class ShellLoops {
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "until test -f ready; do :; done",
+                "until false; do true; done",
+                "until ! kill -0 $pid 2>/dev/null; do :; done",
+                "\\\n until false; do :; done",
+                "until [ -e ready ]; do sleep 1; done",
+                "until test -f ready\ndo\n  :\ndone",
+                "while true; do :; done",
+                "for item in a b; do true; done",
+                "for ((i=0; i<3; i++)); do true; done",
+                "select item in a b; do break; done",
+                "true && until false; do :; done",
+                "if true; then until false; do :; done; fi",
+                "(until false; do :; done)",
+                "{ until false; do :; done; }",
+                "bash -c 'until false; do :; done'",
+                "env FLAG=1 /bin/sh -lc 'until false; do :; done'",
+                "echo $(until false; do :; done)",
+                "echo `until false; do :; done`"
+        })
+        void blockedForms(String command) {
+            assertBlocked("bash", command);
+            assertBlocked("mcp__kompile__process", command);
+            assertTrue(ShellMandatePolicy.containsShellLoop(command));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "echo until while for select",
+                "printf '%s' 'until false; do :; done'",
+                "printf '%s' \"while true; do :; done\"",
+                "mvn test -Dlabel=until",
+                "bash -c 'echo until'",
+                "git status --short"
+        })
+        void loopWordsInArgumentsAreAllowed(String command) {
+            assertAllowed("bash", command);
+            assertFalse(ShellMandatePolicy.containsShellLoop(command));
+        }
+
+        @Test
+        void serializedUntilLoopRoutesToHostMonitoring() {
+            EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs(
+                    "mcp__kompile__bash", "{\"command\":\"until false; do :; done\"}");
+            assertNotNull(decision);
+            assertTrue(decision.getViolations().get(0).contains("until"));
+            assertTrue(decision.getCorrectionPrompt().contains("action=monitor"));
+        }
+    }
+
+    @Nested
     @DisplayName("Sleep is banned — waiting must go through process monitors")
     class SleepBan {
         @ParameterizedTest
@@ -514,11 +643,70 @@ class ShellMandatePolicyTest {
         }
 
         @Test
+        void sedFilteringIsBlockedAcrossEnforcerLanesWithoutAJudge() throws Exception {
+            String command = "mvn test | sed -n '/ERROR/p'";
+            String input = "{\"command\":\"" + command + "\"}";
+            EnforcerPolicy policy = new EnforcerPolicy("", 1, false);
+            try (EnforcerToolCallGuard guard = guardWithRules("Use tools relevant to the request.")) {
+                assertFalse(guard.evaluate("bash", Map.of("command", command)).isAllowed());
+                assertFalse(guard.evaluate("process", Map.of("action", "launch", "command", command)).isAllowed());
+                assertTrue(guard.describe().contains("lazy"), "hard block must not build the judge");
+            }
+            KeywordEnforcerEvaluator evaluator = new KeywordEnforcerEvaluator(java.util.List.of(), "");
+            assertFalse(evaluator.evaluateToolCall("bash", input, policy).isAllowed());
+            JudgeBackend unavailable = new JudgeBackend() {
+                @Override
+                public String generate(String userPrompt, String systemPrompt) {
+                    throw new AssertionError("sed must be blocked before calling the judge");
+                }
+
+                @Override
+                public boolean isAvailable() {
+                    return false;
+                }
+            };
+            EnforcerJudge judge = new EnforcerJudge(unavailable, JsonUtils.standardMapper());
+            try {
+                assertFalse(judge.evaluateToolCall("bash", input, policy).isAllowed());
+            } finally {
+                judge.close();
+            }
+        }
+
+        @Test
+        void executionBoundariesRejectSedWithoutAnEnforcerOrPermissions() throws Exception {
+            var params = JsonUtils.standardMapper().createObjectNode();
+            params.put("command", "printf hello | sed -n '1p'");
+            // Null contexts prove rejection happens before permission checks or process execution.
+            ToolResult bash = new BashTool().execute(params, null);
+            assertTrue(bash.isError());
+            assertTrue(bash.getOutput().contains("`grep` tool"));
+
+            params.put("action", "launch");
+            ToolResult process = new ProcessManagementTool(null).execute(params, null);
+            assertTrue(process.isError());
+            assertTrue(process.getOutput().contains("`grep` tool"));
+        }
+
+        @Test
         void guardBlocksSleepWithoutJudgeOrRules() throws Exception {
             try (EnforcerToolCallGuard guard = guardWithRules("Use tools relevant to the request.")) {
                 assertFalse(guard.evaluate("bash", Map.of("command", "sleep 30")).isAllowed(),
                         "sleep must be hard-blocked by the deterministic mandate");
             }
+        }
+
+        @Test
+        void guardBlocksUntilLoopWithoutStartingJudge() throws Exception {
+            try (EnforcerToolCallGuard guard = guardWithRules("Use tools relevant to the request.")) {
+                assertFalse(guard.evaluate("bash",
+                        Map.of("command", "until false; do :; done")).isAllowed());
+                assertTrue(guard.describe().contains("lazy"));
+            }
+            KeywordEnforcerEvaluator evaluator = new KeywordEnforcerEvaluator(java.util.List.of(), "");
+            assertFalse(evaluator.evaluateToolCall("bash",
+                    "{\"command\":\"until false; do :; done\"}",
+                    new EnforcerPolicy("", 1, false)).isAllowed());
         }
 
         @Test

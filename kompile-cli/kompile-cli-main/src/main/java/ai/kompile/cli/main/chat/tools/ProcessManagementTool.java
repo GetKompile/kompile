@@ -98,7 +98,8 @@ public class ProcessManagementTool implements CliTool {
                 "Actions: list (show local and shared WIP processes), launch (start a background command), " +
                 "kill (stop a local process by ID), output (live tail snapshot), stream (follow output briefly), " +
                 "status (detailed info plus recent output), monitor (wake this agent when one local process exits), " +
-                "unmonitor (cancel a monitor), monitors (list active monitors), cleanup (remove old local entries).";
+                "unmonitor (cancel a monitor), monitors (list active monitors), resource_status (system-pressure " +
+                "auto-kill telemetry, momentum and last kill; configure via /resources monitor), cleanup (remove old local entries).";
     }
 
     @Override
@@ -110,10 +111,10 @@ public class ProcessManagementTool implements CliTool {
 
         ObjectNode action = props.putObject("action");
         action.put("type", "string");
-        action.put("description", "Action to perform: list, launch, kill, output, stream, status, monitor, unmonitor, monitors, cleanup");
+        action.put("description", "Action to perform: list, launch, kill, output, stream, status, monitor, unmonitor, monitors, resource_status, cleanup");
         action.putArray("enum").add("list").add("launch").add("kill")
                 .add("output").add("stream").add("status").add("monitor")
-                .add("unmonitor").add("monitors").add("cleanup");
+                .add("unmonitor").add("monitors").add("resource_status").add("cleanup");
 
         ObjectNode processId = props.putObject("process_id");
         processId.put("type", "string");
@@ -180,11 +181,13 @@ public class ProcessManagementTool implements CliTool {
                 return executeUnmonitor(params);
             case "monitors":
                 return executeMonitors();
+            case "resource_status":
+                return ToolResult.success(JsonUtils.standardMapper().valueToTree(processManager.resourceMonitorStatus()).toPrettyString());
             case "cleanup":
                 return executeCleanup();
             default:
                 return ToolResult.error("Unknown action: " + action +
-                        ". Valid actions: list, launch, kill, output, stream, status, monitor, unmonitor, monitors, cleanup");
+                        ". Valid actions: list, launch, kill, output, stream, status, monitor, unmonitor, monitors, resource_status, cleanup");
         }
     }
 

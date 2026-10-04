@@ -973,6 +973,33 @@ class LocalProjectGraphBackendTest {
     }
 
     @Test
+    void portableConsensusIsTrainingReferenceAndInvalidJsonDoesNotFallBack() throws Exception {
+        Path graphPath = projectRoot.resolve("data/crawls/consensus/graph.kgraph");
+        Files.createDirectories(graphPath.getParent());
+        UnifiedGraph graph = new UnifiedGraph().graphId("local:test:consensus")
+                .addEntity("a", "PERSON", "a").addEntity("b", "PERSON", "b")
+                .addRelation("ab", "a", "b", "WORKS_FOR", 0.8);
+        graph.putArtifactText(ai.kompile.graph.reasoning.lifecycle.ConsensusTargetsArtifactCodec.ARTIFACT_NAME,
+                ai.kompile.graph.reasoning.lifecycle.ConsensusTargetsArtifactCodec.encode(
+                        Map.of("WORKS_FOR(a,b)", 0.2), Map.of("n0", "a", "n1", "b")));
+        graph.saveCompact(graphPath);
+        LocalProjectGraphBackend backend = new LocalProjectGraphBackend(mapper);
+        ObjectNode request = mapper.createObjectNode().put("knowledgeBase", "consensus")
+                .put("atom", "WORKS_FOR(a, b)");
+        JsonNode result = mapper.readTree(backend.executeOfflineTool("ask_graph_verify", request, context).getOutput());
+        assertEquals("SUPPORTED", result.path("verdict").asText(), result.toString());
+        assertEquals(0.2, result.path("consensusTrainingTarget").asDouble(), 1e-9);
+        assertEquals("training-targets", result.path("consensusSemantics").asText());
+        graph.putModel("reasoning/consensus-targets.bin", new java.util.LinkedHashMap<>(Map.of("WORKS_FOR(a,b)", 0.9)));
+        graph.putArtifactText(ai.kompile.graph.reasoning.lifecycle.ConsensusTargetsArtifactCodec.ARTIFACT_NAME, "{}");
+        graph.saveCompact(graphPath);
+        JsonNode invalid = mapper.readTree(new LocalProjectGraphBackend(mapper)
+                .executeOfflineTool("ask_graph_verify", request, context).getOutput());
+        assertEquals("SUPPORTED", invalid.path("verdict").asText());
+        assertFalse(invalid.has("consensusTrainingTarget"), invalid.toString());
+    }
+
+    @Test
     void owlRlVerificationSupportsTransitiveTwoHopAndInvalidatesAfterRetraction() throws Exception {
         Path graphPath = projectRoot.resolve("data/crawls/owl-verify/graph.kgraph");
         Files.createDirectories(graphPath.getParent());

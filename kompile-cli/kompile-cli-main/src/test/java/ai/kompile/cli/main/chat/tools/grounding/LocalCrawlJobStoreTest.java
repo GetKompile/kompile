@@ -7,11 +7,13 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class LocalCrawlJobStoreTest {
     private final ObjectMapper mapper = new ObjectMapper();
@@ -66,6 +68,30 @@ class LocalCrawlJobStoreTest {
         assertFalse(storedResult.isError(), storedResult.getOutput());
         assertEquals("done", storedResult.getOutput());
         assertEquals(jobId, storedResult.getMetadata().get("jobId"));
+    }
+
+    @Test
+    void traceFailureCannotPublishTerminalState() throws Exception {
+        String jobId = LocalCrawlJobRegistry.newJobId();
+        LocalCrawlJobStore.initialize(projectRoot, jobId, "notes", mapper.createObjectNode());
+        ObjectNode state = LocalCrawlJobStore.load(projectRoot, jobId).orElseThrow();
+        state.put("status", "COMPLETED").put("terminal", true);
+        Path directory = projectRoot.resolve(".kompile/state/crawl-jobs").resolve(jobId);
+        Path trace = directory.resolve("trace.jsonl");
+        Path backup = directory.resolve("trace.backup");
+        Files.move(trace, backup);
+        Files.createDirectory(trace);
+        try {
+            assertThrows(IllegalStateException.class,
+                    () -> LocalCrawlJobStore.persist(projectRoot, state, "JOB_TERMINAL"));
+            assertFalse(LocalCrawlJobStore.load(projectRoot, jobId).orElseThrow().path("terminal").asBoolean());
+        } finally {
+            Files.delete(trace);
+            Files.move(backup, trace);
+        }
+        LocalCrawlJobStore.persist(projectRoot, state, "JOB_TERMINAL");
+        assertTrue(LocalCrawlJobStore.load(projectRoot, jobId).orElseThrow().path("terminal").asBoolean());
+        assertTrue(LocalCrawlJobStore.transcript(projectRoot, jobId, mapper).getOutput().contains("JOB_TERMINAL"));
     }
 
     @Test

@@ -76,6 +76,11 @@ class ChatHarnessCapabilitiesTest {
         // Gate approvals: a live control during a run, an input field between runs.
         assertTrue(parsed.path("webControls").path("actions").toString().contains("\"workflow_approve\""), json);
         assertTrue(parsed.path("webInput").path("optionalFields").toString().contains("\"workflowApprove\""), json);
+        // The web insights drawer reads the session panel between runs.
+        assertTrue(parsed.path("webInput").path("optionalFields").toString().contains("\"insightsQuery\""), json);
+        // The chat app's insights page asks for topic reports.
+        assertTrue(parsed.path("webInput").path("optionalFields").toString().contains("\"insightsTopic\""), json);
+        assertTrue(parsed.path("webInput").path("optionalFields").toString().contains("\"insightsQuestion\""), json);
     }
 
     @Test

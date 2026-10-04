@@ -1223,6 +1223,67 @@ public class SetupWizard {
         return chatProvider == null ? provider : chatProvider.id();
     }
 
+    /** Reuse a vendor's session pin or saved default without opening a login/credential menu. */
+    public static ChatConfig modelPickerConfigForVendor(ChatConfig current, String vendor) throws IOException {
+        if (vendor.equalsIgnoreCase(vendorForProvider(current.getProvider()))) return current.copy();
+        List<AuthMethod> methods = authMethodsForPicker(vendor);
+        if (methods.isEmpty()) throw new IOException("No authentication route for " + vendor);
+        ChatConfig primary = modelPickerVendorRoute(current, vendor, methods.get(0));
+        if (methods.get(0) == AuthMethod.NONE || methods.get(0) == AuthMethod.NATIVE
+                || isClaudeCodeRoute(vendor, methods.get(0))) return primary;
+
+        CredentialStore store = CredentialStore.create();
+        // A session's explicit account wins over a provider's saved default,
+        // including vendors whose API-key and OAuth routes use different wire ids.
+        for (boolean pinned : new boolean[]{true, false}) {
+            ChatConfig pinnedFallback = null;
+            for (AuthMethod method : methods) {
+                ChatConfig candidate = modelPickerVendorRoute(current, vendor, method);
+                String provider = candidate.getProvider();
+                String name = candidate.getCredentialName();
+                if (pinned && name == null) continue;
+                if (pinned && pinnedFallback == null) pinnedFallback = candidate;
+                if (!pinned) name = "global".equals(current.getAuthenticationScope())
+                        ? store.activeCredentialName(provider) : store.defaultCredentialName(provider);
+                if (name == null) continue;
+                String selectedName = name;
+                var credential = store.list(provider).stream()
+                        .filter(info -> selectedName.equalsIgnoreCase(info.credentialName()))
+                        .findFirst().orElse(null);
+                if (credential != null && (!compatibleCredentials(List.of(credential), method).isEmpty()
+                        || method == AuthMethod.OAUTH && isLegacyOpenAiCodexCredential(store, provider, credential))) {
+                    if ("session".equals(current.getAuthenticationScope())) candidate.setCredentialName(name);
+                    return candidate;
+                }
+            }
+            // A deleted/expired session pin must fail closed, not switch accounts.
+            if (pinnedFallback != null) return pinnedFallback;
+        }
+        for (AuthMethod method : methods) {
+            if (method != AuthMethod.API_KEY) continue;
+            ChatConfig candidate = modelPickerVendorRoute(current, vendor, method);
+            String variable = ChatProviderRegistry.environmentVariable(candidate.getProvider());
+            String key = variable == null ? null : System.getenv(variable);
+            if (key != null && !key.isBlank()) return candidate;
+        }
+        // Missing auth remains an explicit discovery failure. Only the user can
+        // request the credential flow; vendor selection never initiates sign-in.
+        return primary;
+    }
+
+    private static ChatConfig modelPickerVendorRoute(ChatConfig current, String vendor, AuthMethod method) {
+        ChatConfig config = current.copy();
+        config.setProvider(resolveProviderForAuth(vendor, method));
+        config.setApiKey(null); // A secret must never cross vendors.
+        config.setAuthenticationMethod(method.configValue());
+        config.setBaseUrl(baseUrlForAuth(config.getProvider(), method));
+        config.setModel(null);
+        config.setThinking(null);
+        config.setFastMode(false);
+        config.setUltracode(false);
+        return config;
+    }
+
     /** Fetch the provider's current model ids and discovery status. */
     public static ModelDiscovery.Result modelDiscovery(String provider) {
         return ModelDiscoveryHttp.refreshResult(provider, null, null);
@@ -1341,6 +1402,11 @@ public class SetupWizard {
         if (ChatConfig.isClaudeCliNativeProvider(provider) && config != null
                 && provider.equalsIgnoreCase(config.getProvider())) {
             return config.isClaudeCliNative() ? AuthMethod.OAUTH : AuthMethod.API_KEY;
+        }
+        if (config != null && provider != null && provider.equalsIgnoreCase(config.getProvider())) {
+            for (AuthMethod method : authMethodsForPicker(vendorForProvider(provider))) {
+                if (method.configValue().equalsIgnoreCase(config.getAuthenticationMethod())) return method;
+            }
         }
         return authMethodForProvider(provider);
     }

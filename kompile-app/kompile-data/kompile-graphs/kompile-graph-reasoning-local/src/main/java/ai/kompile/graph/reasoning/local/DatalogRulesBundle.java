@@ -122,6 +122,44 @@ public final class DatalogRulesBundle {
         return fromJson(new String(bytes, StandardCharsets.UTF_8));
     }
 
+    /** Strict activation decoder; unlike the compatibility decoder it never skips malformed rules. */
+    public static List<DatalogRule> fromJsonStrict(String json) {
+        Object parsed = MiniJson.parse(json);
+        if (!(parsed instanceof List<?> list)) throw new IllegalArgumentException("Datalog rules must be a JSON array");
+        List<DatalogRule> rules = new ArrayList<>(list.size());
+        for (Object raw : list) {
+            if (!(raw instanceof Map<?, ?> rule)
+                    || !(rule.get("head") instanceof String head) || head.isBlank()) {
+                throw new IllegalArgumentException("Datalog rule requires a nonblank head");
+            }
+            requireArguments(rule.get("headArgs"));
+            if (!(rule.get("body") instanceof List<?> body) || body.isEmpty()) {
+                throw new IllegalArgumentException("Datalog rule requires a nonempty body");
+            }
+            List<RuleAtom> atoms = new ArrayList<>(body.size());
+            for (Object atomRaw : body) {
+                if (!(atomRaw instanceof Map<?, ?> atom)
+                        || !(atom.get("pred") instanceof String pred) || pred.isBlank()) {
+                    throw new IllegalArgumentException("Datalog body atom requires a nonblank predicate");
+                }
+                requireArguments(atom.get("args"));
+                if (atom.containsKey("neg") && !(atom.get("neg") instanceof Boolean)) {
+                    throw new IllegalArgumentException("Datalog neg must be boolean");
+                }
+                atoms.add(new RuleAtom(pred, strList(atom.get("args")), boolOf(atom, "neg")));
+            }
+            rules.add(new DatalogRule(head, strList(rule.get("headArgs")), atoms));
+        }
+        return List.copyOf(rules);
+    }
+
+    private static void requireArguments(Object raw) {
+        if (!(raw instanceof List<?> args) || args.isEmpty()
+                || args.stream().anyMatch(a -> !(a instanceof String s) || s.isBlank())) {
+            throw new IllegalArgumentException("Datalog arguments must be nonempty strings");
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static String strOf(Map<?, ?> m, String key) {

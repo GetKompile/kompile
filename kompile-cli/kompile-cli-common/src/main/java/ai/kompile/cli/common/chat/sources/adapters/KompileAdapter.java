@@ -96,6 +96,42 @@ public class KompileAdapter implements ChatSourceAdapter {
         return out;
     }
 
+    /**
+     * Native transcript IDs are transport-independent. Only an existing transcript created by
+     * the old browser alias scheme is translated; new sessions never receive a web prefix.
+     * Existing transcripts must belong to the selected directory before a client can resume them.
+     */
+    public String resolveSessionId(Path workingDirectory, String sessionId) throws IOException {
+        String id = ChatAdapterSupport.safeSessionId(sessionId)
+                .filter(value -> value.length() <= 256 && value.matches("[A-Za-z0-9_.-]+"))
+                .orElseThrow(() -> new IOException("Invalid transcript session id"));
+        Path directory = workingDirectory.toRealPath();
+        if (!Files.isRegularFile(conversationsDir().resolve(id + ".txt"))) {
+            String legacy = legacyBrowserSessionId(directory, id);
+            if (Files.isRegularFile(conversationsDir().resolve(legacy + ".txt"))) id = legacy;
+        }
+        if (Files.isRegularFile(conversationsDir().resolve(id + ".txt"))) {
+            Path recorded = resolveWorkingDirectory(id)
+                    .orElseThrow(() -> new IOException("Transcript has no recorded working directory: " + sessionId));
+            if (!recorded.toRealPath().equals(directory))
+                throw new IOException("Transcript belongs to a different working directory: " + sessionId);
+        }
+        return id;
+    }
+
+    /** Compatibility only: never use this to allocate a new transcript. */
+    public static String legacyBrowserSessionId(Path directory, String browserSessionId) {
+        try {
+            var digest = java.security.MessageDigest.getInstance("SHA-256");
+            digest.update(directory.toAbsolutePath().normalize().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            digest.update((byte) 0);
+            digest.update(browserSessionId.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return "web-" + java.util.HexFormat.of().formatHex(digest.digest(), 0, 20);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
     @Override
     public List<ChatTurn> readTurns(String sessionId) throws IOException {
         String safe = ChatAdapterSupport.safeSessionId(sessionId)

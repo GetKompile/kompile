@@ -1,0 +1,138 @@
+.insights-page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+}
+
+.insights-header h1 {
+  margin: 0 0 4px;
+  font-size: 1.5em;
+}
+
+.insights-intro,
+.topic-about,
+.settings-about {
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+}
+
+/* Tab Navigation (mat-tab-nav-bar), as the folder dialog's */
+.tab-navigation {
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+}
+
+/* The M2 theme colors tabs with its primary, indigo 500, which is barely legible on the
+   chat's dark surfaces. It declares those tokens on the nav bar itself, under
+   body.dark-theme, so they are overridden on the links, in the chat palette. */
+.tab-navigation .mat-mdc-tab-link {
+  --mat-tab-header-inactive-label-text-color: var(--text-secondary, #666);
+  --mat-tab-header-inactive-hover-label-text-color: var(--text-primary, #333);
+  --mat-tab-header-inactive-focus-label-text-color: var(--text-primary, #333);
+  --mat-tab-header-active-label-text-color: var(--color-primary, #1976d2);
+  --mat-tab-header-active-hover-label-text-color: var(--color-primary, #1976d2);
+  --mat-tab-header-active-focus-label-text-color: var(--color-primary, #1976d2);
+  --mdc-tab-indicator-active-indicator-color: var(--color-primary, #1976d2);
+  --mat-tab-header-active-hover-indicator-color: var(--color-primary, #1976d2);
+  --mat-tab-header-active-focus-indicator-color: var(--color-primary, #1976d2);
+}
+
+/* Material ships no styles for the panel element, which would otherwise be inline. */
+mat-tab-nav-panel {
+  display: block;
+}
+
+.insights-query {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 12px;
+}
+
+.question-field {
+  flex: 2 1 280px;
+}
+
+.window-field {
+  flex: 0 1 180px;
+}
+
+.directory-field {
+  flex: 1 1 240px;
+}
+
+.query-actions,
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.insights-report {
+  margin-top: 8px;
+}
+
+.report-headline {
+  margin: 8px 0 12px;
+  font-size: 1.1em;
+  font-weight: 600;
+}
+
+/* The report as the terminal prints it: tables and sparklines line up only in a monospace font */
+.report-text {
+  margin: 12px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-body);
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.85em;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.insights-status,
+.insights-meta {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+}
+
+.insights-meta {
+  font-size: 0.85em;
+}
+
+.insights-error {
+  margin: 8px 0 0;
+  color: var(--status-error-text);
+  overflow-wrap: anywhere;
+}
+
+.insights-settings {
+  margin-top: 32px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-body);
+}
+
+.insights-settings summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.settings-about {
+  margin-top: 8px;
+}
+
+.settings-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 4px 12px;
+}
+
+.settings-form mat-checkbox {
+  display: block;
+  margin: 12px 0 4px;
+}

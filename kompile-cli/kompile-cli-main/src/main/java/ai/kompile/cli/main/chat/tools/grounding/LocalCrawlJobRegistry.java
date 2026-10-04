@@ -11,6 +11,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -75,7 +77,7 @@ final class LocalCrawlJobRegistry {
                            Callable<ToolResult> work) {
         cleanup();
         LocalCrawlJobStore.initialize(projectRoot, jobId, knowledgeBase, request);
-        AsyncJob job = new AsyncJob(jobId, knowledgeBase, projectRoot, cancelHook, work);
+        AsyncJob job = new AsyncJob(jobId, knowledgeBase, projectRoot, request, cancelHook, work);
         FutureTask<Void> task = new FutureTask<>(() -> {
             job.run();
             return null;
@@ -196,6 +198,7 @@ final class LocalCrawlJobRegistry {
         private final String jobId;
         private final String knowledgeBase;
         private final Path projectRoot;
+        private final JsonNode submittedRequest;
         private final Runnable cancelHook;
         private final Callable<ToolResult> work;
         private final Instant createdAt = Instant.now();
@@ -204,6 +207,12 @@ final class LocalCrawlJobRegistry {
         private volatile Future<?> future;
         private volatile ToolResult result;
         private volatile boolean cancelRequested;
+        private volatile boolean corpusCommitted;
+        private volatile JsonNode committedReceipt;
+        private volatile boolean finalizationPending;
+        private volatile String finalizationError;
+        private Instant terminalTime;
+        private volatile Thread workerThread;
         private volatile String stage = "QUEUED";
         private volatile String stageDetail = "Waiting for a project-local crawl worker";
         private volatile int progressPercent;
@@ -214,18 +223,53 @@ final class LocalCrawlJobRegistry {
         private AsyncJob(String jobId,
                          String knowledgeBase,
                          Path projectRoot,
+                         JsonNode request,
                          Runnable cancelHook,
                          Callable<ToolResult> work) {
             this.jobId = jobId;
             this.knowledgeBase = knowledgeBase == null || knowledgeBase.isBlank()
                     ? null : knowledgeBase;
             this.projectRoot = LocalCrawlJobStore.normalizeRoot(projectRoot);
+            this.submittedRequest = request == null ? null : request.deepCopy();
             this.cancelHook = cancelHook;
             this.work = work;
         }
 
         String jobId() {
             return jobId;
+        }
+
+        JsonNode submittedRequest(Path root) throws IOException {
+            if (submittedRequest == null || projectRoot == null
+                    || !projectRoot.equals(LocalCrawlJobStore.normalizeRoot(root))
+                    || Thread.currentThread() != workerThread
+                    || !workerEntered.get() || startedAt == null || terminal()) {
+                throw new IOException("No active durable crawl job for corpus publication");
+            }
+            return submittedRequest.deepCopy();
+        }
+
+        /** Cancellation and the commit point share one monitor: only one can win. */
+        synchronized JsonNode commitCorpus(Callable<JsonNode> action) throws Exception {
+            if (Thread.currentThread() != workerThread || projectRoot == null) {
+                throw new IOException("Corpus publication requires the owning durable crawl worker");
+            }
+            if (cancelRequested || Thread.currentThread().isInterrupted() || terminal()
+                    || corpusCommitted) {
+                throw new InterruptedIOException("Corpus publication cancelled or already committed");
+            }
+            JsonNode receipt = action.call();
+            if (receipt == null || !receipt.isObject()
+                    || !"kompile-local-corpus-receipt/v1".equals(receipt.path("schema").asText())
+                    || !"CORPUS_COMMITTED".equals(receipt.path("status").asText())
+                    || !"LEXICAL_ONLY".equals(receipt.path("scope").asText())
+                    || !jobId.equals(receipt.path("jobId").asText())
+                    || !projectRoot.toString().equals(receipt.path("projectRoot").asText())) {
+                throw new IOException("Corpus commit returned no valid job-bound receipt");
+            }
+            committedReceipt = receipt.deepCopy();
+            corpusCommitted = true;
+            return committedReceipt.deepCopy();
         }
 
         Instant finishedAt() {
@@ -251,24 +295,22 @@ final class LocalCrawlJobRegistry {
                 }
                 return completed.isError() ? "FAILED" : "COMPLETED";
             }
-            Future<?> submitted = future;
+            if (finalizationPending) return "FINALIZING";
             if (startedAt == null) {
                 if (cancelRequested) return "CANCELLING";
                 return "QUEUED";
             }
             if (cancelRequested) return "CANCELLING";
-            if (submitted != null && submitted.isDone()) {
-                return "FAILED";
-            }
             return "RUNNING";
         }
 
         private void run() {
             if (!workerEntered.compareAndSet(false, true)) return;
+            workerThread = Thread.currentThread();
             startedAt = Instant.now();
-            updateStage("PREPARING", "Preparing the project-local crawl request", 5);
-            persist("JOB_STARTED");
             try {
+                updateStage("PREPARING", "Preparing the project-local crawl request", 5);
+                persist("JOB_STARTED");
                 if (cancelRequested) {
                     result = ToolResult.error("Project-local crawl cancelled before execution.");
                     return;
@@ -307,25 +349,46 @@ final class LocalCrawlJobRegistry {
         }
 
         private synchronized void finish() {
+            if (finishedAt != null) return;
+            // Keep the commit evidence even when later result decoration or stage persistence fails.
+            if (committedReceipt != null && result != null) {
+                Map<String, Object> metadata = new LinkedHashMap<>(result.getMetadata());
+                metadata.put("corpusReceipt", new ObjectMapper().convertValue(committedReceipt, Map.class));
+                metadata.put("jobId", jobId);
+                metadata.put("knowledgeBase", committedReceipt.path("knowledgeBaseId").asText());
+                result = new ToolResult(result.getTitle(), result.getOutput(), metadata, result.isError());
+            }
+            if (terminalTime == null) terminalTime = Instant.now();
+            finalizationPending = true;
             String terminalStage = terminalStageNow();
-            stage = terminalStage;
-            stageDetail = switch (terminalStage) {
+            try {
+                persistTerminal("JOB_TERMINAL", terminalStage, terminalTime);
+                stage = terminalStage;
+                stageDetail = terminalDetail(terminalStage);
+                progressPercent = 100;
+                stageUpdatedAt = terminalTime;
+                finalizationError = null;
+                finalizationPending = false;
+                finishedAt = terminalTime;
+            } catch (RuntimeException failure) {
+                // Polling retries this frozen terminal snapshot. Future.done is not evidence
+                // of durable completion, and must never make the job look terminal.
+                finalizationError = failure.getMessage();
+                stage = "FINALIZING";
+                stageDetail = "Unable to persist terminal state and trace; poll to retry";
+            }
+        }
+
+        private static String terminalDetail(String terminalStage) {
+            return switch (terminalStage) {
                 case "COMPLETED", "COMPLETED_WITH_ERRORS" -> "Project-local crawl finished";
                 case "CANCELLED" -> "Project-local crawl was cancelled";
                 default -> "Project-local crawl failed";
             };
-            progressPercent = 100;
-            stageUpdatedAt = Instant.now();
-            // Persist an explicitly terminal durable snapshot BEFORE publishing finishedAt.
-            // status() uses finishedAt as its in-memory publication gate, so pollers cannot
-            // observe terminal=true until the matching JOB_TERMINAL state is on disk.
-            Instant completedAt = Instant.now();
-            persistTerminal("JOB_TERMINAL", terminalStage, completedAt);
-            finishedAt = completedAt;
         }
 
         private synchronized void updateStage(String nextStage, String detail, int percent) {
-            if (nextStage == null || nextStage.isBlank() || terminal()
+            if (nextStage == null || nextStage.isBlank() || terminal() || finalizationPending
                     || (cancelRequested && !"CANCELLING".equalsIgnoreCase(nextStage))) {
                 return;
             }
@@ -338,13 +401,13 @@ final class LocalCrawlJobRegistry {
 
         private synchronized void updatePipelineProgress(String nextStage, String detail, int percent,
                                                          Map<String, Object> progress) {
-            if (cancelRequested || terminal()) return;
+            if (cancelRequested || terminal() || finalizationPending) return;
             pipelineProgress = progress == null ? Map.of() : Map.copyOf(progress);
             updateStage(nextStage, detail, percent);
         }
 
         private synchronized boolean cancel() {
-            if (terminal()) {
+            if (terminal() || corpusCommitted || finalizationPending) {
                 return false;
             }
             cancelRequested = true;
@@ -361,21 +424,14 @@ final class LocalCrawlJobRegistry {
                 boolean cancelled = submitted.cancel(true);
                 if (cancelled && workerEntered.compareAndSet(false, true)) {
                     result = ToolResult.error("Project-local crawl cancelled before execution.");
-                    stage = "CANCELLED";
-                    stageDetail = "Project-local crawl was cancelled";
-                    progressPercent = 100;
-                    stageUpdatedAt = Instant.now();
-                    // Same publish ordering as finish(): durable terminal state first,
-                    // then finishedAt makes that state visible to in-memory pollers.
-                    Instant completedAt = Instant.now();
-                    persistTerminal("JOB_TERMINAL", "CANCELLED", completedAt);
-                    finishedAt = completedAt;
+                    finish();
                 }
             }
             return true;
         }
 
-        private ToolResult statusResult(ObjectMapper mapper) {
+        private synchronized ToolResult statusResult(ObjectMapper mapper) {
+            if (finalizationPending) finish();
             Map<String, Object> payload = payload();
             Map<String, Object> metadata = new LinkedHashMap<>();
             attachHandle(mapper, payload, metadata);
@@ -426,7 +482,10 @@ final class LocalCrawlJobRegistry {
             }
             payload.put("status", status());
             payload.put("terminal", terminal());
-            payload.put("cancellable", !terminal() && !cancelRequested);
+            payload.put("cancellable", !terminal() && !cancelRequested && !corpusCommitted && !finalizationPending);
+            payload.put("corpusCommitted", corpusCommitted);
+            if (committedReceipt != null) payload.put("corpusReceipt", committedReceipt.deepCopy());
+            if (finalizationError != null) payload.put("finalizationError", finalizationError);
             payload.put("resultAvailable", terminal() && result != null);
             payload.put("stage", stage);
             if (stageDetail != null) payload.put("stageDetail", stageDetail);
@@ -467,8 +526,14 @@ final class LocalCrawlJobRegistry {
             ObjectNode state = persistentState(new ObjectMapper());
             state.put("status", terminalStatus);
             state.put("terminal", true);
+            state.put("cancellable", false);
             state.put("resultAvailable", result != null);
             state.put("finishedAt", completedAt.toString());
+            state.put("stage", terminalStatus);
+            state.put("stageDetail", terminalDetail(terminalStatus));
+            state.put("progressPercent", 100);
+            state.put("stageUpdatedAt", completedAt.toString());
+            state.remove("finalizationError");
             LocalCrawlJobStore.persist(projectRoot, state, eventType);
         }
 

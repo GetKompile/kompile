@@ -143,18 +143,19 @@ public class EnforcerToolCallGuard implements AutoCloseable {
         if (mandate != null) return mandate;
         if (!snapshot.enabled()) return EnforcerToolCallDecision.allow("Session judge disabled");
         if (snapshot.approvesCommand(toolName, serialized)) {
+            control.recordApprovalUsed(snapshot, toolName, serialized);
             return EnforcerToolCallDecision.allow("Explicit session command approval consumed for this tool call");
         }
         if (guard == null) return EnforcerToolCallDecision.allow("No configured judge policy");
-        return guard.evaluate(toolName, args, snapshot.guidance(), snapshot.reportOnly());
+        return guard.evaluate(toolName, args, snapshot.guidance(), snapshot.reportOnly(), control);
     }
 
     public EnforcerToolCallDecision evaluate(String toolName, Map<String, Object> args) {
-        return evaluate(toolName, args, "", false);
+        return evaluate(toolName, args, "", false, null);
     }
 
     private EnforcerToolCallDecision evaluate(String toolName, Map<String, Object> args,
-                                               String guidance, boolean reportOnly) {
+                                               String guidance, boolean reportOnly, JudgeControl control) {
         if (!isActive()) {
             return EnforcerToolCallDecision.allow("No active enforcer policy");
         }
@@ -181,7 +182,7 @@ public class EnforcerToolCallGuard implements AutoCloseable {
             return readOnlyGit;
         }
 
-        if (runtimePolicy.getReminderConstraints().isBlank()) {
+        if (!JudgeToolPolicy.remindersMayGovernRoutineTools(runtimePolicy.getReminderConstraints())) {
             EnforcerToolCallDecision routine = JudgeToolPolicy.evaluateRoutineTool(
                     toolName, serializedArgs,
                     runtimePolicy.getPolicy(), objectMapper);
@@ -222,6 +223,11 @@ public class EnforcerToolCallGuard implements AutoCloseable {
             EnforcerToolCallDecision decision = llmJudge.evaluateToolCall(
                     toolName, serializedArgs, runtimePolicy.getPolicy(), context);
             if (reportOnly) {
+                boolean wouldIntervene = !decision.isAllowed()
+                        || (decision.isRewrite() && decision.getRewrittenArgs() != null);
+                if (wouldIntervene && control != null) {
+                    control.recordReportOnlyOverride(toolName, serializedArgs, decision);
+                }
                 return EnforcerToolCallDecision.allow("Report-only judge verdict: "
                         + decision.getAction() + " — " + decision.getReason());
             }

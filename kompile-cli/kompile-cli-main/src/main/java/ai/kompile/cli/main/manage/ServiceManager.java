@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.manage;
 
 import ai.kompile.cli.common.logs.LogPaths;
+import ai.kompile.cli.common.WebChatContext;
 import ai.kompile.cli.common.config.HardwareAutoConfigurator;
 import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.common.registry.InstanceInfo;
@@ -370,6 +371,16 @@ public class ServiceManager {
                                          int port, File workDir,
                                          List<String> jvmArgs, List<String> appArgs,
                                          File logDir, boolean foreground) throws IOException {
+        return startProjectComponent(instanceName, type, jarFile, port, workDir,
+                jvmArgs, appArgs, logDir, foreground, Map.of());
+    }
+
+    /** Explicit process environment works for both native executables and JVM children. */
+    public Process startProjectComponent(String instanceName, String type, File jarFile,
+                                         int port, File workDir,
+                                         List<String> jvmArgs, List<String> appArgs,
+                                         File logDir, boolean foreground,
+                                         Map<String, String> environment) throws IOException {
         List<String> command = new ArrayList<>();
         File distributionHome = ComponentRegistry.inferDistributionHome(jarFile.toPath());
 
@@ -405,8 +416,7 @@ public class ServiceManager {
         pb.directory(workDir);
         // Non-Spring managed services (including the endpoint topology REST surface) use this
         // launch context to select <project>/config instead of the standalone ~/.kompile/config.
-        pb.environment().put("KOMPILE_PROJECT_ROOT", workDir.getAbsolutePath());
-        configureDistributionEnvironment(pb.environment(), distributionHome);
+        configureProjectEnvironment(pb.environment(), distributionHome, workDir, environment);
 
         if (foreground) {
             pb.inheritIO();
@@ -429,6 +439,15 @@ public class ServiceManager {
         InstanceRegistry.register(info);
 
         return process;
+    }
+
+    static void configureProjectEnvironment(Map<String, String> environment, File distributionHome,
+                                            File workDir, Map<String, String> launchEnvironment) {
+        environment.put("KOMPILE_PROJECT_ROOT", workDir.getAbsolutePath());
+        configureDistributionEnvironment(environment, distributionHome);
+        // Do not propagate the current CHAT server's context to ordinary managed launches.
+        WebChatContext.clearEnvironment(environment);
+        environment.putAll(launchEnvironment);
     }
 
     /**

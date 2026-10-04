@@ -34,6 +34,8 @@ public final class PersonaSurfaces {
     public static final Set<String> CHAT = Set.of(
             "/api/agents",
             "/api/agents/chat",
+            "/api/agents/chat/insights",
+            "/api/agents/chat/workspace",
             "/api/agents/kompile-local",
             "/api/agents/models",
             "/api/agents/passthrough",

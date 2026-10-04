@@ -11,12 +11,17 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 
@@ -33,8 +38,9 @@ import java.util.concurrent.Callable;
  * hosting chat REPL still holds its own scope — push a nested scope instead of
  * colliding with the parent. While nested, stderr is captured by the inner transcript;
  * when the inner scope closes, the parent's sink and transcript id are restored. This
- * is purely in-memory state, so a hard kill (Ctrl+C included) leaves nothing behind
- * on disk to clean up.</p>
+ * uses a process-owned file lock to refuse a second harness on the same transcript.
+ * The OS releases ownership on exit or a hard kill; the empty lock file is retained
+ * so clients never race by deleting/replacing its inode.</p>
  *
  * <p>{@link #openIsolated} is opt-in session ownership: it neither pushes the legacy
  * stack nor changes the global transcript property. Only explicitly {@link #bind bound}
@@ -48,6 +54,9 @@ public final class TranscriptLogScope implements AutoCloseable {
 
     private static final Object LOCK = new Object();
     private static final Deque<State> STACK = new ArrayDeque<>();
+    // All accesses occur under LOCK. Nested/isolated diagnostic scopes within one
+    // harness retain the same process lease, rather than competing with themselves.
+    private static final Map<Path, WriterLease> WRITERS = new HashMap<>();
     private static final ThreadLocal<Binding> BOUND = new ThreadLocal<>();
     /** The pre-chat terminal stream; no transcript sink tees through another sink. */
     private static PrintStream rootTerminal;
@@ -338,6 +347,7 @@ public final class TranscriptLogScope implements AutoCloseable {
         private Path logFile;
         private String transcriptId = "";
         private int references;
+        private WriterLease writerLease;
 
         private State(PrintStream rootErr, boolean isolated, boolean explicitEcho) {
             this.rootErr = rootErr;
@@ -347,23 +357,33 @@ public final class TranscriptLogScope implements AutoCloseable {
 
         private void switchTo(String id, Path workingDirectory, boolean resumed)
                 throws IOException {
-            Path directory = LogPaths.ensureTranscriptDirectory(id).toPath();
+            Path directory = LogPaths.ensureTranscriptDirectory(id).toPath().toRealPath();
+            WriterLease nextLease = WriterLease.acquire(directory, id);
             Path nextLog = directory.resolve("cli.log");
-            appendBoundary(nextLog, resumed ? "resume" : "start", id, workingDirectory);
-            OutputStream nextFile = Files.newOutputStream(nextLog,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            PrintStream nextErr = new PrintStream(
-                    new TeeOutputStream(rootErr, nextFile), true, StandardCharsets.UTF_8);
+            PrintStream nextErr;
+            try {
+                appendBoundary(nextLog, resumed ? "resume" : "start", id, workingDirectory);
+                OutputStream nextFile = Files.newOutputStream(nextLog,
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                nextErr = new PrintStream(
+                        new TeeOutputStream(rootErr, nextFile), true, StandardCharsets.UTF_8);
+            } catch (IOException | RuntimeException failure) {
+                nextLease.release();
+                throw failure;
+            }
 
             // Do not dismantle the current sink until the replacement is fully open.
             // If any operation above fails, the old transcript remains observable.
             Path previousLog = this.logFile;
             String previousId = this.transcriptId;
             PrintStream previousErr = this.scopedErr;
+            WriterLease previousLease = this.writerLease;
+            this.writerLease = nextLease;
             this.transcriptId = id;
             this.logFile = nextLog;
             this.scopedErr = nextErr;
             closeSink(previousLog, previousId, previousErr, "scope-switch");
+            if (previousLease != null) previousLease.release();
         }
 
         private void closeCurrentSink(String event) {
@@ -372,6 +392,10 @@ public final class TranscriptLogScope implements AutoCloseable {
             PrintStream currentErr = scopedErr;
             scopedErr = null;
             closeSink(currentLog, currentId, currentErr, event);
+            if (writerLease != null) {
+                writerLease.release();
+                writerLease = null;
+            }
         }
 
         private static void closeSink(
@@ -387,6 +411,54 @@ public final class TranscriptLogScope implements AutoCloseable {
                 sinkErr.flush();
                 sinkErr.close();
             }
+        }
+    }
+
+    private static final class WriterLease {
+        private final Path directory;
+        private final FileChannel channel;
+        private final FileLock fileLock;
+        private int references = 1;
+
+        private WriterLease(Path directory, FileChannel channel, FileLock fileLock) {
+            this.directory = directory;
+            this.channel = channel;
+            this.fileLock = fileLock;
+        }
+
+        private static WriterLease acquire(Path directory, String id) throws IOException {
+            WriterLease existing = WRITERS.get(directory);
+            if (existing != null) {
+                existing.references++;
+                return existing;
+            }
+            FileChannel channel = FileChannel.open(directory.resolve("writer.lock"),
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            try {
+                FileLock lock;
+                try {
+                    lock = channel.tryLock();
+                } catch (OverlappingFileLockException busy) {
+                    lock = null;
+                }
+                if (lock == null) {
+                    throw new IOException("Chat session " + id
+                            + " is already running in another harness. Close it before resuming.");
+                }
+                WriterLease lease = new WriterLease(directory, channel, lock);
+                WRITERS.put(directory, lease);
+                return lease;
+            } catch (IOException | RuntimeException failure) {
+                channel.close();
+                throw failure;
+            }
+        }
+
+        private void release() {
+            if (--references > 0) return;
+            WRITERS.remove(directory);
+            try { fileLock.release(); } catch (IOException ignored) { }
+            try { channel.close(); } catch (IOException ignored) { }
         }
     }
 

@@ -15,12 +15,20 @@
  */
 package ai.kompile.graph.reasoning.local;
 
+import ai.kompile.graph.reasoning.fol.MebnInferenceService;
+import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.RelationalMTheoryArtifactCodec;
+import ai.kompile.graph.reasoning.mebn.RelationalMTheoryBuilder;
 import ai.kompile.graph.reasoning.model.SimpleGraphEntity;
 import ai.kompile.graph.reasoning.unified.MiniJson;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -47,11 +55,15 @@ class InferenceHandlersTest {
 
     private LocalToolDispatcher dispatcher;
     private LocalReasoningSession session;
+    @TempDir Path tempDir;
+    private static final String THEORY_ARTIFACT = "reasoning/mebn-theory.v1.json";
 
     @BeforeEach
     void setUp() {
         dispatcher = LocalToolDispatcher.create();
-        session    = LocalReasoningSession.of(buildGraph());
+        UnifiedGraph graph = buildGraph();
+        storeLearnedTheory(graph, 0.75);
+        session = LocalReasoningSession.of(graph);
     }
 
     // ── ask_graph_mebn ────────────────────────────────────────────────────────
@@ -68,21 +80,27 @@ class InferenceHandlersTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> posteriors = (Map<String, Object>) r.get("posteriors");
         assertNotNull(posteriors, "posteriors must be present: " + json);
-        // alice should be in posteriors since it's the root
-        assertTrue(posteriors.containsKey("alice"), "alice must appear in posteriors: " + posteriors);
-        // acme is a neighbour of alice at depth 1 → must appear
-        assertTrue(posteriors.containsKey("acme"), "acme must appear in posteriors: " + posteriors);
+        assertTrue(posteriors.containsKey("isRelevant(alice)"), "learned relevance variable: " + posteriors);
+        assertTrue(posteriors.containsKey("WORKS_AT(alice,acme)"), "learned relationship variable: " + posteriors);
+        assertFalse(posteriors.containsKey("alice"), "must not alias learned variables to entity ids");
+        assertFalse(posteriors.containsKey("isRelevant(london)"), "unrelated entity must be excluded");
+        assertEquals(true, r.get("learnedTheory"));
+        assertEquals("mobile-learned", r.get("mTheory"));
         // posteriors are probabilities in [0,1]
         for (Object v : posteriors.values()) {
             double p = ((Number) v).doubleValue();
             assertTrue(p >= 0.0 && p <= 1.0, "posterior out of range: " + p);
         }
 
-        // variableToTitle must map entity ids to labels
+        // Match the CLI's grounded-variable title and MEBN metadata contract.
         @SuppressWarnings("unchecked")
         Map<String, Object> titles = (Map<String, Object>) r.get("variableToTitle");
         assertNotNull(titles);
-        assertEquals("Alice", titles.get("alice"));
+        assertEquals("isRelevant(alice)", titles.get("isRelevant(alice)"));
+        Map<?, ?> meta = (Map<?, ?>) ((Map<?, ?>) r.get("variableToMebnMeta")).get("WORKS_AT(alice,acme)");
+        assertEquals("WORKS_AT", meta.get("mfragName"));
+        assertEquals("WORKS_AT", meta.get("randomVariable"));
+        assertEquals(true, meta.get("learned"));
     }
 
     @Test
@@ -106,36 +124,228 @@ class InferenceHandlersTest {
     void mebn_evidenceConditionsThePosteriorsWhilePriorsStayTheMarginals() {
         Map<String, Object> base = call("ask_graph_mebn", Map.of("nodeId", "alice", "maxDepth", 2));
         Map<String, Object> observed = call("ask_graph_mebn", Map.of("nodeId", "alice", "maxDepth", 2,
-                "evidence", Map.of("alice", false)));
+                "evidence", Map.of("isRelevant(alice)", false)));
         assertNoError(base, base.toString());
         assertNoError(observed, observed.toString());
 
-        assertEquals(0L, base.get("evidenceApplied"));
-        assertEquals(1L, observed.get("evidenceApplied"));
+        assertEquals(false, base.get("evidenceApplied"));
+        assertEquals(true, observed.get("evidenceApplied"));
         assertEquals(base.get("posteriors"), base.get("priors"), "without evidence the priors are the posteriors");
         assertEquals(base.get("priors"), observed.get("priors"), "evidence does not move the priors");
-        // alice is a root, so its prior is its confidence
-        assertEquals(0.8, probability(base, "priors", "alice"), 1e-4);
-        assertEquals(0.0, probability(observed, "posteriors", "alice"));
-        assertTrue(probability(observed, "posteriors", "acme") < probability(base, "posteriors", "acme"),
-                "alice FALSE must lower acme through WORKS_AT: " + observed);
+        assertEquals(0.0, probability(observed, "posteriors", "isRelevant(alice)"));
+        assertTrue(probability(observed, "posteriors", "WORKS_AT(alice,acme)")
+                        < probability(base, "posteriors", "WORKS_AT(alice,acme)"),
+                "learned relevance FALSE must lower the relationship posterior: " + observed);
     }
 
     @Test
     void evidenceOutsideTheNetworkOrWithABadStateIsAnErrorNotSkipped() {
-        // london has no relations, so it is not in alice's network
-        Map<String, Object> unknown = call("ask_graph_mebn", Map.of("nodeId", "alice", "maxDepth", 2,
-                "evidence", Map.of("london", true)));
-        assertEquals("ERROR", unknown.get("status"), unknown.toString());
-        assertTrue(unknown.get("message").toString().contains("london"), unknown.toString());
-
-        Map<String, Object> badState = call("ask_graph_mebn", Map.of("nodeId", "alice",
-                "evidence", Map.of("alice", "maybe")));
-        assertEquals("ERROR", badState.get("status"), badState.toString());
+        // Unknown grounded name, out-of-neighborhood name, and structural id aliases all fail.
+        for (String name : List.of("missing(alice)", "isRelevant(london)", "alice", "isRelevant( alice )")) {
+            Map<String, Object> unknown = call("ask_graph_mebn", Map.of("nodeId", "alice", "maxDepth", 2,
+                    "evidence", Map.of(name, true)));
+            assertEquals("ERROR", unknown.get("status"), unknown.toString());
+            assertTrue(unknown.get("message").toString().contains(name), unknown.toString());
+            assertTrue(unknown.get("message").toString().contains("isRelevant(alice)"),
+                    "error should show valid exact names: " + unknown);
+        }
+        for (Object state : List.of("maybe", "true", "1", 2, 0.5)) {
+            Map<String, Object> badState = call("ask_graph_mebn", Map.of("nodeId", "alice",
+                    "evidence", Map.of("isRelevant(alice)", state)));
+            assertEquals("ERROR", badState.get("status"), badState.toString());
+        }
+        Map<String, Object> badShape = call("ask_graph_mebn", Map.of("nodeId", "alice", "evidence", List.of(true)));
+        assertEquals("ERROR", badShape.get("status"), badShape.toString());
 
         Map<String, Object> bayes = call("graph_bayes", Map.of("action", "query", "node_id", "alice",
                 "max_depth", 2, "evidence", Map.of("london", 1)));
         assertEquals("ERROR", bayes.get("status"), bayes.toString());
+    }
+
+    @Test
+    void mebn_acceptsBooleanAndNumericEvidenceWithExactLearnedNames() {
+        for (Object state : List.of(true, false, 1, 0)) {
+            Map<String, Object> result = call("ask_graph_mebn", Map.of("nodeId", "alice",
+                    "evidence", Map.of("isRelevant(alice)", state)));
+            assertNoError(result, result.toString());
+            double expected = Boolean.TRUE.equals(state) || Integer.valueOf(1).equals(state) ? 1.0 : 0.0;
+            assertEquals(expected, probability(result, "posteriors", "isRelevant(alice)"));
+            assertEquals(true, result.get("evidenceApplied"));
+        }
+    }
+
+    @Test
+    void mebn_savedCanonicalTheoryPreservesLearnedStrengthAndMatchesJavaInference() throws Exception {
+        Path file = tempDir.resolve("learned.kgraph");
+        session.save(file);
+        String canonical = session.graph().artifactText(THEORY_ARTIFACT);
+        session.close();
+        session = LocalReasoningSession.open(file);
+        assertEquals(canonical, session.graph().artifactText(THEORY_ARTIFACT));
+        MTheory restored = RelationalMTheoryArtifactCodec.fromJson(canonical);
+        assertEquals(0.75, restored.getMFrag("WORKS_AT").getEdgeStrength("isRelevant", "WORKS_AT"));
+
+        Map<String, Object> result = call("ask_graph_mebn", Map.of("nodeId", "alice",
+                "evidence", Map.of("isRelevant(alice)", true)));
+        assertNoError(result, result.toString());
+        MTheory restricted = RelationalMTheoryArtifactCodec.restrictToEntityIds(restored, List.of("alice", "bob", "acme"));
+        Map<String, Double> expected = new MebnInferenceService().infer(session.graph(), restricted,
+                Map.of("isRelevant(alice)", 1));
+        assertEquals(expected.keySet(), ((Map<?, ?>) result.get("posteriors")).keySet());
+        expected.forEach((name, p) -> assertEquals(p, probability(result, "posteriors", name), 1e-12));
+    }
+
+    @Test
+    void mebn_learnedStrengthChangesPosteriorWithoutChangingGraphTopology() {
+        Map<String, Object> args = Map.of("nodeId", "alice", "evidence", Map.of("isRelevant(alice)", true));
+        storeLearnedTheory(session.graph(), 0.15);
+        Map<String, Object> weak = call("ask_graph_mebn", args);
+        storeLearnedTheory(session.graph(), 0.95);
+        Map<String, Object> strong = call("ask_graph_mebn", args);
+        assertNoError(weak, weak.toString());
+        assertNoError(strong, strong.toString());
+        assertTrue(probability(strong, "posteriors", "WORKS_AT(alice,acme)")
+                        > probability(weak, "posteriors", "WORKS_AT(alice,acme)") + 0.1,
+                "must consume learned strength, not rebuild from unchanged edge confidences");
+    }
+
+    @Test
+    void mebn_neighborhoodCapsTheoryBeforeGroundingAndKeepsAnchor() {
+        String original = session.graph().artifactText(THEORY_ARTIFACT);
+        Map<String, Object> result = call("ask_graph_mebn", Map.of("nodeId", "bob", "maxDepth", 2, "maxNodes", 1));
+        assertNoError(result, result.toString());
+        assertEquals(1L, result.get("scopedEntityCount"));
+        assertEquals(Set.of("isRelevant(bob)"), ((Map<?, ?>) result.get("posteriors")).keySet());
+        assertEquals(original, session.graph().artifactText(THEORY_ARTIFACT), "query must not mutate saved theory");
+        Map<String, Object> outside = call("ask_graph_mebn", Map.of("nodeId", "bob", "maxNodes", 1,
+                "evidence", Map.of("isRelevant(alice)", true)));
+        assertEquals("ERROR", outside.get("status"));
+        for (int cap : List.of(0, -1, 1001)) {
+            assertEquals("ERROR", call("ask_graph_mebn", Map.of("nodeId", "alice", "maxNodes", cap)).get("status"));
+        }
+    }
+
+    @Test
+    void mebn_missingCanonicalArtifactErrorsEvenWithLegacyArtifactsAndBayesStillWorks() {
+        session.close();
+        UnifiedGraph graph = buildGraph();
+        session = LocalReasoningSession.of(graph);
+        Map<String, Object> absent = call("ask_graph_mebn", Map.of("nodeId", "alice"));
+        assertEquals("ERROR", absent.get("status"));
+        assertTrue(absent.get("message").toString().contains("No learned canonical MEBN theory"));
+        session.close();
+        graph.putArtifactText("reasoning/mebn-strengths.json", "{}");
+        graph.putArtifact("reasoning/mebn-theory.bin", new byte[]{1, 2, 3});
+        session = LocalReasoningSession.of(graph);
+        Map<String, Object> missing = call("ask_graph_mebn", Map.of("nodeId", "alice"));
+        assertEquals("ERROR", missing.get("status"));
+        assertTrue(missing.get("message").toString().contains("No learned canonical MEBN theory"));
+        assertNoError(call("graph_bayes", Map.of("action", "query")), "structural Bayes must remain independent");
+    }
+
+    @Test
+    void mebn_corruptAndUnsupportedCanonicalArtifactsNeverFallBack() {
+        session.graph().putArtifactText("reasoning/mebn-strengths.json", "{}");
+        String valid = session.graph().artifactText(THEORY_ARTIFACT);
+        for (String corrupt : List.of("", "not JSON", "{}", valid.replace("\"version\":1", "\"version\":99"))) {
+            session.graph().putArtifactText(THEORY_ARTIFACT, corrupt);
+            Map<String, Object> result = call("ask_graph_mebn", Map.of("nodeId", "alice"));
+            assertEquals("ERROR", result.get("status"), result.toString());
+            assertFalse(result.containsKey("posteriors"));
+        }
+    }
+
+    @Test
+    void mebn_staleTheoryErrorsAfterSaveReloadWithoutRebuilding() throws Exception {
+        session.graph().meta("learning.reasoningStale", true);
+        Path file = tempDir.resolve("stale.kgraph");
+        session.save(file);
+        session.close();
+        session = LocalReasoningSession.open(file);
+        Map<String, Object> result = call("ask_graph_mebn", Map.of("nodeId", "alice"));
+        assertEquals("ERROR", result.get("status"));
+        assertTrue(result.get("message").toString().contains("stale"));
+        assertNoError(call("graph_bayes", Map.of("action", "query")), "structural Bayes does not use learned theory");
+    }
+
+    @Test
+    void mebnCodeGenerationReceiptsMatchExecutionAndInventory() {
+        session.graph().meta("codeIndexGeneration.project", 7L);
+        for (long receipt : List.of(-1L, 6L, 7L)) {
+            if (receipt >= 0) session.graph().meta("codeLearningGeneration.project", receipt);
+            Map<String, Object> result = call("ask_graph_mebn", Map.of("nodeId", "alice"));
+            Map<String, Object> activation = InferenceHandlers.mebnActivation(session.graph());
+            if (receipt == 7) {
+                assertNoError(result, result.toString());
+                assertEquals("ACTIVE", activation.get("status"));
+            } else {
+                assertEquals("ERROR", result.get("status"));
+                assertTrue(result.get("message").toString().contains("generation receipt"));
+                assertEquals("INVALID", activation.get("status"));
+            }
+        }
+    }
+
+    @Test
+    void mebnRejectsCartesianGroundingExplosionBeforeInference() {
+        UnifiedGraph graph = new UnifiedGraph();
+        List<String> ids = java.util.stream.IntStream.range(0, 101).mapToObj(i -> "n" + i).toList();
+        ids.forEach(id -> graph.addEntity(id, "PERSON", id));
+        for (int i = 1; i < ids.size(); i++) graph.addRelation("e" + i, "n0", ids.get(i), "LINK", 1.0);
+        MTheory theory = RelationalMTheoryBuilder.build("wide", List.of(
+                new RelationalMTheoryBuilder.RelationDescriptor("LINK", "PERSON", "PERSON", 0.7, ids, ids)));
+        graph.putArtifactText(THEORY_ARTIFACT, RelationalMTheoryArtifactCodec.toJson(theory));
+        try (LocalReasoningSession large = LocalReasoningSession.of(graph)) {
+            Map<String, Object> result = MiniJson.parseObject(dispatcher.dispatch(large, "ask_graph_mebn",
+                    MiniJson.write(Map.of("nodeId", "n0", "maxNodes", 101))));
+            assertEquals("ERROR", result.get("status"), result.toString());
+            assertTrue(result.get("message").toString().contains("grounding work exceeds"), result.toString());
+        }
+    }
+
+    @Test
+    void mutationInvalidatesMebnThroughSaveReload() throws Exception {
+        assertEquals("ACTIVE", InferenceHandlers.mebnActivation(session.graph()).get("status"));
+        assertNotEquals("ERROR", call("ask_graph_retract", Map.of("atomKey", "WORKS_AT(alice, acme)")).get("status"));
+        assertEquals("ERROR", call("ask_graph_mebn", Map.of("nodeId", "alice")).get("status"));
+        Path file = tempDir.resolve("mutated.kgraph");
+        session.save(file);
+        session.close();
+        session = LocalReasoningSession.open(file);
+        assertEquals("ERROR", call("ask_graph_mebn", Map.of("nodeId", "alice")).get("status"));
+        assertEquals("INVALID", InferenceHandlers.mebnActivation(session.graph()).get("status"));
+    }
+
+    @Test
+    void mebn_savedTheoryRunsWithOnlyJavaReasoningAndLoggingOnClasspath() throws Exception {
+        Path file = tempDir.resolve("java-only.kgraph");
+        session.save(file);
+        // A platform-parent loader cannot see test/runtime native dependencies. Only the local
+        // facade, reasoning library and logging API are available; no lifecycle learner is called.
+        URL[] classpath = {
+                LocalToolDispatcher.class.getProtectionDomain().getCodeSource().getLocation(),
+                UnifiedGraph.class.getProtectionDomain().getCodeSource().getLocation(),
+                org.slf4j.LoggerFactory.class.getProtectionDomain().getCodeSource().getLocation()
+        };
+        try (URLClassLoader loader = new URLClassLoader(classpath, ClassLoader.getPlatformClassLoader())) {
+            assertThrows(ClassNotFoundException.class,
+                    () -> loader.loadClass("org.eclipse.deeplearning4j.linalg.factory.Nd4j"));
+            Class<?> sessionType = loader.loadClass(LocalReasoningSession.class.getName());
+            Class<?> dispatcherType = loader.loadClass(LocalToolDispatcher.class.getName());
+            Object isolatedSession = sessionType.getMethod("open", Path.class).invoke(null, file);
+            try {
+                Object isolatedDispatcher = dispatcherType.getMethod("create").invoke(null);
+                String json = (String) dispatcherType.getMethod("dispatch", sessionType, String.class, String.class)
+                        .invoke(isolatedDispatcher, isolatedSession, "ask_graph_mebn",
+                                MiniJson.write(Map.of("nodeId", "alice", "evidence", Map.of("isRelevant(alice)", true))));
+                Map<?, ?> result = (Map<?, ?>) MiniJson.parse(json);
+                assertNotEquals("ERROR", result.get("status"), json);
+                assertEquals(true, result.get("learnedTheory"));
+                assertEquals(1.0, ((Number) ((Map<?, ?>) result.get("posteriors")).get("isRelevant(alice)")).doubleValue());
+            } finally {
+                sessionType.getMethod("close").invoke(isolatedSession);
+            }
+        }
     }
 
     // ── graph_bayes ───────────────────────────────────────────────────────────
@@ -506,6 +716,15 @@ class InferenceHandlersTest {
     }
 
     // ── Graph fixture ─────────────────────────────────────────────────────────
+
+    private static void storeLearnedTheory(UnifiedGraph graph, double worksAtStrength) {
+        MTheory theory = RelationalMTheoryBuilder.build("mobile-learned", List.of(
+                new RelationalMTheoryBuilder.RelationDescriptor("WORKS_AT", "PERSON", "ORG",
+                        worksAtStrength, List.of("alice", "bob"), List.of("acme")),
+                new RelationalMTheoryBuilder.RelationDescriptor("KNOWS", "PERSON", "PERSON",
+                        0.35, List.of("alice"), List.of("bob"))));
+        graph.putArtifactText(THEORY_ARTIFACT, RelationalMTheoryArtifactCodec.toJson(theory));
+    }
 
     /**
      * Build a graph with meaningful weights (not all 1.0) and typed entities.

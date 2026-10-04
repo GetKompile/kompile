@@ -26,6 +26,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -109,21 +110,13 @@ class GroundingBackendClient {
      *
      * @param path        API path, e.g. {@code /api/unified-crawl/single-source}
      * @param jsonBody    serialised JSON request body
-     * @param readTimeout per-call read timeout; connect timeout is always 5 000 ms
+     * @param readTimeout per-call read timeout; the connect timeout is 5 000 ms, or the read
+     *                    timeout when that is shorter
      * @return the status code and response body, error statuses included
      * @throws org.springframework.web.client.RestClientException on transport errors
      */
     GroundingResponse post(String path, String jsonBody, Duration readTimeout) {
-        RestTemplate rt;
-        if (injected) {
-            rt = this.restTemplate;
-        } else {
-            SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-            factory.setConnectTimeout(5_000);
-            factory.setReadTimeout((int) readTimeout.toMillis());
-            rt = createNativeSafeRestTemplate(factory);
-        }
-        return exchange(rt, HttpMethod.POST, path, jsonEntity(jsonBody));
+        return exchange(templateFor(readTimeout), HttpMethod.POST, path, jsonEntity(jsonBody));
     }
 
     /**
@@ -162,9 +155,22 @@ class GroundingBackendClient {
      * @throws org.springframework.web.client.RestClientException on transport errors
      */
     GroundingResponse get(String path) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-        return exchange(restTemplate, HttpMethod.GET, path, new HttpEntity<>(headers));
+        return exchange(restTemplate, HttpMethod.GET, path, acceptJson());
+    }
+
+    /**
+     * GET {@code baseUrl + path} using a per-call read timeout, for a caller that must not
+     * wait the default 35 seconds (the chat's session panel). Routed like the timed
+     * {@link #post(String, String, Duration)}.
+     *
+     * @param path        API path with any query parameters already appended
+     * @param readTimeout per-call read timeout; the connect timeout is 5 000 ms, or the read
+     *                    timeout when that is shorter
+     * @return the status code and response body, error statuses included
+     * @throws org.springframework.web.client.RestClientException on transport errors
+     */
+    GroundingResponse get(String path, Duration readTimeout) {
+        return exchange(templateFor(readTimeout), HttpMethod.GET, path, acceptJson());
     }
 
     /** DELETE {@code baseUrl + path}, preserving the response for tool-led destructive controls. */
@@ -215,6 +221,24 @@ class GroundingBackendClient {
         return body.length() > 200 ? body.substring(0, 200) + "..." : body;
     }
 
+    /**
+     * Why a request never got an answer, as its innermost cause puts it ("Connection refused",
+     * "Read timed out"); RestTemplate's "I/O error on GET request for ..." around it only repeats
+     * the URL.
+     */
+    static String failureReason(Throwable failure) {
+        String reason = null;
+        Throwable cause = failure;
+        for (int depth = 0; cause != null && depth < 16; depth++, cause = cause.getCause()) {
+            String message = cause.getMessage();
+            if (message != null && !message.isBlank()) {
+                // An unknown host's message is the bare host name.
+                reason = cause instanceof UnknownHostException ? "unknown host " + message : message;
+            }
+        }
+        return reason != null ? reason : failure.getClass().getSimpleName();
+    }
+
     private GroundingResponse exchange(RestTemplate rt, HttpMethod method, String path, HttpEntity<?> entity) {
         try {
             ResponseEntity<String> resp = rt.exchange(baseUrl + path, method, entity, String.class);
@@ -227,6 +251,27 @@ class GroundingBackendClient {
             return new GroundingResponse(e.getStatusCode().value(),
                     e.getResponseBodyAsString(StandardCharsets.UTF_8));
         }
+    }
+
+    /**
+     * The injected template (test path, so a {@code MockRestServiceServer} intercepts the call),
+     * else a fresh one with {@code readTimeout} so the shared template is never mutated.
+     */
+    private RestTemplate templateFor(Duration readTimeout) {
+        if (injected) {
+            return restTemplate;
+        }
+        int readMillis = (int) Math.min(Integer.MAX_VALUE, readTimeout.toMillis());
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(Math.min(5_000, readMillis));
+        factory.setReadTimeout(readMillis);
+        return createNativeSafeRestTemplate(factory);
+    }
+
+    private static HttpEntity<Void> acceptJson() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+        return new HttpEntity<>(headers);
     }
 
     private static HttpEntity<String> jsonEntity(String jsonBody) {

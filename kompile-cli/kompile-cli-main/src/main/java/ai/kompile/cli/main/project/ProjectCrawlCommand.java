@@ -1344,9 +1344,22 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                       int markdownCount,
                                       String status,
                                       List<LocalCrawlFailure> documentFailures,
-                                      boolean dryRun) {
+                                      boolean dryRun,
+                                      JsonNode corpusReceipt) {
         public LocalCrawlExecution {
             documentFailures = documentFailures == null ? List.of() : List.copyOf(documentFailures);
+            corpusReceipt = corpusReceipt == null ? null : corpusReceipt.deepCopy();
+        }
+
+        public LocalCrawlExecution(String crawlId, Path outputDirectory, Path markdownDirectory,
+                                   int documentCount, int chunkCount, int markdownCount,
+                                   String status, List<LocalCrawlFailure> documentFailures, boolean dryRun) {
+            this(crawlId, outputDirectory, markdownDirectory, documentCount, chunkCount, markdownCount,
+                    status, documentFailures, dryRun, null);
+        }
+
+        @Override public JsonNode corpusReceipt() {
+            return corpusReceipt == null ? null : corpusReceipt.deepCopy();
         }
     }
 
@@ -1403,6 +1416,14 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             boolean dryRun,
             JsonNode request,
             ModelPipelineExecutor modelPipelineExecutor) throws IOException {
+        return executeLocalCrawl(profile, projectRoot, dryRun, request, modelPipelineExecutor, null);
+    }
+
+    /** The job registry supplies the cancellation fence; a corpus commit is not job success. */
+    public static LocalCrawlExecution executeLocalCrawl(
+            KompileProjectCrawlProfile profile, Path projectRoot, boolean dryRun, JsonNode request,
+            ModelPipelineExecutor modelPipelineExecutor, LocalCorpusPublication.Context publication)
+            throws IOException {
         if (modelPipelineExecutor == null) {
             throw new IllegalArgumentException("modelPipelineExecutor is required");
         }
@@ -1416,32 +1437,86 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         if (!markdownDir.startsWith(normalizedRoot)) {
             throw new IllegalArgumentException("Local crawl markdown output escapes project root: " + markdownDir);
         }
+        boolean preserve = LocalCorpusPublication.isRequested(request);
+        if (preserve) LocalCorpusPublication.validateRequest(request);
         if (dryRun) {
             return new LocalCrawlExecution(crawlId, outputDir, markdownDir,
                     0, 0, 0, "DRY_RUN", List.of(), true);
         }
-
-        Files.createDirectories(outputDir);
-        Files.createDirectories(markdownDir);
-        KompileProjectStore store = new KompileProjectStore();
-        String projectName = null;
-        try {
-            KompileProjectManifest manifest = store.load(normalizedRoot);
-            if (manifest != null) {
-                projectName = manifest.getName();
-            }
-        } catch (Exception ignored) {
-            // A plain code directory is a valid implicit local project.
+        if (preserve) {
+            JsonNode receipt = LocalCorpusPublication.publish(normalizedRoot, crawlId, request, publication,
+                    (generation, stagedMarkdown, selected) -> {
+                        LocalCrawlResult staged = collectSelectedLocalCrawl(profile, normalizedRoot,
+                                generation, stagedMarkdown, markdownDir, selected, request);
+                        writeLocalCrawlArtifacts(profile, normalizedRoot, generation, markdownDir, staged);
+                    });
+            JsonNode counts = receipt.path("counts");
+            return new LocalCrawlExecution(crawlId, outputDir, markdownDir,
+                    counts.path("documentCount").asInt(), counts.path("chunkCount").asInt(),
+                    counts.path("markdownCount").asInt(), "COMPLETED", List.of(), false, receipt);
         }
-        LocalCrawlResult result = collectLocalCrawl(
-                profile, normalizedRoot, outputDir, markdownDir, projectName, request,
-                modelPipelineExecutor);
-        writeLocalCrawlArtifacts(profile, normalizedRoot, outputDir, markdownDir, result);
-        bestEffortCatalogSync(() -> store.syncMarkdownCatalog(normalizedRoot));
-        bestEffortCatalogSync(() -> store.syncCrawlCatalog(normalizedRoot));
-        return new LocalCrawlExecution(crawlId, outputDir, markdownDir,
-                result.documents().size(), result.chunkCount(), result.markdownCount(),
-                result.status(), result.failures(), false);
+        try (LocalCorpusPublication.WriterLock writerLock = LocalCorpusPublication.lock(normalizedRoot, crawlId)) {
+            // Legacy writers must invalidate an immutable pointer before changing its projections.
+            LocalCorpusPublication.invalidateCurrent(normalizedRoot, crawlId);
+            Files.createDirectories(outputDir);
+            Files.createDirectories(markdownDir);
+            KompileProjectStore store = new KompileProjectStore();
+            String projectName = null;
+            try {
+                KompileProjectManifest manifest = store.load(normalizedRoot);
+                if (manifest != null) {
+                    projectName = manifest.getName();
+                }
+            } catch (Exception ignored) {
+                // A plain code directory is a valid implicit local project.
+            }
+            LocalCrawlResult result = collectLocalCrawl(
+                    profile, normalizedRoot, outputDir, markdownDir, projectName, request,
+                    modelPipelineExecutor);
+            writeLocalCrawlArtifacts(profile, normalizedRoot, outputDir, markdownDir, result);
+            bestEffortCatalogSync(() -> store.syncMarkdownCatalog(normalizedRoot));
+            bestEffortCatalogSync(() -> store.syncCrawlCatalog(normalizedRoot));
+            return new LocalCrawlExecution(crawlId, outputDir, markdownDir,
+                    result.documents().size(), result.chunkCount(), result.markdownCount(),
+                    result.status(), result.failures(), false);
+        }
+    }
+
+    /** Exact literal selection, never a directory walk or model-backed pipeline in safe mode. */
+    private static LocalCrawlResult collectSelectedLocalCrawl(
+            KompileProjectCrawlProfile profile, Path root, Path generation, Path stagedMarkdown,
+            Path fixedMarkdown, List<Path> selected, JsonNode request) throws IOException {
+        List<LocalCrawlDocument> documents = new ArrayList<>();
+        LocalCrawlStatistics statistics = new LocalCrawlStatistics();
+        LocalCrawlCapabilities.ResolvedPipeline pipeline = new LocalCrawlCapabilities.ResolvedPipeline(
+                "standard-text", "STANDARD_TEXT", "auto", "recursive-character", 2_000, 200,
+                Map.of(), Map.of());
+        try (BufferedWriter chunks = Files.newBufferedWriter(generation.resolve("chunks.jsonl"),
+                StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW)) {
+            for (Path file : selected) {
+                checkCancellation();
+                LocalCrawlDocument document = localCrawlDocument(root, file.getParent(), file);
+                LocalMarkdownArtifact artifact = writeLocalCrawlMarkdown(root, stagedMarkdown, document,
+                        file, profile, null, pipeline, (a, b, c, d) -> {
+                            throw new IOException("Model extraction is forbidden in lexical corpus publication");
+                        }, request);
+                if (!"EXTRACTED".equals(artifact.status()) || artifact.markdownPath() == null) {
+                    throw new IOException("Selected source extraction failed/empty: " + file + ": " + artifact.message());
+                }
+                document = document.withMarkdown(artifact);
+                LocalChunkingStats stats = streamLocalCrawlChunks(document,
+                        root.resolve(artifact.markdownPath()), pipeline, chunks, statistics);
+                artifact = new LocalMarkdownArtifact(artifact.title(),
+                        projectRelativePath(root, fixedMarkdown.resolve(document.documentId() + ".md")),
+                        artifact.status(), artifact.message(), artifact.pipelineId(), artifact.pipelineType(),
+                        artifact.loader(), artifact.chunker(), stats.markdownChars(), stats.wordCount(),
+                        artifact.loaderOutputs());
+                documents.add(document.withMarkdown(artifact));
+                checkCancellation();
+            }
+        }
+        return new LocalCrawlResult(documents, statistics.chunkCount, statistics.analysisWordCount,
+                Map.copyOf(statistics.terms));
     }
 
     /** Optional catalog projection must not invalidate already-persisted local crawl artifacts. */
@@ -1698,8 +1773,13 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             LocalMarkdownBody bodyResult;
             try (Writer fileWriter = Files.newBufferedWriter(bodyPath, StandardCharsets.UTF_8,
                     StandardOpenOption.TRUNCATE_EXISTING);
-                 NormalizedTextWriter bodyWriter = new NormalizedTextWriter(fileWriter)) {
-                if (LocalCrawlCapabilities.usesModelPipeline(pipeline)) {
+                 Writer bodyWriter = LocalCorpusPublication.isRequested(request) ? fileWriter : new NormalizedTextWriter(fileWriter)) {
+                if (LocalCorpusPublication.isRequested(request)) {
+                    // Reviewed literal text (including whitespace inside JSON strings) must survive verbatim.
+                    // The preserving contract has already limited this path to UTF-8 text and no model execution.
+                    streamUtf8(file, bodyWriter);
+                    bodyResult = new LocalMarkdownBody(file.getFileName().toString(), List.of());
+                } else if (LocalCrawlCapabilities.usesModelPipeline(pipeline)) {
                     String extracted = modelPipelineExecutor.extract(projectRoot, file, pipeline, "");
                     bodyWriter.write(extracted);
                     bodyResult = new LocalMarkdownBody(file.getFileName().toString(), List.of());
@@ -1761,7 +1841,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 }
                 markdown.write('\n');
             }
-            Files.move(temporaryMarkdown, markdownPath, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(temporaryMarkdown, markdownPath,
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             temporaryMarkdown = null;
             String relativeMarkdown = projectRoot.toAbsolutePath().normalize()
                     .relativize(markdownPath.toAbsolutePath().normalize())

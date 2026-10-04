@@ -7,6 +7,8 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalCorpusPublication;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -17,6 +19,9 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.UUID;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -251,6 +256,93 @@ class LocalProjectRagSearchTest {
 
         assertTrue(result.isError());
         assertTrue(result.getOutput().contains("symbolic-link crawl artifact"), result.getOutput());
+    }
+
+    @Test
+    void searchesImmutableGenerationInsteadOfPartiallyReplacedProjections() throws Exception {
+        Path knowledgeBase = writeKnowledgeBase();
+        Path generation = writeSyntheticGeneration(knowledgeBase);
+        Files.writeString(knowledgeBase.resolve("chunks.jsonl"), "partial compatibility write");
+        Files.delete(knowledgeBase.resolve("documents.jsonl"));
+        FakeEmbeddingRuntime embedding = new FakeEmbeddingRuntime();
+        LocalProjectRagSearch search = new LocalProjectRagSearch(mapper, (root, ignored) -> embedding);
+        ToolResult result = search.search(projectRoot, List.of(knowledgeBase), "bread", null, 1);
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("Bread baking guide"), result.getOutput());
+        assertTrue(Files.isRegularFile(knowledgeBase.resolve("semantic-index.jsonl")));
+        assertFalse(Files.exists(generation.resolve("semantic-index.jsonl")), "immutable generation must not be mutated by vector caching");
+    }
+
+    @Test
+    void damagedGenerationFailsClosedWithoutEncoderOrProjectionFallback() throws Exception {
+        Path knowledgeBase = writeKnowledgeBase();
+        Path generation = writeSyntheticGeneration(knowledgeBase);
+        Files.writeString(generation.resolve("chunks.jsonl"), "tampered");
+        LocalProjectRagSearch search = new LocalProjectRagSearch(mapper, (root, ignored) -> {
+            throw new AssertionError("encoder must not open for invalid generation");
+        });
+        ToolResult result = search.search(projectRoot, List.of(knowledgeBase), "bread", null, 5);
+        assertTrue(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("Immutable corpus artifact hash mismatch"), result.getOutput());
+    }
+
+    @Test
+    void damagedReceiptFailsClosedEvenWithHealthyLegacyCorpus() throws Exception {
+        Path knowledgeBase = writeKnowledgeBase();
+        Path generation = writeSyntheticGeneration(knowledgeBase);
+        Files.writeString(generation.resolve("corpus-receipt.json"), "{}");
+        LocalProjectRagSearch search = new LocalProjectRagSearch(mapper, (root, ignored) -> new FakeEmbeddingRuntime());
+        ToolResult result = search.search(projectRoot, List.of(knowledgeBase), "bread", null, 5);
+        assertTrue(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("Corpus receipt hash mismatch"), result.getOutput());
+    }
+
+    /** Hand-authored disk fixtures only: does not submit or run a crawl. */
+    private Path writeSyntheticGeneration(Path knowledgeBase) throws Exception {
+        String id = "gen-" + UUID.randomUUID();
+        Path generation = Files.createDirectories(knowledgeBase.resolve("corpus-generations/" + id));
+        Files.createDirectory(generation.resolve("markdown"));
+        Files.copy(knowledgeBase.resolve("documents.jsonl"), generation.resolve("documents.jsonl"));
+        Files.copy(knowledgeBase.resolve("chunks.jsonl"), generation.resolve("chunks.jsonl"));
+        Files.writeString(generation.resolve("crawl-result.json"), "{}");
+        Files.writeString(generation.resolve("analysis.json"), "{}");
+        ObjectNode request = mapper.createObjectNode();
+        request.put("corpusUpdate", LocalCorpusPublication.UPDATE);
+        request.put("strictSteps", true); request.put("deriveOntology", false);
+        request.putObject("reasoningLearning").put("enabled", false);
+        request.putObject("embeddingTraining").put("enabled", false);
+        request.putArray("steps").add("LOADING").add("MARKDOWN_EXTRACTION").add("CHUNKING").add("LEXICAL_INDEX");
+        ObjectNode document = request.putArray("documents").addObject();
+        document.put("path", projectRoot.toRealPath().resolve("inputs").toString());
+        document.put("sourceType", "DIRECTORY"); document.put("pipelineId", "standard-text");
+        document.putArray("includePatterns").add("bread.md");
+        ObjectNode receipt = mapper.createObjectNode();
+        receipt.put("schema", "kompile-local-corpus-receipt/v1");
+        receipt.put("corpusUpdate", LocalCorpusPublication.UPDATE); receipt.put("status", "CORPUS_COMMITTED");
+        receipt.put("scope", "LEXICAL_ONLY"); receipt.put("jobId", "synthetic-job");
+        receipt.put("projectRoot", projectRoot.toRealPath().toString()); receipt.put("knowledgeBaseId", "local-kb");
+        receipt.put("generationId", id);
+        receipt.set("submittedRequest", request.deepCopy()); receipt.set("effectiveRequest", request.deepCopy());
+        receipt.put("submittedRequestSha256", LocalCorpusPublication.requestDigest(request));
+        receipt.put("effectiveRequestSha256", LocalCorpusPublication.requestDigest(request));
+        ObjectNode artifacts = receipt.putObject("artifacts");
+        for (String name : List.of("documents.jsonl", "chunks.jsonl", "crawl-result.json", "analysis.json")) {
+            Path artifact = generation.resolve(name);
+            artifacts.put(projectRoot.relativize(artifact).toString(), sha256(Files.readAllBytes(artifact)));
+        }
+        byte[] bytes = mapper.writeValueAsBytes(receipt);
+        Files.write(generation.resolve("corpus-receipt.json"), bytes);
+        ObjectNode marker = mapper.createObjectNode();
+        marker.put("schema", "kompile-local-corpus-pointer/v1"); marker.put("generationId", id);
+        marker.put("jobId", "synthetic-job");
+        marker.put("receiptPath", projectRoot.relativize(generation.resolve("corpus-receipt.json")).toString());
+        marker.put("receiptSha256", sha256(bytes));
+        Files.write(knowledgeBase.resolve("corpus-current.json"), mapper.writeValueAsBytes(marker));
+        return generation;
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
     private Path writeKnowledgeBase() throws Exception {

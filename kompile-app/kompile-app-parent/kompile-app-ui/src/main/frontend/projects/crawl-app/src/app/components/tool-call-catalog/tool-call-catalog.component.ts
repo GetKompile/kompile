@@ -16,6 +16,7 @@
 
 import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
@@ -38,6 +39,7 @@ import {
   ToolCallFilterOptions,
   ToolCallGroupedResult
 } from '@shared/services/tool-call-catalog.service';
+import { ServiceEndpointRouter } from '@shared/services/service-endpoint-routing';
 
 @Component({
   standalone: true,
@@ -92,6 +94,9 @@ export class ToolCallCatalogComponent implements OnInit {
   indexing = false;
   indexResult: Record<string, any> | null = null;
 
+  // Last failed request; shown instead of an empty result list
+  errorMessage: string | null = null;
+
   // View mode: table, cards, or grouped
   viewMode: 'table' | 'cards' | 'grouped' = 'table';
 
@@ -113,9 +118,20 @@ export class ToolCallCatalogComponent implements OnInit {
     { value: 'session', label: 'Session' }
   ];
 
-  constructor(private catalogService: ToolCallCatalogService) {}
+  constructor(private catalogService: ToolCallCatalogService,
+              private endpointRouter: ServiceEndpointRouter) {}
 
   ngOnInit(): void {
+    // The chat app serves /api/tool-calls; don't send requests its startup probe says will fail.
+    if (!this.endpointRouter.isReachable('chat')) {
+      this.errorMessage = this.chatUnreachableMessage();
+      return;
+    }
+    this.reload();
+  }
+
+  /** Reloads everything. Retry calls this directly because the reachability probe only runs at page load. */
+  reload(): void {
     this.loadFilterOptions();
     this.loadStats();
     this.doSearch();
@@ -127,6 +143,7 @@ export class ToolCallCatalogComponent implements OnInit {
       return;
     }
     this.loading = true;
+    this.errorMessage = null;
     this.catalogService.search({
       q: this.searchQuery || undefined,
       tool: this.selectedTool || undefined,
@@ -146,14 +163,19 @@ export class ToolCallCatalogComponent implements OnInit {
         this.totalPages = result.totalPages;
         this.loading = false;
       },
-      error: () => {
+      error: (err: unknown) => {
+        this.results = [];
+        this.totalCount = 0;
+        this.totalPages = 0;
         this.loading = false;
+        this.errorMessage = this.describeError(err, 'Loading tool calls');
       }
     });
   }
 
   doGroupedSearch(): void {
     this.loading = true;
+    this.errorMessage = null;
     this.catalogService.grouped({
       groupBy: this.groupBy || 'category',
       q: this.searchQuery || undefined,
@@ -172,8 +194,11 @@ export class ToolCallCatalogComponent implements OnInit {
         this.totalCount = result.totalCount;
         this.loading = false;
       },
-      error: () => {
+      error: (err: unknown) => {
+        this.groupedResult = null;
+        this.totalCount = 0;
         this.loading = false;
+        this.errorMessage = this.describeError(err, 'Loading grouped tool calls');
       }
     });
   }
@@ -185,8 +210,9 @@ export class ToolCallCatalogComponent implements OnInit {
         this.stats = stats;
         this.statsLoading = false;
       },
-      error: () => {
+      error: (err: unknown) => {
         this.statsLoading = false;
+        this.errorMessage = this.describeError(err, 'Loading tool call stats');
       }
     });
   }
@@ -195,6 +221,9 @@ export class ToolCallCatalogComponent implements OnInit {
     this.catalogService.getFilterOptions().subscribe({
       next: (options: ToolCallFilterOptions) => {
         this.filterOptions = options;
+      },
+      error: (err: unknown) => {
+        this.errorMessage = this.describeError(err, 'Loading filter options');
       }
     });
   }
@@ -437,10 +466,34 @@ export class ToolCallCatalogComponent implements OnInit {
         this.loadStats();
         this.doSearch();
       },
-      error: () => {
+      error: (err: unknown) => {
         this.indexing = false;
+        this.errorMessage = this.describeError(err, 'Indexing transcripts');
       }
     });
+  }
+
+  /** Banner text for a failed request. Status 0 means the browser got no response from the chat app. */
+  private describeError(err: unknown, action: string): string {
+    if (!(err instanceof HttpErrorResponse)) {
+      return `${action} failed.`;
+    }
+    if (err.status === 0) {
+      return this.chatUnreachableMessage();
+    }
+    // GlobalExceptionHandler bodies carry {error, message}; prefer the specific message.
+    const body = err.error;
+    const detail = typeof body?.message === 'string' && body.message.trim() ? body.message
+      : typeof body?.error === 'string' ? body.error : '';
+    return detail
+      ? `${action} failed (HTTP ${err.status}): ${detail}`
+      : `${action} failed (HTTP ${err.status}).`;
+  }
+
+  private chatUnreachableMessage(): string {
+    const url = this.endpointRouter.dependencyStatus('chat')?.endpointUrl;
+    return `Tool call history is served by the Chat app${url ? ` at ${url}` : ''}, which could not be reached. `
+      + 'Start the Chat app, or set its URL in the admin console under Settings > Service Endpoints.';
   }
 
   hasActiveFilters(): boolean {

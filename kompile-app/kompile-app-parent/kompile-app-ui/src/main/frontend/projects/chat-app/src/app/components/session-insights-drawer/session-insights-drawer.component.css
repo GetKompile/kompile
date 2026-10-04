@@ -1,0 +1,59 @@
+/* Laid out like the chat pane's other drawers (workflow team, harness activity) */
+.session-insights {
+  margin: 0 0 10px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-body);
+  font-size: 0.9em;
+}
+
+.session-insights summary {
+  cursor: pointer;
+}
+
+.insights-live {
+  color: var(--status-info-text);
+}
+
+.insights-meta {
+  color: var(--text-secondary);
+}
+
+.insights-status {
+  margin: 6px 0 2px;
+  color: var(--text-secondary);
+}
+
+/* The terminal's dashboard rows, one per line; capped like the harness output above it so the
+   input stays in view */
+.insights-rows {
+  margin: 6px 0 2px;
+  padding: 0;
+  max-height: 16rem;
+  overflow: auto;
+  list-style: none;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.92em;
+}
+
+.insights-rows li {
+  padding: 1px 0;
+  overflow-wrap: anywhere;
+}
+
+.insights-topic {
+  font-weight: 600;
+}
+
+.insights-detail {
+  padding-left: 16px;
+  color: var(--text-secondary);
+}
+
+/* The insights page: every topic across the project's chats */
+.insights-page-link {
+  display: inline-block;
+  margin: 4px 0 2px;
+  color: var(--color-primary);
+}

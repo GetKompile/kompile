@@ -63,7 +63,9 @@ public class EnforcerAttachCommand implements Callable<Integer> {
         }
 
         List<JudgementRecord> records = JudgementLog.readAll(sid);
-        boolean llm = records.stream().anyMatch(r -> "llm".equalsIgnoreCase(r.getJudgeMode()));
+        // Only the LLM judge writes policy verdicts, so either mode means an LLM judge is attached.
+        boolean llm = records.stream().anyMatch(r -> "llm".equalsIgnoreCase(r.getJudgeMode())
+                || "policy".equalsIgnoreCase(r.getJudgeMode()));
         String backend = lastNonBlank(records, JudgementRecord::getBackend, "unknown");
         String lastWhen = records.isEmpty() ? "—"
                 : EnforcerJudgementsCommand.shortTime(records.get(records.size() - 1).getTimestamp());

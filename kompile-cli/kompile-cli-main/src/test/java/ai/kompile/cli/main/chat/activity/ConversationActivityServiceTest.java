@@ -277,6 +277,96 @@ class ConversationActivityServiceTest {
                 .read(ActivityIdentity.conversation("session", temp), ActivityReadBudget.DEFAULT);
 
         assertEquals("1", evidence.attributes().get("actualBlocked"));
+        assertEquals("1", evidence.attributes().get("judgeVerdicts"));
         assertEquals(1, evidence.issues().value());
+    }
+
+    @Test
+    void judgementAdapterCountsChatLaneVerdictsAndUserDecisions(@TempDir Path temp) throws Exception {
+        Path file = temp.resolve("judgements.jsonl");
+        List<JudgementRecord> records = List.of(
+                judgement("JUDGE_TOOL", null, false, true, 0),
+                judgement("JUDGE_TOOL", null, true, false, 1),
+                judgement("JUDGE_TURN", null, false, false, 2),
+                judgement("JUDGE_CHAT", null, true, false, 3),
+                judgement("OVERRIDE", "OVERRIDDEN", false, false, 4),
+                judgement("OVERRIDE", "APPROVED", true, false, 5),
+                judgement("CONTROL", "OVERRIDE_ARMED", true, false, 6));
+        StringBuilder log = new StringBuilder();
+        for (JudgementRecord record : records) log.append(mapper.writeValueAsString(record)).append("\n");
+        JudgementRecord otherSession = judgement("JUDGE_TOOL", null, false, true, 7);
+        otherSession.setSessionId("another-session");
+        log.append(mapper.writeValueAsString(otherSession)).append("\n");
+        Files.writeString(file, log.toString(), StandardCharsets.UTF_8);
+        ActivityIdentity identity = ActivityIdentity.conversation("session", temp);
+        JudgementActivityReader reader = new JudgementActivityReader(file, temp);
+
+        ActivityEvidence evidence = reader.read(identity, ActivityReadBudget.DEFAULT);
+
+        assertEquals(ActivityCoverage.COMPLETE, evidence.coverage());
+        assertEquals("3", evidence.attributes().get("judgeVerdicts"));
+        assertEquals("1", evidence.attributes().get("judgeStops"));
+        assertEquals("1", evidence.attributes().get("judgeCorrections"));
+        assertEquals("1", evidence.attributes().get("overridden"));
+        assertEquals("1", evidence.attributes().get("approvalsUsed"));
+        assertEquals("1", evidence.attributes().get("controlChanges"));
+        assertEquals("0", evidence.attributes().get("actualBlocked"));
+        // No RESULT record reports a final outcome in the chat lane: unknown, not zero.
+        assertFalse(evidence.issues().known());
+        assertEquals(Instant.parse("2026-09-01T00:00:00Z"), evidence.startedAt());
+        assertEquals(Instant.parse("2026-09-01T00:00:06Z"), evidence.endedAt());
+        String expected = "Judge: 3 verdict(s), 1 stopped, 1 corrected; user: 1 overridden, "
+                + "1 approval(s) used, 1 control change(s) (8 records read)";
+        assertEquals(List.of(expected), reader.details(identity, ActivityReadBudget.DEFAULT));
+
+        ConversationActivityService service = new ConversationActivityService(
+                new ActivityStorage(temp.resolve("conversations")),
+                List.of(selected -> new JudgementActivityReader(file, temp)));
+        assertTrue(ProjectActivityController.renderDetail(
+                service.detail(identity, ActivityReadBudget.DEFAULT)).contains(expected));
+    }
+
+    @Test
+    void judgementAdapterReadsTheNewestRecordsWhenTheLogExceedsTheBudget(@TempDir Path temp)
+            throws Exception {
+        Path file = temp.resolve("judgements.jsonl");
+        List<String> lines = new ArrayList<>();
+        for (int i = 0; i < 40; i++) lines.add(mapper.writeValueAsString(judgement("JUDGE_TOOL", null, true, false, i)));
+        for (int i = 40; i < 43; i++) lines.add(mapper.writeValueAsString(judgement("JUDGE_TOOL", null, false, true, i)));
+        Files.writeString(file, String.join("\n", lines) + "\n", StandardCharsets.UTF_8);
+        ActivityIdentity identity = ActivityIdentity.conversation("session", temp);
+        JudgementActivityReader reader = new JudgementActivityReader(file, temp);
+
+        ActivityEvidence byRecords = reader.read(identity, new ActivityReadBudget(256 * 1024, 4));
+
+        assertEquals(ActivityCoverage.PARTIAL, byRecords.coverage());
+        assertEquals("4", byRecords.attributes().get("judgeVerdicts"));
+        assertEquals("3", byRecords.attributes().get("judgeStops"));
+        assertEquals(Instant.parse("2026-09-01T00:00:39Z"), byRecords.startedAt());
+        assertEquals(Instant.parse("2026-09-01T00:00:42Z"), byRecords.endedAt());
+        assertTrue(byRecords.warnings().get(0).contains("newest 4 judge record(s)"), byRecords.warnings().toString());
+
+        // A byte window that begins exactly on a record keeps that record whole.
+        int lastTwo = lines.get(41).getBytes(StandardCharsets.UTF_8).length
+                + lines.get(42).getBytes(StandardCharsets.UTF_8).length + 2;
+        for (int window : new int[] {lastTwo, lastTwo + 5}) {
+            ActivityEvidence byBytes = reader.read(identity, new ActivityReadBudget(window, 512));
+            assertEquals("2", byBytes.attributes().get("judgeStops"), "window " + window);
+            assertEquals("2", byBytes.attributes().get("judgeVerdicts"), "window " + window);
+            // The cut-off record before the window is dropped, not reported as malformed.
+            assertEquals(1, byBytes.warnings().size(), byBytes.warnings().toString());
+            assertTrue(byBytes.warnings().get(0).contains("newest 2 judge record(s)"),
+                    byBytes.warnings().toString());
+        }
+        assertEquals(List.of("Judge: 2 verdict(s), 2 stopped, 0 corrected (newest 2 records read)"),
+                reader.details(identity, new ActivityReadBudget(lastTwo, 512)));
+    }
+
+    private static JudgementRecord judgement(String phase, String status, boolean compliant, boolean stop,
+                                             int second) {
+        return JudgementRecord.builder()
+                .timestamp(Instant.parse("2026-09-01T00:00:00Z").plusSeconds(second).toString())
+                .sessionId("session").phase(phase).status(status)
+                .compliant(compliant).stop(stop).judgeMode("llm").build();
     }
 }

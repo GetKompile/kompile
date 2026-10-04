@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -29,18 +30,39 @@ import java.util.stream.Collectors;
  *
  * <p>These calls are low-risk, session-local bookkeeping and should not pay for, or be
  * second-guessed by, a probabilistic LLM review. Explicit tool/command bans still win,
- * so a user can deliberately prohibit one of these tools without relying on the model.</p>
+ * so a user can deliberately prohibit one of these tools without relying on the model.
+ * A reminder that names the task list, or restricts tool use in general, sends these
+ * tools back through judge review ({@link #remindersMayGovernRoutineTools}).</p>
  */
 public final class JudgeToolPolicy {
 
     private static final Set<String> ROUTINE_SESSION_TOOLS = Set.of("todoread", "todowrite");
     private static final Set<String> EXPLICIT_TOOL_RULE_PREFIXES = Set.of(
             "BAN_TOOL:", "STOP_TOOL:", "BAN_CMD:", "BAN_CMD_REGEX:", "STOP_CMD:");
+    /**
+     * Reminder text that can conflict with routine bookkeeping: it names the task list or its
+     * tools, or talks about tool use in general. Other reminders (build paths, namespaces,
+     * planning advice, one named tool such as "the glob tool") cannot.
+     */
+    private static final Pattern ROUTINE_TOOL_REMINDER = Pattern.compile(
+            "todo(?:read|write)|\\bto-?dos?\\b|\\b(?:to do|task)[- ]?lists?\\b"
+                    + "|\\btools\\b|\\btool[- ](?:calls?|use|usage)\\b|\\b(?:any|every|no)\\s+tool\\b",
+            Pattern.CASE_INSENSITIVE);
 
     private JudgeToolPolicy() {}
 
     public static boolean isRoutineSessionTool(String toolName) {
         return ROUTINE_SESSION_TOOLS.contains(canonicalToolName(toolName));
+    }
+
+    /**
+     * True when free-text reminders could govern a routine session tool, so its calls must go
+     * through judge review instead of {@link #evaluateRoutineTool}. Unrelated reminders are
+     * active in most sessions; treating any reminder as a conflict sent every task-list update
+     * to the LLM judge.
+     */
+    public static boolean remindersMayGovernRoutineTools(String reminders) {
+        return reminders != null && ROUTINE_TOOL_REMINDER.matcher(reminders).find();
     }
 
     /**

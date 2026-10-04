@@ -103,6 +103,28 @@ class JudgeToolPolicyTest {
     }
 
     @Test
+    void onlyRemindersAboutTheTaskListOrToolUseGovernRoutineTools() {
+        // The project's live reminders: none mentions the task list or tool use in general.
+        String unrelated = """
+                1. [project] Plan before making changes. Do not overengineer. Git operations especially resets are not allowed.
+                2. [project] If you are not sure what the user is referring to, do not guess *ASK*
+                3. [project] mvn is under /home/user/dev-apps/mvn/bin/mvn
+                4. [project] When the user tells you to quit guessing it means use the glob tool and look for files.
+                5. [project] *ALWAYS* install before running platform-tests""";
+        assertFalse(JudgeToolPolicy.remindersMayGovernRoutineTools(unrelated));
+        assertFalse(JudgeToolPolicy.remindersMayGovernRoutineTools(""));
+        assertFalse(JudgeToolPolicy.remindersMayGovernRoutineTools(null));
+
+        assertTrue(JudgeToolPolicy.remindersMayGovernRoutineTools("Keep the TODO list short"));
+        assertTrue(JudgeToolPolicy.remindersMayGovernRoutineTools("Update the to-do items after each step"));
+        assertTrue(JudgeToolPolicy.remindersMayGovernRoutineTools("Never call mcp__kompile__todowrite"));
+        assertTrue(JudgeToolPolicy.remindersMayGovernRoutineTools("Do not touch the task list"));
+        assertTrue(JudgeToolPolicy.remindersMayGovernRoutineTools("Do not call any tool without asking"));
+        assertTrue(JudgeToolPolicy.remindersMayGovernRoutineTools("Never use tools during review"));
+        assertTrue(JudgeToolPolicy.remindersMayGovernRoutineTools("Batch tool calls"));
+    }
+
+    @Test
     void nonRoutineToolsContinueThroughNormalJudgeEvaluation() {
         assertNull(JudgeToolPolicy.evaluateRoutineTool(
                 "bash", "{\"command\":\"pwd\"}",

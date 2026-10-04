@@ -1618,6 +1618,17 @@ public class GraphMatrixSubprocessMain {
             case "getVisualizationData" -> svc.getVisualizationData(
                     argStr(args, 0), argInt(args, 1), argInt(args, 2));
 
+            case "getTopKVisualizationData" -> svc.getTopKVisualizationData(
+                    argLong(args, 0), argInt(args, 1), argStr(args, 2));
+
+            // A missing edge-type filter means every type, so null stays null rather than an empty
+            // list; a missing fact sheet (or an older three-argument caller) reads the first graph
+            // holding the node.
+            case "expandNeighborhoodVisualization" -> svc.expandNeighborhoodVisualization(
+                    argStr(args, 0), argInt(args, 1),
+                    isNullArg(args, 2) ? null : argList(args, 2, String.class, mapper),
+                    argLong(args, 3));
+
             case "getVisualizationDataInTimeRange" -> svc.getVisualizationDataInTimeRange(
                     argObj(args, 0, LocalDateTime.class, mapper),
                     argObj(args, 1, LocalDateTime.class, mapper),

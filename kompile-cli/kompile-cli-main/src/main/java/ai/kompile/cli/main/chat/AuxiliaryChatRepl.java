@@ -153,6 +153,10 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
         replMetrics.setAgentName(kind.displayName());
         replMetrics.setProvider(provider);
         replMetrics.setModel(model);
+        // One call can report usage several times (Claude Code reports each request
+        // as it runs); it is one judge call. Each runner starts a call, and runs are
+        // serialized.
+        AtomicBoolean callCounted = new AtomicBoolean(true);
         client.setProviderActivityListener(new DirectLlmClient.ProviderActivityListener() {
             @Override
             public void onToolStart(String callId, String name, String input) {
@@ -168,7 +172,7 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
             @Override
             public void onTokenUsage(long input, long output, long cacheRead, long cacheCreation) {
                 replMetrics.recordTokenUsage(input, output, cacheRead, cacheCreation);
-                replMetrics.recordJudgeCall();
+                if (callCounted.compareAndSet(false, true)) replMetrics.recordJudgeCall();
             }
         });
         AtomicReference<String> activeRoute = new AtomicReference<>(String.valueOf(provider) + "/" + String.valueOf(model));
@@ -189,6 +193,7 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
             }
             Consumer<String> previous = client.getOutputConsumer();
             client.setOutputConsumer(stream);
+            callCounted.set(false);
             try {
                 DirectLlmClient.StreamResult result = client.streamChat(
                         userPrompt, systemPrompt, null, null, modelOverride);
@@ -200,6 +205,7 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
         TurnRunner statelessVerdictRunner = (userPrompt, systemPrompt, stream) -> {
             Consumer<String> previous = client.getOutputConsumer();
             client.setOutputConsumer(stream);
+            callCounted.set(false);
             try {
                 DirectLlmClient.StreamResult result = client.streamOneShot(
                         userPrompt, systemPrompt, modelOverride);
@@ -212,6 +218,7 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
                 (userPrompt, systemPrompt, schemaName, schema, strict, stream) -> {
                     Consumer<String> previous = client.getOutputConsumer();
                     client.setOutputConsumer(stream);
+                    callCounted.set(false);
                     try {
                         DirectLlmClient.StreamResult result = client.streamOneShotJson(
                                 userPrompt, systemPrompt, modelOverride,

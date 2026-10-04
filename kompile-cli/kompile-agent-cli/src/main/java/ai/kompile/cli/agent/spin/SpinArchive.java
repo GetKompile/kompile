@@ -79,6 +79,9 @@ public final class SpinArchive {
                     : "Embedded runtime must contain Kompile and kompile-agent launchers");
         }
 
+        if (definition.projectBacked() && runtime != null) {
+            SpinDefinition.validateProjectRuntime(definition.project(), runtime, definition.requiresLocalModelRuntime());
+        }
         Map<String, Path> payload = payloadFiles(root, "");
         if (runtime != null) {
             if (payload.keySet().stream().anyMatch(name -> name.startsWith("runtime/"))) {

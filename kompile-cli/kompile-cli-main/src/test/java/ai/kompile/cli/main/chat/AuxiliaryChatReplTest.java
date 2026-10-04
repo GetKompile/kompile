@@ -143,6 +143,39 @@ class AuxiliaryChatReplTest {
     }
 
     @Test
+    void aCallThatReportsUsageSeveralTimesIsOneJudgeCall() throws Exception {
+        DirectLlmClient client = new DirectLlmClient(
+                new ChatConfig("custom", null, "judge-test", "http://unused.invalid"),
+                JsonUtils.standardMapper()) {
+            @Override
+            public StreamResult streamChat(
+                    String userMessage, String systemPrompt, ArrayNode toolDefs,
+                    List<ToolCallResultInput> toolResults, String modelOverride) {
+                // Claude Code reports each request of a call as it runs.
+                getProviderActivityListener().onTokenUsage(10, 1, 100, 0);
+                getProviderActivityListener().onTokenUsage(0, 29, 0, 0);
+                getProviderActivityListener().onTokenUsage(12, 5, 0, 0);
+                StreamResult result = new StreamResult();
+                result.text = "ok";
+                return result;
+            }
+        };
+        AuxiliaryChatRepl repl = AuxiliaryChatRepl.modelBacked(
+                AuxiliaryChatRepl.Kind.JUDGE, client, null);
+        try {
+            assertEquals("ok", repl.generate("review one", "judge system"));
+            assertEquals(1, repl.metrics().getJudgeCallCount());
+            assertEquals("ok", repl.generate("review two", "judge system"));
+            assertEquals(2, repl.metrics().getJudgeCallCount());
+            assertEquals(44, repl.metrics().getInputTokens());
+            assertEquals(70, repl.metrics().getOutputTokens());
+            assertEquals(200, repl.metrics().getCacheReadTokens());
+        } finally {
+            repl.close();
+        }
+    }
+
+    @Test
     void providerFailureMarksAuxiliaryReplFailedInsteadOfReady() {
         DirectLlmClient client = new DirectLlmClient(
                 new ChatConfig("custom", null, "judge-test", "http://unused.invalid"),

@@ -1614,6 +1614,7 @@ public class TerminalRenderer {
             // Skip verbose metadata
             if ("path".equals(key) || "created".equals(key) || "matchType".equals(key)
                     || ToolResult.OUTPUT_STREAMED_METADATA.equals(key)
+                    || ToolResult.CHART_METADATA.equals(key)
                     || isSensitiveParam(key)) continue;
             if (!first) sb.append(", ");
             sb.append(key).append("=").append(entry.getValue());

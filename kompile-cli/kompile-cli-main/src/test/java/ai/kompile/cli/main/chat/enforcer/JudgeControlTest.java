@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -167,6 +168,89 @@ class JudgeControlTest {
         control.approvePatternNext("git log **");
         control.setEnabled(false);
         assertFalse(control.isApprovalPatternNext());
+    }
+
+    @Test
+    void userDecisionsAreRecordedOnceEachInTheSessionJudgementLog() {
+        JudgeControl control = new JudgeControl("judge-ctl-log", sessionsDir);
+        control.initEnabled(false);
+        control.initEnabled(true);
+        control.setGuidance("prefer junit asserts");
+        control.setGuidance("prefer junit asserts");
+        control.setOverrideNext(true);
+        control.setOverrideNext(true);
+        control.clearOverrideNext();
+        control.approveCommandNext("rm -rf build-cache");
+        control.approvePatternNext("git log **");
+        control.approveCommandNext("");
+        control.setOverrideNext(true);
+        control.setEnabled(false);
+        control.setEnabled(false);
+        control.clearGuidance();
+
+        List<JudgementRecord> records = readLog("judge-ctl-log");
+        assertEquals(List.of("GUIDANCE_SET", "OVERRIDE_ARMED", "OVERRIDE_DISARMED", "APPROVAL_SET",
+                        "APPROVAL_SET", "APPROVAL_CLEARED", "OVERRIDE_ARMED", "JUDGE_DISABLED", "GUIDANCE_CLEARED"),
+                records.stream().map(JudgementRecord::getStatus).toList(),
+                "startup defaults and repeated no-op calls must not be recorded");
+        for (JudgementRecord record : records) {
+            assertEquals("CONTROL", record.getPhase());
+            assertEquals("user", record.getJudgeMode());
+            assertEquals("judge-ctl-log", record.getSessionId());
+            assertTrue(record.isCompliant());
+            assertFalse(record.isStop());
+        }
+        assertTrue(records.get(3).getReasoning().endsWith("Exact bash command approved for the next turn: rm -rf build-cache"));
+        assertTrue(records.get(4).getReasoning().endsWith("Bash token pattern approved for the next turn: git log **"));
+        assertTrue(records.get(5).getReasoning().contains("bash token pattern approval cancelled: git log **"));
+        assertTrue(records.get(7).getReasoning().endsWith("discarded the pending report-only override"));
+    }
+
+    @Test
+    void decisionsThatLetWorkThroughAreRecordedAsOverrides() {
+        JudgeControl control = new JudgeControl("judge-ctl-override", sessionsDir);
+        control.approvePatternNext("git log **");
+        JudgeControl.TurnSnapshot turn = control.beginTurn();
+        control.recordApprovalUsed(turn, "bash", "{\"command\":\"git log -5\"}");
+        control.recordReportOnlyOverride(EnforcerDecision.stop(List.of("deleted tests"), "tests must stay"));
+        control.recordReportOnlyOverride("edit", "{\"file_path\":\"a\"}", EnforcerToolCallDecision.block("outside scope"));
+        control.recordReportOnlyOverride(EnforcerDecision.fail(List.of("long"), "", "r".repeat(5_000)));
+
+        List<JudgementRecord> overrides = readLog("judge-ctl-override").stream()
+                .filter(r -> "OVERRIDE".equals(r.getPhase()))
+                .toList();
+        assertEquals(4, overrides.size());
+        overrides.forEach(r -> assertEquals("user", r.getJudgeMode()));
+
+        JudgementRecord approved = overrides.get(0);
+        assertEquals("APPROVED", approved.getStatus());
+        assertTrue(approved.isCompliant());
+        assertEquals("bash", approved.getToolName());
+        assertEquals("{\"command\":\"git log -5\"}", approved.getAgentOutputExcerpt());
+        assertTrue(approved.getReasoning().endsWith("bash token pattern approval let this call through without judge review: git log **"));
+
+        JudgementRecord stoppedTurn = overrides.get(1);
+        assertEquals("OVERRIDDEN", stoppedTurn.getStatus());
+        assertFalse(stoppedTurn.isCompliant(), "the neutralized verdict stays visible");
+        assertFalse(stoppedTurn.isStop(), "the override let the turn finish");
+        assertEquals("critical", stoppedTurn.getSeverity());
+        assertEquals(List.of("deleted tests"), stoppedTurn.getViolations());
+        assertTrue(stoppedTurn.getReasoning().endsWith("would have stopped it: tests must stay"));
+
+        JudgementRecord blockedCall = overrides.get(2);
+        assertEquals("OVERRIDDEN", blockedCall.getStatus());
+        assertEquals("edit", blockedCall.getToolName());
+        assertEquals("{\"file_path\":\"a\"}", blockedCall.getAgentOutputExcerpt());
+        assertEquals(List.of("outside scope"), blockedCall.getViolations());
+        assertTrue(blockedCall.getReasoning().endsWith("would have blocked it: outside scope"));
+
+        String corrected = overrides.get(3).getReasoning();
+        assertTrue(corrected.contains("would have corrected it: rrr"));
+        assertTrue(corrected.length() < 1_300 && corrected.endsWith("more)"), "reasoning is clamped like the excerpts");
+    }
+
+    private List<JudgementRecord> readLog(String sessionId) {
+        return JudgementLog.readFile(sessionsDir.resolve(sessionId).resolve(JudgementLog.FILE_NAME));
     }
 
     @Test

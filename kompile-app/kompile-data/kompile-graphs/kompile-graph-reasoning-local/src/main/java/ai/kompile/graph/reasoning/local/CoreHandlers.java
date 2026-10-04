@@ -118,6 +118,8 @@ public final class CoreHandlers {
                         buildQuerySchema()),
                 (session, args) -> core.handleQuery(session, args));
 
+        PortablePslProgram.register(builder);
+
         builder.handler("tools_catalog",
                 schemaFor("tools_catalog", "List all registered tools with their descriptions and " +
                         "parameter schemas. Use this for self-discovery.",
@@ -142,6 +144,7 @@ public final class CoreHandlers {
             out.put("entityCount", g.entityCount());
             out.put("relationCount", g.relationCount());
             out.put("factsProjected", session.kbState().factStore().size());
+            out.put("portability", GraphPortabilityReport.inspect(session));
             return MiniJson.write(out);
         } catch (IOException e) {
             return error("Failed to load .kgraph from '" + pathStr + "': " + e.getMessage());
@@ -229,7 +232,15 @@ public final class CoreHandlers {
                 queryText,
                 quantitative);
 
-        return serializeResult(engine.query(session.graph(), query));
+        if ((intent == GraphQueryEngine.Intent.RANK || intent == GraphQueryEngine.Intent.SIMILAR)
+                && structural != HybridReasoner.Structural.BAYESIAN) {
+            try {
+                return serializeResult(session, PortablePslRanking.query(session.graph(), query, engine));
+            } catch (RuntimeException e) {
+                return error("Portable PSL query failed: " + e.getMessage());
+            }
+        }
+        return serializeResult(session, engine.query(session.graph(), query));
     }
 
     private String handleCatalog(LocalReasoningSession session, Map<String, Object> args) {
@@ -245,7 +256,7 @@ public final class CoreHandlers {
      * Serialize a {@link GraphQueryEngine.Result} to JSON matching the server-side wire contract.
      * We use MiniJson to avoid any external JSON dependency.
      */
-    private static String serializeResult(GraphQueryEngine.Result r) {
+    private static String serializeResult(LocalReasoningSession session, GraphQueryEngine.Result r) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("status", r.status() != null ? r.status().name() : "UNKNOWN");
         out.put("intent", r.intent() != null ? r.intent().name() : null);
@@ -335,12 +346,13 @@ public final class CoreHandlers {
         // guidance
         out.put("guidance", r.guidance());
 
-        // data (arbitrary extra data from the engine)
-        if (r.data() != null && !r.data().isEmpty()) {
-            Map<String, Object> data = new LinkedHashMap<>();
-            r.data().forEach((key, value) -> data.put(key, dataValue(value)));
-            out.put("data", data);
+        // Report execution support at the consumer, rather than equating stored bytes with capability.
+        Map<String, Object> data = new LinkedHashMap<>();
+        if (r.data() != null) r.data().forEach((key, value) -> data.put(key, dataValue(value)));
+        if (r.intent() == GraphQueryEngine.Intent.ASSETS || r.intent() == GraphQueryEngine.Intent.OVERVIEW) {
+            data.put("portability", GraphPortabilityReport.inspect(session));
         }
+        if (!data.isEmpty()) out.put("data", data);
 
         // trace, nested as an object like the rest of the result rather than a JSON string
         if (r.trace() != null) {

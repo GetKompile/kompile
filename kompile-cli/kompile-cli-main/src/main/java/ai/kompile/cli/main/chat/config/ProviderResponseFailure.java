@@ -27,6 +27,9 @@ final class ProviderResponseFailure {
             appendDiagnostic(detail, "code", code);
             appendDiagnostic(detail, "type", type);
             appendDiagnostic(detail, "param", param);
+            for (String field : new String[]{"resets_at", "reset_at", "resets_in_seconds", "retry_after"}) {
+                appendDiagnostic(detail, field, error.path(field).asText(""));
+            }
             String message = error.path("message").asText("");
             if ((!code.isBlank() || !type.isBlank() || !param.isBlank())
                     && safeDiagnosticMessage(message)) {
@@ -41,6 +44,25 @@ final class ProviderResponseFailure {
             if (requestId.isBlank()) requestId = root.path("error").path("request_id").asText("");
         }
         appendDiagnostic(detail, "request_id", requestId);
+        // Only quota timing headers, never credentials or arbitrary headers.
+        headers.firstValue("retry-after").ifPresent(value -> {
+            if (value.matches("[0-9]{1,9}")) appendDiagnostic(detail, "retry_after", value);
+            else {
+                try {
+                    appendDiagnostic(detail, "reset_at", Long.toString(java.time.ZonedDateTime.parse(
+                            value, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toEpochSecond()));
+                } catch (java.time.DateTimeException ignored) { /* Invalid timing is not evidence. */ }
+            }
+        });
+        headers.firstValue("anthropic-ratelimit-unified-reset")
+                .ifPresent(value -> appendDiagnostic(detail, "reset_at", value));
+        for (String window : new String[]{"5h", "7d"}) {
+            if (headers.firstValue("anthropic-ratelimit-unified-" + window + "-status")
+                    .filter("rejected"::equalsIgnoreCase).isPresent()) {
+                headers.firstValue("anthropic-ratelimit-unified-" + window + "-reset")
+                        .ifPresent(value -> appendDiagnostic(detail, "reset_at", value));
+            }
+        }
         return detail.isEmpty() ? "" : " (" + detail + ")";
     }
 
@@ -97,7 +119,7 @@ final class ProviderResponseFailure {
             JsonNode root = JSON.readTree(body);
             if (root != null) {
                 JsonNode error = root.has("error") ? root.path("error") : root;
-                if ("zai".equalsIgnoreCase(provider) && status == 429) {
+                if ("zai".equalsIgnoreCase(provider) && (status == 429 || status == 0)) {
                     // Z.AI uses numeric business codes for exhausted/expired
                     // plans. These will not recover through connectivity retries.
                     switch (error.path("code").asText("")) {
@@ -116,7 +138,7 @@ final class ProviderResponseFailure {
                                 "ip_not_authorized", "ip_not_allowed", "organization_membership_required",
                                 "unsupported_country_region_territory":
                             return DirectLlmClient.FailureKind.PERMISSION_DENIED;
-                        case "insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached",
+                        case "usage_limit_reached", "insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached",
                                 "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
                                 "organization_usage_limit_exceeded":
                             return DirectLlmClient.FailureKind.QUOTA_EXHAUSTED;

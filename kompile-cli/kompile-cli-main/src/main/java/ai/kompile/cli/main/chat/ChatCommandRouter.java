@@ -23,6 +23,7 @@ import ai.kompile.cli.main.chat.crawl.CrawlRunStore;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.ClaudeMcpServer;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
@@ -55,6 +56,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -213,7 +215,7 @@ public class ChatCommandRouter {
 
             case "/provider":
                 if (localMode) {
-                    repl.openModelProviderPicker();
+                    repl.openModelProviderPicker(true);
                 } else {
                     runSetup();
                 }
@@ -560,6 +562,10 @@ public class ChatCommandRouter {
                 handleUltracodeCommand(rest.trim());
                 return true;
 
+            case "/mcp":
+                handleMcpCommand(rest);
+                return true;
+
             case "/enforce":
             case "/enforcer":
                 handleJudgeCommand(rest.trim());
@@ -880,12 +886,15 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/subagents")).append("          List available subagents for delegation\n");
             body.append("  ").append(renderer.cyan("/agents")).append("             List local agent types\n");
             body.append("  ").append(renderer.cyan("/agent")).append(" name         Switch agent type\n");
-            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Show/switch LLM model\n");
+            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Choose model for current vendor (/auth switches vendors)\n");
             if (repl.getChatConfig() != null && repl.getChatConfig().supportsFastMode()) {
                 body.append("  ").append(renderer.cyan("/fast")).append(" [on|off|status]  Toggle premium fast mode\n");
             }
             if (repl.getChatConfig() != null && repl.getChatConfig().supportsUltracode()) {
                 body.append("  ").append(renderer.cyan("/ultracode")).append(" [on|off|status]  Toggle Claude Code ultracode workflows\n");
+            }
+            if (repl.getChatConfig() != null && repl.getChatConfig().isClaudeCliNative()) {
+                body.append("  ").append(renderer.cyan("/mcp")).append(" [reconnect]    Show or restart this session's MCP servers\n");
             }
             body.append("  ").append(renderer.cyan("/permissions")).append("        View or set tool permissions\n");
             body.append("  ").append(renderer.cyan("/todos")).append("              Show the session task list\n");
@@ -897,8 +906,9 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
             body.append("  ").append(renderer.cyan("/resume-all [options]")).append(" Restore recent exited/crashed conversations\n");
             body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
-            body.append("  ").append(renderer.cyan("/auth")).append("               Session account or global per-vendor authentication\n");
-            body.append("  ").append(renderer.cyan("/provider")).append("           Switch provider/model and keep this conversation\n");
+            body.append("  ").append(renderer.cyan("/auth")).append("               Choose vendor/model; reuse or change authentication\n");
+            body.append("  ").append(renderer.cyan("/auth list|session|global")).append("  Manage credential scope/accounts\n");
+            body.append("  ").append(renderer.cyan("/provider")).append("           Alias for the /auth vendor/model picker\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure provider/runtime\n");
             body.append("  ").append(renderer.cyan("/clear")).append("              Start a new conversation in this process\n");
             body.append("  ").append(renderer.cyan("/reset")).append("              Restart this session in a new process\n");
@@ -990,7 +1000,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/local-tool")).append(" name    Invoke a local tool directly\n");
             body.append("  ").append(renderer.cyan("/local-agents")).append("       List local agent types\n");
             body.append("  ").append(renderer.cyan("/local-agent")).append(" name   Switch local agent type\n");
-            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Show/switch LLM model\n");
+            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Choose model for current vendor (/auth switches vendors)\n");
             body.append("  ").append(renderer.cyan("/permissions")).append("        View or set tool permissions\n");
             body.append("  ").append(renderer.cyan("/todos")).append("              Show the session task list\n");
             body.append("  ").append(renderer.cyan("/plan")).append(" [on|off]       Toggle planning mode (plan → approve → execute)\n");
@@ -1765,13 +1775,16 @@ public class ChatCommandRouter {
         System.out.println("  ──────────────────────────────────────────");
         for (int i = records.size() - 1; i >= 0; i--) {
             ai.kompile.cli.main.chat.enforcer.JudgementRecord r = records.get(i);
-            String verdict = r.isStop() ? "STOP"
+            // User decisions (CONTROL/OVERRIDE) carry their action in status, not a verdict.
+            boolean userDecision = "user".equals(r.getJudgeMode()) && r.getStatus() != null;
+            String verdict = userDecision ? r.getStatus()
+                    : r.isStop() ? "STOP"
                     : r.isCompliant() ? "ALLOW" : "CORRECT";
             String color = r.isCompliant() && !r.isStop()
                     ? renderer.green(verdict) : renderer.yellow(verdict);
             System.out.println("  [" + (r.getTimestamp() == null ? "?" : r.getTimestamp()) + "] "
                     + r.getPhase() + " · " + color
-                    + " · " + r.getBackend()
+                    + (r.getBackend() == null || r.getBackend().isBlank() ? "" : " · " + r.getBackend())
                     + (r.getLatencyMs() > 0 ? " · " + r.getLatencyMs() + "ms" : ""));
             String reasoning = r.getReasoning();
             if (reasoning != null && !reasoning.isBlank()) {
@@ -2067,6 +2080,30 @@ public class ChatCommandRouter {
         ChatCompleter.printAbove("Fast mode " + (config.isFastMode() ? "ON (requested)" : "OFF")
                 + " — applies to subsequent requests; reasoning effort is unchanged.");
         ChatCompleter.printAbove(config.fastModeCapabilities().notice());
+    }
+
+    /** {@code /mcp}: the MCP servers of the Claude Code process serving this session. */
+    private void handleMcpCommand(String rest) {
+        ChatConfig config = repl.getChatConfig();
+        DirectLlmClient client = repl.getDirectClient();
+        if (!localMode || config == null || client == null || !config.isClaudeCliNative()) {
+            ChatCompleter.printAbove("/mcp is only available on the Claude Code route "
+                    + "(Anthropic signed in through Claude Code).");
+            return;
+        }
+        McpSessionCommand.Servers servers = new McpSessionCommand.Servers() {
+            @Override
+            public List<ClaudeMcpServer> list(Duration timeout) throws IOException {
+                return client.claudeMcpServers(timeout);
+            }
+
+            @Override
+            public boolean reconnect(String name, Duration timeout) throws IOException {
+                return client.reconnectClaudeMcpServer(name, timeout);
+            }
+        };
+        new McpSessionCommand(servers, repl::processesRunForSession, messageHandler::hasActiveTurn,
+                renderer, ChatCompleter::printAbove).run(rest);
     }
 
     private void handleUltracodeCommand(String rest) {
@@ -2740,10 +2777,9 @@ public class ChatCommandRouter {
             ChatCompleter.printAbove("No assistant response is available to copy.");
             return;
         }
-        boolean copied = ClipboardUtil.copyToClipboard(latest.get(), repl.getActiveTerminal());
-        ChatCompleter.printAbove(copied
-                ? "Copied the latest assistant response to the clipboard."
-                : "Could not access a clipboard provider.");
+        String text = latest.get();
+        ChatCompleter.printAbove(ClipboardUtil.describe(
+                ClipboardUtil.copyToClipboard(text, repl.getActiveTerminal()), text.length()));
     }
 
     private void listConversations() {

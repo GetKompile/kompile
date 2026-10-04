@@ -19,6 +19,10 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.IOException;
+import java.net.ConnectException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.UnknownHostException;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -26,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withException;
@@ -104,6 +109,49 @@ class GroundingBackendClientTest {
     }
 
     @Test
+    void timedGetAnswersLikeTheUntimedOne() {
+        server.expect(requestTo("http://localhost/api/unified-crawl/jobs"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("Accept", MediaType.APPLICATION_JSON_VALUE))
+                .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("http://localhost/api/unified-crawl/jobs"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE)
+                        .body("{\"message\":\"crawl manager starting\"}")
+                        .contentType(MediaType.APPLICATION_JSON));
+
+        GroundingBackendClient.GroundingResponse ok =
+                client.get("/api/unified-crawl/jobs", Duration.ofSeconds(2));
+        GroundingBackendClient.GroundingResponse starting =
+                client.get("/api/unified-crawl/jobs", Duration.ofSeconds(2));
+
+        assertEquals(200, ok.statusCode());
+        assertEquals("[]", ok.body());
+        assertEquals(503, starting.statusCode());
+        assertEquals("{\"message\":\"crawl manager starting\"}", starting.body());
+        server.verify();
+    }
+
+    @Test
+    void timedGetGivesUpOnAServerThatNeverAnswers() throws IOException {
+        // The kernel completes the handshake for a listening socket's backlog, so the request
+        // is sent and nothing ever answers it: only the read timeout can end the call.
+        try (ServerSocket silent = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            GroundingBackendClient real = new GroundingBackendClient(
+                    "http://127.0.0.1:" + silent.getLocalPort());
+
+            long started = System.nanoTime();
+            ResourceAccessException timedOut = assertThrows(ResourceAccessException.class,
+                    () -> real.get("/api/unified-crawl/jobs", Duration.ofMillis(300)));
+            long elapsedMillis = Duration.ofNanos(System.nanoTime() - started).toMillis();
+
+            assertTrue(elapsedMillis < 5_000,
+                    "the 300 ms read timeout ended the call, not the 35 s default: " + elapsedMillis);
+            assertEquals("Read timed out", GroundingBackendClient.failureReason(timedOut));
+        }
+    }
+
+    @Test
     void binaryDownloadTellsContentFromAnErrorBody() {
         byte[] graph = new byte[]{1, 2, 3};
         server.expect(requestTo("http://localhost/api/graph/unified/export?format=kgraph"))
@@ -148,5 +196,21 @@ class GroundingBackendClientTest {
         assertEquals("x".repeat(200) + "...", GroundingBackendClient.errorMessage("x".repeat(250)));
         assertEquals("", GroundingBackendClient.errorMessage(null));
         assertEquals("", GroundingBackendClient.errorMessage("   "));
+    }
+
+    @Test
+    void failureReasonIsTheInnermostCausesMessage() {
+        server.expect(requestTo("http://localhost/api/unified-crawl/jobs"))
+                .andRespond(withException(new ConnectException("Connection refused")));
+        ResourceAccessException refused = assertThrows(ResourceAccessException.class,
+                () -> client.get("/api/unified-crawl/jobs"));
+
+        assertTrue(refused.getMessage().startsWith("I/O error on GET request for "), refused.getMessage());
+        assertEquals("Connection refused", GroundingBackendClient.failureReason(refused));
+        assertEquals("unknown host crawl.test", GroundingBackendClient.failureReason(
+                new ResourceAccessException("I/O error", new UnknownHostException("crawl.test"))));
+        assertEquals("outer", GroundingBackendClient.failureReason(
+                new IllegalStateException("outer", new IOException(" "))));
+        assertEquals("IllegalStateException", GroundingBackendClient.failureReason(new IllegalStateException()));
     }
 }

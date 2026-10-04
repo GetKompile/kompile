@@ -38,7 +38,7 @@ public final class SyncWizard {
             var store = new SyncPeerStore(ai.kompile.cli.common.KompileHome.homeDirectory().toPath());
 
             System.out.println();
-            System.out.println("Kompile Sync — skills, memories, roles, and prompts between homes.");
+            System.out.println("Kompile Sync — portable content and opt-in harness settings/logins between homes.");
             System.out.println("(Binaries and models are handled by 'kompile update', never by sync.)");
             System.out.println();
 
@@ -98,6 +98,16 @@ public final class SyncWizard {
             List<String> components = SyncCatalog.validate(
                     componentsLine == null || componentsLine.isBlank()
                             ? null : List.of(componentsLine));
+
+            if (SyncCatalog.includesHarness(components)) {
+                System.out.println(SyncCatalog.HARNESS_WARNING);
+                System.out.print("Authorize transfer of these potentially secret files? [y/N]: ");
+                String consent = reader.readLine();
+                if (consent == null || !consent.trim().equalsIgnoreCase("y")) {
+                    System.out.println("Cancelled.");
+                    return 0;
+                }
+            }
 
             System.out.print("Scope [global / project:<abs-path>] (default: global): ");
             String scopeLine = reader.readLine();

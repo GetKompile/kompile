@@ -32,13 +32,14 @@ public final class ErpConnectionCredentials {
         if (tenant != null && (tenant.contains("\r") || tenant.contains("\n"))) throw new IllegalArgumentException("Invalid ERP tenant");
         if (secret == null || secret.isBlank() || secret.contains("\r") || secret.contains("\n"))
             throw new IllegalArgumentException("ERP secret must be nonblank and single-line");
+        if ("INFOR_MONGOOSE".equalsIgnoreCase(type)) ErpSourceConfiguration.validateMongooseConfig(tenant);
         boolean basic = username != null && !username.isBlank();
         if (basic && (username.contains(":") || username.contains("\r") || username.contains("\n")))
             throw new IllegalArgumentException("Invalid ERP username");
         if (basic && ErpSourceConfiguration.requiresBearer(type))
             throw new IllegalArgumentException("This ERP profile requires a bearer token, not basic credentials");
-        if (!basic && "SAP_NETWEAVER".equalsIgnoreCase(type))
-            throw new IllegalArgumentException("SAP NetWeaver connection requires a username and password");
+        if (!basic && ErpSourceConfiguration.requiresBasic(type))
+            throw new IllegalArgumentException("This ERP profile requires a username and password");
         if (expiresAt < 0 || expiresAt > 0 && expiresAt <= System.currentTimeMillis())
             throw new IllegalArgumentException("ERP token expiry must be in the future");
         var data = MAPPER.createObjectNode();

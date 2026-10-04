@@ -20,11 +20,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -92,6 +94,31 @@ class ClaudeCliClientTest {
               for arg in "${args[@]}"; do
                 case "$arg" in --mcp-config=*) cp "${arg#--mcp-config=}" "$DIR/mcp.json" ;; esac
               done
+            }
+            """;
+
+    /**
+     * Claude Code's answers to {@code mcp_status} (its servers: Kompile's stdio one
+     * and a remote one that failed) and to {@code mcp_reconnect}, which refuses a
+     * server it does not run.
+     */
+    private static final String MCP_CONTROLS = """
+            control() {
+              case "$2" in
+                mcp_status)
+                  emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{"mcpServers":[{"name":"kompile","status":"connected","serverInfo":{"name":"kompile","version":"1.0.0"},"config":{"type":"stdio","command":"java","args":["-jar","kompile-cli.jar","mcp-stdio"]},"scope":"dynamic","tools":[{"name":"read"},{"name":"grep"}]},{"name":"docs","status":"failed","config":{"type":"sse","url":"http://127.0.0.1:8085/sse"},"error":"connect ECONNREFUSED"}]}}}'
+                  ;;
+                mcp_reconnect)
+                  if [[ $3 == *'"serverName":"gone"'* ]]; then
+                    emit '{"type":"control_response","response":{"subtype":"error","request_id":"'"$1"'","error":"Server not found: gone"}}'
+                  else
+                    emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'"}}'
+                  fi
+                  ;;
+                *)
+                  emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{}}}'
+                  ;;
+              esac
             }
             """;
 
@@ -469,6 +496,27 @@ class ClaudeCliClientTest {
     }
 
     @Test
+    void quotaResetHintSurvivesAGenericTerminalError() throws Exception {
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  say_init
+                  emit '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You have hit your limit - resets 5pm (UTC)"}]},"parent_tool_use_id":null,"error":"rate_limit","is_api_error_message":true}'
+                  emit '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"errors":["Request failed"]}'
+                }
+                """);
+
+        try (ClaudeCliClient client = client(fake)) {
+            ClaudeCliClient.TurnFailedException failure = assertThrows(ClaudeCliClient.TurnFailedException.class,
+                    () -> client.send("sonnet", null, false, null, "hi", "", null, null));
+
+            assertTrue(failure.getMessage().contains("Request failed"), failure.getMessage());
+            assertTrue(failure.getMessage().contains("resets 5pm (UTC)"), failure.getMessage());
+            assertTrue(client.processAlive(), "quota exhaustion keeps the same vendor process");
+            assertNotNull(client.nativeSession(), "the same session remains available for resumption");
+        }
+    }
+
+    @Test
     void tokenUsageFromTheResultEventReachesTheListener() throws Exception {
         FakeClaudeCode fake = fake("""
                 turn() {
@@ -484,6 +532,66 @@ class ClaudeCliClientTest {
         }
         // input_tokens is uncached input; cache reads and writes arrive separately.
         assertEquals(List.of("12/3/4/2"), recorder.usage);
+    }
+
+    @Test
+    void eachRequestsTokensReachTheListenerWhileTheTurnRuns() throws Exception {
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  say_init
+                  emit '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-1","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":1000}}}}'
+                  emit '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_task","name":"Task","input":{}}}}'
+                  emit '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"prompt\\":\\"look\\"}"}}}'
+                  emit '{"type":"stream_event","event":{"type":"content_block_stop","index":0}}'
+                  emit '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":30}}}'
+                  emit '{"type":"assistant","parent_tool_use_id":"toolu_task","message":{"id":"msg-sub","content":[],"usage":{"input_tokens":900,"output_tokens":5}}}'
+                  emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_task","content":"found it"}]}}'
+                  emit '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-2","usage":{"input_tokens":20,"output_tokens":1,"cache_read_input_tokens":1000}}}}'
+                  say_text done
+                  emit '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}}'
+                  emit '{"type":"result","subtype":"success","num_turns":2,"usage":{"input_tokens":30,"output_tokens":34,"cache_read_input_tokens":2000},"modelUsage":{"claude-sonnet-5":{"inputTokens":30,"outputTokens":34,"cacheReadInputTokens":2000},"claude-haiku-4-5":{"inputTokens":900,"outputTokens":75}}}'
+                }
+                """);
+        Recorder recorder = new Recorder();
+
+        try (ClaudeCliClient client = client(fake)) {
+            assertEquals("done", client.send("sonnet", null, false, null, "look it up", "",
+                    text -> recorder.timeline.add("text:" + text), recorder));
+        }
+        // Each request counts as it runs, the subagent's input included; the
+        // result adds the subagent's output, which only modelUsage reports.
+        assertEquals(List.of("usage:10/1/1000/0", "usage:0/29/0/0", "usage:900/0/0/0",
+                "done:toolu_task", "usage:20/1/1000/0", "text:done", "usage:0/3/0/0",
+                "usage:0/75/0/0"), recorder.timeline);
+        assertEquals(List.of("{\"prompt\":\"look\"}"), recorder.toolInputDeltas);
+    }
+
+    @Test
+    void aCancelledTurnStillCountsTheTokensItUsed() throws Exception {
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  say_init
+                  emit '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-1","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":1000}}}}'
+                  say_text working
+                  start_tool
+                }
+                on_interrupt() {
+                  if [ -f "$DIR/tool.pid" ]; then kill "$(cat "$DIR/tool.pid")" 2>/dev/null; fi
+                  emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{"cancelled":[],"still_queued":[]}}}'
+                  emit '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"usage":{"input_tokens":10,"output_tokens":25,"cache_read_input_tokens":1000},"modelUsage":{"claude-sonnet-5":{"inputTokens":10,"outputTokens":25,"cacheReadInputTokens":1000}}}'
+                }
+                """);
+        StringBuilder streamed = new StringBuilder();
+        Recorder recorder = new Recorder();
+
+        try (ClaudeCliClient client = client(fake)) {
+            client.setCancellationCheck(() -> streamed.length() > 0 && Files.exists(fake.path("tool.pid")));
+            assertThrows(CancellationException.class, () -> client.send("sonnet", null, false, null,
+                    "run the long task", "", streamed::append, recorder));
+            fake.assertToolStopped();
+        }
+        // The interrupted request's output was billed though its turn is not shown.
+        assertEquals(List.of("10/1/1000/0", "0/24/0/0"), recorder.usage);
     }
 
     @Test
@@ -769,14 +877,9 @@ class ClaudeCliClientTest {
 
     @Test
     void anIdleSettingsRefusalBecomesANoticeOnTheNextTurn() throws Exception {
-        // Cli.applySettings records a new model, effort and fast mode
-        // optimistically regardless of Claude Code's answer, so a switch
-        // applyIdleSettings pushes while idle (e.g. to a model the account does
-        // not have, or, for ultracode, an unavailable effort tier) can still be
-        // refused. Without carrying that refusal forward, the next send() would
-        // see nothing changed from its own point of view -- since applySettings
-        // already recorded "opus" as current -- and never re-send it, so the
-        // user would never learn the switch failed.
+        // Non-selection idle changes still carry their refusal to the next turn.
+        // A rejected model is not cached as active; sending the old model below
+        // must neither switch back nor repeat the invalid selection.
         FakeClaudeCode fake = fake("""
                 control() {
                   if [ "$2" = set_model ]; then
@@ -799,13 +902,62 @@ class ClaudeCliClientTest {
             FakeClaudeCode.await("the idle settings change to reach the live session",
                     () -> !fake.controls("set_model").isEmpty());
 
-            // Asks for exactly what was just (unsuccessfully) applied while idle,
-            // so this turn's own applySettings triggers no second set_model of
-            // its own -- isolating the notice below to the idle-applied refusal.
-            assertEquals("ok", client.send("opus", "high", false, null, "second", "", null, recorder));
+            assertEquals("ok", client.send("sonnet", "high", false, null, "second", "", null, recorder));
         }
         assertEquals(List.of("Claude Code did not apply the model change: model not available"), recorder.notices);
         assertEquals(1, fake.controls("set_model").size(), fake.controls("set_model").toString());
+    }
+
+    @Test
+    void rejectedModelSelectionReportsImmediatelyAndKeepsTheConfirmedModel() throws Exception {
+        FakeClaudeCode fake = fake("""
+                control() {
+                  if [ "$2" = set_model ] && [[ "$3" == *'fable[1m]'* ]]; then
+                    emit '{"type":"control_response","response":{"subtype":"error","request_id":"'"$1"'","error":"1m context is disabled"}}'
+                  else
+                    emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{}}}'
+                  fi
+                }
+                """);
+        LinkedBlockingQueue<String> results = new LinkedBlockingQueue<>();
+        try (ClaudeCliClient client = client(fake)) {
+            assertEquals("ok", client.send("sonnet", null, false, null, "first", "", null, null));
+            assertTrue(client.selectModel("fable[1m]", () -> results.add("accepted"), results::add));
+            assertEquals("1m context is disabled", results.poll(5, TimeUnit.SECONDS),
+                    "the rejection must not wait for another user turn");
+            assertEquals("ok", client.send("sonnet", null, false, null, "still works", "", null, null));
+            assertEquals(1, fake.controls("set_model").size(), "the old model was never changed");
+            // A second attempt must be checked, not treated as an already-applied model.
+            assertTrue(client.selectModel("fable[1m]", () -> results.add("accepted"), results::add));
+            assertEquals("1m context is disabled", results.poll(5, TimeUnit.SECONDS));
+            assertTrue(client.selectModel("opus", () -> results.add("accepted"), results::add));
+            assertEquals("accepted", results.poll(5, TimeUnit.SECONDS));
+            assertEquals("ok", client.send("opus", null, false, null, "new model", "", null, null));
+            assertEquals(List.of("fable[1m]", "fable[1m]", "opus"), fake.controls("set_model").stream()
+                    .map(request -> request.path("model").asText()).toList());
+            assertEquals(1, fake.argv().size(), "the switch keeps the provider session");
+        }
+    }
+
+    @Test
+    void modelSelectionDoesNotCommitBeforeAcknowledgement() throws Exception {
+        FakeClaudeCode fake = fake("""
+                control() {
+                  if [ "$2" = set_model ]; then
+                    while [ ! -f "$DIR/ack" ]; do sleep 0.02; done
+                  fi
+                  emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{}}}'
+                }
+                """);
+        LinkedBlockingQueue<String> results = new LinkedBlockingQueue<>();
+        try (ClaudeCliClient client = client(fake)) {
+            assertEquals("ok", client.send("sonnet", null, false, null, "first", "", null, null));
+            assertTrue(client.selectModel("opus", () -> results.add("accepted"), results::add));
+            fake.awaitControl("set_model");
+            assertNull(results.poll(100, TimeUnit.MILLISECONDS));
+            Files.createFile(fake.path("ack"));
+            assertEquals("accepted", results.poll(5, TimeUnit.SECONDS));
+        }
     }
 
     @Test
@@ -1509,6 +1661,221 @@ class ClaudeCliClientTest {
         assertFalse(ClaudeCliClient.effortListed(null, "sonnet", "low"));
     }
 
+    @Test
+    void mcpServersComeFromTheLiveProcessAndReconnectRestartsOneByName() throws Exception {
+        FakeClaudeCode fake = fake(MCP_CONTROLS);
+
+        try (ClaudeCliClient client = client(fake)) {
+            // No process serves the session before its first message, and asking starts none.
+            assertNull(client.mcpServers(Duration.ofSeconds(5)));
+            assertFalse(client.reconnectMcpServer("kompile", Duration.ofSeconds(5)));
+            assertTrue(fake.argv().isEmpty(), fake.argv().toString());
+
+            assertEquals("ok", client.send("sonnet", null, false, null, "hi", "", null, null));
+            List<ClaudeMcpServer> servers = client.mcpServers(Duration.ofSeconds(5));
+
+            assertEquals(List.of(
+                    new ClaudeMcpServer("kompile", "connected", "kompile 1.0.0", "stdio",
+                            List.of("java", "-jar", "kompile-cli.jar", "mcp-stdio"), 2, ""),
+                    new ClaudeMcpServer("docs", "failed", "", "sse",
+                            List.of("http://127.0.0.1:8085/sse"), 0, "connect ECONNREFUSED")), servers);
+            assertTrue(servers.get(0).isKompileStdio());
+            assertFalse(servers.get(1).isKompileStdio());
+
+            assertTrue(client.reconnectMcpServer("kompile", Duration.ofSeconds(5)));
+            IOException refused = assertThrows(IOException.class,
+                    () -> client.reconnectMcpServer("gone", Duration.ofSeconds(5)));
+            assertEquals("Server not found: gone", refused.getMessage());
+        }
+        assertEquals(List.of("kompile", "gone"), fake.controls("mcp_reconnect").stream()
+                .map(request -> request.path("serverName").asText()).toList());
+        assertEquals(1, fake.argv().size(), fake.argv().toString());
+    }
+
+    @Test
+    void anMcpRequestClaudeCodeDoesNotAnswerTimesOutAndTheSessionGoesOn() throws Exception {
+        FakeClaudeCode fake = fake("""
+                control() {
+                  if [ "$2" != mcp_status ]; then
+                    emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{}}}'
+                  fi
+                }
+                """);
+
+        try (ClaudeCliClient client = client(fake)) {
+            assertEquals("ok", client.send("sonnet", null, false, null, "hi", "", null, null));
+
+            IOException silent = assertThrows(IOException.class,
+                    () -> client.mcpServers(Duration.ofSeconds(1)));
+
+            assertEquals("Claude Code did not answer mcp_status within 1 s", silent.getMessage());
+            assertEquals("ok", client.send("sonnet", null, false, null, "next", "", null, null));
+        }
+        assertEquals(1, fake.argv().size(), fake.argv().toString());
+    }
+
+    @Test
+    void aMessageWrittenIntoTheRunningTurnIsTakenIntoIt() throws Exception {
+        // Claude Code folds the message into the turn it runs: it echoes the
+        // message, and the turn goes on to its result.
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  if [ "$1" = 1 ]; then
+                    say_init
+                    say_text working
+                  else
+                    say_text ' done'
+                    say_result
+                  fi
+                }
+                """);
+        Injections injections = new Injections();
+
+        try (ClaudeCliClient client = client(fake)) {
+            client.setInjectionListener(injections);
+            BackgroundTurn turn = new BackgroundTurn(client, "start");
+            turn.awaitOutput("working");
+
+            assertTrue(client.injectIntoRunningTurn("event-1", "proc-7 ended"));
+            assertEquals("event-1", injections.delivered.poll(10, TimeUnit.SECONDS));
+            turn.join();
+
+            assertNull(turn.failure.get());
+            assertEquals("working done", turn.reply.get());
+            assertEquals(List.of("start", "proc-7 ended"), fake.messages());
+            JsonNode injected = fake.inputs().stream()
+                    .filter(input -> "event-1".equals(input.path("uuid").asText()))
+                    .findFirst().orElseThrow();
+            // Priority "now" would abort the turn; without one Claude Code folds the message in.
+            assertTrue(injected.path("priority").isMissingNode(), injected.toString());
+            assertTrue(injections.dropped.isEmpty(), injections.dropped.toString());
+        }
+    }
+
+    @Test
+    void aMessageTheStoppedTurnLeftQueuedIsReportedDropped() throws Exception {
+        // The turn has not taken the message in when it is stopped, so the
+        // interrupt's cancel_queued drops it, and Claude Code names it in its answer.
+        FakeClaudeCode fake = fake("""
+                QUEUED=
+                turn() {
+                  say_init
+                  say_text working
+                  IFS= read -r queued
+                  printf '%s\\n' "$queued" >> "$DIR/stdin.log"
+                  [[ $queued =~ $re_uuid ]] && QUEUED="${BASH_REMATCH[1]}"
+                }
+                on_interrupt() {
+                  emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{"cancelled":["'"$QUEUED"'"],"still_queued":[]}}}'
+                  emit '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1}'
+                }
+                """);
+        Injections injections = new Injections();
+        AtomicBoolean stop = new AtomicBoolean();
+
+        try (ClaudeCliClient client = client(fake)) {
+            client.setInjectionListener(injections);
+            client.setCancellationCheck(stop::get);
+            BackgroundTurn turn = new BackgroundTurn(client, "start");
+            turn.awaitOutput("working");
+
+            assertTrue(client.injectIntoRunningTurn("event-1", "proc-7 ended"));
+            stop.set(true);
+            turn.join();
+
+            assertInstanceOf(CancellationException.class, turn.failure.get());
+            assertTrue(fake.awaitControl("interrupt").path("cancel_queued").asBoolean(),
+                    "the interrupt drops the messages still queued");
+            assertEquals("event-1", injections.dropped.poll(10, TimeUnit.SECONDS));
+            assertTrue(injections.delivered.isEmpty(), injections.delivered.toString());
+            assertFalse(client.injectIntoRunningTurn("event-2", "proc-8 ended"), "no turn runs");
+        }
+    }
+
+    @Test
+    void nothingIsWrittenWhenNoTurnRuns() throws Exception {
+        FakeClaudeCode fake = fake();
+        Injections injections = new Injections();
+
+        try (ClaudeCliClient client = client(fake)) {
+            client.setInjectionListener(injections);
+            assertFalse(client.injectIntoRunningTurn("event-1", "proc-7 ended"), "no process runs yet");
+            assertEquals("ok", client.send("sonnet", null, false, null, "hi", "", null, null));
+            assertFalse(client.injectIntoRunningTurn("event-2", "proc-8 ended"), "the turn has ended");
+        }
+        assertEquals(List.of("hi"), fake.messages());
+        assertTrue(injections.delivered.isEmpty(), injections.delivered.toString());
+        assertTrue(injections.dropped.isEmpty(), injections.dropped.toString());
+    }
+
+    @Test
+    void aMessageTheTurnEndsBeforeTakingInRunsAsATurnOfItsOwn() throws Exception {
+        // The message reaches Claude Code too late for the turn, so Claude Code
+        // takes it in once the turn ends and answers it in a turn of its own.
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  say_init
+                  if [ "$1" = 1 ]; then
+                    say_text working
+                    while [ ! -f "$DIR/go" ]; do sleep 0.05; done
+                  else
+                    say_text "$ANSWER"
+                  fi
+                  say_result
+                }
+                """);
+        Injections injections = new Injections();
+        LinkedBlockingQueue<String> announced = new LinkedBlockingQueue<>();
+
+        try (ClaudeCliClient client = client(fake)) {
+            client.setInjectionListener(injections);
+            client.setFollowUpListener(announced::add);
+            BackgroundTurn turn = new BackgroundTurn(client, "start");
+            turn.awaitOutput("working");
+
+            assertTrue(client.injectIntoRunningTurn("event-1", "proc-7 ended"));
+            Files.createFile(fake.path("go"));
+            turn.join();
+
+            assertNull(turn.failure.get());
+            assertEquals("working", turn.reply.get());
+            assertEquals("event-1", injections.delivered.poll(10, TimeUnit.SECONDS));
+            assertEquals("f1", announced.poll(10, TimeUnit.SECONDS));
+            assertEquals("ok", client.adoptFollowUp("f1", null, null));
+            assertTrue(injections.dropped.isEmpty(), injections.dropped.toString());
+        }
+    }
+
+    @Test
+    void aMessageUnreadWhenClaudeCodeExitsIsReportedDropped() throws Exception {
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  say_init
+                  say_text working
+                  IFS= read -r queued
+                  printf '%s\\n' "$queued" >> "$DIR/stdin.log"
+                  exit 3
+                }
+                """);
+        Injections injections = new Injections();
+
+        try (ClaudeCliClient client = client(fake)) {
+            client.setInjectionListener(injections);
+            BackgroundTurn turn = new BackgroundTurn(client, "start");
+            turn.awaitOutput("working");
+
+            assertTrue(client.injectIntoRunningTurn("event-1", "proc-7 ended"));
+            turn.join();
+
+            assertNotNull(turn.failure.get(), "the turn fails with its process");
+            assertTrue(String.valueOf(turn.failure.get().getMessage()).contains("exit 3"),
+                    turn.failure.get().toString());
+            assertEquals("event-1", injections.dropped.poll(10, TimeUnit.SECONDS));
+            assertTrue(injections.delivered.isEmpty(), injections.delivered.toString());
+            assertFalse(client.injectIntoRunningTurn("event-2", "proc-8 ended"), "no process runs");
+        }
+    }
+
     private FakeClaudeCode fake() throws IOException {
         return fake("");
     }
@@ -1555,10 +1922,18 @@ class ClaudeCliClientTest {
         final List<String> retries = new ArrayList<>();
         final List<String> usage = new ArrayList<>();
         final List<String> compactions = new ArrayList<>();
+        final List<String> toolInputDeltas = new ArrayList<>();
+        /** Usage and finished tools in the order they arrived; a test's output can add its text. */
+        final List<String> timeline = new ArrayList<>();
 
         @Override
         public void onToolStart(String callId, String name, String input) {
             toolStarts.add(callId + ":" + name);
+        }
+
+        @Override
+        public void onToolInputDelta(String delta) {
+            toolInputDeltas.add(delta);
         }
 
         @Override
@@ -1574,11 +1949,14 @@ class ClaudeCliClientTest {
         @Override
         public void onToolComplete(String callId, String name, String output, int exitCode, boolean error) {
             toolResults.add(callId + ":" + output + ":" + error);
+            timeline.add("done:" + callId);
         }
 
         @Override
         public void onTokenUsage(long input, long output, long cacheRead, long cacheCreation) {
-            usage.add(input + "/" + output + "/" + cacheRead + "/" + cacheCreation);
+            String counts = input + "/" + output + "/" + cacheRead + "/" + cacheCreation;
+            usage.add(counts);
+            timeline.add("usage:" + counts);
         }
 
         @Override
@@ -1599,6 +1977,50 @@ class ClaudeCliClientTest {
         @Override
         public void onCompacted(String trigger, long tokensBefore) {
             compactions.add(trigger + ":" + tokensBefore);
+        }
+    }
+
+    /** Records what became of each message written into a running turn. */
+    private static final class Injections implements DirectLlmClient.ClaudeInjectionListener {
+        final LinkedBlockingQueue<String> delivered = new LinkedBlockingQueue<>();
+        final LinkedBlockingQueue<String> dropped = new LinkedBlockingQueue<>();
+
+        @Override
+        public void delivered(String id) {
+            delivered.add(id);
+        }
+
+        @Override
+        public void dropped(String id) {
+            dropped.add(id);
+        }
+    }
+
+    /** A turn sent on a thread of its own, so the test can act while it runs. */
+    private static final class BackgroundTurn {
+        final StringBuffer streamed = new StringBuffer();
+        final AtomicReference<String> reply = new AtomicReference<>();
+        final AtomicReference<Throwable> failure = new AtomicReference<>();
+        private final Thread thread;
+
+        BackgroundTurn(ClaudeCliClient client, String message) {
+            thread = new Thread(() -> {
+                try {
+                    reply.set(client.send("sonnet", null, false, null, message, "", streamed::append, null));
+                } catch (Throwable t) {
+                    failure.set(t);
+                }
+            }, "claude-turn");
+            thread.start();
+        }
+
+        void awaitOutput(String text) throws Exception {
+            FakeClaudeCode.await("the turn to show " + text, () -> streamed.toString().contains(text));
+        }
+
+        void join() throws InterruptedException {
+            thread.join(10_000);
+            assertFalse(thread.isAlive(), "the turn did not end");
         }
     }
 }

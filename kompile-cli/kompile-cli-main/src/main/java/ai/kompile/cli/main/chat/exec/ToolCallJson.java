@@ -9,6 +9,7 @@ package ai.kompile.cli.main.chat.exec;
 import ai.kompile.cli.main.chat.render.SyntaxHighlighter;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -21,8 +22,11 @@ import java.util.Objects;
  * from the {@link TerminalRenderer} row and detail model the terminal prints, so a browser
  * shows the same row, the same bounded body and the same highlight languages:
  *
- * <pre>{"displayName", "action"?, "title"?, "metadata"?, "preview"?, "error"?,
+ * <pre>{"displayName", "action"?, "title"?, "metadata"?, "preview"?, "error"?, "chart"?,
  *  "sections": [{"label", "diff"?, "note"?, "runs": [{"text", "file"?, "family"?}]}]}</pre>
+ *
+ * <p>{@code chart} is the tool's {@link ToolResult#CHART_METADATA} object, passed through as is
+ * for the browser to draw; the terminal prints the same answer as text.</p>
  *
  * <p>Consecutive lines that share a highlight language form one run, so a browser highlighter
  * sees multi-line constructs (block comments, strings) whole; lines whose language was
@@ -47,6 +51,7 @@ public final class ToolCallJson {
         putText(detail, "metadata", row.metadata());
         putText(detail, "preview", row.preview());
         putText(detail, "error", row.errorPreview());
+        putChart(mapper, detail, result);
         ArrayNode sections = detail.putArray("sections");
         for (TerminalRenderer.DetailSection section
                 : TerminalRenderer.toolResultDetailSections(toolName, rawInput, result)) {
@@ -70,6 +75,17 @@ public final class ToolCallJson {
             if (text != null) addRun(runs, text.toString(), runFile);
         }
         return detail;
+    }
+
+    /**
+     * The chart of a successful call. An in-process tool hands over a JSON node; a result rebuilt
+     * from MCP structured content carries the same object as a map.
+     */
+    private static void putChart(ObjectMapper mapper, ObjectNode detail, ToolResult result) {
+        Object chart = result.getMetadata().get(ToolResult.CHART_METADATA);
+        if (chart == null || result.isError()) return;
+        JsonNode node = mapper.valueToTree(chart);
+        if (node.isObject()) detail.set("chart", node);
     }
 
     private static void addRun(ArrayNode runs, String text, String file) {

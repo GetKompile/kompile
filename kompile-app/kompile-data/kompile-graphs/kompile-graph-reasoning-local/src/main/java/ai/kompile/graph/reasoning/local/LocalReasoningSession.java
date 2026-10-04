@@ -130,6 +130,9 @@ public final class LocalReasoningSession implements Closeable {
      */
     public synchronized void reprimeKb() {
         checkOpen();
+        // Mutation invalidates learned models; loading an unchanged archive does not.
+        graph.meta("learning.reasoningStale", true);
+        graph.meta("learning.kgeStale", true);
         kbState.reprimeFromGraph(graph);
     }
 

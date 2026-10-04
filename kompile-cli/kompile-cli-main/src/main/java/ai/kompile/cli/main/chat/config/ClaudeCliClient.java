@@ -21,11 +21,13 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.InterruptedIOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -103,13 +105,23 @@ final class ClaudeCliClient implements AutoCloseable {
         void onToolStart(String callId, String name, String input);
         default void onToolInput(String callId, String name, String input) { }
         default void onToolOutput(String callId, String name, String output) { }
+        /**
+         * A fragment of the arguments the model is writing for a tool call, as it
+         * streams. Its tokens are output the request's usage reports when it ends.
+         */
+        default void onToolInputDelta(String delta) { }
         void onToolComplete(String callId, String name, String output,
                             int exitCode, boolean error);
+        /**
+         * Tokens the session used since the last report, each counted once: a
+         * request's as it runs, and at a result what only Claude Code's totals
+         * cover, such as a subagent's output and compaction requests.
+         */
         void onTokenUsage(long input, long output, long cacheRead, long cacheCreation);
         /**
          * The input size of the turn's last request, reported at the end of the
-         * turn when known. {@link #onTokenUsage} adds up every request of the
-         * turn, so only this describes the context the session holds.
+         * turn when known. {@link #onTokenUsage} adds up every request, so only
+         * this describes the context the session holds.
          */
         default void onContextUsage(long contextTokens) { }
         /**
@@ -293,6 +305,7 @@ final class ClaudeCliClient implements AutoCloseable {
     private BackgroundProcessManager taskProcesses;
     private ClaudeTaskBridge taskBridge;
     private Consumer<String> followUpListener;
+    private DirectLlmClient.ClaudeInjectionListener injectionListener;
     /** Returns true once the running turn is cancelled; null when nothing can cancel it. */
     private volatile BooleanSupplier cancellationCheck;
     private volatile boolean closed;
@@ -327,12 +340,11 @@ final class ClaudeCliClient implements AutoCloseable {
     /**
      * Setting changes {@link #runIdleSettingsWorker} applied while the session
      * was idle, not yet reported to a displayed turn's activity listener. {@link
-     * Cli#applySettings} records the new model, effort and fast mode
-     * optimistically regardless of Claude Code's answer, so without this, a
-     * refusal (e.g. ultracode unavailable on this account) applied while idle
-     * would vanish silently: the next {@link #send} would see nothing changed
-     * from its own point of view and never re-send it, so {@link #consume}
-     * would never have it to report. Guarded by {@link #turnLock}, like the
+     * Cli#applySettings} records effort and fast mode optimistically, while
+     * models are recorded only on acknowledgement. Keeping these responses
+     * lets the next displayed turn report idle refusals (e.g. ultracode
+     * unavailable), even when that turn asks for the same settings.
+     * Guarded by {@link #turnLock}, like the
      * worker's own call into {@link Cli#applySettings}.
      */
     private final List<SettingChange> idleAppliedSettings = new ArrayList<>();
@@ -391,6 +403,37 @@ final class ClaudeCliClient implements AutoCloseable {
      */
     synchronized void setFollowUpListener(Consumer<String> listener) {
         followUpListener = listener;
+    }
+
+    /**
+     * Told what became of each message {@link #injectIntoRunningTurn} wrote, on
+     * a thread that holds none of this client's locks.
+     */
+    synchronized void setInjectionListener(DirectLlmClient.ClaudeInjectionListener listener) {
+        injectionListener = listener;
+    }
+
+    /**
+     * Write a message into the turn a {@link #send} or {@link #adoptFollowUp} is
+     * reading. Claude Code takes it in after the turn's next tool calls, or as a
+     * turn of its own once the turn ends; the injection listener is told which
+     * messages it took in and which it dropped.
+     *
+     * @param id the message's uuid, which the listener is told
+     * @return false, writing nothing, when no turn is read or the turn was
+     *         interrupted or ended
+     */
+    boolean injectIntoRunningTurn(String id, String text) {
+        if (id == null || id.isBlank() || text == null || text.isBlank()
+                || mode.toolFree() || mode.oneShot()) {
+            return false;
+        }
+        Cli running;
+        synchronized (this) {
+            if (closed) return false;
+            running = cli;
+        }
+        return running != null && running.inject(id, text);
     }
 
     /** The chat message that asks for a follow-up turn to be shown. */
@@ -471,6 +514,64 @@ final class ClaudeCliClient implements AutoCloseable {
             running = cli;
         }
         return running != null && running.alive();
+    }
+
+    /**
+     * The MCP servers of the session's Claude Code process, as its
+     * {@code mcp_status} control request reports them, or null when no process
+     * serves the session yet. A resumed process counts as none until its first
+     * message: its output is not read before then, since what it prints first
+     * belongs to that message.
+     */
+    List<ClaudeMcpServer> mcpServers(Duration timeout) throws IOException {
+        JsonNode response = sessionControl("mcp_status", request -> { }, timeout);
+        if (response == null) return null;
+        List<ClaudeMcpServer> servers = new ArrayList<>();
+        for (JsonNode server : response.path("response").path("mcpServers")) {
+            servers.add(ClaudeMcpServer.from(server));
+        }
+        return servers;
+    }
+
+    /**
+     * Ask Claude Code to restart one MCP server in place ({@code mcp_reconnect}):
+     * it stops the server's process and starts it again from the same
+     * configuration. False when no process serves the session yet.
+     */
+    boolean reconnectMcpServer(String name, Duration timeout) throws IOException {
+        return sessionControl("mcp_reconnect", request -> request.put("serverName", name), timeout) != null;
+    }
+
+    /**
+     * Send a control request to the session's process and wait for its answer;
+     * null when no process runs or its output is not read yet. A refusal, or no
+     * answer within {@code timeout}, is an IOException.
+     */
+    private JsonNode sessionControl(String subtype, Consumer<ObjectNode> fields, Duration timeout)
+            throws IOException {
+        Cli running;
+        synchronized (this) {
+            running = cli;
+        }
+        if (running == null || !running.alive() || !running.isReading()) return null;
+        CompletableFuture<JsonNode> answer = running.control(subtype, fields);
+        JsonNode response;
+        try {
+            response = answer.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            answer.cancel(false);
+            throw new IOException("Claude Code did not answer " + subtype + " within "
+                    + timeout.toSeconds() + " s");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedIOException(subtype + " was interrupted");
+        } catch (ExecutionException e) {
+            throw new IOException(String.valueOf(e.getCause().getMessage()), e.getCause());
+        }
+        if ("error".equals(response.path("subtype").asText(""))) {
+            throw new IOException(response.path("error").asText("no reason given"));
+        }
+        return response;
     }
 
     /**
@@ -659,12 +760,8 @@ final class ClaudeCliClient implements AutoCloseable {
                         running = cli;
                     }
                     if (running != null && running.alive()) {
-                        // Kept, not discarded: Cli.applySettings records the new
-                        // values optimistically regardless of Claude Code's
-                        // answer, so a refusal (e.g. ultracode unavailable) is
-                        // only ever visible through these futures. send() and
-                        // adoptFollowUp() drain idleAppliedSettings so the next
-                        // displayed turn can still report it.
+                        // Keep responses so send() and adoptFollowUp() can
+                        // report idle refusals on the next displayed turn.
                         idleAppliedSettings.addAll(running.applySettings(desired.model(),
                                 turnEffort(running, desired.model(), desired.effort()), desired.fastMode()));
                     }
@@ -685,6 +782,56 @@ final class ClaudeCliClient implements AutoCloseable {
             }
             throw e;
         }
+    }
+
+    /**
+     * Confirm a live model selection before the caller publishes it. The worker
+     * waits for any current turn, then keeps the turn lock through the commit so
+     * the next send cannot restore the old config between acknowledgement and UI.
+     */
+    boolean selectModel(String model, Runnable accepted, Consumer<String> rejected) {
+        Cli running;
+        synchronized (this) {
+            running = cli;
+        }
+        if (running == null || !running.alive() || !running.isReading()) return false;
+        daemon("kompile-claude-cli-model-selection", () -> {
+            synchronized (turnLock) {
+                try {
+                    synchronized (this) {
+                        if (cli != running || !running.alive()) {
+                            throw new IOException("Claude Code session ended before applying the model");
+                        }
+                    }
+                    String nextModel = normalized(model);
+                    if (!nextModel.equals(running.model)) {
+                        JsonNode response;
+                        try {
+                            response = running.setModel(nextModel).get(10, TimeUnit.SECONDS);
+                        } catch (TimeoutException e) {
+                            // Its eventual answer is unknown. Stop only this process;
+                            // the next turn resumes with the still-active old config.
+                            running.stop();
+                            throw new IOException("Claude Code did not acknowledge the model change within 10 s", e);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            running.stop();
+                            throw new IOException("Model selection was interrupted", e);
+                        } catch (ExecutionException e) {
+                            throw new IOException("Claude Code could not apply the model: "
+                                    + e.getCause().getMessage(), e.getCause());
+                        }
+                        if (!"success".equals(response.path("subtype").asText())) {
+                            throw new IOException(response.path("error").asText("no reason given"));
+                        }
+                    }
+                    accepted.run();
+                } catch (IOException e) {
+                    rejected.accept(e.getMessage());
+                }
+            }
+        }).start();
+        return true;
     }
 
     /** The session's running process; a new one resumes the session when there is none. */
@@ -892,6 +1039,7 @@ final class ClaudeCliClient implements AutoCloseable {
         CompletableFuture<JsonNode> interrupt = null;
         long deadline = 0;
         boolean stopped = false;
+        turn.source.openInjection(turn);
         try {
             while (true) {
                 Object item;
@@ -907,8 +1055,12 @@ final class ClaudeCliClient implements AutoCloseable {
                 }
                 if (item instanceof ClaudeCliStreamParser.Event event) {
                     if (outcome.cancelled) {
-                        // An interrupted turn's output is not shown; its result ends it.
-                        if (event instanceof ClaudeCliStreamParser.TurnComplete) {
+                        // An interrupted turn's output is not shown, but the tokens it
+                        // used count; its result ends it.
+                        if (event instanceof ClaudeCliStreamParser.RequestUsage) {
+                            reportUsage(event, activityListener, turn.source);
+                        } else if (event instanceof ClaudeCliStreamParser.TurnComplete) {
+                            reportUsage(event, activityListener, turn.source);
                             outcome.completed = true;
                             break;
                         }
@@ -921,9 +1073,12 @@ final class ClaudeCliClient implements AutoCloseable {
                         || Thread.currentThread().isInterrupted() || cancelRequested(check))) {
                     outcome.cancelled = true;
                     // The process was initialized with perTaskStopAffordance, so the
-                    // interrupt spares background tasks. A message still queued is dropped.
+                    // interrupt spares background tasks. A message still queued is
+                    // dropped, so nothing is written into the turn after it.
+                    turn.source.closeInjection(turn);
                     interrupt = turn.source.control("interrupt",
                             request -> request.put("cancel_queued", true));
+                    turn.source.reportWithdrawn(interrupt);
                     deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(INTERRUPT_GRACE_MILLIS);
                 }
                 if (outcome.cancelled) {
@@ -979,6 +1134,8 @@ final class ClaudeCliClient implements AutoCloseable {
             if (activityListener != null) {
                 activityListener.onToolStart(start.callId(), start.name(), start.input());
             }
+        } else if (event instanceof ClaudeCliStreamParser.ToolInputDelta delta) {
+            if (activityListener != null) activityListener.onToolInputDelta(delta.delta());
         } else if (event instanceof ClaudeCliStreamParser.ToolInput input) {
             if (activityListener != null) {
                 activityListener.onToolInput(input.callId(), input.name(), input.input());
@@ -1008,6 +1165,8 @@ final class ClaudeCliClient implements AutoCloseable {
                         pointer != null ? pointer : complete.output(),
                         complete.error() ? 1 : 0, complete.error());
             }
+        } else if (event instanceof ClaudeCliStreamParser.RequestUsage) {
+            reportUsage(event, activityListener, source);
         } else if (event instanceof ClaudeCliStreamParser.Notice notice) {
             if (activityListener != null) activityListener.onNotice(notice.text());
         } else if (event instanceof ClaudeCliStreamParser.ApiError apiError) {
@@ -1030,6 +1189,10 @@ final class ClaudeCliClient implements AutoCloseable {
             if (turn.error()) {
                 String detail = turn.errorMessage().isBlank()
                         ? outcome.apiError : turn.errorMessage();
+                // A generic terminal error must not erase an earlier quota reset hint.
+                if (!outcome.apiError.isBlank() && !detail.contains(outcome.apiError)) {
+                    detail += "; " + outcome.apiError;
+                }
                 outcome.failure = detail.isBlank()
                         ? "Claude reported an error for this turn"
                         : "Claude reported an error: " + detail;
@@ -1053,15 +1216,29 @@ final class ClaudeCliClient implements AutoCloseable {
             if (activityListener != null && turn.requests() > 0) {
                 activityListener.onSteps(turn.requests());
             }
-            if (activityListener != null && (turn.inputTokens() > 0
-                    || turn.outputTokens() > 0 || turn.cacheReadTokens() > 0
-                    || turn.cacheCreationTokens() > 0)) {
-                activityListener.onTokenUsage(turn.inputTokens(), turn.outputTokens(),
-                        turn.cacheReadTokens(), turn.cacheCreationTokens());
-            }
+            reportUsage(turn, activityListener, source);
             return true;
         }
         return false;
+    }
+
+    /**
+     * Report the tokens a request's usage or a result adds to what the process
+     * already reported. Without a source to keep that account, only a result's
+     * usage is reported.
+     */
+    private static void reportUsage(ClaudeCliStreamParser.Event event,
+                                    ActivityListener activityListener, Cli source) {
+        ClaudeCliStreamParser.TokenCounts added = ClaudeCliStreamParser.TokenCounts.ZERO;
+        if (event instanceof ClaudeCliStreamParser.RequestUsage usage) {
+            if (source != null) added = source.usageLedger.request(usage);
+        } else if (event instanceof ClaudeCliStreamParser.TurnComplete complete) {
+            added = source != null ? source.usageLedger.result(complete) : complete.usage();
+        }
+        if (activityListener != null && !added.isZero()) {
+            activityListener.onTokenUsage(added.input(), added.output(),
+                    added.cacheRead(), added.cacheCreation());
+        }
     }
 
     /** Report each settings change Claude Code has answered; one it refused becomes a notice. */
@@ -1086,11 +1263,17 @@ final class ClaudeCliClient implements AutoCloseable {
                 || interrupt.isCompletedExceptionally()) {
             return false;
         }
-        for (JsonNode cancelled : interrupt.join().path("response").path("cancelled")) {
+        return cancelledIds(interrupt.join()).contains(uuid);
+    }
+
+    /** The uuids of the queued messages Claude Code dropped unread when it answered an interrupt. */
+    private static List<String> cancelledIds(JsonNode interruptResponse) {
+        List<String> ids = new ArrayList<>();
+        for (JsonNode cancelled : interruptResponse.path("response").path("cancelled")) {
             String id = cancelled.isTextual() ? cancelled.asText() : cancelled.path("uuid").asText("");
-            if (uuid.equals(id)) return true;
+            if (!id.isEmpty()) ids.add(id);
         }
-        return false;
+        return ids;
     }
 
     /** Ask Claude Code to stop one of its tasks, whose row was killed in the process panel. */
@@ -1167,6 +1350,27 @@ final class ClaudeCliClient implements AutoCloseable {
             listener.accept(followUpId);
         } catch (RuntimeException ignored) {
             // A failing listener must not stop the output reader.
+        }
+    }
+
+    /** Tell the injection listener these injected messages were taken in, or dropped. */
+    private void reportInjections(List<String> ids, boolean delivered) {
+        if (ids.isEmpty()) return;
+        DirectLlmClient.ClaudeInjectionListener listener;
+        synchronized (this) {
+            listener = injectionListener;
+        }
+        if (listener == null) return;
+        for (String id : ids) {
+            try {
+                if (delivered) {
+                    listener.delivered(id);
+                } else {
+                    listener.dropped(id);
+                }
+            } catch (RuntimeException ignored) {
+                // A failing listener must not stop the output reader.
+            }
         }
     }
 
@@ -1632,13 +1836,20 @@ final class ClaudeCliClient implements AutoCloseable {
         private final Thread errorReader;
         private final Thread exitWatch;
         // The session's settings as last applied; used under the turn lock.
-        private String model;
+        private volatile String model;
         private String effort;
         private boolean fastMode;
         /** The message written last, until Claude Code takes it in; guarded by this Cli. */
         private Turn pending;
         /** The turn the output belongs to now; guarded by this Cli. */
         private Turn owner;
+        /**
+         * The turn {@link #inject} writes into: the one being read, until its
+         * result or its interrupt; null otherwise. Guarded by this Cli.
+         */
+        private Turn injectable;
+        /** Uuids of the injected messages Claude Code has not taken in yet; guarded by this Cli. */
+        private final Set<String> injected = new LinkedHashSet<>();
         /** Events that arrived while no turn read the output; guarded by this Cli. */
         private final List<ClaudeCliStreamParser.Event> unowned = new ArrayList<>();
         /** What each task is, by task id, oldest first; guarded by this Cli. */
@@ -1670,8 +1881,12 @@ final class ClaudeCliClient implements AutoCloseable {
         private boolean reading;
         private volatile boolean exited;
         private volatile int exitCode = -1;
+        /** Orders the usage and results the process reports, across its turns' parsers. */
+        private final AtomicLong usageSequence = new AtomicLong();
         /** Decodes the current turn's output; used by the reader thread only. */
-        private ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        private ClaudeCliStreamParser parser = new ClaudeCliStreamParser(usageSequence);
+        /** The tokens the process's turns reported, so each counts once. */
+        private final ClaudeCliUsageLedger usageLedger;
 
         Cli(Process process, Path instructionsFile, String launchDigest,
             String model, String effort, boolean fastMode, boolean resumed) {
@@ -1679,6 +1894,7 @@ final class ClaudeCliClient implements AutoCloseable {
             this.instructionsFile = instructionsFile;
             this.launchDigest = launchDigest;
             this.resumed = resumed;
+            this.usageLedger = new ClaudeCliUsageLedger(resumed);
             this.input = new BufferedWriter(new OutputStreamWriter(
                     process.getOutputStream(), StandardCharsets.UTF_8));
             this.model = normalized(model);
@@ -1690,6 +1906,10 @@ final class ClaudeCliClient implements AutoCloseable {
         }
 
         Cli start() {
+            ClaudeTaskBridge bridge = currentBridge();
+            if (bridge != null) {
+                bridge.processStarted(this, process.pid(), currentSessionId(), this::stop);
+            }
             // With this affordance an interrupt ends the turn but spares the
             // background tasks; each task is stopped on its own (stop_task).
             initialized = control("initialize", request -> request.put("perTaskStopAffordance", true));
@@ -1698,6 +1918,11 @@ final class ClaudeCliClient implements AutoCloseable {
 
         boolean alive() {
             return !exited && process.isAlive();
+        }
+
+        /** True once the output readers started, so control responses are read. */
+        synchronized boolean isReading() {
+            return reading;
         }
 
         /**
@@ -1738,9 +1963,7 @@ final class ClaudeCliClient implements AutoCloseable {
             List<SettingChange> changes = new ArrayList<>();
             String nextModel = normalized(turnModel);
             if (!nextModel.equals(model)) {
-                changes.add(new SettingChange("model", control("set_model",
-                        request -> request.put("model", nextModel.isEmpty() ? "default" : nextModel))));
-                model = nextModel;
+                changes.add(new SettingChange("model", setModel(nextModel)));
             }
             String nextEffort = normalized(turnEffort);
             if (!nextEffort.equals(effort) || turnFastMode != fastMode) {
@@ -1750,6 +1973,16 @@ final class ClaudeCliClient implements AutoCloseable {
                 fastMode = turnFastMode;
             }
             return changes;
+        }
+
+        /** Only acknowledged models belong in the cache; a refusal must be retryable. */
+        CompletableFuture<JsonNode> setModel(String nextModel) {
+            return control("set_model",
+                    request -> request.put("model", nextModel.isEmpty() ? "default" : nextModel))
+                    .thenApply(response -> {
+                        if ("success".equals(response.path("subtype").asText())) model = nextModel;
+                        return response;
+                    });
         }
 
         /** Write a message; the events Claude Code answers it with go to its turn. */
@@ -1764,6 +1997,77 @@ final class ClaudeCliClient implements AutoCloseable {
             // Output is read from the first message on, so what Claude Code prints
             // before taking it in, such as a refused resume, is that message's.
             startReading();
+            ObjectNode message = userMessage(text, attachments, turn.uuid);
+            try {
+                write(message);
+            } catch (IOException e) {
+                // The turn learns of the failure when the process ends.
+                recordDiagnostic("Could not send the message to Claude Code: " + e.getMessage());
+                stop();
+            }
+        }
+
+        /**
+         * Write a message into the turn being read; false, writing nothing, when
+         * none is. The check and the write share one hold of {@link #input}, so
+         * an interrupt written after {@link #closeInjection} comes after every
+         * message written into the turn, and drops those still queued.
+         */
+        boolean inject(String id, String text) {
+            ObjectNode message = userMessage(text, null, id);
+            synchronized (input) {
+                synchronized (this) {
+                    if (exited || injectable == null || !injected.add(id)) return false;
+                }
+                try {
+                    write(message);
+                    return true;
+                } catch (IOException e) {
+                    synchronized (this) {
+                        injected.remove(id);
+                    }
+                    return false;
+                }
+            }
+        }
+
+        /** Messages {@link #inject} writes go into this turn from now on. */
+        synchronized void openInjection(Turn turn) {
+            if (!exited) injectable = turn;
+        }
+
+        /** Nothing more is written into this turn. */
+        synchronized void closeInjection(Turn turn) {
+            if (injectable == turn) injectable = null;
+        }
+
+        /**
+         * Report the injected messages Claude Code drops unread when it answers
+         * this interrupt. Reported on a thread of its own, never the one reading
+         * the turn; an interrupt that fails is the process's end, reported there.
+         */
+        void reportWithdrawn(CompletableFuture<JsonNode> interrupt) {
+            synchronized (this) {
+                if (injected.isEmpty()) return;
+            }
+            interrupt.thenAcceptAsync(
+                    response -> reportInjections(takeInjected(cancelledIds(response)), false),
+                    task -> daemon("kompile-claude-cli-withdrawn", task).start());
+        }
+
+        /** The injected messages among {@code uuids}, forgotten as injected. */
+        private synchronized List<String> takeInjected(List<String> uuids) {
+            if (injected.isEmpty()) return List.of();
+            List<String> taken = new ArrayList<>();
+            for (String uuid : uuids) {
+                if (injected.remove(uuid)) taken.add(uuid);
+            }
+            return taken;
+        }
+
+        /** A stream-json user message, its attachments ahead of its text. */
+        private ObjectNode userMessage(String text, List<DirectLlmClient.AttachmentInput> attachments,
+                                       String uuid) {
             ObjectNode message = mapper.createObjectNode();
             message.put("type", "user");
             ObjectNode body = message.putObject("message");
@@ -1775,14 +2079,8 @@ final class ClaudeCliClient implements AutoCloseable {
             }
             message.putNull("parent_tool_use_id");
             message.put("session_id", currentSessionId());
-            message.put("uuid", turn.uuid);
-            try {
-                write(message);
-            } catch (IOException e) {
-                // The turn learns of the failure when the process ends.
-                recordDiagnostic("Could not send the message to Claude Code: " + e.getMessage());
-                stop();
-            }
+            message.put("uuid", uuid);
+            return message;
         }
 
         /** Send a control request; the future completes with Claude Code's response. */
@@ -1865,6 +2163,9 @@ final class ClaudeCliClient implements AutoCloseable {
 
         /** The turn stopped reading; output still due to it is dropped. */
         synchronized void release(Turn turn) {
+            if (injectable == turn) {
+                injectable = null;
+            }
             if (pending == turn) {
                 pending = null;
             }
@@ -1978,15 +2279,15 @@ final class ClaudeCliClient implements AutoCloseable {
                 return;
             }
             String announced = null;
+            List<String> delivered = List.of();
             synchronized (this) {
                 if (exited) return;
                 if (event instanceof ClaudeCliStreamParser.ConsumedUserMessages consumed) {
                     if (pending != null && consumed.uuids().contains(pending.uuid)) {
                         take(pending);
                     }
-                    return;
-                }
-                if (event instanceof ClaudeCliStreamParser.TurnComplete complete) {
+                    delivered = takeInjected(consumed.uuids());
+                } else if (event instanceof ClaudeCliStreamParser.TurnComplete complete) {
                     Turn target = owner;
                     if (target == null && pending != null && complete.error() && !complete.started()) {
                         // Claude Code refused the message without running a turn.
@@ -2001,10 +2302,14 @@ final class ClaudeCliClient implements AutoCloseable {
                         flushUnowned(target);
                         target.events.add(complete);
                     }
+                    // A message written from here on would start a turn of its own.
+                    if (target != null && target == injectable) {
+                        injectable = null;
+                    }
                     unowned.clear();
                     owner = null;
                     // Each turn begins with its own init; the next one decodes afresh.
-                    parser = new ClaudeCliStreamParser();
+                    parser = new ClaudeCliStreamParser(usageSequence);
                 } else if (isContent(event)) {
                     if (owner == null) {
                         // Output no message asked for: a turn Claude Code started by
@@ -2018,12 +2323,16 @@ final class ClaudeCliClient implements AutoCloseable {
                     owner.events.add(event);
                 } else if (pending != null) {
                     pending.events.add(event);
-                } else {
+                } else if (!(event instanceof ClaudeCliStreamParser.RequestUsage
+                        || event instanceof ClaudeCliStreamParser.ToolInputDelta)) {
+                    // Usage no turn reads is left to the next result's totals, so it
+                    // does not crowd out what the next turn shows.
                     if (unowned.size() >= MAX_UNOWNED_EVENTS) unowned.remove(0);
                     unowned.add(event);
                 }
             }
             if (announced != null) announceFollowUp(announced);
+            reportInjections(delivered, true);
         }
 
         /**
@@ -2160,6 +2469,7 @@ final class ClaudeCliClient implements AutoCloseable {
                 return; // Daemon thread: only JVM shutdown interrupts it.
             }
             List<Turn> waiting = new ArrayList<>();
+            List<String> unread;
             synchronized (this) {
                 exited = true;
                 exitCode = code;
@@ -2167,6 +2477,9 @@ final class ClaudeCliClient implements AutoCloseable {
                 if (pending != null && pending != owner) waiting.add(pending);
                 owner = null;
                 pending = null;
+                injectable = null;
+                unread = new ArrayList<>(injected);
+                injected.clear();
                 unowned.clear();
             }
             synchronized (followUps) {
@@ -2189,6 +2502,7 @@ final class ClaudeCliClient implements AutoCloseable {
             deleteQuietly(instructionsFile);
             ClaudeTaskBridge bridge = currentBridge();
             if (bridge != null) bridge.processExited(this, code);
+            reportInjections(unread, false);
         }
 
         private void readErrors() {

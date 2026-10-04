@@ -9,6 +9,7 @@ import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.WebChatContext;
 import ai.kompile.cli.common.util.JavaRuntimeLocator;
 import ai.kompile.chat.history.service.FolderService;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -26,16 +27,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -65,10 +66,21 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     private static final int TIMEOUT_GRACE_SECONDS = 15;
     private static final long CAPABILITY_TTL_MS = 10_000L;
     private static final int MAX_DIAGNOSTIC_CHARS = 16_384;
+    /** A topic report's outcome is one stdout line, with its text twice and a chart. */
+    private static final int MAX_REPORT_CHARS = 4 * 1024 * 1024;
+    /** The one-shot harness's own {@code --timeout}, plus its start-up. */
+    private static final int REPORT_TIMEOUT_SECONDS = 40;
+    /** The harness's bounds on an insights topic and question (web-json {@code insightsTopic}). */
+    private static final int MAX_INSIGHTS_TOPIC_CHARS = 64;
+    private static final int MAX_INSIGHTS_QUESTION_CHARS = 1_000;
     private static final int MAX_MESSAGE_CHARS = 1_000_000;
     private static final int MAX_SYSTEM_PROMPT_CHARS = 256_000;
     private static final int MAX_HISTORY_CHARS = 1_000_000;
-    private static final long MAX_ATTACHMENT_BYTES = 5L * 1024L * 1024L;
+    /** The inline-image contract's per-image limit, applied to every attachment. */
+    private static final long MAX_ATTACHMENT_BYTES =
+            StructuredChatLanguageModel.MAX_INLINE_IMAGE_BYTES;
+    private static final String ATTACHMENT_TOO_LARGE =
+            "Attachment exceeds " + MAX_ATTACHMENT_BYTES / (1024 * 1024) + " MiB: ";
     private static final long MAX_TOTAL_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
     private static final long MAX_BASE64_CHARS = ((MAX_ATTACHMENT_BYTES + 2L) / 3L) * 4L + 4L;
     private static final int MAX_ATTACHMENTS = 8;
@@ -91,6 +103,8 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     private final Map<String, HarnessReplayBuffer> replays = new ConcurrentHashMap<>();
     private final Map<String, SessionLock> sessionLocks = new LinkedHashMap<>();
     private final Map<Path, CachedCapabilities> capabilityCache = new ConcurrentHashMap<>();
+    private final Map<String, CompletableFuture<JsonNode>> insightProbes = new ConcurrentHashMap<>();
+    private final Map<String, CompletableFuture<JsonNode>> insightReports = new ConcurrentHashMap<>();
 
     @Autowired
     public KompileCliHarnessClient(
@@ -343,16 +357,16 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     public JsonNode configSnapshot(String browserSessionId, String workingDirectory,
                                    String modelVendor) {
         Path workDir;
+        String harnessSessionId;
         try {
             workDir = resolveWorkingDirectory(workingDirectory);
-        } catch (IOException invalid) {
+            harnessSessionId = harnessSessionId(workDir,
+                    browserSessionId == null || browserSessionId.isBlank()
+                            ? UUID.randomUUID().toString() : browserSessionId);
+        } catch (IOException | IllegalArgumentException invalid) {
             return unavailableConfigSnapshot(invalid.getMessage());
         }
-        // Mirror the live turn: session-scoped CLI state (persisted model/role,
-        // queue) is keyed by the same derived harness session id.
-        String harnessSessionId = harnessSessionId(workDir,
-                browserSessionId == null || browserSessionId.isBlank()
-                        ? UUID.randomUUID().toString() : browserSessionId);
+        // The same native transcript identity keys terminal and browser session state.
         Process process = null;
         StringBuffer stdout = new StringBuffer();
         StringBuffer stderr = new StringBuffer();
@@ -507,6 +521,243 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         outcome.put("message", message == null || message.isBlank()
                 ? (ok ? "Gate approved" : "Gate approval failed") : bounded(message, 1_000));
         return outcome;
+    }
+
+    /**
+     * The session's insights for the chat drawer, the rows the terminal's dashboard area shows:
+     * judge flags, tool counts and latency, the last test milestone and crawl progress. One
+     * short-lived harness answers an {@code insightsQuery} frame. It only reads logs, so it runs
+     * beside a live turn and takes no session lock. Each probe starts a CLI process, so refreshes
+     * of one session that overlap share one. Returns the outcome's {@code data}, or
+     * {@code available:false} with a {@code status}.
+     */
+    @Override
+    public JsonNode insightsSnapshot(String browserSessionId, String workingDirectory) {
+        if (browserSessionId == null || browserSessionId.isBlank()) {
+            return unavailableInsights("Session insights need the chat session id");
+        }
+        Path workDir;
+        String harnessSessionId;
+        try {
+            workDir = resolveWorkingDirectory(workingDirectory);
+            harnessSessionId = harnessSessionId(workDir, browserSessionId);
+        } catch (IOException | IllegalArgumentException invalid) {
+            return unavailableInsights(invalid.getMessage());
+        }
+        CompletableFuture<JsonNode> probe = new CompletableFuture<>();
+        CompletableFuture<JsonNode> running = insightProbes.putIfAbsent(harnessSessionId, probe);
+        if (running != null) return running.join().deepCopy();
+        JsonNode snapshot = null;
+        try {
+            snapshot = probeInsights(workDir, harnessSessionId);
+            return snapshot;
+        } finally {
+            insightProbes.remove(harnessSessionId, probe);
+            probe.complete(snapshot != null ? snapshot : unavailableInsights("Session insights probe failed"));
+        }
+    }
+
+    private JsonNode probeInsights(Path workDir, String harnessSessionId) {
+        Process process = null;
+        StringBuffer stdout = new StringBuffer();
+        StringBuffer stderr = new StringBuffer();
+        Thread outReader = null;
+        Thread errReader = null;
+        try {
+            process = processStarter.start(oneShotCommand(workDir), workDir);
+            ObjectNode input = mapper.createObjectNode();
+            input.put("version", 1);
+            input.put("sessionId", harnessSessionId);
+            input.put("insightsQuery", true);
+            try (var stdin = process.getOutputStream()) {
+                stdin.write(mapper.writeValueAsBytes(input));
+                stdin.write('\n');
+            }
+            outReader = drain(process.getInputStream(), stdout, "web-chat-insights-stdout");
+            errReader = drain(process.getErrorStream(), stderr, "web-chat-insights-stderr");
+            // Shorter than the other probes: the drawer asks again on its next refresh.
+            if (!process.waitFor(15, TimeUnit.SECONDS)) {
+                terminate(process);
+                return unavailableInsights("Session insights probe timed out");
+            }
+            join(outReader, 2_000L);
+            join(errReader, 2_000L);
+            // A refused read exits non-zero, so the outcome is read whatever the exit; a frame
+            // the harness cannot parse (an older CLI) comes back as an error event.
+            String refusal = "";
+            for (String line : stdout.toString().split("\n")) {
+                if (!line.contains("\"type\":\"command\"") && !line.contains("\"type\":\"error\"")) continue;
+                JsonNode event;
+                try {
+                    event = mapper.readTree(line.trim());
+                } catch (IOException malformed) {
+                    continue;
+                }
+                String type = event.path("type").asText("");
+                if (type.equals("error")) {
+                    refusal = event.path("message").asText("");
+                } else if (type.equals("command")) {
+                    JsonNode data = event.path("data");
+                    return data.isObject() ? data : unavailableInsights(event.path("text").asText(""));
+                }
+            }
+            if (refusal.isBlank()) refusal = lastDiagnostic(stderr);
+            return unavailableInsights(refusal.isBlank()
+                    ? "Harness returned no session insights (exit " + process.exitValue() + ")" : refusal);
+        } catch (Exception failure) {
+            if (process != null) terminate(process);
+            return unavailableInsights(failure.getMessage() == null
+                    ? failure.getClass().getSimpleName() : failure.getMessage());
+        } finally {
+            join(outReader, 500L);
+            join(errReader, 500L);
+        }
+    }
+
+    private ObjectNode unavailableInsights(String status) {
+        ObjectNode result = mapper.createObjectNode();
+        result.put("menu", "insights");
+        result.put("available", false);
+        result.put("status", status == null || status.isBlank()
+                ? "Session insights are unavailable" : bounded(status, 1_000));
+        return result;
+    }
+
+    /**
+     * One topic's report over every session for the chat app's insights page, as the CLI's
+     * {@code insights} tool answers it: the topics only the CLI reads, such as the project's crawls
+     * and graphs, and the overview. One short-lived harness answers an {@code insightsQuery} frame
+     * that names the topic and no session. It only reads, so it takes no session lock, and
+     * requests for the same report that overlap share one harness.
+     */
+    @Override
+    public JsonNode insightsReport(String topic, String question, String workingDirectory) {
+        String name = topic == null ? "" : topic.strip();
+        if (name.isEmpty() || name.length() > MAX_INSIGHTS_TOPIC_CHARS
+                || name.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("Invalid insights topic");
+        }
+        String asked = question == null || question.isBlank() ? null : question.strip();
+        if (asked != null && (asked.length() > MAX_INSIGHTS_QUESTION_CHARS
+                || asked.chars().anyMatch(Character::isISOControl))) {
+            throw new IllegalArgumentException("Invalid insights question");
+        }
+        Path workDir;
+        try {
+            workDir = resolveWorkingDirectory(workingDirectory);
+        } catch (IOException | IllegalArgumentException invalid) {
+            return unavailableReport(name, invalid.getMessage());
+        }
+        String key = workDir + "\n" + name + "\n" + (asked == null ? "" : asked);
+        CompletableFuture<JsonNode> report = new CompletableFuture<>();
+        CompletableFuture<JsonNode> running = insightReports.putIfAbsent(key, report);
+        if (running != null) {
+            try {
+                return running.join().deepCopy();
+            } catch (CompletionException failed) {
+                // The harness refused the topic it was asked for, so it refuses it for this request too.
+                if (failed.getCause() instanceof IllegalArgumentException refused) {
+                    throw new IllegalArgumentException(refused.getMessage(), refused);
+                }
+                throw failed;
+            }
+        }
+        JsonNode answer = null;
+        RuntimeException thrown = null;
+        try {
+            answer = readReport(workDir, name, asked);
+            return answer;
+        } catch (RuntimeException failure) {
+            thrown = failure;
+            throw failure;
+        } finally {
+            insightReports.remove(key, report);
+            if (thrown != null) report.completeExceptionally(thrown);
+            else report.complete(answer != null ? answer : unavailableReport(name, "Insights report failed"));
+        }
+    }
+
+    private JsonNode readReport(Path workDir, String topic, String question) {
+        Process process = null;
+        StringBuffer stdout = new StringBuffer();
+        StringBuffer stderr = new StringBuffer();
+        Thread outReader = null;
+        Thread errReader = null;
+        try {
+            process = processStarter.start(oneShotCommand(workDir), workDir);
+            ObjectNode input = mapper.createObjectNode();
+            input.put("version", 1);
+            input.put("insightsQuery", true);
+            input.put("insightsTopic", topic);
+            if (question != null) input.put("insightsQuestion", question);
+            try (var stdin = process.getOutputStream()) {
+                stdin.write(mapper.writeValueAsBytes(input));
+                stdin.write('\n');
+            }
+            outReader = drain(process.getInputStream(), stdout, "web-chat-insights-report-stdout", MAX_REPORT_CHARS);
+            errReader = drain(process.getErrorStream(), stderr, "web-chat-insights-report-stderr");
+            if (!process.waitFor(REPORT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                terminate(process);
+                return unavailableReport(topic, "Insights report timed out");
+            }
+            join(outReader, 2_000L);
+            join(errReader, 2_000L);
+        } catch (Exception failure) {
+            if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+            if (process != null) terminate(process);
+            return unavailableReport(topic, failure.getMessage() == null
+                    ? failure.getClass().getSimpleName() : failure.getMessage());
+        } finally {
+            join(outReader, 500L);
+            join(errReader, 500L);
+        }
+        return reportOutcome(topic, stdout, stderr, process.exitValue());
+    }
+
+    /**
+     * The report the harness answered, or why there is none. A refused read exits non-zero, so the
+     * outcome is read whatever the exit; a topic the harness does not know is the caller's error.
+     */
+    private JsonNode reportOutcome(String topic, StringBuffer stdout, StringBuffer stderr, int exit) {
+        String refusal = "";
+        for (String line : stdout.toString().split("\n")) {
+            if (!line.contains("\"type\":\"command\"") && !line.contains("\"type\":\"error\"")) continue;
+            JsonNode event;
+            try {
+                event = mapper.readTree(line.trim());
+            } catch (IOException malformed) {
+                continue;
+            }
+            String type = event.path("type").asText("");
+            if (type.equals("error")) {
+                refusal = event.path("message").asText("");
+            } else if (type.equals("command")) {
+                String text = event.path("text").asText("");
+                if (event.path("status").asText("").equals("INVALID")) {
+                    throw new IllegalArgumentException(text.isBlank()
+                            ? "Invalid insights request" : bounded(text, 1_000));
+                }
+                JsonNode data = event.path("data");
+                return data.isObject() ? data : unavailableReport(topic, text);
+            }
+        }
+        if (stdout.length() >= MAX_REPORT_CHARS) {
+            return unavailableReport(topic, "The insights report is larger than "
+                    + MAX_REPORT_CHARS / (1024 * 1024) + " MiB; lower maxRows or maxExamples in insights.json");
+        }
+        if (refusal.isBlank()) refusal = lastDiagnostic(stderr);
+        return unavailableReport(topic, refusal.isBlank()
+                ? "Harness returned no insights report (exit " + exit + ")" : refusal);
+    }
+
+    private ObjectNode unavailableReport(String topic, String status) {
+        ObjectNode result = mapper.createObjectNode();
+        result.put("menu", "insights");
+        result.put("topic", topic);
+        result.put("available", false);
+        result.put("status", status == null || status.isBlank()
+                ? "The insights report is unavailable" : bounded(status, 1_000));
+        return result;
     }
 
     /** A harness that answers one web-json line and exits: no live controls, no model turn. */
@@ -1031,16 +1282,12 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         return List.of();
     }
 
-    static String harnessSessionId(Path workDir, String browserSessionId) {
+    static String harnessSessionId(Path workDir, String sessionId) {
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(workDir.toAbsolutePath().normalize().toString()
-                    .getBytes(StandardCharsets.UTF_8));
-            digest.update((byte) 0);
-            digest.update(browserSessionId.getBytes(StandardCharsets.UTF_8));
-            return "web-" + HexFormat.of().formatHex(digest.digest(), 0, 20);
-        } catch (Exception impossible) {
-            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+            return new ai.kompile.cli.common.chat.sources.adapters.KompileAdapter()
+                    .resolveSessionId(workDir, sessionId);
+        } catch (IOException invalid) {
+            throw new IllegalArgumentException(invalid.getMessage(), invalid);
         }
     }
 
@@ -1060,7 +1307,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                 byte[] bytes;
                 if (attachment.base64Data() != null && !attachment.base64Data().isBlank()) {
                     if (attachment.base64Data().length() > MAX_BASE64_CHARS) {
-                        throw new IOException("Attachment exceeds 5 MiB: " + attachment.filename());
+                        throw new IOException(ATTACHMENT_TOO_LARGE + attachment.filename());
                     }
                     try { bytes = Base64.getDecoder().decode(attachment.base64Data()); }
                     catch (IllegalArgumentException invalid) {
@@ -1072,12 +1319,12 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                         throw new IOException("Text attachment has no content: " + attachment.filename());
                     }
                     if (attachment.textContent().length() > MAX_ATTACHMENT_BYTES) {
-                        throw new IOException("Attachment exceeds 5 MiB: " + attachment.filename());
+                        throw new IOException(ATTACHMENT_TOO_LARGE + attachment.filename());
                     }
                     bytes = attachment.textContent().getBytes(StandardCharsets.UTF_8);
                 }
                 if (bytes.length > MAX_ATTACHMENT_BYTES) {
-                    throw new IOException("Attachment exceeds 5 MiB: " + attachment.filename());
+                    throw new IOException(ATTACHMENT_TOO_LARGE + attachment.filename());
                 }
                 total += bytes.length;
                 if (total > MAX_TOTAL_ATTACHMENT_BYTES) {
@@ -1187,7 +1434,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             }
             if (attachment.base64Data() != null && !attachment.base64Data().isBlank()) {
                 if (attachment.base64Data().length() > MAX_BASE64_CHARS) {
-                    throw new IllegalArgumentException("Attachment exceeds 5 MiB: "
+                    throw new IllegalArgumentException(ATTACHMENT_TOO_LARGE
                             + attachment.filename());
                 }
                 estimatedBytes += (attachment.base64Data().length() * 3L) / 4L;
@@ -1197,7 +1444,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                             + attachment.filename());
                 }
                 if (attachment.textContent().length() > MAX_ATTACHMENT_BYTES) {
-                    throw new IllegalArgumentException("Attachment exceeds 5 MiB: "
+                    throw new IllegalArgumentException(ATTACHMENT_TOO_LARGE
                             + attachment.filename());
                 }
                 estimatedBytes += attachment.textContent().length();
@@ -1208,7 +1455,8 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         }
     }
 
-    private static Path resolveWorkingDirectory(String configured) throws IOException {
+    /** Package-private for {@link ChatInsightsService}, whose reads follow the harness's binding. */
+    static Path resolveWorkingDirectory(String configured) throws IOException {
         Path handoffDirectory = WebChatContext.workingDirectory();
         if (WebChatContext.workspace()) {
             if (handoffDirectory == null) throw new IOException("Workspace mode requires a CLI web launch context");
@@ -1262,14 +1510,18 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     }
 
     private static Thread drain(InputStream stream, StringBuffer destination, String name) {
+        return drain(stream, destination, name, MAX_DIAGNOSTIC_CHARS);
+    }
+
+    private static Thread drain(InputStream stream, StringBuffer destination, String name, int maxChars) {
         Thread reader = new Thread(() -> {
             try (BufferedReader lines = new BufferedReader(
                     new InputStreamReader(stream, StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = lines.readLine()) != null) {
-                    if (destination.length() < MAX_DIAGNOSTIC_CHARS) {
+                    if (destination.length() < maxChars) {
                         if (!destination.isEmpty()) destination.append('\n');
-                        int remaining = MAX_DIAGNOSTIC_CHARS - destination.length();
+                        int remaining = maxChars - destination.length();
                         destination.append(line, 0, Math.min(line.length(), remaining));
                     }
                 }

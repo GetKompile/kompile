@@ -435,24 +435,25 @@ public class EnforcerJudge implements EnforcerEvaluator {
         // a failing or disabled judge never re-opens the bash sed/grep escape hatch.
         EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateFromSerializedArgs(toolName, toolInput);
         if (mandate != null) {
-            logToolJudgement(toolName, toolInput, mandate, "[deterministic shell-mandate policy]", 0L);
+            logPolicyToolJudgement(toolName, toolInput, mandate, "[deterministic shell-mandate policy]");
             return mandate;
         }
 
         EnforcerToolCallDecision readOnlyGit = JudgeToolPolicy.evaluateReadOnlyGitTool(
                 toolName, toolInput, policy, objectMapper);
         if (readOnlyGit != null) {
-            logToolJudgement(toolName, toolInput, readOnlyGit,
-                    "[deterministic read-only Git policy]", 0L);
+            logPolicyToolJudgement(toolName, toolInput, readOnlyGit,
+                    "[deterministic read-only Git policy]");
             return readOnlyGit;
         }
 
-        if ((constraints == null ? currentReminderConstraints() : constraints.reminders()).isBlank()) {
+        if (!JudgeToolPolicy.remindersMayGovernRoutineTools(
+                constraints == null ? currentReminderConstraints() : constraints.reminders())) {
             EnforcerToolCallDecision routine = JudgeToolPolicy.evaluateRoutineTool(
                     toolName, toolInput, policy, objectMapper);
             if (routine != null) {
-                logToolJudgement(toolName, toolInput, routine,
-                        "[deterministic routine-tool policy]", 0L);
+                logPolicyToolJudgement(toolName, toolInput, routine,
+                        "[deterministic routine-tool policy]");
                 return routine;
             }
         }
@@ -479,7 +480,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
         } else {
             decision = EnforcerToolCallDecision.parse(objectMapper, response);
         }
-        logToolJudgement(toolName, toolInput, decision,
+        logToolJudgement(toolName, toolInput, decision, "llm",
                 generated.rawForLog(), generated.latencyMs());
         return decision;
     }
@@ -616,14 +617,20 @@ public class EnforcerJudge implements EnforcerEvaluator {
                 .build());
     }
 
+    /** A verdict decided by deterministic policy before any model call ({@code judgeMode=policy}). */
+    private void logPolicyToolJudgement(String toolName, String toolInput, EnforcerToolCallDecision decision,
+                                        String policyLabel) {
+        logToolJudgement(toolName, toolInput, decision, "policy", policyLabel, 0L);
+    }
+
     private void logToolJudgement(String toolName, String toolInput, EnforcerToolCallDecision decision,
-                                  String rawResponse, long latencyMs) {
+                                  String judgeMode, String rawResponse, long latencyMs) {
         if (judgementLog == null) {
             return;
         }
         judgementLog.record(JudgementRecord.builder()
                 .phase("JUDGE_TOOL")
-                .judgeMode("llm")
+                .judgeMode(judgeMode)
                 .backend(describe())
                 .latencyMs(latencyMs)
                 .compliant(decision.isAllowed())

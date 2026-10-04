@@ -3,6 +3,7 @@ package ai.kompile.cli.main.chat.agent;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatCompleter;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.cli.main.chat.ForegroundRequestProgress;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.FakeClaudeCode;
@@ -152,6 +153,97 @@ class AgenticChatLoopClaudeCliTranscriptTest {
             assertFalse(transcript.contains("\"file_path\""), transcript);
             assertTrue(transcript.contains("NOTES_FILE_BODY"), transcript);
             assertFalse(transcript.contains("{\"title\""), transcript);
+        } finally {
+            ChatCompleter.setContentOutput(null);
+            ChatCompleter.setActivity(null);
+            if (home == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", home);
+        }
+    }
+
+    @Test
+    void aToolCallsTokensCountInBothPanesWhileTheTurnRuns() throws Exception {
+        String home = System.getProperty("user.home");
+        System.setProperty("user.home", directory.toString());
+        List<String> lines = Collections.synchronizedList(new ArrayList<>());
+        ChatCompleter.setContentOutput(lines::add);
+        ChatCompleter.setTranscriptBlockOutput(null);
+        var mapper = JsonUtils.standardMapper();
+        try (DirectLlmClient client = new DirectLlmClient(claudeConfig(), mapper, directory)) {
+            installFakeClaude(client);
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            String session = "claude-token-usage-test";
+            loop.configureConversationSession(session);
+            ChatSessionMetrics metrics = new ChatSessionMetrics(session);
+            loop.setSessionMetrics(metrics);
+            ForegroundRequestProgress progress = new ForegroundRequestProgress();
+            loop.setForegroundProgress(progress);
+            List<String> usage = Collections.synchronizedList(new ArrayList<>());
+            StringBuilder arguments = new StringBuilder();
+            List<ForegroundRequestProgress.Snapshot> toolStarted =
+                    Collections.synchronizedList(new ArrayList<>());
+            List<ForegroundRequestProgress.Snapshot> argumentsStreamed =
+                    Collections.synchronizedList(new ArrayList<>());
+            List<ForegroundRequestProgress.Snapshot> toolDone =
+                    Collections.synchronizedList(new ArrayList<>());
+            List<String> topBarAtToolDone = Collections.synchronizedList(new ArrayList<>());
+            // The loop updates both panes first, then hands each event on to this listener.
+            client.setProviderActivityListener(new DirectLlmClient.ProviderActivityListener() {
+                @Override
+                public void onToolStart(String callId, String name, String input) {
+                    toolStarted.add(progress.snapshot());
+                }
+
+                @Override
+                public void onToolInputDelta(String delta) {
+                    arguments.append(delta);
+                    argumentsStreamed.add(progress.snapshot());
+                }
+
+                @Override
+                public void onToolComplete(String callId, String name, String output,
+                                           int exitCode, boolean error) {
+                    toolDone.add(progress.snapshot());
+                    topBarAtToolDone.add(metrics.compactTokenSummary());
+                }
+
+                @Override
+                public void onTokenUsage(long input, long output, long cacheRead, long cacheCreation) {
+                    usage.add(input + "/" + output + "/" + cacheRead + "/" + cacheCreation);
+                }
+            });
+            progress.begin();
+
+            loop.chat("read the notes", session, "coder", "default", false);
+
+            String diagnostics = "usage=" + usage + "\ntoolStarted=" + toolStarted
+                    + "\nargumentsStreamed=" + argumentsStreamed + "\ntoolDone=" + toolDone
+                    + "\ntopBar=" + topBarAtToolDone + "\nlines=" + lines;
+            // Each request counts as it runs: msg_1 opens, its message_delta settles the
+            // output that wrote the tool call, then msg_2 runs after the tool. The result
+            // adds nothing the requests already reported.
+            assertEquals(List.of("10/1/0/0", "0/41/0/0", "12/1/0/0", "0/11/0/0"), usage, diagnostics);
+            // Bottom pane: the tool call's arguments are estimated as they stream...
+            assertEquals("{\"file_path\": \"/tmp/project/NOTES.md\"}", arguments.toString(), diagnostics);
+            assertEquals(1, toolStarted.size(), diagnostics);
+            assertEquals(1, argumentsStreamed.size(), diagnostics);
+            assertTrue(argumentsStreamed.get(0).estimate(), diagnostics);
+            assertTrue(argumentsStreamed.get(0).tokens() - toolStarted.get(0).tokens()
+                    >= arguments.length() / 4, diagnostics);
+            // ...and the request's usage replaces the estimate before the tool's result.
+            assertEquals(1, toolDone.size(), diagnostics);
+            assertEquals(42, toolDone.get(0).tokens(), diagnostics);
+            assertFalse(toolDone.get(0).estimate(), diagnostics);
+            // Top pane: the request that wrote the tool call counts while the tool runs.
+            assertEquals(List.of("↑10 ↓42 Σ52"), topBarAtToolDone, diagnostics);
+            // The turn ends exact on both panes, every token counted once.
+            ForegroundRequestProgress.Snapshot end = progress.snapshot();
+            assertEquals(54, end.tokens(), diagnostics);
+            assertFalse(end.estimate(), diagnostics);
+            assertEquals(22, metrics.getInputTokens(), diagnostics);
+            assertEquals(54, metrics.getOutputTokens(), diagnostics);
+            assertEquals(76, metrics.getTotalTokens(), diagnostics);
         } finally {
             ChatCompleter.setContentOutput(null);
             ChatCompleter.setActivity(null);

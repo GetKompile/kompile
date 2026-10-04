@@ -591,6 +591,33 @@ class KnowledgeGraphControllerTest {
         verify(graphService).getVisualizationData("root-1", 2, 50);
     }
 
+    @Test
+    void expandNeighborhood_passesTheFactSheetAndClampsTheNeighborCap() {
+        Map<String, Object> viz = Map.of("nodes", List.of(Map.of("id", NODE_ID)), "edges", List.of());
+        when(graphService.expandNeighborhoodVisualization(NODE_ID, 500, List.of("SEMANTIC"), FS_ID))
+                .thenReturn(viz);
+
+        ResponseEntity<Map<String, Object>> resp =
+                controller.expandNeighborhood(NODE_ID, 10_000, List.of("SEMANTIC"), FS_ID);
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        assertSame(viz, resp.getBody());
+    }
+
+    @Test
+    void expandNeighborhood_withoutAFactSheetLeavesTheScopeToTheService() {
+        controller.expandNeighborhood(NODE_ID, 0, null, null);
+
+        verify(graphService).expandNeighborhoodVisualization(NODE_ID, 1, null, null);
+    }
+
+    @Test
+    void topKVisualization_passesTheFactSheet() {
+        controller.getTopKVisualization(0, "degree", FS_ID);
+
+        verify(graphService).getTopKVisualizationData(FS_ID, 1, "degree");
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // GRAPH BUILDING ENDPOINTS
     // ═══════════════════════════════════════════════════════════════════════════

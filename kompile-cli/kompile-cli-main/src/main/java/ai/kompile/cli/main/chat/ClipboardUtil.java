@@ -19,13 +19,17 @@ package ai.kompile.cli.main.chat;
 import org.jline.terminal.Terminal;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -41,7 +45,24 @@ import java.util.concurrent.TimeoutException;
  */
 public class ClipboardUtil {
 
+    /**
+     * What a copy achieved. Only a native helper that exited 0 confirms a copy:
+     * a terminal consumes OSC 52 silently whether or not it honors it, and
+     * VTE-based terminals (GNOME Terminal and most Linux defaults) ignore it.
+     */
+    public enum CopyResult {
+        /** A native clipboard helper took the text. */
+        COPIED,
+        /** Only the OSC 52 sequence went out; the terminal may have ignored it. */
+        OSC52_ONLY,
+        /** Neither OSC 52 nor a native helper worked. */
+        FAILED
+    }
+
     private static final int MAX_CLIPBOARD_BYTES = 32 * 1024 * 1024;
+    /** Helpers that leave a background process serving the selection; see {@link #detached}. */
+    private static final Set<String> DAEMONIZING_HELPERS = Set.of("wl-copy", "xclip", "xsel");
+    private static final String SETSID = detectSetsid();
     private static final ExecutorService CLIPBOARD_COPY_EXECUTOR =
             Executors.newSingleThreadExecutor(r -> {
                 Thread thread = new Thread(r, "kompile-clipboard-copy");
@@ -54,10 +75,8 @@ public class ClipboardUtil {
     /**
      * Copy text to the system clipboard.
      * Tries OSC 52 first, then falls back to native commands.
-     *
-     * @return true if the copy succeeded via at least one method
      */
-    public static boolean copyToClipboard(String text) {
+    public static CopyResult copyToClipboard(String text) {
         return copyToClipboard(text, null);
     }
 
@@ -65,25 +84,49 @@ public class ClipboardUtil {
      * Copy through the active terminal when one is available, keeping OSC 52 on
      * the terminal output stream instead of a potentially unrelated System.out.
      */
-    public static boolean copyToClipboard(String text, Terminal terminal) {
-        if (text == null || text.isEmpty()) return false;
+    public static CopyResult copyToClipboard(String text, Terminal terminal) {
+        if (text == null || text.isEmpty()) return CopyResult.FAILED;
 
         boolean osc52Ok = tryOsc52(text, terminal);
-        boolean nativeOk = tryNativeClipboard(text);
-        return osc52Ok || nativeOk;
+        return result(tryNativeClipboard(text), osc52Ok);
     }
 
     /**
      * Ordered non-blocking copy for mouse widgets. Serial execution guarantees
      * that a slower native helper for an older selection cannot overwrite a
      * newer selection after it completes.
+     *
+     * @return completes with the outcome once the native helper has finished
      */
-    public static void copyToClipboardAsync(String text, Terminal terminal) {
-        if (text == null || text.isEmpty()) return;
+    public static CompletableFuture<CopyResult> copyToClipboardAsync(String text, Terminal terminal) {
+        if (text == null || text.isEmpty()) return CompletableFuture.completedFuture(CopyResult.FAILED);
         // OSC 52 is a single ordered terminal write and should take effect
         // immediately. Potentially slow native helpers stay off JLine's thread.
-        tryOsc52(text, terminal);
-        CLIPBOARD_COPY_EXECUTOR.execute(() -> tryNativeClipboard(text));
+        boolean osc52Ok = tryOsc52(text, terminal);
+        return CompletableFuture.supplyAsync(
+                () -> result(tryNativeClipboard(text), osc52Ok), CLIPBOARD_COPY_EXECUTOR);
+    }
+
+    /** The notice for a copy of {@code characters} characters; it claims success only when confirmed. */
+    public static String describe(CopyResult result, int characters) {
+        return describe(result, characters, nativeCopyCommands().stream().map(c -> c[0]).toList());
+    }
+
+    static String describe(CopyResult result, int characters, List<String> helpers) {
+        String helperProblem = helpers.isEmpty()
+                ? "no clipboard helper for this session"
+                : String.join("/", helpers) + " failed or not installed";
+        return switch (result) {
+            case COPIED -> "✓ Copied " + characters + " characters to the clipboard";
+            case OSC52_ONLY -> "Copy unconfirmed: sent " + characters
+                    + " characters via OSC 52 only (" + helperProblem + ")";
+            case FAILED -> "Copy failed: " + helperProblem;
+        };
+    }
+
+    private static CopyResult result(boolean nativeOk, boolean osc52Ok) {
+        if (nativeOk) return CopyResult.COPIED;
+        return osc52Ok ? CopyResult.OSC52_ONLY : CopyResult.FAILED;
     }
 
     /**
@@ -154,36 +197,69 @@ public class ClipboardUtil {
      * Try native clipboard commands in order of preference.
      */
     private static boolean tryNativeClipboard(String text) {
-        String os = System.getProperty("os.name", "").toLowerCase();
+        for (String[] command : nativeCopyCommands()) {
+            if (execPipe(command, text)) return true;
+        }
+        return false;
+    }
 
+    /** The native copy commands this session can try, in order of preference. */
+    private static List<String[]> nativeCopyCommands() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        List<String[]> commands = new ArrayList<>();
         if (os.contains("mac")) {
-            return execPipe(new String[]{"pbcopy"}, text);
+            commands.add(new String[]{"pbcopy"});
+            return commands;
         }
 
         // Linux — try wayland first, then X11
         String waylandDisplay = System.getenv("WAYLAND_DISPLAY");
         if (waylandDisplay != null && !waylandDisplay.isEmpty()) {
-            if (execPipe(new String[]{"wl-copy"}, text)) return true;
+            commands.add(new String[]{"wl-copy"});
         }
 
         String display = System.getenv("DISPLAY");
         if (display != null && !display.isEmpty()) {
-            if (execPipe(new String[]{"xclip", "-selection", "clipboard"}, text)) return true;
-            if (execPipe(new String[]{"xsel", "--clipboard", "--input"}, text)) return true;
+            commands.add(new String[]{"xclip", "-selection", "clipboard"});
+            commands.add(new String[]{"xsel", "--clipboard", "--input"});
         }
 
         // Windows — clip.exe (also works in WSL)
         if (os.contains("win") || isWsl()) {
-            return execPipe(new String[]{"clip.exe"}, text);
+            commands.add(new String[]{"clip.exe"});
         }
+        return commands;
+    }
 
-        return false;
+    /**
+     * xclip forks a background process that keeps serving the selection after the
+     * command exits (wl-copy and xsel do the same). Started from the chat it stayed
+     * in the chat's process group and session, so the next Ctrl+C (SIGINT to the
+     * whole foreground group) or closing the terminal (SIGHUP) killed it, and the
+     * copied text was gone unless a desktop clipboard manager had taken it over.
+     * setsid gives the helper a session of its own. A ProcessBuilder child never
+     * leads a process group, so setsid execs in place and the exit status is still
+     * the helper's.
+     */
+    static String[] detached(String[] cmd) {
+        if (SETSID == null || !DAEMONIZING_HELPERS.contains(cmd[0])) return cmd;
+        String[] wrapped = new String[cmd.length + 1];
+        wrapped[0] = SETSID;
+        System.arraycopy(cmd, 0, wrapped, 1, cmd.length);
+        return wrapped;
+    }
+
+    private static String detectSetsid() {
+        for (String candidate : new String[]{"/usr/bin/setsid", "/bin/setsid"}) {
+            if (new File(candidate).canExecute()) return candidate;
+        }
+        return null;
     }
 
     private static boolean execPipe(String[] cmd, String text) {
         Process process = null;
         try {
-            process = new ProcessBuilder(cmd)
+            process = new ProcessBuilder(detached(cmd))
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .redirectError(ProcessBuilder.Redirect.DISCARD)
                     .start();

@@ -14,22 +14,29 @@ import ai.kompile.cli.main.chat.config.FakeClaudeCode;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -121,6 +128,151 @@ class AgenticChatLoopSameRouteModelChangeTest {
             assertEquals(2, client.getHistorySize(),
                     "the new model receives the conversation without stale wire envelopes");
             assertEquals("gpt-4.1", client.getConfiguredModel());
+        }
+    }
+
+    @Test
+    void switchingAwayKeepsClaudeTasksControllableAndSwitchingBackReusesTheProcess() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = claudeCodeConfig("claude-opus-5-5");
+        Path project = Files.createDirectories(directory.resolve("project"));
+        ChatCompleter.setContentOutput(ignored -> {});
+        HttpServer otherProvider = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        otherProvider.createContext("/chat/completions", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] body = """
+                    data: {"choices":[{"delta":{"content":"Other provider result"},"finish_reason":null}]}
+
+                    data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+                    data: [DONE]
+
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, body.length);
+            try (var response = exchange.getResponseBody()) { response.write(body); }
+            exchange.close();
+        });
+        otherProvider.start();
+        FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("claude"), """
+                turn() {
+                  say_init
+                  if [ "$1" = 1 ]; then
+                    emit '{"type":"system","subtype":"task_started","task_id":"task-1","description":"Run the build","task_type":"local_bash"}'
+                    emit '{"type":"system","subtype":"task_started","task_id":"task-2","description":"Watch the build","task_type":"local_agent"}'
+                  fi
+                  say_text done
+                  say_result
+                }
+                on_stop_task() {
+                  emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{}}}'
+                  emit '{"type":"system","subtype":"task_notification","task_id":"task-1","status":"stopped","summary":"stopped"}'
+                  say_init
+                  say_text 'Late Claude response'
+                  say_result
+                }
+                """);
+        try (BackgroundProcessManager processes = new BackgroundProcessManager(SESSION, project);
+             DirectLlmClient client = new DirectLlmClient(config, mapper, project)) {
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), project, client, processes);
+            loop.configureConversationSession(SESSION);
+            fake.installBinary(client);
+            client.setClaudeTaskProcesses(processes);
+            LinkedBlockingQueue<String> followUps = new LinkedBlockingQueue<>();
+            client.setClaudeFollowUpListener(followUps::add);
+            assertEquals("done", loop.chat("start work", SESSION, "coder", "default", false).strip());
+            Object claude = claudeCodeClient(client);
+            DirectLlmClient.ClaudeNativeSession nativeSession = client.claudeNativeSession();
+            BackgroundProcessManager.ProcessEntry task = processes.listAll().stream()
+                    .filter(entry -> "task-1".equals(entry.getMetadata().get("task_id")))
+                    .findFirst().orElseThrow();
+            BackgroundProcessManager.ProcessEntry remaining = processes.listAll().stream()
+                    .filter(entry -> "task-2".equals(entry.getMetadata().get("task_id")))
+                    .findFirst().orElseThrow();
+
+            ChatConfig other = new ChatConfig("openai", "test-key", "gpt-4o",
+                    "http://127.0.0.1:" + otherProvider.getAddress().getPort());
+            assertFalse(loop.changeDirectSettings(() -> config.applyLlmSettingsFrom(other))
+                    .keptProviderSession());
+            assertSame(claude, claudeCodeClient(client));
+            assertEquals(nativeSession.sessionId(), client.claudeNativeSession().sessionId());
+            assertTrue(task.isRunning());
+            assertTrue(task.isKillable());
+            client.syncClaudeIdleSettings("gpt-4o", "high", false);
+            assertEquals("Other provider result",
+                    loop.chat("Other provider work", SESSION, "coder", "default", false).strip());
+            assertTrue(processes.kill(task.getId()));
+            assertEquals("task-1", fake.awaitControl("stop_task").path("task_id").asText());
+            assertTrue(fake.controls("set_model").isEmpty(),
+                    "switching providers must not push their settings to Claude");
+
+            String followUp = followUps.poll(5, TimeUnit.SECONDS);
+            assertNotNull(followUp, "Claude follow-ups remain connected after switching providers");
+            DirectLlmClient.StreamResult late = client.streamChat(followUp, "", null, null);
+            assertEquals("Late Claude response", late.text);
+            assertNull(late.claudeNativeSession,
+                    "the parked session must not claim it holds the other provider's work");
+            assertEquals(1, fake.messages().size(), "the follow-up is adopted, not sent again");
+            // A later non-Claude replay/compaction must not kill retained work either.
+            loop.rebuildDirectHistoryForProviderSwitch();
+            assertSame(claude, claudeCodeClient(client));
+            assertTrue(remaining.isRunning());
+            loop.changeDirectSettings(() -> config.applyLlmSettingsFrom(claudeCodeConfig("claude-opus-5-5")));
+            assertSame(claude, claudeCodeClient(client));
+            assertEquals("done", loop.chat("continue work", SESSION, "coder", "default", false).strip());
+            assertEquals(1, fake.argv().size(), "switching back must reuse the live process");
+            assertTrue(fake.messages().get(1).contains("Other provider result"),
+                    "the retained session must receive intervening provider work");
+
+            // Stop the retained session from the panel while another provider is selected.
+            loop.changeDirectSettings(() -> config.applyLlmSettingsFrom(other));
+            BackgroundProcessManager.ProcessEntry session = processes.listAll().stream()
+                    .filter(entry -> entry.getMetadata().containsKey("pid"))
+                    .filter(entry -> "claude-code".equals(entry.getMetadata().get("source")))
+                    .findFirst().orElseThrow();
+            long pid = Long.parseLong(session.getMetadata().get("pid"));
+            assertTrue(session.isRunning());
+            assertTrue(session.isKillable());
+            assertTrue(processes.kill(session.getId()));
+            FakeClaudeCode.await("the retained Claude process to exit",
+                    () -> ProcessHandle.of(pid).map(handle -> !handle.isAlive()).orElse(true));
+            FakeClaudeCode.await("Claude task rows to end", () -> !remaining.isRunning());
+            assertEquals(BackgroundProcessManager.ProcessState.KILLED, session.getState());
+            client.clearHistory();
+            assertFalse(remaining.isRunning());
+            assertNull(client.claudeNativeSession());
+        } finally {
+            otherProvider.stop(0);
+        }
+    }
+
+    @Test
+    void closingTheChatOffRouteStopsTheRetainedClaudeProcess() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = claudeCodeConfig("claude-opus-5-5");
+        Path project = Files.createDirectories(directory.resolve("project"));
+        FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("claude"), "ANSWER=done");
+        ChatCompleter.setContentOutput(ignored -> {});
+        try (BackgroundProcessManager processes = new BackgroundProcessManager(SESSION, project);
+             DirectLlmClient client = new DirectLlmClient(config, mapper, project)) {
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), project, client, processes);
+            loop.configureConversationSession(SESSION);
+            fake.installBinary(client);
+            client.setClaudeTaskProcesses(processes);
+            assertEquals("done", loop.chat("first question", SESSION, "coder", "default", false).strip());
+            BackgroundProcessManager.ProcessEntry session = processes.listAll().stream()
+                    .filter(entry -> entry.getMetadata().containsKey("pid"))
+                    .findFirst().orElseThrow();
+            long pid = Long.parseLong(session.getMetadata().get("pid"));
+            loop.changeDirectSettings(() -> config.applyLlmSettingsFrom(
+                    new ChatConfig("openai", "test-key", "gpt-4o", null)));
+            assertTrue(session.isRunning());
+            client.close();
+            assertFalse(session.isRunning());
+            assertFalse(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false));
+            assertNull(client.claudeNativeSession());
         }
     }
 

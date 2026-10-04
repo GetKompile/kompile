@@ -191,6 +191,15 @@
     </div>
   </div>
 
+  <!-- Failed request banner (e.g. the chat app that serves /api/tool-calls is down) -->
+  <div class="catalog-error" *ngIf="errorMessage" role="alert">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ errorMessage }}</span>
+    <button mat-stroked-button (click)="reload()" class="retry-btn">
+      <mat-icon>refresh</mat-icon> Retry
+    </button>
+  </div>
+
   <!-- Index result banner -->
   <div class="index-result" *ngIf="indexResult">
     <mat-icon>check_circle</mat-icon>
@@ -207,7 +216,7 @@
   </div>
 
   <!-- Results count -->
-  <div class="results-header" *ngIf="!loading">
+  <div class="results-header" *ngIf="!loading && !errorMessage">
     <span class="results-count">{{ totalCount }} tool call(s) found</span>
     <span class="page-info" *ngIf="totalPages > 1 && viewMode !== 'grouped'">
       Page {{ page + 1 }} of {{ totalPages }}
@@ -410,14 +419,14 @@
     </div>
 
     <!-- Empty grouped state -->
-    <div class="empty-state" *ngIf="getGroupKeys().length === 0 && !loading">
+    <div class="empty-state" *ngIf="getGroupKeys().length === 0 && !loading && !errorMessage">
       <mat-icon class="empty-icon">search_off</mat-icon>
       <p>No groups found.</p>
     </div>
   </div>
 
   <!-- Empty state (table/cards) -->
-  <div class="empty-state" *ngIf="!loading && viewMode !== 'grouped' && results.length === 0">
+  <div class="empty-state" *ngIf="!loading && !errorMessage && viewMode !== 'grouped' && results.length === 0">
     <mat-icon class="empty-icon">search_off</mat-icon>
     <p>No tool calls found.</p>
     <p class="empty-hint" *ngIf="hasActiveFilters()">Try clearing filters or adjusting your search query.</p>

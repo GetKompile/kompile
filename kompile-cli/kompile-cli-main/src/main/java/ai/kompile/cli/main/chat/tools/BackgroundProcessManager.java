@@ -131,6 +131,11 @@ public class BackgroundProcessManager implements AutoCloseable {
         private volatile boolean fromHistory;
         /** OS start time of {@link #pid}; tells the recorded process from a later one reusing the PID. */
         private volatile Instant osStart;
+        /**
+         * A virtual entry's log was created empty to reserve its id and nothing has been written to
+         * it yet; closing the manager removes such a log. Changed under the entry's monitor.
+         */
+        private volatile boolean unwrittenReservation;
 
         ProcessEntry(String id, String command, long pid, Instant startTime,
                      Path outputFile, String description, Process process,
@@ -191,6 +196,12 @@ public class BackgroundProcessManager implements AutoCloseable {
     private static final boolean IS_UNIX =
             !System.getProperty("os.name", "").toLowerCase().startsWith("win");
 
+    /** How long a killed process's descendants get after SIGTERM before SIGKILL, as the process itself does. */
+    private static final long DESCENDANT_GRACE_MILLIS = 500;
+
+    /** How many ids {@link #reserveId} tries before it gives up. */
+    private static final int MAX_ID_ATTEMPTS = 64;
+
     /** A log file named by {@link #nextId}, e.g. {@code proc-007.log}; group 1 is the number. */
     private static final Pattern ID_LOG_FILE = Pattern.compile("^[a-z]+-([0-9]{1,9})\\.log$");
 
@@ -227,6 +238,7 @@ public class BackgroundProcessManager implements AutoCloseable {
     private boolean stopping;
     private final Object launchLock = new Object();
     private final Object historyLock = new Object();
+    private final SystemPressureMonitor pressureMonitor;
     /** The history last read or written, so an unchanged list is not rewritten. */
     private String lastHistory;
 
@@ -274,10 +286,15 @@ public class BackgroundProcessManager implements AutoCloseable {
             return t;
         });
 
+        Path pressureRoot = workingDirectory != null ? workingDirectory : Path.of(System.getProperty("user.dir"));
+        this.pressureMonitor = SystemPressureMonitor.create(pressureRoot, this::pressureTargets, this::killForPressure);
+
         // Register shutdown hook to kill all running processes
         this.shutdownHook = new Thread(() -> {
             stopLaunching();
+            pressureMonitor.close();
             killAllRunning();
+            discardUnwrittenReservations();
             ioExecutor.shutdownNow();
         }, "bg-proc-manager-shutdown-" + sessionId);
         Runtime.getRuntime().addShutdownHook(this.shutdownHook);
@@ -668,6 +685,10 @@ public class BackgroundProcessManager implements AutoCloseable {
             return false;
         }
         synchronized (entry) {
+            // close() can have removed the unwritten logs, and the folder with them, since the check above.
+            if (closed) {
+                return false;
+            }
             try {
                 Path parent = file.getParent();
                 if (parent != null) {
@@ -678,6 +699,7 @@ public class BackgroundProcessManager implements AutoCloseable {
             } catch (IOException e) {
                 return false;
             }
+            entry.unwrittenReservation = false;
         }
         fireOutput(entry, line);
         return true;
@@ -846,12 +868,6 @@ public class BackgroundProcessManager implements AutoCloseable {
                 throw new IOException("Background process manager for session " + sessionId
                         + " is closed");
             }
-            // Ensure output directory exists
-            Files.createDirectories(outputDir);
-
-            String id = nextId(ProcessKind.COMMAND);
-            Path outputFile = outputDir.resolve(id + ".log");
-
             ProcessBuilder pb = new ProcessBuilder(args);
             pb.directory(workDir != null ? workDir.toFile() : new File("."));
             pb.redirectErrorStream(true);
@@ -866,7 +882,20 @@ public class BackgroundProcessManager implements AutoCloseable {
             }
             env.put("GEMINI_CLI_TRUST_WORKSPACE", "true");
 
-            Process process = pb.start();
+            String id = reserveId(ProcessKind.COMMAND);
+            Path outputFile = outputDir.resolve(id + ".log");
+            Process process;
+            try {
+                process = pb.start();
+            } catch (IOException | RuntimeException e) {
+                // Nothing will write the reserved log: free its name.
+                try {
+                    Files.deleteIfExists(outputFile);
+                } catch (IOException cleanup) {
+                    e.addSuppressed(cleanup);
+                }
+                throw e;
+            }
             entry = new ProcessEntry(
                     id, command, process.pid(), Instant.now(), outputFile, description, process,
                     ProcessKind.COMMAND, Map.of());
@@ -880,6 +909,7 @@ public class BackgroundProcessManager implements AutoCloseable {
             ioExecutor.submit(() -> captureOutputAndWait(entry));
         }
 
+        pressureMonitor.start();
         fireChange();
         return entry;
     }
@@ -921,7 +951,20 @@ public class BackgroundProcessManager implements AutoCloseable {
     private ProcessEntry registerVirtual(ProcessKind kind, String command, String description,
                                          long pid, Map<String, String> metadata, Runnable stop) {
         ProcessKind resolvedKind = kind != null ? kind : ProcessKind.COMMAND;
-        String id = nextId(resolvedKind);
+        // Reserved like a launch's id, so the other manager numbering ids in the session's folder
+        // never hands it out while this entry lives. A closed manager creates nothing there.
+        String id = null;
+        if (!closed) {
+            try {
+                id = reserveId(resolvedKind);
+            } catch (IOException e) {
+                // An unwritable folder: the entry is still listed and its writes report the failure.
+            }
+        }
+        boolean reserved = id != null;
+        if (!reserved) {
+            id = nextId(resolvedKind);
+        }
         Path outputFile = outputDir.resolve(id + ".log");
         ProcessEntry entry = new ProcessEntry(
                 id,
@@ -934,7 +977,12 @@ public class BackgroundProcessManager implements AutoCloseable {
                 resolvedKind,
                 metadata);
         entry.stopHandler = stop;
+        entry.unwrittenReservation = reserved;
         processes.put(id, entry);
+        // close() may have swept the unwritten logs before this entry was listed.
+        if (closed && discardUnwrittenReservation(entry)) {
+            removeOutputDirIfEmpty();
+        }
         fireChange();
         return entry;
     }
@@ -1021,11 +1069,40 @@ public class BackgroundProcessManager implements AutoCloseable {
         }
     }
 
-    /**
-     * Kill a tracked process by its process ID string (e.g. "proc-001").
-     *
-     * @return true if the process was found and kill was attempted
-     */
+    /** Runtime resource watchdog status; reads do not advance sampling or enforcement. */
+    public Map<String, Object> resourceMonitorStatus() {
+        return pressureMonitor.status();
+    }
+
+    List<String> pressureTargets() {
+        return processes.values().stream()
+                .filter(entry -> entry.kind == ProcessKind.COMMAND && entry.process != null
+                        && entry.isRunning() && entry.process.isAlive())
+                .sorted(Comparator.comparing(ProcessEntry::getStartTime).reversed())
+                .map(ProcessEntry::getId).toList();
+    }
+
+    boolean killForPressure(String id, String reason) {
+        ProcessEntry entry = processes.get(id);
+        if (entry == null || entry.kind != ProcessKind.COMMAND || entry.process == null
+                || !entry.isRunning() || !entry.process.isAlive()) return false;
+        Map<String, String> metadata = new LinkedHashMap<>(entry.metadata);
+        metadata.put("resourceMonitorReason", reason);
+        entry.metadata = Map.copyOf(metadata);
+        // A bash wrapper alone is not the workload. Capture identity-bearing handles
+        // before terminating it so its owned children cannot survive the pressure kill.
+        List<ProcessHandle> descendants = entry.process.descendants().toList();
+        boolean killed = kill(id);
+        if (killed) {
+            for (int i = descendants.size() - 1; i >= 0; i--) {
+                ProcessHandle child = descendants.get(i);
+                if (child.isAlive()) child.destroyForcibly();
+            }
+        }
+        return killed;
+    }
+
+    /** Kill an explicitly selected tracked process; returns whether a kill was attempted. */
     public boolean kill(String processId) {
         ProcessEntry entry = processes.get(processId);
         if (entry == null) return false;
@@ -1084,6 +1161,7 @@ public class BackgroundProcessManager implements AutoCloseable {
         if (entry.process == null) {
             if (entry.pid > 0) {
                 ProcessHandle.of(entry.pid).ifPresent(handle -> {
+                    List<ProcessHandle> descendants = descendantsOf(handle);
                     handle.destroy();
                     try {
                         if (handle.isAlive()) {
@@ -1095,6 +1173,7 @@ public class BackgroundProcessManager implements AutoCloseable {
                     if (handle.isAlive()) {
                         handle.destroyForcibly();
                     }
+                    stopDescendants(descendants);
                 });
             }
             Runnable stop = entry.stopHandler;
@@ -1112,6 +1191,9 @@ public class BackgroundProcessManager implements AutoCloseable {
 
         long pid = entry.pid;
         if (IS_UNIX) {
+            // The launched pid is usually a bash -c wrapper; the workload (a Maven JVM and
+            // the npm it started) runs in its children, which a signal to it never reaches.
+            List<ProcessHandle> descendants = descendantsOf(entry.process.toHandle());
             try {
                 new ProcessBuilder("kill", "-TERM", String.valueOf(pid))
                         .redirectErrorStream(true).start().waitFor(1, TimeUnit.SECONDS);
@@ -1133,7 +1215,9 @@ public class BackgroundProcessManager implements AutoCloseable {
                 entry.process.destroyForcibly();
                 Thread.currentThread().interrupt();
             }
+            stopDescendants(descendants);
         } else {
+            // /t stops the whole tree.
             try {
                 new ProcessBuilder("taskkill", "/pid", String.valueOf(pid), "/f", "/t")
                         .redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS);
@@ -1153,9 +1237,10 @@ public class BackgroundProcessManager implements AutoCloseable {
     }
 
     /**
-     * Stop a process an earlier run of the session launched. Only the recorded OS
-     * process is signalled, through a handle that carries its start time, so a reused
-     * PID is never touched. One that is already gone is closed out and false returned.
+     * Stop a process an earlier run of the session launched, and the processes it
+     * started. Only the recorded OS process and its descendants are signalled, through
+     * handles that carry their start times, so a reused PID is never touched. One that
+     * is already gone is closed out and false returned.
      */
     private boolean killRecorded(ProcessEntry entry) {
         ProcessHandle handle;
@@ -1174,6 +1259,7 @@ public class BackgroundProcessManager implements AutoCloseable {
             }
         }
         if (handle != null) {
+            List<ProcessHandle> descendants = descendantsOf(handle);
             handle.destroy();
             try {
                 if (handle.isAlive()) {
@@ -1185,10 +1271,51 @@ public class BackgroundProcessManager implements AutoCloseable {
             if (handle.isAlive()) {
                 handle.destroyForcibly();
             }
+            stopDescendants(descendants);
         }
         fireExit(entry);
         fireChange();
         return handle != null;
+    }
+
+    /**
+     * Every process {@code root} has started, children before grandchildren. Taken
+     * before the root is signalled: once it dies they are re-parented and no longer
+     * reachable through it. Each handle carries its process's start time, so a later
+     * signal never reaches a process that has since reused the PID.
+     */
+    private static List<ProcessHandle> descendantsOf(ProcessHandle root) {
+        try {
+            return root.descendants().toList();
+        } catch (RuntimeException e) {
+            // The process table is unreadable; the root itself is still signalled.
+            return List.of();
+        }
+    }
+
+    /**
+     * Stop the descendants {@link #descendantsOf} captured before their root was
+     * signalled: SIGTERM, up to {@link #DESCENDANT_GRACE_MILLIS} to exit, then SIGKILL
+     * for any still running. Left alone they outlive the kill and, holding the captured
+     * stdout pipe, delay the exit's publication until they end on their own.
+     */
+    private static void stopDescendants(List<ProcessHandle> descendants) {
+        if (descendants.isEmpty()) return;
+        // In snapshot order, parents before their children: a shell that saw its child
+        // die first could start its next command, which the snapshot does not hold.
+        descendants.forEach(ProcessHandle::destroy);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DESCENDANT_GRACE_MILLIS);
+        try {
+            while (System.nanoTime() < deadline
+                    && descendants.stream().anyMatch(ProcessHandle::isAlive)) {
+                Thread.sleep(20);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        for (ProcessHandle child : descendants) {
+            if (child.isAlive()) child.destroyForcibly();
+        }
     }
 
     /**
@@ -1239,6 +1366,73 @@ public class BackgroundProcessManager implements AutoCloseable {
             case COMMAND -> "proc";
         };
         return prefix + "-" + String.format("%03d", counter.incrementAndGet());
+    }
+
+    /**
+     * Hand out the next id and reserve it by creating its log, {@code <id>.log}, as a new file.
+     * Another manager can number ids in the same folder: a chat and its MCP stdio server share
+     * the session's, each with its own counter. A name already on disk moves numbering past
+     * every log in the folder and tries again, so no two managers hand out one id or write one log.
+     *
+     * @throws IOException if the folder or the log cannot be created
+     */
+    private String reserveId(ProcessKind kind) throws IOException {
+        for (int attempt = 0; attempt < MAX_ID_ATTEMPTS; attempt++) {
+            Files.createDirectories(outputDir);
+            String id = nextId(kind);
+            try {
+                Files.createFile(outputDir.resolve(id + ".log"));
+                return id;
+            } catch (FileAlreadyExistsException taken) {
+                counter.accumulateAndGet(highestUsedIdNumber(outputDir), Math::max);
+            } catch (NoSuchFileException folderRemoved) {
+                // The other manager's close() removed the emptied folder in between.
+            }
+        }
+        throw new IOException("No free process id in " + outputDir + " after "
+                + MAX_ID_ATTEMPTS + " attempts");
+    }
+
+    /**
+     * Remove the log reserved for a virtual entry if nothing was ever written to it.
+     *
+     * @return whether the log was removed
+     */
+    private static boolean discardUnwrittenReservation(ProcessEntry entry) {
+        synchronized (entry) {
+            if (!entry.unwrittenReservation) {
+                return false;
+            }
+            entry.unwrittenReservation = false;
+            try {
+                // Empty only: a build that does not reserve ids may share the folder and write to it.
+                return Files.size(entry.outputFile) == 0 && Files.deleteIfExists(entry.outputFile);
+            } catch (IOException e) {
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Remove the logs reserved for virtual entries that never wrote a line, and the session's
+     * folder when that empties it, so a watcher that stayed silent leaves nothing behind.
+     */
+    private void discardUnwrittenReservations() {
+        boolean removed = false;
+        for (ProcessEntry entry : processes.values()) {
+            removed |= discardUnwrittenReservation(entry);
+        }
+        if (removed) {
+            removeOutputDirIfEmpty();
+        }
+    }
+
+    private void removeOutputDirIfEmpty() {
+        try {
+            Files.deleteIfExists(outputDir);
+        } catch (IOException notEmpty) {
+            // Other logs or the session history are still in it.
+        }
     }
 
     /**
@@ -1425,6 +1619,7 @@ public class BackgroundProcessManager implements AutoCloseable {
     @Override
     public void close() {
         stopLaunching();
+        pressureMonitor.close();
         // Kill all running processes and publish their exits. Ones restored from an
         // earlier run are not this run's to stop: they stay recorded as running for a
         // later run to kill.
@@ -1449,6 +1644,7 @@ public class BackgroundProcessManager implements AutoCloseable {
         // The log directory can go with its session, so a late writer (a diagnostics
         // sink still registered) must not recreate it.
         closed = true;
+        discardUnwrittenReservations();
 
         // Remove shutdown hook to prevent leak
         try {

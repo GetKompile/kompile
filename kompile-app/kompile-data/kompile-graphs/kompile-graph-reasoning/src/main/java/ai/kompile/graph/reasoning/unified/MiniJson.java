@@ -188,7 +188,16 @@ public final class MiniJson {
      * @throws IllegalArgumentException if the input is not well-formed JSON
      */
     public static Object parse(String json) {
-        Parser p = new Parser(json);
+        return parseDocument(new Parser(json));
+    }
+
+    /** Strict, depth-bounded decoding for executable artifacts; legacy parse behavior is unchanged. */
+    public static Object parseStrict(String json, int maxDepth) {
+        if (maxDepth < 1 || maxDepth > 128) throw new IllegalArgumentException("maxDepth must be 1..128");
+        return parseDocument(new Parser(json, maxDepth));
+    }
+
+    private static Object parseDocument(Parser p) {
         p.skipWs();
         Object v = p.readValue();
         p.skipWs();
@@ -212,8 +221,11 @@ public final class MiniJson {
     private static final class Parser {
         private final String s;
         private int pos;
+        private int depth;
+        private final int maxDepth;
 
-        Parser(String s) { this.s = s; }
+        Parser(String s) { this(s, 0); }
+        Parser(String s, int maxDepth) { this.s = s; this.maxDepth = maxDepth; }
 
         boolean atEnd() { return pos >= s.length(); }
 
@@ -230,8 +242,11 @@ public final class MiniJson {
             if (atEnd()) throw err("unexpected end of input");
             char c = s.charAt(pos);
             return switch (c) {
-                case '{' -> readObject();
-                case '[' -> readArray();
+                case '{', '[' -> {
+                    if (maxDepth > 0 && ++depth > maxDepth) throw err("nesting depth limit exceeded");
+                    try { yield c == '{' ? readObject() : readArray(); }
+                    finally { if (maxDepth > 0) depth--; }
+                }
                 case '"' -> readString();
                 case 't', 'f' -> readBoolean();
                 case 'n' -> readNull();
@@ -251,6 +266,7 @@ public final class MiniJson {
                 skipWs();
                 expect(':');
                 Object val = readValue();
+                if (maxDepth > 0 && out.containsKey(key)) throw err("duplicate object key: " + key);
                 out.put(key, val);
                 skipWs();
                 char c = next();
@@ -296,12 +312,15 @@ public final class MiniJson {
                         case 'f'  -> sb.append('\f');
                         case 'u'  -> {
                             if (pos + 4 > s.length()) throw err("bad \\u escape");
-                            sb.append((char) Integer.parseInt(s.substring(pos, pos + 4), 16));
+                            String hex = s.substring(pos, pos + 4);
+                            if (maxDepth > 0 && !hex.matches("[0-9a-fA-F]{4}")) throw err("bad \\u escape");
+                            sb.append((char) Integer.parseInt(hex, 16));
                             pos += 4;
                         }
                         default -> throw err("bad escape \\" + e);
                     }
                 } else {
+                    if (maxDepth > 0 && c < 0x20) throw err("unescaped control character");
                     sb.append(c);
                 }
             }
@@ -335,6 +354,9 @@ public final class MiniJson {
             }
             String tok = s.substring(start, pos);
             if (tok.isEmpty()) throw err("invalid number");
+            if (maxDepth > 0 && !tok.matches("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?")) {
+                throw err("invalid JSON number");
+            }
             if (real) {
                 return Double.parseDouble(tok);
             }

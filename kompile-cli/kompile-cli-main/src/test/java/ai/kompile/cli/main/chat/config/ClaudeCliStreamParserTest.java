@@ -9,9 +9,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -158,12 +160,12 @@ class ClaudeCliStreamParserTest {
             parser.parse(line);
         }
 
-        // result.usage adds up every request of the turn, the subagent's included.
+        // result.usage adds up the turn's main-thread requests; a subagent's are in modelUsage.
         ClaudeCliStreamParser.TurnComplete turn = turnComplete(parser, """
-                {"type":"result","subtype":"success","num_turns":2,"result":"done","usage":{"input_tokens":185008,"output_tokens":20,"cache_read_input_tokens":82000,"cache_creation_input_tokens":2500}}""");
+                {"type":"result","subtype":"success","num_turns":2,"result":"done","usage":{"input_tokens":8,"output_tokens":20,"cache_read_input_tokens":82000,"cache_creation_input_tokens":2500}}""");
         assertEquals(42_503, turn.contextTokens(),
                 "input plus cache reads plus cache writes of the last main-thread request");
-        assertEquals(82_000, turn.cacheReadTokens(), "the turn's totals still add up every request");
+        assertEquals(82_000, turn.cacheReadTokens(), "the turn's usage still adds up its requests");
         assertEquals(20, turn.outputTokens());
     }
 
@@ -197,12 +199,115 @@ class ClaudeCliStreamParserTest {
         String result = """
                 {"type":"result","subtype":"success","num_turns":1,"result":"answer"}""";
         ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
-        assertEquals(List.of(new ClaudeCliStreamParser.Text("answer")), parser.parse("""
+        assertEquals(List.of(new ClaudeCliStreamParser.RequestUsage(1, "old-cli-msg", true,
+                        new ClaudeCliStreamParser.TokenCounts(7, 3, 1000, 0)),
+                new ClaudeCliStreamParser.Text("answer")), parser.parse("""
                 {"type":"assistant","message":{"id":"old-cli-msg","content":[{"type":"text","text":"answer"}],"usage":{"input_tokens":7,"cache_read_input_tokens":1000,"output_tokens":3}},"parent_tool_use_id":null}"""));
         assertEquals(1_007, turnComplete(parser, result).contextTokens());
 
         assertEquals(0, turnComplete(new ClaudeCliStreamParser(), result).contextTokens(),
                 "a turn whose requests reported no usage has no measurement");
+    }
+
+    @Test
+    void eachFrameCarryingUsageReportsItsRequest() {
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        List<ClaudeCliStreamParser.Event> events = new ArrayList<>();
+        for (String line : List.of(
+                """
+                {"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-1","usage":{"input_tokens":10,"cache_read_input_tokens":1000,"output_tokens":1}}},"parent_tool_use_id":null}""",
+                // An aggregate repeats the usage known when its block ended.
+                """
+                {"type":"assistant","message":{"id":"msg-1","content":[],"usage":{"input_tokens":10,"cache_read_input_tokens":1000,"output_tokens":1}},"parent_tool_use_id":null}""",
+                """
+                {"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":30}},"parent_tool_use_id":null}""",
+                // A subagent's stream events are not the main thread's; its aggregates carry its usage.
+                """
+                {"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-sub","usage":{"input_tokens":900,"output_tokens":1}}},"parent_tool_use_id":"toolu_task"}""",
+                """
+                {"type":"assistant","message":{"id":"msg-sub","content":[],"usage":{"input_tokens":900,"output_tokens":5}},"parent_tool_use_id":"toolu_task"}""")) {
+            events.addAll(parser.parse(line));
+        }
+
+        assertEquals(List.of(
+                new ClaudeCliStreamParser.RequestUsage(1, "msg-1", true,
+                        new ClaudeCliStreamParser.TokenCounts(10, 1, 1000, 0)),
+                new ClaudeCliStreamParser.RequestUsage(2, "msg-1", true,
+                        new ClaudeCliStreamParser.TokenCounts(10, 1, 1000, 0)),
+                new ClaudeCliStreamParser.RequestUsage(3, "msg-1", true,
+                        new ClaudeCliStreamParser.TokenCounts(0, 30, 0, 0)),
+                new ClaudeCliStreamParser.RequestUsage(4, "msg-sub", false,
+                        new ClaudeCliStreamParser.TokenCounts(900, 5, 0, 0))), events);
+    }
+
+    @Test
+    void framesWithoutCountsOrARequestIdReportNoUsage() {
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        assertEquals(List.of(), parser.parse("""
+                {"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-1"}}}"""));
+        assertEquals(List.of(), parser.parse("""
+                {"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":0}}}"""));
+        // Without a request id a repeat cannot be told from new usage.
+        assertEquals(List.of(), parser.parse("""
+                {"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1}}}}"""));
+        assertEquals(List.of(), parser.parse("""
+                {"type":"assistant","message":{"content":[],"usage":{"input_tokens":10,"output_tokens":1}},"parent_tool_use_id":"toolu_task"}"""));
+    }
+
+    @Test
+    void theParsersOfOneProcessNumberUsageAndResultsInOutputOrder() {
+        AtomicLong sequences = new AtomicLong();
+        String start = """
+                {"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-%d","usage":{"input_tokens":5,"output_tokens":1}}}}""";
+        String result = """
+                {"type":"result","subtype":"success","num_turns":1,"result":"done","usage":{"input_tokens":5,"output_tokens":1}}""";
+        ClaudeCliStreamParser first = new ClaudeCliStreamParser(sequences);
+        ClaudeCliStreamParser second = new ClaudeCliStreamParser(sequences);
+
+        assertEquals(1, ((ClaudeCliStreamParser.RequestUsage) first.parse(start.formatted(1)).get(0)).sequence());
+        assertEquals(2, turnComplete(first, result).sequence());
+        assertEquals(3, ((ClaudeCliStreamParser.RequestUsage) second.parse(start.formatted(2)).get(0)).sequence());
+        assertEquals(4, turnComplete(second, result).sequence());
+    }
+
+    @Test
+    void theArgumentsTheModelWritesForAToolStreamAsToolInput() {
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        List<ClaudeCliStreamParser.Event> events = new ArrayList<>();
+        for (String line : List.of(
+                """
+                {"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-1"}}}""",
+                """
+                {"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}}}""",
+                """
+                {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}}""",
+                """
+                {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"file_path\\": "}}}""",
+                """
+                {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"/tmp/a\\"}"}}}""")) {
+            events.addAll(parser.parse(line));
+        }
+
+        assertEquals(List.of(new ClaudeCliStreamParser.ToolInputDelta("{\"file_path\": "),
+                        new ClaudeCliStreamParser.ToolInputDelta("\"/tmp/a\"}")),
+                events.stream().filter(ClaudeCliStreamParser.ToolInputDelta.class::isInstance).toList());
+        assertEquals(List.of(), parser.parse("""
+                {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}},"parent_tool_use_id":"toolu_task"}"""),
+                "a subagent's stream events are not the main thread's");
+    }
+
+    @Test
+    void theTotalsAddUpEveryModelTheProcessUsed() {
+        ClaudeCliStreamParser.TurnComplete turn = turnComplete(new ClaudeCliStreamParser(), """
+                {"type":"result","subtype":"success","num_turns":1,"result":"done","usage":{"input_tokens":10,"output_tokens":30},"modelUsage":{"claude-opus-5-5":{"inputTokens":10,"outputTokens":30,"cacheReadInputTokens":1000,"cacheCreationInputTokens":200,"contextWindow":200000},"claude-haiku-4-5-20251001":{"inputTokens":900,"outputTokens":75,"contextWindow":200000}}}""");
+        assertEquals(new ClaudeCliStreamParser.TokenCounts(910, 105, 1000, 200), turn.totals());
+        assertEquals(new ClaudeCliStreamParser.TokenCounts(10, 30, 0, 0), turn.usage());
+
+        assertEquals(ClaudeCliStreamParser.TokenCounts.ZERO, turnComplete(new ClaudeCliStreamParser(), """
+                {"type":"result","subtype":"success","num_turns":1,"result":"done","modelUsage":{}}""").totals());
+        assertNull(turnComplete(new ClaudeCliStreamParser(), """
+                {"type":"result","subtype":"success","num_turns":1,"result":"done"}""").totals(),
+                "a result without modelUsage has no totals");
     }
 
     @Test

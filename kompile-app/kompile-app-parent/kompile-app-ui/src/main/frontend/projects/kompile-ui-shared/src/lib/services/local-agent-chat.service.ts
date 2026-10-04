@@ -15,11 +15,12 @@
  */
 
 import { Injectable, NgZone } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext } from '@angular/common/http';
 import { Observable, Subject, BehaviorSubject } from 'rxjs';
 import { throttleTime } from 'rxjs/operators';
 import { BaseService } from './base.service';
 import { ChatStorageService } from './chat-storage.service';
+import { SKIP_ERROR_SNACKBAR } from './http-error.interceptor';
 import { ReasoningTrailDto } from './kb-grounding.service';
 import {
   AgentProvider,
@@ -36,7 +37,8 @@ import {
   createAssistantMessage,
   createNewSession,
   ChatHistoryEntry,
-  MessageAttachment
+  MessageAttachment,
+  ToolCallChart
 } from '../models/api-models';
 
 /**
@@ -60,6 +62,63 @@ export interface SessionConfigSnapshot {
   queue?: CommandEventData;
   continue?: CommandEventData;
   judge?: CommandEventData;
+}
+
+/**
+ * The session's insight rows from GET /agents/chat/session-insights: the rows the terminal's
+ * dashboard area shows (judge flags, tool counts and latency, the last test milestone, crawl
+ * progress). A summary row reads "Topic: …"; a row starting with "↳ " details the row above it.
+ * {@code live} is true while a crawl runs. {@code available:false} carries a {@code status}.
+ */
+export interface SessionInsightsSnapshot {
+  menu: 'insights';
+  available?: boolean;
+  status?: string;
+  sessionId?: string;
+  schemaVersion?: string;
+  title?: string;
+  contextVersion?: number;
+  lines?: string[];
+  live?: boolean;
+}
+
+/**
+ * One topic's report from GET /agents/chat/insights, over every chat session: what the CLI's
+ * insights tool answers for judge verdicts, tool calls, test milestones, crawls, graphs, or the
+ * overview of them all. {@code available:false} carries a {@code status} instead of a report.
+ */
+export interface InsightsTopicReport {
+  menu: 'insights';
+  topic: string;
+  available: boolean;
+  status?: string;
+  headline?: string;
+  /** The report as the terminal prints it: tables and sparklines in a monospace font. */
+  text?: string;
+  chart?: ToolCallChart;
+}
+
+/** The limits every insights report keeps to, as insights.json holds them. */
+export interface InsightsSettings {
+  defaultWindowDays: number;
+  maxRows: number;
+  maxExamples: number;
+  maxSessions: number;
+  maxBytesPerFile: number;
+  maxToolIndexBytes: number;
+  sparklineBuckets: number;
+  sessionPanel: boolean;
+}
+
+/**
+ * insights.json from GET and PUT /agents/chat/insights/config: the file, its settings, the
+ * defaults, and a {@code warning} when the file could not be used and the defaults apply.
+ */
+export interface InsightsSettingsView {
+  file: string;
+  settings: InsightsSettings;
+  defaults: InsightsSettings;
+  warning?: string;
 }
 
 /** One selectable vendor chip of the model section. */
@@ -1715,6 +1774,49 @@ export class LocalAgentChatService extends BaseService {
     if (modelVendor) params['modelVendor'] = modelVendor;
     return this.http.get<SessionConfigSnapshot>(
       `${this.backendUrl}/agents/chat/session-config`, { params });
+  }
+
+  /**
+   * The session's insight rows, read headlessly through the CLI like getSessionConfig: no chat
+   * messages, no transcript entries. The insights drawer polls this and shows its own
+   * unavailable state, so failures skip the global error snackbar.
+   */
+  getSessionInsights(sessionId?: string, workingDirectory?: string): Observable<SessionInsightsSnapshot> {
+    const params: { [key: string]: string } = {};
+    if (sessionId) params['sessionId'] = sessionId;
+    if (workingDirectory) params['workingDirectory'] = workingDirectory;
+    return this.http.get<SessionInsightsSnapshot>(
+      `${this.backendUrl}/agents/chat/session-insights`,
+      { params, context: new HttpContext().set(SKIP_ERROR_SNACKBAR, true) });
+  }
+
+  /**
+   * One topic's report over every chat session; no topic means the overview. The question
+   * narrows it, with a window ("last 30 days") or a subject ("flags for bash"). The insights
+   * page shows a failed read itself, so failures skip the global error snackbar.
+   */
+  getInsightsReport(topic?: string, question?: string, workingDirectory?: string): Observable<InsightsTopicReport> {
+    const params: { [key: string]: string } = {};
+    if (topic) params['topic'] = topic;
+    if (question) params['question'] = question;
+    if (workingDirectory) params['workingDirectory'] = workingDirectory;
+    return this.http.get<InsightsTopicReport>(
+      `${this.backendUrl}/agents/chat/insights`,
+      { params, context: new HttpContext().set(SKIP_ERROR_SNACKBAR, true) });
+  }
+
+  /** insights.json, which the insights page edits and shows its own errors for. */
+  getInsightsSettings(): Observable<InsightsSettingsView> {
+    return this.http.get<InsightsSettingsView>(
+      `${this.backendUrl}/agents/chat/insights/config`,
+      { context: new HttpContext().set(SKIP_ERROR_SNACKBAR, true) });
+  }
+
+  /** Changes the insights settings {@code changes} names; the others keep their values. */
+  saveInsightsSettings(changes: Partial<InsightsSettings>): Observable<InsightsSettingsView> {
+    return this.http.put<InsightsSettingsView>(
+      `${this.backendUrl}/agents/chat/insights/config`, changes,
+      { context: new HttpContext().set(SKIP_ERROR_SNACKBAR, true) });
   }
 
   // Synchronous getters

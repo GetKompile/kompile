@@ -15,7 +15,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -25,6 +27,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -64,6 +67,11 @@ final class LocalCrawlJobStore {
 
     static Path normalizeRoot(Path root) {
         return root == null ? null : root.toAbsolutePath().normalize();
+    }
+
+    /** How long a finished job's record is kept before {@link #prune(Path)} deletes it. */
+    static long retentionMs() {
+        return RETENTION_MS;
     }
 
     static void initialize(Path root, String jobId, String knowledgeBase, JsonNode request) {
@@ -106,11 +114,13 @@ final class LocalCrawlJobStore {
             try {
                 Files.createDirectories(directory);
                 ObjectNode sanitizedState = (ObjectNode) redact(state);
-                atomicWrite(directory.resolve(STATE_FILE), sanitizedState);
                 ObjectNode event = MAPPER.createObjectNode();
                 event.put("eventType", eventType == null ? "JOB_STATE" : eventType);
                 event.set("state", sanitizedState.deepCopy());
+                // A terminal state must never precede its durable transcript witness.
+                // A failed state replacement may leave an extra trace row, not false completion.
                 appendTraceLocked(directory, event);
+                atomicWrite(directory.resolve(STATE_FILE), sanitizedState);
             } catch (IOException e) {
                 throw new IllegalStateException("Unable to persist local crawl job " + jobId, e);
             }
@@ -180,16 +190,26 @@ final class LocalCrawlJobStore {
     }
 
     static ArrayNode list(Path root) {
+        Path normalized = normalizeRoot(root);
+        if (normalized == null) return MAPPER.createArrayNode();
+        prune(normalized);
+        return snapshot(normalized);
+    }
+
+    /**
+     * The stored jobs, newest first, read without pruning or reconciling anything, for readers
+     * that must leave the store as they found it.
+     */
+    static ArrayNode snapshot(Path root) {
         ArrayNode jobs = MAPPER.createArrayNode();
         Path normalized = normalizeRoot(root);
         if (normalized == null) return jobs;
-        prune(normalized);
         Path directory = jobsDirectory(normalized);
         if (!Files.isDirectory(directory)) return jobs;
         try (var children = Files.list(directory)) {
             children.filter(Files::isDirectory)
                     .map(path -> load(normalized, path.getFileName().toString()).orElse(null))
-                    .filter(java.util.Objects::nonNull)
+                    .filter(Objects::nonNull)
                     .sorted(Comparator.comparing(
                             value -> value.path("createdAt").asText(""), Comparator.reverseOrder()))
                     .forEach(jobs::add);
@@ -221,13 +241,18 @@ final class LocalCrawlJobStore {
         return ToolResult.success("crawl_transcript", result.toPrettyString(), metadata);
     }
 
-    static void reconcileInterrupted(Path root, ObjectNode state) {
-        if (state == null || state.path("terminal").asBoolean(false)) return;
+    /** True when a job is not terminal and the process that owned it has exited, so it never will be. */
+    static boolean ownerExited(ObjectNode state) {
+        if (state == null || state.path("terminal").asBoolean(false)) return false;
         long ownerPid = state.path("ownerPid").asLong(-1L);
-        if (ownerPid == ProcessHandle.current().pid()) return;
+        if (ownerPid == ProcessHandle.current().pid()) return false;
         boolean ownerAlive = ownerPid > 0 && ProcessHandle.of(ownerPid)
                 .map(ProcessHandle::isAlive).orElse(false);
-        if (ownerAlive) return;
+        return !ownerAlive;
+    }
+
+    static void reconcileInterrupted(Path root, ObjectNode state) {
+        if (!ownerExited(state)) return;
         Instant now = Instant.now();
         state.put("status", "FAILED");
         state.put("terminal", true);
@@ -375,10 +400,15 @@ final class LocalCrawlJobStore {
         envelope.put("eventId", UUID.randomUUID().toString());
         envelope.put("timestamp", Instant.now().toString());
         envelope.setAll(event.deepCopy());
-        Files.writeString(trace, MAPPER.writeValueAsString(envelope) + System.lineSeparator(),
-                StandardCharsets.UTF_8,
-                java.nio.file.StandardOpenOption.CREATE,
-                java.nio.file.StandardOpenOption.APPEND);
+        byte[] bytes = (MAPPER.writeValueAsString(envelope) + System.lineSeparator())
+                .getBytes(StandardCharsets.UTF_8);
+        try (FileChannel channel = FileChannel.open(trace,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+            ByteBuffer buffer = ByteBuffer.wrap(bytes);
+            while (buffer.hasRemaining()) channel.write(buffer);
+            channel.force(true);
+        }
+        syncDirectory(directory);
     }
 
     private static long existingLineCount(Path path) {
@@ -405,12 +435,25 @@ final class LocalCrawlJobStore {
     private static void atomicWrite(Path target, JsonNode value) throws IOException {
         Files.createDirectories(target.getParent());
         Path temporary = target.resolveSibling(target.getFileName() + ".tmp-" + UUID.randomUUID());
-        MAPPER.writerWithDefaultPrettyPrinter().writeValue(temporary.toFile(), value);
         try {
+            byte[] bytes = MAPPER.writerWithDefaultPrettyPrinter().writeValueAsBytes(value);
+            try (FileChannel channel = FileChannel.open(temporary,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                ByteBuffer buffer = ByteBuffer.wrap(bytes);
+                while (buffer.hasRemaining()) channel.write(buffer);
+                channel.force(true);
+            }
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            syncDirectory(target.getParent());
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static void syncDirectory(Path directory) throws IOException {
+        try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+            channel.force(true);
         }
     }
 

@@ -55,7 +55,8 @@ public class ChatCompleter implements Completer {
         // Chat & agents
         COMMANDS.put("/help", "Show help message");
         COMMANDS.put("/setup", "Run setup wizard");
-        COMMANDS.put("/auth", "Select session credentials or global per-vendor authentication");
+        COMMANDS.put("/auth", "Choose vendor and model; reuse or change authentication");
+        COMMANDS.put("/provider", "Alias for the /auth vendor/model picker");
         COMMANDS.put("/status", "Connection and session info");
         COMMANDS.put("/agent", "Switch or show current agent");
         COMMANDS.put("/agents", "List available agents");
@@ -99,9 +100,10 @@ public class ChatCompleter implements Completer {
         // Config & permissions
         COMMANDS.put("/config", "Show or edit configuration");
         COMMANDS.put("/permissions", "Manage permissions");
-        COMMANDS.put("/model", "Switch or show model");
+        COMMANDS.put("/model", "Choose a model for the current vendor (/auth switches vendors)");
         COMMANDS.put("/fast", "Toggle premium fast mode (supported models only)");
         COMMANDS.put("/ultracode", "Toggle Claude Code ultracode workflows (Claude Code route only)");
+        COMMANDS.put("/mcp", "Show or reconnect this session's MCP servers (Claude Code route only)");
         COMMANDS.put("/mode", "Switch interaction mode");
 
         // Queue & jobs
@@ -253,6 +255,10 @@ public class ChatCompleter implements Completer {
                 new String[]{"on", "Request fast mode (higher cost)"},
                 new String[]{"off", "Use standard speed"},
                 new String[]{"status", "Show fast-mode preference"}
+        ));
+        SUB_ARGS.put("/mcp", List.of(
+                new String[]{"status", "Show this session's MCP servers"},
+                new String[]{"reconnect", "Restart MCP servers in place (--force stops running jobs)"}
         ));
         SUB_ARGS.put("/ultracode", List.of(
                 new String[]{"on", "Plan workflows at xhigh effort (more tokens)"},

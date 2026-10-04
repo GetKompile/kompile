@@ -11,6 +11,7 @@ import ai.kompile.cli.main.chat.agent.CustomAgentLoader;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelCatalogFallback;
+import ai.kompile.cli.main.chat.mcp.SessionInsightsPanel;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
@@ -18,17 +19,23 @@ import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsMarkdownGenerator;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tools.InsightsTool;
 import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.insights.InsightReport;
+import ai.kompile.cli.insights.InsightsConfig;
+import ai.kompile.cli.insights.InsightsQuery;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -134,6 +141,7 @@ public final class WebCommandResolver {
         if (input.configQuery()) {
             return configSnapshot(input, stateStore, directory, configOverride, modelCatalogStorePath);
         }
+        if (input.insightsQuery()) return insightsSnapshot(input, directory);
         if (input.workflowApprove() != null) return workflowApproval(input, directory);
         String raw = input.rawInput().stripLeading();
         if (!raw.startsWith("/")) return model(input.rawInput(), input);
@@ -771,6 +779,78 @@ public final class WebCommandResolver {
                         ? "Judge guidance saved — injected into every future judge prompt."
                         : "Judge guidance cleared.",
                 null, judgeData(input, null, Path.of(".")));
+    }
+
+    // ========================================================================
+    // Session insights (insightsQuery=true): the panel the terminal's dashboard
+    // area shows — this session's judge flags, tool calls and latency, latest
+    // test result and crawls — for the web chat's insights drawer, which asks
+    // between runs. Read-only, and never a model turn.
+    // ========================================================================
+
+    private static Resolution insightsSnapshot(WebChatInput input, Path directory) {
+        if (input.insightsTopic() != null) return insightsReport(input, directory);
+        String sessionId = input.sessionId() == null || input.sessionId().isBlank()
+                ? null : input.sessionId();
+        if (sessionId == null) {
+            return new Resolution(Status.INVALID, "/insights", "Session insights need a session id.", null);
+        }
+        ObjectNode data = JsonUtils.standardMapper().createObjectNode();
+        data.put("menu", "insights");
+        data.put("sessionId", sessionId);
+        String text;
+        try {
+            ObjectNode panel = SessionInsightsPanel.snapshot(directory == null ? Path.of(".") : directory,
+                    sessionId);
+            data.put("available", true);
+            data.setAll(panel);
+            List<String> lines = new ArrayList<>();
+            panel.path("lines").forEach(line -> lines.add(line.asText()));
+            text = String.join("\n", lines);
+        } catch (Exception e) {
+            String reason = e.getMessage() == null || e.getMessage().isBlank()
+                    ? e.getClass().getSimpleName() : e.getMessage();
+            text = "Session insights could not be read: " + reason;
+            data.put("available", false);
+            data.put("status", text);
+        }
+        return new Resolution(Status.COMPLETED, "/insights", text, null, data);
+    }
+
+    /**
+     * One topic's report (insightsTopic set): what the {@code insights} tool answers, over every
+     * session, for the chat app's insights page. The page reads judge, tool and test data itself
+     * and asks here for what only the CLI reads, such as the project's crawls. A web run is
+     * project-local, so are the crawls and graphs read here.
+     */
+    private static Resolution insightsReport(WebChatInput input, Path directory) {
+        InsightsConfig config = InsightsConfig.load();
+        InsightReport report;
+        try {
+            report = new InsightsTool().newInsights(directory == null ? Path.of(".") : directory, config)
+                    .answer(InsightsQuery.parse(input.insightsTopic(), input.insightsQuestion(), List.of(),
+                            Instant.now(), ZoneId.systemDefault(), config.getDefaultWindowDays()));
+        } catch (IllegalArgumentException unknownTopic) {
+            return new Resolution(Status.INVALID, "/insights", unknownTopic.getMessage(), null);
+        } catch (IOException e) {
+            String text = "Could not read insights data: "
+                    + (e.getMessage() == null || e.getMessage().isBlank() ? e.getClass().getSimpleName() : e.getMessage());
+            ObjectNode data = JsonUtils.standardMapper().createObjectNode();
+            data.put("menu", "insights");
+            data.put("topic", input.insightsTopic());
+            data.put("available", false);
+            data.put("status", text);
+            return new Resolution(Status.COMPLETED, "/insights", text, null, data);
+        }
+        String text = config.appendWarning(report.getText());
+        ObjectNode data = JsonUtils.standardMapper().createObjectNode();
+        data.put("menu", "insights");
+        data.put("topic", report.getTopic());
+        data.put("available", true);
+        data.put("headline", report.getHeadline());
+        data.put("text", text);
+        if (report.getChart() != null) data.set("chart", report.getChart());
+        return new Resolution(Status.COMPLETED, "/insights", text, null, data);
     }
 
     // ========================================================================

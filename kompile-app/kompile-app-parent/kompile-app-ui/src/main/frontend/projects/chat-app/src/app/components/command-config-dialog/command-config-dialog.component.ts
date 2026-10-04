@@ -59,7 +59,7 @@ export interface CommandConfigDialogData {
   dispatch: (commandLine: string) => void;
   /** Select a model (raw '/model <id>' dispatch). */
   selectModel: (modelId: string) => void;
-  /** Select a role (raw '/role <name>' dispatch); '' clears. */
+  /** Select a role (raw '/role <name>' dispatch); 'none' clears (an empty argument is never sent). */
   selectRole: (roleName: string) => void;
   /** Toggle fast mode (raw '/fast on|off' dispatch). */
   toggleFastMode: (enabled: boolean) => void;
@@ -100,8 +100,9 @@ export interface CommandConfigDialogData {
           <header class="cc-section-header">
             <span class="cc-title">Model</span>
             <span class="cc-meta" *ngIf="modelMenu?.provider">{{ modelMenu!.provider }}</span>
-            <button type="button" class="cc-refresh" [disabled]="busy()"
-              (click)="refreshModels()" title="Reload the model catalog from the CLI">↻</button>
+            <button mat-icon-button type="button" class="cc-refresh" [disabled]="busy()"
+              (click)="refreshModels()" title="Reload the model catalog from the CLI"
+              aria-label="Reload the model catalog"><mat-icon>refresh</mat-icon></button>
           </header>
           <!-- Vendor selector: same vendor set the interactive /model picker
                offers. Clicking a chip quietly re-scopes the model list over
@@ -123,6 +124,7 @@ export interface CommandConfigDialogData {
               [class.current]="m.current"
               [attr.aria-selected]="m.current ? 'true' : 'false'"
               [disabled]="busy()"
+              [title]="'Switch to ' + modelLabel(m) + ', as /model does in the terminal'"
               (click)="selectModel(m.id)">
               <span class="cc-option-label">{{ modelLabel(m) }}</span>
               <span class="cc-option-meta" *ngIf="m.contextLimit">ctx {{ m.contextLimit }}</span>
@@ -131,7 +133,8 @@ export interface CommandConfigDialogData {
           </div>
           <p class="cc-empty" *ngIf="!models().length && !busy() && !vendorsLoading">
             No models listed yet.
-            <button type="button" class="cc-link" [disabled]="busy()" (click)="refreshModels()">Load catalog</button>
+            <button mat-button type="button" class="cc-link" [disabled]="busy()" (click)="refreshModels()"
+              title="Load the model catalog from the CLI">Load catalog</button>
           </p>
         </section>
 
@@ -140,8 +143,9 @@ export interface CommandConfigDialogData {
           <header class="cc-section-header">
             <span class="cc-title">Role</span>
             <span class="cc-meta" *ngIf="roleMenu?.currentRole">current: {{ roleMenu!.currentRole }}</span>
-            <button type="button" class="cc-refresh" [disabled]="busy()"
-              (click)="dispatch('/role')" title="Reload the role roster from the CLI">↻</button>
+            <button mat-icon-button type="button" class="cc-refresh" [disabled]="busy()"
+              (click)="dispatch('/role')" title="Reload the role roster from the CLI"
+              aria-label="Reload the role roster"><mat-icon>refresh</mat-icon></button>
           </header>
           <div class="cc-options" role="listbox" aria-label="Available roles" *ngIf="roles().length">
             <button type="button" role="option" class="cc-option"
@@ -158,10 +162,13 @@ export interface CommandConfigDialogData {
           </div>
           <p class="cc-empty" *ngIf="!roles().length && !busy()">
             No roles listed yet.
-            <button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/role')">Load roles</button>
+            <button mat-button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/role')"
+              title="Load the role roster from the CLI">Load roles</button>
           </p>
           <div class="cc-footer-row" *ngIf="roleMenu?.currentRole">
-            <button type="button" class="cc-link" [disabled]="busy()" (click)="selectRole('')">
+            <!-- 'none' is the web route's clear; the parent drops an empty argument. -->
+            <button mat-button type="button" class="cc-link" [disabled]="busy()" (click)="selectRole('none')"
+              title="Clear the session role and use the default persona">
               Clear role (default persona)
             </button>
           </div>
@@ -177,8 +184,9 @@ export interface CommandConfigDialogData {
               <span class="cc-fast-state" [class.on]="fastMenu!.fastMode">
                 {{ fastMenu!.fastMode ? 'ON (requested)' : 'OFF' }}
               </span>
-              <button type="button" class="cc-option cc-fast-toggle" *ngIf="fastMenu!.supported"
-                [disabled]="busy()" (click)="toggleFastMode(!fastMenu!.fastMode)">
+              <button mat-stroked-button type="button" class="cc-fast-toggle" *ngIf="fastMenu!.supported"
+                [disabled]="busy()" (click)="toggleFastMode(!fastMenu!.fastMode)"
+                [title]="fastMenu!.fastMode ? 'Use standard speed, as /fast off does in the terminal' : 'Request fast mode (higher cost), as /fast on does in the terminal'">
                 {{ fastMenu!.fastMode ? 'Turn off' : 'Turn on' }}
               </button>
             </div>
@@ -189,7 +197,8 @@ export interface CommandConfigDialogData {
           <ng-template #fastUnknown>
             <p class="cc-empty">
               State unknown.
-              <button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/fast')">Check fast mode</button>
+              <button mat-button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/fast')"
+                title="Show fast-mode preference, as /fast status does in the terminal">Check fast mode</button>
             </p>
           </ng-template>
         </section>
@@ -204,8 +213,9 @@ export interface CommandConfigDialogData {
               <span class="cc-fast-state" [class.on]="ultracodeMenu!.ultracode">
                 {{ ultracodeMenu!.ultracode ? 'ON (requested)' : 'OFF' }}
               </span>
-              <button type="button" class="cc-option cc-fast-toggle" *ngIf="ultracodeMenu!.supported"
-                [disabled]="busy()" (click)="toggleUltracode(!ultracodeMenu!.ultracode)">
+              <button mat-stroked-button type="button" class="cc-fast-toggle" *ngIf="ultracodeMenu!.supported"
+                [disabled]="busy()" (click)="toggleUltracode(!ultracodeMenu!.ultracode)"
+                [title]="ultracodeMenu!.ultracode ? 'Use the selected effort level, as /ultracode off does in the terminal' : 'Plan workflows at xhigh effort (more tokens), as /ultracode on does in the terminal'">
                 {{ ultracodeMenu!.ultracode ? 'Turn off' : 'Turn on' }}
               </button>
             </div>
@@ -217,7 +227,8 @@ export interface CommandConfigDialogData {
           <ng-template #ultracodeUnknown>
             <p class="cc-empty">
               State unknown.
-              <button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/ultracode')">Check ultracode</button>
+              <button mat-button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/ultracode')"
+                title="Show ultracode preference, as /ultracode status does in the terminal">Check ultracode</button>
             </p>
           </ng-template>
         </section>
@@ -226,8 +237,9 @@ export interface CommandConfigDialogData {
         <section class="cc-section">
           <header class="cc-section-header">
             <span class="cc-title">Reminders</span>
-            <button type="button" class="cc-refresh" [disabled]="busy()"
-              (click)="dispatch('/reminder')" title="Reload session reminders from the CLI">↻</button>
+            <button mat-icon-button type="button" class="cc-refresh" [disabled]="busy()"
+              (click)="dispatch('/reminder')" title="Reload session reminders from the CLI"
+              aria-label="Reload session reminders"><mat-icon>refresh</mat-icon></button>
           </header>
           <div class="cc-options" *ngIf="reminderEntries().length">
             <div class="cc-option cc-static" *ngFor="let r of reminderEntries()">
@@ -238,23 +250,28 @@ export interface CommandConfigDialogData {
           <div class="cc-add-row">
             <input type="text" class="cc-input" [(ngModel)]="newReminder" [ngModelOptions]="{standalone: true}"
               placeholder="Add a session reminder…" (keyup.enter)="addReminder()" [disabled]="busy()">
-            <button type="button" class="cc-option cc-add-btn" [disabled]="busy() || !newReminder.trim()"
-              (click)="addReminder()">Add</button>
+            <button mat-flat-button color="primary" type="button" class="cc-add-btn" [disabled]="busy() || !newReminder.trim()"
+              (click)="addReminder()" title="Add a reminder, as /reminder add does in the terminal">Add</button>
           </div>
           <div class="cc-footer-row">
-            <button type="button" class="cc-link" [disabled]="busy() || !reminderEntries().length"
-              (click)="dispatch('/reminder clear')">Clear all session reminders</button>
+            <button mat-button type="button" class="cc-link" [disabled]="busy() || !reminderEntries().length"
+              (click)="dispatch('/reminder clear')"
+              title="Clear configured reminders, as /reminder clear does in the terminal">Clear all session reminders</button>
             <span class="cc-sep">·</span>
-            <button type="button" class="cc-link" [disabled]="busy()"
-              (click)="dispatch('/reminder-global')">Project reminders ↻</button>
+            <button mat-button type="button" class="cc-link" [disabled]="busy()"
+              (click)="dispatch('/reminder-global')" title="Reload project reminders from the CLI">
+              <mat-icon>refresh</mat-icon>
+              Project reminders
+            </button>
           </div>
           <div class="cc-scope-list" *ngIf="globalReminderEntries().length">
             <span class="cc-meta">Project:</span>
             <div class="cc-option cc-static" *ngFor="let r of globalReminderEntries()">
               <span class="cc-option-label">{{ r.text }}</span>
             </div>
-            <button type="button" class="cc-link" [disabled]="busy()"
-              (click)="dispatch('/reminder-global clear')">Clear project reminders</button>
+            <button mat-button type="button" class="cc-link" [disabled]="busy()"
+              (click)="dispatch('/reminder-global clear')"
+              title="Clear configured reminders, as /reminder-global clear does in the terminal">Clear project reminders</button>
           </div>
         </section>
 
@@ -262,23 +279,27 @@ export interface CommandConfigDialogData {
         <section class="cc-section">
           <header class="cc-section-header">
             <span class="cc-title">Scheduled Loops</span>
-            <button type="button" class="cc-refresh" [disabled]="busy()"
-              (click)="dispatch('/loop')" title="Reload session loops from the CLI">↻</button>
+            <button mat-icon-button type="button" class="cc-refresh" [disabled]="busy()"
+              (click)="dispatch('/loop')" title="Reload session loops from the CLI"
+              aria-label="Reload session loops"><mat-icon>refresh</mat-icon></button>
           </header>
           <div class="cc-options" *ngIf="loopEntries().length; else noLoops">
             <div class="cc-option cc-static" *ngFor="let l of loopEntries()">
               <span class="cc-option-label">[{{ l.id }}] {{ l.schedule }}</span>
               <span class="cc-option-meta">{{ l.interval }} · {{ l.status.toLowerCase() }} · {{ l.fireCount }} fired</span>
               <span class="cc-loop-actions">
-                <button type="button" class="cc-link" [disabled]="busy()"
-                  (click)="dispatch('/loop pause ' + l.id)" *ngIf="l.status === 'ACTIVE'">pause</button>
-                <button type="button" class="cc-link" [disabled]="busy()"
-                  (click)="dispatch('/loop resume ' + l.id)" *ngIf="l.status === 'PAUSED'">resume</button>
-                <button type="button" class="cc-link cc-danger" [disabled]="busy()"
-                  (click)="dispatch('/loop remove ' + l.id)">remove</button>
-                <button type="button" class="cc-link" [disabled]="busy() || !liveSession()"
-                  [title]="liveSession() ? 'Fire this loop now' : 'Requires a live chat session'"
-                  (click)="dispatch('/loop run ' + l.id)">run now</button>
+                <button mat-button type="button" class="cc-link" [disabled]="busy()"
+                  (click)="dispatch('/loop pause ' + l.id)" *ngIf="l.status === 'ACTIVE'"
+                  title="Pause this loop, as /loop pause does in the terminal">pause</button>
+                <button mat-button type="button" class="cc-link" [disabled]="busy()"
+                  (click)="dispatch('/loop resume ' + l.id)" *ngIf="l.status === 'PAUSED'"
+                  title="Resume this loop, as /loop resume does in the terminal">resume</button>
+                <button mat-button color="warn" type="button" class="cc-link cc-danger" [disabled]="busy()"
+                  (click)="dispatch('/loop remove ' + l.id)"
+                  title="Remove this loop, as /loop remove does in the terminal">remove</button>
+                <button mat-button disabledInteractive type="button" class="cc-link" [disabled]="busy() || !liveSession()"
+                  [title]="liveSession() ? 'Run this loop now, as /loop run does in the terminal' : 'Requires a live chat session'"
+                  (click)="runLoopNow('/loop', l.id)">run now</button>
               </span>
             </div>
           </div>
@@ -290,8 +311,8 @@ export interface CommandConfigDialogData {
               placeholder="every (5m, 2h30m)" [disabled]="busy()">
             <input type="text" class="cc-input cc-grow" [(ngModel)]="newLoopPrompt" [ngModelOptions]="{standalone: true}"
               placeholder="Prompt to fire…" (keyup.enter)="addLoop()" [disabled]="busy()">
-            <button type="button" class="cc-option cc-add-btn" [disabled]="busy() || !newLoopSchedule.trim() || !newLoopPrompt.trim()"
-              (click)="addLoop()">Add</button>
+            <button mat-flat-button color="primary" type="button" class="cc-add-btn" [disabled]="busy() || !newLoopSchedule.trim() || !newLoopPrompt.trim()"
+              (click)="addLoop()" title="Add a recurring prompt, as /loop add does in the terminal">Add</button>
           </div>
           <div class="cc-scope-list" *ngIf="globalLoopEntries().length">
             <span class="cc-meta">Project loops:</span>
@@ -299,15 +320,18 @@ export interface CommandConfigDialogData {
               <span class="cc-option-label">[{{ l.id }}] {{ l.schedule }}</span>
               <span class="cc-option-meta">{{ l.interval }} · {{ l.status.toLowerCase() }}</span>
               <span class="cc-loop-actions">
-                <button type="button" class="cc-link" [disabled]="busy()"
-                  (click)="dispatch('/loop-global pause ' + l.id)" *ngIf="l.status === 'ACTIVE'">pause</button>
-                <button type="button" class="cc-link" [disabled]="busy()"
-                  (click)="dispatch('/loop-global resume ' + l.id)" *ngIf="l.status === 'PAUSED'">resume</button>
-                <button type="button" class="cc-link cc-danger" [disabled]="busy()"
-                  (click)="dispatch('/loop-global remove ' + l.id)">remove</button>
-                <button type="button" class="cc-link" [disabled]="busy() || !liveSession()"
-                  [title]="liveSession() ? 'Fire this loop now' : 'Requires a live chat session'"
-                  (click)="dispatch('/loop-global run ' + l.id)">run now</button>
+                <button mat-button type="button" class="cc-link" [disabled]="busy()"
+                  (click)="dispatch('/loop-global pause ' + l.id)" *ngIf="l.status === 'ACTIVE'"
+                  title="Pause this loop, as /loop-global pause does in the terminal">pause</button>
+                <button mat-button type="button" class="cc-link" [disabled]="busy()"
+                  (click)="dispatch('/loop-global resume ' + l.id)" *ngIf="l.status === 'PAUSED'"
+                  title="Resume this loop, as /loop-global resume does in the terminal">resume</button>
+                <button mat-button color="warn" type="button" class="cc-link cc-danger" [disabled]="busy()"
+                  (click)="dispatch('/loop-global remove ' + l.id)"
+                  title="Remove this loop, as /loop-global remove does in the terminal">remove</button>
+                <button mat-button disabledInteractive type="button" class="cc-link" [disabled]="busy() || !liveSession()"
+                  [title]="liveSession() ? 'Run this loop now, as /loop-global run does in the terminal' : 'Requires a live chat session'"
+                  (click)="runLoopNow('/loop-global', l.id)">run now</button>
               </span>
             </div>
           </div>
@@ -318,16 +342,18 @@ export interface CommandConfigDialogData {
           <header class="cc-section-header">
             <span class="cc-title">Message Queue</span>
             <span class="cc-meta" *ngIf="queueEntries().length">{{ queueEntries().length }} waiting</span>
-            <button type="button" class="cc-refresh" [disabled]="busy()"
-              (click)="dispatch('/queues')" title="Reload the queue from the CLI">↻</button>
+            <button mat-icon-button type="button" class="cc-refresh" [disabled]="busy()"
+              (click)="dispatch('/queues')" title="Reload the queue from the CLI"
+              aria-label="Reload the queue"><mat-icon>refresh</mat-icon></button>
           </header>
           <div class="cc-options" *ngIf="queueEntries().length; else noQueued">
             <div class="cc-option cc-static" *ngFor="let q of queueEntries(); let i = index">
               <span class="cc-option-label">{{ i + 1 }}. [{{ q.id }}] {{ q.content }}</span>
               <span class="cc-option-meta" *ngIf="q.status !== 'PENDING'">{{ q.status.toLowerCase() }}</span>
               <span class="cc-loop-actions">
-                <button type="button" class="cc-link cc-danger" [disabled]="busy()"
-                  (click)="dispatch('/queue-remove ' + q.id)">remove</button>
+                <button mat-button color="warn" type="button" class="cc-link cc-danger" [disabled]="busy()"
+                  (click)="dispatch('/queue-remove ' + q.id)"
+                  title="Remove this message from the queue, as /queue-remove does in the terminal">remove</button>
               </span>
             </div>
           </div>
@@ -337,20 +363,20 @@ export interface CommandConfigDialogData {
           <div class="cc-add-row">
             <input type="text" class="cc-input cc-grow" [(ngModel)]="newQueued" [ngModelOptions]="{standalone: true}"
               placeholder="Message to queue…" (keyup.enter)="addQueued()" [disabled]="busy()">
-            <button type="button" class="cc-option cc-add-btn" [disabled]="busy() || !newQueued.trim()"
-              (click)="addQueued()">Queue</button>
+            <button mat-flat-button color="primary" type="button" class="cc-add-btn" [disabled]="busy() || !newQueued.trim()"
+              (click)="addQueued()" title="Add a message to the queue, as /queue does in the terminal">Queue</button>
           </div>
           <div class="cc-footer-row">
-            <button type="button" class="cc-link" [disabled]="busy() || !liveSession() || !queueEntries().length"
-              [title]="liveSession() ? 'Send the first queued message now' : 'Requires a live chat session'"
+            <button mat-button disabledInteractive type="button" class="cc-link" [disabled]="busy() || !liveSession() || !queueEntries().length"
+              [title]="liveSession() ? 'Send the next queued message, as /queue-send does in the terminal' : 'Requires a live chat session'"
               (click)="sendQueued()">Send first now</button>
             <span class="cc-sep">·</span>
-            <button type="button" class="cc-link" [disabled]="busy() || !liveSession() || !queueEntries().length"
-              [title]="liveSession() ? 'Send every queued message in order' : 'Requires a live chat session'"
+            <button mat-button disabledInteractive type="button" class="cc-link" [disabled]="busy() || !liveSession() || !queueEntries().length"
+              [title]="liveSession() ? 'Send all queued messages, as /queue-send-all does in the terminal' : 'Requires a live chat session'"
               (click)="sendQueuedAll()">Send all now</button>
             <span class="cc-sep">·</span>
-            <button type="button" class="cc-link cc-danger" [disabled]="busy() || !queueEntries().length"
-              (click)="dispatch('/queue-clear')">Clear queue</button>
+            <button mat-button color="warn" type="button" class="cc-link cc-danger" [disabled]="busy() || !queueEntries().length"
+              (click)="dispatch('/queue-clear')" title="Clear the queue, as /queue-clear does in the terminal">Clear queue</button>
           </div>
           <p class="cc-hint" *ngIf="!liveSession() && queueEntries().length">
             Queued messages dispatch when the interactive CLI runs (or auto-dequeue at its next turn boundary).
@@ -365,8 +391,9 @@ export interface CommandConfigDialogData {
           </header>
           <p class="cc-hint">Automatically answers yes-style questions at the end of a turn (project-global; the live CLI does the replying).</p>
           <div class="cc-fast-row" *ngIf="continueMenu">
-            <button type="button" class="cc-option cc-fast-toggle" [disabled]="busy()"
-              (click)="dispatch(continueMenu!.continueEnabled ? '/continue off' : '/continue on')">
+            <button mat-stroked-button type="button" class="cc-fast-toggle" [disabled]="busy()"
+              (click)="dispatch(continueMenu!.continueEnabled ? '/continue off' : '/continue on')"
+              [title]="continueMenu!.continueEnabled ? 'Disable auto-reply, as /continue off does in the terminal' : 'Enable auto-reply, as /continue on does in the terminal'">
               {{ continueMenu!.continueEnabled ? 'Disable' : 'Enable' }}
             </button>
           </div>
@@ -385,14 +412,16 @@ export interface CommandConfigDialogData {
           <p class="cc-hint">The enforcer reviews each turn and can block corrections. These controls persist; live-only actions (override, approvals) need the interactive session.</p>
           <ng-container *ngIf="judgeMenu">
             <div class="cc-fast-row">
-              <button type="button" class="cc-option cc-fast-toggle" [disabled]="busy()"
-                (click)="dispatch(judgeGlobalEnabled() ? '/judge global off' : '/judge global on')">
+              <button mat-stroked-button type="button" class="cc-fast-toggle" [disabled]="busy()"
+                (click)="dispatch(judgeGlobalEnabled() ? '/judge global off' : '/judge global on')"
+                [title]="judgeGlobalEnabled() ? 'Disable the judge globally, as /judge global off does in the terminal' : 'Enable the judge globally, as /judge global on does in the terminal'">
                 {{ judgeGlobalEnabled() ? 'Disable globally' : 'Enable globally' }}
               </button>
             </div>
             <p class="cc-hint" *ngIf="judgeGuidance()">
               Guidance: {{ judgeGuidance() }}
-              <button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/judge feedback clear')">clear</button>
+              <button mat-button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/judge feedback clear')"
+                title="Clear the durable guidance, as /judge feedback clear does in the terminal">clear</button>
             </p>
             <p class="cc-hint" *ngIf="!judgeGuidance()">
               No guidance set. Use the chat input:
@@ -408,8 +437,9 @@ export interface CommandConfigDialogData {
           </header>
           <p class="cc-hint">Start a fresh conversation. The previous transcript stays resumable; queued messages and reminders are kept.</p>
           <div class="cc-fast-row">
-            <button type="button" class="cc-option cc-fast-toggle"
-              [disabled]="busy()" (click)="clearConversation()">
+            <button mat-stroked-button type="button" class="cc-fast-toggle"
+              [disabled]="busy()" (click)="clearConversation()"
+              title="Start a new conversation, as /clear does in the terminal">
               New conversation
             </button>
           </div>
@@ -429,6 +459,21 @@ export interface CommandConfigDialogData {
     </div>
   `,
   styles: [`
+    /* Compact Material buttons: the 48px touch target would stretch every row. */
+    :host {
+      --mdc-text-button-container-height: 32px;
+      --mdc-outlined-button-container-height: 32px;
+      --mdc-filled-button-container-height: 32px;
+      --mat-text-button-touch-target-display: none;
+      --mat-outlined-button-touch-target-display: none;
+      --mat-filled-button-touch-target-display: none;
+      --mat-icon-button-touch-target-display: none;
+    }
+    :host-context(body.dark-theme) { color-scheme: dark; }
+    /* Material's M2 dark dialog surface (#424242) is lighter than the chat palette this
+       content is styled for: borders, hints and option rows lose contrast on it. Paint
+       the chat's elevated surface so the dialog reads like the chat panels. */
+    :host-context(body.dark-theme) .command-config { background: var(--bg-surface-elevated); }
     .command-config { min-width: 420px; max-width: 560px; }
     mat-dialog-content { display: flex; flex-direction: column; gap: 16px; }
 
@@ -438,12 +483,12 @@ export interface CommandConfigDialogData {
       border: 2px solid var(--border-color, #ccc); border-top-color: var(--text-secondary, #555);
       animation: cc-spin 0.8s linear infinite; }
     @keyframes cc-spin { to { transform: rotate(360deg); } }
-    .cc-error { margin: 0; color: var(--status-error, #c62828); font-size: 0.9em; }
+    .cc-error { margin: 0; color: var(--status-error-text, #c62828); font-size: 0.9em; }
 
     .cc-hint { margin: 0; color: var(--text-tertiary, #888); font-size: 0.85em; }
 
     .cc-section { border: 1px solid var(--border-color, #ddd); border-radius: 8px; padding: 10px 12px; }
-    .cc-section-header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+    .cc-section-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
     .cc-title { font-weight: 600; }
     .cc-meta { color: var(--text-tertiary, #888); font-size: 0.8em; }
 
@@ -451,23 +496,22 @@ export interface CommandConfigDialogData {
     .cc-vendor-chip { border: 1px solid var(--border-color, #ccc); border-radius: 14px;
       padding: 3px 12px; font-size: 0.82em; background: transparent;
       color: var(--text-secondary, #555); cursor: pointer; }
-    .cc-vendor-chip:hover:not(:disabled) { border-color: var(--accent, #1976d2);
-      color: var(--accent, #1976d2); }
-    .cc-vendor-chip.current { border-color: var(--status-success, #2e7d32);
-      color: var(--status-success, #2e7d32); }
-    .cc-vendor-chip.selected:not(.current) { border-color: var(--accent, #1976d2);
-      background: color-mix(in srgb, var(--accent, #1976d2) 10%, transparent);
-      color: var(--accent, #1976d2); }
+    .cc-vendor-chip:hover:not(:disabled) { border-color: var(--color-primary, #1976d2);
+      color: var(--color-primary, #1976d2); }
+    .cc-vendor-chip.current { border-color: var(--status-success-text, #2e7d32);
+      color: var(--status-success-text, #2e7d32); }
+    .cc-vendor-chip.selected:not(.current) { border-color: var(--color-primary, #1976d2);
+      background: var(--color-primary-light, rgba(25, 118, 210, 0.1));
+      color: var(--color-primary, #1976d2); }
     .cc-vendor-chip:disabled { opacity: 0.5; cursor: default; }
     .cc-keywords { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .cc-keyword { border: 1px solid var(--border-color, #ccc); border-radius: 12px;
       padding: 2px 10px; font-size: 0.78em; color: var(--text-secondary, #555); }
-    .cc-refresh {
-      margin-left: auto; border: none; background: transparent; cursor: pointer;
-      color: var(--text-secondary, #666); font-size: 1em; padding: 2px 6px; border-radius: 4px;
+    .cc-refresh.mat-mdc-icon-button.mat-mdc-button-base {
+      --mdc-icon-button-state-layer-size: 28px; --mdc-icon-button-icon-size: 18px;
+      padding: 5px; margin-left: auto; flex: none;
     }
-    .cc-refresh:hover:not(:disabled) { background: var(--status-info-bg, #eef); }
-    .cc-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
+    .cc-refresh .mat-icon { width: 18px; height: 18px; font-size: 18px; line-height: 18px; }
 
     .cc-options { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
     .cc-option {
@@ -483,24 +527,20 @@ export interface CommandConfigDialogData {
     .cc-current { color: var(--color-primary, #1976d2); font-size: 0.75em; font-weight: 600; }
 
     .cc-empty { margin: 0; color: var(--text-tertiary, #888); font-size: 0.9em; }
-    .cc-link {
-      border: none; background: transparent; padding: 0; cursor: pointer;
-      color: var(--color-primary, #1976d2); font: inherit; text-decoration: underline;
-    }
-    .cc-link:disabled { opacity: 0.5; cursor: not-allowed; }
-    .cc-footer-row { display: flex; justify-content: flex-end; margin-top: 6px; }
+    .cc-footer-row { display: flex; justify-content: flex-end; align-items: center; margin-top: 6px; }
+    .cc-scope-list > .cc-link { align-self: flex-end; }
 
     .cc-fast-row { display: flex; align-items: center; gap: 10px; }
     .cc-fast-state { font-weight: 600; color: var(--text-secondary, #666); }
-    .cc-fast-state.on { color: var(--status-success, #2e7d32); }
+    .cc-fast-state.on { color: var(--status-success-text, #2e7d32); }
     .cc-fast-toggle { flex: none; }
 
     .cc-static { cursor: default; }
-    .cc-add-row { display: flex; gap: 6px; margin-top: 8px; }
+    .cc-add-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
     .cc-input {
       flex: 1 1 auto; min-width: 0; padding: 6px 10px;
       border: 1px solid var(--border-color, #ddd); border-radius: 6px;
-      font: inherit; background: var(--bg-body, #fff); color: inherit;
+      font: inherit; background: var(--bg-body, #fff); color: var(--text-primary, #212529);
     }
     .cc-input:focus { outline: none; border-color: var(--color-primary, #1976d2); }
     .cc-input:disabled { opacity: 0.6; }
@@ -509,8 +549,11 @@ export interface CommandConfigDialogData {
     .cc-sep { color: var(--text-tertiary, #888); }
     .cc-scope-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border-color, #ddd); }
     .cc-scope-list .cc-meta { font-size: 0.8em; color: var(--text-tertiary, #888); }
-    .cc-loop-actions { margin-left: auto; display: flex; gap: 8px; flex: none; }
-    .cc-danger { color: var(--status-error, #c62828); }
+    .cc-loop-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; flex: none; }
+    .cc-loop-actions .mat-mdc-button-base {
+      --mdc-text-button-container-height: 24px; --mat-text-button-horizontal-padding: 6px;
+      --mdc-text-button-label-text-size: 12px; min-width: 0;
+    }
   `]
 })
 export class CommandConfigDialogComponent implements OnInit, OnDestroy {
@@ -770,13 +813,22 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     this.newQueued = '';
   }
 
+  /**
+   * The run-now and send-now buttons are disabledInteractive so their "Requires
+   * a live chat session" title still shows on hover. Clicks therefore reach these
+   * handlers while the button looks disabled, so each one re-checks its condition.
+   */
+  runLoopNow(command: string, id: string): void {
+    if (this.liveSession()) this.dispatch(command + ' run ' + id);
+  }
+
   sendQueued(): void {
-    if (!this.data.liveSession() || this.busy()) return;
+    if (!this.data.liveSession() || this.busy() || !this.queueEntries().length) return;
     this.data.dispatch('/queue-send');
   }
 
   sendQueuedAll(): void {
-    if (!this.data.liveSession() || this.busy()) return;
+    if (!this.data.liveSession() || this.busy() || !this.queueEntries().length) return;
     this.data.dispatch('/queue-send-all');
   }
 

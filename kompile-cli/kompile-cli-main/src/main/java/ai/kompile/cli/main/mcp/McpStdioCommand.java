@@ -67,6 +67,7 @@ import ai.kompile.cli.main.chat.tools.GraphRagSearchTool;
 import ai.kompile.cli.main.chat.tools.GraphSimulateTool;
 import ai.kompile.cli.main.chat.tools.GrepTool;
 import ai.kompile.cli.main.chat.tools.HighMemoryToolCallGuard;
+import ai.kompile.cli.main.chat.tools.InsightsTool;
 import ai.kompile.cli.main.chat.tools.KnowledgeGraphTool;
 import ai.kompile.cli.main.chat.tools.KnowledgeSearchCliTool;
 import ai.kompile.cli.main.chat.tools.KnowledgeStatusCliTool;
@@ -1734,6 +1735,10 @@ public class McpStdioCommand implements Callable<Integer> {
         // ── Tool call and diff history (search indexed agent activity) ─────
         registerCliTool(tools, new ToolCallCatalogTool(), om, wd);
         registerCliTool(tools, new DiffIndexTool(baseUrl, om), om, wd);
+
+        // ── Insights (judge verdicts, tool calls, test milestones, crawls, graphs) ──
+        // Crawls and graphs are read from where the crawl and graph tools below read them.
+        registerCliTool(tools, new InsightsTool(crawlBaseUrl, baseUrl), om, wd);
 
         // ── RAG & graph search (in-process by default; --url selects remote) ──
         registerCliTool(tools, new RagSearchTool(baseUrl, om), om, wd);

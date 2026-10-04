@@ -53,6 +53,73 @@ public class PslProgram implements Serializable {
     /** Safety cap on the number of ground rules to avoid pathological grounding blow-ups. */
     public static final int MAX_GROUND_RULES = 500_000;
 
+    /** Inclusive runtime limits shared by logical, CWA and arithmetic grounding. */
+    public record GroundingLimits(int maxAtoms, int maxRules, int maxIncidences, long maxWork) {
+        public GroundingLimits {
+            if (maxAtoms < 0 || maxRules < 0 || maxIncidences < 0 || maxWork < 0) {
+                throw new IllegalArgumentException("Grounding limits must be non-negative");
+            }
+        }
+    }
+
+    /** Complete grounding only; callers should pass these lists directly to the solver. */
+    public record GroundedProgram(List<GroundRule> logicalRules,
+                                  List<ArithmeticGroundRule> arithmeticRules, long work) {
+        public GroundedProgram {
+            logicalRules = List.copyOf(logicalRules);
+            arithmeticRules = List.copyOf(arithmeticRules);
+        }
+    }
+
+    private static final class GroundingBudget {
+        private final GroundingLimits limits;
+        private long work;
+        private long rules;
+        private long incidences;
+
+        private GroundingBudget(GroundingLimits limits) {
+            this.limits = java.util.Objects.requireNonNull(limits, "limits");
+        }
+
+        private void work(long amount) {
+            // Subtraction avoids overflow even when maxWork is Long.MAX_VALUE.
+            if (amount > limits.maxWork() - work) throw exceeded("maxWork", limits.maxWork());
+            work += amount;
+        }
+
+        private void atoms(long count) {
+            if (count > limits.maxAtoms()) throw exceeded("maxAtoms", limits.maxAtoms());
+        }
+
+        private void emit(long count) {
+            if (rules >= limits.maxRules()) throw exceeded("maxRules", limits.maxRules());
+            if (count > limits.maxIncidences() - incidences) {
+                throw exceeded("maxIncidences", limits.maxIncidences());
+            }
+            rules++;
+            incidences += count;
+        }
+
+        private static IllegalArgumentException exceeded(String name, long limit) {
+            return new IllegalArgumentException("PSL grounding budget exceeded: " + name + "=" + limit);
+        }
+    }
+
+    /** Non-null only while groundAll is running; never persisted or leaked after failure. */
+    private transient GroundingBudget activeGroundingBudget;
+
+    private void chargeWork(long amount) {
+        if (activeGroundingBudget != null) activeGroundingBudget.work(amount);
+    }
+
+    private void checkNewAtom() {
+        if (activeGroundingBudget != null) activeGroundingBudget.atoms((long) atomsByKey.size() + 1);
+    }
+
+    private void chargeOutput(long incidences) {
+        if (activeGroundingBudget != null) activeGroundingBudget.emit(incidences);
+    }
+
     private static final Logger log = LoggerFactory.getLogger(PslProgram.class);
     /** One-time guard so a mis-ranged {@link #observe} (WP1a) warns once, not once per atom. */
     private static final AtomicBoolean OUT_OF_RANGE_WARNED = new AtomicBoolean(false);
@@ -235,6 +302,7 @@ public class PslProgram implements Serializable {
         }
         String key = groundAtom.key();
         if (!atomsByKey.containsKey(key)) {
+            checkNewAtom();
             atomsByKey.put(key, groundAtom);
             values.put(key, 0.0);
             predicateIndexDirty = true; // E-8: invalidate cached index
@@ -333,8 +401,10 @@ public class PslProgram implements Serializable {
      * no matching registered atom.
      */
     private String registerCwa(PslAtom groundAtom) {
+        chargeWork(1L + groundAtom.args().size());
         String key = groundAtom.key();
         if (!atomsByKey.containsKey(key)) {
+            checkNewAtom();
             atomsByKey.put(key, groundAtom);
             values.put(key, 0.0);
             predicateIndexDirty = true; // E-8: new atom added
@@ -381,7 +451,56 @@ public class PslProgram implements Serializable {
         return atomsByKey.size();
     }
 
+    /** Immutable structured atom snapshot; does not reconstruct arguments from atom keys. */
+    public List<PslAtom> atomsSnapshot() {
+        return List.copyOf(atomsByKey.values());
+    }
+
+    /** Immutable snapshots of explicit predicate declarations. */
+    public Map<String, Integer> closedPredicatesSnapshot() {
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(closedPredicates));
+    }
+
+    public Map<String, Integer> openPredicatesSnapshot() {
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(openPredicates));
+    }
+
+    /** Registered function names, including unused callbacks which cannot be persisted portably. */
+    public Set<String> functionNamesSnapshot() {
+        return java.util.Collections.unmodifiableSet(new LinkedHashSet<>(functions.keySet()));
+    }
+
     // ─── Grounding ───────────────────────────────────────────────────────────
+
+    /**
+     * Ground both rule kinds with one fail-closed runtime budget. Work counts scans,
+     * candidate attempts and intermediate binding allocations, including failed joins
+     * and bindings discarded by deduplication. Atom limits include the initial store
+     * and new CWA atoms; incidences count logical literals and arithmetic coefficients.
+     *
+     * <p>Unlike the legacy entry points, this method never returns a truncated program.
+     * Use a disposable decoded program: CWA mutations are not rolled back on failure.
+     * Registered external functions are rejected because callbacks cannot be bounded.
+     * This mutable program, like its legacy grounding methods, is not thread-safe.</p>
+     */
+    public GroundedProgram groundAll(GroundingLimits limits) {
+        GroundingBudget budget = new GroundingBudget(limits);
+        if (!functions.isEmpty()) {
+            throw new IllegalArgumentException("Bounded grounding does not support registered external functions");
+        }
+        budget.atoms(atomsByKey.size());
+        GroundingBudget previous = activeGroundingBudget;
+        activeGroundingBudget = budget;
+        try {
+            // Charge index construction on every bounded call, regardless of legacy cache warmth.
+            predicateIndexDirty = true;
+            List<GroundRule> logical = ground();
+            List<ArithmeticGroundRule> arithmetic = groundArithmetic();
+            return new GroundedProgram(logical, arithmetic, budget.work);
+        } finally {
+            activeGroundingBudget = previous;
+        }
+    }
 
     /**
      * Instantiate every logical rule against the declared ground atoms via a backtracking join.
@@ -393,6 +512,7 @@ public class PslProgram implements Serializable {
      * on the fly and registered as temporary observed atoms.</p>
      */
     public List<GroundRule> ground() {
+        chargeWork(rules.size());
         Set<Integer> allTemplates = new LinkedHashSet<>();
         for (int i = 0; i < rules.size(); i++) allTemplates.add(i);
         return groundRulesForTemplates(allTemplates);
@@ -411,16 +531,17 @@ public class PslProgram implements Serializable {
         for (int i = 0; i < rules.size(); i++) {
             if (!templateIndexes.contains(i)) continue;
             PslRule rule = rules.get(i);
+            chargeWork(1L + rule.body().size() + rule.head().size());
             // E-8: optimise join order for body atoms (most-selective first), then head atoms
             List<PslAtom> optimizedBody = optimizeJoinOrder(rule.body(), byPredicate);
             List<PslAtom> allAtoms = new ArrayList<>(optimizedBody.size() + rule.head().size());
             allAtoms.addAll(optimizedBody);
             allAtoms.addAll(rule.head());
             groundInto(rule, i, allAtoms, byPredicate, 0, new LinkedHashMap<>(), out);
-            if (out.size() >= MAX_GROUND_RULES) break;
+            if (activeGroundingBudget == null && out.size() >= MAX_GROUND_RULES) break;
         }
         // WP17f — a hit on the grounding cap silently truncates inference; make it loud + observable.
-        groundingTruncated = out.size() >= MAX_GROUND_RULES;
+        groundingTruncated = activeGroundingBudget == null && out.size() >= MAX_GROUND_RULES;
         if (groundingTruncated) {
             log.warn("PSL grounding hit the MAX_GROUND_RULES cap ({}) — inference is INCOMPLETE "
                     + "(grounding truncated). Reduce graph/rule fan-out or raise the cap.", MAX_GROUND_RULES);
@@ -438,6 +559,7 @@ public class PslProgram implements Serializable {
         Map<String, List<PslAtom>> byPredicate = buildPredicateIndex();
         List<ArithmeticGroundRule> out = new ArrayList<>();
         for (ArithmeticRule rule : arithmeticRules) {
+            chargeWork(1);
             groundArithmeticRule(rule, byPredicate, out);
         }
         return out;
@@ -459,6 +581,7 @@ public class PslProgram implements Serializable {
         }
         Map<String, List<PslAtom>> byPredicate = new LinkedHashMap<>();
         for (PslAtom atom : atomsByKey.values()) {
+            chargeWork(1);
             byPredicate.computeIfAbsent(atom.predicate(), k -> new ArrayList<>()).add(atom);
         }
         cachedPredicateIndex = byPredicate;
@@ -489,8 +612,10 @@ public class PslProgram implements Serializable {
     List<PslAtom> optimizeJoinOrder(List<PslAtom> bodyAtoms,
                                     Map<String, List<PslAtom>> byPredicate) {
         if (bodyAtoms.size() <= 1) return bodyAtoms;
+        chargeWork(bodyAtoms.size());
         List<PslAtom> sorted = new ArrayList<>(bodyAtoms);
         sorted.sort(Comparator.comparingInt(atom -> {
+            chargeWork(1);
             String pred = atom.predicate();
             // Function predicates: expensive to enumerate → push to end
             if (functions.containsKey(pred)) return Integer.MAX_VALUE;
@@ -508,9 +633,11 @@ public class PslProgram implements Serializable {
     private void groundInto(PslRule rule, int templateIndex, List<PslAtom> atoms,
                             Map<String, List<PslAtom>> byPredicate, int index,
                             Map<String, String> binding, List<GroundRule> out) {
-        if (out.size() >= MAX_GROUND_RULES) return;
+        if (activeGroundingBudget == null && out.size() >= MAX_GROUND_RULES) return;
+        chargeWork(1);
         if (index == atoms.size()) {
             if (satisfiesDistinct(rule, binding)) {
+                chargeOutput((long) rule.body().size() + rule.head().size());
                 out.add(instantiate(rule, binding, templateIndex));
             }
             return;
@@ -534,6 +661,7 @@ public class PslProgram implements Serializable {
             Set<String> constants = collectBoundConstants(binding, byPredicate);
             candidates = generateCwaCandidates(template, constants);
             for (PslAtom candidate : candidates) {
+                chargeWork(1);
                 // Auto-register as observed 0.0 (CWA)
                 if (!atomsByKey.containsKey(candidate.key())) {
                     registerCwa(candidate);
@@ -559,10 +687,15 @@ public class PslProgram implements Serializable {
     /** Collect all constant values currently bound (from partial binding + all known atoms). */
     private Set<String> collectBoundConstants(Map<String, String> binding,
                                                Map<String, List<PslAtom>> byPredicate) {
+        chargeWork(1L + binding.size());
         Set<String> constants = new LinkedHashSet<>(binding.values());
         for (List<PslAtom> atoms : byPredicate.values()) {
             for (PslAtom a : atoms) {
-                for (Term t : a.args()) constants.add(t.name());
+                chargeWork(1);
+                for (Term t : a.args()) {
+                    chargeWork(1);
+                    constants.add(t.name());
+                }
             }
         }
         return constants;
@@ -574,13 +707,16 @@ public class PslProgram implements Serializable {
      */
     private List<PslAtom> generateCwaCandidates(PslAtom template, Set<String> constants) {
         // Start with a list containing one binding: the current fixed positions
+        chargeWork(1);
         List<Map<String, String>> partials = new ArrayList<>();
         partials.add(new LinkedHashMap<>());
         for (Term t : template.args()) {
+            chargeWork(1);
             if (!t.variable()) continue;  // constant position — no expansion needed
             List<Map<String, String>> next = new ArrayList<>();
             for (Map<String, String> partial : partials) {
                 for (String c : constants) {
+                    chargeWork(1L + partial.size());
                     Map<String, String> copy = new LinkedHashMap<>(partial);
                     copy.put(t.name(), c);
                     next.add(copy);
@@ -590,6 +726,7 @@ public class PslProgram implements Serializable {
         }
         List<PslAtom> result = new ArrayList<>();
         for (Map<String, String> binding : partials) {
+            chargeWork(1L + template.args().size());
             PslAtom candidate = template.ground(binding);
             if (candidate.isGround()) result.add(candidate);
         }
@@ -670,6 +807,7 @@ public class PslProgram implements Serializable {
 
         List<Map<String, String>> outerBindings = new ArrayList<>();
         if (dedupedOuter.isEmpty()) {
+            chargeWork(1);
             outerBindings.add(new LinkedHashMap<>());
         } else {
             enumerateBindings(dedupedOuter, byPredicate, 0, new LinkedHashMap<>(), outerBindings);
@@ -682,13 +820,14 @@ public class PslProgram implements Serializable {
         Set<String> summationWildcards = collectSummationWildcardNames(rule);
         Set<String> seen = new LinkedHashSet<>();
         for (Map<String, String> outerBinding : outerBindings) {
+            chargeWork(1L + outerBinding.size() + summationWildcards.size());
             // Build a signature from non-wildcard entries only
             Map<String, String> reducedBinding = new LinkedHashMap<>(outerBinding);
             summationWildcards.forEach(reducedBinding::remove);
             String sig = reducedBinding.toString();
             if (seen.add(sig)) {
                 emitArithmeticGroundRule(rule, reducedBinding, byPredicate, out);
-                if (out.size() >= MAX_GROUND_RULES) return;
+                if (activeGroundingBudget == null && out.size() >= MAX_GROUND_RULES) return;
             }
         }
     }
@@ -699,6 +838,7 @@ public class PslProgram implements Serializable {
      * by a fresh unique variable name so they don't constrain the join (will match anything).
      */
     private void addOuterAtom(ArithmeticRule.ArithmeticTerm term, List<PslAtom> outerAtoms) {
+        chargeWork(1L + term.args().size());
         if (term.isConstant()) return;
         if (term.args().isEmpty()) {
             outerAtoms.add(new PslAtom(term.predicate(), List.of(), false));
@@ -750,9 +890,11 @@ public class PslProgram implements Serializable {
     /** Remove atoms with identical predicate+args from the outer template list. */
     private List<PslAtom> deduplicateOuterAtoms(List<PslAtom> atoms) {
         List<PslAtom> result = new ArrayList<>();
-        Set<String> seen = new LinkedHashSet<>();
+        Set<PslAtom> seen = new LinkedHashSet<>();
         for (PslAtom a : atoms) {
-            if (seen.add(a.predicate() + a.args().toString())) result.add(a);
+            chargeWork(1L + a.args().size());
+            // Term identity includes the variable flag, unlike its display string.
+            if (seen.add(a)) result.add(a);
         }
         return result;
     }
@@ -766,6 +908,7 @@ public class PslProgram implements Serializable {
     }
 
     private void addSummationWildcards(ArithmeticRule.ArithmeticTerm term, Set<String> wildcards) {
+        chargeWork(1L + term.args().size());
         if (term.isConstant() || !term.summationVariable()) return;
         // Identify the last variable argument position (the summation position)
         for (int i = term.args().size() - 1; i >= 0; i--) {
@@ -782,7 +925,9 @@ public class PslProgram implements Serializable {
                                    int index,
                                    Map<String, String> binding,
                                    List<Map<String, String>> out) {
+        chargeWork(1);
         if (index == atoms.size()) {
+            chargeWork(1L + binding.size());
             out.add(new LinkedHashMap<>(binding));
             return;
         }
@@ -811,6 +956,7 @@ public class PslProgram implements Serializable {
 
         // Process LHS
         for (ArithmeticRule.ArithmeticTerm term : rule.lhs()) {
+            chargeWork(1);
             if (term.isConstant()) {
                 rhsConstant -= term.coefficient(); // move constant to RHS
                 continue;
@@ -819,6 +965,7 @@ public class PslProgram implements Serializable {
         }
         // Process RHS — move to LHS with negated coefficient
         for (ArithmeticRule.ArithmeticTerm term : rule.rhs()) {
+            chargeWork(1);
             if (term.isConstant()) {
                 rhsConstant += term.coefficient();
                 continue;
@@ -826,7 +973,11 @@ public class PslProgram implements Serializable {
             rhsConstant += accumulateTerm(term, outerBinding, byPredicate, netCoef, -term.coefficient());
         }
 
-        if (netCoef.isEmpty()) return; // nothing to constrain
+        // An empty sum is still a constraint (e.g. 0 >= 1 is infeasible).
+        // Preserve the historical unbounded API behavior; strict callers retain it.
+        if (netCoef.isEmpty() && activeGroundingBudget == null) return;
+        chargeOutput(netCoef.size());
+        chargeWork(netCoef.size());
         String[] keys = netCoef.keySet().toArray(new String[0]);
         double[] coefs = new double[keys.length];
         for (int i = 0; i < keys.length; i++) coefs[i] = netCoef.get(keys[i]);
@@ -845,6 +996,7 @@ public class PslProgram implements Serializable {
                                   Map<String, List<PslAtom>> byPredicate,
                                   Map<String, Double> netCoef,
                                   double signedCoef) {
+        chargeWork(1L + term.args().size());
         if (!term.summationVariable()) {
             // Single atom — ground it directly from the outer binding
             String key = term.groundKey(outerBinding);
@@ -880,6 +1032,9 @@ public class PslProgram implements Serializable {
 
     /** Try to match a (possibly non-ground) template against a ground candidate atom. */
     private Map<String, String> unify(PslAtom template, PslAtom candidate, Map<String, String> binding) {
+        // Charge before every attempt, even an arity mismatch or a failed constant/variable join.
+        // This also covers copying the current binding before any new entries are allocated.
+        chargeWork(1L + template.args().size() + binding.size());
         if (template.args().size() != candidate.args().size()) return null;
         Map<String, String> extended = null;
         for (int i = 0; i < template.args().size(); i++) {
@@ -903,6 +1058,7 @@ public class PslProgram implements Serializable {
 
     private boolean satisfiesDistinct(PslRule rule, Map<String, String> binding) {
         for (String[] pair : rule.distinct()) {
+            chargeWork(1);
             String a = binding.getOrDefault(pair[0], pair[0]);
             String b = binding.getOrDefault(pair[1], pair[1]);
             if (a.equals(b)) return false;
@@ -914,9 +1070,11 @@ public class PslProgram implements Serializable {
         List<GroundRule.Lit> body = new ArrayList<>(rule.body().size());
         List<GroundRule.Lit> head = new ArrayList<>(rule.head().size());
         for (PslAtom atom : rule.body()) {
+            chargeWork(1L + atom.args().size());
             body.add(new GroundRule.Lit(atom.ground(binding).key(), atom.negated()));
         }
         for (PslAtom atom : rule.head()) {
+            chargeWork(1L + atom.args().size());
             head.add(new GroundRule.Lit(atom.ground(binding).key(), atom.negated()));
         }
         return new GroundRule(rule.weight(), rule.hard(), rule.squared(), body, head,

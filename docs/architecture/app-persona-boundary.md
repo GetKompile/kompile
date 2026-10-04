@@ -115,11 +115,13 @@ SPA forward.
 `SetupStatusController` must stay shared: `ProjectCrawlCommand` probes `/api/setup/status` on every
 generated app to decide whether the backend is ready.
 
-## chat — `kompile-app-web-chat` (19)
+## chat — `kompile-app-web-chat` (21)
 
 | Controller | Base path |
 |---|---|
 | `AgentChatController` | `/api/agents/chat` |
+| `ChatWorkspaceController` | `/api/agents/chat/workspace` |
+| `ChatInsightsController` | `/api/agents/chat/insights` (judge, tool and test reports read in-process from the files the CLI writes; crawl, graph and overview reports through a one-shot harness run; `/config` edits `insights.json`) |
 | `PassthroughChatController` | `/api/agents/passthrough` |
 | `CliAgentModelController` | `/api/agents/models` |
 | `KompileLocalModelController` | `/api/agents/kompile-local` |
@@ -295,7 +297,7 @@ They coexist safely because Spring matches on the full path.
 | `/api/models` | `ModelStatusController`, `ModelDiscoveryController` | — | — | `ModelRegistryController`, `Nd4jProfilingController` |
 | `/api/documents` | `DocumentManagementController`, `DocumentUploadController` | — | `ExternalSourceIngestController` | `DocumentDebuggerController`, `DocumentIngestDebugController` |
 | `/api/system` | `SystemResourceController`, `SystemInfoController` | — | — | — |
-| `/api/agents` | — | `AgentDiagnosticController`, `AgentChatController`, `AgentRuntimeStatusController`, `CliAgentModelController`, `KompileLocalModelController`, `PassthroughChatController` | — | `ApiAgentConfigController`, `CliLlmConfigController` |
+| `/api/agents` | — | `AgentDiagnosticController`, `AgentChatController`, `AgentRuntimeStatusController`, `ChatInsightsController`, `ChatWorkspaceController`, `CliAgentModelController`, `KompileLocalModelController`, `PassthroughChatController` | — | `ApiAgentConfigController`, `CliLlmConfigController` |
 | `/api/cluster` | — | — | `CrawlClusterController`, `ClusterJobController` | — |
 | `/api/graph` | — | — | `GraphExtractionModelController`, `GraphHydrationController` | — |
 | `/api/graph` (graph module) | — | `GraphAggregateController`, `GraphForecastController` | `GraphAggregateController`, `GraphForecastController` | — |

@@ -137,6 +137,24 @@ class VisionChatServingTest {
         assertTrue(e.getMessage().contains("cannot decode image/webp"), e.getMessage());
     }
 
+    @Test
+    void anImageOverThePerImageLimitIsRefusedByItsSize() {
+        // At the limit an image gets as far as decoding; one byte more is refused before that.
+        byte[] atLimit = new byte[Math.toIntExact(StructuredChatLanguageModel.MAX_INLINE_IMAGE_BYTES)];
+        IllegalArgumentException undecodable = assertThrows(IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.decodeChatImage(new InlineImage(
+                        "image/png", Base64.getEncoder().encodeToString(atLimit), null)));
+        assertTrue(undecodable.getMessage().contains("cannot decode image/png"),
+                undecodable.getMessage());
+
+        byte[] overLimit = new byte[atLimit.length + 1];
+        IllegalArgumentException oversized = assertThrows(IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.decodeChatImage(new InlineImage(
+                        "image/png", Base64.getEncoder().encodeToString(overLimit), null)));
+        assertTrue(oversized.getMessage().contains("at most "
+                + StructuredChatLanguageModel.MAX_INLINE_IMAGE_BYTES + " bytes"), oversized.getMessage());
+    }
+
     // -- conversation assembly --
 
     @Test

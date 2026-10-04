@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Starts only the installed Kompile chat persona when no CLI chat instance is configured.
@@ -141,14 +142,11 @@ final class ChatInstanceBootstrap {
             throw new BootstrapException("The installed Kompile chat executable was not found.");
         }
 
-        if (webHandoff && !chatArtifact.getName().endsWith(".jar")) {
-            throw new BootstrapException("--web currently requires the installed CHAT JAR tier; native CHAT handoff is not supported.");
-        }
         File workDirectory = dataDirectory.getAbsoluteFile();
         if (!workDirectory.isDirectory() && !workDirectory.mkdirs()) {
             throw new BootstrapException("Could not create Kompile data directory: " + workDirectory);
         }
-        File logDirectory = new File(webHandoff ? KompileHome.homeDirectory() : workDirectory, "logs");
+        File logDirectory = logDirectory(workDirectory, webHandoff, System.getenv("KOMPILE_SPIN_WORKSPACE"));
         String instanceName = webHandoff ? "kompile-chat-web-" + chatPort : INSTANCE_NAME;
 
         System.out.println(webHandoff ? "Starting an isolated installed CHAT web subprocess..."
@@ -158,18 +156,20 @@ final class ChatInstanceBootstrap {
 
         Process process;
         try {
+            boolean nativeChat = !chatArtifact.getName().endsWith(".jar");
             process = serviceManager.startProjectComponent(
                     instanceName,
                     ComponentRegistry.KOMPILE_APP_CHAT,
                     chatArtifact,
                     chatPort,
                     workDirectory,
-                    webHandoff ? WebChatContext.jvmArguments(workDirectory.toPath(), globalConfig, workflow, workspace) : List.of(),
-                    // Use the CHAT distribution's all-interface default and honor operator
-                    // overrides (KOMPILE_CHAT_ADDRESS / SERVER_ADDRESS), rather than forcing loopback.
-                    List.of(),
+                    webHandoff && !nativeChat
+                            ? WebChatContext.jvmArguments(workDirectory.toPath(), globalConfig, workflow, workspace) : List.of(),
+                    webHandoff ? webApplicationArguments(System.getenv()) : List.of(),
                     logDirectory,
-                    false);
+                    false,
+                    webHandoff && nativeChat
+                            ? WebChatContext.environment(workDirectory.toPath(), globalConfig, workflow, workspace) : Map.of());
         } catch (IOException e) {
             throw new BootstrapException("Could not launch the installed Kompile chat subprocess: "
                     + e.getMessage(), e);
@@ -205,6 +205,37 @@ final class ChatInstanceBootstrap {
         System.out.println("  Chat subprocess ready (PID: " + process.pid() + ")");
         System.out.println("  Logs: " + logDirectory.getAbsolutePath());
         return new StartupResult(requestedChatUrl, true);
+    }
+
+    /** Web launches are local by default; an operator may deliberately select another bind. */
+    static List<String> webApplicationArguments(Map<String, String> environment) {
+        String address = environment.get("KOMPILE_CHAT_ADDRESS");
+        if (address == null || address.isBlank()) address = environment.get("SERVER_ADDRESS");
+        if (address == null || address.isBlank()) address = "127.0.0.1";
+        return List.of("--server.address=" + address.strip());
+    }
+
+    static File logDirectory(File workDirectory, boolean webHandoff, String spinWorkspace)
+            throws BootstrapException {
+        if (webHandoff && spinWorkspace != null && !spinWorkspace.isBlank()) {
+            try {
+                Path root = Path.of(spinWorkspace).toRealPath();
+                if (!java.nio.file.Files.isDirectory(root)
+                        || !workDirectory.toPath().toRealPath().startsWith(root)) {
+                    throw new IOException("CHAT working directory is outside the spin workspace");
+                }
+                Path logs = root.resolve("logs");
+                java.nio.file.Files.createDirectories(logs);
+                if (!logs.toRealPath().startsWith(root)) {
+                    throw new IOException("Spin log directory is outside the spin workspace");
+                }
+                return logs.toFile();
+            } catch (IOException | java.nio.file.InvalidPathException e) {
+                // Never fall back to the global installation for a broken isolated spin context.
+                throw new BootstrapException("Invalid KOMPILE_SPIN_WORKSPACE for CHAT logs: " + spinWorkspace, e);
+            }
+        }
+        return new File(webHandoff ? KompileHome.homeDirectory() : workDirectory, "logs");
     }
 
     /**

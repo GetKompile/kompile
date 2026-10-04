@@ -268,8 +268,8 @@ public class LocalCodeIndexer {
             // another process committed since this one last looked at the index.
             String scopeIncludes = recordedScope ? stringMetadata(priorMetadata.get("includePatterns")) : includes;
             String scopeExcludes = recordedScope ? stringMetadata(priorMetadata.get("excludePatterns")) : excludes;
-            Set<String> includeSet = parsePatterns(scopeIncludes);
-            Set<String> excludeSet = parsePatterns(scopeExcludes);
+            PathPatterns includeScope = PathPatterns.parse(scopeIncludes);
+            PathPatterns excludeScope = PathPatterns.parse(scopeExcludes);
             Map<String, IndexFileStore.FileFingerprint> oldFingerprints;
             try {
                 oldFingerprints = store.loadFingerprints();
@@ -294,7 +294,7 @@ public class LocalCodeIndexer {
             }
 
             // Collect current source files (walk captures mtime+size — no re-stat later)
-            List<SourceFile> sourceFiles = collectSourceFiles(absRoot, includeSet, excludeSet);
+            List<SourceFile> sourceFiles = collectSourceFiles(absRoot, includeScope, excludeScope);
             Set<String> currentRelPaths = new LinkedHashSet<>();
             for (SourceFile f : sourceFiles) {
                 currentRelPaths.add(f.relPath());
@@ -1825,13 +1825,15 @@ public class LocalCodeIndexer {
      */
     private record SourceFile(Path path, String relPath, long mtime, long size) {}
 
-    private List<SourceFile> collectSourceFiles(Path root, Set<String> includes,
-                                                Set<String> excludes) throws IOException {
+    private List<SourceFile> collectSourceFiles(Path root, PathPatterns includes,
+                                                PathPatterns excludes) throws IOException {
         List<SourceFile> files = new ArrayList<>();
         SearchExclusions.GitignoreDirFilter gitFilter = SearchExclusions.loadGitignoreDirFilter(root);
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                // The root is the directory asked for: its own name never prunes it.
+                if (dir.equals(root)) return FileVisitResult.CONTINUE;
                 String dirName = dir.getFileName().toString();
                 if (IGNORED_DIRS.contains(dirName)) return FileVisitResult.SKIP_SUBTREE;
                 String relative = normalizeRelativePath(root.relativize(dir));
@@ -1841,11 +1843,12 @@ public class LocalCodeIndexer {
                         || relative.equals("data/markdown") || relative.startsWith("data/markdown/")) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
-                // Project-specific git-ignored data directories (no hard-coded names).
-                if (gitFilter.isIgnoredDir(root.relativize(dir).toString(), dirName)) {
+                // Project-specific git-ignored data directories (no hard-coded names). A
+                // .gitignore rule is relative to its own directory, which may be above the root.
+                if (gitFilter.isIgnoredDir(gitFilter.relativePath(dir, root), dirName)) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
-                if (!excludes.isEmpty() && matchesAny(dir.toString(), excludes)) {
+                if (excludes.matchesDirectory(relative)) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
                 return FileVisitResult.CONTINUE;
@@ -1858,13 +1861,15 @@ public class LocalCodeIndexer {
 
                 String fileName = file.getFileName().toString();
                 if ("kompile.project.json".equals(fileName)) return FileVisitResult.CONTINUE;
-                if (!includes.isEmpty() && !matchesAny(fileName, includes)) {
+                Path relPath = root.relativize(file);
+                String relative = normalizeRelativePath(relPath);
+                if (!includes.isEmpty() && !includes.matchesFile(relative)) {
                     return FileVisitResult.CONTINUE;
                 }
-                if (!excludes.isEmpty() && matchesAny(fileName, excludes)) {
+                if (excludes.matchesFile(relative)) {
                     return FileVisitResult.CONTINUE;
                 }
-                files.add(new SourceFile(file, root.relativize(file).toString(),
+                files.add(new SourceFile(file, relPath.toString(),
                         attrs.lastModifiedTime().toMillis(), attrs.size()));
                 return FileVisitResult.CONTINUE;
             }
@@ -1879,20 +1884,6 @@ public class LocalCodeIndexer {
 
     private static String normalizeRelativePath(Path path) {
         return path.toString().replace('\\', '/');
-    }
-
-    private boolean matchesAny(String value, Set<String> patterns) {
-        for (String pattern : patterns) {
-            if (pattern.startsWith("*") && value.endsWith(pattern.substring(1))) return true;
-            if (pattern.endsWith("*") && value.startsWith(pattern.substring(0, pattern.length() - 1))) return true;
-            if (value.contains(pattern)) return true;
-        }
-        return false;
-    }
-
-    private Set<String> parsePatterns(String commaSeparated) {
-        if (commaSeparated == null || commaSeparated.isBlank()) return Set.of();
-        return Set.of(commaSeparated.split(","));
     }
 
     public static Path getBaseIndexDir() {

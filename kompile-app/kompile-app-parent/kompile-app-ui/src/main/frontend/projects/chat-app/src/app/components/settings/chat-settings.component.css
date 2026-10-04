@@ -40,5 +40,5 @@ mat-card-actions button {
 }
 
 .error {
-  color: var(--error-color, #b00020) !important;
+  color: var(--status-error-text, #b00020) !important;
 }

@@ -95,6 +95,12 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli-common</artifactId>
         </dependency>
+        <!-- The insights page reads judge, tool and test data with the library the CLI's insights tool uses. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-insights</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-knowledge-graph</artifactId>

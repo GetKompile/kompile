@@ -545,7 +545,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             renderer.attachTerminal(term, readyTerminalTitle());
             int termWidth = term.getWidth();
             if (termWidth <= 0) termWidth = 120;
-            ascii = new AsciiRenderer(renderer, termWidth);
+            // Panels span the renderer's full width, so it gets the transcript's row width.
+            ascii = new AsciiRenderer(renderer, KompileTui.transcriptColumns(termWidth));
 
             this.lineReader = LineReaderBuilder.builder()
                     .terminal(term)
@@ -3885,7 +3886,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             List<String> lines = new ArrayList<>();
             for (String line : (text == null ? "" : text).split("\\R", -1)) {
                 List<AttributedString> rows = AttributedString.fromAnsi(line)
-                        .columnSplitLength(Math.max(1, width - 1));
+                        .columnSplitLength(KompileTui.transcriptColumns(width));
                 if (rows.isEmpty()) {
                     lines.add("");
                 } else {
@@ -6176,10 +6177,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             safePrintln(renderer.dim("  No assistant response is available to copy."));
             return;
         }
-        boolean copied = ClipboardUtil.copyToClipboard(latest.get(), terminal);
-        safePrintln(copied
-                ? renderer.green("  Copied the latest assistant response to the clipboard.")
-                : renderer.yellow("  Could not access a clipboard provider."));
+        String text = latest.get();
+        ClipboardUtil.CopyResult result = ClipboardUtil.copyToClipboard(text, terminal);
+        String message = "  " + ClipboardUtil.describe(result, text.length());
+        safePrintln(result == ClipboardUtil.CopyResult.COPIED
+                ? renderer.green(message)
+                : renderer.yellow(message));
     }
 
     String handleSlashCommand(String input, LineReader lineReader, ChatHistory history, ChatSessionMetrics metrics) {

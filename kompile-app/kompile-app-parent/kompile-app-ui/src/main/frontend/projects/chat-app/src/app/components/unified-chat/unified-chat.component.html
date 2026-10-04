@@ -17,14 +17,14 @@
 <div class="unified-chat-wrapper" data-testid="chat-wrapper">
 
   <!-- Chat History Sidebar (Left) -->
-  <aside class="history-sidebar" [class.collapsed]="!showHistorySidebar" data-testid="history-sidebar">
+  <aside *ngIf="!workspaceChat" class="history-sidebar" [class.collapsed]="!showHistorySidebar" data-testid="history-sidebar">
     <div class="history-sidebar-header">
       <h3>Conversations</h3>
-      <button class="new-chat-btn" (click)="newChat()"
+      <button mat-flat-button color="primary" type="button" class="new-chat-btn" (click)="newChat()"
         [disabled]="lifecycleBusy"
-        title="New conversation — preserve the previous conversation"
+        title="Start a new conversation, as /clear does in the terminal — the previous conversation is kept"
         data-testid="new-chat-btn">
-        <span>+</span> New conversation
+        <mat-icon>add</mat-icon> New conversation
       </button>
     </div>
 
@@ -50,9 +50,10 @@
           <option value="gemini">Gemini</option>
           <option value="pi">Pi</option>
         </select>
-        <button class="refresh-sync-btn" (click)="triggerChatSync()" title="Sync chats from CLI sources"
+        <button mat-icon-button type="button" class="refresh-sync-btn" (click)="triggerChatSync()"
+          title="Sync chats from CLI sources" aria-label="Sync chats from CLI sources"
           [disabled]="syncedSessionsLoading || chatSyncStatus?.running">
-          {{ chatSyncStatus?.running ? '...' : '↻' }}
+          <mat-icon [class.spinning]="chatSyncStatus?.running">sync</mat-icon>
         </button>
       </div>
 
@@ -115,13 +116,15 @@
           <div class="chat-edit-mode" *ngIf="editingSessionId === currentSession.id">
             <input type="text" class="chat-name-input" [(ngModel)]="editingSessionName" [ngModelOptions]="{standalone: true}"
               (keydown.enter)="saveSessionName(currentSession)" (keydown.escape)="cancelEditSessionName()">
-            <button class="edit-action-btn save" (click)="saveSessionName(currentSession)" title="Save">✓</button>
-            <button class="edit-action-btn cancel" (click)="cancelEditSessionName()" title="Cancel">✕</button>
+            <button mat-icon-button type="button" class="edit-action-btn save" (click)="saveSessionName(currentSession)"
+              title="Save name" aria-label="Save name"><mat-icon>check</mat-icon></button>
+            <button mat-icon-button type="button" class="edit-action-btn cancel" (click)="cancelEditSessionName()"
+              title="Cancel rename" aria-label="Cancel rename"><mat-icon>close</mat-icon></button>
           </div>
 
           <div class="chat-item-actions" *ngIf="editingSessionId !== currentSession.id && !transcriptReadOnly">
-            <button class="chat-action-btn" (click)="startEditSessionName(currentSession); $event.stopPropagation()"
-              title="Rename">✏️</button>
+            <button mat-icon-button type="button" class="chat-action-btn" (click)="startEditSessionName(currentSession); $event.stopPropagation()"
+              title="Rename conversation" aria-label="Rename conversation"><mat-icon>edit</mat-icon></button>
           </div>
         </div>
 
@@ -161,15 +164,17 @@
           <div class="chat-edit-mode" *ngIf="editingSessionId === session.id">
             <input type="text" class="chat-name-input" [(ngModel)]="editingSessionName" [ngModelOptions]="{standalone: true}"
               (keydown.enter)="saveSessionName(session)" (keydown.escape)="cancelEditSessionName()">
-            <button class="edit-action-btn save" (click)="saveSessionName(session)" title="Save">✓</button>
-            <button class="edit-action-btn cancel" (click)="cancelEditSessionName()" title="Cancel">✕</button>
+            <button mat-icon-button type="button" class="edit-action-btn save" (click)="saveSessionName(session)"
+              title="Save name" aria-label="Save name"><mat-icon>check</mat-icon></button>
+            <button mat-icon-button type="button" class="edit-action-btn cancel" (click)="cancelEditSessionName()"
+              title="Cancel rename" aria-label="Cancel rename"><mat-icon>close</mat-icon></button>
           </div>
 
           <div class="chat-item-actions" *ngIf="editingSessionId !== session.id">
-            <button class="chat-action-btn" (click)="startEditSessionName(session); $event.stopPropagation()"
-              title="Rename">✏️</button>
-            <button class="chat-action-btn" [matMenuTriggerFor]="folderMenu" (click)="$event.stopPropagation()"
-              title="Add to folder">📁</button>
+            <button mat-icon-button type="button" class="chat-action-btn" (click)="startEditSessionName(session); $event.stopPropagation()"
+              title="Rename conversation" aria-label="Rename conversation"><mat-icon>edit</mat-icon></button>
+            <button mat-icon-button type="button" class="chat-action-btn" [matMenuTriggerFor]="folderMenu" (click)="$event.stopPropagation()"
+              title="Add to folder" aria-label="Add to folder"><mat-icon>create_new_folder</mat-icon></button>
             <mat-menu #folderMenu="matMenu">
               <button mat-menu-item disabled *ngIf="folders.length === 0">
                 <span>No folders available</span>
@@ -178,12 +183,13 @@
                 <span>📁 {{ folder.name }}</span>
               </button>
             </mat-menu>
-            <button class="chat-action-btn" (click)="archiveSession(session); $event.stopPropagation()"
-              [title]="session.archived ? 'Unarchive' : 'Archive'">
-              {{ session.archived ? '📤' : '📥' }}
+            <button mat-icon-button type="button" class="chat-action-btn" (click)="archiveSession(session); $event.stopPropagation()"
+              [title]="session.archived ? 'Unarchive conversation' : 'Archive conversation'"
+              [attr.aria-label]="session.archived ? 'Unarchive conversation' : 'Archive conversation'">
+              <mat-icon>{{ session.archived ? 'unarchive' : 'archive' }}</mat-icon>
             </button>
-            <button class="chat-action-btn danger" (click)="deleteSession(session); $event.stopPropagation()"
-              title="Delete" [disabled]="lifecycleBusy">🗑️</button>
+            <button mat-icon-button color="warn" type="button" class="chat-action-btn danger" (click)="deleteSession(session); $event.stopPropagation()"
+              title="Delete conversation" aria-label="Delete conversation" [disabled]="lifecycleBusy"><mat-icon>delete</mat-icon></button>
           </div>
         </div>
 
@@ -209,7 +215,8 @@
                   </div>
                 </div>
               </div>
-              <button class="show-more-btn" *ngIf="hasSyncedMore(src)" (click)="showMoreSynced(src)">
+              <button mat-button type="button" class="show-more-btn" *ngIf="hasSyncedMore(src)" (click)="showMoreSynced(src)"
+                title="Show more conversations from this source">
                 Show more…
               </button>
             </ng-container>
@@ -232,13 +239,14 @@
 
       <!-- Footer Actions -->
       <div class="history-sidebar-footer">
-        <button class="footer-btn" (click)="toggleShowArchived()" [class.active]="showArchivedChats">
-          {{ showArchivedChats ? '📦 Hide Archived' : '📦 Show Archived' }}
+        <button mat-button type="button" class="footer-btn" (click)="toggleShowArchived()" [class.active]="showArchivedChats"
+          [title]="showArchivedChats ? 'Hide archived conversations' : 'Show archived conversations'">
+          <mat-icon>archive</mat-icon> {{ showArchivedChats ? 'Hide Archived' : 'Show Archived' }}
         </button>
-        <button class="footer-btn" (click)="switchSidebarTab('cli')" title="Browse raw CLI transcripts">
+        <button mat-button type="button" class="footer-btn" (click)="switchSidebarTab('cli')" title="Browse raw CLI transcripts">
           CLI Browser
         </button>
-        <button class="footer-btn" (click)="exportCurrentSession()" *ngIf="currentSession && messages.length > 0"
+        <button mat-button type="button" class="footer-btn" (click)="exportCurrentSession()" *ngIf="currentSession && messages.length > 0"
           title="Export current session to CLI transcript">
           Export to CLI
         </button>
@@ -249,7 +257,8 @@
       <div class="cli-browser-overlay">
         <div class="cli-browser-header">
           <span>CLI Transcript Browser</span>
-          <button class="cli-browser-close" (click)="switchSidebarTab('app')">✕</button>
+          <button mat-icon-button type="button" class="cli-browser-close" (click)="switchSidebarTab('app')"
+            title="Close the CLI transcript browser" aria-label="Close the CLI transcript browser"><mat-icon>close</mat-icon></button>
         </div>
 
         <!-- Source Filter -->
@@ -284,7 +293,7 @@
               </div>
             </div>
             <div class="chat-item-actions">
-              <button class="chat-action-btn import-btn"
+              <button mat-stroked-button type="button" class="import-btn"
                 (click)="importCliSession(session); $event.stopPropagation()"
                 [disabled]="cliImporting === session.sessionId"
                 title="Import into app">
@@ -302,17 +311,22 @@
         <!-- CLI Preview Panel -->
         <div class="cli-preview-panel" *ngIf="cliPreview">
           <div class="cli-preview-header">
-            <button class="cli-preview-back" (click)="closeCliPreview()">Back</button>
+            <button mat-button type="button" class="cli-preview-back" (click)="closeCliPreview()" title="Back to the CLI transcript list">
+              <mat-icon>arrow_back</mat-icon> Back
+            </button>
             <span class="cli-preview-title">{{ cliPreview.title }}</span>
             <span class="cli-source-badge small" [style.background-color]="getSourceColor(cliPreview.source)">
               {{ getSourceDisplayName(cliPreview.source) }}
             </span>
           </div>
           <div class="cli-preview-actions">
-            <button class="import-btn" (click)="importCliSession({sessionId: cliPreview.sessionId, source: cliPreview.source, title: cliPreview.title, agent: cliPreview.agent, messageCount: cliPreview.turns.length, lastModified: 0})">
+            <button mat-flat-button color="primary" type="button" class="import-btn"
+              (click)="importCliSession({sessionId: cliPreview.sessionId, source: cliPreview.source, title: cliPreview.title, agent: cliPreview.agent, messageCount: cliPreview.turns.length, lastModified: 0})"
+              title="Import this transcript into the app's conversation history">
               Import to App
             </button>
-            <button class="load-btn" (click)="loadCliTranscriptIntoChat(cliPreview)">
+            <button mat-stroked-button type="button" class="load-btn" (click)="loadCliTranscriptIntoChat(cliPreview)"
+              title="Open this transcript as a new conversation in the chat">
               Load in Chat
             </button>
           </div>
@@ -333,9 +347,9 @@
     </div>
 
     <!-- Collapse Toggle -->
-    <button class="sidebar-collapse-btn" (click)="toggleHistorySidebar()"
-      [title]="showHistorySidebar ? 'Collapse' : 'Expand'">
-      {{ showHistorySidebar ? '◀' : '▶' }}
+    <button mat-icon-button type="button" class="sidebar-collapse-btn" (click)="toggleHistorySidebar()"
+      [title]="showHistorySidebar ? 'Collapse conversation history' : 'Expand conversation history'">
+      <mat-icon>{{ showHistorySidebar ? 'chevron_left' : 'chevron_right' }}</mat-icon>
     </button>
   </aside>
 
@@ -343,7 +357,8 @@
   <aside class="settings-sidebar" [class.visible]="showSettings" data-testid="settings-sidebar">
     <div class="sidebar-header">
       <h3>Chat Settings</h3>
-      <button class="close-btn" (click)="toggleSettings()">×</button>
+      <button mat-icon-button type="button" class="close-btn" (click)="toggleSettings()" title="Close settings"
+        aria-label="Close settings"><mat-icon>close</mat-icon></button>
     </div>
 
     <div class="settings-content">
@@ -352,10 +367,9 @@
       <div class="settings-section">
         <div class="section-header">
           <h4>Harness Persona</h4>
-          <button class="refresh-btn" (click)="refreshAgents()" [disabled]="agentsLoading"
-            title="Reload Kompile CLI harness capabilities">
-            <span *ngIf="!agentsLoading">🔄</span>
-            <span *ngIf="agentsLoading" class="loading-spinner-small">⟳</span>
+          <button mat-icon-button type="button" class="refresh-btn" (click)="refreshAgents()" [disabled]="agentsLoading"
+            title="Reload Kompile CLI harness capabilities" aria-label="Reload Kompile CLI harness capabilities">
+            <mat-icon [class.spinning]="agentsLoading">refresh</mat-icon>
           </button>
         </div>
 
@@ -399,8 +413,9 @@
       <div class="settings-section">
         <h4>Session Configuration</h4>
         <p class="setting-hint">Pick the model and role this session uses, and toggle fast mode. Clicks dispatch the CLI commands; the CLI resolves and persists them.</p>
-        <button type="button" class="text-btn" data-testid="command-config-open"
+        <button mat-stroked-button type="button" class="text-btn" data-testid="command-config-open"
           [disabled]="!selectedAgent || isStreaming || isLoading"
+          title="Switch model or role and toggle fast mode, as /model, /role and /fast do in the terminal"
           (click)="openCommandConfig()">
           Open Session Configuration…
         </button>
@@ -410,9 +425,9 @@
       <div class="settings-section" *ngIf="activeModelContext">
         <div class="section-header-row">
           <h4>Active Models</h4>
-          <button class="refresh-context-btn" (click)="refreshModelContext()" [disabled]="modelContextLoading"
-            [class.spinning]="modelContextLoading" title="Refresh model context">
-            &#x21bb;
+          <button mat-icon-button type="button" class="refresh-context-btn" (click)="refreshModelContext()"
+            [disabled]="modelContextLoading" title="Refresh model context" aria-label="Refresh model context">
+            <mat-icon [class.spinning]="modelContextLoading">refresh</mat-icon>
           </button>
         </div>
 
@@ -433,12 +448,15 @@
             </div>
           </div>
           <div class="model-card-actions" *ngIf="activeModelContext.embedding.modelId">
-            <button class="text-btn small" *ngIf="activeModelContext.staging?.connected"
-              (click)="openStagingModelCard(activeModelContext.embedding.modelId)">
-              Model Card &#x2197;
+            <button mat-button type="button" class="text-btn small" *ngIf="activeModelContext.staging?.connected"
+              (click)="openStagingModelCard(activeModelContext.embedding.modelId)"
+              title="Open the embedding model's card in Model Staging">
+              Model Card
+              <mat-icon iconPositionEnd>open_in_new</mat-icon>
             </button>
-            <button class="text-btn small" *ngIf="activeModelContext.availableEmbeddingModels.length > 1"
-              (click)="toggleModelSwitchDropdown()" [disabled]="embeddingSwitchLoading">
+            <button mat-button type="button" class="text-btn small" *ngIf="activeModelContext.availableEmbeddingModels.length > 1"
+              (click)="toggleModelSwitchDropdown()" [disabled]="embeddingSwitchLoading"
+              title="Switch the embedding model">
               {{ embeddingSwitchLoading ? 'Switching...' : 'Switch' }}
             </button>
           </div>
@@ -467,8 +485,10 @@
             </div>
           </div>
           <div class="model-card-actions" *ngIf="activeModelContext.reranker.modelId && activeModelContext.staging?.connected">
-            <button class="text-btn small" (click)="openStagingModelCard(activeModelContext.reranker.modelId)">
-              Model Card &#x2197;
+            <button mat-button type="button" class="text-btn small" (click)="openStagingModelCard(activeModelContext.reranker.modelId)"
+              title="Open the reranker model's card in Model Staging">
+              Model Card
+              <mat-icon iconPositionEnd>open_in_new</mat-icon>
             </button>
           </div>
         </div>
@@ -489,8 +509,9 @@
 
         <!-- Open Staging App link -->
         <div class="staging-link" *ngIf="activeModelContext.staging?.connected">
-          <button class="text-btn small" (click)="openStagingApp()">
-            Open Model Staging &#x2197;
+          <button mat-button type="button" class="text-btn small" (click)="openStagingApp()" title="Open the Model Staging app">
+            Open Model Staging
+            <mat-icon iconPositionEnd>open_in_new</mat-icon>
           </button>
         </div>
       </div>
@@ -536,10 +557,12 @@
           <div class="prompt-info-row">
             <span class="prompt-info-name">{{ activeSystemPrompt.name }}</span>
             <span *ngIf="activeSystemPrompt.isActive" class="prompt-active-badge">Active</span>
-            <span *ngIf="!activeSystemPrompt.isActive" class="prompt-activate-link" (click)="onActivateSystemPrompt()">Set as active</span>
+            <button *ngIf="!activeSystemPrompt.isActive" mat-button type="button" class="prompt-activate-link"
+              (click)="onActivateSystemPrompt()" title="Make this the active managed prompt">Set as active</button>
           </div>
           <p class="setting-hint" *ngIf="activeSystemPrompt.description" style="margin-top: 4px">{{ activeSystemPrompt.description }}</p>
-          <button class="text-btn small" (click)="showPromptContent = !showPromptContent" style="margin-top: 4px">
+          <button mat-button type="button" class="text-btn small" (click)="showPromptContent = !showPromptContent"
+            title="Show or hide the prompt text">
             {{ showPromptContent ? 'Hide content' : 'Show content' }}
           </button>
           <div *ngIf="showPromptContent" class="system-prompt-preview">
@@ -883,8 +906,9 @@
     <!-- Header -->
     <header class="chat-header">
       <div class="header-left">
-        <button class="icon-btn" (click)="toggleSettings()" title="Settings" data-testid="settings-toggle-btn">
-          <span class="settings-icon">⚙</span>
+        <button mat-icon-button type="button" class="icon-btn" (click)="toggleSettings()" title="Settings"
+          aria-label="Settings" data-testid="settings-toggle-btn">
+          <mat-icon>settings</mat-icon>
         </button>
 
         <!-- Harness persona selector -->
@@ -916,13 +940,14 @@
         <!-- Folder indicator -->
         <span class="folder-badge" *ngIf="selectedFolder" title="Folder context active: {{ selectedFolder.name }}">
           📁 {{ selectedFolder.name }}
-          <button class="folder-clear-btn" (click)="clearFolderSelection(); $event.stopPropagation()"
-            title="Clear folder">×</button>
+          <button mat-icon-button type="button" class="folder-clear-btn" (click)="clearFolderSelection(); $event.stopPropagation()"
+            title="Clear folder" aria-label="Clear folder"><mat-icon>close</mat-icon></button>
         </span>
 
         <!-- Folder toggle button -->
-        <button class="icon-btn folder-toggle-btn" (click)="toggleFolderSidebar()" title="Toggle folder sidebar">
-          <span>📂</span>
+        <button mat-icon-button type="button" class="icon-btn folder-toggle-btn" (click)="toggleFolderSidebar()"
+          title="Toggle folder sidebar" aria-label="Toggle folder sidebar">
+          <mat-icon>folder_open</mat-icon>
         </button>
       </div>
 
@@ -945,29 +970,35 @@
           <ng-container *ngIf="contextUsagePercent !== null">({{ contextUsagePercent }}%)</ng-container>
         </span>
 
-        <button class="text-btn" (click)="newChat()" *ngIf="!isStreaming">+ New</button>
-        <button class="text-btn" (click)="exportConversation()" *ngIf="messages.length > 0 && !isStreaming"
-          title="Export conversation">
+        <button mat-button type="button" class="text-btn" (click)="newChat()" *ngIf="!isStreaming"
+          title="Start a new conversation, as /clear does in the terminal">
+          <mat-icon>add</mat-icon>
+          New
+        </button>
+        <button mat-button type="button" class="text-btn" (click)="exportConversation()" *ngIf="messages.length > 0 && !isStreaming"
+          title="Download the conversation as a text file">
           Export
         </button>
-        <button class="text-btn" (click)="compactContext()" *ngIf="messages.length > 0 && !isStreaming"
+        <button mat-button type="button" class="text-btn" (click)="compactContext()" *ngIf="messages.length > 0 && !isStreaming"
           [disabled]="isCompacting || transcriptReadOnly"
-          title="Summarize older messages to free context — the model keeps a summary plus recent turns">
+          title="Summarize conversation to free context, as /compact does in the terminal — the model keeps a summary plus recent turns">
           {{ isCompacting ? 'Compacting…' : 'Compact' }}
         </button>
-        <button class="text-btn" (click)="clearConversation()" *ngIf="messages.length > 0" [disabled]="lifecycleBusy">
+        <button mat-button type="button" class="text-btn" (click)="clearConversation()" *ngIf="messages.length > 0" [disabled]="lifecycleBusy"
+          title="Confirm, then start a new conversation as /clear does in the terminal; this one stays in recent conversations">
           Start fresh
         </button>
         <ng-container *ngIf="transcriptReadOnly">
           <span>Read-only transcript — not a resumable browser conversation</span>
-          <button class="text-btn" (click)="continueAsNewConversation()" [disabled]="lifecycleBusy"
+          <button mat-stroked-button type="button" class="text-btn" (click)="continueAsNewConversation()" [disabled]="lifecycleBusy"
             title="Copy text context into a fresh identity; does not resume the original session">
             Continue as new conversation
           </button>
         </ng-container>
         <!-- Prominent Stop button during streaming -->
-        <button class="stop-btn" (click)="cancelStreaming()" *ngIf="isStreaming" title="Stop agent execution" data-testid="header-stop-btn">
-          <span class="stop-icon">⏹</span>
+        <button mat-stroked-button color="warn" type="button" class="stop-btn" (click)="cancelStreaming()" *ngIf="isStreaming"
+          title="Stop agent execution (Esc)" data-testid="header-stop-btn">
+          <mat-icon>stop</mat-icon>
           Stop
         </button>
       </div>
@@ -1017,9 +1048,9 @@
             </div>
             <div class="welcome-model-sub">No context budget reported for this persona yet.</div>
           </ng-template>
-          <button type="button" class="text-btn small" data-testid="welcome-model-picker"
+          <button mat-stroked-button type="button" class="text-btn small" data-testid="welcome-model-picker"
             (click)="openWelcomeModelPicker()"
-            [disabled]="isStreaming || isLoading" title="Switch the model this session uses">
+            [disabled]="isStreaming || isLoading" title="Switch or show model, as /model does in the terminal">
             Change model…
           </button>
           <span class="welcome-model-hint">or type <code>/model</code> in the chat box</span>
@@ -1027,9 +1058,13 @@
 
         <div class="welcome-commands" data-testid="welcome-commands">
           <span class="welcome-commands-label">Slash commands:</span>
-          <button *ngFor="let item of slashCommands" type="button" class="welcome-command-chip"
-            (click)="selectSlashCommand(item.command)" [disabled]="isStreaming || isLoading || !selectedAgent"
-            title="Insert {{ item.command }} into the chat box">{{ item.command }}</button>
+          <!-- disabledInteractive keeps each command's CLI description on hover before a persona is
+               selected; the button still receives clicks then, so the handler re-checks the state. -->
+          <button *ngFor="let item of slashCommands" mat-stroked-button type="button" class="welcome-command-chip"
+            disabledInteractive
+            (click)="selectedAgent && !isStreaming && !isLoading && selectSlashCommand(item.command)"
+            [disabled]="isStreaming || isLoading || !selectedAgent"
+            [title]="item.description">{{ item.command }}</button>
         </div>
 
         <div class="quick-tips">
@@ -1054,7 +1089,8 @@
             <strong>{{ agentsError ? 'Unable to load harness capabilities' : 'No harness personas available' }}</strong>
             <p *ngIf="agentsError" role="alert">{{ agentsError }}</p>
             <p *ngIf="!agentsError">The harness reported no available personas. Check the server's chat configuration and retry.</p>
-            <button type="button" class="refresh-btn" (click)="refreshAgents()" data-testid="agents-retry">Retry</button>
+            <button mat-stroked-button type="button" (click)="refreshAgents()" data-testid="agents-retry"
+              title="Reload Kompile CLI harness capabilities">Retry</button>
           </div>
         </div>
       </div>
@@ -1109,26 +1145,27 @@
               <!-- Message Actions (visible on hover, hidden during streaming) -->
               <div class="message-actions" *ngIf="!message.isStreaming">
                 <!-- Copy button -->
-                <button class="action-btn" (click)="copyMessage(message.content, i, message.dbId)"
-                  [title]="copiedIndex === i ? 'Copied!' : 'Copy'" [class.copied]="copiedIndex === i">
-                  {{ copiedIndex === i ? '✓' : '📋' }}
+                <button mat-icon-button type="button" class="action-btn" (click)="copyMessage(message.content, i, message.dbId)"
+                  [title]="copiedIndex === i ? 'Copied!' : 'Copy message'" [class.copied]="copiedIndex === i">
+                  <mat-icon>{{ copiedIndex === i ? 'check' : 'content_copy' }}</mat-icon>
                 </button>
 
                 <!-- Fork button (creates new conversation from this point) -->
-                <button class="action-btn" (click)="forkFromMessage(i)" title="Fork conversation from here">
-                  🍴
+                <button *ngIf="!workspaceChat" mat-icon-button type="button" class="action-btn" (click)="forkFromMessage(i)"
+                  title="Fork conversation from here">
+                  <mat-icon>call_split</mat-icon>
                 </button>
 
                 <!-- Export button -->
-                <button class="action-btn" (click)="exportMessage(message.content, message.dbId)"
+                <button mat-icon-button type="button" class="action-btn" (click)="exportMessage(message.content, message.dbId)"
                   title="Download message">
-                  💾
+                  <mat-icon>download</mat-icon>
                 </button>
 
                 <!-- Regenerate button (assistant messages only) -->
-                <button class="action-btn" *ngIf="message.role === 'assistant'" (click)="regenerateMessage(i)"
+                <button mat-icon-button type="button" class="action-btn" *ngIf="message.role === 'assistant'" (click)="regenerateMessage(i)"
                   title="Regenerate response" [disabled]="isStreaming || isLoading">
-                  🔄
+                  <mat-icon>refresh</mat-icon>
                 </button>
               </div>
             </div>
@@ -1161,11 +1198,11 @@
                   <div class="tool-use-body">
                     <pre *ngIf="segment.toolInput" class="tool-use-input">{{ segment.toolInput }}</pre>
                     <pre *ngIf="segment.toolResult" class="tool-use-result">{{ segment.toolResult }}</pre>
-                    <button class="tool-copy-btn"
+                    <button mat-icon-button type="button" class="tool-copy-btn"
                       *ngIf="segment.toolInput || segment.toolResult"
                       (click)="copyToClipboardPublic((segment.toolInput || '') + (segment.toolResult ? '\n' + segment.toolResult : ''), i)"
                       title="Copy tool content">
-                      📋
+                      <mat-icon>content_copy</mat-icon>
                     </button>
                   </div>
                 </details>
@@ -1188,6 +1225,7 @@
                     <span class="tool-call-dim" *ngIf="call.metadata">{{ call.metadata }}</span>
                     <span class="tool-call-dim tool-call-preview" *ngIf="call.preview">· {{ call.preview }}</span>
                   </summary>
+                  <app-tool-call-chart *ngIf="call.chart" [chart]="call.chart"></app-tool-call-chart>
                   <div class="tool-call-section" *ngFor="let section of call.sections">
                     <div class="tool-call-dim">↳ {{ section.label }}:</div>
                     <pre class="tool-call-body" [class.tool-call-diff]="section.diff"><code class="hljs" [innerHTML]="section.html"></code></pre>
@@ -1206,8 +1244,10 @@
               <!-- Retry button for errored messages -->
               <div class="error-retry-bar" *ngIf="message.error && !isStreaming">
                 <span class="error-label">Response failed</span>
-                <button class="retry-btn" (click)="retryMessage(i)" [disabled]="isLoading">
-                  ↺ Retry
+                <button mat-stroked-button type="button" class="retry-btn" (click)="retryMessage(i)" [disabled]="isLoading"
+                  title="Send the preceding message again">
+                  <mat-icon>replay</mat-icon>
+                  Retry
                 </button>
               </div>
             </ng-container>
@@ -1331,17 +1371,17 @@
 
                   <!-- Source actions -->
                   <div class="source-actions">
-                    <button class="source-action-btn"
+                    <button mat-icon-button type="button" class="source-action-btn"
                       (click)="copySourceContent(source, $event)"
                       [title]="source._copied ? 'Copied!' : 'Copy source'"
                       [class.copied]="source._copied">
-                      {{ source._copied ? '✓' : '📋' }}
+                      <mat-icon>{{ source._copied ? 'check' : 'content_copy' }}</mat-icon>
                     </button>
-                    <button class="source-action-btn"
+                    <button mat-icon-button type="button" class="source-action-btn"
                       *ngIf="source.documentId || source.nodeId"
                       (click)="viewSourceInGraph(source); $event.stopPropagation()"
                       title="View in knowledge graph">
-                      🔗
+                      <mat-icon>hub</mat-icon>
                     </button>
                   </div>
                 </div>
@@ -1375,7 +1415,8 @@
 
             <!-- Sources footer with actions -->
             <div class="sources-footer" *ngIf="message._sourcesExpanded && message.sources.length > 0">
-              <button class="sources-footer-btn" (click)="toggleSources(message)">
+              <button mat-button type="button" class="sources-footer-btn" (click)="toggleSources(message)"
+                title="Hide the sources for this answer">
                 Collapse sources
               </button>
             </div>
@@ -1436,7 +1477,8 @@
 
             <!-- Documents footer -->
             <div class="sources-footer" *ngIf="message.documentsExpanded && message.documents!.length > 0">
-              <button class="sources-footer-btn" (click)="toggleDocuments(message)">
+              <button mat-button type="button" class="sources-footer-btn" (click)="toggleDocuments(message)"
+                title="Hide the retrieved documents for this answer">
                 Collapse documents
               </button>
             </div>
@@ -1461,10 +1503,12 @@
     <div class="input-area" data-testid="input-area" [class.drag-over]="isDragOver"
       (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)"
       (drop)="onDrop($event)" (paste)="onPaste($event)">
-      <div *ngIf="!isStreaming && reconnectBookmark" role="status" data-testid="reconnect-run">
-        A previous run can be reattached without restarting its work.
-        <button type="button" (click)="reconnectCurrentRun()" [disabled]="lifecycleBusy">Reconnect run</button>
-        <button type="button" (click)="stopSavedRun()" [disabled]="lifecycleBusy">Stop saved run</button>
+      <div *ngIf="!isStreaming && reconnectBookmark" class="reconnect-run" role="status" data-testid="reconnect-run">
+        <span>A previous run can be reattached without restarting its work.</span>
+        <button mat-stroked-button type="button" (click)="reconnectCurrentRun()" [disabled]="lifecycleBusy"
+          title="Reattach to the previous run without restarting its work">Reconnect run</button>
+        <button mat-stroked-button color="warn" type="button" (click)="stopSavedRun()" [disabled]="lifecycleBusy"
+          title="Stop the previous run and its work">Stop saved run</button>
       </div>
       <!-- The workflow team the session was started with, laid out as the terminal team summary -->
       <details *ngIf="workflowTeam as team" class="workflow-team" data-testid="workflow-team">
@@ -1486,7 +1530,7 @@
           <div *ngFor="let gate of workflowGates; trackBy: trackWorkflowGate" class="workflow-detail workflow-gate">
             <span>{{ gate.label }}: {{ gate.name }}</span>
             <span *ngIf="gate.approved" class="workflow-gate-approved">approved</span>
-            <button *ngIf="!gate.approved" type="button" (click)="approveWorkflowGate(gate.name)"
+            <button *ngIf="!gate.approved" mat-flat-button color="primary" type="button" (click)="approveWorkflowGate(gate.name)"
               [disabled]="workflowApprovalPending || (isStreaming && !liveControlsReady)"
               [title]="'Approve gate ' + gate.name + ', as /workflow approve does in the terminal'">Approve</button>
           </div>
@@ -1497,50 +1541,62 @@
       </details>
       <details *ngIf="harnessActivity" class="harness-activity" data-testid="harness-activity">
         <summary>Harness activity — {{ harnessActivity.turnActive ? 'working' : 'waiting / finished' }}</summary>
-        <button type="button" (click)="sendHarnessControl('background')"
+        <button mat-stroked-button type="button" (click)="sendHarnessControl('background')"
           [disabled]="!liveControlsReady || !harnessActivity.backgroundable || harnessControlPending"
           title="Background the blocking subagent (Ctrl+B)" data-testid="background-task-btn">Background (Ctrl+B)</button>
-        <button type="button" (click)="sendHarnessControl('process_list')"
-          [disabled]="!liveControlsReady || harnessControlPending">Refresh</button>
+        <button mat-button type="button" (click)="sendHarnessControl('process_list')"
+          [disabled]="!liveControlsReady || harnessControlPending"
+          title="Show processes &amp; subagents, as /processes does in the terminal">Refresh</button>
         <details *ngFor="let task of harnessActivity.tasks; trackBy: trackHarnessEntry">
           <summary>{{ task.description }} — {{ task.state }}</summary>
-          <pre style="max-height: 16rem; overflow: auto; white-space: pre-wrap">{{ task.output }}</pre>
+          <pre class="harness-output">{{ task.output }}</pre>
         </details>
         <details *ngFor="let child of harnessActivity.subagents; trackBy: trackHarnessEntry" data-testid="subagent-activity">
           <summary (keydown)="handleSubagentKey($event, child.id, false)"
             title="Delete stops only this child">{{ child.type }}: {{ child.description }} — {{ child.state }}</summary>
-          <pre style="max-height: 16rem; overflow: auto; white-space: pre-wrap">{{ child.output }}</pre>
+          <pre class="harness-output">{{ child.output }}</pre>
           <textarea [(ngModel)]="subagentInputs[child.id]" [ngModelOptions]="{standalone: true}"
             (keydown)="handleSubagentKey($event, child.id, true)" rows="2" maxlength="32768"
             [disabled]="!liveControlsReady || !child.canSend" [attr.aria-label]="'Follow-up to ' + child.id"
             placeholder="Follow up with this child (Enter to send, Shift+Enter for a new line)"></textarea>
-          <button type="button" (click)="sendHarnessControl('subagent_input', child.id, subagentInputs[child.id])"
-            [disabled]="!liveControlsReady || !child.canSend || harnessControlPending || !subagentInputs[child.id]?.trim()">Send to child</button>
-          <button type="button" (click)="sendHarnessControl('subagent_cancel', child.id)"
-            [disabled]="!liveControlsReady || !child.canCancel || harnessControlPending">Stop child</button>
+          <button mat-stroked-button type="button" (click)="sendHarnessControl('subagent_input', child.id, subagentInputs[child.id])"
+            [disabled]="!liveControlsReady || !child.canSend || harnessControlPending || !subagentInputs[child.id]?.trim()"
+            title="Send the follow-up to this child only (Enter)">Send to child</button>
+          <button mat-stroked-button color="warn" type="button" (click)="sendHarnessControl('subagent_cancel', child.id)"
+            [disabled]="!liveControlsReady || !child.canCancel || harnessControlPending"
+            title="Stop only this child (Delete)">Stop child</button>
         </details>
         <details *ngFor="let process of harnessActivity.processes; trackBy: trackHarnessEntry">
           <summary>{{ process.id }}: {{ process.description }} — {{ process.state }}<span
             *ngIf="process.kind && process.kind !== 'command'"> [{{ process.kind }}]</span><span
             *ngIf="process.owner"> · owner: {{ process.owner }}</span></summary>
           <code>{{ process.command }}</code>
-          <button type="button" (click)="sendHarnessControl('process_output', process.id)"
-            [disabled]="!liveControlsReady || harnessControlPending">Read output</button>
-          <button type="button" (click)="sendHarnessControl('process_kill', process.id)"
+          <button mat-button type="button" (click)="sendHarnessControl('process_output', process.id)"
+            [disabled]="!liveControlsReady || harnessControlPending"
+            title="View process output, as /process-output does in the terminal">Read output</button>
+          <!-- disabledInteractive keeps the "Shared by …" title visible while disabled; the
+               button still receives clicks then, so the handler re-checks the process state. -->
+          <button mat-stroked-button color="warn" type="button" disabledInteractive
+            (click)="process.state === 'RUNNING' && process.killable !== false && sendHarnessControl('process_kill', process.id)"
             [disabled]="!liveControlsReady || harnessControlPending || process.state !== 'RUNNING' || process.killable === false"
-            [title]="process.killable === false ? 'Shared by ' + (process.owner || 'another session') + '; only its owner can stop it' : 'Stop this process'">Stop process</button>
-          <pre style="max-height: 16rem; overflow: auto; white-space: pre-wrap">{{ process.output }}</pre>
+            [title]="process.killable === false ? 'Shared by ' + (process.owner || 'another session') + '; only its owner can stop it' : 'Stop this process, as /process-kill does in the terminal'">Stop process</button>
+          <pre class="harness-output">{{ process.output }}</pre>
         </details>
         <div *ngFor="let input of liveInputHistory">Queued follow-up: {{ input }}</div>
-        <pre *ngIf="harnessProcessOutput" style="max-height: 16rem; overflow: auto; white-space: pre-wrap">{{ harnessProcessOutput }}</pre>
+        <pre *ngIf="harnessProcessOutput" class="harness-output">{{ harnessProcessOutput }}</pre>
       </details>
-      <div *ngIf="harnessControlMessage" role="status" aria-live="polite">{{ harnessControlMessage }}</div>
+      <!-- This session's judge flags, tool counts, last test milestone and crawl progress, as the
+           terminal's dashboard area shows them -->
+      <app-session-insights-drawer [sessionId]="insightsSessionId" [workingDirectory]="workingDirectory"
+        [active]="viewActive"></app-session-insights-drawer>
+      <div *ngIf="harnessControlMessage" class="harness-control-message" role="status" aria-live="polite">{{ harnessControlMessage }}</div>
       <!-- A /command the live harness answered, printed as the CLI REPL prints it -->
       <div *ngIf="liveCommandOutput" class="live-command-output" [class.failed]="!liveCommandOutput.ok"
         role="status" aria-live="polite" data-testid="live-command-output">
         <div class="live-command-header">
           <code>{{ liveCommandOutput.command }}</code>
-          <button type="button" (click)="liveCommandOutput = null" aria-label="Dismiss command output">×</button>
+          <button mat-icon-button type="button" (click)="liveCommandOutput = null" title="Dismiss command output"
+            aria-label="Dismiss command output"><mat-icon>close</mat-icon></button>
         </div>
         <pre>{{ liveCommandOutput.text }}</pre>
       </div>
@@ -1550,8 +1606,9 @@
           <span class="pulse-dot"></span>
           <span>Agent is responding...</span>
         </div>
-        <button class="stop-btn-inline" (click)="cancelStreaming()" title="Stop agent execution (Esc)">
-          <span class="stop-icon">⏹</span>
+        <button mat-stroked-button color="warn" type="button" class="stop-btn-inline" (click)="cancelStreaming()"
+          title="Stop agent execution (Esc)">
+          <mat-icon>stop</mat-icon>
           Stop
         </button>
       </div>
@@ -1563,8 +1620,8 @@
             [src]="attachment.previewUrl" [alt]="attachment.filename || attachment.name || 'Attached image'">
           <span *ngIf="!attachment.isImage" class="attachment-file-icon">📄</span>
           <span class="attachment-name">{{ attachment.filename || attachment.name || 'Attachment' }}</span>
-          <button type="button" class="remove-attachment-btn" (click)="removeAttachment(i)"
-            [disabled]="isStreaming" aria-label="Remove attachment">×</button>
+          <button mat-icon-button type="button" class="remove-attachment-btn" (click)="removeAttachment(i)"
+            [disabled]="isStreaming" title="Remove attachment" aria-label="Remove attachment"><mat-icon>close</mat-icon></button>
         </div>
       </div>
 
@@ -1575,13 +1632,14 @@
         <div class="queued-chips" *ngIf="latestQueued" data-testid="queued-chips">
           <span class="queued-chip">
             <span class="queued-chip-text" [title]="latestQueued.text">{{ latestQueued.text }}</span>
-            <button type="button" class="queued-chip-send" (click)="sendLatestQueuedNow()"
-              [disabled]="isStreaming || isLoading" title="Send this queued message now">➤</button>
-            <button type="button" class="queued-chip-remove" (click)="removeLatestQueued()"
-              aria-label="Remove queued message">×</button>
+            <button mat-icon-button type="button" class="queued-chip-send" (click)="sendLatestQueuedNow()"
+              [disabled]="isStreaming || isLoading" title="Send this queued message now"
+              aria-label="Send this queued message now"><mat-icon>send</mat-icon></button>
+            <button mat-icon-button type="button" class="queued-chip-remove" (click)="removeLatestQueued()"
+              title="Remove queued message" aria-label="Remove queued message"><mat-icon>close</mat-icon></button>
           </span>
-          <button type="button" class="queued-chip-more" (click)="openCommandConfig()"
-            title="Open the full queue (Session Configuration)">Queue…</button>
+          <button mat-button type="button" class="queued-chip-more" (click)="openCommandConfig()"
+            title="Show message queue, as /queue does in the terminal (Session Configuration)">Queue…</button>
         </div>
         <div *ngIf="slashSuggestions.length" id="slash-command-menu" class="slash-command-menu"
           role="listbox" aria-label="Common slash commands" data-testid="slash-command-menu">
@@ -1595,10 +1653,10 @@
         <input #fileInput type="file" class="attachment-input"
           accept=".png,.jpg,.jpeg,.gif,.webp,.svg,.pdf,.txt,.md,.markdown,.json,.jsonl,.csv,.tsv,.xml,.yaml,.yml,.log,.properties,.ini,.java,.kt,.py,.ts,.tsx,.js,.jsx,.html,.css,.scss,.sql,.sh,.c,.cc,.cpp,.cu,.cuh,.h,.hpp,.rs,.go,.toml,.gradle"
           multiple (change)="onFileSelected($event)" data-testid="attachment-input">
-        <button type="button" class="attach-btn" (click)="onAttachClick()"
+        <button mat-icon-button type="button" class="attach-btn" (click)="onAttachClick()"
           [disabled]="isLoading || isStreaming || !selectedAgent"
           title="Attach PNG, JPEG, GIF or WebP images, PDFs, or text files (8 files, 5 MiB each, 20 MiB total)"
-          aria-label="Attach files" data-testid="attach-btn">📎</button>
+          aria-label="Attach files" data-testid="attach-btn"><mat-icon>attach_file</mat-icon></button>
         <textarea [ngModel]="userInput" (ngModelChange)="onUserInputChange($event)" [ngModelOptions]="{standalone: true}"
           placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : (isStreaming ? (liveControlsReady ? 'Queue a follow-up, or type / for live commands' : 'Queue a message — it sends when the run finishes') : 'Type your message...') }}"
           (keydown)="handleKeydown($event)" (blur)="dismissSlashMenu()"
@@ -1608,13 +1666,14 @@
           [attr.aria-activedescendant]="slashSuggestions.length ? 'slash-command-' + slashSelectedIndex : null" rows="2" [disabled]="transcriptReadOnly || isCompacting || isLoading || !selectedAgent"
           data-testid="chat-input">
         </textarea>
-        <button class="send-btn" (click)="sendMessage()"
+        <button mat-mini-fab color="primary" type="button" class="send-btn" (click)="sendMessage()"
           [disabled]="transcriptReadOnly || isCompacting || !userInput.trim() || isLoading || harnessControlPending || !selectedAgent" [title]="isStreaming ? 'Queue follow-up for the next turn boundary' : 'Send message'"
           *ngIf="!isStreaming || liveControlsReady" data-testid="send-btn">
-          <span class="send-icon">➤</span>
+          <mat-icon>send</mat-icon>
         </button>
-        <button class="stop-btn-send" (click)="cancelStreaming()" title="Stop agent execution" *ngIf="isStreaming" data-testid="stop-btn">
-          <span class="stop-icon">⏹</span>
+        <button mat-mini-fab color="warn" type="button" class="stop-btn-send" (click)="cancelStreaming()"
+          title="Stop agent execution (Esc)" *ngIf="isStreaming" data-testid="stop-btn">
+          <mat-icon>stop</mat-icon>
         </button>
       </div>
       <div class="input-hints">

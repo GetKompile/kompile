@@ -32,6 +32,60 @@ class ChatWorkspaceStoreTest {
         assertEquals(first.toRealPath(), store().resolveRegisteredDirectory(first.toString()));
     }
 
+    @Test void newProjectCreatesOnlyItsFolderAndPersistsCanonicalIdentity() throws Exception {
+        Path parent = Files.createDirectory(temp.resolve("projects"));
+        Path alias = Files.createSymbolicLink(temp.resolve("alias"), parent);
+        var project = store().createProject(alias, "New project");
+        assertEquals(parent.resolve("New project").toRealPath().toString(), project.workingDirectory());
+        assertEquals("New project", project.name());
+        assertEquals(project, store().read().projects().get(0));
+        assertEquals(project.id(), store().register(parent.resolve("New project")).id());
+        try (var children = Files.list(Path.of(project.workingDirectory()))) { assertEquals(0, children.count()); }
+        var chat = store().createChat(project.id(), "First chat");
+        assertEquals(chat, store().read().projects().get(0).chats().get(0));
+    }
+
+    @Test void newProjectRejectsTraversalMissingParentsAndExistingTargets() throws Exception {
+        for (String name : new String[] {"", ".", "..", "../escape", "a/b", "a\\b", "a\nb", "a".repeat(129)}) {
+            assertThrows(IllegalArgumentException.class, () -> store().createProject(temp, name));
+        }
+        assertThrows(IllegalArgumentException.class, () -> store().createProject(Path.of("relative"), "new"));
+        assertThrows(IOException.class, () -> store().createProject(temp.resolve("missing"), "new"));
+        Path existing = Files.createDirectory(temp.resolve("existing"));
+        Files.writeString(existing.resolve("keep.txt"), "untouched");
+        Path alias = Files.createSymbolicLink(temp.resolve("existing-alias"), existing);
+        assertThrows(IOException.class, () -> store().createProject(temp, "existing"));
+        assertThrows(IOException.class, () -> store().createProject(temp, alias.getFileName().toString()));
+        assertEquals("untouched", Files.readString(existing.resolve("keep.txt")));
+        assertTrue(store().read().projects().isEmpty());
+        assertFalse(Files.exists(temp.resolve("new")));
+    }
+
+    @Test void corruptIndexDoesNotCreateAProjectFolder() throws Exception {
+        store().register(temp);
+        Files.writeString(temp.resolve(".kompile/chat-workspace.json"), "{bad json");
+        assertThrows(IOException.class, () -> store().createProject(temp, "new"));
+        assertFalse(Files.exists(temp.resolve("new")));
+    }
+
+    @Test void failedIndexWriteOffersRecoveryWithoutDeletingTheNewFolder() throws Exception {
+        Path indexDirectory = temp.resolve(".kompile");
+        store().register(temp);
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.getFileStore(indexDirectory).supportsFileAttributeView("posix"));
+        var original = Files.getPosixFilePermissions(indexDirectory);
+        try {
+            Files.setPosixFilePermissions(indexDirectory, java.nio.file.attribute.PosixFilePermissions.fromString("r-x------"));
+            org.junit.jupiter.api.Assumptions.assumeFalse(Files.isWritable(indexDirectory), "Requires unprivileged permission checks");
+            IOException failure = assertThrows(IOException.class, () -> store().createProject(temp, "new"));
+            assertTrue(Files.isDirectory(temp.resolve("new")));
+            assertTrue(failure.getMessage().contains("Add existing folder"));
+            assertTrue(failure.getMessage().contains(temp.resolve("new").toString()));
+            assertEquals(1, store().read().projects().size());
+        } finally { Files.setPosixFilePermissions(indexDirectory, original); }
+        assertEquals(temp.resolve("new").toRealPath().toString(), store().register(temp.resolve("new")).workingDirectory());
+        assertEquals(2, store().read().projects().size());
+    }
+
     @Test void onlyExplicitCanonicalRootsAreAllowed() throws Exception {
         Path root = Files.createDirectory(temp.resolve("root"));
         Path nested = Files.createDirectory(root.resolve("nested"));

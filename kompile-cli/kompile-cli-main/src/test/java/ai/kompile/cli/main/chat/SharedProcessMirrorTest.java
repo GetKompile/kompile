@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.ProcessCoordEntry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -289,6 +290,57 @@ class SharedProcessMirrorTest {
         underWay.get(5, TimeUnit.SECONDS);
         requested.join(5_000);
         assertTrue(mirror.owesWake(), "the requested pass read the process launched after the first began");
+    }
+
+    @Test
+    void listsTheJobsRunningOnThisChatsBehalfMonitoredOrNot() {
+        CoordinationStateManager mine = childOwner("mcp-mine", "local-chat");
+        childOwner("mcp-other", "other-chat");
+        publish("mcp-mine", "proc-build", "mvn -o verify", "Verify", "RUNNING", 0);
+        mine.updateProcessMonitor("proc-build", true, null);
+        publish("mcp-mine", "proc-quiet", "sleep 600", "", "RUNNING", 0);
+        publish("mcp-mine", "proc-done", "true", "Finished", "COMPLETED", 0);
+        publish("mcp-other", "proc-other", "other", "Another chat's build", "RUNNING", 0);
+        publish("mcp-loose", "proc-loose", "loose", "No parent session", "RUNNING", 0);
+
+        mirror.pollOnce();
+        // An empty description falls back to the command.
+        assertEquals(List.of("proc-build|Verify", "proc-quiet|sleep 600"), sessionJobs());
+
+        mine.updateProcessState("proc-build", "COMPLETED", Instant.now(), 0);
+        mirror.pollOnce();
+        assertEquals(List.of("proc-quiet|sleep 600"), sessionJobs());
+
+        mirror.close();
+        assertTrue(mirror.runningForSession().isEmpty(), "a closed mirror reports none");
+    }
+
+    @Test
+    void aPassWithoutACoordinationSnapshotSaysSo() {
+        CoordinationStateManager unavailable = new CoordinationStateManager(workDir, "blind-chat", MAPPER) {
+            @Override
+            public List<ProcessCoordEntry> snapshotProcesses() {
+                return null;
+            }
+        };
+        SharedProcessMirror blind = new SharedProcessMirror(processes, unavailable, "blind-chat");
+        try {
+            blind.pollOnce();
+
+            // A host reading the jobs must learn they could not be read, not see none.
+            assertEquals("coordination snapshot unavailable", blind.pollFailure());
+            assertTrue(blind.runningForSession().isEmpty());
+        } finally {
+            blind.close();
+            unavailable.shutdown();
+        }
+    }
+
+    private List<String> sessionJobs() {
+        return mirror.runningForSession().stream()
+                .map(job -> job.processId() + "|" + job.label())
+                .sorted()
+                .toList();
     }
 
     private BackgroundProcessManager.ProcessEntry sharedMirror(String sharedProcessId) {

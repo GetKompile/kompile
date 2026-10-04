@@ -83,6 +83,11 @@ public class DirectLlmClient implements AutoCloseable {
         void onToolStart(String callId, String name, String input);
         default void onToolInput(String callId, String name, String input) { }
         default void onToolOutput(String callId, String name, String output) { }
+        /**
+         * A fragment of tool-call arguments as the model streams them. Their tokens
+         * are output the request's usage reports when it ends.
+         */
+        default void onToolInputDelta(String delta) { }
         void onToolComplete(String callId, String name, String output,
                             int exitCode, boolean error);
         /** Settled usage deltas, never cumulative SSE snapshots; input/cache categories are disjoint. */
@@ -123,6 +128,15 @@ public class DirectLlmClient implements AutoCloseable {
     /** A Claude Code native session and the digest of the instructions it holds. */
     public record ClaudeNativeSession(String sessionId, String instructionsDigest) { }
 
+    /** What became of a message {@link #injectIntoClaudeTurn} wrote into a running turn. */
+    public interface ClaudeInjectionListener {
+        /** Claude Code took the message in: into the running turn, or as a turn of its own. */
+        void delivered(String id);
+
+        /** Claude Code dropped the message unread: the turn was interrupted, or its process ended. */
+        void dropped(String id);
+    }
+
     private final ChatConfig config;
     private final HttpClient httpClient;
     private final ProviderConnectivityPolicy connectivityPolicy;
@@ -148,6 +162,7 @@ public class DirectLlmClient implements AutoCloseable {
     // Where the Claude Code route shows its tasks, and who hears of the turns it starts itself.
     private volatile BackgroundProcessManager claudeTaskProcesses;
     private volatile Consumer<String> claudeFollowUpListener;
+    private volatile ClaudeInjectionListener claudeInjectionListener;
     private volatile boolean claudeNeedsSeed = true;
     private volatile boolean claudeCompactionFailed;
     private volatile int nativeCompactionTriggerTokens;
@@ -306,6 +321,31 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     /**
+     * Told, on a thread that holds none of the route's locks, whether Claude Code
+     * took in each message {@link #injectIntoClaudeTurn} wrote, or dropped it unread.
+     */
+    public void setClaudeInjectionListener(ClaudeInjectionListener listener) {
+        ClaudeCliClient client;
+        synchronized (this) {
+            claudeInjectionListener = listener;
+            client = claudeServeClient;
+        }
+        if (client != null) client.setInjectionListener(listener);
+    }
+
+    /**
+     * Write a message into the turn the Claude Code route is running. Claude Code
+     * takes it in after the turn's next tool calls, or as a turn of its own once
+     * the turn ends; the injection listener is told which.
+     *
+     * @return false, writing nothing, when the route runs no turn to take it
+     */
+    public boolean injectIntoClaudeTurn(String id, String text) {
+        ClaudeCliClient client = claudeServeClient;
+        return client != null && client.injectIntoRunningTurn(id, text);
+    }
+
+    /**
      * Push the chat's current model, effort and fast mode onto the live Claude
      * Code route's process, if one is already running, so a turn it starts by
      * itself (such as its reply once a background task finished) already runs
@@ -316,6 +356,9 @@ public class DirectLlmClient implements AutoCloseable {
      * request and returns.
      */
     public void syncClaudeIdleSettings(String model, String effort, boolean fastMode) {
+        // A retained Claude process still owns its tasks after a provider switch.
+        // Never apply the newly selected provider's settings to that process.
+        if (resolveRoute(model).protocol() != WireProtocol.CLAUDE_CLI) return;
         ClaudeCliClient client;
         synchronized (this) {
             client = claudeServeClient;
@@ -323,6 +366,18 @@ public class DirectLlmClient implements AutoCloseable {
         if (client != null) {
             client.applyIdleSettings(model, effort, fastMode);
         }
+    }
+
+    /** Confirm a same-route live Claude model switch without blocking the UI. */
+    public boolean selectClaudeModel(ChatConfig candidate, Runnable accepted, Consumer<String> rejected) {
+        ClaudeCliClient client;
+        synchronized (this) {
+            client = claudeServeClient;
+        }
+        return client != null && config.isClaudeCliNative() && candidate.isClaudeCliNative()
+                && Objects.equals(config.getProvider(), candidate.getProvider())
+                && !Objects.equals(config.getModel(), candidate.getModel())
+                && client.selectModel(candidate.getModel(), accepted, rejected);
     }
 
     private static Consumer<String> followUpMarkers(Consumer<String> listener) {
@@ -430,6 +485,16 @@ public class DirectLlmClient implements AutoCloseable {
         if (consumer != null) {
             consumer.accept(chunk);
         }
+    }
+
+    /**
+     * Report a fragment of tool-call arguments as the model streams it, so the
+     * chat counts its tokens before the request's usage arrives.
+     */
+    protected void reportToolInputDelta(String delta) {
+        if (delta == null || delta.isEmpty()) return;
+        ProviderActivityListener listener = providerActivityListener;
+        if (listener != null) listener.onToolInputDelta(delta);
     }
 
     /**
@@ -1283,7 +1348,9 @@ public class DirectLlmClient implements AutoCloseable {
                     claudeActivity(result, effectiveModel));
             result.text = text;
             if (!text.isEmpty()) appendOpenCodeHistory(userMessage, text);
-            result.claudeNativeSession = client.nativeSession();
+            // A parked session has not received the other provider's turns yet.
+            // Its late response must not checkpoint those turns as native Claude history.
+            if (!claudeNeedsSeed) result.claudeNativeSession = client.nativeSession();
         } catch (Exception e) {
             if (isContextOverflowFailure(0, e.getMessage())) claudeCompactionFailed = true;
             if (streamed.length() > 0) result.text = streamed.toString();
@@ -1342,6 +1409,11 @@ public class DirectLlmClient implements AutoCloseable {
                 result.providerSideEffectsObserved = true;
                 ProviderActivityListener listener = providerActivityListener;
                 if (listener != null) listener.onToolOutput(callId, name, output);
+            }
+
+            @Override
+            public void onToolInputDelta(String delta) {
+                reportToolInputDelta(delta);
             }
 
             @Override
@@ -1478,6 +1550,24 @@ public class DirectLlmClient implements AutoCloseable {
         return client == null ? null : client.nativeSession();
     }
 
+    /**
+     * The MCP servers of the Claude Code process serving this session, or null
+     * when no process serves it yet.
+     */
+    public List<ClaudeMcpServer> claudeMcpServers(Duration timeout) throws IOException {
+        ClaudeCliClient client = claudeServeClient;
+        return client == null ? null : client.mcpServers(timeout);
+    }
+
+    /**
+     * Restart one MCP server of the Claude Code process serving this session.
+     * False when no process serves it yet.
+     */
+    public boolean reconnectClaudeMcpServer(String name, Duration timeout) throws IOException {
+        ClaudeCliClient client = claudeServeClient;
+        return client != null && client.reconnectMcpServer(name, timeout);
+    }
+
     private ClaudeCliClient claudeClient() {
         ClaudeCliClient client = claudeServeClient;
         if (client == null) {
@@ -1487,6 +1577,7 @@ public class DirectLlmClient implements AutoCloseable {
                     client = new ClaudeCliClient(workingDirectory, null, claudeBinaryOverride, claudeMode);
                     client.setTaskProcesses(claudeTaskProcesses);
                     client.setFollowUpListener(followUpMarkers(claudeFollowUpListener));
+                    client.setInjectionListener(claudeInjectionListener);
                     claudeServeClient = client;
                 }
             }
@@ -1538,6 +1629,21 @@ public class DirectLlmClient implements AutoCloseable {
             conversationHistory.clear();
             resetOpenCodeClient();
             resetClaudeClient();
+        }
+    }
+
+    /**
+     * Reproject wire history without ending Claude Code's session or its task
+     * controls. Provider switching is not chat disposal: the retained process
+     * keeps its input, task bridge and follow-up listener until close/new session.
+     * If Claude is selected again, its next message receives the rebuilt
+     * conversation so it also sees the work done through other providers.
+     */
+    public void clearHistoryForProviderSwitch() {
+        synchronized (historyLock) {
+            conversationHistory.clear();
+            resetOpenCodeClient();
+            claudeNeedsSeed = true;
         }
     }
 
@@ -2515,7 +2621,7 @@ public class DirectLlmClient implements AutoCloseable {
                     return result;
                 }
                 String body = readResponseBody(response.body());
-                if (recordKnownProviderFailure(result, response.statusCode(), body)) return result;
+                if (recordKnownProviderFailure(result, response.statusCode(), body, response.headers())) return result;
                 if (nativeCompaction && (response.statusCode() == 400
                         || response.statusCode() == 404 || response.statusCode() == 422)
                         && !isContextOverflowFailure(response.statusCode(), body)) {
@@ -2833,7 +2939,9 @@ public class DirectLlmClient implements AutoCloseable {
                         ResponsesToolCallAccumulator accumulator =
                                 state.toolCalls.computeIfAbsent(
                                         outputIndex, ignored -> new ResponsesToolCallAccumulator());
-                        accumulator.arguments.append(event.path("delta").asText(""));
+                        String argumentsDelta = event.path("delta").asText("");
+                        accumulator.arguments.append(argumentsDelta);
+                        reportToolInputDelta(argumentsDelta);
                     }
                     case "response.function_call_arguments.done" -> {
                         ResponsesToolCallAccumulator accumulator =
@@ -3164,7 +3272,7 @@ public class DirectLlmClient implements AutoCloseable {
                     return result;
                 }
                 String body = readResponseBody(response.body());
-                if (recordKnownProviderFailure(result, response.statusCode(), body)) return result;
+                if (recordKnownProviderFailure(result, response.statusCode(), body, response.headers())) return result;
                 String error = extractErrorMessage(body) + ProviderResponseFailure.diagnostics(body, response.headers());
                 String finalMessage = "[Radius API error " + response.statusCode()
                         + ": " + error + "]";
@@ -3429,10 +3537,13 @@ public class DirectLlmClient implements AutoCloseable {
                         accumulator.callId = event.path("id").asText(null);
                         accumulator.name = event.path("toolName").asText(null);
                     }
-                    case "toolcall_delta" ->
-                            accumulators.computeIfAbsent(
-                                            contentIndex, ignored -> new ResponsesToolCallAccumulator())
-                                    .arguments.append(event.path("delta").asText(""));
+                    case "toolcall_delta" -> {
+                        String argumentsDelta = event.path("delta").asText("");
+                        accumulators.computeIfAbsent(
+                                        contentIndex, ignored -> new ResponsesToolCallAccumulator())
+                                .arguments.append(argumentsDelta);
+                        reportToolInputDelta(argumentsDelta);
+                    }
                     case "toolcall_end" -> {
                         JsonNode toolCall = event.path("toolCall");
                         ResponsesToolCallAccumulator accumulator =
@@ -4091,7 +4202,7 @@ public class DirectLlmClient implements AutoCloseable {
                     return;
                 }
                 String body = readResponseBody(response.body());
-                if (recordKnownProviderFailure(result, response.statusCode(), body)) return;
+                if (recordKnownProviderFailure(result, response.statusCode(), body, response.headers())) return;
                 String error = extractErrorMessage(body) + ProviderResponseFailure.diagnostics(body, response.headers());
                 String finalMessage = "[LLM API error " + response.statusCode()
                         + ": " + error + "]";
@@ -4439,7 +4550,10 @@ public class DirectLlmClient implements AutoCloseable {
                             if (name != null) acc.name = name;
 
                             String args = tcDelta.path("function").path("arguments").asText(null);
-                            if (args != null) acc.arguments.append(args);
+                            if (args != null) {
+                                acc.arguments.append(args);
+                                reportToolInputDelta(args);
+                            }
                         }
                     }
 
@@ -4610,7 +4724,7 @@ public class DirectLlmClient implements AutoCloseable {
                     return result;
                 }
                 String body = readResponseBody(response.body());
-                if (recordKnownProviderFailure(result, response.statusCode(), body)) return result;
+                if (recordKnownProviderFailure(result, response.statusCode(), body, response.headers())) return result;
                 if (nativeCompaction && (response.statusCode() == 400
                         || response.statusCode() == 404 || response.statusCode() == 422)
                         && !isContextOverflowFailure(response.statusCode(), body)) {
@@ -4960,6 +5074,7 @@ public class DirectLlmClient implements AutoCloseable {
                             } else if ("input_json_delta".equals(deltaType)) {
                                 String partial = delta.path("partial_json").asText("");
                                 currentToolArgs.append(partial);
+                                reportToolInputDelta(partial);
                             } else if ("compaction_delta".equals(deltaType)) {
                                 compactionSummary.append(delta.path("content").asText(""));
                             }
@@ -5286,9 +5401,20 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private boolean recordKnownProviderFailure(StreamResult result, int status, String body) {
+        return recordKnownProviderFailure(result, status, body, HttpHeaders.of(Map.of(), (name, value) -> true));
+    }
+
+    private boolean recordKnownProviderFailure(StreamResult result, int status, String body, HttpHeaders headers) {
         FailureKind kind = ProviderResponseFailure.classify(config.getProvider(), status, body);
         if (kind == FailureKind.NONE) return false;
         recordTerminalOutcome(result, kind, status);
+        if (kind == FailureKind.QUOTA_EXHAUSTED) {
+            // The handler needs the business code and reset time, not the generic
+            // billing guidance. Retain bounded allowlisted diagnostics only.
+            String detail = ProviderResponseFailure.diagnostics(body, headers);
+            result.failureMessage += detail;
+            result.text += detail;
+        }
         return true;
     }
 

@@ -35,11 +35,25 @@ import java.util.List;
  * <p>The {@link #phase} field distinguishes layered records:</p>
  * <ul>
  *   <li>{@code JUDGE_TURN} / {@code JUDGE_PARTIAL} / {@code JUDGE_TOOL} — a raw LLM judge call
- *       (carries {@link #judgeRawResponse} + {@link #latencyMs}); the judge transcript.</li>
+ *       (carries {@link #judgeRawResponse} + {@link #latencyMs}); the judge transcript. A
+ *       {@code JUDGE_TOOL} record with {@code judgeMode=policy} was decided by deterministic
+ *       policy before any model call; its raw response names the policy.</li>
  *   <li>{@code JUDGE_CHAT} — a /judge chat exchange with the judge (verdict fields are
  *       neutral; the raw response holds the judge's conversational reply).</li>
+ *   <li>{@code JUDGE_DIRECTION} — a direction-judge check of whether the agent is on track.</li>
  *   <li>{@code ATTEMPT} — a non-LLM (keyword) per-attempt decision.</li>
  *   <li>{@code RESULT} — the final enforcement outcome for a turn ({@link #status}).</li>
+ *   <li>{@code SWAP} — the resilient judge backend swapped judge models after a failure.</li>
+ *   <li>{@code CONTROL} — a user change to the judge posture ({@code judgeMode=user});
+ *       {@link #status} names the action ({@code OVERRIDE_ARMED}, {@code OVERRIDE_DISARMED},
+ *       {@code APPROVAL_SET}, {@code APPROVAL_CLEARED}, {@code GUIDANCE_SET},
+ *       {@code GUIDANCE_CLEARED}, {@code JUDGE_ENABLED}, {@code JUDGE_DISABLED}) and
+ *       {@link #reasoning} the detail.</li>
+ *   <li>{@code OVERRIDE} — a call or turn that a user decision let through ({@code judgeMode=user}):
+ *       {@code status=APPROVED} when an explicit command approval skipped judge review, or
+ *       {@code status=OVERRIDDEN} when the report-only override neutralized a verdict. An
+ *       {@code OVERRIDDEN} record keeps that verdict ({@code compliant=false}, severity,
+ *       violations) with {@code stop=false}, because nothing was stopped.</li>
  * </ul>
  */
 @Data
@@ -56,13 +70,13 @@ public class JudgementRecord {
     /** Owning session id (e.g. {@code enforcer-1a2b3c4d}). */
     private String sessionId;
 
-    /** JUDGE_TURN | JUDGE_PARTIAL | JUDGE_TOOL | JUDGE_CHAT | ATTEMPT | RESULT. */
+    /** JUDGE_TURN | JUDGE_PARTIAL | JUDGE_TOOL | JUDGE_CHAT | JUDGE_DIRECTION | ATTEMPT | RESULT | SWAP | CONTROL | OVERRIDE. */
     private String phase;
 
     /** 1-based correction attempt, or 0 when not applicable. */
     private int attempt;
 
-    /** {@code llm} or {@code keyword}. */
+    /** {@code llm}, {@code keyword}, {@code policy} (deterministic, no model call), or {@code user} (a user decision). */
     private String judgeMode;
 
     /** Judge backend identity ({@code evaluator.describe()}). */
@@ -81,13 +95,16 @@ public class JudgementRecord {
     private String correctionPrompt;
     private String reasoning;
 
-    /** Final enforcement status (RESULT phase only): ACCEPTED | BLOCKED | UNAVAILABLE | ERROR. */
+    /**
+     * RESULT: the final enforcement status (ACCEPTED | BLOCKED | UNAVAILABLE | ERROR).
+     * CONTROL: the user action. OVERRIDE: APPROVED | OVERRIDDEN.
+     */
     private String status;
 
     private String userPromptExcerpt;
     private String agentOutputExcerpt;
 
-    /** Tool name (JUDGE_TOOL phase only). */
+    /** Tool name (JUDGE_TOOL records, and OVERRIDE records for a tool call). */
     private String toolName;
 
     /** Raw judge response text (JUDGE_* phases); truncated. This is the LLM judge transcript. */

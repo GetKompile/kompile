@@ -124,6 +124,21 @@ public final class SyncPeerStore {
         return map;
     }
 
+    /** Reject baseline reuse across different local/remote profile mounts. */
+    void validateBaselineMounts(String peer, SyncScope scope, String identity) throws IOException {
+        Path file = baselineFile(peer, scope);
+        if (!Files.isRegularFile(file)) return;
+        JsonNode root = MAPPER.readTree(file.toFile());
+        String previous = root.path("meta").path("mountIdentity").asText("");
+        boolean legacyHarness = loadBaseline(peer, scope).keySet().stream()
+                .anyMatch(k -> k.startsWith(SyncCatalog.HARNESS_SETTINGS + "/")
+                        || k.startsWith(SyncCatalog.HARNESS_CREDENTIALS + "/"));
+        if ((!previous.isEmpty() && !previous.equals(identity)) || (previous.isEmpty() && legacyHarness)) {
+            throw new IOException("Sync profile mounts differ from this peer's baseline; nothing was transferred. "
+                    + "Register a separate peer name for different profiles.");
+        }
+    }
+
     /** Persists the post-sync baseline for a peer+scope. */
     public void saveBaseline(String peer, SyncScope scope, Map<String, String> baseline,
                              Map<String, String> meta) throws IOException {

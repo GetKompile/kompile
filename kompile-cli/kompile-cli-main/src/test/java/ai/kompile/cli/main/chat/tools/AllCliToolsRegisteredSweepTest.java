@@ -231,7 +231,7 @@ class AllCliToolsRegisteredSweepTest {
                     "edit_coordinator", "sessions", "explore",
                     "config_archive", "project_config", "enforcer_config",
                     "test_milestone", "code_search", "code_graph",
-                    "local_code_index", "tool_call_catalog", "server_mode",
+                    "local_code_index", "tool_call_catalog", "insights", "server_mode",
                     "skill_manager", "resume", "role_manager");
             assertTrue(registry.ids().containsAll(expected),
                     "Live chat registry is missing bundled tools: "

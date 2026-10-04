@@ -413,6 +413,15 @@ class ProjectLocalLearningSubprocessExecutorTest {
         assertEquals(Set.of("r2"),
                 ProjectLocalLearningSubprocessExecutor.learningProjectedRelationIds(graph));
 
+        graph.addEntity("alice,bob", "PERSON", "Ambiguous")
+                .addRelation("ambiguous", "alice,bob", "bob", "KNOWS", 0.8);
+        graph.putModel(UnifiedGraphReasoningLifecycle.CONSENSUS_TARGETS_ARTIFACT,
+                new java.util.LinkedHashMap<>(Map.of(
+                        "KNOWS(alice,bob)", 0.7,
+                        "KNOWS(alice,bob,bob)", 0.9)));
+        assertEquals(Set.of("r2"),
+                ProjectLocalLearningSubprocessExecutor.learningProjectedRelationIds(graph));
+
         graph.putArtifact(UnifiedGraphReasoningLifecycle.CONSENSUS_TARGETS_ARTIFACT,
                 new byte[]{1, 2, 3});
         assertEquals(Set.of(),

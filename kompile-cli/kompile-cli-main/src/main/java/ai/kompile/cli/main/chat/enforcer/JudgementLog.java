@@ -45,6 +45,9 @@ import java.util.stream.Stream;
  */
 public class JudgementLog {
 
+    /** Per-session log file name, under {@code ~/.kompile/sessions/<sessionId>/}. */
+    public static final String FILE_NAME = "judgements.jsonl";
+
     private static final int MAX_EXCERPT_CHARS = 1_200;
     private static final int MAX_RAW_CHARS = 8_000;
 
@@ -81,7 +84,7 @@ public class JudgementLog {
     }
 
     public static Path fileFor(String sessionId) {
-        return sessionDir(sessionId).resolve("judgements.jsonl");
+        return sessionDir(sessionId).resolve(FILE_NAME);
     }
 
     public String getSessionId() {
@@ -174,7 +177,7 @@ public class JudgementLog {
         try (Stream<Path> dirs = Files.list(root)) {
             return dirs
                     .filter(Files::isDirectory)
-                    .filter(d -> Files.exists(d.resolve("judgements.jsonl")))
+                    .filter(d -> Files.exists(d.resolve(FILE_NAME)))
                     .sorted(Comparator.comparingLong(JudgementLog::lastModified).reversed())
                     .map(d -> d.getFileName().toString())
                     .toList();
@@ -185,10 +188,15 @@ public class JudgementLog {
 
     private static long lastModified(Path dir) {
         try {
-            return Files.getLastModifiedTime(dir.resolve("judgements.jsonl")).toMillis();
+            return Files.getLastModifiedTime(dir.resolve(FILE_NAME)).toMillis();
         } catch (IOException e) {
             return 0L;
         }
+    }
+
+    /** Clamps free text that {@link #record} does not clamp itself, such as reasoning. */
+    static String clampExcerpt(String s) {
+        return clamp(s, MAX_EXCERPT_CHARS);
     }
 
     private static String clamp(String s, int max) {

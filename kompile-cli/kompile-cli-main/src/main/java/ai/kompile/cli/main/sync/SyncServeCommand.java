@@ -37,8 +37,8 @@ import java.util.concurrent.Callable;
  * </pre>
  *
  * <p>The endpoint speaks JSON-lines, never opens a listening socket, and exits
- * when stdin closes. All writes are confined to component roots under the
- * selected home.</p>
+ * when stdin closes. Writes are confined to selected component mounts,
+ * including exact opt-in external harness files.</p>
  */
 @Command(name = "serve",
         mixinStandardHelpOptions = true,
@@ -48,7 +48,10 @@ public class SyncServeCommand implements Callable<Integer> {
     @Option(names = "--home", description = "Scope root to serve (default: current kompile home).")
     private Path home;
 
-    @Option(names = "--components", split = ",", description = "Component families to expose.")
+    @Option(names = "--user-home", description = "External harness user home; explicit values ignore provider home environment overrides.")
+    private Path userHome;
+
+    @Option(names = "--components", split = ",", description = "Component families to expose (harness settings/credentials are opt-in).")
     private java.util.List<String> components;
 
     @Option(names = "--scope", defaultValue = "global",
@@ -57,7 +60,7 @@ public class SyncServeCommand implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-        Path root = home != null ? home.toAbsolutePath().normalize()
+        Path root = home != null ? SyncPaths.expandHome(home).toAbsolutePath().normalize()
                 : ai.kompile.cli.common.KompileHome.homeDirectory().toPath();
         if ("project".equalsIgnoreCase(scope) && !root.endsWith(".kompile")) {
             // Allow passing the project root; serve its .kompile directory.
@@ -65,7 +68,8 @@ public class SyncServeCommand implements Callable<Integer> {
         }
         List<String> allowed = SyncCatalog.validate(components);
 
-        var handler = SyncServeHandler.create(root, allowed, line ->
+        if (SyncCatalog.includesHarness(allowed)) System.err.println(SyncCatalog.HARNESS_WARNING);
+        var handler = SyncServeHandler.create(SyncPaths.configured(root, scope, userHome), allowed, line ->
                 System.err.println("[kompile-sync] " + line));
 
         var reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));

@@ -47,7 +47,12 @@
 
   <!-- ── Tab content ─────────────────────────────────────────────────────── -->
   <div class="tab-content-area">
-    <div *ngIf="!activeFactSheet" class="no-fact-sheet-state" role="status">
+    <div *ngIf="openingLinkedSheet" class="linked-sheet-bar" role="status">
+      <mat-icon class="linked-sheet-icon">hourglass_empty</mat-icon>
+      <span class="linked-sheet-text">Opening fact sheet…</span>
+    </div>
+
+    <div *ngIf="!openingLinkedSheet && !shownSheet" class="no-fact-sheet-state" role="status">
       <mat-icon class="no-fact-sheet-icon">note_add</mat-icon>
       <h3>Create a fact sheet to start building your graph</h3>
       <p>
@@ -60,17 +65,27 @@
       </button>
     </div>
 
-    <ng-container *ngIf="activeFactSheet">
+    <ng-container *ngIf="shownSheet as sheet">
+      <div *ngIf="linkedFactSheet" class="linked-sheet-bar" role="status">
+        <mat-icon class="linked-sheet-icon">link</mat-icon>
+        <span class="linked-sheet-text">
+          Showing <strong>{{ sheet.name }}</strong> from a link. Chat and crawls still use the active
+          fact sheet{{ activeFactSheet ? ', ' + activeFactSheet.name : '' }}.
+        </span>
+        <button mat-button color="primary" class="show-active-sheet-btn" (click)="showActiveSheet()">
+          Show the active sheet
+        </button>
+      </div>
       <div *ngIf="activeTab === 'visualizer'" class="graph-explore-panel">
         <app-graph-visualizer
-          [factSheetId]="activeFactSheet?.id || null"
-          [factSheetName]="activeFactSheet?.name || ''"
+          [factSheetId]="sheet.id"
+          [factSheetName]="sheet.name || ''"
           [focusNodeId]="focusNodeId">
         </app-graph-visualizer>
       </div>
       <div *ngIf="activeTab === 'hierarchy'" class="graph-explore-panel">
         <app-graph-hierarchy
-          [factSheetId]="activeFactSheetId"
+          [factSheetId]="sheet.id"
           (navigateToGraph)="onNavigateToGraph($event)"
           (viewSubGraph)="onNavigateToGraph($event)">
         </app-graph-hierarchy>
@@ -79,10 +94,10 @@
         <app-graph-overview></app-graph-overview>
       </div>
       <div *ngIf="activeTab === 'communities'">
-        <app-community-panel [factSheetId]="activeFactSheetId"></app-community-panel>
+        <app-community-panel [factSheetId]="sheet.id"></app-community-panel>
       </div>
       <div *ngIf="activeTab === 'coverage'">
-        <app-partition-coverage-panel [factSheetId]="activeFactSheetId"></app-partition-coverage-panel>
+        <app-partition-coverage-panel [factSheetId]="sheet.id"></app-partition-coverage-panel>
       </div>
     </ng-container>
   </div>

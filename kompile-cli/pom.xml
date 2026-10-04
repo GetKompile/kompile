@@ -36,6 +36,7 @@
         <module>kompile-model-cli</module>
         <module>kompile-agent-cli</module>
         <module>kompile-component-cli</module>
+        <module>kompile-cli-insights</module>
         <module>kompile-cli-main</module>
     </modules>
 

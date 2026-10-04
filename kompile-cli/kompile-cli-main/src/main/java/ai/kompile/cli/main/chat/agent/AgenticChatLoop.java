@@ -1062,6 +1062,10 @@ public class AgenticChatLoop {
      * @return number of provider-neutral messages replayed
      */
     public int rebuildDirectHistoryForProviderSwitch() {
+        return rebuildDirectHistoryForProviderSwitch(false);
+    }
+
+    private int rebuildDirectHistoryForProviderSwitch(boolean keepClaudeProcess) {
         if (directLlmClient == null) {
             return 0;
         }
@@ -1077,10 +1081,14 @@ public class AgenticChatLoop {
                 && checkpoint.provider().equalsIgnoreCase(
                         directLlmClient.getConfiguredProvider())
                 && Objects.equals(checkpoint.model(), effectiveModel);
+        if (keepClaudeProcess) {
+            directLlmClient.clearHistoryForProviderSwitch();
+        }
         if (restoredNative) {
             directLlmClient.replaceHistoryWithNativeCheckpoint(checkpoint.nativePayload());
         }
-        return rebuildDirectHistory(snapshot.activeEntries(), !restoredNative, restoredNative);
+        return rebuildDirectHistory(snapshot.activeEntries(),
+                !restoredNative && !keepClaudeProcess, restoredNative);
     }
 
     /**
@@ -1089,7 +1097,8 @@ public class AgenticChatLoop {
      * provider holds the conversation in its own session (Claude Code,
      * OpenCode), the session stays: its process and the tasks it runs survive,
      * and the next turn applies the new model to it. Any other change rebuilds
-     * the wire history for the new route, as a provider switch does.
+     * the wire history for the new route, as a provider switch does. Claude's
+     * process remains owned by this chat even while another route is selected.
      *
      * @param applySettings changes the direct client's chat config
      */
@@ -1111,7 +1120,9 @@ public class AgenticChatLoop {
             return new DirectSettingsChange(
                     conversationLedger.snapshot().activeEntries().size(), true);
         }
-        return new DirectSettingsChange(rebuildDirectHistoryForProviderSwitch(), false);
+        // Wire envelopes must change, but Claude's background tasks still belong
+        // to this chat and remain controllable in its process panel.
+        return new DirectSettingsChange(rebuildDirectHistoryForProviderSwitch(true), false);
     }
 
     /**
@@ -1154,7 +1165,16 @@ public class AgenticChatLoop {
             boolean skipPortableSummary,
             boolean closeDanglingToolCalls,
             String replayModel) {
-        if (clearHistory) directLlmClient.clearHistory();
+        if (clearHistory) {
+            if (directLlmClient.resolveRoute(replayModel).protocol()
+                    == DirectLlmClient.WireProtocol.CLAUDE_CLI) {
+                directLlmClient.clearHistory();
+            } else {
+                // Replaying/compacting another provider must not dispose the
+                // retained Claude process and the tasks it still owns.
+                directLlmClient.clearHistoryForProviderSwitch();
+            }
+        }
         int replayed = 0;
         // Tool calls interrupted before execution have no durable result. Wire
         // APIs reject an unanswered tool envelope, so each pending call is held
@@ -2491,6 +2511,9 @@ public class AgenticChatLoop {
                         if (!decision.isCompliant()) {
                             emitLine(renderer.yellow("[judge] (overridden) would flag: "
                                     + String.join("; ", decision.getViolations())));
+                            if (judgeControl != null) {
+                                judgeControl.recordReportOnlyOverride(decision);
+                            }
                         }
                     } else if (!decision.isCompliant()) {
                         String violations = String.join("; ", decision.getViolations());
@@ -3086,6 +3109,9 @@ public class AgenticChatLoop {
                         mandate.getCorrectionPrompt(), true);
             }
             emitInlineEnforcerActivity("[user command approval] " + toolName + " " + toolInput);
+            if (judgeControl != null) {
+                judgeControl.recordApprovalUsed(activeJudgeSnapshot, toolName, toolInput);
+            }
             return new ToolInterception(arguments, "user approval", "", "", false);
         }
         NamedToolDecision enforcement = null;
@@ -3874,6 +3900,8 @@ public class AgenticChatLoop {
         AtomicLong reportedOutput = new AtomicLong();
         AtomicLong reportedCacheRead = new AtomicLong();
         AtomicLong reportedCacheCreation = new AtomicLong();
+        // Claude Code output usage, which replaced the foreground estimate as it arrived.
+        AtomicLong liveOutput = new AtomicLong();
         ForegroundRequestProgress requestProgress = foregroundProgress;
         long progressSequence = requestProgress == null ? -1 : requestProgress.sequence();
         directLlmClient.setOutputConsumer(sessionContext.wrapConsumer(chunk -> {
@@ -3956,6 +3984,17 @@ public class AgenticChatLoop {
                     }
 
                     @Override
+                    public void onToolInputDelta(String delta) {
+                        sessionContext.wrap(() -> {
+                            // Tool arguments are output; estimated until usage settles them.
+                            if (requestProgress != null) requestProgress.recordTextDelta(progressSequence, delta);
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onToolInputDelta(delta);
+                            }
+                        }).run();
+                    }
+
+                    @Override
                     public void onToolComplete(String callId, String name, String output,
                                                int exitCode, boolean error) {
                         sessionContext.wrap(() -> {
@@ -4012,8 +4051,14 @@ public class AgenticChatLoop {
                             if (sessionMetrics != null) {
                                 sessionMetrics.recordTokenUsage(input, output, cacheRead, cacheCreation);
                             }
-                            // A usage callback can be an incomplete snapshot or precede
-                            // REST fallback text. Settle foreground output at return below.
+                            // Claude Code reports each request's output as the request
+                            // runs, counted once, so it replaces that request's estimate
+                            // at once. Other routes' callbacks can be incomplete snapshots
+                            // or precede REST fallback text; they settle at return below.
+                            if (claudeCliRoute && requestProgress != null && output > 0) {
+                                requestProgress.recordExactOutput(progressSequence, output);
+                                liveOutput.addAndGet(output);
+                            }
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onTokenUsage(
                                         input, output, cacheRead, cacheCreation);
@@ -4121,7 +4166,9 @@ public class AgenticChatLoop {
                     || reportedCacheRead.get() > 0 || reportedCacheCreation.get() > 0
                     || remainingInput > 0 || remainingOutput > 0
                     || remainingCacheRead > 0 || remainingCacheCreation > 0;
-            long output = directResult.outputTokens + directResult.compactionOutputTokens;
+            // Output already settled live is not counted again.
+            long output = Math.max(0, directResult.outputTokens
+                    + directResult.compactionOutputTokens - liveOutput.get());
             // Failed/cancelled streams can report only message_start usage. Keep
             // the estimate as well as that lower bound, never label it exact.
             if (!hasUsage || directResult.failed || directResult.cancelled) {

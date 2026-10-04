@@ -212,6 +212,8 @@ public class ToolRegistryFactory {
         registry.register(new KnowledgeStatusCliTool(baseUrl, objectMapper));
         registry.register(new DiffIndexTool(baseUrl, objectMapper));
         registry.register(new ToolCallCatalogTool());
+        // Crawls and graphs are read from where the crawl and knowledge-graph tools read them.
+        registry.register(new InsightsTool(crawlBaseUrl, baseUrl));
         registry.register(new RagSearchTool(baseUrl, objectMapper));
         registry.register(new GraphRagSearchTool(baseUrl, objectMapper));
         registry.register(new GraphAggregateTool(baseUrl, objectMapper));

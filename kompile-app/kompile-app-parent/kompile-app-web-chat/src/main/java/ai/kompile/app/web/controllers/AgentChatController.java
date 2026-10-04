@@ -308,6 +308,27 @@ public class AgentChatController {
     }
 
     /**
+     * The session's insights for the chat drawer: the rows the terminal's dashboard area shows
+     * (judge flags, tool calls, the last test milestone, crawl progress), read through the CLI
+     * by one short-lived process. Read-only: no chat message, no model work, no transcript
+     * entry. {@code live} asks the drawer to refresh sooner while a crawl runs.
+     */
+    @GetMapping("/session-insights")
+    public ResponseEntity<JsonNode> sessionInsights(
+            @RequestParam(required = false) String sessionId,
+            @RequestParam(required = false) String workingDirectory) {
+        if (harnessClient == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Kompile CLI harness is unavailable");
+        }
+        try {
+            return ResponseEntity.ok(harnessClient.insightsSnapshot(sessionId, workingDirectory));
+        } catch (IllegalStateException unavailable) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, unavailable.getMessage());
+        }
+    }
+
+    /**
      * Approves a gate of the session's workflow team between runs, as {@code /workflow approve}
      * does in the terminal; a run in progress takes approvals through its live controls
      * ({@code workflow_approve}). Body: {@code sessionId}, optional {@code workingDirectory} and

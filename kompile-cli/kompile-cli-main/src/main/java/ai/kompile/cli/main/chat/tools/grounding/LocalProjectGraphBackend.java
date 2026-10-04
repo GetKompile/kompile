@@ -51,6 +51,7 @@ import ai.kompile.graph.reasoning.lifecycle.FinalGraphLearningResolutionPipeline
 import ai.kompile.graph.reasoning.lifecycle.FinalGraphLearningResolutionPipeline.LearningOutcome;
 import ai.kompile.graph.reasoning.lifecycle.FinalGraphLearningResolutionPipeline.ResolutionOutcome;
 import ai.kompile.graph.reasoning.lifecycle.FinalGraphLearningResolutionPipeline.Result;
+import ai.kompile.graph.reasoning.lifecycle.ConsensusTargetsArtifactCodec;
 import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
 import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle.Config;
 import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle.Summary;
@@ -1378,13 +1379,30 @@ public final class LocalProjectGraphBackend {
 
   private ToolResult localFactSheetInventory(ToolContext context) throws Exception {
     Path root = this.projectRoot(context.getWorkingDirectory());
-    ArrayNode factSheets = this.mapper.createArrayNode();
     ArrayNode warnings = this.mapper.createArrayNode();
+    ArrayNode factSheets = this.factSheetInventory(context.getWorkingDirectory(), warnings);
+
+    ObjectNode result = this.mapper.createObjectNode();
+    result.put("backend", "project-local");
+    result.put("projectRoot", root.toString());
+    result.put("count", factSheets.size());
+    result.put("skippedUnreadableGraphs", warnings.size());
+    result.set("factSheets", factSheets);
+    result.set("warnings", warnings);
+    return this.localSuccess("list_fact_sheets", result);
+  }
+
+  /**
+   * The project's knowledge bases: crawl summaries first, then graphs from crawls that wrote no
+   * summary. An unreadable graph is skipped and described in {@code warnings}. Reads only.
+   */
+  ArrayNode factSheetInventory(Path workingDirectory, ArrayNode warnings) throws IOException {
+    Path root = this.projectRoot(workingDirectory);
+    ArrayNode factSheets = this.mapper.createArrayNode();
     Set<String> seen = new LinkedHashSet<>();
 
     for (JsonNode candidate :
-        new LocalProjectCrawlBackend(this.mapper, this)
-            .knowledgeBaseInventory(context.getWorkingDirectory())) {
+        new LocalProjectCrawlBackend(this.mapper, this).knowledgeBaseInventory(workingDirectory)) {
       if (candidate.isObject()) {
         ObjectNode item = (ObjectNode) candidate.deepCopy();
         String id = item.path("id").asText("");
@@ -1443,14 +1461,7 @@ public final class LocalProjectGraphBackend {
       }
     }
 
-    ObjectNode result = this.mapper.createObjectNode();
-    result.put("backend", "project-local");
-    result.put("projectRoot", root.toString());
-    result.put("count", factSheets.size());
-    result.put("skippedUnreadableGraphs", warnings.size());
-    result.set("factSheets", factSheets);
-    result.set("warnings", warnings);
-    return this.localSuccess("list_fact_sheets", result);
+    return factSheets;
   }
 
   private ToolResult localGraphInventory(String action, ToolContext context) throws Exception {
@@ -2298,7 +2309,7 @@ public final class LocalProjectGraphBackend {
             + " is reported for reference and does not decide the verdict",
             learnedScore, this.relationAtom(opinionRelation), opinion.uncertainty())
         : learnedScore != null
-            ? String.format(Locale.ROOT, "; learned score %.3f (the PSL/MEBN value learned for this atom)"
+            ? String.format(Locale.ROOT, "; learned score %.3f (the stored consensus training target, not a fresh query posterior)"
                 + " is reported for reference and does not decide the verdict", learnedScore)
             : learnedApplies && !opinionsFresh && UnifiedGraphReasoningLifecycle.hasLearnedState(graph)
                 ? "; learning is stale (meta.stale), so learned scores are withheld until learning reruns"
@@ -2324,7 +2335,9 @@ public final class LocalProjectGraphBackend {
       result.put("learnedScore", learnedScore);
     }
     if (posterior != null) {
-      result.put("learnedPosterior", posterior);
+      result.put("learnedPosterior", posterior); // Compatibility alias, not a query posterior.
+      result.put("consensusTrainingTarget", posterior);
+      result.put("consensusSemantics", "training-targets");
     }
     if (opinionRelation != null) {
       ObjectNode stored = result.putObject("relationOpinion");
@@ -2600,18 +2613,31 @@ public final class LocalProjectGraphBackend {
   }
 
   /**
-   * Look up the learned PSL/MEBN posterior for an atom in the graph's consensusTargets model
-   * (reasoning/consensus-targets.bin, written by the crawl-end learning subprocess). Returns null
-   * when no trained program is stored or the atom was not a learning target.
+   * Look up a stored consensus training target, not a fresh query posterior. Canonical JSON
+   * takes precedence; an invalid present snapshot never falls back to Java serialization.
+   * Legacy binary decoding remains desktop-only compatibility.
    */
   private Double learnedPosterior(
       UnifiedGraph graph, LocalProjectGraphBackend.Atom atom, List<GraphRelation> evidence) {
     if (staleCodeLearning(graph, "codeLearningGeneration.")) return null;
-    Object model = graph.model("reasoning/consensus-targets.bin");
-    if (!(model instanceof Map<?, ?> targets)) {
-      return null;
+    Map<?, ?> targets;
+    String snapshot = graph.artifactText(ConsensusTargetsArtifactCodec.ARTIFACT_NAME);
+    if (snapshot != null) {
+      try {
+        targets = ConsensusTargetsArtifactCodec.decode(snapshot).targets();
+      } catch (IllegalArgumentException invalid) {
+        return null; // Withhold invalid learned reference data; direct verification stays available.
+      }
+    } else {
+      Object model = graph.model("reasoning/consensus-targets.bin");
+      if (!(model instanceof Map<?, ?> legacy)) return null;
+      targets = legacy;
     }
     if (atom.args().size() == 2) {
+      if (atom.args().stream().anyMatch(id -> !UnifiedGraphReasoningLifecycle.isConsensusArgument(id))
+          || evidence.stream().anyMatch(relation ->
+              !UnifiedGraphReasoningLifecycle.isConsensusArgument(relation.sourceId())
+              || !UnifiedGraphReasoningLifecycle.isConsensusArgument(relation.targetId()))) return null;
       Object value = targets.get(atom.predicate() + "(" + atom.args().get(0) + ","
           + atom.args().get(1) + ")");
       if (value instanceof Number number) {
@@ -2621,7 +2647,9 @@ public final class LocalProjectGraphBackend {
       // try resolving both arguments through their stored entity ids.
       GraphEntity source = this.resolveEntity(graph, atom.args().get(0));
       GraphEntity target = this.resolveEntity(graph, atom.args().get(1));
-      if (source != null && target != null) {
+      if (source != null && target != null
+          && UnifiedGraphReasoningLifecycle.isConsensusArgument(source.id())
+          && UnifiedGraphReasoningLifecycle.isConsensusArgument(target.id())) {
         value = targets.get(atom.predicate() + "(" + source.id() + "," + target.id() + ")");
         if (value instanceof Number number) {
           return number.doubleValue();

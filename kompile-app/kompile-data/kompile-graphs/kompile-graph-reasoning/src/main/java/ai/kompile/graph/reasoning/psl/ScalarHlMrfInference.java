@@ -51,9 +51,15 @@ public class ScalarHlMrfInference implements HlMrfSolver {
 
         for (; iter < maxIterations; iter++) {
             Map<String, Double> grad = gradient(ground, values, targetSet, hardWeight);
-            double gradNorm2 = 0.0;
-            for (double g : grad.values()) gradNorm2 += g * g;
-            if (gradNorm2 <= tolerance * tolerance) {
+            // Projected stationarity also recognizes constrained optima on 0/1 boundaries.
+            if (grad.values().stream().anyMatch(g -> !Double.isFinite(g))) break;
+            double projectedChange = 0.0;
+            for (String target : targets) {
+                double value = values.get(target);
+                projectedChange = Math.max(projectedChange,
+                        Math.abs(clamp01(value - grad.getOrDefault(target, 0.0)) - value));
+            }
+            if (projectedChange <= tolerance) {
                 converged = true;
                 break;
             }
@@ -79,10 +85,8 @@ public class ScalarHlMrfInference implements HlMrfSolver {
                 }
                 step *= 0.5;
             }
-            if (!accepted) { // step underflow ⇒ already at the optimum
-                converged = true;
-                break;
-            }
+            // Exhausting backtracking is numerical failure, not evidence of an optimum.
+            if (!accepted) break;
             if (converged) break;
             step *= 1.5; // grow the step again for the next iteration
         }

@@ -1171,6 +1171,11 @@ final class ProjectLocalLearningSubprocessExecutor {
         }
         Set<String> ids = new LinkedHashSet<>();
         for (GraphRelation relation : graph.relations()) {
+            // Historical snapshots may contain ambiguous raw keys; they cannot establish ownership.
+            if (!UnifiedGraphReasoningLifecycle.isConsensusArgument(relation.sourceId())
+                    || !UnifiedGraphReasoningLifecycle.isConsensusArgument(relation.targetId())) {
+                continue;
+            }
             if (targets.containsKey(UnifiedGraphReasoningLifecycle.relationTargetKey(
                     relation.type(), relation.sourceId(), relation.targetId()))) {
                 ids.add(relation.id());

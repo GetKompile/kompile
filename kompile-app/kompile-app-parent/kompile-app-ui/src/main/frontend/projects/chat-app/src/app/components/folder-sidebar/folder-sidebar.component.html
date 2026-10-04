@@ -18,7 +18,10 @@
   <div class="error-message" *ngIf="error">
     <mat-icon>error</mat-icon>
     <span>{{ error }}</span>
-    <button mat-icon-button (click)="error = null">
+    <button mat-icon-button
+            (click)="error = null"
+            matTooltip="Dismiss error"
+            aria-label="Dismiss error">
       <mat-icon>close</mat-icon>
     </button>
   </div>

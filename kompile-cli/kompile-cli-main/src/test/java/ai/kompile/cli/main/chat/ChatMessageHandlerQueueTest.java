@@ -20,10 +20,13 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -40,6 +43,129 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @TemporaryUserHome
 class ChatMessageHandlerQueueTest {
+
+    @Test
+    void quotaWakeResumesTheSameVendorAndPreservesTheRetryBudget() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        CountDownLatch fourRequests = new CountDownLatch(4);
+        List<String> prompts = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/", exchange -> {
+            try {
+                JsonNode request = JsonUtils.standardMapper().readTree(exchange.getRequestBody());
+                JsonNode messages = request.path("messages");
+                prompts.add(messages.get(messages.size() - 1).path("content").asText());
+                requests.incrementAndGet();
+                fourRequests.countDown();
+                byte[] body = ("{\"error\":{\"type\":\"usage_limit_reached\","
+                        + "\"message\":\"Usage limit reached\",\"resets_in_seconds\":1}}")
+                        .getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(429, body.length);
+                exchange.getResponseBody().write(body);
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        ChatConfig config = new ChatConfig("custom", null, "quota-test",
+                "http://127.0.0.1:" + server.getAddress().getPort());
+        ChatRepl repl = new ChatRepl(null, null, "quota-resume-" + System.nanoTime(),
+                false, "default", false, config);
+        ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+        try {
+            handler.handleChatMessage("resume this work");
+            assertTrue(fourRequests.await(10, TimeUnit.SECONDS), "quota resets did not resume the failed turn");
+            assertTrue(awaitCondition(() -> !repl.isLlmBusy(), 5, TimeUnit.SECONDS));
+            Thread.sleep(1_500);
+            assertEquals(4, requests.get(), "automatic dispatch must stop after three quota retries");
+            assertEquals(4, prompts.size());
+            assertTrue(prompts.stream().allMatch(prompt -> prompt.endsWith("resume this work")),
+                    "every wake must replay the failed prompt, with normal reminder injection");
+            assertEquals("custom", config.getProvider(), "quota wake must not switch providers");
+        } finally {
+            repl.close();
+            server.stop(0);
+            field(repl, "processManager", BackgroundProcessManager.class).close();
+            ChatCompleter.setActivity(null);
+        }
+    }
+
+    @Test
+    void busyMaintenanceOwnerDefersQuotaWakeUntilRelease() throws Exception {
+        verifyBusyQuotaWake(false);
+    }
+
+    @Test
+    void cancellingBusyOwnerAlsoCancelsItsDeferredQuotaWake() throws Exception {
+        verifyBusyQuotaWake(true);
+    }
+
+    private void verifyBusyQuotaWake(boolean cancel) throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        CountDownLatch request = new CountDownLatch(1);
+        CountDownLatch maintenanceStarted = new CountDownLatch(1);
+        CountDownLatch releaseMaintenance = new CountDownLatch(1);
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/", exchange -> {
+            // Chat probes the optional serving status endpoint before model work.
+            // It is not a resumed model request and must not consume this counter.
+            if (!"/chat/completions".equals(exchange.getRequestURI().getPath())) {
+                exchange.sendResponseHeaders(404, -1);
+                exchange.close();
+                return;
+            }
+            requests.incrementAndGet();
+            request.countDown();
+            exchange.getRequestBody().readAllBytes();
+            byte[] body = ("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"
+                    + "data: [DONE]\n\n").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, body.length);
+            try (var output = exchange.getResponseBody()) { output.write(body); }
+        });
+        server.start();
+        ChatRepl repl = new ChatRepl(null, null, "busy-quota-" + System.nanoTime(), false, "default", false,
+                new ChatConfig("custom", null, "quota-test", "http://127.0.0.1:" + server.getAddress().getPort()));
+        ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+        UsageLimitAutoContinue watchdog = field(handler, "usageLimitAutoContinue", UsageLimitAutoContinue.class);
+        Object dispatchLock = field(handler, "turnDispatchLock", Object.class);
+        Field deferred = ChatMessageHandler.class.getDeclaredField("deferredQuotaResume");
+        deferred.setAccessible(true);
+        try {
+            watchdog.onTurnFailure("usage_limit_reached; retry in 0 seconds", "resume this work", true);
+            assertTrue(handler.dispatchMaintenanceTurn(() -> {
+                maintenanceStarted.countDown();
+                try { releaseMaintenance.await(); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }, "quota-test-maintenance"));
+            assertTrue(maintenanceStarted.await(1, TimeUnit.SECONDS));
+            assertTrue(awaitCondition(() -> {
+                synchronized (dispatchLock) {
+                    try { return deferred.get(handler) != null; }
+                    catch (IllegalAccessException e) { throw new AssertionError(e); }
+                }
+            }, 4, TimeUnit.SECONDS), "busy owner discarded the due wake");
+            assertEquals(0, requests.get());
+            if (cancel) assertTrue(handler.requestCancel());
+            releaseMaintenance.countDown();
+            if (cancel) {
+                assertTrue(awaitCondition(() -> !handler.hasActiveTurn(), 3, TimeUnit.SECONDS));
+                assertFalse(request.await(1_500, TimeUnit.MILLISECONDS));
+                assertEquals(0, requests.get());
+            } else {
+                assertTrue(request.await(3, TimeUnit.SECONDS), "deferred wake did not dispatch on owner release");
+                assertTrue(awaitCondition(() -> !handler.hasActiveTurn(), 3, TimeUnit.SECONDS));
+                assertEquals(1, requests.get(), "deferral must not spend an additional retry");
+            }
+        } finally {
+            releaseMaintenance.countDown();
+            repl.close();
+            server.stop(0);
+            field(repl, "processManager", BackgroundProcessManager.class).close();
+            ChatCompleter.setActivity(null);
+        }
+    }
 
     @Test
     void activeTurnKeepsInputAvailableAndQueuesFollowUp() throws Exception {
@@ -1808,7 +1934,229 @@ class ChatMessageHandlerQueueTest {
         }
     }
 
-    /** A model endpoint that holds its first request until closed and answers the rest with "ok". */
+    @Test
+    void queuedEventsReachTheAgentTogetherInOneTurn() throws Exception {
+        try (RecordingProvider provider = new RecordingProvider()) {
+            ChatRepl repl = new ChatRepl(
+                    null, null, "event-batch-" + System.nanoTime(), false, "default", false,
+                    new ChatConfig("custom", null, "event-batch-test", provider.url()));
+            ChatMessageHandler handler = repl.messageHandler;
+            try {
+                repl.agenticLoop.setPerformanceHarness(null);
+                handler.handleChatMessage("batch-first");
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
+                handler.handleExternalMessage("[System process completion] batch-one");
+                handler.handleExternalMessage("[System process completion] batch-two");
+                assertTrue(Files.readString(handler.pendingEventsFile()).contains("batch-two"),
+                        "an event that waits for a turn is kept on disk");
+
+                provider.answerFirst();
+                assertTrue(awaitCondition(() -> provider.laterBodyContains("batch-two")
+                                && !repl.isLlmBusy(), 10, TimeUnit.SECONDS),
+                        () -> "the queued events were not delivered\n" + activeTurnStack(handler));
+                String delivery = provider.bodies.stream().skip(1)
+                        .filter(body -> body.contains("batch-one")).findFirst().orElseThrow();
+                assertTrue(delivery.contains("batch-two"),
+                        "both events go out in one request, not one turn each");
+                assertFalse(delivery.contains("Late delivery"), "a fresh event carries no age stamp");
+                assertFalse(Files.exists(handler.pendingEventsFile()),
+                        "delivered events leave nothing to deliver again");
+            } finally {
+                handler.shutdown();
+                repl.processManager.close();
+                ChatCompleter.setActivity(null);
+            }
+        }
+    }
+
+    @Test
+    void anEventTheChatNeverDeliveredReachesTheNextChatOnTheSession() throws Exception {
+        String sessionId = "event-persist-" + System.nanoTime();
+        try (RecordingProvider provider = new RecordingProvider()) {
+            ChatConfig config = new ChatConfig("custom", null, "event-persist-test", provider.url());
+            ChatRepl first = new ChatRepl(null, null, sessionId, false, "default", false, config);
+            ChatMessageHandler firstHandler = first.messageHandler;
+            Path pending = firstHandler.pendingEventsFile();
+            try {
+                first.agenticLoop.setPerformanceHarness(null);
+                firstHandler.handleChatMessage("persist-first");
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
+                firstHandler.handleExternalMessage("[System process completion] persist-event");
+            } finally {
+                // The chat ends while its turn still runs, before the event's turn.
+                firstHandler.shutdown();
+                first.processManager.close();
+            }
+            assertTrue(Files.readString(pending).contains("persist-event"),
+                    "the undelivered event outlives the chat that received it");
+
+            ChatRepl next = new ChatRepl(null, null, sessionId, false, "default", false, config);
+            ChatMessageHandler nextHandler = next.messageHandler;
+            try {
+                next.agenticLoop.setPerformanceHarness(null);
+                nextHandler.startAcceptingExternalMessages();
+                assertTrue(awaitCondition(() -> provider.laterBodyContains("persist-event")
+                                && !next.isLlmBusy(), 10, TimeUnit.SECONDS),
+                        () -> "the next chat did not deliver the event\n" + activeTurnStack(nextHandler));
+                assertFalse(Files.exists(pending), "a delivered event is not delivered again");
+            } finally {
+                nextHandler.shutdown();
+                next.processManager.close();
+                ChatCompleter.setActivity(null);
+            }
+        }
+    }
+
+    @Test
+    void anEventThatWaitedSaysWhenItArrived() throws Exception {
+        try (RecordingProvider provider = new RecordingProvider()) {
+            ChatRepl repl = new ChatRepl(
+                    null, null, "event-late-" + System.nanoTime(), false, "default", false,
+                    new ChatConfig("custom", null, "event-late-test", provider.url()));
+            ChatMessageHandler handler = repl.messageHandler;
+            Path pending = handler.pendingEventsFile();
+            Instant arrived = Instant.now().minus(Duration.ofHours(2));
+            try {
+                repl.agenticLoop.setPerformanceHarness(null);
+                Files.createDirectories(pending.getParent());
+                Files.writeString(pending, "{\"version\":1,\"events\":[{\"content\":"
+                        + "\"[System process completion] late-event\",\"receivedAt\":\""
+                        + arrived + "\"}]}");
+
+                handler.startAcceptingExternalMessages();
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS),
+                        "a restored event starts a turn by itself");
+                String body = provider.bodies.get(0);
+                assertTrue(body.contains("late-event"), body);
+                assertTrue(body.contains("[Late delivery: this event arrived at "
+                        + ChatMessageHandler.EVENT_TIME_FORMAT.format(arrived) + ", 2h"), body);
+                assertFalse(Files.exists(pending), "a delivered event is not delivered again");
+            } finally {
+                handler.shutdown();
+                repl.processManager.close();
+                ChatCompleter.setActivity(null);
+            }
+        }
+    }
+
+    @Test
+    void aProcessNoticeSaysWhenTheProcessEnded(@TempDir Path workDir) throws Exception {
+        BackgroundProcessManager processes = new BackgroundProcessManager("ended-notice", workDir);
+        try {
+            Instant ended = Instant.parse("2026-10-02T04:20:04Z");
+            BackgroundProcessManager.ProcessEntry entry = processes.upsertShared("shared-1",
+                    "mvn test", "targeted tests", 1L, ended.minus(Duration.ofMinutes(16)),
+                    BackgroundProcessManager.ProcessState.COMPLETED, 0, ended, null, Map.of());
+            String notice = ChatRepl.processCompletionNotice(entry,
+                    new BackgroundProcessManager.ProcessMonitor("proc-166", "", ended));
+            assertTrue(notice.contains("Process proc-166 finished"), notice);
+            assertTrue(notice.contains("\nEnded: "
+                    + ChatMessageHandler.EVENT_TIME_FORMAT.format(ended) + "\n"), notice);
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void anEventThatArrivesMidTurnGoesIntoTheRunningTurn() throws Exception {
+        try (RecordingProvider provider = new RecordingProvider()) {
+            ChatRepl repl = new ChatRepl(
+                    null, null, "event-inject-" + System.nanoTime(), false, "default", false,
+                    new ChatConfig("custom", null, "event-inject-test", provider.url()));
+            ChatMessageHandler handler = repl.messageHandler;
+            Path pending = handler.pendingEventsFile();
+            List<String> ids = new CopyOnWriteArrayList<>();
+            List<String> written = new CopyOnWriteArrayList<>();
+            handler.setRunningTurnInjector((id, text) -> {
+                ids.add(id);
+                written.add(text);
+                return true;
+            });
+            try {
+                repl.agenticLoop.setPerformanceHarness(null);
+                handler.handleChatMessage("inject-first");
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
+                handler.handleExternalMessage("[System process completion] inject-event");
+
+                assertEquals(1, written.size(), "the event goes into the running turn");
+                assertTrue(written.get(0).contains("inject-event"), written.get(0));
+                assertTrue(Files.readString(pending).contains("inject-event"),
+                        "the event stays on disk until the turn takes it in");
+                handler.handleExternalMessage("[System process completion] inject-event");
+                assertEquals(1, written.size(), "an event already in the turn is not written again");
+
+                handler.injectionDelivered(ids.get(0));
+                assertFalse(Files.exists(pending), "an event the turn took in is not delivered again");
+
+                provider.answerFirst();
+                assertTrue(awaitCondition(() -> !repl.isLlmBusy(), 10, TimeUnit.SECONDS),
+                        () -> "the turn did not end\n" + activeTurnStack(handler));
+                handler.handleChatMessage("inject-after");
+                assertTrue(awaitCondition(() -> provider.laterBodyContains("inject-after")
+                                && !repl.isLlmBusy(), 10, TimeUnit.SECONDS),
+                        () -> "the next message did not go out\n" + activeTurnStack(handler));
+                assertFalse(provider.laterBodyContains("inject-event"),
+                        "the turn that took the event in was its delivery");
+            } finally {
+                handler.shutdown();
+                repl.processManager.close();
+                ChatCompleter.setActivity(null);
+            }
+        }
+    }
+
+    @Test
+    void anEventTheRunningTurnDidNotTakeGoesOutAfterIt() throws Exception {
+        try (RecordingProvider provider = new RecordingProvider()) {
+            ChatRepl repl = new ChatRepl(
+                    null, null, "event-requeue-" + System.nanoTime(), false, "default", false,
+                    new ChatConfig("custom", null, "event-requeue-test", provider.url()));
+            ChatMessageHandler handler = repl.messageHandler;
+            List<String> ids = new CopyOnWriteArrayList<>();
+            List<String> written = new CopyOnWriteArrayList<>();
+            AtomicBoolean writable = new AtomicBoolean(true);
+            handler.setRunningTurnInjector((id, text) -> {
+                ids.add(id);
+                written.add(text);
+                return writable.get();
+            });
+            try {
+                repl.agenticLoop.setPerformanceHarness(null);
+                handler.handleChatMessage("requeue-first");
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
+                handler.handleExternalMessage("[System process completion] dropped-event");
+                // The provider ends the turn without reading the event.
+                handler.injectionDropped(ids.get(0));
+
+                // An event the provider cannot take in waits, with the dropped one ahead of it.
+                writable.set(false);
+                handler.handleExternalMessage("[System process completion] refused-event");
+                assertEquals(2, written.size(), written.toString());
+                String retry = written.get(1);
+                assertTrue(retry.indexOf("dropped-event") >= 0
+                        && retry.indexOf("dropped-event") < retry.indexOf("refused-event"), retry);
+
+                provider.answerFirst();
+                assertTrue(awaitCondition(() -> provider.laterBodyContains("refused-event")
+                                && !repl.isLlmBusy(), 10, TimeUnit.SECONDS),
+                        () -> "the waiting events were not delivered\n" + activeTurnStack(handler));
+                String delivery = provider.bodies.stream().skip(1)
+                        .filter(body -> body.contains("refused-event")).findFirst().orElseThrow();
+                assertTrue(delivery.contains("dropped-event"), "both go out in the turn after it");
+                assertFalse(Files.exists(handler.pendingEventsFile()),
+                        "delivered events leave nothing to deliver again");
+            } finally {
+                handler.shutdown();
+                repl.processManager.close();
+                ChatCompleter.setActivity(null);
+            }
+        }
+    }
+
+    /**
+     * A model endpoint that holds its first model request until answered or closed
+     * and answers the rest with "ok". Probes are not model requests.
+     */
     private static final class RecordingProvider implements AutoCloseable {
         final CountDownLatch firstRequest = new CountDownLatch(1);
         final List<String> bodies = new CopyOnWriteArrayList<>();
@@ -1821,6 +2169,14 @@ class ChatMessageHandlerQueueTest {
             server = HttpServer.create(new InetSocketAddress(0), 0);
             server.setExecutor(executor);
             server.createContext("/", exchange -> {
+                if (!"POST".equals(exchange.getRequestMethod())) {
+                    // A turn first asks a local endpoint for its model's limits
+                    // (ModelContextResolver, GET /api/llm/status). Held, that probe
+                    // only times out after 2s and the model request goes unheld.
+                    exchange.sendResponseHeaders(404, -1);
+                    exchange.close();
+                    return;
+                }
                 String requestBody = new String(
                         exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 int requestNumber = requests.incrementAndGet();
@@ -1848,6 +2204,11 @@ class ChatMessageHandlerQueueTest {
 
         String url() {
             return "http://127.0.0.1:" + server.getAddress().getPort();
+        }
+
+        /** Answers the held first request, so its turn ends normally. */
+        void answerFirst() {
+            releaseFirst.countDown();
         }
 
         /** True when a request after the held first one carried the text. */

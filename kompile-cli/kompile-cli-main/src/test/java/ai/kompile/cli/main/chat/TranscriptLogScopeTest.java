@@ -384,6 +384,85 @@ class TranscriptLogScopeTest {
         }
     }
 
+    @Test
+    void anotherProcessCannotOwnTheSameTranscriptAndExitReleasesIt(@TempDir Path tempDir)
+            throws Exception {
+        try (TestEnvironment env = new TestEnvironment(tempDir)) {
+            Process owner = new ProcessBuilder(
+                    Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                    "-cp", System.getProperty("java.class.path"),
+                    ExternalOwner.class.getName(), tempDir.toString(), "shared")
+                    .redirectError(ProcessBuilder.Redirect.INHERIT).start();
+            ExecutorService reader = Executors.newSingleThreadExecutor();
+            try {
+                Future<String> ready = reader.submit(() -> new java.io.BufferedReader(
+                        new java.io.InputStreamReader(owner.getInputStream(), StandardCharsets.UTF_8)).readLine());
+                assertEquals("READY", ready.get(10, TimeUnit.SECONDS));
+                java.io.IOException busy = assertThrows(java.io.IOException.class,
+                        () -> TranscriptLogScope.open("shared", tempDir, true));
+                assertTrue(busy.getMessage().contains("already running"));
+                assertSame(env.terminal, System.err);
+                assertEquals("configured-root", TranscriptLogScope.currentTranscriptId());
+                // Different chats remain independent even while that transcript is owned.
+                try (TranscriptLogScope independent = TranscriptLogScope.open("other", tempDir, false)) {
+                    assertThrows(java.io.IOException.class,
+                            () -> independent.switchTo("shared", tempDir, true));
+                    assertEquals("other", TranscriptLogScope.currentTranscriptId());
+                }
+                owner.getOutputStream().close();
+                assertTrue(owner.waitFor(10, TimeUnit.SECONDS));
+                assertEquals(0, owner.exitValue());
+                try (TranscriptLogScope resumed = TranscriptLogScope.open("shared", tempDir, true)) {
+                    assertEquals("shared", TranscriptLogScope.currentTranscriptId());
+                }
+            } finally {
+                owner.destroyForcibly();
+                owner.waitFor(10, TimeUnit.SECONDS);
+                stop(reader);
+            }
+        }
+    }
+
+    @Test
+    void ownershipSurvivesNestedDiagnosticsAndMovesOnClear(@TempDir Path tempDir) throws Exception {
+        try (TestEnvironment env = new TestEnvironment(tempDir);
+             TranscriptLogScope first = TranscriptLogScope.open("first", tempDir, false)) {
+            Path firstLock = first.logFile().resolveSibling("writer.lock");
+            try (TranscriptLogScope diagnostic = TranscriptLogScope.openIsolated("first", tempDir, false)) {
+                assertThrows(java.nio.channels.OverlappingFileLockException.class, () -> {
+                    try (var channel = java.nio.channels.FileChannel.open(firstLock,
+                            java.nio.file.StandardOpenOption.WRITE)) {
+                        try (var ignored = channel.tryLock()) { }
+                    }
+                });
+            }
+            first.switchTo("fresh", tempDir, false);
+            try (var channel = java.nio.channels.FileChannel.open(firstLock,
+                    java.nio.file.StandardOpenOption.WRITE);
+                 var released = channel.tryLock()) {
+                assertTrue(released != null);
+            }
+            assertThrows(java.nio.channels.OverlappingFileLockException.class, () -> {
+                try (var channel = java.nio.channels.FileChannel.open(
+                        first.logFile().resolveSibling("writer.lock"), java.nio.file.StandardOpenOption.WRITE)) {
+                    try (var ignored = channel.tryLock()) { }
+                }
+            });
+        }
+    }
+
+    /** A separate JVM exercises the OS lease, not merely a JVM-local mutex. */
+    public static class ExternalOwner {
+        public static void main(String[] args) throws Exception {
+            System.setProperty("user.home", args[0]);
+            try (TranscriptLogScope owner = TranscriptLogScope.open(args[1], Path.of(args[0]), false)) {
+                System.out.println("READY");
+                System.out.flush();
+                System.in.read();
+            }
+        }
+    }
+
     private static void stop(ExecutorService worker) throws InterruptedException {
         worker.shutdownNow();
         assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS), "executor did not stop");

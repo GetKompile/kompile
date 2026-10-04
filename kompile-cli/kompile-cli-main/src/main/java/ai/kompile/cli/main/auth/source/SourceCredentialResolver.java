@@ -200,7 +200,7 @@ public final class SourceCredentialResolver {
             case "NOTION" -> Set.of("apiToken", "accessToken");
             case "EMAIL", "IMAP", "POP3" -> Set.of("password", "accessToken");
             case "SFTP", "SMB", "SQL" -> Set.of("password");
-            case "SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE" -> Set.of("password", "accessToken");
+            case "SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE", "ORACLE_FUSION", "ORACLE_EBS", "JD_EDWARDS", "INFOR_MONGOOSE", "ACUMATICA" -> Set.of("password", "accessToken");
             case "GMAIL", "GDOCS", "GDRIVE", "GOOGLE_WORKSPACE", "ONEDRIVE" -> Set.of("accessToken");
             case "S3" -> Set.of("accessKey", "secretKey");
             default -> Set.of();

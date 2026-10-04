@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
-import { HttpClientTestingModule } from '@angular/common/http/testing';
+import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { HttpClient } from '@angular/common/http';
 import { Subject } from 'rxjs';
 import { UnifiedChatComponent } from './unified-chat.component';
 import { LocalAgentChatService } from '@shared/services/local-agent-chat.service';
@@ -9,6 +10,9 @@ import { AgentProvider } from '@shared/models/api-models';
 describe('Browser conversation lifecycle', () => {
   let component: UnifiedChatComponent;
   let service: LocalAgentChatService;
+  let http: HttpTestingController;
+  const workspaceId = 'web-test-workspace-identity';
+  const workspaceKey = 'unified_chat_workspace:' + workspaceId;
   let history: jasmine.SpyObj<any>;
   let confirmation: Subject<boolean>;
   let saved: string | null;
@@ -19,11 +23,12 @@ describe('Browser conversation lifecycle', () => {
     TestBed.configureTestingModule({ imports: [HttpClientTestingModule], providers: [LocalAgentChatService,
       { provide: ChatStorageService, useValue: jasmine.createSpyObj('storage', ['updateSession', 'updateTab']) }] });
     service = TestBed.inject(LocalAgentChatService);
+    http = TestBed.inject(HttpTestingController);
     history = jasmine.createSpyObj('history', ['getSessionMessages']);
     confirmation = new Subject<boolean>();
     const unused = null as any;
     component = new UnifiedChatComponent(unused, service, unused, unused, history, unused, unused, unused,
-      unused, unused, unused, unused, jasmine.createSpyObj('cdr', ['detach', 'reattach', 'detectChanges', 'markForCheck']),
+      unused, unused, unused, TestBed.inject(HttpClient), jasmine.createSpyObj('cdr', ['detach', 'reattach', 'detectChanges', 'markForCheck']),
       unused, unused, { open: () => ({ afterClosed: () => confirmation }) } as any,
       jasmine.createSpyObj('snack', ['open']), unused, unused);
     spyOn<any>(component, 'updateMonitorSubscription');
@@ -35,8 +40,140 @@ describe('Browser conversation lifecycle', () => {
   afterEach(() => {
     (component as any).cleanupStreaming();
     (component as any).unsubscribeStreamingSubs();
+    http.verify();
+    localStorage.removeItem(workspaceKey);
+    localStorage.removeItem(workspaceKey + ':active');
     if (saved === null) localStorage.removeItem('unified_chat_sessions');
     else localStorage.setItem('unified_chat_sessions', saved);
+  });
+  const openWorkspace = () => {
+    component.workspaceChat = { id: workspaceId, name: 'CLI chat' };
+    component.workingDirectory = '/test/project with spaces';
+    (component as any).loadSessions();
+    return http.expectOne(request => request.url.endsWith('/agents/chat/workspace/transcript'));
+  };
+  it('creates UUID conversation identities while retaining existing local IDs', () => {
+    expect(component.currentSession!.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    const legacy = { ...transcript('legacy-browser-id'), synced: false };
+    component.loadSession(legacy);
+    expect(component.currentSession!.id).toBe('legacy-browser-id');
+  });
+  it('hydrates writable canonical CLI turns instead of stale cache or a local active ID', () => {
+    localStorage.setItem(workspaceKey, JSON.stringify([
+      { ...transcript('wrong-active'), synced: false },
+      { ...transcript(workspaceId), name: 'Browser label', agentName: 'coder', conversationId: 'rag-id',
+        messages: [{ role: 'user', content: 'stale browser turn' }] }
+    ]));
+    localStorage.setItem(workspaceKey + ':active', 'wrong-active');
+    const request = openWorkspace();
+    expect(request.request.params.get('sessionId')).toBe(workspaceId);
+    expect(request.request.params.get('workingDirectory')).toBe('/test/project with spaces');
+    expect(component.lifecycleBusy).toBeTrue();
+    const send = spyOn(service, 'sendMessage').and.resolveTo();
+    component.userInput = 'waiting';
+    component.sendMessage();
+    expect(send).not.toHaveBeenCalled();
+    expect(component.messages).toEqual([]);
+    request.flush({ sessionId: workspaceId, turns: [
+      { role: 'USER', content: 'CLI question' }, { role: 'assistant', content: 'CLI answer' }
+    ] });
+    expect(component.currentSession!.id).toBe(workspaceId);
+    expect(component.sessions.some(session => session.id === 'wrong-active')).toBeTrue();
+    expect(component.currentSession!.name).toBe('Browser label');
+    expect(component.currentSession!.agentName).toBe('coder');
+    expect(component.currentConversationId).toBe('rag-id');
+    expect(component.transcriptReadOnly).toBeFalse();
+    expect(component.lifecycleBusy).toBeFalse();
+    expect(component.messages.map(message => message.content)).toEqual(['CLI question', 'CLI answer']);
+    expect(component.messages.map(message => message.role)).toEqual(['user', 'assistant']);
+    component.sendMessage();
+    expect(send.calls.mostRecent().args[3]).toEqual(jasmine.objectContaining({
+      sessionId: workspaceId, workingDirectory: '/test/project with spaces', includeHistory: false
+    }));
+    expect(history.getSessionMessages).not.toHaveBeenCalled();
+  });
+  it('always refreshes persisted turns on open and accepts an empty new transcript', () => {
+    openWorkspace().flush({ sessionId: workspaceId, turns: [{ role: 'user', content: 'before' }] });
+    const draft = { name: 'draft.txt', textContent: 'draft' } as any;
+    component.pendingAttachments = [draft];
+    component.refreshWorkspaceTranscript();
+    expect(component.pendingAttachments).toEqual([draft]);
+    http.expectOne(request => request.url.endsWith('/workspace/transcript')).flush({
+      sessionId: workspaceId, turns: [{ role: 'assistant', content: 'external CLI update' }]
+    });
+    expect(component.messages.map(message => message.content)).toEqual(['external CLI update']);
+    component.refreshWorkspaceTranscript();
+    http.expectOne(request => request.url.endsWith('/workspace/transcript')).flush({ sessionId: workspaceId, turns: [] });
+    expect(component.messages).toEqual([]);
+    expect(component.currentSession!.id).toBe(workspaceId);
+    expect(component.transcriptReadOnly).toBeFalse();
+  });
+  it('blocks sends after hydration failure rather than falling back to cached history, and retries', () => {
+    openWorkspace().flush({ message: 'unavailable' }, { status: 503, statusText: 'Unavailable' });
+    const send = spyOn(service, 'sendMessage').and.resolveTo();
+    component.userInput = 'next';
+    component.sendMessage();
+    expect(send).not.toHaveBeenCalled();
+    expect(component.messages).toEqual([]);
+    component.refreshWorkspaceTranscript();
+    http.expectOne(request => request.url.endsWith('/workspace/transcript')).flush({ sessionId: workspaceId, turns: [] });
+    component.sendMessage();
+    expect(send).toHaveBeenCalled();
+  });
+  it('does not replace an active harness transport when its workspace pane is reopened', () => {
+    openWorkspace().flush({ sessionId: workspaceId, turns: [] });
+    component.isStreaming = true;
+    const session = component.currentSession;
+    component.refreshWorkspaceTranscript();
+    expect(component.currentSession).toBe(session);
+    http.expectNone(request => request.url.endsWith('/workspace/transcript'));
+  });
+  it('rejects a different returned identity without enabling a write', () => {
+    openWorkspace().flush({ sessionId: 'other-id', turns: [] });
+    const send = spyOn(service, 'sendMessage');
+    component.userInput = 'next';
+    component.sendMessage();
+    expect(send).not.toHaveBeenCalled();
+    expect(component.currentSession!.id).toBe(workspaceId);
+  });
+  it('does not apply transcript hydration after pane destruction', () => {
+    const pending = openWorkspace();
+    (component as any).harnessViewDestroyed = true;
+    (component as any).destroy$.next();
+    expect(pending.cancelled).toBeTrue();
+    expect(component.messages).toEqual([]);
+  });
+  it('sends workspace turns through the shared harness without a duplicate wire history', async () => {
+    openWorkspace().flush({ sessionId: workspaceId, turns: [{ role: 'user', content: 'persisted' }] });
+    const fetch = spyOn(window, 'fetch').and.resolveTo(new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: complete\ndata: {"content":"done"}\n\n'));
+      controller.close();
+    } })));
+    component.userInput = 'next';
+    component.sendMessage();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const request = JSON.parse(String(fetch.calls.mostRecent().args[1]!.body));
+    expect(request.sessionId).toBe(workspaceId);
+    expect(request.workingDirectory).toBe('/test/project with spaces');
+    expect(request.message).toBe('next');
+    expect(request.includeHistory).toBeFalse();
+    expect(request.chatHistory).toBeUndefined();
+  });
+  it('delegates workspace New and Start fresh to the manager without orphaning the canonical identity', () => {
+    openWorkspace().flush({ sessionId: workspaceId, turns: [{ role: 'user', content: 'preserved' }] });
+    const session = component.currentSession;
+    const request = jasmine.createSpy('workspaceNewChat');
+    component.workspaceNewChat.subscribe(request);
+    component.newChat();
+    component.clearConversation(); confirmation.next(true);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(component.currentSession).toBe(session);
+    expect(component.messages[0].content).toBe('preserved');
+    component.forkFromMessage(0);
+    expect(component.currentSession).toBe(session);
+    component.isStreaming = true;
+    component.newChat();
+    expect(request).toHaveBeenCalledTimes(2);
   });
   it('preserves the previous conversation when starting fresh', () => {
     const old = component.currentSession!;

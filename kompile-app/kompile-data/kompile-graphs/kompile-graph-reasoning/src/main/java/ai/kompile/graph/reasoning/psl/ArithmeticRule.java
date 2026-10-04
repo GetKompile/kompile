@@ -306,12 +306,21 @@ public record ArithmeticRule(double weight, boolean hard, boolean squared,
         List<Term> args = new ArrayList<>();
         boolean hasSummation = false;
         if (!inside.isEmpty()) {
-            for (String arg : inside.split(",")) {
-                arg = arg.trim();
+            String[] arguments = inside.split(",", -1);
+            for (int i = 0; i < arguments.length; i++) {
+                String arg = arguments[i].trim();
                 boolean summation = arg.startsWith("+");
-                if (summation) { arg = arg.substring(1).trim(); hasSummation = true; }
-                // Parse the arg as a Term (variable/constant by capitalisation)
+                if (summation) arg = arg.substring(1).trim();
+                // Parse the arg as a Term (variable/constant by capitalisation).
                 boolean isVar = !arg.isEmpty() && Character.isUpperCase(arg.charAt(0));
+                if (summation) {
+                    // The model has one boolean, not a list of sum positions. Reject before
+                    // losing provenance rather than silently reinterpret unsupported layouts.
+                    if (hasSummation || i != arguments.length - 1 || !isVar) {
+                        throw new IllegalArgumentException("Only a single final-argument summation variable is supported: " + tok);
+                    }
+                    hasSummation = true;
+                }
                 args.add(new Term(arg, isVar));
             }
         }
@@ -351,7 +360,7 @@ public record ArithmeticRule(double weight, boolean hard, boolean squared,
                     if (j > 0) sb.append(", ");
                     Term a = t.args().get(j);
                     // Mark summation variables with '+' only if this term has summation
-                    if (t.summationVariable() && a.variable()) sb.append('+');
+                    if (t.summationVariable() && j == t.args().size() - 1 && a.variable()) sb.append('+');
                     sb.append(a.name());
                 }
                 sb.append(')');

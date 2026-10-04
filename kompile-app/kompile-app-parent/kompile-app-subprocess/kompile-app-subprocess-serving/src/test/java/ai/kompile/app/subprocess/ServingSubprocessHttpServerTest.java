@@ -2,16 +2,21 @@ package ai.kompile.app.subprocess;
 
 import ai.kompile.app.llm.pipeline.LoadRequest;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.Map;
@@ -19,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ServingSubprocessHttpServerTest {
 
@@ -110,6 +116,49 @@ class ServingSubprocessHttpServerTest {
         assertEquals(413, oversized.statusCode());
         assertEquals("request exceeds byte limit",
                 objectMapper.readTree(oversized.body()).get("error").asText());
+    }
+
+    @Test
+    void admitsAChatRequestCarryingTheFullImageAllowanceByDefault() throws Exception {
+        RecordingApi api = new RecordingApi();
+        start(api, ServingSubprocessHttpServer.DEFAULT_MAX_REQUEST_BYTES, 4096);
+
+        // Every image the contract allows, each at the per-image limit, beside a long turn.
+        String image = "A".repeat(Math.toIntExact(
+                (StructuredChatLanguageModel.MAX_INLINE_IMAGE_BYTES + 2L) / 3L * 4L));
+        StringBuilder body = new StringBuilder("{\"request\":{\"messages\":[{\"role\":\"user\",")
+                .append("\"content\":\"").append("x".repeat(2 * 1024 * 1024)).append("\",\"images\":[");
+        for (int i = 0; i < StructuredChatLanguageModel.MAX_INLINE_IMAGES_PER_REQUEST; i++) {
+            body.append(i == 0 ? "" : ",")
+                    .append("{\"mimeType\":\"image/png\",\"base64Data\":\"").append(image).append("\"}");
+        }
+        body.append("]}]},\"maxTokens\":512}");
+
+        HttpResponse<String> chat = request("POST", "/api/llm/chat", body.toString());
+        assertEquals(200, chat.statusCode());
+        assertEquals(512, api.chatRequest.get("maxTokens"));
+        JsonNode images = objectMapper.<JsonNode>valueToTree(api.chatRequest)
+                .at("/request/messages/0/images");
+        assertEquals(StructuredChatLanguageModel.MAX_INLINE_IMAGES_PER_REQUEST, images.size());
+    }
+
+    @Test
+    void refusesABodyDeclaredBeyondTheDefaultLimitWithoutReadingIt() throws Exception {
+        start(new RecordingApi(), ServingSubprocessHttpServer.DEFAULT_MAX_REQUEST_BYTES, 4096);
+
+        // The declared length alone is refused, so the body never has to be sent.
+        try (Socket socket = new Socket("127.0.0.1", server.port())) {
+            socket.setSoTimeout(10_000);
+            socket.getOutputStream().write(("POST /api/llm/chat HTTP/1.1\r\n"
+                    + "Host: 127.0.0.1\r\n"
+                    + "Content-Type: application/json\r\n"
+                    + "Content-Length: " + (ServingSubprocessHttpServer.DEFAULT_MAX_REQUEST_BYTES + 1)
+                    + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            String statusLine = new BufferedReader(new InputStreamReader(
+                    socket.getInputStream(), StandardCharsets.US_ASCII)).readLine();
+            assertTrue(statusLine != null && statusLine.startsWith("HTTP/1.1 413"), statusLine);
+        }
     }
 
     @Test

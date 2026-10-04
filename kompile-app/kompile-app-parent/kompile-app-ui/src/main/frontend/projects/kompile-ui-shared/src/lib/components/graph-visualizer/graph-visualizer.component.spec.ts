@@ -21,6 +21,7 @@ import {
   tick
 } from '@angular/core/testing';
 import { Component, Input, Output, EventEmitter, NO_ERRORS_SCHEMA } from '@angular/core';
+import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatDialog } from '@angular/material/dialog';
@@ -30,14 +31,18 @@ import { GraphVisualizerComponent } from './graph-visualizer.component';
 import { GraphCanvasComponent } from './graph-canvas.component';
 import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
 import { CompositeEntityDialogComponent } from '../composite-entity-dialog/composite-entity-dialog.component';
-import { GraphService } from '../../services/graph.service';
+import { GraphBuildStatus, GraphService } from '../../services/graph.service';
 import { SourceWeightService } from '../../services/source-weight.service';
+import { AttributionService } from '../../services/attribution.service';
+import { ProcessEngineService } from '../../services/process-engine.service';
+import { KbGroundingService } from '../../services/kb-grounding.service';
 import {
   D3VisualizationData,
   D3Node,
   GraphEdge,
   SourceWeight,
   DEFAULT_FORCE_CONFIG,
+  NODE_COLORS,
   NodeLevel,
   EdgeType,
   WeightedSearchPreview
@@ -185,7 +190,17 @@ describe('GraphVisualizerComponent', () => {
       'getEdges',
       'getConnectedNodes',
       'getAncestors',
-      'getReasoningLayers'
+      'getReasoningLayers',
+      'getTemporalBounds',
+      'getNodeNeighborhood',
+      'exportNativeGraph',
+      'importNativeGraph',
+      // Called by the source-linking panel the side panel renders
+      'getSourceConnectivity',
+      'getSourceLinks',
+      'findMostConnectedSources',
+      'findIsolatedSources',
+      'removeSourceLink'
     ]);
 
     weightServiceSpy = jasmine.createSpyObj('SourceWeightService', [
@@ -197,9 +212,30 @@ describe('GraphVisualizerComponent', () => {
     snackBarSpy = jasmine.createSpyObj('MatSnackBar', ['open']);
     dialogSpy = jasmine.createSpyObj('MatDialog', ['open']);
 
+    const attributionSpy = jasmine.createSpyObj<AttributionService>('AttributionService', ['explainQuick', 'predictQuick']);
+    const processEngineSpy = jasmine.createSpyObj<ProcessEngineService>('ProcessEngineService', [
+      'listStoredSuggestions', 'getStoredSuggestionTrace', 'mineProcesses', 'listOntologies'
+    ]);
+    processEngineSpy.listStoredSuggestions.and.returnValue(of({ count: 0, suggestions: [] }));
+    processEngineSpy.mineProcesses.and.returnValue(of(null));
+    processEngineSpy.listOntologies.and.returnValue(of([]));
+    const groundingSpy = jasmine.createSpyObj<KbGroundingService>('KbGroundingService', ['batchVerify', 'unifiedExplain']);
+    groundingSpy.batchVerify.and.returnValue(of({
+      results: {},
+      totalCount: 0,
+      factSheetId: 42,
+      timestamp: '2026-10-03T00:00:00Z'
+    }));
+
     // Default return values
     graphServiceSpy.getVisualizationData.and.returnValue(of(mockD3Data));
     graphServiceSpy.getStatistics.and.returnValue(of({ totalNodes: 0, totalAvailableNodes: 0 } as any));
+    graphServiceSpy.getFactSheetStatistics.and.returnValue(of({ totalNodes: 0, totalAvailableNodes: 0 } as any));
+    graphServiceSpy.getTemporalBounds.and.returnValue(of(null as any));
+    graphServiceSpy.getSourceConnectivity.and.returnValue(of({}));
+    graphServiceSpy.getSourceLinks.and.returnValue(of([]));
+    graphServiceSpy.findMostConnectedSources.and.returnValue(of([]));
+    graphServiceSpy.findIsolatedSources.and.returnValue(of([]));
     graphServiceSpy.getTopKVisualization.and.returnValue(of(mockD3Data));
     graphServiceSpy.getFactSheetVisualizationData.and.returnValue(of(mockD3Data));
     graphServiceSpy.getAncestors.and.returnValue(of([]));
@@ -216,6 +252,7 @@ describe('GraphVisualizerComponent', () => {
     await TestBed.configureTestingModule({
       imports: [
         GraphVisualizerComponent,
+        HttpClientTestingModule,
         NoopAnimationsModule
       ],
       schemas: [NO_ERRORS_SCHEMA]
@@ -236,6 +273,9 @@ describe('GraphVisualizerComponent', () => {
     // so the mocks are resolved when the component creates its own injector.
     .overrideProvider(GraphService, { useValue: graphServiceSpy })
     .overrideProvider(SourceWeightService, { useValue: weightServiceSpy })
+    .overrideProvider(AttributionService, { useValue: attributionSpy })
+    .overrideProvider(ProcessEngineService, { useValue: processEngineSpy })
+    .overrideProvider(KbGroundingService, { useValue: groundingSpy })
     .overrideProvider(MatSnackBar, { useValue: snackBarSpy })
     .overrideProvider(MatDialog, { useValue: dialogSpy })
     .compileComponents();
@@ -270,7 +310,7 @@ describe('GraphVisualizerComponent', () => {
       component.factSheetId = 42;
       fixture.detectChanges();
       tick();
-      expect(graphServiceSpy.getFactSheetVisualizationData).toHaveBeenCalledWith(42, jasmine.any(Number), jasmine.any(Number));
+      expect(graphServiceSpy.getFactSheetVisualizationData).toHaveBeenCalledWith(42, component.maxNodes);
       expect(graphServiceSpy.getVisualizationData).not.toHaveBeenCalled();
     }));
 
@@ -321,9 +361,11 @@ describe('GraphVisualizerComponent', () => {
       expect(component.forceConfig).toEqual(DEFAULT_FORCE_CONFIG);
     });
 
-    it('should initialize allNodeTypes with 7 entries', () => {
+    it('should initialize allNodeTypes with the 9 default node types', () => {
       createComponent();
-      expect(component.allNodeTypes.length).toBe(7);
+      expect(component.allNodeTypes).toEqual([
+        'SOURCE', 'DOCUMENT', 'SNIPPET', 'ENTITY', 'CUSTOM', 'TABLE', 'ATTACHMENT', 'IDENTIFIER', 'ALIAS'
+      ]);
     });
 
     it('should initialize allEdgeTypes with at least 4 entries', () => {
@@ -351,10 +393,13 @@ describe('GraphVisualizerComponent', () => {
     it('should use getVisualizationData with maxDepth and maxNodes when no factSheetId', fakeAsync(() => {
       fixture.detectChanges();
       tick();
+      // No time range is passed while the temporal filter is off
       expect(graphServiceSpy.getVisualizationData).toHaveBeenCalledWith(
         undefined,
         component.maxDepth,
-        component.maxNodes
+        component.maxNodes,
+        undefined,
+        undefined
       );
     }));
 
@@ -362,7 +407,7 @@ describe('GraphVisualizerComponent', () => {
       component.factSheetId = 7;
       fixture.detectChanges();
       tick();
-      expect(graphServiceSpy.getFactSheetVisualizationData).toHaveBeenCalledWith(7, jasmine.any(Number), jasmine.any(Number));
+      expect(graphServiceSpy.getFactSheetVisualizationData).toHaveBeenCalledWith(7, component.maxNodes);
     }));
 
     it('should apply filters to returned data', fakeAsync(() => {
@@ -379,6 +424,32 @@ describe('GraphVisualizerComponent', () => {
       tick();
       expect(snackBarSpy.open).toHaveBeenCalledWith('Failed to load knowledge graph', 'Dismiss', { duration: 3000 });
       expect(component.loading).toBeFalse();
+    }));
+
+    it('should fetch a failing graph once', fakeAsync(() => {
+      spyOn(console, 'error');
+      graphServiceSpy.getVisualizationData.and.returnValue(throwError(() => new Error('Server error')));
+      fixture.detectChanges();
+      tick();
+      expect(graphServiceSpy.getVisualizationData).toHaveBeenCalledTimes(1);
+    }));
+
+    it('should load the graph flat when its size cannot be read', fakeAsync(() => {
+      graphServiceSpy.getStatistics.and.returnValue(throwError(() => new Error('no statistics')));
+      fixture.detectChanges();
+      tick();
+      expect(graphServiceSpy.getVisualizationData).toHaveBeenCalledTimes(1);
+      expect(component.graphData!.nodes.length).toBe(4);
+    }));
+
+    it('should load the graph flat when the top-K fetch fails', fakeAsync(() => {
+      graphServiceSpy.getStatistics.and.returnValue(of({ totalNodes: 5000 } as any));
+      graphServiceSpy.getTopKVisualization.and.returnValue(throwError(() => new Error('no ranking')));
+      fixture.detectChanges();
+      tick();
+      expect(graphServiceSpy.getTopKVisualization).toHaveBeenCalledTimes(1);
+      expect(graphServiceSpy.getVisualizationData).toHaveBeenCalledTimes(1);
+      expect(component.graphData!.nodes.length).toBe(4);
     }));
 
     it('should call loadGraph with query when a search query is provided', fakeAsync(() => {
@@ -414,17 +485,10 @@ describe('GraphVisualizerComponent', () => {
     });
 
     it('should filter links to only those between remaining nodes', () => {
-      // Only SOURCE nodes remain → only links that go between SOURCE nodes
-      component.filter.nodeTypes = ['SOURCE'];
+      // SOURCE n1 and ENTITY n3 remain: their link stays, the links to DOCUMENT n2 go
+      component.filter.nodeTypes = ['SOURCE', 'ENTITY'];
       const result = component.applyFilters(mockD3Data);
-      // n1 is SOURCE, n2/n3 are not → links e1, e2, e3 all involve non-SOURCE nodes
-      result.links.forEach(l => {
-        const sourceId = typeof l.source === 'string' ? l.source : String((l.source as any).id || (l.source as any).nodeId);
-        const targetId = typeof l.target === 'string' ? l.target : String((l.target as any).id || (l.target as any).nodeId);
-        const nodeIds = new Set(result.nodes.map(n => n.id));
-        expect(nodeIds.has(sourceId)).toBeTrue();
-        expect(nodeIds.has(targetId)).toBeTrue();
-      });
+      expect(result.links.map(l => l.id)).toEqual(['e3']);
     });
 
     it('should filter nodes by label when searchQuery is provided', () => {
@@ -445,15 +509,10 @@ describe('GraphVisualizerComponent', () => {
     });
 
     it('should remove links where either endpoint node is filtered out by search', () => {
-      // Only Entity 1 matches 'entity'; n1 and n2 links disappear
-      const result = component.applyFilters(mockD3Data, 'entity');
-      result.links.forEach(l => {
-        const nodeIds = new Set(result.nodes.map(n => n.id));
-        const sourceId = typeof l.source === 'string' ? l.source : String((l.source as any).id || (l.source as any).nodeId);
-        const targetId = typeof l.target === 'string' ? l.target : String((l.target as any).id || (l.target as any).nodeId);
-        expect(nodeIds.has(sourceId)).toBeTrue();
-        expect(nodeIds.has(targetId)).toBeTrue();
-      });
+      // 'o' matches Source 1 and Doc 1 but not Entity 1, so only the link between the first two stays
+      const result = component.applyFilters(mockD3Data, 'o');
+      expect(result.nodes.map(n => n.id)).toEqual(['n1', 'n2']);
+      expect(result.links.map(l => l.id)).toEqual(['e1']);
     });
 
     it('should return empty nodes when search query matches nothing', () => {
@@ -738,7 +797,7 @@ describe('GraphVisualizerComponent', () => {
     }));
 
     it('should set buildStatus after build call', fakeAsync(() => {
-      const status = { status: 'COMPLETED', jobId: 'job-1', nodesCreated: 5, edgesCreated: 3 };
+      const status: GraphBuildStatus = { status: 'COMPLETED', jobId: 'job-1', nodesCreated: 5, edgesCreated: 3 };
       graphServiceSpy.buildFactSheetGraph.and.returnValue(of(status));
       component.buildGraph();
       tick();
@@ -904,6 +963,8 @@ describe('GraphVisualizerComponent', () => {
       fixture.detectChanges();
       tick();
       graphServiceSpy.getFactSheetStatistics.and.returnValue(of(mockStats));
+      // loadGraph asks for the statistics too, to size the graph; count only viewStatistics' calls
+      graphServiceSpy.getFactSheetStatistics.calls.reset();
     }));
 
     it('should call graphService.getFactSheetStatistics', fakeAsync(() => {
@@ -1125,32 +1186,10 @@ describe('GraphVisualizerComponent', () => {
       fixture.detectChanges();
     });
 
-    it('should return green for SOURCE', () => {
-      expect(component.getNodeColor('SOURCE')).toBe('#22c55e');
-    });
-
-    it('should return blue for DOCUMENT', () => {
-      expect(component.getNodeColor('DOCUMENT')).toBe('#3b82f6');
-    });
-
-    it('should return amber for SNIPPET', () => {
-      expect(component.getNodeColor('SNIPPET')).toBe('#f59e0b');
-    });
-
-    it('should return purple for ENTITY', () => {
-      expect(component.getNodeColor('ENTITY')).toBe('#a855f7');
-    });
-
-    it('should return pink for ATTACHMENT', () => {
-      expect(component.getNodeColor('ATTACHMENT')).toBe('#ec4899');
-    });
-
-    it('should return a color for TABLE', () => {
-      expect(component.getNodeColor('TABLE')).toMatch(/^#[0-9a-f]{6}$/i);
-    });
-
-    it('should return grey for CUSTOM', () => {
-      expect(component.getNodeColor('CUSTOM')).toBe('#64748b');
+    it('should return the color the canvas draws each node type in', () => {
+      for (const type of component.allNodeTypes) {
+        expect(component.getNodeColor(type)).withContext(type).toBe(NODE_COLORS[type]);
+      }
     });
 
     it('should return a fallback grey for unknown type', () => {
@@ -1202,6 +1241,9 @@ describe('GraphVisualizerComponent', () => {
   describe('toggleNodeTypeFilter()', () => {
     beforeEach(fakeAsync(() => {
       createComponent();
+      // fakeAsync flushes periodic timers when the beforeEach ends, so the 5 s live refresh would
+      // fetch after the reset below and count as a fetch the toggle made
+      component.autoRefresh = false;
       fixture.detectChanges();
       tick();
       graphServiceSpy.getVisualizationData.calls.reset();
@@ -1219,17 +1261,39 @@ describe('GraphVisualizerComponent', () => {
       expect(component.filter.nodeTypes).toContain('ENTITY');
     });
 
-    it('should reload graph when graphData is available', fakeAsync(() => {
-      component.toggleNodeTypeFilter('SNIPPET');
-      tick();
-      expect(graphServiceSpy.getVisualizationData).toHaveBeenCalled();
-    }));
-
-    it('should not reload graph when graphData is null', fakeAsync(() => {
-      component.graphData = null;
+    it('should filter the loaded graph without fetching it again', fakeAsync(() => {
       component.toggleNodeTypeFilter('SNIPPET');
       tick();
       expect(graphServiceSpy.getVisualizationData).not.toHaveBeenCalled();
+      expect(component.graphData!.nodes.map(n => n.id)).toEqual(['n1', 'n2', 'n3']);
+    }));
+  });
+
+  describe('toggleNodeTypeFilter() before a load has landed', () => {
+    beforeEach(fakeAsync(() => {
+      spyOn(console, 'error');
+      graphServiceSpy.getVisualizationData.and.returnValue(throwError(() => new Error('unavailable')));
+      createComponent();
+      component.autoRefresh = false;
+      fixture.detectChanges();
+      tick();
+      graphServiceSpy.getVisualizationData.and.returnValue(of(mockD3Data));
+      graphServiceSpy.getVisualizationData.calls.reset();
+    }));
+
+    it('should not load a graph when none is drawn', fakeAsync(() => {
+      component.toggleNodeTypeFilter('SNIPPET');
+      tick();
+      expect(graphServiceSpy.getVisualizationData).not.toHaveBeenCalled();
+      expect(component.graphData).toBeNull();
+    }));
+
+    it('should load the graph when one is drawn but none is cached', fakeAsync(() => {
+      component.graphData = mockD3Data;
+      component.toggleNodeTypeFilter('SNIPPET');
+      tick();
+      expect(graphServiceSpy.getVisualizationData).toHaveBeenCalledTimes(1);
+      expect(component.graphData!.nodes.map(n => n.id)).toEqual(['n1', 'n2', 'n3']);
     }));
   });
 
@@ -1665,26 +1729,48 @@ describe('GraphVisualizerComponent', () => {
   describe('Search debounce (onSearchChange)', () => {
     beforeEach(fakeAsync(() => {
       createComponent();
+      component.autoRefresh = false; // see toggleNodeTypeFilter(): the refresh would count as a fetch
       fixture.detectChanges();
       tick();
       graphServiceSpy.getVisualizationData.calls.reset();
     }));
 
-    it('should debounce multiple rapid search changes', fakeAsync(() => {
+    it('should filter the loaded graph by the last query once the debounce settles', fakeAsync(() => {
       component.onSearchChange('a');
       component.onSearchChange('ab');
-      component.onSearchChange('abc');
+      component.onSearchChange('entity');
       tick(300);
-      // Only one call should be made after debounce settles
-      expect(graphServiceSpy.getVisualizationData.calls.count()).toBe(1);
+      // The search filters the graph already loaded instead of fetching it again
+      expect(graphServiceSpy.getVisualizationData).not.toHaveBeenCalled();
+      expect(component.graphData!.nodes.map(n => n.id)).toEqual(['n3']);
     }));
 
-    it('should not fire immediately before debounce period elapses', fakeAsync(() => {
-      component.onSearchChange('test');
+    it('should not filter before the debounce period elapses', fakeAsync(() => {
+      component.onSearchChange('entity');
       tick(100);
-      expect(graphServiceSpy.getVisualizationData.calls.count()).toBe(0);
+      expect(component.graphData!.nodes.length).toBe(4);
       tick(200); // total 300ms
-      expect(graphServiceSpy.getVisualizationData.calls.count()).toBe(1);
+      expect(component.graphData!.nodes.map(n => n.id)).toEqual(['n3']);
+    }));
+  });
+
+  describe('Search before a load has landed', () => {
+    it('should load the graph and filter it by the query', fakeAsync(() => {
+      spyOn(console, 'error');
+      graphServiceSpy.getVisualizationData.and.returnValue(throwError(() => new Error('unavailable')));
+      createComponent();
+      component.autoRefresh = false;
+      fixture.detectChanges();
+      tick();
+      expect(component.graphData).toBeNull();
+      graphServiceSpy.getVisualizationData.and.returnValue(of(mockD3Data));
+      graphServiceSpy.getVisualizationData.calls.reset();
+
+      component.onSearchChange('entity');
+      tick(300);
+
+      expect(graphServiceSpy.getVisualizationData).toHaveBeenCalledTimes(1);
+      expect(component.graphData!.nodes.map(n => n.id)).toEqual(['n3']);
     }));
   });
 });

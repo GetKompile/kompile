@@ -48,6 +48,14 @@ public final class SpinLauncher {
         verifyModelRuntime(current.definition(), kompile, environment);
         Map<String, String> childEnvironment = runtimeEnvironment(
                 prepared, kompile, environment);
+        if (current.definition().projectBacked()) {
+            childEnvironment.remove("KOMPILE_CHAT_MODEL_PATH");
+            childEnvironment.remove("KOMPILE_CHAT_TOKENIZER_PATH");
+            childEnvironment.remove("KOMPILE_MODEL_SERVING_EXECUTABLE");
+            childEnvironment.remove("KOMPILE_MODEL_SERVING_JAR");
+            childEnvironment.put("KOMPILE_DIST_HOME", kompile.installRoot().toString());
+            childEnvironment.put("KOMPILE_CHAT_ADDRESS", current.definition().project().distribution().getWeb().getBind());
+        }
         ensureProjectInitialized(current.definition(), prepared, kompile,
                 childEnvironment);
         List<String> command = new ArrayList<>(kompile.commandPrefix());
@@ -80,11 +88,17 @@ public final class SpinLauncher {
             if (!hasMemoryOption(chatArgs)) {
                 command.add("--memory=false");
             }
+            if (args.isEmpty() && current.definition().projectBacked()
+                    && current.definition().project().distribution().getWeb().isEnabled()) {
+                command.add("--web");
+                command.add("--open-browser");
+            }
             command.addAll(chatArgs);
         }
 
         ProcessBuilder processBuilder = new ProcessBuilder(command).inheritIO();
         processBuilder.directory(prepared.workspace().toFile());
+        processBuilder.environment().clear();
         processBuilder.environment().putAll(childEnvironment);
 
         return waitFor(processBuilder.start());
@@ -281,6 +295,15 @@ public final class SpinLauncher {
     private static CommandResolution resolveKompile(SpinInstallation.Current current,
                                                      Map<String, String> environment)
             throws IOException {
+        if (current.definition().projectBacked()) {
+            Path bundled = current.release().resolve("runtime");
+            CommandResolution resolution = executableResolution(bundled, "kompile");
+            if (resolution == null && !"native".equals(current.definition().project().distribution().getDelivery())) {
+                resolution = jarResolution(bundled);
+            }
+            if (resolution == null) throw new IOException("Curated spin runtime is missing; global fallback is disabled");
+            return resolution;
+        }
         String explicit = environment.get("KOMPILE_CLI");
         if (explicit != null && !explicit.isBlank()) {
             Path path = Path.of(explicit).toAbsolutePath().normalize();

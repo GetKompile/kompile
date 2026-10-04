@@ -15,6 +15,8 @@
  */
 package ai.kompile.project;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -37,6 +39,7 @@ public class KompileProjectManifest {
     private List<KompileProjectScript> scripts = new ArrayList<>();
     private List<KompileProjectCrawlProfile> crawlProfiles = new ArrayList<>();
     private List<KompileProjectWorkflow> workflows = new ArrayList<>();
+    private KompileProjectDistribution distribution;
     private Map<String, String> metadata = new LinkedHashMap<>();
     private Instant createdAt;
     private Instant updatedAt;
@@ -159,6 +162,18 @@ public class KompileProjectManifest {
 
     public void setWorkflows(List<KompileProjectWorkflow> workflows) {
         this.workflows = workflows == null ? new ArrayList<>() : new ArrayList<>(workflows);
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public KompileProjectDistribution getDistribution() {
+        return distribution;
+    }
+
+    public void setDistribution(KompileProjectDistribution distribution) {
+        if (distribution != null) {
+            distribution.validate();
+        }
+        this.distribution = distribution;
     }
 
     public Map<String, String> getMetadata() {

@@ -57,7 +57,7 @@ public final class LocalExternalSourceLoaderRegistry {
     private static final Set<String> TYPES = Set.of(
             "JIRA", "REDDIT", "NOTION", "CONFLUENCE", "SLACK", "SLACK_HISTORY",
             "DISCORD", "DISCORD_HISTORY", "EMAIL", "IMAP", "POP3", "GMAIL", "GDOCS",
-            "GDRIVE", "GOOGLE_WORKSPACE", "ONEDRIVE", "SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE");
+            "GDRIVE", "GOOGLE_WORKSPACE", "ONEDRIVE", "SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE", "ORACLE_FUSION", "ORACLE_EBS", "JD_EDWARDS", "INFOR_MONGOOSE", "ACUMATICA");
     private static final Set<String> SENSITIVE_SUFFIXES = Set.of(
             "password", "token", "secret", "accesskey", "apikey", "privatekey",
             "authorization", "credential", "credentials");
@@ -617,7 +617,7 @@ public final class LocalExternalSourceLoaderRegistry {
             case GDRIVE -> new GoogleDriveLoaderImpl(null);
             case GOOGLE_WORKSPACE -> new GWorkspaceLoaderImpl();
             case ONEDRIVE -> new OneDriveLoaderImpl(null);
-            case SAP_NETWEAVER, ODATA, DYNAMICS365, NETSUITE, ODOO, SALESFORCE -> new CamelErpDocumentLoader();
+            case SAP_NETWEAVER, ODATA, DYNAMICS365, NETSUITE, ODOO, SALESFORCE, ORACLE_FUSION, ORACLE_EBS, JD_EDWARDS, INFOR_MONGOOSE, ACUMATICA -> new CamelErpDocumentLoader();
             default -> throw new IllegalArgumentException("No local external loader for " + type);
         };
     }
@@ -734,7 +734,7 @@ public final class LocalExternalSourceLoaderRegistry {
             case "GDRIVE" -> List.of("fileIds", "folderId");
             case "ONEDRIVE" -> List.of("itemIds", "folderId");
             case "NOTION" -> List.of("pageIds", "databaseIds");
-            case "SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE" -> List.of("serviceRoot");
+            case "SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE", "ORACLE_FUSION", "ORACLE_EBS", "JD_EDWARDS", "INFOR_MONGOOSE", "ACUMATICA" -> List.of("serviceRoot");
             default -> List.of();
         };
     }

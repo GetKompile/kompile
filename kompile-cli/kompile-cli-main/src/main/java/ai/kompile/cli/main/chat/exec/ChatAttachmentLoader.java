@@ -16,6 +16,7 @@
 package ai.kompile.cli.main.chat.exec;
 
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -36,7 +37,9 @@ import java.util.Set;
  */
 public final class ChatAttachmentLoader {
 
-    public static final long MAX_ATTACHMENT_BYTES = 5L * 1024L * 1024L;
+    /** The inline-image contract's per-image limit, applied to every attached file. */
+    public static final long MAX_ATTACHMENT_BYTES =
+            StructuredChatLanguageModel.MAX_INLINE_IMAGE_BYTES;
     public static final long MAX_TOTAL_BYTES = 20L * 1024L * 1024L;
 
     /**
@@ -85,7 +88,8 @@ public final class ChatAttachmentLoader {
             throw new IOException("Attachment is not a regular file: " + path);
         }
         if (Files.size(path) > MAX_ATTACHMENT_BYTES) {
-            throw new IOException("Attachment exceeds 5 MiB: " + path.getFileName());
+            throw new IOException("Attachment exceeds " + MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                    + " MiB: " + path.getFileName());
         }
         String mimeType = detectMimeType(path);
         if (!IMAGE_MIME_TYPES.contains(mimeType) && mimeType.startsWith("image/")

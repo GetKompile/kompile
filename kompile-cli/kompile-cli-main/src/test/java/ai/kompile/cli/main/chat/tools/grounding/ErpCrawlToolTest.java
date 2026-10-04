@@ -55,7 +55,7 @@ class ErpCrawlToolTest {
     @Test
     void erpSourcesAlwaysDispatchLocallyIncludingNestedRequests() {
         for (String type : Set.of("SAP_NETWEAVER", "sap-netweaver", "ODATA", "odata",
-                "DYNAMICS365", "dynamics365", "NETSUITE", "netsuite", "ODOO", "odoo", "SALESFORCE", "salesforce")) {
+                "DYNAMICS365", "dynamics365", "NETSUITE", "netsuite", "ODOO", "odoo", "SALESFORCE", "salesforce", "ORACLE_FUSION", "oracle-fusion", "ORACLE_EBS", "oracle-ebs", "JD_EDWARDS", "jd-edwards", "INFOR_MONGOOSE", "infor-mongoose", "ACUMATICA", "acumatica")) {
             for (String array : Set.of("documents", "sources")) {
                 ObjectNode request = mapper.createObjectNode();
                 request.putArray(array).addObject().put("sourceType", type);
@@ -71,7 +71,7 @@ class ErpCrawlToolTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE"})
+    @ValueSource(strings = {"ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE", "ORACLE_FUSION", "ORACLE_EBS", "JD_EDWARDS", "INFOR_MONGOOSE", "ACUMATICA"})
     void crawlsErpThroughChatIntoLocalSearchWithoutPersistingSecrets(String type) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         String rootPath = switch (type) {
@@ -79,13 +79,20 @@ class ErpCrawlToolTest {
             case "NETSUITE" -> "/services/rest/record/v1/";
             case "ODOO" -> "/json/2/";
             case "SALESFORCE" -> "/services/data/v60.0/";
+            case "ORACLE_FUSION" -> "/fscmRestApi/resources/11.13.18.05/";
+            case "ORACLE_EBS" -> "/webservices/rest/autoinvoice/";
+            case "JD_EDWARDS" -> "/jderest/v2/dataservice/table/";
+            case "INFOR_MONGOOSE" -> "/TENANT/CSI/IDORequestService/ido/";
+            case "ACUMATICA" -> "/entity/Default/24.200.001/";
             default -> "/erp/";
         };
         AtomicReference<String> method = new AtomicReference<>();
         AtomicReference<String> authorization = new AtomicReference<>();
+        AtomicReference<String> mongooseConfig = new AtomicReference<>();
         server.createContext(rootPath, exchange -> {
             method.set(exchange.getRequestMethod());
             authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            mongooseConfig.set(exchange.getRequestHeaders().getFirst("X-Infor-MongooseConfig"));
             exchange.getRequestBody().readAllBytes();
             String record = "{\"ID\":\"42\",\"Id\":\"42\",\"id\":\"42\",\"description\":\"erp-cobalt-puffin-marker\"}";
             String response = switch (type) {
@@ -93,6 +100,12 @@ class ErpCrawlToolTest {
                         : "{\"items\":[{\"id\":\"42\"}],\"count\":1,\"offset\":0,\"hasMore\":false}";
                 case "ODOO" -> "[" + record + "]";
                 case "SALESFORCE" -> "{\"records\":[" + record + "],\"done\":true}";
+                case "ORACLE_FUSION" -> "{\"items\":[" + record + "],\"offset\":0,\"limit\":100,\"hasMore\":false}";
+                case "ORACLE_EBS" -> "{\"OutputParameters\":{\"Summary\":{\"Offset\":\"0\",\"Limit\":\"100\",\"GetCount\":\"1\",\"TotalCount\":\"1\"},\"Result\":{\"Output\":{\"ORDERS_REC\":" + record + "}}}}";
+                case "JD_EDWARDS" -> "{\"fs_DATABROWSE_F0101\":{\"data\":{\"gridData\":{\"rowset\":[" + record + "],\"summary\":{\"records\":1,\"moreRecords\":false}}},\"errors\":[]},\"sysErrors\":[]}";
+                case "INFOR_MONGOOSE" -> "{\"Items\":[" + record + "],\"Success\":true,\"MoreRowsExist\":false,\"Bookmark\":null,\"Message\":null}";
+                case "ACUMATICA" -> exchange.getRequestURI().getQuery().contains("$skip=0")
+                        ? "[{\"CustomerID\":{\"value\":\"42\"},\"description\":{\"value\":\"erp-cobalt-puffin-marker\"}}]" : "[]";
                 default -> "{\"value\":[" + record + "]}";
             };
             byte[] body = response.getBytes(StandardCharsets.UTF_8);
@@ -116,10 +129,37 @@ class ErpCrawlToolTest {
                     .put("serviceRoot", "http://127.0.0.1:" + server.getAddress().getPort() + rootPath)
                     .put("entitySet", "Orders").put("accessToken", "erp-fixture-secret");
             if (Set.of("ODOO", "SALESFORCE").contains(type)) properties.put("select", "description");
+            if (Set.of("ORACLE_FUSION", "ORACLE_EBS", "JD_EDWARDS").contains(type)) {
+                properties.put("entitySet", type.equals("JD_EDWARDS") ? "F0101" : "ORDERS").put("keyFields", "ID");
+                properties.remove("accessToken");
+                String root = properties.path("serviceRoot").asText();
+                ai.kompile.cli.main.auth.source.ErpConnectionCredentials.save(
+                        ai.kompile.cli.main.auth.CredentialStore.create(), type, "oracle-reader", root, null,
+                        type.equals("ORACLE_EBS") ? "reader" : null, "erp-fixture-secret", 0);
+                properties.put("connectionName", "oracle-reader");
+            }
+            if (type.equals("INFOR_MONGOOSE")) {
+                properties.put("select", "description").put("keyFields", "ID").put("tenant", "site-config");
+                properties.remove("accessToken");
+                ai.kompile.cli.main.auth.source.ErpConnectionCredentials.save(
+                        ai.kompile.cli.main.auth.CredentialStore.create(), type, "infor-reader",
+                        properties.path("serviceRoot").asText(), "site-config", null, "erp-fixture-secret", 0);
+                properties.put("connectionName", "infor-reader");
+            }
+            if (type.equals("ACUMATICA")) {
+                properties.put("entitySet", "Customer").put("keyFields", "CustomerID").put("select", "description");
+                properties.remove("accessToken");
+                ai.kompile.cli.main.auth.source.ErpConnectionCredentials.save(
+                        ai.kompile.cli.main.auth.CredentialStore.create(), type, "acumatica-reader",
+                        properties.path("serviceRoot").asText(), null, null, "erp-fixture-secret", 0);
+                properties.put("connectionName", "acumatica-reader");
+            }
             ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
             assertFalse(result.isError(), result.getOutput());
             assertEquals("ODOO".equals(type) ? "POST" : "GET", method.get());
-            assertEquals("Bearer erp-fixture-secret", authorization.get());
+            assertEquals(type.equals("ORACLE_EBS") ? "Basic " + java.util.Base64.getEncoder().encodeToString(
+                    "reader:erp-fixture-secret".getBytes(StandardCharsets.UTF_8)) : "Bearer erp-fixture-secret", authorization.get());
+            assertEquals(type.equals("INFOR_MONGOOSE") ? "site-config" : null, mongooseConfig.get());
             String knowledgeBase = (String) result.getMetadata().get("knowledgeBase");
             Path crawl = projectRoot.resolve("data/crawls").resolve(knowledgeBase);
             String persisted = Files.readString(crawl.resolve("mcp-request.json"));

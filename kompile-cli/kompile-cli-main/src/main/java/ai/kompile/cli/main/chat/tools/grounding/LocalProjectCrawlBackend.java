@@ -12,6 +12,7 @@ import ai.kompile.cli.main.project.ChatModelPipelineRunner;
 import ai.kompile.cli.main.project.LocalCrawlCapabilities;
 import ai.kompile.cli.main.project.NativeChatModels;
 import ai.kompile.cli.main.project.LocalCrawlRunner;
+import ai.kompile.cli.main.project.LocalCorpusPublication;
 import ai.kompile.cli.main.project.LocalExternalSourceLoaderRegistry;
 import ai.kompile.cli.main.project.LocalModelPipelineRunner;
 import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
@@ -224,10 +225,37 @@ public final class LocalProjectCrawlBackend {
         }
         // Fail before queued-job snapshots, project registration, source downloads, or index writes.
         ProjectState discovered = project(context.getWorkingDirectory());
+        final boolean preservingCorpus;
+        final LocalCrawlJobRegistry.AsyncJob owningJob;
         try {
-            graphBackend.preflightNativeChat(discovered.root(), params);
+            // Internal selectors are capabilities of the registry-owned worker, not
+            // caller-supplied authorization to update another job or publish a corpus.
+            if (params.has("_asyncWorker") || params.has("_asyncJobId")) {
+                if (!params.path("_asyncWorker").isBoolean()
+                        || !params.path("_asyncWorker").booleanValue()
+                        || !params.path("_asyncJobId").isTextual()) {
+                    throw new IOException("Internal crawl selectors require the owning durable crawl worker");
+                }
+                owningJob = LocalCrawlJobRegistry.get(text(params, "_asyncJobId"));
+                if (owningJob == null) {
+                    throw new IOException("Internal crawl selectors require the owning durable crawl worker");
+                }
+                owningJob.submittedRequest(discovered.root());
+            } else {
+                owningJob = null;
+            }
+            preservingCorpus = LocalCorpusPublication.isRequested(params);
+            if (preservingCorpus) {
+                LocalCorpusPublication.validateRequest(params);
+                if (!dryRun(params) && !asyncRequested(params)
+                        && owningJob == null) {
+                    return ToolResult.error("Preserving corpus publication requires a durable asynchronous crawl job.");
+                }
+            } else {
+                graphBackend.preflightNativeChat(discovered.root(), params);
+            }
         } catch (Exception invalid) {
-            return ToolResult.error("Native graph chat preflight failed: " + message(invalid));
+            return ToolResult.error("Local crawl preflight failed: " + message(invalid));
         }
         if (asyncRequested(params)) {
             String refusal = autoInitRefusal(discovered);
@@ -244,6 +272,15 @@ public final class LocalProjectCrawlBackend {
             ProjectState project = dryRun(params)
                     ? project(context.getWorkingDirectory())
                     : ensureDirectoryProject(context.getWorkingDirectory());
+            LocalCorpusPublication.Context publication = null;
+            if (preservingCorpus && !dryRun(params)) {
+                LocalCrawlJobRegistry.AsyncJob job = owningJob;
+                if (job == null) {
+                    throw new IOException("Preserving corpus publication requires the owning durable crawl worker");
+                }
+                publication = new LocalCorpusPublication.Context(text(params, "_asyncJobId"),
+                        job.submittedRequest(project.root()), job::commitCorpus);
+            }
             KnowledgeBaseRef knowledgeBase = knowledgeBase(params.get("knowledgeBase"), project);
             if (knowledgeBase.error() != null) {
                 return ToolResult.error(knowledgeBase.error());
@@ -257,14 +294,16 @@ public final class LocalProjectCrawlBackend {
             LinkedHashSet<String> excludePatterns = new LinkedHashSet<>();
             List<String> warnings = new ArrayList<>();
             JsonNode documents = params.get("documents");
-            boolean isolatedExplicitPreview = dryRun(params)
-                    && documents != null && documents.isArray() && !documents.isEmpty();
+            boolean isolatedExplicitPreview = preservingCorpus || (dryRun(params)
+                    && documents != null && documents.isArray() && !documents.isEmpty());
             ObjectNode previous = isolatedExplicitPreview
                     ? mapper.createObjectNode()
                     : readSummary(project.root(), knowledgeBase.id());
             LinkedHashMap<String, ObjectNode> sourceConfigs = new LinkedHashMap<>();
             if (isolatedExplicitPreview) {
-                warnings.add("Explicit dry-run documents are isolated from prior crawl sources.");
+                warnings.add(preservingCorpus
+                        ? "Explicit lexical selection replaces only selected sources; unrelated corpus entries are preserved."
+                        : "Explicit dry-run documents are isolated from prior crawl sources.");
             } else {
                 mergePrevious(previous, sources, includePatterns, excludePatterns, warnings);
                 sourceConfigs.putAll(previousSourceConfigs(
@@ -500,7 +539,8 @@ public final class LocalProjectCrawlBackend {
             executionRequest.remove("_asyncJobId");
             ArrayNode normalizedDocuments = executionRequest.putArray("documents");
             sourceConfigs.values().forEach(normalizedDocuments::add);
-            String projectPipelineError = registerProjectPipelines(executionRequest, project);
+            String projectPipelineError = preservingCorpus ? null
+                    : registerProjectPipelines(executionRequest, project);
             if (projectPipelineError != null) {
                 return ToolResult.error(projectPipelineError);
             }
@@ -509,7 +549,8 @@ public final class LocalProjectCrawlBackend {
                 return ToolResult.error(validationError);
             }
             String pipelineValidationError =
-                    LocalModelPipelineRunner.validatePipelineDefinitions(project.root(), executionRequest);
+                    preservingCorpus ? null : LocalModelPipelineRunner.validatePipelineDefinitions(
+                            project.root(), executionRequest);
             if (pipelineValidationError != null) {
                 return ToolResult.error(pipelineValidationError);
             }
@@ -518,7 +559,7 @@ public final class LocalProjectCrawlBackend {
                     CrawlDocumentsTool.pipelineConfigurationWarnings(executionRequest);
             warnings.addAll(configurationWarnings);
 
-            if (!dryRun(params)) {
+            if (!dryRun(params) && !preservingCorpus) {
                 LocalSubprocessWatchdog.CapacityAdmission admission =
                         LocalSubprocessWatchdog.get().awaitCrawlCapacity(reason ->
                                 reportStage(params, "WAITING_FOR_CAPACITY",
@@ -574,6 +615,9 @@ public final class LocalProjectCrawlBackend {
                         "Loading and extracting project documents", 30);
                 ProjectCrawlCommand.ModelPipelineExecutor reportingModelExecutor =
                         (root, file, pipeline, loadedText) -> {
+                            if (preservingCorpus) {
+                                throw new IOException("Model execution is forbidden for preserving lexical corpus updates");
+                            }
                             reportStage(params, "MODEL_INITIALIZATION",
                                     "Initializing or running the selected model-backed document pipeline",
                                     30);
@@ -593,7 +637,7 @@ public final class LocalProjectCrawlBackend {
                 LocalCrawlRunner.ExecutionResult lifecycle =
                         LocalCrawlRunner.execute(
                                 profile, project.root(), dryRun, executionRequest,
-                                graphContext, mapper, reportingModelExecutor, graphBackend);
+                                graphContext, mapper, reportingModelExecutor, graphBackend, publication);
                 if (Thread.currentThread().isInterrupted()) {
                     throw new InterruptedException("Project-local crawl cancelled before persistence");
                 }
@@ -601,7 +645,9 @@ public final class LocalProjectCrawlBackend {
                         "Persisting crawl metadata, graph updates, and searchable artifacts", 85);
                 ProjectCrawlCommand.LocalCrawlExecution execution = lifecycle.crawlExecution();
                 LocalProjectGraphBackend.GraphUpdate graphUpdate = lifecycle.graphUpdate();
-                if (!dryRun) {
+                if (!dryRun && !preservingCorpus) {
+                    // Preserving jobs already persisted a request-bound immutable receipt. No
+                    // fallible metadata writes may turn a successful corpus commit into failure.
                     persistRequest(execution.outputDirectory(), executionRequest, project, knowledgeBase);
                     if (graphUpdate != null) {
                         persistProjectGraphProfile(project, profile, knowledgeBase,
@@ -623,11 +669,12 @@ public final class LocalProjectCrawlBackend {
                 summary.put("projectRoot", project.root().toString());
                 summary.put("codeProjectId", project.id());
                 summary.put("projectManifest", project.root().resolve("kompile.project.json").toString());
-                summary.put("jobId", knowledgeBase.id());
+                String resultJobId = owningJob == null ? knowledgeBase.id() : owningJob.jobId();
+                summary.put("jobId", resultJobId);
                 summary.put("status", effectiveStatus);
 
                 Map<String, Object> metadata = new LinkedHashMap<>();
-                metadata.put("jobId", knowledgeBase.id());
+                metadata.put("jobId", resultJobId);
                 metadata.put("status", effectiveStatus);
                 metadata.put("backend", "project-local");
                 metadata.put("distributed", false);
@@ -647,6 +694,11 @@ public final class LocalProjectCrawlBackend {
                 metadata.put("codeProjectCount", selectedProjects.projects().size());
                 metadata.put("documentCount", execution.documentCount());
                 metadata.put("chunkCount", execution.chunkCount());
+                if (execution.corpusReceipt() != null) {
+                    metadata.put("corpusReceipt", mapper.convertValue(execution.corpusReceipt(), Map.class));
+                    metadata.put("corpusUpdate", LocalCorpusPublication.UPDATE);
+                    metadata.put("scope", "LEXICAL_ONLY");
+                }
                 metadata.put("failedDocumentCount", execution.documentFailures().size());
                 metadata.put("documentFailures", execution.documentFailures());
                 if (knowledgeBase.factSheetId() != null) {
@@ -757,9 +809,7 @@ public final class LocalProjectCrawlBackend {
             }
             if (crawlLock != null && crawlLock.isHeldByCurrentThread()) {
                 crawlLock.unlock();
-                if (!crawlLock.hasQueuedThreads() && crawlLockKey != null) {
-                    CRAWL_LOCKS.remove(crawlLockKey, crawlLock);
-                }
+                // Retain lock identities: removing an unlocked entry can split concurrent writers.
             }
         }
     }
@@ -1659,6 +1709,11 @@ public final class LocalProjectCrawlBackend {
     ArrayNode knowledgeBaseInventory(Path workingDirectory) throws IOException {
         ProjectState project = project(workingDirectory);
         return listKnowledgeBases(project.root());
+    }
+
+    /** The project a working directory belongs to, found without initialising anything. */
+    Path projectRoot(Path workingDirectory) {
+        return project(workingDirectory).root();
     }
 
     private ProjectState project(Path workingDirectory) {

@@ -347,6 +347,9 @@ public final class ResourcePolicy {
             String input = args.strip();
             boolean global = input.equals("global") || input.startsWith("global ");
             if (global) input = input.substring("global".length()).strip();
+            if (input.equals("monitor") || input.startsWith("monitor "))
+                return SystemPressureConfig.command(root, (global ? "global " : "")
+                        + input.substring("monitor".length()).strip(), user.resolveSibling("resource-monitor.json"));
             Path target = global ? user : file(root);
             String[] parts = input.split("\\s+", 2);
             String action = parts[0];
@@ -438,6 +441,7 @@ public final class ResourcePolicy {
                     + "  /resources                         Readable policy and source summary\n"
                     + "  /resources setup                   Interactive configuration wizard\n"
                     + "  /resources add                     Interactive add-rule wizard\n"
+                    + "  /resources monitor help            Configure runtime system-pressure auto-kill and momentum\n"
                     + "  /resources rules                   List ordered rules\n"
                     + "  /resources check <shell command>   Preview only; never executes\n"
                     + "  /resources rule <id> low|high <executable> [argument prefix...]\n"

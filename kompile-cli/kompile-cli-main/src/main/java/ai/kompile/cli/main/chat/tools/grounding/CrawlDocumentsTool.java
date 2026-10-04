@@ -177,11 +177,11 @@ public final class CrawlDocumentsTool implements CliTool {
         documentProps.putObject("chunkSize").put("type", "integer").put("minimum", 1);
         documentProps.putObject("chunkOverlap").put("type", "integer").put("minimum", 0);
         documentProps.putObject("properties").put("type", "object")
-                .put("description", "Connector configuration. SAP_NETWEAVER/ODATA/DYNAMICS365/NETSUITE/ODOO/SALESFORCE require entitySet and a service-root url "
+                .put("description", "Connector configuration. SAP_NETWEAVER/ODATA/DYNAMICS365/NETSUITE/ODOO/SALESFORCE/ORACLE_FUSION/ORACLE_EBS/JD_EDWARDS/INFOR_MONGOOSE/ACUMATICA require entitySet and a service-root url "
                         + "or serviceRoot; use connectionName from 'kompile auth source erp', not pasted secrets. "
                         + "Optional filter, select, orderBy, keyFields (comma-separated), sapClient (SAP only), "
                         + "maxRecords (default 100), pageSize, maxPages, timeoutMillis, maxResponseBytes. "
-                        + "Read-only SAP V2, OData V4, Dynamics F&O, NetSuite REST records, Odoo 19 search_read, Salesforce queries. Odoo/Salesforce require select field identifiers; no Camel routes, mutations or RFC.");
+                        + "Read-only SAP V2, OData V4, Dynamics F&O, NetSuite REST records, Odoo 19 search_read, Salesforce queries, Fusion Financials collections, EBS ISG interface GETs and JDE AIS table GETs. Oracle profiles require keyFields; JDE is one bounded read (no select/pageSize/maxPages). EBS uses Basic auth. Odoo/Salesforce require select field identifiers. INFOR_MONGOOSE: ION bearer, required tenant (X-Infor-MongooseConfig), select and keyFields, fixed REST v2 LoadCollection with bookmark paging; no filter/orderBy/custom methods. ACUMATICA: external bearer, root /entity/<endpoint>/<version>/, required wrapped business keyFields, optional simple select, computed top/skip; no filter/orderBy/login/actions. No Camel routes, mutations or RFC.");
         documentProps.putObject("chunkerOptions").put("type", "object");
         // No oneOf(path, url) here: connector sourceTypes (see the sourceType description above)
         // resolve identity from a connected account or from properties, so both path and url are
@@ -238,6 +238,12 @@ public final class CrawlDocumentsTool implements CliTool {
                 "Pipeline steps to run. Dependencies are resolved by the server; omit to run all.");
         addStringArray(props, "archivedSteps",
                 "Steps to archive for deferred execution.");
+        props.putObject("corpusUpdate").put("type", "string")
+                .put("description", "Opt-in folder-local immutable lexical publication. preserve-unselected-v1 requires "
+                        + "an asynchronous job, one DIRECTORY standard-text source with exact literal includePatterns, "
+                        + "the four lexical steps, strictSteps=true, deriveOntology=false, and disabled training/learning. "
+                        + "Retains unselected corpus rows and markdown; returns a job-bound integrity receipt, not model verification.")
+                .putArray("enum").add("preserve-unselected-v1");
         props.putObject("strictSteps").put("type", "boolean")
                 .put("description", "Honor selected steps without force-adding the legacy graph spine.");
         props.putObject("deriveOntology").put("type", "boolean");
@@ -1174,6 +1180,7 @@ public final class CrawlDocumentsTool implements CliTool {
     static boolean requiresLocalExecution(JsonNode params) {
         return params != null && params.isObject() && (params.path("dryRun").asBoolean(false)
                 || params.path("config").path("dryRun").asBoolean(false)
+                || params.has("corpusUpdate") || params.path("config").has("corpusUpdate")
                 || LocalProjectGraphBackend.usesNativeChat(params)
                 || requiresRequestScopedPipelineExecution(params) || requiresProjectLocalSource(params));
     }
@@ -1186,7 +1193,7 @@ public final class CrawlDocumentsTool implements CliTool {
     private static boolean requiresProjectLocalSource(JsonNode params) {
         if (params == null) return false;
         // ERP profiles and named credentials live in the host, not the managed crawl DTO.
-        for (String type : List.of("OBSIDIAN", "SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE")) {
+        for (String type : List.of("OBSIDIAN", "SAP_NETWEAVER", "ODATA", "DYNAMICS365", "NETSUITE", "ODOO", "SALESFORCE", "ORACLE_FUSION", "ORACLE_EBS", "JD_EDWARDS", "INFOR_MONGOOSE", "ACUMATICA")) {
             if (containsSourceType(params.get("documents"), type)
                     || containsSourceType(params.get("sources"), type)
                     || containsSourceType(params.path("config").get("documents"), type)

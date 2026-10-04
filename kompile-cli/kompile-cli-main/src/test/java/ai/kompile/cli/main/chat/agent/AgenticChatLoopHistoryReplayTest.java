@@ -53,6 +53,48 @@ class AgenticChatLoopHistoryReplayTest {
     }
 
     @Test
+    void twoNativeChatsRoundTripThroughBrowserAdapterAndCliReplayWithoutForks() throws Exception {
+        var adapter = new ai.kompile.cli.common.chat.sources.adapters.KompileAdapter();
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        for (int chat = 0; chat < 2; chat++) {
+            String id = UUID.randomUUID().toString();
+            var history = new ai.kompile.cli.main.chat.ChatHistory(id);
+            history.open("http://example.test", "coder", false, workingDirectory);
+            history.logUserMessage("original-" + chat);
+            history.logAssistantMessage("answer-" + chat, 0, 0);
+            history.close();
+            // Opening in the browser uses the native identity and the persisted turns.
+            assertEquals(id, adapter.resolveSessionId(workingDirectory, id));
+            assertEquals(2, adapter.readTurns(id).size());
+            var loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), workingDirectory,
+                    new RecordingClient(mapper), null);
+            loop.configureConversationSession(id);
+            loop.restoreHistory(history.readTurns());
+            assertEquals(2, ledgerOf(loop).snapshot().activeEntries().size());
+            ledgerOf(loop).append(CompactionService.ConversationEntry.user("continued-" + chat));
+            ledgerOf(loop).append(CompactionService.ConversationEntry.assistant("continued-answer-" + chat));
+            history.open("http://example.test", "coder", false, workingDirectory);
+            history.logUserMessage("continued-" + chat);
+            history.logAssistantMessage("continued-answer-" + chat, 0, 0);
+            history.close();
+            // Normal CLI resume restores the same ledger, not a duplicated browser history.
+            var resumed = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), workingDirectory,
+                    new RecordingClient(mapper), null);
+            resumed.configureConversationSession(id);
+            resumed.restoreHistory(history.readTurns());
+            assertEquals(4, ledgerOf(resumed).snapshot().activeEntries().size());
+            assertEquals(List.of("original-" + chat, "answer-" + chat,
+                            "continued-" + chat, "continued-answer-" + chat),
+                    adapter.readTurns(id).stream().map(turn -> turn.content()).toList());
+            assertTrue(ai.kompile.cli.main.chat.ChatHistory.listResumableConversations(workingDirectory)
+                    .stream().anyMatch(conversation -> id.equals(conversation.sessionId())));
+        }
+        assertEquals(2, adapter.list().size());
+    }
+
+    @Test
     void replayedToolExchangesUseEnvelopesAndCloseDanglingCalls() throws Exception {
         ObjectMapper objectMapper = JsonUtils.standardMapper();
         RecordingClient client = new RecordingClient(objectMapper);

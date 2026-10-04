@@ -26,8 +26,10 @@ import ai.kompile.cli.main.chat.exec.ChatAttachmentLoader;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.StreamingMarkdownRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
@@ -39,15 +41,25 @@ import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiPredicate;
 import java.util.stream.Collectors;
 
 /**
@@ -57,6 +69,12 @@ import java.util.stream.Collectors;
 public class ChatMessageHandler {
 
     private static final String SESSION_RESTART_STOP_LABEL = "Stopped: session restarting";
+    /** Beside the transcript: events this session received but has not delivered yet. */
+    private static final String PENDING_EVENTS_SUFFIX = ".pending-events.json";
+    /** An event that waited this long is delivered with its arrival time and age. */
+    private static final Duration LATE_EVENT_AGE = Duration.ofMinutes(1);
+    static final DateTimeFormatter EVENT_TIME_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(ZoneId.systemDefault());
 
     private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final ChatRepl repl;
@@ -83,7 +101,10 @@ public class ChatMessageHandler {
     /** Auto-continue watchdog for provider usage-limit windows (e.g. 5-hour quota). */
     private final UsageLimitAutoContinue usageLimitAutoContinue = new UsageLimitAutoContinue(
             this::resumeAfterUsageLimitWindow,
-            line -> ChatCompleter.showNotice(line));
+            line -> ChatCompleter.showNotice(line), this::quotaProvider);
+    private final ThreadLocal<UsageLimitAutoContinue.Turn> quotaTurn = new ThreadLocal<>();
+    /** Accessed only under turnDispatchLock; a busy owner must not discard a due wake. */
+    private UsageLimitAutoContinue.Resume deferredQuotaResume;
     private final ProviderConnectivityPolicy serverConnectivityPolicy =
             ProviderConnectivityPolicy.forProvider("kompile");
     private final AtomicReference<Thread> activeDispatchThread = new AtomicReference<>();
@@ -105,6 +126,26 @@ public class ChatMessageHandler {
             new ConcurrentLinkedDeque<>();
     private final ConcurrentLinkedDeque<String> mandatoryExternalMessages =
             new ConcurrentLinkedDeque<>();
+    /**
+     * Real events (never provider follow-up markers) with their arrival time, from
+     * receipt until a turn logs them. Mirrored to the pending-events file so the
+     * next chat on this session still delivers them. Guarded by turnDispatchLock.
+     */
+    private final Map<String, Instant> undeliveredExternal = new LinkedHashMap<>();
+    /** Off once this handler stops, so its late writes cannot clobber a successor's file. */
+    private boolean pendingEventsWritable = true;
+    /**
+     * Writes a delivery (id, text) into the provider turn that is running; false
+     * when no turn there can take it. Null for providers that cannot.
+     */
+    private volatile BiPredicate<String, String> runningTurnInjector;
+    /**
+     * Deliveries written into a running turn, by id, until the provider reports
+     * them read or dropped. Guarded by turnDispatchLock.
+     */
+    private final Map<String, Injection> injectedExternal = new LinkedHashMap<>();
+
+    private record Injection(String id, String delivery, List<String> events) { }
     /**
      * Input handed directly to a detached turn. These messages are no longer
      * durable queue entries: Ctrl+B explicitly released them for processing by
@@ -180,7 +221,10 @@ public class ChatMessageHandler {
         if (!acceptingDispatches.get()) return;
         // Any user-submitted input takes ownership back from the watchdog
         // and re-arms the /continue auto-reply budget.
-        usageLimitAutoContinue.disarm();
+        synchronized (turnDispatchLock) {
+            usageLimitAutoContinue.disarm();
+            deferredQuotaResume = null;
+        }
         if (continueManager != null) continueManager.noteUserActivity();
         repl.initializeSessionTitleFromPrompt(message);
         // Crawl/headless runs deliberately stay synchronous so callers do not
@@ -231,25 +275,147 @@ public class ChatMessageHandler {
         if (message == null || message.isBlank() || repl.isForceAgentic()
                 || !acceptingExternalMessages.get()) return;
         String normalized = message.strip();
+        boolean followUp = DirectLlmClient.isProviderFollowUp(normalized);
+        Injection injection;
         synchronized (turnDispatchLock) {
             if (!acceptingExternalMessages.get()) return;
+            if (!followUp && undeliveredExternal.putIfAbsent(normalized, Instant.now()) == null) {
+                savePendingEvents();
+            }
             if (repl.isLlmBusy()) {
-                if (mandatoryExternalMessages.contains(normalized)) return;
+                if (mandatoryExternalMessages.contains(normalized) || isInjected(normalized)) return;
                 mandatoryExternalMessages.add(normalized);
-                // A blocking child is not a model boundary. Release the parent
-                // automatically so completion events do not require Ctrl+B.
-                // Keep ordinary queued user input subject to its own policy.
-                requestBackground(false);
-                ChatCompleter.showNotice(renderer.cyan(hasBackgroundedActiveTurn()
-                        ? "  ↻ Completion event handed to background task"
-                        : "  ↻ Completion event queued for agent"));
-                repl.requestStatusRedraw();
+                injection = followUp ? null : claimForInjection();
+                if (injection == null) {
+                    waitForRunningTurn();
+                    return;
+                }
+            } else if (followUp) {
+                dispatchTurn(normalized,
+                        () -> handleAcceptedExternalMessage(normalized, List.of()),
+                        "standard-chat-process-wakeup");
+                return;
+            } else {
+                // Events a stopped turn held go out with this one.
+                List<String> events = pollQueuedEvents();
+                events.remove(normalized);
+                events.add(normalized);
+                dispatchExternalEvents(events);
                 return;
             }
-            dispatchTurn(normalized,
-                    () -> handleAcceptedExternalMessage(normalized),
-                    "standard-chat-process-wakeup");
         }
+        injectIntoRunningTurn(injection);
+    }
+
+    /** The event waits for the running turn's next boundary, or for its end. */
+    private void waitForRunningTurn() {
+        // A blocking child is not a model boundary. Release the parent
+        // automatically so completion events do not require Ctrl+B.
+        // Keep ordinary queued user input subject to its own policy.
+        requestBackground(false);
+        ChatCompleter.showNotice(renderer.cyan(hasBackgroundedActiveTurn()
+                ? "  ↻ Completion event handed to background task"
+                : "  ↻ Completion event queued for agent"));
+        repl.requestStatusRedraw();
+    }
+
+    /**
+     * Takes the queued events out for the running turn, which reads them after
+     * its next tool calls instead of after it ends. Null when no provider can
+     * take them, or the turn is being cancelled. Called under turnDispatchLock.
+     */
+    private Injection claimForInjection() {
+        if (runningTurnInjector == null || cancelSignal.get()) return null;
+        List<String> events = pollQueuedEvents();
+        if (events.isEmpty()) return null;
+        Injection injection = new Injection(UUID.randomUUID().toString(),
+                composeExternalDelivery(events), List.copyOf(events));
+        injectedExternal.put(injection.id(), injection);
+        return injection;
+    }
+
+    /**
+     * Writes a claimed delivery into the running turn, outside turnDispatchLock
+     * because the write can block on the provider's input. A delivery nothing
+     * took goes back to the queue.
+     */
+    private void injectIntoRunningTurn(Injection injection) {
+        BiPredicate<String, String> injector = runningTurnInjector;
+        if (injector != null && injector.test(injection.id(), injection.delivery())) {
+            ChatCompleter.showNotice(renderer.cyan("  ↻ Completion event sent to the running turn"));
+            return;
+        }
+        synchronized (turnDispatchLock) {
+            if (!requeueInjected(injection.id())) return;
+            if (repl.isLlmBusy()) {
+                waitForRunningTurn();
+            } else {
+                // The turn ended meanwhile, and its release did not see these events.
+                dispatchPendingExternalAfterTurnRelease();
+            }
+        }
+    }
+
+    /** The running turn took in an injected delivery: its events are delivered. */
+    void injectionDelivered(String id) {
+        synchronized (turnDispatchLock) {
+            Injection injection = injectedExternal.remove(id);
+            // A stopped handler leaves the events in the file for the next chat on the session.
+            if (injection == null || !acceptingExternalMessages.get()) return;
+            chatHistory.logSystem(injection.delivery());
+            markExternalDelivered(injection.events());
+        }
+    }
+
+    /** The provider dropped an injected delivery unread: its events wait for the next turn. */
+    void injectionDropped(String id) {
+        synchronized (turnDispatchLock) {
+            if (!requeueInjected(id)) return;
+            if (repl.isLlmBusy()) {
+                repl.requestStatusRedraw();
+            } else if (cancelSignal.get() && turnStopped.get()) {
+                // Escape is not answered by a new turn: they wait with the rest it held.
+                noteHeldAfterStop();
+            } else {
+                dispatchPendingExternalAfterTurnRelease();
+            }
+        }
+    }
+
+    /**
+     * Puts an injected delivery's events back at the head of the queue, in order.
+     * Removing the entry settles it, so a failed write and a later drop report
+     * cannot both requeue it. Called under turnDispatchLock.
+     *
+     * @return false when it was already settled, or this handler takes no events
+     */
+    private boolean requeueInjected(String id) {
+        Injection injection = injectedExternal.remove(id);
+        if (injection == null || !acceptingExternalMessages.get()) return false;
+        List<String> events = injection.events();
+        for (int i = events.size() - 1; i >= 0; i--) {
+            mandatoryExternalMessages.remove(events.get(i));
+            mandatoryExternalMessages.addFirst(events.get(i));
+        }
+        return true;
+    }
+
+    private boolean isInjected(String event) {
+        for (Injection injection : injectedExternal.values()) {
+            if (injection.events().contains(event)) return true;
+        }
+        return false;
+    }
+
+    void setRunningTurnInjector(BiPredicate<String, String> injector) {
+        runningTurnInjector = injector;
+    }
+
+    /** True while a turn runs, including one backgrounded with Ctrl+B. */
+    boolean hasActiveTurn() {
+        return turnActive.get() || repl.isLlmBusy()
+                || activeDispatchThread.get() != null
+                || synchronousTurnOwner.get() != null;
     }
 
     /**
@@ -262,11 +428,10 @@ public class ChatMessageHandler {
         String normalized = message.strip();
         synchronized (turnDispatchLock) {
             if (!acceptingDispatches.get()) return false;
+            usageLimitAutoContinue.disarm();
+            deferredQuotaResume = null;
             if (continueManager != null) continueManager.noteUserActivity();
-            boolean activeTurn = turnActive.get() || repl.isLlmBusy()
-                    || activeDispatchThread.get() != null
-                    || synchronousTurnOwner.get() != null;
-            if (activeTurn) {
+            if (hasActiveTurn()) {
                 if (mandatoryUserFeedback.contains(normalized)) return true;
                 mandatoryUserFeedback.add(normalized);
                 ChatCompleter.showNotice(renderer.cyan(
@@ -283,10 +448,26 @@ public class ChatMessageHandler {
         }
     }
 
+    /**
+     * Opens the event lanes, then delivers what this session received but never
+     * delivered before its previous chat stopped (a restart, a resume, a crash).
+     */
     void startAcceptingExternalMessages() {
         synchronized (turnDispatchLock) {
             acceptingDispatches.set(true);
             acceptingExternalMessages.set(true);
+            pendingEventsWritable = true;
+            List<String> restored = restorePendingEvents();
+            if (restored.isEmpty()) return;
+            ChatCompleter.showNotice(renderer.cyan("  ↻ Delivering " + restored.size()
+                    + (restored.size() == 1 ? " event" : " events")
+                    + " this chat received before it last stopped"));
+            if (repl.isLlmBusy()) {
+                mandatoryExternalMessages.addAll(restored);
+                repl.requestStatusRedraw();
+            } else {
+                dispatchExternalEvents(restored);
+            }
         }
     }
 
@@ -294,6 +475,8 @@ public class ChatMessageHandler {
         Thread externalOwner;
         synchronized (turnDispatchLock) {
             acceptingExternalMessages.set(false);
+            // The file keeps what is still undelivered for the next chat on this session.
+            pendingEventsWritable = false;
             mandatoryExternalMessages.clear();
             externalOwner = activeDispatchThread.get();
         }
@@ -393,7 +576,9 @@ public class ChatMessageHandler {
             turnActive.set(true);
             lastAssistantResponse.set(null);
             activeRemoteProcessId.set(null);
+            UsageLimitAutoContinue.Turn quotaOwner = usageLimitAutoContinue.beginTurn();
             Thread dispatchThread = new Thread(sessionContext.wrap(() -> {
+                quotaTurn.set(quotaOwner);
                 try {
                     repl.syncPendingSessionTitle();
                     action.run();
@@ -410,6 +595,7 @@ public class ChatMessageHandler {
                             + uncaughtTurnFailure.getClass().getName() + ": "
                             + uncaughtTurnFailure.getMessage());
                 } finally {
+                    quotaTurn.remove();
                     releaseTurnOwnershipAndHandOff();
                 }
             }), threadName);
@@ -456,7 +642,7 @@ public class ChatMessageHandler {
         if (stopped) {
             lastAssistantResponse.set(null);
             noteHeldAfterStop();
-        } else if (dispatchContinueAutoReply()) {
+        } else if (dispatchDeferredQuotaResume() || dispatchContinueAutoReply()) {
             return;
         }
         if (acceptingDispatches.get()) {
@@ -567,6 +753,8 @@ public class ChatMessageHandler {
         Thread synchronous;
         String processId;
         synchronized (turnDispatchLock) {
+            usageLimitAutoContinue.disarm();
+            deferredQuotaResume = null;
             // Keep the old owner reserved until every local cancellation signal is
             // published. Its release callback cannot start a successor that these
             // operations would accidentally cancel.
@@ -726,18 +914,20 @@ public class ChatMessageHandler {
         }
     }
 
-    private void handleAcceptedExternalMessage(String message) {
-        if (!acceptingExternalMessages.get()) {
-            repl.completeTaskWithoutAutoDequeue();
-            return;
+    /**
+     * @param events the real events this turn carries; once the turn is logged
+     *               they are delivered, and a later chat must not send them again
+     */
+    private void handleAcceptedExternalMessage(String message, List<String> events) {
+        synchronized (turnDispatchLock) {
+            if (!acceptingExternalMessages.get()) {
+                repl.completeTaskWithoutAutoDequeue();
+                return;
+            }
+            externalTurnActive.set(true);
+            chatHistory.logSystem(message);
+            markExternalDelivered(events);
         }
-        externalTurnActive.set(true);
-        if (!acceptingExternalMessages.get()) {
-            externalTurnActive.set(false);
-            repl.completeTaskWithoutAutoDequeue();
-            return;
-        }
-        chatHistory.logSystem(message);
         try {
             if (localMode) handleLocalChat(message);
             else handleServerChat(message);
@@ -762,17 +952,15 @@ public class ChatMessageHandler {
         return true;
     }
 
+    /** Delivers every queued event in one turn, not one turn per event. */
     private boolean dispatchPendingExternalAfterTurnRelease() {
         if (!acceptingExternalMessages.get()) {
             mandatoryExternalMessages.clear();
             return false;
         }
-        String message = mandatoryExternalMessages.poll();
-        if (message == null) return false;
-        if (!acceptingExternalMessages.get()) return false;
-        dispatchTurn(message,
-                () -> handleAcceptedExternalMessage(message),
-                "standard-chat-process-wakeup");
+        List<String> events = pollQueuedEvents();
+        if (events.isEmpty()) return false;
+        dispatchExternalEvents(events);
         return true;
     }
 
@@ -780,7 +968,7 @@ public class ChatMessageHandler {
         String message = pollProviderFollowUp();
         if (message == null) return false;
         dispatchTurn(message,
-                () -> handleAcceptedExternalMessage(message),
+                () -> handleAcceptedExternalMessage(message, List.of()),
                 "standard-chat-process-wakeup");
         return true;
     }
@@ -795,6 +983,128 @@ public class ChatMessageHandler {
             }
         }
         return null;
+    }
+
+    /** Removes and returns the queued real events, oldest first; follow-up markers stay. */
+    private List<String> pollQueuedEvents() {
+        List<String> events = new ArrayList<>();
+        for (String message : mandatoryExternalMessages) {
+            if (!DirectLlmClient.isProviderFollowUp(message)
+                    && mandatoryExternalMessages.removeFirstOccurrence(message)) {
+                events.add(message);
+            }
+        }
+        return events;
+    }
+
+    /** Starts one turn that delivers all of the given events. */
+    private void dispatchExternalEvents(List<String> events) {
+        List<String> carried = List.copyOf(events);
+        String delivery = composeExternalDelivery(carried);
+        dispatchTurn(delivery, () -> handleAcceptedExternalMessage(delivery, carried),
+                "standard-chat-process-wakeup");
+    }
+
+    /**
+     * Joins events into one delivery. An event that waited at least
+     * LATE_EVENT_AGE says when it arrived, so the agent checks the current state
+     * before it acts on the event.
+     */
+    private String composeExternalDelivery(List<String> events) {
+        Instant now = Instant.now();
+        StringBuilder delivery = new StringBuilder();
+        for (String event : events) {
+            if (delivery.length() > 0) delivery.append("\n\n");
+            Instant receivedAt = undeliveredExternal.get(event);
+            Duration waited = receivedAt == null ? Duration.ZERO : Duration.between(receivedAt, now);
+            if (waited.compareTo(LATE_EVENT_AGE) >= 0) {
+                delivery.append("[Late delivery: this event arrived at ")
+                        .append(EVENT_TIME_FORMAT.format(receivedAt)).append(", ")
+                        .append(ProcessManagementTool.formatDuration(waited))
+                        .append(" ago. Check the current state before acting on it.]\n");
+            }
+            delivery.append(event);
+        }
+        return delivery.toString();
+    }
+
+    /** A logged event is delivered: no later chat has to send it again. */
+    private void markExternalDelivered(List<String> events) {
+        boolean changed = false;
+        for (String event : events) {
+            // The same text queued again is a new arrival that still waits.
+            if (!mandatoryExternalMessages.contains(event)
+                    && undeliveredExternal.remove(event) != null) {
+                changed = true;
+            }
+        }
+        if (changed) savePendingEvents();
+    }
+
+    Path pendingEventsFile() {
+        Path transcript = chatHistory.getTranscriptFile();
+        return transcript == null ? null : transcript.resolveSibling(sessionId + PENDING_EVENTS_SUFFIX);
+    }
+
+    /** Mirrors undeliveredExternal beside the transcript; nothing pending, no file. */
+    private void savePendingEvents() {
+        if (!pendingEventsWritable) return;
+        Path file = pendingEventsFile();
+        if (file == null) return;
+        try {
+            if (undeliveredExternal.isEmpty()) {
+                Files.deleteIfExists(file);
+                return;
+            }
+            ObjectNode root = objectMapper.createObjectNode();
+            root.put("version", 1);
+            ArrayNode events = root.putArray("events");
+            undeliveredExternal.forEach((content, receivedAt) -> events.addObject()
+                    .put("content", content)
+                    .put("receivedAt", receivedAt.toString()));
+            Files.createDirectories(file.getParent());
+            Path temp = Files.createTempFile(file.getParent(), "." + file.getFileName(), ".tmp");
+            try {
+                Files.writeString(temp, objectMapper.writeValueAsString(root));
+                try {
+                    Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE,
+                            StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temp);
+            }
+        } catch (IOException e) {
+            // This chat still delivers them from memory; only a later chat would miss them.
+        }
+    }
+
+    /** Reads the pending-events file; returns the events this handler did not know yet. */
+    private List<String> restorePendingEvents() {
+        List<String> restored = new ArrayList<>();
+        Path file = pendingEventsFile();
+        if (file == null || !Files.isRegularFile(file)) return restored;
+        try {
+            for (JsonNode event : objectMapper.readTree(Files.readString(file)).path("events")) {
+                String content = event.path("content").asText("").strip();
+                if (content.isEmpty() || DirectLlmClient.isProviderFollowUp(content)) continue;
+                if (undeliveredExternal.putIfAbsent(content, receivedAt(event)) == null) {
+                    restored.add(content);
+                }
+            }
+        } catch (IOException | RuntimeException e) {
+            // An unreadable file must not stop the chat; the events in it are lost.
+        }
+        return restored;
+    }
+
+    private static Instant receivedAt(JsonNode event) {
+        try {
+            return Instant.parse(event.path("receivedAt").asText(""));
+        } catch (DateTimeParseException e) {
+            return Instant.now();
+        }
     }
 
     /** Dispatch input that a detached owner could not consume before it ended. */
@@ -897,7 +1207,7 @@ public class ChatMessageHandler {
             if (!acceptingDispatches.get()) return null;
             // A turn the provider started by itself is already running: it goes first.
             String followUp = pollProviderFollowUp();
-            if (followUp != null) return externalInputAtBoundary(followUp);
+            if (followUp != null) return externalInputAtBoundary(followUp, List.of(followUp));
             String feedback = mandatoryUserFeedback.poll();
             if (feedback != null) {
                 return new AgenticChatLoop.QueuedInput(feedback, () -> {
@@ -923,9 +1233,9 @@ public class ChatMessageHandler {
             if (!acceptingExternalMessages.get()) {
                 mandatoryExternalMessages.clear();
             }
-            String external = mandatoryExternalMessages.poll();
-            if (external != null && acceptingExternalMessages.get()) {
-                return externalInputAtBoundary(external);
+            List<String> events = pollQueuedEvents();
+            if (!events.isEmpty()) {
+                return externalInputAtBoundary(composeExternalDelivery(events), events);
             }
             BackgroundInput backgroundInput = backgroundInputs.poll();
             if (backgroundInput != null) {
@@ -1003,14 +1313,20 @@ public class ChatMessageHandler {
         }
     }
 
-    private AgenticChatLoop.QueuedInput externalInputAtBoundary(String external) {
-        return new AgenticChatLoop.QueuedInput(external, () -> {
+    /**
+     * @param delivery the text the agent receives
+     * @param events   the queued entries it carries; a declined claim puts them
+     *                 back at the head of the queue, in order
+     */
+    private AgenticChatLoop.QueuedInput externalInputAtBoundary(String delivery, List<String> events) {
+        return new AgenticChatLoop.QueuedInput(delivery, () -> {
             synchronized (turnDispatchLock) {
                 if (cancelSignal.get() || !acceptingExternalMessages.get()) {
                     return false;
                 }
                 externalWorkClaimed.set(true);
-                chatHistory.logSystem(external);
+                chatHistory.logSystem(delivery);
+                markExternalDelivered(events);
                 ChatCompleter.showNotice(renderer.cyan(
                         "  ↻ Applying completion event at agent boundary"));
                 repl.requestStatusRedraw();
@@ -1020,8 +1336,10 @@ public class ChatMessageHandler {
             synchronized (turnDispatchLock) {
                 externalWorkClaimed.set(false);
                 if (acceptingExternalMessages.get()) {
-                    mandatoryExternalMessages.remove(external);
-                    mandatoryExternalMessages.addFirst(external);
+                    for (int i = events.size() - 1; i >= 0; i--) {
+                        mandatoryExternalMessages.remove(events.get(i));
+                        mandatoryExternalMessages.addFirst(events.get(i));
+                    }
                 }
             }
         });
@@ -1183,8 +1501,8 @@ public class ChatMessageHandler {
                 repl.stopGeneratingSpinner();
                 String failure = e.getMessage() == null ? "" : e.getMessage();
                 emitLine(renderer.red("Error in chat: " + e.getMessage()));
-                usageLimitAutoContinue.onTurnFailure(
-                        failure + "\n" + textOf(task), message, !repl.isForceAgentic());
+                // Only provider failure evidence may set the quota wake, not prior model/tool output.
+                usageLimitAutoContinue.onTurnFailure(failure, message, !repl.isForceAgentic(), quotaTurn.get());
                 task.setError(e);
             }
         }
@@ -1526,25 +1844,46 @@ public class ChatMessageHandler {
                 repl.stopGeneratingSpinner();
                 String failure = e.getMessage() == null ? "" : e.getMessage();
                 emitLine(renderer.red("Error in agentic chat: " + e.getMessage()));
-                usageLimitAutoContinue.onTurnFailure(
-                        failure + "\n" + textOf(parentTask), message, !repl.isForceAgentic());
+                usageLimitAutoContinue.onTurnFailure(failure, message, !repl.isForceAgentic(), quotaTurn.get());
                 if (parentTask != null) parentTask.setError(e);
             }
         }
     }
 
+    private String quotaProvider() {
+        return repl.getChatConfig() == null ? "" : repl.getChatConfig().getProvider();
+    }
+
     /**
-     * Wake action for the usage-limit watchdog: re-dispatch the failed message
-     * through the ordinary turn path. Runs on the watchdog's scheduler thread;
-     * handleChatMessage's dispatch lock makes the hand-off safe and skips
-     * cleanly when the session is closing or a new turn owns the model.
+     * Re-dispatch the failed message without treating it as new user input.
+     * The dispatch lock and watchdog ticket reject stale wakes while preserving
+     * the automatic retry budget for the same provider and session.
      */
-    private void resumeAfterUsageLimitWindow(String message) {
-        ChatCompleter.showNotice(renderer.cyan("  ▶ Usage limit window elapsed — auto-continuing: "
-                + StringUtils.truncate(message, 60)));
-        chatHistory.logSystem("[auto-continue] usage-limit window elapsed; resending "
-                + "the failed turn (attempt budget managed by UsageLimitAutoContinue)");
-        handleChatMessage(message);
+    private void resumeAfterUsageLimitWindow(UsageLimitAutoContinue.Resume resume) {
+        String message = resume.message();
+        synchronized (turnDispatchLock) {
+            // Never replay into a different vendor. Busy maintenance/external
+            // owners defer the wake until release, without spending another retry.
+            if (!acceptingDispatches.get() || !usageLimitAutoContinue.isCurrent(resume)) return;
+            if (hasActiveTurn()) {
+                deferredQuotaResume = resume;
+                return;
+            }
+            ChatCompleter.showNotice(renderer.cyan("  ▶ Usage limit window elapsed — auto-continuing: "
+                    + StringUtils.truncate(message, 60)));
+            chatHistory.logSystem("[auto-continue] usage-limit window elapsed; resending the failed turn");
+            // This is not user input: preserve the watchdog's consecutive retry budget.
+            dispatchTurn(message, () -> handleAcceptedChatMessage(message), "usage-limit-resume");
+        }
+    }
+
+    /** Called under turnDispatchLock, after the previous owner has released. */
+    private boolean dispatchDeferredQuotaResume() {
+        UsageLimitAutoContinue.Resume resume = deferredQuotaResume;
+        deferredQuotaResume = null;
+        if (resume == null || !acceptingDispatches.get() || !usageLimitAutoContinue.isCurrent(resume)) return false;
+        resumeAfterUsageLimitWindow(resume);
+        return true;
     }
 
     // ========================================================================

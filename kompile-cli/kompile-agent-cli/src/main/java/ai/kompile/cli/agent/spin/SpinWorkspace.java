@@ -65,6 +65,9 @@ public final class SpinWorkspace {
         createManagedDirectory(workspace, workspace.resolve("data/input_documents"));
         createManagedDirectory(workspace, workspace.resolve("data/crawls"));
 
+        if (definition.projectBacked()) {
+            materializeProject(definition, workspace, pruneStaleManagedFiles);
+        }
         writeRole(definition, workspace);
         writeInstructions(definition, workspace);
         materializeSkills(definition, workspace);
@@ -74,7 +77,141 @@ public final class SpinWorkspace {
         markBundledExecutables(definition);
 
         SpinDefinition.ModelAsset model = definition.defaultModel();
+        if (model != null && definition.projectBacked()) {
+            Path payload = projectPayload(definition, workspace);
+            Path path = payload.resolve(definition.project().template().relativize(model.path()));
+            Path tokenizer = model.tokenizer() == null ? null
+                    : payload.resolve(definition.project().template().relativize(model.tokenizer()));
+            model = new SpinDefinition.ModelAsset(model.id(), workspace.relativize(path).toString(), path,
+                    tokenizer == null ? null : workspace.relativize(tokenizer).toString(), tokenizer,
+                    model.isDefault(), model.provider());
+        }
         return new Prepared(home, workspace, definition.root(), definition.roleName(), model);
+    }
+
+    private static Path projectPayload(SpinDefinition definition, Path workspace) {
+        return workspace.resolve("data/models/spin-assets").resolve(definition.project().contentId());
+    }
+
+    /** Publish verified project assets first, and its canonical inventory last. */
+    private static void materializeProject(SpinDefinition definition, Path workspace, boolean installing)
+            throws IOException {
+        Path payload = projectPayload(definition, workspace);
+        rejectSymlinkComponents(payload, "spin project assets");
+        Path manifestPath = workspace.resolve("kompile.project.json");
+        rejectSymlinkComponents(manifestPath, "spin project manifest");
+        ObjectNode existing = null;
+        if (Files.exists(manifestPath, LinkOption.NOFOLLOW_LINKS)) {
+            JsonNode read = JSON.readTree(manifestPath.toFile());
+            if (read == null || !read.isObject()) throw new IOException("Invalid workspace project manifest");
+            existing = (ObjectNode) read;
+            if (!definition.id().equals(existing.path("metadata").path("spin.owner").asText())) {
+                throw new IOException("Refusing to replace a project not owned by this spin");
+            }
+            if (!installing && definition.project().contentId().equals(
+                    existing.path("metadata").path("spin.contentId").asText())) return;
+        }
+        if (!Files.exists(payload, LinkOption.NOFOLLOW_LINKS)) {
+            createManagedDirectory(workspace, payload.getParent());
+            Path staging = payload.resolveSibling(".stage-" + UUID.randomUUID());
+            try {
+                copyWorkspaceTemplate(definition.project().template(), staging);
+                verifyProjectCopy(definition.project().template(), staging);
+                try { Files.move(staging, payload, StandardCopyOption.ATOMIC_MOVE); }
+                catch (AtomicMoveNotSupportedException failure) { Files.move(staging, payload); }
+            } finally {
+                if (Files.exists(staging, LinkOption.NOFOLLOW_LINKS)) {
+                    resetManagedDirectory(workspace, staging);
+                    Files.delete(staging);
+                }
+            }
+        } else {
+            verifyProjectCopy(definition.project().template(), payload);
+        }
+        String prefix = workspace.relativize(payload).toString().replace('\\', '/') + "/";
+        ObjectNode curated = definition.project().manifest();
+        ObjectNode result = existing == null ? curated.deepCopy() : existing.deepCopy();
+        for (String field : List.of("models", "pipelines", "scripts", "crawlProfiles", "workflows", "components", "modules")) {
+            ArrayNode merged = JSON.createArrayNode();
+            java.util.Set<String> ids = new java.util.HashSet<>();
+            if (existing != null) for (JsonNode item : SpinProjectComposition.array(existing, field)) {
+                if (definition.id().equals(item.path("metadata").path("spin.owner").asText())) continue;
+                merged.add(item.deepCopy());
+                ids.add(item.path("id").asText());
+            }
+            for (JsonNode item : SpinProjectComposition.array(curated, field)) {
+                if (!item.isObject()) throw new IOException("Project " + field + " entry must be an object");
+                String id = item.path("id").asText("");
+                if (id.isBlank() || !ids.add(id)) throw new IOException("Project " + field + " id collision: " + id);
+                ObjectNode managed = (ObjectNode) item.deepCopy();
+                if (!managed.path("metadata").isObject()) managed.putObject("metadata");
+                ((ObjectNode) managed.path("metadata")).put("spin.owner", definition.id());
+                if ("models".equals(field)) {
+                    relocate(managed, "path", prefix);
+                    relocate(managed, "stagingRegistryPath", prefix);
+                    relocateMetadata(managed, prefix);
+                } else if ("pipelines".equals(field)) {
+                    relocate(managed, "definitionPath", prefix);
+                    relocate(managed, "registryPath", prefix);
+                } else if ("scripts".equals(field)) {
+                    relocate(managed, "path", prefix);
+                    relocate(managed, "workingDirectory", prefix);
+                } else if ("crawlProfiles".equals(field)) {
+                    JsonNode sources = managed.path("sources");
+                    if (sources.isArray()) {
+                        ArrayNode remapped = JSON.createArrayNode();
+                        for (JsonNode source : sources) {
+                            String value = source.asText();
+                            remapped.add(value.matches("^[A-Za-z][A-Za-z0-9+.-]*://.*") ? value : prefix + value);
+                        }
+                        managed.set("sources", remapped);
+                    }
+                }
+                merged.add(managed);
+            }
+            result.set(field, merged);
+        }
+        result.set("distribution", curated.path("distribution").deepCopy());
+        if (!result.path("metadata").isObject()) result.putObject("metadata");
+        ObjectNode metadata = (ObjectNode) result.path("metadata");
+        metadata.put("spin.owner", definition.id());
+        metadata.put("spin.contentId", definition.project().contentId());
+        metadata.put("spin.defaultModel", curated.path("metadata").path("spin.defaultModel").asText(""));
+        // Seed configuration only once; never export or overwrite the user's subsequent secrets.
+        copyWorkspaceTemplate(definition.project().template().resolve("config"), workspace.resolve("config"));
+        writeJsonAtomic(workspace, manifestPath, result);
+    }
+
+    private static void verifyProjectCopy(Path source, Path target) throws IOException {
+        rejectSymlinkComponents(target, "spin project payload");
+        try (var walk = Files.walk(source)) {
+            for (Path file : walk.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
+                Path copied = target.resolve(source.relativize(file));
+                rejectSymlinkComponents(copied, "spin project payload");
+                if (!Files.isRegularFile(copied, LinkOption.NOFOLLOW_LINKS)
+                        || !ai.kompile.utils.HashUtils.sha256Hex(file).equals(ai.kompile.utils.HashUtils.sha256Hex(copied))) {
+                    throw new IOException("Spin project asset verification failed: " + source.relativize(file));
+                }
+            }
+        }
+    }
+
+    private static void relocate(ObjectNode node, String field, String prefix) throws IOException {
+        JsonNode value = node.path(field);
+        if (value.isMissingNode() || value.isNull() || value.asText().isBlank()) return;
+        String path = value.asText();
+        if (!value.isTextual() || path.contains("\\") || Path.of(path).isAbsolute()
+                || java.util.Arrays.asList(path.split("/")).contains("..") || path.contains(":")) {
+            throw new IOException("Project " + field + " must be a portable relative path");
+        }
+        node.put(field, prefix + path);
+    }
+
+    private static void relocateMetadata(ObjectNode node, String prefix) throws IOException {
+        ObjectNode metadata = (ObjectNode) node.path("metadata");
+        List<String> paths = new ArrayList<>();
+        metadata.fieldNames().forEachRemaining(key -> { if (key.endsWith(".path")) paths.add(key); });
+        for (String key : paths) relocate(metadata, key, prefix);
     }
 
     private static void writeRole(SpinDefinition definition, Path workspace) throws IOException {
@@ -221,7 +358,9 @@ public final class SpinWorkspace {
         }
         ObjectNode catalog = JSON.createObjectNode();
         catalog.set("models", models);
-        writeJsonAtomic(workspace, workspace.resolve(".kompile/spin-models.json"), catalog);
+        if (!definition.projectBacked()) {
+            writeJsonAtomic(workspace, workspace.resolve(".kompile/spin-models.json"), catalog);
+        }
 
         SpinDefinition.ModelAsset model = definition.defaultModel();
         if (model == null) {

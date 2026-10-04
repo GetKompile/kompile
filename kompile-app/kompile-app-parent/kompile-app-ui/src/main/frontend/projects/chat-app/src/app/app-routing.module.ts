@@ -22,10 +22,13 @@ import { ChatWorkspaceComponent } from './components/chat-workspace/chat-workspa
 import { ProjectPageComponent } from './components/project-page/project-page.component';
 import { GraphPageComponent } from './components/graph-page/graph-page.component';
 import { ChatSettingsComponent } from './components/settings/chat-settings.component';
+import { InsightsPageComponent } from './components/insights-page/insights-page.component';
 import { FactSheetPageComponent } from '@shared/components/fact-sheet-page/fact-sheet-page.component';
 
 /**
- * Chat app routes — chat, project browsing, fact sheets and read-only graph exploration.
+ * Chat app routes — chat, project browsing, fact sheets, read-only graph exploration, and the
+ * insights reports on the project's chat sessions: judge verdicts, tool calls, test milestones,
+ * crawls and knowledge graphs.
  *
  * Deliberately absent: /data, /developer, /agents, /enforcer and the graph build / reason /
  * audit / ontology surfaces. Those are admin routes and their components are not on this
@@ -38,11 +41,13 @@ export const routes: Routes = [
   { path: '', redirectTo: 'chat', pathMatch: 'full' },
 
   // ── Primary nav tabs ────────────────────────────────────────────────────
-  { path: 'chat',        component: UnifiedChatComponent,  title: 'Kompile Chat' },
-  { path: 'workspace',   component: ChatWorkspaceComponent, title: 'Kompile Chat — Workspace' },
+  { path: 'chat',        component: ChatWorkspaceComponent, title: 'Kompile Chat' },
+  { path: 'workspace',   redirectTo: 'chat', pathMatch: 'full' },
+  { path: 'single-chat', component: UnifiedChatComponent, title: 'Kompile Chat — Single chat' },
   { path: 'project',     component: ProjectPageComponent,  title: 'Kompile Chat — Project' },
   { path: 'fact-sheets', component: FactSheetPageComponent, title: 'Kompile Chat — Fact Sheets' },
   { path: 'graph',       component: GraphPageComponent,    title: 'Kompile Chat — Graph' },
+  { path: 'insights',    component: InsightsPageComponent, title: 'Kompile Chat — Insights' },
   { path: 'settings',    component: ChatSettingsComponent, title: 'Kompile Chat — Connections' },
 
   // ── Legacy path redirects ────────────────────────────────────────────────

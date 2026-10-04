@@ -44,7 +44,8 @@ export class AppComponent {
     { label: 'Chat',        route: '/chat',        exact: true },
     { label: 'Project',     route: '/project' },
     { label: 'Fact Sheets', route: '/fact-sheets', activeJobsBadge: true },
-    { label: 'Graph',       route: '/graph' }
+    { label: 'Graph',       route: '/graph' },
+    { label: 'Insights',    route: '/insights' }
   ];
 
   /**

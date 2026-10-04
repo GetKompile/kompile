@@ -51,8 +51,8 @@ class ChatWebHandoffTest {
         command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
         String output = successfulOutput(command, "--web", "--workspace", "--open-browser",
                 "--working-dir", directory.toString());
-        assertTrue(output.contains("http://127.0.0.1:1234/#/workspace"), output);
-        assertEquals("http://127.0.0.1:1234/#/workspace", command.opened);
+        assertTrue(output.contains("http://127.0.0.1:1234/#/chat"), output);
+        assertEquals("http://127.0.0.1:1234/#/chat", command.opened);
     }
 
     @Test void webDefaultsToPrintedUrlWithoutBrowser() {
@@ -63,7 +63,23 @@ class ChatWebHandoffTest {
         assertNull(command.opened);
         assertFalse(command.wizard);
         assertNull(command.startedWorkflow);
+        assertTrue(command.webWorkspace());
+        assertTrue(output.contains("http://127.0.0.1:1234/#/chat"), output);
         assertFalse(output.contains("Workflow team:"), output);
+    }
+
+    @Test void singleChatRemainsExplicitAndDoesNotEnableWorkspace() {
+        Stub command = new Stub();
+        command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
+        successfulOutput(command, "--web", "--single-chat", "--open-browser", "--working-dir", directory.toString());
+        assertFalse(command.webWorkspace());
+        assertEquals("http://127.0.0.1:1234/#/single-chat", command.opened);
+        for (String[] args : new String[][] {{"--single-chat"}, {"--web", "--single-chat", "--workspace"}}) {
+            Stub invalid = new Stub();
+            assertEquals(2, new CommandLine(invalid).execute(args));
+            assertFalse(invalid.selected);
+            assertNull(invalid.started);
+        }
     }
 
     @Test void aNamedTeamStartsEveryNewWebSession() throws Exception {
@@ -119,7 +135,7 @@ class ChatWebHandoffTest {
                     : new String[] {"--web", "--open-browser", "--working-dir", directory.toString()};
             String output = successfulOutput(command, args);
             assertTrue(output.contains("Web chat: http://127.0.0.1:1234"));
-            assertEquals("http://127.0.0.1:1234", command.opened);
+            assertEquals("http://127.0.0.1:1234/#/chat", command.opened);
             assertTrue(command.selected);
             assertFalse(command.wizard);
         }

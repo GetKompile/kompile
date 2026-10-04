@@ -278,6 +278,143 @@ class ChatReplRetainedLifecycleTest {
         }
     }
 
+    @Test
+    void aRejectedLiveModelSelectionKeepsConfigLabelMetricsAndSavedModel() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        Path home = Files.createDirectories(temporaryDirectory.resolve("model-home"));
+        Path work = Files.createDirectories(temporaryDirectory.resolve("model-project"));
+        System.setProperty("user.home", home.toString());
+        HarnessConfig disabled = new HarnessConfig();
+        disabled.setEnabled(false);
+        disabled.setJudgeEnabled(false);
+        disabled.setJudgeGlobalEnabled(false);
+        disabled.setPersistCrossSession(false);
+        McpBundleToolLoader bundle = mock(McpBundleToolLoader.class);
+        when(bundle.dashboardConfig()).thenReturn(Optional.empty());
+        try (MockedStatic<HarnessConfig> harness = mockStatic(HarnessConfig.class);
+             MockedStatic<ToolRegistryFactory> tools = mockStatic(ToolRegistryFactory.class);
+             MockedStatic<McpBundleToolLoader> mcp = mockStatic(McpBundleToolLoader.class)) {
+            harness.when(HarnessConfig::load).thenReturn(disabled);
+            harness.when(() -> HarnessConfig.load(any())).thenReturn(disabled);
+            tools.when(() -> ToolRegistryFactory.create(any(), anyString(), any(), any(),
+                            any(), any(), any(), any(), isNull(), any(), any()))
+                    .thenAnswer(invocation -> new ToolRegistry(invocation.getArgument(0)));
+            mcp.when(() -> McpBundleToolLoader.loadInteractive(eq(work), any(), anyString())).thenReturn(bundle);
+            ChatConfig initial = new ChatConfig("anthropic", null, "sonnet", null);
+            initial.setAuthenticationMethod("oauth");
+            initial.setContextWindowTokens(200_000);
+            initial.setMaxOutputTokens(4096);
+            ScheduledLoopManager loops = new ScheduledLoopManager(prompt -> fail("No scheduled turn expected"),
+                    ScheduledLoopManager.stateFileForProject(work));
+            try (OwnedRepl owned = new OwnedRepl("model-ack-test", work, loops, initial)) {
+                var fake = new ai.kompile.cli.main.chat.config.FakeClaudeCode(work.resolve("fake"), """
+                        control() {
+                          if [ "$2" = set_model ] && [[ "$3" == *'fable[1m]'* ]]; then
+                            emit '{"type":"control_response","response":{"subtype":"error","request_id":"'"$1"'","error":"1m context is disabled"}}'
+                          else
+                            emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{}}}'
+                          fi
+                        }
+                        """);
+                fake.install(owned.repl.getDirectClient(), work, null);
+                var loop = (ai.kompile.cli.main.chat.agent.AgenticChatLoop)
+                        org.springframework.test.util.ReflectionTestUtils.getField(owned.repl, "agenticLoop");
+                var metrics = (ChatSessionMetrics)
+                        org.springframework.test.util.ReflectionTestUtils.getField(owned.repl, "sessionMetrics");
+                try (var ignored = owned.ui.bind()) {
+                    assertEquals("ok", loop.chat("first", "model-ack-test", "coder", "default", false).strip());
+                    owned.repl.refreshModelDisplay();
+                    owned.repl.getChatConfig().saveLoadedOrGlobal();
+                    String label = owned.repl.getTui().getTopBar().render(160);
+                    ChatConfig invalid = owned.repl.getChatConfig().copy();
+                    invalid.setModel("fable[1m]");
+                    assertTrue(owned.repl.commitModelProviderSelection(invalid));
+                    ai.kompile.cli.main.chat.config.FakeClaudeCode.await("the visible selection rejection",
+                            () -> content(owned).contains("1m context is disabled"));
+                    assertEquals("sonnet", owned.repl.getChatConfig().getModel());
+                    assertEquals("sonnet", metrics.getModel());
+                    assertEquals(label, owned.repl.getTui().getTopBar().render(160));
+                    assertEquals("sonnet", ChatConfig.loadSession("model-ack-test").getModel());
+                    assertFalse(content(owned).contains("Selected provider/model: Anthropic / fable[1m]"));
+                    assertEquals("ok", loop.chat("after rejection", "model-ack-test", "coder", "default", false).strip());
+                    assertEquals(1, fake.controls("set_model").size(), "no phantom switch back is needed");
+                    ChatConfig valid = owned.repl.getChatConfig().copy();
+                    valid.setModel("opus");
+                    assertTrue(owned.repl.commitModelProviderSelection(valid));
+                    ai.kompile.cli.main.chat.config.FakeClaudeCode.await("acknowledged model persisted",
+                            () -> "opus".equals(ChatConfig.loadSession("model-ack-test").getModel()));
+                    assertEquals("opus", owned.repl.getChatConfig().getModel());
+                    assertEquals("opus", metrics.getModel());
+                    assertTrue(owned.repl.getTui().getTopBar().render(160).contains("opus"));
+                    assertEquals(1, fake.argv().size(), "the provider session survives selection");
+                }
+            } finally {
+                loops.shutdown();
+            }
+        } finally {
+            restoreProperty("user.home", previousHome);
+        }
+    }
+
+    @Test
+    void aCompletionEventDuringAClaudeTurnGoesIntoThatTurnAfterInteractiveInitialization() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        String previousDirectory = System.getProperty("user.dir");
+        Path home = Files.createDirectories(temporaryDirectory.resolve("injection-home"));
+        Path work = Files.createDirectories(temporaryDirectory.resolve("injection-project"));
+        Files.createDirectories(work.resolve(".kompile"));
+        System.setProperty("user.home", home.toString());
+        System.setProperty("user.dir", work.toString());
+        HarnessConfig disabled = new HarnessConfig();
+        disabled.setEnabled(false);
+        disabled.setJudgeEnabled(false);
+        disabled.setJudgeGlobalEnabled(false);
+        disabled.setPersistCrossSession(false);
+        McpBundleToolLoader bundle = mock(McpBundleToolLoader.class);
+        when(bundle.dashboardConfig()).thenReturn(Optional.empty());
+        try (MockedStatic<HarnessConfig> harness = mockStatic(HarnessConfig.class);
+             MockedStatic<ToolRegistryFactory> tools = mockStatic(ToolRegistryFactory.class);
+             MockedStatic<McpBundleToolLoader> mcp = mockStatic(McpBundleToolLoader.class);
+             // The running Claude Code turn takes every delivery written into it.
+             MockedConstruction<DirectLlmClient> clients = mockConstruction(DirectLlmClient.class,
+                     (client, context) -> when(client.injectIntoClaudeTurn(anyString(), anyString())).thenReturn(true));
+             var terminal = new LineDisciplineTerminal(
+                     "running-turn-injection", "xterm", new ByteArrayOutputStream(), StandardCharsets.UTF_8)) {
+            harness.when(HarnessConfig::load).thenReturn(disabled);
+            harness.when(() -> HarnessConfig.load(any())).thenReturn(disabled);
+            tools.when(() -> ToolRegistryFactory.create(any(), anyString(), any(), any(),
+                            any(), any(), any(), any(), isNull(), any(), any()))
+                    .thenAnswer(invocation -> new ToolRegistry(invocation.getArgument(0)));
+            mcp.when(() -> McpBundleToolLoader.loadInteractive(eq(work), any(), anyString())).thenReturn(bundle);
+            // A terminal with a width makes initializeInteractive rebuild the message handler.
+            terminal.setSize(new Size(100, 30));
+            ScheduledLoopManager loops = new ScheduledLoopManager(prompt -> fail("No scheduled turn expected"),
+                    ScheduledLoopManager.stateFileForProject(work));
+            try (OwnedRepl owned = new OwnedRepl("running-turn-injection", work, loops)) {
+                try (var ignored = owned.ui.bind()) {
+                    owned.repl.initializeInteractive(terminal);
+                    // The process ends while a Claude Code turn runs.
+                    owned.repl.setLlmBusy(true);
+                    try {
+                        owned.repl.messageHandler.handleExternalMessage("[System process completion]\n"
+                                + "Process proc-001 finished with state completed and exit code 0.");
+                    } finally {
+                        owned.repl.setLlmBusy(false);
+                    }
+                    owned.repl.detachInteractive();
+                }
+                assertEquals(1, clients.constructed().size());
+                verify(clients.constructed().get(0))
+                        .injectIntoClaudeTurn(anyString(), contains("Process proc-001 finished"));
+            } finally {
+                loops.shutdown();
+            }
+        } finally {
+            restoreProperty("user.home", previousHome);
+            restoreProperty("user.dir", previousDirectory);
+        }
+    }
+
     private static String content(OwnedRepl owner) {
         return String.join("\n", owner.repl.getTui().getVisibleContentLines());
     }
@@ -288,9 +425,13 @@ class ChatReplRetainedLifecycleTest {
         final ChatRepl repl;
 
         OwnedRepl(String id, Path work, ScheduledLoopManager projectLoops) {
+            this(id, work, projectLoops, new ChatConfig("codex", null, "test-model", null));
+        }
+
+        OwnedRepl(String id, Path work, ScheduledLoopManager projectLoops, ChatConfig config) {
             try (var ignored = ui.bind()) {
                 repl = new ChatRepl(null, null, id, false, "coder", false,
-                        new ChatConfig("codex", null, "test-model", null), work,
+                        config, work,
                         new TerminalRenderer(true));
                 repl.installRetainedOutput();
                 repl.configureHost(projectLoops);

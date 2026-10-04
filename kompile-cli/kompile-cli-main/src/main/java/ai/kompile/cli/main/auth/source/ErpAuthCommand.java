@@ -18,10 +18,10 @@ import java.util.concurrent.Callable;
         subcommands = {ErpAuthCommand.ListConnections.class, ErpAuthCommand.Status.class, ErpAuthCommand.Remove.class})
 public final class ErpAuthCommand implements Callable<Integer> {
     @Option(names = "--name", description = "Connection name referenced by crawl properties.connectionName.") String name;
-    @Option(names = "--source-type", description = "SAP_NETWEAVER, ODATA, DYNAMICS365 (F&O), NETSUITE, ODOO (19 JSON-2), SALESFORCE.") String type;
+    @Option(names = "--source-type", description = "SAP_NETWEAVER, ODATA, DYNAMICS365 (F&O), NETSUITE, ODOO (19 JSON-2), SALESFORCE, ORACLE_FUSION, ORACLE_EBS, JD_EDWARDS, INFOR_MONGOOSE (REST v2 through ION), ACUMATICA (contract-based REST).") String type;
     @Option(names = "--service-root", description = "HTTPS service URL, without query or credentials.") String root;
-    @Option(names = "--tenant", description = "Tenant identity for binding; ODOO uses this as the optional X-Odoo-Database header.") String tenant;
-    @Option(names = "--username", description = "Basic-auth username for SAP/ODATA only; omit for bearer credentials.") String username;
+    @Option(names = "--tenant", description = "Tenant identity for binding; ODOO: optional X-Odoo-Database; INFOR_MONGOOSE: required X-Infor-MongooseConfig.") String tenant;
+    @Option(names = "--username", description = "Basic-auth username for SAP/ODATA/Fusion/EBS/JDE; omit for bearer credentials.") String username;
     @Option(names = "--secret-from-env", paramLabel = "ENV") String environment;
     @Option(names = "--secret-file", paramLabel = "PATH") Path file;
     @Option(names = "--secret-stdin") boolean stdin;
@@ -35,11 +35,11 @@ public final class ErpAuthCommand implements Callable<Integer> {
             if (bare) {
                 var console = System.console();
                 if (console == null) throw new IllegalArgumentException("No interactive console. Use --name --source-type --service-root and --secret-from-env, --secret-file or --secret-stdin.");
-                type = console.readLine("Source type (SAP_NETWEAVER, ODATA, DYNAMICS365, NETSUITE, ODOO, SALESFORCE): ");
+                type = console.readLine("Source type (%s): ", String.join(", ", ai.kompile.source.erp.ErpSourceConfiguration.TYPES.stream().sorted().toList()));
                 name = console.readLine("Connection name: ");
                 root = console.readLine("HTTPS service root: ");
-                tenant = console.readLine("Tenant identity (optional): ");
-                username = console.readLine("Basic username (SAP/ODATA only; leave blank for bearer): ");
+                tenant = console.readLine("Tenant identity (required Mongoose configuration for INFOR_MONGOOSE; otherwise optional): ");
+                username = console.readLine("Basic username (required for SAP/EBS; optional for ODATA/Fusion/JDE, blank for bearer): ");
                 char[] password = console.readPassword("Password or bearer token: ");
                 if (password == null) throw new IllegalArgumentException("ERP setup cancelled");
                 secret = new String(password);

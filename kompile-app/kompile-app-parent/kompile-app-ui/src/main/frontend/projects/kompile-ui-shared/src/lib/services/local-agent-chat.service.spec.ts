@@ -1,8 +1,11 @@
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
-import { HttpClientTestingModule } from '@angular/common/http/testing';
+import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 
-import { LocalAgentChatService } from './local-agent-chat.service';
+import {
+  InsightsSettingsView, InsightsTopicReport, LocalAgentChatService, SessionInsightsSnapshot
+} from './local-agent-chat.service';
 import { ChatStorageService } from './chat-storage.service';
+import { SKIP_ERROR_SNACKBAR } from './http-error.interceptor';
 import { AgentProvider, LocalAgentSession, MessageAttachment, ToolUseEvent } from '../models/api-models';
 
 describe('LocalAgentChatService harness transport', () => {
@@ -555,6 +558,86 @@ describe('LocalAgentChatService harness transport', () => {
       expect(service.getWorkflowTeam('no-approvals')).toBeNull();
       expect(service.getWorkflowTeam('unnamed-participant')).toBeNull();
       expect(service.getWorkflowTeam('not-json')).toBeNull();
+    });
+  });
+
+  describe('session insights', () => {
+    let http: HttpTestingController;
+    const insightsRead = (request: { url: string }) => request.url.endsWith('/agents/chat/session-insights');
+
+    beforeEach(() => http = TestBed.inject(HttpTestingController));
+    afterEach(() => http.verify());
+
+    it('reads the session\'s insights for its project, outside the global error snackbar', () => {
+      let answer: SessionInsightsSnapshot | undefined;
+      service.getSessionInsights('web-1', '/work/project').subscribe(value => answer = value);
+      const request = http.expectOne(insightsRead);
+      expect(request.request.method).toBe('GET');
+      expect(request.request.params.get('sessionId')).toBe('web-1');
+      expect(request.request.params.get('workingDirectory')).toBe('/work/project');
+      // The drawer polls and shows a failed read itself; a snackbar per poll would repeat it.
+      expect(request.request.context.get(SKIP_ERROR_SNACKBAR)).toBeTrue();
+      request.flush({ menu: 'insights', available: true, sessionId: 'web-1', lines: ['Judge: no flags'] });
+      expect(answer?.lines).toEqual(['Judge: no flags']);
+    });
+
+    it('sends only the session and directory it was given', () => {
+      service.getSessionInsights().subscribe();
+      const request = http.expectOne(insightsRead);
+      expect(request.request.params.keys()).toEqual([]);
+      request.flush({ menu: 'insights', available: false, status: 'Session insights need the chat session id' });
+    });
+  });
+
+  describe('insights page', () => {
+    let http: HttpTestingController;
+    const settings = {
+      defaultWindowDays: 7, maxRows: 10, maxExamples: 5, maxSessions: 200, maxBytesPerFile: 4194304,
+      maxToolIndexBytes: 268435456, sparklineBuckets: 14, sessionPanel: true
+    };
+    const view: InsightsSettingsView = { file: '/home/u/.kompile/config/insights.json', settings, defaults: settings };
+
+    beforeEach(() => http = TestBed.inject(HttpTestingController));
+    afterEach(() => http.verify());
+
+    it('reads one topic\'s report with its question and project, outside the global error snackbar', () => {
+      let answer: InsightsTopicReport | undefined;
+      service.getInsightsReport('judge', 'flags for bash', '/work/project').subscribe(value => answer = value);
+      const request = http.expectOne(r => r.url.endsWith('/agents/chat/insights'));
+      expect(request.request.method).toBe('GET');
+      expect(request.request.params.get('topic')).toBe('judge');
+      expect(request.request.params.get('question')).toBe('flags for bash');
+      expect(request.request.params.get('workingDirectory')).toBe('/work/project');
+      expect(request.request.context.get(SKIP_ERROR_SNACKBAR)).toBeTrue();
+      request.flush({ menu: 'insights', topic: 'judge', available: true, headline: 'Judge, last 7 days: no verdicts' });
+      expect(answer?.headline).toBe('Judge, last 7 days: no verdicts');
+    });
+
+    it('asks for the overview by naming no topic', () => {
+      service.getInsightsReport().subscribe();
+      const request = http.expectOne(r => r.url.endsWith('/agents/chat/insights'));
+      expect(request.request.params.keys()).toEqual([]);
+      request.flush({ menu: 'insights', topic: 'overview', available: true });
+    });
+
+    it('reads and saves insights.json, sending only the changed settings', () => {
+      let read: InsightsSettingsView | undefined;
+      service.getInsightsSettings().subscribe(value => read = value);
+      const get = http.expectOne(r => r.url.endsWith('/agents/chat/insights/config'));
+      expect(get.request.method).toBe('GET');
+      expect(get.request.context.get(SKIP_ERROR_SNACKBAR)).toBeTrue();
+      get.flush(view);
+      expect(read?.file).toBe(view.file);
+
+      let saved: InsightsSettingsView | undefined;
+      service.saveInsightsSettings({ maxRows: 20 }).subscribe(value => saved = value);
+      const put = http.expectOne(r => r.url.endsWith('/agents/chat/insights/config'));
+      expect(put.request.method).toBe('PUT');
+      expect(put.request.body).toEqual({ maxRows: 20 });
+      // The page shows a rejected value next to the form; a snackbar would repeat it.
+      expect(put.request.context.get(SKIP_ERROR_SNACKBAR)).toBeTrue();
+      put.flush({ ...view, settings: { ...settings, maxRows: 20 } });
+      expect(saved?.settings.maxRows).toBe(20);
     });
   });
 });

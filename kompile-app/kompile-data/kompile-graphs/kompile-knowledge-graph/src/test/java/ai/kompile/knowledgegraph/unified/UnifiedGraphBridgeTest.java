@@ -307,14 +307,15 @@ class UnifiedGraphBridgeTest {
 
     @Test
     void unclaimedManagedArtifactFailsBeforeMutation() {
-        UnifiedGraph imported = new UnifiedGraph().factSheetId(7L)
-                .putArtifactText("reasoning/psl-weights.json", "{}");
-
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class, () -> bridge.importGraph(imported, 7L));
-
-        assertTrue(failure.getMessage().contains("reserved .kgraph artifact"));
-        verify(graphService, never()).deleteByFactSheetId(anyLong());
+        for (String artifact : List.of("reasoning/psl-weights.json",
+                "reasoning/graph-psl-weights.v1.json", "reasoning/consensus-targets.v1.json",
+                "reasoning/fol-psl-program.v1.json")) {
+            UnifiedGraph imported = new UnifiedGraph().factSheetId(7L).putArtifactText(artifact, "{}");
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, () -> bridge.importGraph(imported, 7L));
+            assertTrue(failure.getMessage().contains("reserved .kgraph artifact"));
+            verify(graphService, never()).deleteByFactSheetId(anyLong());
+        }
     }
 
     @Test

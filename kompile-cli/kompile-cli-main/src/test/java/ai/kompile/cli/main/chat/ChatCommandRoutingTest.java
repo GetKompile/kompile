@@ -26,6 +26,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ChatCommandRoutingTest {
 
     @Test
+    void busyTranscriptFailsThroughNormalHeadlessEventsBeforeAnyModelStartup(
+            @org.junit.jupiter.api.io.TempDir Path home) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        var previousOut = System.out;
+        var output = new java.io.ByteArrayOutputStream();
+        try {
+            System.setProperty("user.home", home.toString());
+            Path directory = ai.kompile.cli.common.logs.LogPaths.ensureTranscriptDirectory("busy-id").toPath();
+            try (var channel = java.nio.channels.FileChannel.open(directory.resolve("writer.lock"),
+                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+                 var lock = channel.lock();
+                 var captured = new java.io.PrintStream(output, true, java.nio.charset.StandardCharsets.UTF_8)) {
+                System.setOut(captured);
+                assertEquals(1, new CommandLine(new ChatCommand()).execute(
+                        "--session-id", "busy-id", "--working-dir", home.toString(),
+                        "--output-format", "stream-json", "--local", "hello"));
+            }
+            String events = output.toString(java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(events.contains("already running"), events);
+            assertTrue(events.contains("busy-id"), events);
+            assertFalse(java.nio.file.Files.exists(directory.resolve("cli.log")));
+        } finally {
+            System.setOut(previousOut);
+            if (previousHome == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", previousHome);
+        }
+    }
+
+    @Test
     void liveWebInputAcceptsAdaptersStdinSentinelWithoutConsumingControls() throws Exception {
         var original = System.in;
         String initial = "{\"version\":1,\"rawInput\":\"hello\"}";

@@ -202,6 +202,8 @@ public class KompileTui {
     private String selectionViewKey;
     private int selectionPointerX;
     private int selectionPointerY;
+    /** An edge row stays selectable: drag scrolling waits until the pointer leaves the press row. */
+    private boolean selectionEdgeScrollArmed;
     private boolean selectionAutoScrollScheduled;
     private long selectionVersion;
 
@@ -570,6 +572,7 @@ public class KompileTui {
             selectionViewKey = contentViewKey;
             selectionPointerX = x;
             selectionPointerY = y;
+            selectionEdgeScrollArmed = false;
             selectionAutoScrollScheduled = false;
             selectionVersion++;
             replaceScrollRegion(contentViewLines, contentViewPinsHeader);
@@ -581,9 +584,10 @@ public class KompileTui {
     public boolean dragTranscriptSelection(int x, int y) {
         synchronized (drawLock) {
             if (!selectionDragging || !selectionBelongsToActiveView()) return false;
+            if (y != selectionPointerY) selectionEdgeScrollArmed = true;
             selectionPointerX = x;
             selectionPointerY = y;
-            boolean changed = autoScrollSelectionAt(y);
+            boolean changed = selectionEdgeScrollArmed && autoScrollSelectionAt(y);
             SelectionPoint point = selectionPointAt(x, y, true, true);
             if (point != null && !point.equals(selectionActiveCell)) {
                 selectionActiveCell = point;
@@ -2114,9 +2118,20 @@ public class KompileTui {
         return rows;
     }
 
+    /**
+     * Columns a transcript row may fill: one short of the terminal, so the
+     * terminal's automatic right-margin wrap never advances into input. Output
+     * that spans a whole row, such as a panel, must be sized to this; a
+     * terminal-wide panel wraps every line and leaves its right border on a
+     * row of its own, where a copied line picks it up.
+     */
+    public static int transcriptColumns(int terminalWidth) {
+        return Math.max(1, (terminalWidth > 0 ? terminalWidth : 80) - 1);
+    }
+
     private List<VisualRow> visualRowsWithMetadata(List<String> lines, int logicalLineOffset) {
         if (lines == null || lines.isEmpty()) return List.of();
-        int width = Math.max(1, (terminalWidth > 0 ? terminalWidth : 80) - 1);
+        int width = transcriptColumns(terminalWidth);
         List<VisualRow> rows = new ArrayList<>();
         for (int logicalLine = 0; logicalLine < lines.size(); logicalLine++) {
             String line = lines.get(logicalLine);
@@ -2252,7 +2267,10 @@ public class KompileTui {
     }
 
     private void scheduleSelectionAutoScrollLocked() {
-        if (selectionAutoScrollScheduled || !selectionDragging || !selectionAtScrollableEdge()) return;
+        if (selectionAutoScrollScheduled || !selectionDragging || !selectionEdgeScrollArmed
+                || !selectionAtScrollableEdge()) {
+            return;
+        }
         selectionAutoScrollScheduled = true;
         long version = selectionVersion;
         CompletableFuture.delayedExecutor(75, TimeUnit.MILLISECONDS).execute(() -> {

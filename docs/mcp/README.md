@@ -217,6 +217,7 @@ trust behavior, tool filtering, examples, and the open-source harness comparison
 | Subprocess watchdog | `subprocess_watchdog` (local crawl admission plus tracking/limits for pooled children) |
 | Code | `code_search`, `code_graph`, `local_code_index`, `tool_call_catalog` |
 | Edit history | `diff_index` (search, filter, and sort old/new text and unified diffs) |
+| Insights | `insights` (read-only: judge flags and overrides, tool-call counts and latency, test-milestone pass rates, crawl jobs and knowledge bases, and the relations around a knowledge-graph node; ask in plain words, get a table with sparklines or a small graph, from the project or from the crawl manager and app the session uses) |
 | Delegation | `task` (single subagent), `multi_task` (parallel), `quorum_task` (consensus voting) |
 | Coordination | `edit_coordinator`, `file_activity` (file watcher for multi-agent) |
 | Config | `project_config`, `enforcer_config`, `role_manager`, `skill_manager`, `config_archive` |

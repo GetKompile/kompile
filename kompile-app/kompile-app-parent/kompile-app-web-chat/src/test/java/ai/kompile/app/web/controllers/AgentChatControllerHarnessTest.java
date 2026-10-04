@@ -178,6 +178,30 @@ class AgentChatControllerHarnessTest {
     }
 
     @Test
+    void sessionInsightsAreTheHarnessReadAndNeedAHarness() {
+        var rows = new ObjectMapper().createObjectNode().put("menu", "insights").put("available", true);
+        rows.putArray("lines").add("Judge: no verdicts yet");
+        when(harness.insightsSnapshot("browser-1", "/project")).thenReturn(rows);
+
+        var response = controller.sessionInsights("browser-1", "/project");
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertSame(rows, response.getBody());
+        verify(legacyChat, never()).executeChat(any(), any());
+
+        // A client without the read (the interface default) and no harness at all are both 503.
+        when(harness.insightsSnapshot("browser-2", null)).thenCallRealMethod();
+        var unsupported = assertThrows(ResponseStatusException.class,
+                () -> controller.sessionInsights("browser-2", null));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, unsupported.getStatusCode());
+        assertEquals("Session insights unavailable", unsupported.getReason());
+        var withoutHarness = new AgentChatController(legacyChat, mock(AgentRegistryService.class));
+        var missing = assertThrows(ResponseStatusException.class,
+                () -> withoutHarness.sessionInsights("browser-1", null));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, missing.getStatusCode());
+    }
+
+    @Test
     void harnessSseTimeoutOutlivesTheBoundedCliTurn() {
         assertEquals(TimeUnit.SECONDS.toMillis(330), AgentChatController.harnessSseTimeout(0));
         assertEquals(TimeUnit.SECONDS.toMillis(90), AgentChatController.harnessSseTimeout(60));

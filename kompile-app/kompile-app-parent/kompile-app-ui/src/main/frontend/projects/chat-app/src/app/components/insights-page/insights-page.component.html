@@ -1,0 +1,97 @@
+<div class="insights-page">
+  <header class="insights-header">
+    <h1>Insights</h1>
+    <p class="insights-intro">
+      Judge verdicts, tool calls, test milestones, crawls and knowledge graphs across this project's chat
+      sessions: the reports the Kompile <code>insights</code> tool gives an agent in the terminal chat.
+    </p>
+  </header>
+
+  <nav mat-tab-nav-bar class="tab-navigation" [tabPanel]="insightsPanel" aria-label="Insights topics">
+    <a mat-tab-link
+       *ngFor="let topic of topics"
+       [active]="topic.id === activeId"
+       [attr.data-topic]="topic.id"
+       [title]="topic.about"
+       (click)="select(topic.id)">{{ topic.label }}</a>
+  </nav>
+
+  <mat-tab-nav-panel #insightsPanel>
+    <p class="topic-about">{{ activeTopic.about }}</p>
+
+    <form class="insights-query" (ngSubmit)="ask()">
+      <mat-form-field appearance="outline" class="question-field">
+        <mat-label>Question</mat-label>
+        <input matInput name="question" data-testid="insights-question"
+               [(ngModel)]="state.question" [placeholder]="'e.g. ' + activeTopic.example">
+        <mat-hint>Narrows the report to a subject or a window</mat-hint>
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="window-field">
+        <mat-label>Window</mat-label>
+        <mat-select name="window" data-testid="insights-window"
+                    [(ngModel)]="window" (selectionChange)="onWindowChange()">
+          <mat-option *ngFor="let option of windows" [value]="option.value">{{ option.label }}</mat-option>
+        </mat-select>
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="directory-field">
+        <mat-label>Project directory</mat-label>
+        <input matInput name="workingDirectory" data-testid="insights-directory" [(ngModel)]="workingDirectory">
+        <mat-hint>Empty reads the project this chat is bound to</mat-hint>
+      </mat-form-field>
+      <div class="query-actions">
+        <button mat-raised-button color="primary" type="submit" data-testid="insights-ask">Ask</button>
+        <button mat-stroked-button type="button" data-testid="insights-refresh" (click)="refresh()">Refresh</button>
+        <mat-checkbox name="autoRefresh" data-testid="insights-auto-refresh"
+                      [(ngModel)]="autoRefresh" (change)="onAutoRefreshChange()">Every 30 s</mat-checkbox>
+      </div>
+    </form>
+
+    <mat-progress-bar *ngIf="state.loading" mode="indeterminate"></mat-progress-bar>
+    <p *ngIf="state.error" class="insights-error" role="alert">{{ state.error }}</p>
+
+    <section *ngIf="state.report as report" class="insights-report" data-testid="insights-report">
+      <p *ngIf="!report.available" class="insights-status" role="status">
+        {{ report.status || 'This report is unavailable' }}
+      </p>
+      <ng-container *ngIf="report.available">
+        <h2 *ngIf="report.headline" class="report-headline">{{ report.headline }}</h2>
+        <app-tool-call-chart *ngIf="report.chart" [chart]="report.chart"></app-tool-call-chart>
+        <pre *ngIf="state.text" class="report-text">{{ state.text }}</pre>
+      </ng-container>
+      <p *ngIf="state.readAt" class="insights-meta">Read at {{ state.readAt | date:'HH:mm:ss' }}</p>
+    </section>
+  </mat-tab-nav-panel>
+
+  <details class="insights-settings" data-testid="insights-settings" (toggle)="onSettingsToggle($event)">
+    <summary>Report limits (insights.json)</summary>
+    <p class="settings-about">
+      Every report keeps to these limits, on this page, in the terminal chat and over MCP.
+    </p>
+    <mat-progress-bar *ngIf="settingsLoading" mode="indeterminate"></mat-progress-bar>
+    <p *ngIf="settingsView?.warning" class="insights-error" role="alert">{{ settingsView?.warning }}</p>
+    <form *ngIf="settingsForm" class="settings-form" (ngSubmit)="saveSettings()">
+      <div class="settings-fields">
+        <mat-form-field *ngFor="let field of settingFields" appearance="outline">
+          <mat-label>{{ field.label }}</mat-label>
+          <input matInput inputmode="decimal" [name]="field.key" [attr.data-setting]="field.key"
+                 [(ngModel)]="settingsForm[field.key]">
+          <mat-hint>{{ field.hint }}</mat-hint>
+        </mat-form-field>
+      </div>
+      <mat-checkbox name="sessionPanel" data-setting="sessionPanel" [(ngModel)]="settingsForm.sessionPanel">
+        Session panel in the terminal chat: judge flags, tool calls, the latest test result and crawls,
+        when the project configures no dashboard of its own
+      </mat-checkbox>
+      <div class="settings-actions">
+        <button mat-raised-button color="primary" type="submit" data-testid="insights-settings-save"
+                [disabled]="settingsSaving">Save</button>
+        <button mat-stroked-button type="button" data-testid="insights-settings-defaults"
+                (click)="useDefaults()">Use defaults</button>
+        <button mat-stroked-button type="button" (click)="loadSettings()">Reload</button>
+      </div>
+    </form>
+    <p *ngIf="settingsError" class="insights-error" role="alert">{{ settingsError }}</p>
+    <p *ngIf="settingsStatus" class="insights-status" role="status">{{ settingsStatus }}</p>
+    <p *ngIf="settingsView" class="insights-meta">{{ settingsView.file }}</p>
+  </details>
+</div>

@@ -19,14 +19,11 @@ import { HttpClientTestingModule, HttpTestingController } from '@angular/common/
 import { GraphService } from './graph.service';
 import {
   GraphNode,
-  GraphEdge,
   HierarchyTreeNode,
   CreateCompositeEntityRequest,
-  AddDocumentRequest,
-  CreateAttachmentRequest,
-  CreateTableRequest,
   NamedGraph,
-  CreateNamedGraphRequest
+  CreateNamedGraphRequest,
+  MoveGraphResult
 } from '../models/graph-models';
 
 describe('GraphService', () => {
@@ -144,8 +141,10 @@ describe('GraphService', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('getHierarchy', () => {
-    it('should GET hierarchy for a node with default maxDepth', (done) => {
+    it('should GET hierarchy for a node with default depth', (done) => {
       const mockHierarchy: HierarchyTreeNode = {
+        nodeId: 'root-1',
+        nodeType: 'SOURCE',
         id: 'root-1',
         type: 'SOURCE',
         label: 'Root',
@@ -154,6 +153,8 @@ describe('GraphService', () => {
         isComposite: false,
         children: [
           {
+            nodeId: 'child-1',
+            nodeType: 'DOCUMENT',
             id: 'child-1',
             type: 'DOCUMENT',
             label: 'Doc 1',
@@ -172,20 +173,21 @@ describe('GraphService', () => {
       });
 
       const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/hierarchy/root-1') &&
-        r.params.get('maxDepth') === '5'
+        r.url.endsWith('/knowledge-graph/nodes/root-1/hierarchy') &&
+        r.params.get('depth') === '2'
       );
       expect(req.request.method).toBe('GET');
       req.flush(mockHierarchy);
     });
 
-    it('should pass custom maxDepth parameter', (done) => {
+    it('should pass custom depth parameter', (done) => {
       service.getHierarchy('node-1', 3).subscribe(() => done());
 
       const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/hierarchy/node-1') &&
-        r.params.get('maxDepth') === '3'
+        r.url.endsWith('/knowledge-graph/nodes/node-1/hierarchy') &&
+        r.params.get('depth') === '3'
       );
+      expect(req.request.method).toBe('GET');
       req.flush({});
     });
   });
@@ -254,166 +256,6 @@ describe('GraphService', () => {
     });
   });
 
-  describe('getSubGraph', () => {
-    it('should GET sub-graph data for a composite entity', (done) => {
-      const mockResponse = {
-        nodes: [
-          { id: 'comp-1', type: 'entity', label: 'Composite' },
-          { id: 'sub-1', type: 'entity', label: 'Sub Entity' }
-        ],
-        edges: [
-          { id: 'e1', source: 'comp-1', target: 'sub-1', type: 'contains' }
-        ],
-        metadata: { nodeCount: 2, edgeCount: 1 }
-      };
-
-      service.getSubGraph('comp-1', 3).subscribe(result => {
-        expect(result.nodes.length).toBe(2);
-        expect(result.links.length).toBe(1);
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/comp-1/sub-graph') &&
-        r.params.get('maxDepth') === '3'
-      );
-      expect(req.request.method).toBe('GET');
-      req.flush(mockResponse);
-    });
-  });
-
-  describe('promoteSourceToEntity', () => {
-    it('should POST promote request', (done) => {
-      const mockResponse: GraphNode = {
-        nodeId: 'entity-uuid',
-        nodeType: 'ENTITY',
-        title: 'Email Source',
-        externalId: 'entity-src-1',
-        confidence: 0.95
-      } as GraphNode;
-
-      service.promoteSourceToEntity('src-1', 'EMAIL_ACCOUNT', 0.95).subscribe(result => {
-        expect(result.nodeType).toBe('ENTITY');
-        expect(result.confidence).toBe(0.95);
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/src-1/promote-to-entity')
-      );
-      expect(req.request.method).toBe('POST');
-      expect(req.request.body.entityType).toBe('EMAIL_ACCOUNT');
-      expect(req.request.body.confidence).toBe(0.95);
-      req.flush(mockResponse);
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // DOCUMENT & ATTACHMENT OPERATIONS
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  describe('addDocument', () => {
-    it('should POST document creation request', (done) => {
-      const request: AddDocumentRequest = {
-        sourceExternalId: 'inbox-1',
-        sourceTitle: 'Work Inbox',
-        sourceType: 'EMAIL',
-        docExternalId: 'email-42',
-        docTitle: 'Q4 Report',
-        content: 'The quarterly report shows...',
-        metadata: { from: 'cfo@company.com' }
-      };
-
-      const mockResponse: GraphNode = {
-        nodeId: 'doc-uuid',
-        nodeType: 'DOCUMENT',
-        title: 'Q4 Report',
-        externalId: 'email-42'
-      } as GraphNode;
-
-      service.addDocument(request).subscribe(result => {
-        expect(result.nodeType).toBe('DOCUMENT');
-        expect(result.title).toBe('Q4 Report');
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/documents')
-      );
-      expect(req.request.method).toBe('POST');
-      expect(req.request.body).toEqual(request);
-      req.flush(mockResponse);
-    });
-  });
-
-  describe('createAttachment', () => {
-    it('should POST attachment creation request', (done) => {
-      const request: CreateAttachmentRequest = {
-        parentNodeId: 'doc-1',
-        externalId: 'attach-1',
-        title: 'quarterly_report.xlsx',
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        metadata: { size: 52480 }
-      };
-
-      const mockResponse: GraphNode = {
-        nodeId: 'attach-uuid',
-        nodeType: 'ATTACHMENT',
-        title: 'quarterly_report.xlsx',
-        externalId: 'attach-1'
-      } as GraphNode;
-
-      service.createAttachment(request).subscribe(result => {
-        expect(result.nodeType).toBe('ATTACHMENT');
-        expect(result.title).toBe('quarterly_report.xlsx');
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/attachment')
-      );
-      expect(req.request.method).toBe('POST');
-      expect(req.request.body.mimeType).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      req.flush(mockResponse);
-    });
-  });
-
-  describe('createTable', () => {
-    it('should POST table creation request', (done) => {
-      const request: CreateTableRequest = {
-        parentNodeId: 'attach-1',
-        externalId: 'sheet-1',
-        title: 'Revenue Data',
-        rowCount: 100,
-        columnCount: 5,
-        headers: ['Quarter', 'Revenue', 'Costs', 'Profit', 'Growth'],
-        content: 'Q1,1000,800,200,5%',
-        metadata: { sheetIndex: 0 }
-      };
-
-      const mockResponse: GraphNode = {
-        nodeId: 'table-uuid',
-        nodeType: 'TABLE',
-        title: 'Revenue Data',
-        externalId: 'sheet-1'
-      } as GraphNode;
-
-      service.createTable(request).subscribe(result => {
-        expect(result.nodeType).toBe('TABLE');
-        expect(result.title).toBe('Revenue Data');
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/table')
-      );
-      expect(req.request.method).toBe('POST');
-      expect(req.request.body.rowCount).toBe(100);
-      expect(req.request.body.headers?.length).toBe(5);
-      req.flush(mockResponse);
-    });
-  });
-
   // ═══════════════════════════════════════════════════════════════════════════
   // ERROR HANDLING
   // ═══════════════════════════════════════════════════════════════════════════
@@ -428,7 +270,7 @@ describe('GraphService', () => {
       });
 
       const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/hierarchy/bad-id')
+        r.url.endsWith('/knowledge-graph/nodes/bad-id/hierarchy')
       );
       req.error(new ProgressEvent('error'), { status: 404 });
     });
@@ -456,54 +298,6 @@ describe('GraphService', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('graphs of graphs', () => {
-    it('should pass maxDepth=1 to getSubGraph for shallow traversal', (done) => {
-      const mockResponse = {
-        nodes: [{ id: 'comp-1', type: 'entity', label: 'Root Composite' }],
-        edges: [],
-        metadata: { nodeCount: 1, edgeCount: 0 }
-      };
-
-      service.getSubGraph('comp-1', 1).subscribe(result => {
-        expect(result.nodes.length).toBe(1);
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/comp-1/sub-graph') &&
-        r.params.get('maxDepth') === '1'
-      );
-      expect(req.request.method).toBe('GET');
-      req.flush(mockResponse);
-    });
-
-    it('should pass maxDepth=10 to getSubGraph for deep traversal', (done) => {
-      const mockResponse = {
-        nodes: [
-          { id: 'comp-1', type: 'entity', label: 'Root' },
-          { id: 'sub-1', type: 'entity', label: 'Level 1' },
-          { id: 'sub-2', type: 'entity', label: 'Level 2' }
-        ],
-        edges: [
-          { id: 'e1', source: 'comp-1', target: 'sub-1', type: 'contains' },
-          { id: 'e2', source: 'sub-1', target: 'sub-2', type: 'contains' }
-        ],
-        metadata: { nodeCount: 3, edgeCount: 2 }
-      };
-
-      service.getSubGraph('comp-1', 10).subscribe(result => {
-        expect(result.nodes.length).toBe(3);
-        expect(result.links.length).toBe(2);
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/comp-1/sub-graph') &&
-        r.params.get('maxDepth') === '10'
-      );
-      expect(req.request.method).toBe('GET');
-      req.flush(mockResponse);
-    });
-
     it('should createCompositeEntity with a parentNodeId that is itself a composite', (done) => {
       // The parent is a composite entity - verifying request body passes the composite parentNodeId
       const compositeParentId = 'composite-parent-uuid';
@@ -544,6 +338,8 @@ describe('GraphService', () => {
 
     it('should return composite+subGraphId fields when getHierarchy targets a composite node', (done) => {
       const mockCompositeHierarchy: HierarchyTreeNode = {
+        nodeId: 'comp-root',
+        nodeType: 'ENTITY',
         id: 'comp-root',
         type: 'ENTITY',
         label: 'Composite Root',
@@ -553,6 +349,8 @@ describe('GraphService', () => {
         subGraphId: 'org-sub-graph',
         children: [
           {
+            nodeId: 'comp-child-1',
+            nodeType: 'ENTITY',
             id: 'comp-child-1',
             type: 'ENTITY',
             label: 'Division A',
@@ -563,6 +361,8 @@ describe('GraphService', () => {
             children: []
           },
           {
+            nodeId: 'comp-child-2',
+            nodeType: 'ENTITY',
             id: 'comp-child-2',
             type: 'ENTITY',
             label: 'Division B',
@@ -587,134 +387,11 @@ describe('GraphService', () => {
       });
 
       const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/hierarchy/comp-root') &&
-        r.params.get('maxDepth') === '5'
+        r.url.endsWith('/knowledge-graph/nodes/comp-root/hierarchy') &&
+        r.params.get('depth') === '2'
       );
       expect(req.request.method).toBe('GET');
       req.flush(mockCompositeHierarchy);
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // SOURCE-AS-ENTITY (multiple source types)
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  describe('promoteSourceToEntity - source type variations', () => {
-    it('should POST promote request for EMAIL_ACCOUNT source type', (done) => {
-      const mockResponse: GraphNode = {
-        nodeId: 'entity-email-uuid',
-        nodeType: 'ENTITY',
-        title: 'Work Inbox',
-        externalId: 'entity-email-src',
-        sourceType: 'EMAIL_ACCOUNT',
-        confidence: 0.9
-      } as GraphNode;
-
-      service.promoteSourceToEntity('email-src-1', 'EMAIL_ACCOUNT', 0.9).subscribe(result => {
-        expect(result.nodeType).toBe('ENTITY');
-        expect(result.confidence).toBe(0.9);
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/email-src-1/promote-to-entity')
-      );
-      expect(req.request.method).toBe('POST');
-      expect(req.request.body.entityType).toBe('EMAIL_ACCOUNT');
-      expect(req.request.body.confidence).toBe(0.9);
-      req.flush(mockResponse);
-    });
-
-    it('should POST promote request for API_ENDPOINT source type', (done) => {
-      const mockResponse: GraphNode = {
-        nodeId: 'entity-api-uuid',
-        nodeType: 'ENTITY',
-        title: 'REST API',
-        externalId: 'entity-api-src',
-        sourceType: 'API_ENDPOINT',
-        confidence: 0.8
-      } as GraphNode;
-
-      service.promoteSourceToEntity('api-src-1', 'API_ENDPOINT', 0.8).subscribe(result => {
-        expect(result.nodeType).toBe('ENTITY');
-        expect(result.confidence).toBe(0.8);
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/api-src-1/promote-to-entity')
-      );
-      expect(req.request.method).toBe('POST');
-      expect(req.request.body.entityType).toBe('API_ENDPOINT');
-      expect(req.request.body.confidence).toBe(0.8);
-      req.flush(mockResponse);
-    });
-
-    it('should POST promote request for DATABASE source type', (done) => {
-      const mockResponse: GraphNode = {
-        nodeId: 'entity-db-uuid',
-        nodeType: 'ENTITY',
-        title: 'Production DB',
-        externalId: 'entity-db-src',
-        sourceType: 'DATABASE',
-        confidence: 0.99
-      } as GraphNode;
-
-      service.promoteSourceToEntity('db-src-1', 'DATABASE', 0.99).subscribe(result => {
-        expect(result.nodeType).toBe('ENTITY');
-        expect(result.confidence).toBe(0.99);
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/db-src-1/promote-to-entity')
-      );
-      expect(req.request.method).toBe('POST');
-      expect(req.request.body.entityType).toBe('DATABASE');
-      expect(req.request.body.confidence).toBe(0.99);
-      req.flush(mockResponse);
-    });
-
-    it('should POST promote request with confidence=1.0 (absolute certainty)', (done) => {
-      const mockResponse: GraphNode = {
-        nodeId: 'entity-certain-uuid',
-        nodeType: 'ENTITY',
-        title: 'Verified Source',
-        externalId: 'entity-certain',
-        confidence: 1.0
-      } as GraphNode;
-
-      service.promoteSourceToEntity('certain-src', 'DATABASE', 1.0).subscribe(result => {
-        expect(result.confidence).toBe(1.0);
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/certain-src/promote-to-entity')
-      );
-      expect(req.request.body.confidence).toBe(1.0);
-      req.flush(mockResponse);
-    });
-
-    it('should POST promote request with confidence=0.0 (no certainty)', (done) => {
-      const mockResponse: GraphNode = {
-        nodeId: 'entity-uncertain-uuid',
-        nodeType: 'ENTITY',
-        title: 'Unverified Source',
-        externalId: 'entity-uncertain',
-        confidence: 0.0
-      } as GraphNode;
-
-      service.promoteSourceToEntity('uncertain-src', 'API_ENDPOINT', 0.0).subscribe(result => {
-        expect(result.confidence).toBe(0.0);
-        done();
-      });
-
-      const req = httpMock.expectOne(r =>
-        r.url.endsWith('/knowledge-graph/nodes/uncertain-src/promote-to-entity')
-      );
-      expect(req.request.body.confidence).toBe(0.0);
-      req.flush(mockResponse);
     });
   });
 
@@ -750,7 +427,7 @@ describe('GraphService', () => {
         done();
       });
 
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs') && !r.params.has('query'));
+      const req = httpMock.expectOne(r => r.url.endsWith('/api/knowledge-graph/named-graphs') && !r.params.has('query'));
       expect(req.request.method).toBe('GET');
       req.flush(mockNamedGraphList);
     });
@@ -762,7 +439,7 @@ describe('GraphService', () => {
       });
 
       const req = httpMock.expectOne(r =>
-        r.url.endsWith('/api/graphs') &&
+        r.url.endsWith('/api/knowledge-graph/named-graphs') &&
         r.params.get('query') === 'test'
       );
       expect(req.request.method).toBe('GET');
@@ -776,7 +453,7 @@ describe('GraphService', () => {
         done();
       });
 
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs/graph-123'));
+      const req = httpMock.expectOne(r => r.url.endsWith('/api/knowledge-graph/named-graphs/graph-123'));
       expect(req.request.method).toBe('GET');
       req.flush(mockNamedGraph);
     });
@@ -790,7 +467,7 @@ describe('GraphService', () => {
         done();
       });
 
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs'));
+      const req = httpMock.expectOne(r => r.url.endsWith('/api/knowledge-graph/named-graphs'));
       expect(req.request.method).toBe('POST');
       expect(req.request.body).toEqual(createRequest);
       req.flush(mockNamedGraph);
@@ -805,8 +482,8 @@ describe('GraphService', () => {
         done();
       });
 
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs/graph-123'));
-      expect(req.request.method).toBe('PATCH');
+      const req = httpMock.expectOne(r => r.url.endsWith('/api/knowledge-graph/named-graphs/graph-123'));
+      expect(req.request.method).toBe('PUT');
       expect(req.request.body).toEqual(updates);
       req.flush(updated);
     });
@@ -814,7 +491,7 @@ describe('GraphService', () => {
     it('should delete a named graph', (done) => {
       service.deleteNamedGraph('graph-123').subscribe(() => done());
 
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs/graph-123'));
+      const req = httpMock.expectOne(r => r.url.endsWith('/api/knowledge-graph/named-graphs/graph-123'));
       expect(req.request.method).toBe('DELETE');
       req.flush(null);
     });
@@ -830,76 +507,63 @@ describe('GraphService', () => {
         done();
       });
 
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs/parent-id/children'));
+      const req = httpMock.expectOne(r => r.url.endsWith('/api/knowledge-graph/named-graphs/parent-id/children'));
       expect(req.request.method).toBe('GET');
       req.flush(children);
     });
 
-    it('should get graph hierarchy', (done) => {
-      const mockHierarchy = {
-        graphId: 'root-id',
-        name: 'Root',
+    it('should get graph hierarchy via getHierarchy', (done) => {
+      const mockHierarchy: HierarchyTreeNode = {
+        nodeId: 'root-id',
+        nodeType: 'SOURCE',
+        id: 'root-id',
+        type: 'SOURCE',
+        label: 'Root',
         children: []
       };
 
-      service.getGraphHierarchy('root-id', 3).subscribe(result => {
-        expect(result.graphId).toBe('root-id');
+      service.getHierarchy('root-id', 3).subscribe(result => {
+        expect(result.nodeId).toBe('root-id');
         done();
       });
 
       const req = httpMock.expectOne(r =>
-        r.url.endsWith('/api/graphs/root-id/hierarchy') &&
-        r.params.get('maxDepth') === '3'
+        r.url.endsWith('/api/knowledge-graph/nodes/root-id/hierarchy') &&
+        r.params.get('depth') === '3'
       );
       expect(req.request.method).toBe('GET');
       req.flush(mockHierarchy);
     });
 
-    it('should get graph ancestors', (done) => {
-      const ancestors: NamedGraph[] = [
-        { graphId: 'root', name: 'Root', nodeCount: 0, edgeCount: 0, childGraphCount: 1 },
-        { graphId: 'child-id', name: 'Child', nodeCount: 0, edgeCount: 0, childGraphCount: 0 }
+    it('should get graph ancestors via getAncestors', (done) => {
+      const ancestors: GraphNode[] = [
+        { id: 1, nodeId: 'root', nodeType: 'SOURCE', title: 'Root', childCount: 1, edgeCount: 0 },
+        { id: 2, nodeId: 'child-id', nodeType: 'DOCUMENT', title: 'Child', childCount: 0, edgeCount: 0 }
       ];
 
-      service.getGraphAncestors('child-id').subscribe(result => {
+      service.getAncestors('child-id').subscribe(result => {
         expect(result.length).toBe(2);
-        expect(result[0].graphId).toBe('root');
+        expect(result[0].nodeId).toBe('root');
         done();
       });
 
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs/child-id/ancestors'));
+      const req = httpMock.expectOne(r => r.url.endsWith('/api/knowledge-graph/nodes/child-id/ancestors'));
       expect(req.request.method).toBe('GET');
       req.flush(ancestors);
     });
 
     it('should move a graph', (done) => {
-      const moved: NamedGraph = { ...mockNamedGraph, parentGraphId: 'new-parent' };
+      const moved: MoveGraphResult = { graphId: 'graph-id', newParentGraphId: 'new-parent', success: true };
 
       service.moveGraph('graph-id', 'new-parent').subscribe(result => {
-        expect(result.parentGraphId).toBe('new-parent');
+        expect(result.newParentGraphId).toBe('new-parent');
         done();
       });
 
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs/graph-id/move'));
+      const req = httpMock.expectOne(r => r.url.endsWith('/api/knowledge-graph/named-graphs/graph-id/move'));
       expect(req.request.method).toBe('POST');
       expect(req.request.body).toEqual({ newParentGraphId: 'new-parent' });
       req.flush(moved);
-    });
-
-    it('should link node to graph', (done) => {
-      service.linkNodeToGraph('node-1', 'graph-1').subscribe(() => done());
-
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs/graph-1/nodes/node-1'));
-      expect(req.request.method).toBe('POST');
-      req.flush(null);
-    });
-
-    it('should unlink node from graph', (done) => {
-      service.unlinkNodeFromGraph('node-1', 'graph-1').subscribe(() => done());
-
-      const req = httpMock.expectOne(r => r.url.endsWith('/api/graphs/graph-1/nodes/node-1'));
-      expect(req.request.method).toBe('DELETE');
-      req.flush(null);
     });
   });
 
@@ -1014,11 +678,13 @@ describe('GraphService', () => {
   describe('getNode()', () => {
     it('should GET /knowledge-graph/nodes/:nodeId', (done) => {
       const mockNode: GraphNode = {
+        id: 1,
         nodeId: 'test-node-1',
-        nodeType: 'ENTITY' as any,
+        nodeType: 'ENTITY',
         title: 'Test Entity',
         description: 'A test entity node',
         createdAt: '2025-01-01T00:00:00Z',
+        childCount: 0,
         edgeCount: 3
       };
 
@@ -1038,10 +704,12 @@ describe('GraphService', () => {
 
     it('should handle URL-encoded node IDs', (done) => {
       const mockNode: GraphNode = {
+        id: 2,
         nodeId: 'node/with/slashes',
-        nodeType: 'DOCUMENT' as any,
+        nodeType: 'DOCUMENT',
         title: 'Encoded Node',
         createdAt: '2025-01-01T00:00:00Z',
+        childCount: 0,
         edgeCount: 0
       };
 
@@ -1051,10 +719,54 @@ describe('GraphService', () => {
       });
 
       const req = httpMock.expectOne(r =>
-        r.url.includes('/knowledge-graph/nodes/')
+        r.url.endsWith('/knowledge-graph/nodes/node%2Fwith%2Fslashes')
       );
       expect(req.request.method).toBe('GET');
       req.flush(mockNode);
+    });
+  });
+
+  // ── getNodeNeighborhood ─────────────────────────────────────────────────
+
+  describe('getNodeNeighborhood()', () => {
+    it('scopes the expansion to the fact sheet being viewed', (done) => {
+      service.getNodeNeighborhood('acme', 25, ['MENTIONS'], 7).subscribe(result => {
+        expect(result.nodes.map(node => node.id)).toEqual(['acme', 'alice']);
+        expect(result.links.map(link => link.id)).toEqual(['alice::acme::MENTIONS']);
+        done();
+      });
+
+      const req = httpMock.expectOne(r => r.url.endsWith('/knowledge-graph/nodes/acme/expand'));
+      expect(req.request.method).toBe('GET');
+      expect(req.request.params.get('maxNeighbors')).toBe('25');
+      expect(req.request.params.get('edgeTypes')).toBe('MENTIONS');
+      expect(req.request.params.get('factSheetId')).toBe('7');
+      req.flush({
+        nodes: [
+          { id: 'acme', type: 'ENTITY', label: 'Acme' },
+          { id: 'alice', type: 'ENTITY', label: 'Alice' }
+        ],
+        edges: [{ id: 'alice::acme::MENTIONS', source: 'alice', target: 'acme', type: 'MENTIONS', weight: 1 }]
+      } as any);
+    });
+
+    it('sends no sheet or edge filter when none is given', () => {
+      service.getNodeNeighborhood('acme').subscribe();
+
+      const req = httpMock.expectOne(r => r.url.endsWith('/knowledge-graph/nodes/acme/expand'));
+      expect(req.request.params.get('maxNeighbors')).toBe('50');
+      expect(req.request.params.has('edgeTypes')).toBeFalse();
+      expect(req.request.params.has('factSheetId')).toBeFalse();
+      req.flush({ nodes: [], edges: [] } as any);
+    });
+
+    it('keeps the global sheet 0 and sends a node id with reserved characters as one segment', () => {
+      service.getNodeNeighborhood('Q3 report #2?draft', 50, undefined, 0).subscribe();
+
+      const req = httpMock.expectOne(r =>
+        r.url.endsWith('/knowledge-graph/nodes/Q3%20report%20%232%3Fdraft/expand'));
+      expect(req.request.params.get('factSheetId')).toBe('0');
+      req.flush({ nodes: [], edges: [] } as any);
     });
   });
 });

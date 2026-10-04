@@ -19,6 +19,7 @@ package ai.kompile.app.subprocess;
 import ai.kompile.app.llm.pipeline.LlmGenerateController;
 import ai.kompile.app.llm.pipeline.LlmModelController;
 import ai.kompile.app.llm.pipeline.LoadRequest;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -55,7 +56,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 final class ServingSubprocessHttpServer implements AutoCloseable {
 
-    static final long DEFAULT_MAX_REQUEST_BYTES = 1024L * 1024L;
+    /** Shared by every route; sized for the largest chat request the inline-image contract allows. */
+    static final long DEFAULT_MAX_REQUEST_BYTES = StructuredChatLanguageModel.MAX_CHAT_REQUEST_BYTES;
     static final long DEFAULT_MAX_RESPONSE_BYTES = 16L * 1024L * 1024L;
     static final int DEFAULT_HTTP_THREADS = 8;
     static final int DEFAULT_HTTP_QUEUE_CAPACITY = 32;

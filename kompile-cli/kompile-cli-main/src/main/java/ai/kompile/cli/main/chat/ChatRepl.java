@@ -171,7 +171,7 @@ public class ChatRepl implements AutoCloseable {
     private final SkillRegistry skillRegistry;
     private final RoleManager roleManager;
     private final PermissionService permissionService;
-    private final AgenticChatLoop agenticLoop;
+    final AgenticChatLoop agenticLoop;
     private final DirectLlmClient directClient;
     private final PerformanceHarness performanceHarness;
     private final JudgeLlmEvaluator directToolJudge;
@@ -189,7 +189,7 @@ public class ChatRepl implements AutoCloseable {
     private volatile ai.kompile.cli.main.chat.enforcer.DirectionJudge directionJudge;
     private volatile AuxiliaryChatRepl directionRepl;
     private final AtomicBoolean auxiliarySupervisionActive = new AtomicBoolean(false);
-    private final BackgroundProcessManager processManager;
+    final BackgroundProcessManager processManager;
     private final CoordinationStateManager coordinationManager;
     private final SharedProcessMirror sharedProcessMirror;
     private final ProjectActivityController projectActivityController;
@@ -237,6 +237,7 @@ public class ChatRepl implements AutoCloseable {
     private volatile LineReader activeReader;
     private volatile Terminal activeTerminal;
     private volatile boolean modelPickerActive;
+    private final AtomicBoolean modelSelectionPending = new AtomicBoolean();
     /** Set by /clear so the owning ChatCommand starts a fresh transcript in this JVM. */
     private volatile boolean newConversationRequested;
 
@@ -253,7 +254,7 @@ public class ChatRepl implements AutoCloseable {
     // ── Extracted collaborators ───────────────────────────────────────────────
 
     private ChatCommandRouter commandRouter;
-    private ChatMessageHandler messageHandler;
+    ChatMessageHandler messageHandler;
     private MessageQueueManager queueManager;
     private SessionLifecycleManager lifecycleManager;
 
@@ -463,7 +464,7 @@ public class ChatRepl implements AutoCloseable {
         this.judgeGloballyEnabled = harnessConfig.isJudgeGlobalEnabled();
         this.agenticLoop.setWorkflowGlobalEnabled(judgeGloballyEnabled);
         this.judgeControl = ai.kompile.cli.main.chat.enforcer.JudgeControl.load(sessionId);
-        this.judgeControl.setEnabled(judgeGloballyEnabled);
+        this.judgeControl.initEnabled(judgeGloballyEnabled);
         this.agenticLoop.setJudgeControl(judgeControl);
         this.judgeRepl = harnessConfig.isEnabled() && harnessConfig.isJudgeEnabled()
                 ? createModelAuxiliaryRepl(
@@ -579,6 +580,18 @@ public class ChatRepl implements AutoCloseable {
                 ChatCompleter.printAbove(renderer.dim("  ↻ Claude Code started a turn by itself"));
                 messageHandler.handleExternalMessage(marker);
             }).run());
+            // An event that arrives while Claude Code works goes into the turn it is running.
+            directClient.setClaudeInjectionListener(new DirectLlmClient.ClaudeInjectionListener() {
+                @Override
+                public void delivered(String id) {
+                    sessionContext.wrap(() -> messageHandler.injectionDelivered(id)).run();
+                }
+
+                @Override
+                public void dropped(String id) {
+                    sessionContext.wrap(() -> messageHandler.injectionDropped(id)).run();
+                }
+            });
         }
         SubagentRunner subagentRunner = toolRegistry.getSubagentRunner();
         if (subagentRunner != null) {
@@ -704,8 +717,10 @@ public class ChatRepl implements AutoCloseable {
                     return true; // already queued; just rewrite the chip
                 }
             }
-            pendingAttachments.add(new ChatRepl.PendingAttachment(
-                    stagedImage, "image/png", true));
+            // The staged bytes name the type: a JPEG clipboard image sent as
+            // image/png is rejected by the vision APIs.
+            pendingAttachments.add(new ChatRepl.PendingAttachment(stagedImage,
+                    ImageClipboardSupport.imageMimeType(stagedImage).orElse("image/png"), true));
             noticeWhenModelLacksVision();
             statusBar.requestRedraw();
             return true;
@@ -792,6 +807,10 @@ public class ChatRepl implements AutoCloseable {
                 chatHistory, chatMemory, sessionMetrics, renderer, ascii, agenticLoop,
                 backgroundTaskManager, messageQueue, cancelSignal, pendingAttachments,
                 reminderManager, continueManager);
+        if (directClient != null) {
+            // Set on every handler: initializeInteractive replaces the first one.
+            messageHandler.setRunningTurnInjector(directClient::injectIntoClaudeTurn);
+        }
         this.queueManager = new MessageQueueManager(
                 this, messageQueue, messageHandler, backgroundTaskManager, sessionMetrics,
                 renderer, ascii, autoDequeueEnabled);
@@ -1512,10 +1531,11 @@ public class ChatRepl implements AutoCloseable {
         // retains native transcript selection and paste behavior.
         disableTranscriptMouse(terminal);
 
-        // Re-create AsciiRenderer with actual terminal width now that the terminal is available
+        // Re-create AsciiRenderer with actual terminal width now that the terminal is available.
+        // Panels span the renderer's full width, so it gets the transcript's row width.
         int termW = terminal.getWidth();
         if (termW > 0) {
-            this.ascii = new AsciiRenderer(renderer, termW);
+            this.ascii = new AsciiRenderer(renderer, KompileTui.transcriptColumns(termW));
             // Re-init collaborators so they reference the new ascii instance
             initCollaborators();
         }
@@ -2306,24 +2326,31 @@ public class ChatRepl implements AutoCloseable {
                 || monitor == null) {
             return;
         }
+        // The owner's id, which the agent's tools know; a mirror row has its own local id.
+        String processId = monitor.processId();
+        ChatCompleter.showNotice(renderer.cyan("  ↻ Monitored process " + processId
+                + " exited; waking agent"));
+        messageHandler.handleExternalMessage(processCompletionNotice(entry, monitor));
+    }
+
+    /** The agent's notice for a monitored process that ended, with the time it ended. */
+    static String processCompletionNotice(BackgroundProcessManager.ProcessEntry entry,
+                                          BackgroundProcessManager.ProcessMonitor monitor) {
         int exitCode = entry.getExitCode() == null ? -1 : entry.getExitCode();
         String description = entry.getDescription() == null
                 ? entry.getCommand() : entry.getDescription();
-        // The owner's id, which the agent's tools know; a mirror row has its own local id.
-        String processId = monitor.processId();
-        String message = "[System process completion]\n"
-                + "Process " + processId + " finished with state "
+        return "[System process completion]\n"
+                + "Process " + monitor.processId() + " finished with state "
                 + entry.getState().name().toLowerCase(Locale.ROOT)
                 + " and exit code " + exitCode + ".\n"
                 + "Description: " + description + "\n"
                 + "Duration: " + ProcessManagementTool.formatDuration(entry.getDuration()) + "\n"
+                + (entry.getEndTime() == null ? ""
+                : "Ended: " + ChatMessageHandler.EVENT_TIME_FORMAT.format(entry.getEndTime()) + "\n")
                 + "Output log: " + entry.getOutputFile() + "\n"
                 + (monitor.message().isBlank() ? ""
                 : "Monitor instructions: " + monitor.message() + "\n")
                 + "Inspect the process output if relevant, then continue the parent task.";
-        ChatCompleter.showNotice(renderer.cyan("  ↻ Monitored process " + processId
-                + " exited; waking agent"));
-        messageHandler.handleExternalMessage(message);
     }
 
     /** Turn a terminal Ctrl+B task into a mandatory agent turn, not just a UI notification. */
@@ -2338,6 +2365,8 @@ public class ChatRepl implements AutoCloseable {
                 + task.getStatus().name().toLowerCase(Locale.ROOT) + ".\n"
                 + "Description: " + task.getDescription() + "\n"
                 + "Duration: " + task.getElapsedTime() + "\n"
+                + (task.getCompletedAt() == null ? ""
+                : "Ended: " + ChatMessageHandler.EVENT_TIME_FORMAT.format(task.getCompletedAt()) + "\n")
                 + (task.getError() == null ? "" : "Error: " + task.getError().getMessage() + "\n")
                 + (output.isBlank() ? "" : "Captured output:\n" + output + "\n")
                 + "Review the completed task, use its result if relevant, and continue the user's work.";
@@ -2904,16 +2933,15 @@ public class ChatRepl implements AutoCloseable {
             KompileTui tui,
             Consumer<String> queueEditStarted,
             Supplier<String> clipboardTextSupplier) {
+        // The notice reports what the copy achieved once the native helper has
+        // run, not that a copy was attempted; it arrives on the clipboard thread,
+        // so it is routed through the session that bound these keys.
+        ChatSessionContext owner = ChatSessionContext.current();
         bindStandardChatActivityKeys(
                 reader, queue, activityPanel, tui, queueEditStarted, clipboardTextSupplier,
-                text -> {
-                    ClipboardUtil.copyToClipboardAsync(text, reader.getTerminal());
-                    // Copy used to be silent: with OSC 52 unsupported (or the
-                    // selection already gone) the user could not tell copy from
-                    // the paste fallback. Mirror the queued/backgrounded notices.
-                    ChatCompleter.showNotice("  ✓ Copied " + text.length()
-                            + " characters to the clipboard");
-                });
+                text -> ClipboardUtil.copyToClipboardAsync(text, reader.getTerminal())
+                        .thenAccept(owner.wrapConsumer(result -> ChatCompleter.showNotice(
+                                "  " + ClipboardUtil.describe(result, text.length())))));
     }
 
     static void bindStandardChatActivityKeys(
@@ -3505,8 +3533,8 @@ public class ChatRepl implements AutoCloseable {
      *
      * @return true when the new configuration is active in this session
      */
-    boolean updateChatConfig(ChatConfig config) {
-        if (config == null) {
+    synchronized boolean updateChatConfig(ChatConfig config) {
+        if (config == null || modelSelectionPending.get()) {
             return false;
         }
         if (!localMode) {
@@ -3561,6 +3589,22 @@ public class ChatRepl implements AutoCloseable {
     boolean isLlmBusy() { return llmBusy; }
     void setLlmBusy(boolean busy) { this.llmBusy = busy; }
     void requestStatusRedraw() { statusBar.requestRedraw(); }
+
+    DirectLlmClient getDirectClient() { return directClient; }
+
+    /**
+     * Processes other sessions run on this session's behalf, chiefly the jobs
+     * Kompile's MCP server runs for this session's agent, read from
+     * coordination state now.
+     */
+    List<SharedProcessMirror.SessionProcess> processesRunForSession() throws IOException {
+        sharedProcessMirror.pollOnce();
+        String failure = sharedProcessMirror.pollFailure();
+        if (!failure.isEmpty()) {
+            throw new IOException("could not read coordination state: " + failure);
+        }
+        return sharedProcessMirror.runningForSession();
+    }
 
     /**
      * Handle the configured cancel key without turning it into an implicit
@@ -3636,6 +3680,11 @@ public class ChatRepl implements AutoCloseable {
      * the active reader is safe and keeps all selection input in the same terminal.
      */
     void openModelProviderPicker() {
+        openModelProviderPicker(false);
+    }
+
+    /** /model starts at models; /auth (and /provider) starts at vendors. */
+    void openModelProviderPicker(boolean chooseProvider) {
         if (!localMode || chatConfig == null) {
             ChatCompleter.printAbove("Provider/model switching is only available in local standard chat.");
             return;
@@ -3655,6 +3704,8 @@ public class ChatRepl implements AutoCloseable {
         String selectedProvider = chatConfig.getProvider();
         String selectedVendor = SetupWizard.vendorForProvider(selectedProvider);
         String selectedModel = chatConfig.getModel();
+        ChatConfig discoveryConfig = chatConfig.copy();
+        boolean changeCredentials = false;
         boolean committed = false;
         // Menu answers (option numbers, model ids, credential prompts) are
         // transient picker input: swap in a throwaway history so they never
@@ -3665,115 +3716,126 @@ public class ChatRepl implements AutoCloseable {
             modelPickerActive = true;
             ChatCompleter.setTemporaryWindowActive(true);
             while (true) {
-                tui.updateTemporaryWindow("Provider and model", pickerLines(
-                        "Choose a provider", providers, selectedVendor, selectedVendor, selectedProvider, selectedModel));
-                String providerInput = reader.readLine("picker provider (number/name, Esc cancels): ");
-                if (providerInput == null || providerInput.isBlank()
-                        || "cancel".equalsIgnoreCase(providerInput.trim())) {
-                    return;
+                if (chooseProvider) {
+                    tui.updateTemporaryWindow("Provider and model", pickerLines(
+                            "Choose a provider", providers, selectedVendor, selectedVendor, selectedProvider, selectedModel,
+                            discoveryConfig));
+                    String providerInput = reader.readLine("picker provider (number/name, back, Esc cancels): ");
+                    if (providerInput == null || providerInput.isBlank()
+                            || "cancel".equalsIgnoreCase(providerInput.trim())) {
+                        return;
+                    }
+                    if ("back".equalsIgnoreCase(providerInput.trim())) {
+                        chooseProvider = false;
+                        continue;
+                    }
+                    String providerChoice = parsePickerChoice(providerInput, providers);
+                    if (providerChoice == null) {
+                        tui.updateTemporaryWindow("Provider and model", List.of(
+                                "Invalid provider: " + providerInput.trim(),
+                                "Choose a numbered provider or its exact name.",
+                                "Current: " + activeModelDisplayName()));
+                        continue;
+                    }
+                    ChatConfig vendorConfig = providerChoice.equalsIgnoreCase(
+                            SetupWizard.vendorForProvider(chatConfig.getProvider()))
+                            && !providerChoice.equalsIgnoreCase(selectedVendor) ? chatConfig : discoveryConfig;
+                    discoveryConfig = SetupWizard.modelPickerConfigForVendor(vendorConfig, providerChoice);
+                    selectedVendor = providerChoice;
+                    selectedProvider = discoveryConfig.getProvider();
+                    selectedModel = discoveryConfig.getModel();
+                    chooseProvider = false;
                 }
-                if ("back".equalsIgnoreCase(providerInput.trim())) {
-                    continue;
-                }
-                String providerChoice = parsePickerChoice(providerInput, providers);
-                if (providerChoice == null) {
-                    tui.updateTemporaryWindow("Provider and model", List.of(
-                            "Invalid provider: " + providerInput.trim(),
-                            "Choose a numbered provider or its exact name.",
-                            "Current: " + activeModelDisplayName()));
-                    continue;
-                }
-                selectedVendor = providerChoice;
-
-                List<SetupWizard.AuthMethod> authMethods =
-                        SetupWizard.authMethodsForPicker(selectedVendor);
-                if (authMethods.isEmpty()) {
-                    tui.updateTemporaryWindow("Provider and model", List.of(
-                            "No configured authentication route exists for "
-                                    + SetupWizard.vendorLabel(selectedVendor) + ".",
-                            "Run /setup to configure this provider."));
-                    continue;
-                }
-                SetupWizard.AuthMethod selectedAuth =
-                        selectedVendor.equalsIgnoreCase(SetupWizard.vendorForProvider(selectedProvider))
-                                ? SetupWizard.authMethodForProvider(selectedProvider, chatConfig)
-                                : authMethods.get(0);
-                if (!authMethods.contains(selectedAuth)) {
-                    selectedAuth = authMethods.get(0);
-                }
-                if (authMethods.size() > 1) {
-                    List<String> authChoices = SetupWizard.authOptions(selectedVendor);
-                    boolean backToProvider = false;
-                    while (true) {
-                        tui.updateTemporaryWindow("Provider and model", pickerLines(
-                                "Choose authentication for " + SetupWizard.vendorLabel(selectedVendor),
-                                authChoices,
-                                SetupWizard.authMethodLabel(selectedVendor, selectedAuth),
-                                selectedVendor, selectedProvider, selectedModel));
-                        String authInput = reader.readLine(
-                                "picker auth (number/name, back, Esc cancels): ");
-                        if (authInput == null || "cancel".equalsIgnoreCase(authInput.trim())) {
-                            return;
-                        }
-                        if ("back".equalsIgnoreCase(authInput.trim())) {
-                            backToProvider = true;
+                SetupWizard.AuthenticationSelection authentication = new SetupWizard.AuthenticationSelection(
+                        selectedProvider, SetupWizard.authMethodForProvider(selectedProvider, discoveryConfig),
+                        null, discoveryConfig.getCredentialName());
+                String selectedBaseUrl = discoveryConfig.getBaseUrl();
+                if (changeCredentials) {
+                    List<SetupWizard.AuthMethod> authMethods = SetupWizard.authMethodsForPicker(selectedVendor);
+                    if (authMethods.isEmpty()) {
+                        tui.updateTemporaryWindow("Provider and model", List.of(
+                                "No configured authentication route exists for "
+                                        + SetupWizard.vendorLabel(selectedVendor) + ".",
+                                "Run /setup to configure this provider."));
+                        changeCredentials = false;
+                        continue;
+                    }
+                    SetupWizard.AuthMethod selectedAuth =
+                            SetupWizard.authMethodForProvider(selectedProvider, discoveryConfig);
+                    if (!authMethods.contains(selectedAuth)) selectedAuth = authMethods.get(0);
+                    if (authMethods.size() > 1) {
+                        List<String> authChoices = SetupWizard.authOptions(selectedVendor);
+                        boolean backToModels = false;
+                        while (true) {
+                            tui.updateTemporaryWindow("Provider and model", pickerLines(
+                                    "Choose authentication for " + SetupWizard.vendorLabel(selectedVendor),
+                                    authChoices, SetupWizard.authMethodLabel(selectedVendor, selectedAuth),
+                                    selectedVendor, selectedProvider, selectedModel, discoveryConfig));
+                            String authInput = reader.readLine("picker auth (number/name, back, Esc cancels): ");
+                            if (authInput == null || "cancel".equalsIgnoreCase(authInput.trim())) return;
+                            if ("back".equalsIgnoreCase(authInput.trim())) {
+                                backToModels = true;
+                                break;
+                            }
+                            String authChoice = parsePickerChoice(authInput, authChoices);
+                            if (authChoice == null) {
+                                tui.updateTemporaryWindow("Provider and model", List.of(
+                                        "Invalid authentication method: " + authInput.trim(),
+                                        "Choose a numbered method or its exact name."));
+                                continue;
+                            }
+                            selectedAuth = authMethods.get(authChoices.indexOf(authChoice));
                             break;
                         }
-                        String authChoice = parsePickerChoice(authInput, authChoices);
-                        if (authChoice == null) {
-                            tui.updateTemporaryWindow("Provider and model", List.of(
-                                    "Invalid authentication method: " + authInput.trim(),
-                                    "Choose a numbered method or its exact name."));
+                        if (backToModels) {
+                            changeCredentials = false;
                             continue;
                         }
-                        selectedAuth = authMethods.get(authChoices.indexOf(authChoice));
-                        break;
                     }
-                    if (backToProvider) {
+                    // Replace credential pages inside the modal so startup and resumed
+                    // chats share bounded paging without disturbing the chat terminal.
+                    tui.updateTemporaryWindow("Provider authentication", List.of(
+                            SetupWizard.vendorLabel(selectedVendor) + " · "
+                                    + SetupWizard.authMethodLabel(selectedVendor, selectedAuth)));
+                    String authVendor = selectedVendor;
+                    SetupWizard.AuthMethod authMethod = selectedAuth;
+                    authentication = withNativeMouseDuringAuthentication(
+                            reader.getTerminal(), () -> "global".equals(chatConfig.getAuthenticationScope())
+                                    ? SetupWizard.authenticate(reader, authVendor, authMethod, tui::updateTemporaryWindow)
+                                    : SetupWizard.authenticateSession(reader, authVendor, authMethod, tui::updateTemporaryWindow));
+                    if (authentication == null) {
+                        changeCredentials = false;
                         continue;
                     }
-                }
-                // Replace credential pages inside the modal so startup and resumed
-                // chats share bounded paging without disturbing the chat terminal.
-                tui.updateTemporaryWindow("Provider authentication", List.of(
-                        SetupWizard.vendorLabel(selectedVendor) + " · "
-                                + SetupWizard.authMethodLabel(selectedVendor, selectedAuth)));
-                String authVendor = selectedVendor;
-                SetupWizard.AuthMethod authMethod = selectedAuth;
-                SetupWizard.AuthenticationSelection authentication = withNativeMouseDuringAuthentication(
-                        reader.getTerminal(), () -> "global".equals(chatConfig.getAuthenticationScope())
-                                ? SetupWizard.authenticate(reader, authVendor, authMethod, tui::updateTemporaryWindow)
-                                : SetupWizard.authenticateSession(reader, authVendor, authMethod, tui::updateTemporaryWindow));
-                if (authentication == null) {
-                    tui.updateTemporaryWindow("Provider and model", List.of(
-                            "Authentication was not completed for "
-                                    + SetupWizard.vendorLabel(selectedVendor) + ".",
-                            "Choose another authentication route or provider."));
-                    continue;
-                }
-                selectedProvider = authentication.provider();
-                String selectedBaseUrl = SetupWizard.baseUrlForAuth(selectedProvider, selectedAuth);
-                if ("custom".equalsIgnoreCase(selectedProvider)) {
-                    selectedBaseUrl = SetupWizard.promptBaseUrl(reader, selectedProvider);
-                    if (selectedBaseUrl == null || selectedBaseUrl.isBlank()) {
-                        tui.updateTemporaryWindow("Provider and model", List.of(
-                                "A custom endpoint URL is required.",
-                                "Enter a base URL or choose another provider."));
-                        continue;
+                    selectedProvider = authentication.provider();
+                    selectedBaseUrl = SetupWizard.baseUrlForAuth(selectedProvider, selectedAuth);
+                    if ("custom".equalsIgnoreCase(selectedProvider)) {
+                        selectedBaseUrl = discoveryConfig.getBaseUrl();
+                        if (selectedBaseUrl == null || selectedBaseUrl.isBlank()) {
+                            selectedBaseUrl = SetupWizard.promptBaseUrl(reader, selectedProvider);
+                        }
+                        if (selectedBaseUrl == null || selectedBaseUrl.isBlank()) return;
                     }
-                }
 
-                boolean sameProvider = selectedProvider.equalsIgnoreCase(chatConfig.getProvider());
-                ChatConfig discoveryConfig = new ChatConfig(
-                        selectedProvider,
-                        authentication.apiKey(),
-                        sameProvider ? chatConfig.getModel() : null,
-                        selectedBaseUrl);
-                discoveryConfig.setAuthenticationScope(chatConfig.getAuthenticationScope());
-                discoveryConfig.setCredentialName(authentication.credentialName());
-                discoveryConfig.setAuthenticationMethod(authentication.authMethod().configValue());
-                if (sameProvider && (selectedBaseUrl == null || selectedBaseUrl.isBlank())) {
-                    discoveryConfig.setBaseUrl(chatConfig.getBaseUrl());
+                    boolean sameProvider = selectedProvider.equalsIgnoreCase(discoveryConfig.getProvider());
+                    String previousThinking = sameProvider ? discoveryConfig.getThinking() : null;
+                    discoveryConfig = buildModelProviderCandidateFrom(
+                            discoveryConfig, selectedProvider, sameProvider ? selectedModel : null, selectedBaseUrl);
+                    discoveryConfig.setThinking(previousThinking);
+                    discoveryConfig.setCredentialName(authentication.credentialName());
+                    discoveryConfig.setAuthenticationMethod(authentication.authMethod().configValue());
+                    if (authentication.apiKey() != null && !authentication.apiKey().isBlank()) {
+                        discoveryConfig.setApiKey(authentication.apiKey());
+                    }
+                    selectedBaseUrl = discoveryConfig.getBaseUrl();
+                    selectedModel = discoveryConfig.getModel();
+                    changeCredentials = false;
+                }
+                if ("custom".equalsIgnoreCase(selectedProvider)
+                        && (selectedBaseUrl == null || selectedBaseUrl.isBlank())) {
+                    selectedBaseUrl = SetupWizard.promptBaseUrl(reader, selectedProvider);
+                    if (selectedBaseUrl == null || selectedBaseUrl.isBlank()) return;
+                    discoveryConfig.setBaseUrl(selectedBaseUrl);
                 }
                 ModelDiscovery.Result discovery = SetupWizard.modelDiscovery(
                         selectedProvider, authentication.apiKey(), discoveryConfig);
@@ -3792,24 +3854,19 @@ public class ChatRepl implements AutoCloseable {
                 while (true) {
                     // Claude Code route: auth is `claude auth status`; the model
                     // list is Claude Code's own catalog. Not logged in →
-                    // indicator and exit. Logged in but no catalog → the picker
+                    // show the auth failure and optional routes. No catalog → the picker
                     // below shows Claude Code's reason and takes a typed id or
                     // alias, which the claude CLI resolves itself.
                     boolean claudeCliRoute = SetupWizard.isClaudeCodeRoute(
                             selectedProvider, authentication.authMethod());
-                    if (claudeCliRoute && models.isEmpty()
-                            && discovery.status() == ModelDiscovery.Status.AUTH_REQUIRED) {
-                        ChatCompleter.printAbove(renderer.yellow("  ⚠ " + discovery.message()
-                                + " Then run /model again."));
-                        return;
-                    }
                     boolean authenticationBlocked = ModelCatalogSelection.authenticationBlocked(discovery);
                     String defaultModel = models.isEmpty() ? null : models.get(0);
                     List<String> modelPickerLines = authenticationBlocked ? new ArrayList<>(List.of(
                             ModelCatalogSelection.authenticationNotice(discovery, selectedProvider),
-                            "Commands: back to change credentials, refresh to retry, or Esc to cancel.")) : pickerLines(
+                            "Commands: credentials to change authentication, provider to change vendor,",
+                            "refresh to retry, or Esc to cancel.")) : pickerLines(
                             "Choose a model for " + providerLabel(selectedVendor),
-                            models, defaultModel, selectedVendor, selectedProvider, selectedModel);
+                            models, defaultModel, selectedVendor, selectedProvider, selectedModel, discoveryConfig);
                     if (!authenticationBlocked && !fallbackBanner.isBlank()) {
                         modelPickerLines.add("");
                         modelPickerLines.add(renderer.yellow("  ⚠ " + fallbackBanner));
@@ -3820,15 +3877,26 @@ public class ChatRepl implements AutoCloseable {
                                 + discovery.status().name().toLowerCase().replace('_', ' '));
                         modelPickerLines.add(discovery.message());
                     }
+                    if (!authenticationBlocked) {
+                        modelPickerLines.add("Credentials are reused. Type provider or credentials to change them.");
+                        modelPickerLines.add("Reasoning/fast/ultracode settings are kept where supported; use /thinking, /fast or /ultracode to change them.");
+                    }
                     tui.updateTemporaryWindow("Provider and model", modelPickerLines);
                     String modelInput = reader.readLine(
                             authenticationBlocked
-                                    ? "Authentication failed (back, refresh, Esc cancels): "
-                                    : "picker model (number/name, refresh, blank uses default, Esc cancels): ");
+                                    ? "Authentication failed (credentials, provider, refresh, Esc cancels): "
+                                    : "picker model (number/name, provider, credentials, refresh, blank uses default, Esc cancels): ");
                     if (modelInput == null || "cancel".equalsIgnoreCase(modelInput.trim())) {
                         return;
                     }
-                    if ("back".equalsIgnoreCase(modelInput.trim())) {
+                    if ("provider".equalsIgnoreCase(modelInput.trim())
+                            || ("back".equalsIgnoreCase(modelInput.trim()) && !authenticationBlocked)) {
+                        chooseProvider = true;
+                        break;
+                    }
+                    if ("credentials".equalsIgnoreCase(modelInput.trim())
+                            || ("back".equalsIgnoreCase(modelInput.trim()) && authenticationBlocked)) {
+                        changeCredentials = true;
                         break;
                     }
                     if ("refresh".equalsIgnoreCase(modelInput.trim())) {
@@ -3859,114 +3927,13 @@ public class ChatRepl implements AutoCloseable {
                         selectedModel = modelChoice;
                     }
 
-                    List<SetupWizard.ThinkingOption> thinkingOptions =
-                            SetupWizard.thinkingOptions(
-                                    selectedProvider, selectedModel, authentication.apiKey(),
-                                    discoveryConfig, discovery);
-                    String selectedThinking = SetupWizard.compatibleThinking(
-                            selectedProvider, selectedModel, chatConfig.getThinking(), discovery);
-                    boolean backToModel = false;
-                    if (thinkingOptions.size() > 1) {
-                        List<String> thinkingChoices = thinkingOptions.stream()
-                                .map(SetupWizard.ThinkingOption::label)
-                                .toList();
-                        String defaultThinkingChoice = thinkingChoices.get(0);
-                        for (int i = 0; i < thinkingOptions.size(); i++) {
-                            if (Objects.equals(thinkingOptions.get(i).value(), selectedThinking)) {
-                                defaultThinkingChoice = thinkingChoices.get(i);
-                                break;
-                            }
-                        }
-                        while (true) {
-                            tui.updateTemporaryWindow("Provider and model", pickerLines(
-                                    "Choose reasoning effort", thinkingChoices, defaultThinkingChoice,
-                                    selectedVendor, selectedProvider, selectedModel));
-                            String thinkingInput = reader.readLine(
-                                    "picker thinking (number/name, blank keeps current, back, Esc cancels): ");
-                            if (thinkingInput == null
-                                    || "cancel".equalsIgnoreCase(thinkingInput.trim())) {
-                                return;
-                            }
-                            if ("back".equalsIgnoreCase(thinkingInput.trim())) {
-                                backToModel = true;
-                                break;
-                            }
-                            String thinkingChoice = thinkingInput.isBlank()
-                                    ? defaultThinkingChoice
-                                    : parsePickerChoice(thinkingInput, thinkingChoices);
-                            if (thinkingChoice == null) {
-                                tui.updateTemporaryWindow("Provider and model", List.of(
-                                        "Invalid reasoning effort: " + thinkingInput.trim(),
-                                        "Choose a listed effort, blank, back, or Esc to cancel."));
-                                continue;
-                            }
-                            selectedThinking = thinkingOptions.get(thinkingChoices.indexOf(thinkingChoice)).value();
-                            break;
-                        }
-                    }
-                    if (backToModel) {
-                        continue;
-                    }
-
-                    ChatConfig candidate = buildModelProviderCandidate(
-                            selectedProvider, selectedModel, selectedBaseUrl);
-                    candidate.setCredentialName(authentication.credentialName());
-                    candidate.setAuthenticationMethod(authentication.authMethod().configValue());
-                    candidate.setThinking(selectedThinking);
-                    if (candidate.supportsFastMode()) {
-                        List<String> fastChoices = SetupWizard.fastModeOptions(selectedProvider, selectedModel);
-                        String defaultFastChoice = candidate.isFastMode() ? "on" : "off";
-                        while (true) {
-                            List<String> lines = pickerLines("Choose fast mode (higher cost)",
-                                    fastChoices, defaultFastChoice, selectedVendor, selectedProvider, selectedModel);
-                            lines.add(candidate.fastModeCapabilities().notice());
-                            tui.updateTemporaryWindow("Provider and model", lines);
-                            String input = reader.readLine(
-                                    "picker fast (on/off, blank keeps current, back, Esc cancels): ");
-                            if (input == null || "cancel".equalsIgnoreCase(input.trim())) return;
-                            if ("back".equalsIgnoreCase(input.trim())) {
-                                backToModel = true;
-                                break;
-                            }
-                            String choice = input.isBlank() ? defaultFastChoice : parsePickerChoice(input, fastChoices);
-                            if (choice == null) continue;
-                            candidate.setFastMode("on".equals(choice));
-                            break;
-                        }
-                    }
-                    if (backToModel) continue;
-                    List<String> ultracodeChoices = candidate.supportsUltracode()
-                            ? SetupWizard.ultracodeOptions(selectedProvider, selectedModel, discovery)
-                            : List.of();
-                    if (ultracodeChoices.isEmpty()) {
+                    ChatConfig candidate = buildModelProviderCandidateFrom(
+                            discoveryConfig, selectedProvider, selectedModel, selectedBaseUrl);
+                    candidate.setThinking(SetupWizard.compatibleThinking(
+                            selectedProvider, selectedModel, discoveryConfig.getThinking(), discovery));
+                    if (candidate.isUltracode() && SetupWizard.ultracodeOptions(
+                            selectedProvider, selectedModel, discovery).isEmpty()) {
                         candidate.setUltracode(false);
-                    } else {
-                        String defaultUltracodeChoice = candidate.isUltracode() ? "on" : "off";
-                        while (true) {
-                            List<String> lines = pickerLines("Choose ultracode (Claude Code workflows)",
-                                    ultracodeChoices, defaultUltracodeChoice, selectedVendor, selectedProvider,
-                                    selectedModel);
-                            lines.add(candidate.ultracodeCapabilities().notice());
-                            tui.updateTemporaryWindow("Provider and model", lines);
-                            String input = reader.readLine(
-                                    "picker ultracode (on/off, blank keeps current, back, Esc cancels): ");
-                            if (input == null || "cancel".equalsIgnoreCase(input.trim())) return;
-                            if ("back".equalsIgnoreCase(input.trim())) {
-                                backToModel = true;
-                                break;
-                            }
-                            String choice = input.isBlank()
-                                    ? defaultUltracodeChoice : parsePickerChoice(input, ultracodeChoices);
-                            if (choice == null) continue;
-                            candidate.setUltracode("on".equals(choice));
-                            break;
-                        }
-                    }
-                    if (backToModel) continue;
-                    if (authentication.apiKey() != null && !authentication.apiKey().isBlank()) {
-                        // API-key input is transient and write-only; it is never persisted
-                        // into chat-config.json.
-                        candidate.setApiKey(authentication.apiKey());
                     }
                     if (!canHotSwitchLocalProvider(candidate)) {
                         tui.updateTemporaryWindow("Provider and model", List.of(
@@ -3978,7 +3945,7 @@ public class ChatRepl implements AutoCloseable {
                     if (!candidate.isValid()) {
                         tui.updateTemporaryWindow("Provider and model", List.of(
                                 "Credentials are not configured for " + providerLabel(selectedVendor) + ".",
-                                "Run /setup to configure this provider, then try again.",
+                                "Type credentials to configure authentication, or provider to change vendor.",
                                 "The current provider/model is still active."));
                         continue;
                     }
@@ -3996,6 +3963,8 @@ public class ChatRepl implements AutoCloseable {
         } catch (UserInterruptException | EndOfFileException ignored) {
             // Escape/EOF closes only the temporary picker. The active turn's cancel
             // widget has already requested interruption when Escape was pressed.
+        } catch (IOException error) {
+            ChatCompleter.printAbove("Could not reuse provider credentials. The current model is unchanged.");
         } finally {
             endPickerHistory(reader, pickerHistory);
             modelPickerActive = false;
@@ -4119,15 +4088,19 @@ public class ChatRepl implements AutoCloseable {
             ChatCompleter.printAbove("Session authentication requires standard direct chat.");
             return;
         }
-        String[] args = arguments == null || arguments.isBlank() ? new String[0] : arguments.trim().split("\\s+");
+        if (arguments == null || arguments.isBlank()) {
+            openModelProviderPicker(true);
+            return;
+        }
+        String[] args = arguments.trim().split("\\s+");
         try {
             var store = ai.kompile.cli.main.auth.CredentialStore.create();
-            if (args.length == 0 || "list".equals(args[0])) {
+            if ("list".equals(args[0])) {
                 if (chatConfig.isClaudeCliNative()) {
                     ChatCompleter.printAbove("Authentication: Claude Code route — "
                             + LiveModelDiscovery.claudeCodeLogin().describe());
                     ChatCompleter.printAbove("Kompile-managed Anthropic credentials apply to the API-key route; "
-                            + "/model switches routes.");
+                            + "/auth opens vendor selection; type credentials to switch routes.");
                     return;
                 }
                 ChatCompleter.printAbove("Authentication: " + chatConfig.getAuthenticationScope()
@@ -4138,7 +4111,8 @@ public class ChatRepl implements AutoCloseable {
                             + (info.active() ? " [global default]" : ""));
                 ChatCompleter.printAbove("/auth session [name] — pin this session; /auth global — follow vendor default\n"
                         + "/auth global <provider> <name> — select credential for all global-mode sessions of that provider\n"
-                        + "/auth default session|global — default mode for new sessions; /provider — choose vendor/account/model");
+                        + "/auth default session|global — default mode for new sessions; /auth — choose vendor/model\n"
+                        + "/auth list — show credentials; type credentials in the picker to change authentication");
                 return;
             }
             if (args.length == 2 && "default".equals(args[0])) {
@@ -4161,7 +4135,7 @@ public class ChatRepl implements AutoCloseable {
             if (chatConfig.isClaudeCliNative()) {
                 // The route's credential is the Claude Code login; Kompile has none to pin.
                 ChatCompleter.printAbove("The Claude Code route uses your Claude Code login, so there is no "
-                        + "Kompile credential to pin. /model switches to Anthropic's API-key route.");
+                        + "Kompile credential to pin. Use /auth, then credentials, to choose Anthropic's API-key route.");
                 return;
             }
             ChatConfig candidate = chatConfig.copy();
@@ -4187,7 +4161,33 @@ public class ChatRepl implements AutoCloseable {
         }
     }
 
-    private boolean commitModelProviderSelection(ChatConfig candidate) {
+    synchronized boolean commitModelProviderSelection(ChatConfig candidate) {
+        if (!modelSelectionPending.compareAndSet(false, true)) {
+            ChatCompleter.printAbove(renderer.yellow("  A model selection is awaiting Claude Code's acknowledgement."));
+            return false;
+        }
+        if (directClient != null && directClient.selectClaudeModel(candidate,
+                uiSession.capture((Runnable) () -> {
+                    synchronized (ChatRepl.this) {
+                        modelSelectionPending.set(false);
+                        if (!uiSession.isClosed()) commitConfirmedModelProviderSelection(candidate);
+                    }
+                }), uiSession.captureConsumer(problem -> {
+                    synchronized (ChatRepl.this) {
+                        modelSelectionPending.set(false);
+                        ChatCompleter.printAbove(renderer.yellow("  Model switch was not applied: " + problem)
+                                + renderer.dim(" — still using " + activeModelDisplayName()));
+                    }
+                }))) {
+            ChatCompleter.printAbove(renderer.dim("  Waiting for Claude Code to confirm model "
+                    + candidate.getModel() + "; the active model is unchanged."));
+            return true;
+        }
+        modelSelectionPending.set(false);
+        return commitConfirmedModelProviderSelection(candidate);
+    }
+
+    private boolean commitConfirmedModelProviderSelection(ChatConfig candidate) {
         String previous = activeModelDisplayName();
         if (!updateChatConfig(candidate)) {
             ChatCompleter.printAbove(renderer.yellow("  Provider/model switch was not applied.")
@@ -4281,7 +4281,7 @@ public class ChatRepl implements AutoCloseable {
 
     private List<String> pickerLines(String heading, List<String> choices,
                                      String defaultChoice, String vendor,
-                                     String provider, String model) {
+                                     String provider, String model, ChatConfig selection) {
         List<String> lines = new ArrayList<>();
         lines.add("Active: " + activeModelDisplayName());
         lines.add(heading + ":");
@@ -4294,12 +4294,12 @@ public class ChatRepl implements AutoCloseable {
         if (choices.isEmpty()) lines.add("  (type a value at the prompt)");
         lines.add("");
         String auth = SetupWizard.authMethodLabel(vendor,
-                SetupWizard.authMethodForProvider(provider, chatConfig));
+                SetupWizard.authMethodForProvider(provider, selection));
         lines.add("Provider: " + SetupWizard.vendorLabel(vendor)
                 + " (" + provider + ")   Auth: " + auth + "   Model: " + model);
-        String commands = heading.startsWith("Choose reasoning effort")
-                ? "number/name, blank keeps current, back, or Esc to cancel"
-                : "number/name, model id, back, or Esc to cancel";
+        String commands = heading.startsWith("Choose a model")
+                ? "number/name, model id, provider, credentials, refresh, or Esc to cancel"
+                : "number/name, back, or Esc to cancel";
         lines.add("Commands: " + commands);
         return lines;
     }

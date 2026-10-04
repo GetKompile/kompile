@@ -2,9 +2,12 @@ package ai.kompile.cli.main.chat.tui;
 
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
 import ai.kompile.cli.main.chat.MessageQueue;
+import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -244,6 +247,35 @@ class KompileTuiContentViewTest {
     }
 
     @Test
+    void draggingAlongTheEdgeRowItStartedOnSelectsWithoutScrolling() throws Exception {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-edge-row-selection-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-edge-row-selection-queue"),
+                    new TerminalRenderer(false));
+            for (int i = 1; i <= 8; i++) tui.printInScrollRegion("line " + i);
+
+            int top = tui.scrollTop() - 1;
+            assertTrue(tui.beginTranscriptSelection(0, top));
+            assertTrue(tui.dragTranscriptSelection(5, top));
+            Thread.sleep(250);
+            assertEquals(0, tui.getContentScrollOffset(),
+                    "dragging along the row the press started on must not scroll, even when held");
+            assertEquals("line 7", tui.getSelectedTranscriptText());
+
+            assertTrue(tui.dragTranscriptSelection(5, top + 1));
+            assertTrue(tui.dragTranscriptSelection(5, top));
+            assertTrue(tui.finishTranscriptSelection(5, top));
+            assertTrue(tui.getContentScrollOffset() >= 1,
+                    "returning to the edge from another row must still scroll");
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
     void copiedSelectionJoinsSoftWrappedRowsWithoutInventingNewlines() {
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("tui-soft-wrap-selection-test");
@@ -261,6 +293,34 @@ class KompileTuiContentViewTest {
 
             assertEquals("x".repeat(10), tui.getSelectedTranscriptText());
             assertFalse(tui.getSelectedTranscriptText().contains("\n"));
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void panelSizedToTranscriptColumnsCopiesWholeLinesWithoutStrayBorderRows() {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-panel-width-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-panel-width-queue"),
+                    new TerminalRenderer(false));
+            int columns = KompileTui.transcriptColumns(tui.getTerminalWidth());
+            String panel = new AsciiRenderer(new TerminalRenderer(false), columns)
+                    .panel("Help", "/help    This help message", AsciiRenderer.ROUNDED, null);
+            List<String> panelLines = List.of(panel.split("\n"));
+            assertEquals(3, panelLines.size());
+            tui.printInScrollRegion(panel);
+
+            // The two-row viewport shows the body and bottom border, one row each:
+            // a wider panel would wrap and leave each right border on its own row.
+            assertEquals(panelLines.subList(1, 3), tui.getVisibleContentLines());
+            int body = tui.scrollTop() - 1;
+            assertTrue(tui.beginTranscriptSelection(0, body));
+            assertTrue(tui.finishTranscriptSelection(columns - 1, body));
+            assertEquals(panelLines.get(1), tui.getSelectedTranscriptText());
         } finally {
             processes.close();
         }

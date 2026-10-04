@@ -3184,6 +3184,8 @@ export interface ToolCallDetail {
   preview?: string;
   error?: string;
   sections?: ToolCallSection[];
+  /** The same answer as a chart, drawn under the row (kompile-cli-insights Charts). */
+  chart?: ToolCallChart;
 }
 
 /** One bounded detail body under a tool row: diff, content, output or result. */
@@ -3200,6 +3202,39 @@ export interface ToolCallRun {
   text: string;
   file?: string;
   family?: 'clike' | 'hash' | 'python' | 'sql' | 'markup';
+}
+
+/**
+ * A chart description a tool attaches to its answer (kompile-cli-insights Charts, version `v`):
+ * bars or lines over labels, or one node and the relations around it.
+ */
+export type ToolCallChart = ToolCallSeriesChart | ToolCallGraphChart;
+
+/** One value per label in each series; null is a missing point, drawn as a gap. */
+export interface ToolCallSeriesChart {
+  v: number;
+  kind: 'bar' | 'line';
+  title: string;
+  unit?: string;
+  labels: string[];
+  series: { name: string; values: (number | null)[] }[];
+}
+
+/**
+ * The relations one hop around `focus`; every edge touches it. `omitted` counts the relations
+ * left out, and `link` is the chat app route that opens the full graph there, absent when the
+ * graph is not on a server the web app can show.
+ */
+export interface ToolCallGraphChart {
+  v: number;
+  kind: 'graph';
+  title: string;
+  factSheet: { id: string; name: string };
+  focus: string;
+  nodes: { id: string; label: string; type?: string }[];
+  edges: { source: string; target: string; label?: string; directed: boolean }[];
+  omitted: number;
+  link?: string;
 }
 
 /**

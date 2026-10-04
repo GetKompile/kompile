@@ -329,6 +329,98 @@ class DirectLlmClientUsageTest {
         }
     }
 
+    @Test
+    void toolArgumentsReachTheListenerAsTheModelStreamsThem() throws Exception {
+        String anthropic = """
+                data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1}}}
+
+                data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}
+
+                data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}
+
+                data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"file_path\\": "}}
+
+                data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"/tmp/a\\"}"}}
+
+                data: {"type":"content_block_stop","index":0}
+
+                data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":30}}
+
+                data: {"type":"message_stop"}
+
+                """;
+        assertToolArgumentsStream(fixture("/v1/messages", exchange -> sse(exchange, anthropic)),
+                "anthropic", "claude-sonnet-4-6");
+        String openAi = """
+                data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":""}}]}}]}
+
+                data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"file_path\\": "}}]}}]}
+
+                data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"/tmp/a\\"}"}}]}}]}
+
+                data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":30}}
+
+                data: [DONE]
+
+                """;
+        assertToolArgumentsStream(fixture("/chat/completions", exchange -> sse(exchange, openAi)),
+                "openai", "test-model");
+        String responses = """
+                data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":""}}
+
+                data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":""}
+
+                data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\\"file_path\\": "}
+
+                data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\\"/tmp/a\\"}"}
+
+                data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\\"file_path\\": \\"/tmp/a\\"}"}
+
+                data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":10,"output_tokens":30}}}
+
+                """;
+        assertToolArgumentsStream(fixture("/responses", exchange -> sse(exchange, responses)),
+                "openai", "gpt-6-astra");
+        String pi = """
+                data: {"type":"toolcall_start","contentIndex":0,"id":"call_1","toolName":"read"}
+
+                data: {"type":"toolcall_delta","contentIndex":0,"delta":""}
+
+                data: {"type":"toolcall_delta","contentIndex":0,"delta":"{\\"file_path\\": "}
+
+                data: {"type":"toolcall_delta","contentIndex":0,"delta":"\\"/tmp/a\\"}"}
+
+                data: {"type":"toolcall_end","contentIndex":0,"toolCall":{"id":"call_1","name":"read","arguments":{"file_path":"/tmp/a"}}}
+
+                data: {"type":"done","reason":"toolUse","usage":{"input":10,"output":30,"cacheRead":0,"cacheWrite":0}}
+
+                """;
+        assertToolArgumentsStream(fixture("/", exchange -> {
+            String path = exchange.getRequestURI().getPath();
+            if (path.equals("/v1/config")) {
+                json(exchange, "{\"baseUrl\":\"http://127.0.0.1:" + exchange.getLocalAddress().getPort()
+                        + "/pi\",\"models\":[{\"id\":\"test-model\",\"input\":[\"text\"]}]}");
+            } else if (path.equals("/pi/messages")) {
+                sse(exchange, pi);
+            } else {
+                throw new IOException("Unexpected path: " + path);
+            }
+        }), "radius", "test-model");
+    }
+
+    /** Each route streams the arguments in two pieces after an empty one, and uses 10 in and 30 out. */
+    private static void assertToolArgumentsStream(Fixture fixture, String provider, String model)
+            throws Exception {
+        String route = provider + "/" + model;
+        try (Fixture server = fixture; DirectLlmClient client = client(provider, model, server)) {
+            UsageListener listener = listen(client);
+            var result = client.streamChat("hi", "system", null, null);
+            assertFalse(result.failed, route + ": " + result.failureMessage);
+            assertEquals(List.of("{\"file_path\": ", "\"/tmp/a\"}"), listener.toolInput, route);
+            assertUsage(result, 10, 30, 0, 0);
+        }
+    }
+
     private static DirectLlmClient client(String provider, String model, Fixture server) {
         var client = new DirectLlmClient(new ChatConfig(provider, "test-key", model,
                 "http://127.0.0.1:" + server.server.getAddress().getPort()), MAPPER, FAST_POLICY);
@@ -387,7 +479,9 @@ class DirectLlmClientUsageTest {
 
     private static final class UsageListener implements DirectLlmClient.ProviderActivityListener {
         final List<Usage> events = new ArrayList<>();
+        final List<String> toolInput = new ArrayList<>();
         @Override public void onToolStart(String id, String name, String input) { }
+        @Override public void onToolInputDelta(String delta) { toolInput.add(delta); }
         @Override public void onToolComplete(String id, String name, String output, int exitCode, boolean error) { }
         @Override public void onTokenUsage(long input, long output, long read, long write) {
             events.add(new Usage(input, output, read, write));

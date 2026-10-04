@@ -22,8 +22,9 @@ import java.util.Map;
  * Static description of everything {@code kompile sync} may synchronize.
  *
  * <p>Sync transfers portable, user-managed content only. Platform binaries,
- * model weights, credentials, caches, and logs are deliberately outside this
- * catalog; distribution updates remain the job of {@code kompile update}.</p>
+ * model weights, caches, and logs are deliberately outside this
+ * catalog; distribution updates remain the job of {@code kompile update}.
+ * External harness settings and file-based credentials require explicit selection.</p>
  */
 public final class SyncCatalog {
 
@@ -32,8 +33,8 @@ public final class SyncCatalog {
 
     /** Protocol marker for this sync implementation. */
     public static final String PROTOCOL = "kompile-sync";
-    /** Current protocol version; peers negotiate on the minimum of both. */
-    public static final int PROTOCOL_VERSION = 1;
+    /** Current protocol version; both peers must match. */
+    public static final int PROTOCOL_VERSION = 2;
 
     /** Portable component families that sync can transfer. */
     public static final String SKILLS = "skills";
@@ -42,8 +43,25 @@ public final class SyncCatalog {
     public static final String PROMPTS = "prompts";
     public static final String PROVIDER_SKILLS = "provider-skills";
 
+    public static final String HARNESS_SETTINGS = "harness-settings";
+    public static final String HARNESS_CREDENTIALS = "harness-credentials";
+
     public static final List<String> COMPONENTS =
-            List.of(SKILLS, MEMORIES, ROLES, PROMPTS, PROVIDER_SKILLS);
+            List.of(SKILLS, MEMORIES, ROLES, PROMPTS, PROVIDER_SKILLS, HARNESS_SETTINGS, HARNESS_CREDENTIALS);
+
+    public static boolean isHarness(String component) {
+        return HARNESS_SETTINGS.equals(component) || HARNESS_CREDENTIALS.equals(component);
+    }
+
+    public static boolean includesHarness(List<String> components) {
+        return components.stream().anyMatch(SyncCatalog::isHarness);
+    }
+
+    public static final String HARNESS_WARNING =
+            "WARNING: Harness sync copies Codex/Claude provider/model settings and, when selected, login credentials. "
+            + "Settings may also contain API keys. Only sync to a trusted account/device; close both harnesses first. "
+            + "Existing files are replaced, not merged. Claude global state includes MCP settings and project trust decisions. "
+            + "Keychain/environment-only credentials are NOT copied; copied refresh tokens may expire or invalidate another login.";
 
     /** Default selection: the three first-class families. */
     public static final List<String> DEFAULT_COMPONENTS = List.of(SKILLS, MEMORIES, ROLES);
@@ -107,6 +125,9 @@ public final class SyncCatalog {
             case ROLES: leaf = "roles"; break;
             case PROMPTS: leaf = "system-prompts"; break;
             case PROVIDER_SKILLS: leaf = "provider-skills"; break;
+            // Logical mounts only: SyncPaths resolves the allowlisted external files.
+            case HARNESS_SETTINGS: leaf = "harness-settings"; break;
+            case HARNESS_CREDENTIALS: leaf = "harness-credentials"; break;
             default: throw new IllegalArgumentException("Unknown component: " + component);
         }
         return base.isEmpty() ? leaf : base + "/" + leaf;

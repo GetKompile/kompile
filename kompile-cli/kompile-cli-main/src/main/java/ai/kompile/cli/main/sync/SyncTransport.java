@@ -26,6 +26,13 @@ import java.util.Map;
  */
 public interface SyncTransport extends AutoCloseable {
 
+    static String shellQuote(String value) {
+        if (value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException("Invalid sync endpoint argument.");
+        }
+        return "'" + value.replace("'", "'\"'\"'") + "'";
+    }
+
     /** Starts the peer endpoint and returns its stdin for writing. */
     java.io.OutputStream stdin() throws IOException;
 
@@ -43,6 +50,12 @@ public interface SyncTransport extends AutoCloseable {
     static SyncTransport localSubprocess(java.nio.file.Path kompileBinary,
                                          java.nio.file.Path remoteHome,
                                          Map<String, String> extraEnv) {
+        return localSubprocess(kompileBinary, remoteHome, extraEnv, List.of());
+    }
+
+    static SyncTransport localSubprocess(java.nio.file.Path kompileBinary,
+                                         java.nio.file.Path remoteHome,
+                                         Map<String, String> extraEnv, List<String> endpointOptions) {
         return new SyncTransport() {
             private Process process;
 
@@ -53,8 +66,9 @@ public interface SyncTransport extends AutoCloseable {
                     command.add("sync");
                     command.add("serve");
                     command.add("--home");
-                    command.add(remoteHome.toAbsolutePath().toString());
-                    ProcessBuilder builder = new ProcessBuilder(command);
+                    command.add(SyncPaths.expandHome(remoteHome).toAbsolutePath().toString());
+                    command.addAll(endpointOptions);
+                    ProcessBuilder builder = new ProcessBuilder(command).redirectError(ProcessBuilder.Redirect.INHERIT);
                     builder.environment().putAll(extraEnv);
                     process = builder.start();
                 }
@@ -102,24 +116,31 @@ public interface SyncTransport extends AutoCloseable {
                              int port,
                              java.nio.file.Path sshExecutable,
                              Map<String, String> extraEnv) {
+        return ssh(sshTarget, port, sshExecutable, extraEnv, List.of());
+    }
+
+    static SyncTransport ssh(String sshTarget, int port, java.nio.file.Path sshExecutable,
+                             Map<String, String> extraEnv, List<String> endpointOptions) {
         return new SyncTransport() {
             private Process process;
 
             private Process ensure() throws IOException {
                 if (process == null) {
                     List<String> command = new java.util.ArrayList<>();
-                    command.add(sshExecutable.toAbsolutePath().toString());
+                    command.add(sshExecutable.toString());
                     if (port > 0) {
                         command.add("-p");
                         command.add(String.valueOf(port));
                     }
                     command.add("-o");
                     command.add("BatchMode=yes");
+                    command.add("--");
                     command.add(sshTarget);
-                    command.add("kompile");
-                    command.add("sync");
-                    command.add("serve");
-                    ProcessBuilder builder = new ProcessBuilder(command);
+                    List<String> remoteCommand = new java.util.ArrayList<>(List.of("kompile", "sync", "serve"));
+                    remoteCommand.addAll(endpointOptions);
+                    command.add(remoteCommand.stream().map(SyncTransport::shellQuote)
+                            .collect(java.util.stream.Collectors.joining(" ")));
+                    ProcessBuilder builder = new ProcessBuilder(command).redirectError(ProcessBuilder.Redirect.INHERIT);
                     builder.environment().putAll(extraEnv);
                     process = builder.start();
                 }

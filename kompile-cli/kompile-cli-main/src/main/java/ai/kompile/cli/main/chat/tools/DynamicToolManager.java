@@ -95,8 +95,9 @@ public class DynamicToolManager {
                 Set.of("task", "multi_task", "quorum_task", "role_manager", "skill_manager")));
 
         GROUPS.put("history", new ToolGroup("history",
-                "Conversation search, import/resume, and prior tool-call lookup",
-                Set.of("transcript_search", "conversation_import", "resume", "tool_call_catalog")));
+                "Conversation search, import/resume, prior tool-call lookup, and judge/tool/test/crawl/graph insights",
+                Set.of("transcript_search", "conversation_import", "resume", "tool_call_catalog",
+                        "insights")));
 
         GROUPS.put("memory", new ToolGroup("memory",
                 "Persistent memory plus semantic, RAG, and knowledge-base search",
@@ -105,13 +106,13 @@ public class DynamicToolManager {
         GROUPS.put("crawl", new ToolGroup("crawl",
                 "Build and maintain pipelines, then run and inspect folder-local model-backed crawls",
                 Set.of("crawl_discover", "model_runtime", "pipeline", "crawl_documents", "crawl_source",
-                        "crawl_control", "crawl_result", "knowledge_status")));
+                        "crawl_control", "crawl_result", "knowledge_status", "insights")));
 
         GROUPS.put("graph_query", new ToolGroup("graph_query",
                 "Search and reason over the knowledge graph without mutating it",
                 Set.of("knowledge_graph", "graph_search", "graph_reason", "graph_reasoning_query",
                         "ask_graph_query", "ask_graph_verify", "ask_graph_explain",
-                        "ask_graph_explain_fused", "ask_graph_synthesize", "ask_graph_claim")));
+                        "ask_graph_explain_fused", "ask_graph_synthesize", "ask_graph_claim", "insights")));
 
         GROUPS.put("graph_analysis", new ToolGroup("graph_analysis",
                 "Graph aggregation, embeddings, centrality, simulation, forecasting, and Bayesian analysis",
@@ -124,8 +125,8 @@ public class DynamicToolManager {
                         "graph_import", "graph_export")));
 
         GROUPS.put("evaluation", new ToolGroup("evaluation",
-                "Test milestones, performance harnesses, and agent evaluation",
-                Set.of("test_milestone", "performance_harness", "eval")));
+                "Test milestones and their trends, performance harnesses, and agent evaluation",
+                Set.of("test_milestone", "insights", "performance_harness", "eval")));
 
         // Custom tools loaded from ~/.kompile/tools/ and .kompile/tools/ — inactive by default.
         // Group is populated dynamically at startup; tool IDs follow the "custom_<name>" convention.

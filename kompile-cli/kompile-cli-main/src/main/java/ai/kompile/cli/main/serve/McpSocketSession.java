@@ -545,6 +545,7 @@ public class McpSocketSession implements Runnable {
         // Tool call catalog
         register(map, new ToolCallCatalogTool(), om, wd);
         register(map, new DiffIndexTool(null, om), om, wd);
+        register(map, new InsightsTool(), om, wd);
 
         // Full knowledge graph CRUD + graph capabilities
         register(map, new KnowledgeGraphTool(null, om), om, wd);

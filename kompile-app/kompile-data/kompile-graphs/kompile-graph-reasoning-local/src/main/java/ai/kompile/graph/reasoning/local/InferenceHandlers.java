@@ -24,8 +24,14 @@ import ai.kompile.graph.reasoning.claims.DossierItem;
 import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.embedding.kge.KgeTripleScorer;
 import ai.kompile.graph.reasoning.embedding.learn.EmbeddingTable;
+import ai.kompile.graph.reasoning.fol.MebnInferenceService;
+import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.RelationalMTheoryArtifactCodec;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
+import ai.kompile.graph.reasoning.subgraph.SubgraphMaterializer;
+import ai.kompile.graph.reasoning.subgraph.SubgraphSpec;
 import ai.kompile.graph.reasoning.synthesis.AnswerSynthesizer;
 import ai.kompile.graph.reasoning.unified.MiniJson;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -39,7 +45,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.Set;
 
 /**
  * Inference tool handlers: Bayesian inference, MEBN/MTheory query, claim dossier, and
@@ -47,11 +53,9 @@ import java.util.Optional;
  *
  * <h3>Tools registered</h3>
  * <ul>
- *   <li>{@code ask_graph_mebn} — BFS neighborhood subgraph + Bayesian network variable elimination,
- *       conditioned on optional {@code evidence}. Entity {@link GraphEntity#confidence()} is the
- *       root prior (default 1.0 → deterministic posteriors; meaningful results require entities
- *       with confidences strictly between 0 and 1). {@code priors} are the marginals before
- *       evidence.</li>
+ *   <li>{@code ask_graph_mebn} — bounded projection of the stored canonical learned MTheory,
+ *       conditioned on optional evidence keyed by exact grounded variable names. Missing,
+ *       corrupt or stale theory is an error, never a structural rebuild.</li>
  *   <li>{@code graph_bayes} — four actions: query, mpe, whatif, stats.</li>
  *   <li>{@code ask_graph_claim} — multi-signal claim dossier via {@link DossierBuilder}.</li>
  *   <li>{@code ask_graph_synthesize} — ranked answer synthesis via {@link AnswerSynthesizer}.</li>
@@ -63,14 +67,17 @@ import java.util.Optional;
  *   <li>{@code factSheetId} is accepted and silently ignored (local sessions are single-graph).</li>
  *   <li>Embedding cosine in {@code ask_graph_claim} is attempted only when a {@code "kge"} layer
  *       exists in the session graph — skipped otherwise so the tool works on graphs without KGE.</li>
- *   <li>{@code ask_graph_mebn} and {@code graph_bayes} both use
- *       {@link GraphBayesianNetworkBuilder} + {@link VariableElimination}: MEBN adds a
- *       neighborhood BFS step first and maps the result back to entity ids.</li>
+ *   <li>{@code graph_bayes} uses {@link GraphBayesianNetworkBuilder} for structural inference;
+ *       {@code ask_graph_mebn} uses the pure-Java {@link MebnInferenceService} learned path.</li>
  * </ul>
  */
 public final class InferenceHandlers {
 
     private InferenceHandlers() {}
+
+    // Read only the portable JSON contract; never deserialize native/legacy models or invoke learning.
+    private static final String MEBN_THEORY_ARTIFACT = "reasoning/mebn-theory.v1.json";
+    private static final String REASONING_STALE_META = "learning.reasoningStale";
 
     /**
      * Register all inference handlers with the dispatcher builder.
@@ -80,13 +87,11 @@ public final class InferenceHandlers {
     static void register(LocalToolDispatcher.Builder builder) {
         builder.handler("ask_graph_mebn",
                 schemaFor("ask_graph_mebn",
-                        "Run MEBN/Bayesian belief propagation around a node. BFS extracts a " +
-                        "neighborhood subgraph (maxDepth, maxNodes), builds a Bayesian network " +
-                        "via noisy-OR CPTs (entity confidence is the root prior — all-1.0 " +
-                        "confidences produce degenerate/deterministic posteriors), then runs " +
-                        "variable elimination. Pass evidence {entityId: true|false} to condition " +
-                        "the posteriors; priors are the marginals before evidence. Both are keyed " +
-                        "by entity id.",
+                        "Query the stored canonical learned MEBN theory around a node. " +
+                        "A bounded neighborhood (maxDepth, maxNodes) restricts the theory's entity " +
+                        "domains before pure-Java SSBN inference. Missing, corrupt or stale theory " +
+                        "is an error. Evidence uses exact variable names from posteriors, mapped " +
+                        "to true/false or 1/0. Without evidence priors equal posteriors.",
                         List.of("nodeId"),
                         buildMebnSchema()),
                 InferenceHandlers::handleMebn);
@@ -133,58 +138,108 @@ public final class InferenceHandlers {
             if (nodeId == null || nodeId.isBlank()) {
                 return error("ask_graph_mebn requires 'nodeId'");
             }
-            int maxDepth = intVal(args, "maxDepth", 3);
-            int maxNodes = intVal(args, "maxNodes", 50);
-
+            int maxDepth = Math.max(0, Math.min(10, intVal(args, "maxDepth", 3)));
+            int maxNodes = intVal(args, "maxNodes", 100);
+            if (maxNodes <= 0 || maxNodes > 1000) {
+                return error("maxNodes must be between 1 and 1000 for bounded MEBN inference");
+            }
             UnifiedGraph full = session.graph();
-
-            // Validate nodeId exists
-            Optional<? extends GraphEntity> rootOpt = full.entity(nodeId);
-            if (rootOpt.isEmpty()) {
+            if (full.entity(nodeId).isEmpty()) {
                 return error("Entity not found: " + nodeId);
             }
-
-            // BFS subgraph around nodeId
-            UnifiedGraph sub = full.neighborhood(List.of(nodeId), maxDepth);
-
-            // Cap to maxNodes (neighborhood() respects maxNodes via SubgraphSpec when > 0,
-            // but we set 0 above for no-cap; apply our own cap by trimming to first maxNodes)
-            sub = capGraph(sub, maxNodes);
-
-            long t0 = System.currentTimeMillis();
-
-            // Build Bayesian network from subgraph
-            GraphBayesianNetworkBuilder builder = new GraphBayesianNetworkBuilder();
-            BayesianNetwork network = builder.build(sub);
-
-            Map<String, String> varToEntityId = builder.variableToEntityId();
-            Map<String, String> entityIdToVar = builder.entityIdToVariable();
-            Map<String, Integer> evidence = parseEvidenceMap(args, "evidence", entityIdToVar);
-
-            Map<String, Object> variableToTitle = new LinkedHashMap<>();
-            for (GraphEntity entity : sub.entities()) {
-                if (!entityIdToVar.containsKey(entity.id())) continue;
-                variableToTitle.put(entity.id(), entity.label().isEmpty() ? entity.id() : entity.label());
-            }
-
-            // Priors are the marginals before evidence; without evidence they are the posteriors.
-            Map<String, Double> varPriors = VariableElimination.queryAll(network, Map.of());
-            Map<String, Double> varPosteriors = evidence.isEmpty()
-                    ? varPriors : VariableElimination.queryAll(network, evidence);
-
-            long elapsed = System.currentTimeMillis() - t0;
+            MTheory theory = learnedMebnTheory(full);
+            // Only topology is needed to select domains; do not clone embeddings/model artifacts.
+            ReasoningGraph sub = SubgraphMaterializer.INSTANCE.materialize(full,
+                    SubgraphSpec.builder().seedIds(Set.of(nodeId)).radius(maxDepth).maxNodes(maxNodes).build()).graph();
+            List<String> nodes = sub.entities().stream().map(GraphEntity::id).toList();
+            MTheory queryTheory = RelationalMTheoryArtifactCodec.restrictToEntityIds(theory, nodes);
+            checkMebnGroundingBudget(queryTheory);
+            long started = System.nanoTime();
+            MebnInferenceService inference = new MebnInferenceService();
+            Map<String, Double> priors = inference.infer(full, queryTheory, Map.of());
+            Map<String, Integer> evidence = parseMebnEvidence(args.get("evidence"), priors.keySet());
+            Map<String, Double> posteriors = evidence.isEmpty()
+                    ? priors : inference.infer(full, queryTheory, evidence);
+            Map<String, Object> titles = new LinkedHashMap<>();
+            Map<String, Object> meta = new LinkedHashMap<>();
+            posteriors.keySet().stream().sorted().forEach(variable -> {
+                String rvName = variable.contains("(") ? variable.substring(0, variable.indexOf('(')) : variable;
+                titles.put(variable, variable);
+                meta.put(variable, Map.of("mTheory", queryTheory.getName(), "randomVariable", rvName,
+                        "mfragName", queryTheory.findHomeMFrag(rvName).map(f -> f.getName()).orElse("unknown"),
+                        "nodeRole", "RESIDENT", "learned", true));
+            });
 
             Map<String, Object> out = new LinkedHashMap<>();
-            out.put("posteriors", byEntityId(varPosteriors, varToEntityId));
-            out.put("priors", byEntityId(varPriors, varToEntityId));
-            out.put("variableToTitle", variableToTitle);
-            out.put("evidenceApplied", evidence.size());
-            out.put("computationTimeMs", elapsed);
+            out.put("posteriors", posteriors);
+            out.put("priors", priors);
+            out.put("variableToTitle", titles);
+            out.put("variableToMebnMeta", meta);
+            out.put("mTheory", queryTheory.getName());
+            out.put("learnedTheory", true);
+            out.put("evidence", evidence);
+            out.put("evidenceApplied", !evidence.isEmpty());
+            out.put("note", evidence.isEmpty()
+                    ? "No evidence was applied, so each prior equals its posterior; the anchor node only selects which variables are included."
+                    : "Posteriors are conditioned on the evidence; each prior is the model's probability without it.");
+            out.put("computationTimeMs", (System.nanoTime() - started) / 1_000_000L);
+            out.put("scopedEntityCount", nodes.size());
             out.put("nodeCount", sub.entityCount());
             out.put("edgeCount", sub.relationCount());
             return MiniJson.write(out);
         } catch (Exception e) {
             return error("ask_graph_mebn failed: " + e.getMessage());
+        }
+    }
+
+    private static final long MAX_MEBN_GROUNDINGS = 10_000;
+
+    /** Canonical activation validation shared by execution and the portability inventory. */
+    static Map<String, Object> mebnActivation(UnifiedGraph graph) {
+        try {
+            learnedMebnTheory(graph);
+            return Map.of("status", "ACTIVE", "reason",
+                    "ask_graph_mebn executes the canonical JSON theory within a per-request grounding budget",
+                    "maxGroundings", MAX_MEBN_GROUNDINGS);
+        } catch (RuntimeException e) {
+            return Map.of("status", "INVALID", "reason", String.valueOf(e.getMessage()));
+        }
+    }
+
+    private static MTheory learnedMebnTheory(UnifiedGraph graph) {
+        if (Boolean.parseBoolean(String.valueOf(graph.meta().get(REASONING_STALE_META)))) {
+            throw new IllegalStateException("Stored MEBN theory is stale. Run reasoning learning again before querying.");
+        }
+        for (Map.Entry<String, Object> entry : graph.meta().entrySet()) {
+            if (!entry.getKey().startsWith("codeIndexGeneration.")) continue;
+            String project = entry.getKey().substring("codeIndexGeneration.".length());
+            if (entry.getValue() == null
+                    || !entry.getValue().equals(graph.meta().get("codeLearningGeneration." + project))) {
+                throw new IllegalStateException("Stored MEBN theory is stale or missing a code generation receipt");
+            }
+        }
+        String json = graph.artifactText(MEBN_THEORY_ARTIFACT);
+        if (json == null) {
+            throw new IllegalStateException("No learned canonical MEBN theory is stored in this graph. Run " +
+                    "crawl_documents with reasoningLearning.enabled=true.");
+        }
+        return RelationalMTheoryArtifactCodec.fromJson(json);
+    }
+
+    /** SSBN expands domain Cartesian products even for context-failed bindings. Bound before allocation. */
+    private static void checkMebnGroundingBudget(MTheory theory) {
+        long total = 0;
+        for (var frag : theory.getMFrags()) {
+            // The canonical relational codec guarantees one resident per fragment and distinct arg vars.
+            long bindings = 1;
+            for (var type : frag.getResidentNodes().get(0).getArgumentTypes()) {
+                bindings *= type.getEntityIds().size();
+            }
+            total += bindings;
+            if (total > MAX_MEBN_GROUNDINGS) {
+                throw new IllegalArgumentException("MEBN grounding work exceeds " + MAX_MEBN_GROUNDINGS
+                        + " candidate bindings; reduce maxNodes/maxDepth");
+            }
         }
     }
 
@@ -581,15 +636,33 @@ public final class InferenceHandlers {
         return null;
     }
 
-    /** Maps variable-keyed probabilities back to entity ids, rounded for the response. */
-    private static Map<String, Object> byEntityId(Map<String, Double> byVariable,
-                                                  Map<String, String> varToEntityId) {
-        Map<String, Object> out = new LinkedHashMap<>();
-        byVariable.forEach((var, p) -> {
-            String entityId = varToEntityId.get(var);
-            if (entityId != null) out.put(entityId, round4(p));
-        });
-        return out;
+    /** Learned evidence must use exact grounded names, not structural entity-id aliases. */
+    private static Map<String, Integer> parseMebnEvidence(Object value, Set<String> variables) {
+        if (value == null) return Map.of();
+        if (!(value instanceof Map<?, ?> map)) {
+            throw new IllegalArgumentException("evidence must be an object mapping variable names to true/false");
+        }
+        Map<String, Integer> evidence = new LinkedHashMap<>();
+        List<String> unknown = new ArrayList<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            String variable = String.valueOf(entry.getKey());
+            Object stateValue = entry.getValue();
+            Integer state = stateValue instanceof Boolean || stateValue instanceof Number
+                    ? evidenceState(stateValue) : null;
+            if (state == null) {
+                throw new IllegalArgumentException("evidence states must be true/false or 1/0: " + variable);
+            }
+            if (!variables.contains(variable)) unknown.add(variable);
+            evidence.put(variable, state);
+        }
+        if (!unknown.isEmpty()) {
+            List<String> known = variables.stream().sorted().limit(10).toList();
+            throw new IllegalArgumentException("Unknown evidence variable(s): " + String.join(", ", unknown)
+                    + (known.isEmpty() ? ". The network around this node has no variables."
+                        : ". Use exact names from posteriors, e.g. " + String.join(", ", known)
+                          + (variables.size() > known.size() ? " (" + variables.size() + " in total)." : ".")));
+        }
+        return Collections.unmodifiableMap(evidence);
     }
 
     private static List<Object> serializeDossierItems(List<DossierItem> items) {
@@ -648,10 +721,10 @@ public final class InferenceHandlers {
     private static Map<String, Object> buildMebnSchema() {
         Map<String, Object> props = new LinkedHashMap<>();
         props.put("nodeId",    stringProp("Entity id to use as the root for BFS subgraph extraction"));
-        props.put("maxDepth",  intProp("BFS radius (default 3)"));
-        props.put("maxNodes",  intProp("Maximum subgraph nodes (default 50)"));
-        props.put("evidence",  objectProp("Observed states {entityId: true|false} (1|0 also accepted), " +
-                "keyed like posteriors; an id outside the subgraph is an error"));
+        props.put("maxDepth",  intProp("BFS radius (default 3, clamped to 0-10)"));
+        props.put("maxNodes",  intProp("Maximum scoped entities (default 100, range 1-1000)"));
+        props.put("evidence",  objectProp("Observed states {groundedVariableName: true|false} (1|0 also accepted), " +
+                "using exact names from learned posteriors; an unknown name is an error"));
         props.put("factSheetId", stringProp("Accepted and ignored (local session is single-graph)"));
         return props;
     }

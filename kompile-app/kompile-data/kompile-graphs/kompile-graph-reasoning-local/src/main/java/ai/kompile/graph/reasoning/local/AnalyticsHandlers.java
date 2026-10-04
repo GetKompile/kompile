@@ -15,7 +15,9 @@
  */
 package ai.kompile.graph.reasoning.local;
 
+import ai.kompile.graph.reasoning.embedding.kge.KgeTripleScorer;
 import ai.kompile.graph.reasoning.embedding.learn.EmbeddingTable;
+import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphKgeLifecycle;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.unified.MiniJson;
@@ -24,7 +26,6 @@ import ai.kompile.graph.reasoning.unified.VectorLayer;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -42,11 +43,11 @@ import java.util.Objects;
  * current session graph's entities and relations.</p>
  *
  * <h3>graph_embeddings</h3>
- * <p>Inference-only operations against vectors already bundled in the loaded {@code .kgraph} via
- * {@link UnifiedGraph#embeddingTable(String)}. The default layer is the first
- * {@link VectorLayer.Target#ENTITY}-target layer in {@link UnifiedGraph#vectorLayers()} insertion
- * order. Accepts an optional {@code layer} argument to override. Training actions return
- * {@code UNSUPPORTED} — training is server-side; embeddings ship inside the {@code .kgraph}.</p>
+ * <p>Triple score/prediction consumes the canonical {@code kge} and {@code kge-relations}
+ * layers plus {@code models/kge.json} (TransE or RotatE). Missing, stale or malformed trained
+ * models return {@code ERROR}; cosine is never substituted for trained KGE. Nearest-vector
+ * {@code similar} remains available without a model, defaulting to the first ENTITY layer with
+ * an optional {@code layer} override. Training actions return {@code UNSUPPORTED}.</p>
  *
  * <h3>Centrality source decision</h3>
  * <p>{@code kompile-graph-algorithms} has Spring Boot, JPA, jackson-databind, and
@@ -342,7 +343,23 @@ public final class AnalyticsHandlers {
             return handleAlgorithms(graph);
         }
 
-        // All other actions need vectors
+        // Triple scoring requires the canonical trained model, never an arbitrary cosine layer.
+        if (List.of("score", "predict_tails", "predict_heads", "predict_relations").contains(actionLower)) {
+            String requestedLayer = str(args, "layer");
+            if (requestedLayer != null && !requestedLayer.isBlank()
+                    && !UnifiedGraphKgeLifecycle.ENTITY_LAYER.equals(requestedLayer)) {
+                return error("Trained KGE scoring requires layer 'kge'; layer overrides apply only to similar");
+            }
+            try {
+                TrainedKge model = trainedKge(graph);
+                return handleTrainedKge(model, graph, args, actionLower,
+                        Math.max(1, Math.min(100, intVal(args, "top_k", 10))));
+            } catch (IllegalArgumentException | IllegalStateException e) {
+                return error(e.getMessage());
+            }
+        }
+
+        // Similarity remains available over bundled vectors without a trained KGE model.
         EmbeddingTable table = (layerName != null) ? graph.embeddingTable(layerName) : null;
         if (table == null || table.size() == 0) {
             Map<String, Object> out = new LinkedHashMap<>();
@@ -355,10 +372,6 @@ public final class AnalyticsHandlers {
         int topK = intVal(args, "top_k", 10);
 
         return switch (actionLower) {
-            case "score"            -> handleScore(table, args);
-            case "predict_tails"    -> handlePredictTails(table, graph, args, topK);
-            case "predict_heads"    -> handlePredictHeads(table, graph, args, topK);
-            case "predict_relations"-> handlePredictRelations(table, graph, args, topK);
             case "similar"          -> handleSimilar(table, graph, args, topK);
             default -> error("Unknown action '" + action +
                     "'. Supported: score | predict_tails | predict_heads | " +
@@ -389,116 +402,194 @@ public final class AnalyticsHandlers {
         return MiniJson.write(out);
     }
 
-    /** score {head, relation, tail} → {score} using TransE-style cosine between h+r and t. */
-    private static String handleScore(EmbeddingTable table, Map<String, Object> args) {
-        String head = str(args, "head");
-        String tail = str(args, "tail");
-        if (head == null || tail == null) {
-            return error("score action requires 'head' and 'tail'");
-        }
-        double[] hVec = table.vector(head);
-        double[] tVec = table.vector(tail);
-        if (hVec == null) return error("Unknown entity id/name: '" + head + "'");
-        if (tVec == null) return error("Unknown entity id/name: '" + tail + "'");
-
-        // Optional relation vector from a GLOBAL layer named "relation" if present, else ignore
-        String relation = str(args, "relation");
-        double score;
-        if (relation != null && !relation.isBlank()) {
-            // Pure cosine between head and tail (relation-aware scoring requires a KGE model;
-            // here we compute cosine(h, t) as a plausibility proxy without a trained model)
-            score = cosine(hVec, tVec);
+    /** All triple actions use the same relation-sensitive trained scorer. */
+    private static String handleTrainedKge(TrainedKge model, UnifiedGraph graph,
+                                          Map<String, Object> args, String action, int topK) {
+        String head = "predict_heads".equals(action) ? null : kgeEntity(args, "head", graph, model);
+        String tail = "predict_tails".equals(action) ? null : kgeEntity(args, "tail", graph, model);
+        String relation = "predict_relations".equals(action) ? null
+                : model.relation(requiredArg(args, "relation"));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("status", "OK");
+        out.put("algorithm", model.algorithm());
+        out.put("scoreSemantics", "1/(1+L2 distance); trained KGE plausibility, not probability");
+        if ("score".equals(action)) {
+            out.put("head", head);
+            out.put("relation", relation);
+            out.put("tail", tail);
+            out.put("score", model.scoreTriple(head, relation, tail));
         } else {
-            score = cosine(hVec, tVec);
+            List<ScoredId> ranked = new ArrayList<>();
+            if ("predict_relations".equals(action)) {
+                for (String candidate : model.relations().keySet()) {
+                    ranked.add(new ScoredId(candidate, model.scoreTriple(head, candidate, tail)));
+                }
+            } else {
+                // Sparse model coverage is legal. Include self candidates, as the CLI does.
+                for (GraphEntity candidate : graph.entities()) {
+                    if (!model.entities().containsKey(candidate.id())) continue;
+                    double score = "predict_tails".equals(action)
+                            ? model.scoreTriple(head, relation, candidate.id())
+                            : model.scoreTriple(candidate.id(), relation, tail);
+                    ranked.add(new ScoredId(candidate.id(), score));
+                }
+            }
+            ranked.sort(Comparator.comparingDouble(ScoredId::score).reversed()
+                    .thenComparing(ScoredId::id));
+            if ("predict_relations".equals(action)) {
+                List<Object> predictions = new ArrayList<>();
+                for (ScoredId item : ranked.subList(0, Math.min(topK, ranked.size()))) {
+                    predictions.add(Map.of("relation", item.id(), "score", item.score()));
+                }
+                out.put("predictions", predictions);
+            } else {
+                out.put("predictions", toTopK(ranked, topK, graph));
+            }
         }
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("status", "OK");
-        out.put("score", score);
-        out.put("head", head);
-        out.put("tail", tail);
-        if (relation != null) out.put("relation", relation);
         return MiniJson.write(out);
     }
 
-    /** predict_tails {head, relation?} → top-k entities by cosine(head_vec, candidate_vec). */
-    private static String handlePredictTails(EmbeddingTable table, UnifiedGraph graph,
-                                             Map<String, Object> args, int topK) {
-        String head = str(args, "head");
-        if (head == null) return error("predict_tails requires 'head'");
-        double[] hVec = table.vector(head);
-        if (hVec == null) return error("Unknown entity: '" + head + "'");
-
-        List<ScoredId> ranked = rankAllByCosine(table, graph, hVec, head);
-        List<Object> predictions = toTopK(ranked, topK, graph);
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("status", "OK");
-        out.put("predictions", predictions);
-        return MiniJson.write(out);
+    private static String requiredArg(Map<String, Object> args, String key) {
+        String value = str(args, key);
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("KGE action requires '" + key + "'");
+        }
+        return value;
     }
 
-    /** predict_heads {tail, relation?} → top-k entities by cosine(candidate_vec, tail_vec). */
-    private static String handlePredictHeads(EmbeddingTable table, UnifiedGraph graph,
-                                             Map<String, Object> args, int topK) {
-        String tail = str(args, "tail");
-        if (tail == null) return error("predict_heads requires 'tail'");
-        double[] tVec = table.vector(tail);
-        if (tVec == null) return error("Unknown entity: '" + tail + "'");
-
-        List<ScoredId> ranked = rankAllByCosine(table, graph, tVec, tail);
-        List<Object> predictions = toTopK(ranked, topK, graph);
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("status", "OK");
-        out.put("predictions", predictions);
-        return MiniJson.write(out);
+    private static String kgeEntity(Map<String, Object> args, String key,
+                                    UnifiedGraph graph, TrainedKge model) {
+        String name = requiredArg(args, key);
+        String id = resolveEntityName(name, graph);
+        if (id == null) throw new IllegalArgumentException("Unknown entity id/name: '" + name + "'");
+        if (!model.entities().containsKey(id)) {
+            throw new IllegalArgumentException("Entity '" + id + "' has no trained KGE vector");
+        }
+        return id;
     }
 
-    /**
-     * predict_relations {head, tail} → top-k relation types by cosine(head_vec, tail_vec) proxy.
-     * Without a relation embedding table the score is the cosine of the head-tail pair, reported
-     * once per distinct relation type present in the graph between head and tail (or all types if
-     * no direct edge, ordered by frequency then name).
-     */
-    private static String handlePredictRelations(EmbeddingTable table, UnifiedGraph graph,
-                                                 Map<String, Object> args, int topK) {
-        String head = str(args, "head");
-        String tail = str(args, "tail");
-        if (head == null || tail == null) {
-            return error("predict_relations requires 'head' and 'tail'");
+    /** Uses exactly the same validation as execution, without attempting training or deserialization. */
+    static Map<String, Object> kgeActivation(UnifiedGraph graph) {
+        try {
+            TrainedKge model = trainedKge(graph);
+            return Map.of("status", "ACTIVE", "algorithm", model.algorithm(), "reason",
+                    "graph_embeddings score/predictions execute the trained model and canonical vector layers");
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return Map.of("status", "INVALID", "reason", e.getMessage());
         }
-        double[] hVec = table.vector(head);
-        double[] tVec = table.vector(tail);
-        if (hVec == null) return error("Unknown entity: '" + head + "'");
-        if (tVec == null) return error("Unknown entity: '" + tail + "'");
+    }
 
-        double pairScore = cosine(hVec, tVec);
-
-        // Collect distinct relation types from the graph, score each
-        Map<String, Integer> relTypeFreq = new LinkedHashMap<>();
-        for (GraphRelation r : graph.relations()) {
-            relTypeFreq.merge(r.type(), 1, Integer::sum);
+    /** Validate the canonical portable model before scoring; never infer an algorithm from vectors. */
+    private static TrainedKge trainedKge(UnifiedGraph graph) {
+        if (Boolean.parseBoolean(String.valueOf(graph.meta().get("learning.kgeStale")))) {
+            throw new IllegalStateException("Trained KGE embeddings are stale; train and re-export");
         }
-        List<Map.Entry<String, Integer>> sorted = new ArrayList<>(relTypeFreq.entrySet());
-        sorted.sort(Map.Entry.<String, Integer>comparingByValue(Comparator.reverseOrder())
-                .thenComparing(Map.Entry.comparingByKey()));
+        for (Map.Entry<String, Object> entry : graph.meta().entrySet()) {
+            if (!entry.getKey().startsWith("codeIndexGeneration.")) continue;
+            String project = entry.getKey().substring("codeIndexGeneration.".length());
+            if (entry.getValue() == null
+                    || !entry.getValue().equals(graph.meta().get("codeKgeGeneration." + project))) {
+                throw new IllegalStateException("Trained KGE embeddings are stale or missing a code generation receipt");
+            }
+        }
+        String artifact = graph.artifactText(UnifiedGraphKgeLifecycle.MODEL_ARTIFACT);
+        if (artifact == null) {
+            throw new IllegalStateException("No trained KGE model in loaded graph; train and re-export");
+        }
+        Map<String, Object> metadata;
+        try {
+            metadata = MiniJson.parseObject(artifact);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Malformed trained KGE model artifact");
+        }
+        Object algorithmValue = metadata.get("algorithm");
+        String algorithm = algorithmValue instanceof String s ? s.trim().toUpperCase(Locale.ROOT) : "";
+        if (!List.of("TRANSE", "ROTATE").contains(algorithm)) {
+            throw new IllegalArgumentException("Unsupported or missing trained KGE algorithm: " + algorithmValue);
+        }
+        Object dimension = metadata.get("embeddingDim");
+        if (!(dimension instanceof Number n) || !Double.isFinite(n.doubleValue())
+                || n.doubleValue() != n.intValue() || n.intValue() < 1 || n.intValue() > 256) {
+            throw new IllegalArgumentException("Malformed trained KGE embeddingDim (expected integer 1..256)");
+        }
+        int dim = ((Number) dimension).intValue();
+        VectorLayer entities = graph.vectorLayer(UnifiedGraphKgeLifecycle.ENTITY_LAYER);
+        VectorLayer relations = graph.vectorLayer(UnifiedGraphKgeLifecycle.RELATION_LAYER);
+        if (entities == null || relations == null || entities.isEmpty() || relations.isEmpty()) {
+            throw new IllegalStateException("Missing trained KGE entity or relation vectors; train and re-export");
+        }
+        int entityDim = "ROTATE".equals(algorithm) ? dim * 2 : dim;
+        if (entities.target() != VectorLayer.Target.ENTITY || relations.target() != VectorLayer.Target.GLOBAL
+                || entities.dim() != entityDim || relations.dim() != dim) {
+            throw new IllegalArgumentException("Malformed trained KGE layer target or dimensions");
+        }
+        validateKgeRows(entities, entityDim);
+        validateKgeRows(relations, dim);
+        return new TrainedKge(algorithm, dim, entities.rows(), relations.rows());
+    }
 
-        List<Object> predictions = new ArrayList<>();
-        int limit = topK > 0 ? Math.min(topK, sorted.size()) : sorted.size();
-        for (int i = 0; i < limit; i++) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("relation", sorted.get(i).getKey());
-            // Scale pairScore by rank position as a proxy
-            row.put("score", pairScore * (1.0 / (1.0 + i)));
-            predictions.add(row);
+    private static void validateKgeRows(VectorLayer layer, int dim) {
+        for (Map.Entry<String, double[]> entry : layer.rows().entrySet()) {
+            if (entry.getKey().isBlank() || entry.getValue() == null || entry.getValue().length != dim) {
+                throw new IllegalArgumentException("Malformed trained KGE vector in " + layer.name());
+            }
+            for (double value : entry.getValue()) {
+                if (!Double.isFinite(value)) {
+                    throw new IllegalArgumentException("Non-finite trained KGE vector in " + layer.name());
+                }
+            }
+        }
+    }
+
+    /** Portable layer adapter; no reference to the ND4J-backed training implementation. */
+    private record TrainedKge(String algorithm, int dim, Map<String, double[]> entities,
+                              Map<String, double[]> relations) implements KgeTripleScorer {
+        String relation(String name) {
+            if (relations.containsKey(name)) return name;
+            String match = null;
+            for (String candidate : relations.keySet()) {
+                if (!candidate.equalsIgnoreCase(name)) continue;
+                if (match != null) throw new IllegalArgumentException("Ambiguous trained relation: '" + name + "'");
+                match = candidate;
+            }
+            if (match == null) throw new IllegalArgumentException("Unknown trained relation: '" + name + "'");
+            return match;
         }
 
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("status", "OK");
-        out.put("predictions", predictions);
-        out.put("pairCosine", pairScore);
-        return MiniJson.write(out);
+        @Override
+        public boolean knows(String head, String relation, String tail) {
+            return entities.containsKey(head) && relations.containsKey(relation) && entities.containsKey(tail);
+        }
+
+        @Override
+        public double scoreTriple(String head, String relation, String tail) {
+            if (!knows(head, relation, tail)) return 0.0;
+            double[] h = entities.get(head), r = relations.get(relation), t = entities.get(tail);
+            double distance;
+            if ("ROTATE".equals(algorithm)) {
+                // Same L2 complex rotation as RotatELearner.score, directly on the portable layout.
+                double squared = 0.0;
+                for (int i = 0; i < dim; i++) {
+                    double cos = Math.cos(r[i]), sin = Math.sin(r[i]);
+                    double re = h[i] * cos - h[i + dim] * sin - t[i];
+                    double im = h[i] * sin + h[i + dim] * cos - t[i + dim];
+                    squared += re * re + im * im;
+                }
+                distance = Math.sqrt(squared);
+            } else {
+                // Portable TransE layout: ||h + r - t||2, matching the CLI model consumer.
+                double squared = 0.0;
+                for (int i = 0; i < dim; i++) {
+                    double error = h[i] + r[i] - t[i];
+                    squared += error * error;
+                }
+                distance = Math.sqrt(squared);
+            }
+            if (!Double.isFinite(distance)) {
+                throw new IllegalArgumentException("Non-finite trained KGE distance");
+            }
+            return 1.0 / (1.0 + distance);
+        }
     }
 
     /**
@@ -662,11 +753,11 @@ public final class AnalyticsHandlers {
                 List.of("score", "predict_tails", "predict_heads", "predict_relations",
                         "similar", "algorithms")));
         props.put("head",         stringProp("Head entity id or label (score / predict_tails / predict_heads / predict_relations)."));
-        props.put("relation",     stringProp("Relation type string (optional context for score/predict actions)."));
+        props.put("relation",     stringProp("Trained relation type (required for score / predict_tails / predict_heads)."));
         props.put("tail",         stringProp("Tail entity id or label (score / predict_heads / predict_relations)."));
         props.put("entity_name",  stringProp("Entity id or label to find similar entities for (similar action)."));
-        props.put("top_k",        intProp("Maximum result count (default 10)."));
-        props.put("layer",        stringProp("Vector layer name to use. Default: first ENTITY-target layer in the graph."));
+        props.put("top_k",        intProp("Maximum result count (default 10); trained predictions clamp to 1..100."));
+        props.put("layer",        stringProp("Similarity vector layer; default first ENTITY layer. Trained score/predict requires canonical kge."));
 
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
@@ -676,13 +767,14 @@ public final class AnalyticsHandlers {
         return new LocalToolCatalog.Entry(
                 "graph_embeddings",
                 "KGE / embedding inference against vectors already bundled in the loaded .kgraph. " +
-                        "score → plausibility score for a (head,tail) pair; " +
+                        "score → relation-sensitive TransE/RotatE plausibility for (head,relation,tail); " +
                         "predict_tails/heads → top-k candidate entities; " +
                         "predict_relations → top-k relation types; " +
                         "similar → nearest entities by cosine; " +
                         "algorithms → list available layers. " +
                         "Training actions (train/jobs/cancel) return UNSUPPORTED. " +
-                        "If no embedding layer is present returns status=ERROR.",
+                        "Score/predict requires a valid fresh trained KGE model; otherwise status=ERROR. " +
+                        "Similar uses cosine without requiring a trained model.",
                 schema);
     }
 

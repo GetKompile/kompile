@@ -10,6 +10,31 @@ The CLI prints the selected port and a local URL; from another machine use
 `http://<server-hostname-or-LAN-IP>:<port>/`. Both `/` and `/chat` open the UI;
 `/chat` and `/chat/` redirect to the browser's `/#/chat` route automatically.
 
+### Folder-based chat manager
+
+`kompile chat --web` opens the chat manager at `/#/chat`. The launch folder is
+registered automatically. Chats are grouped by their canonical local folder, not
+by a distributed server project. Open several chats and switch tabs without
+stopping runs in the other panes; stop a running chat before closing its tab.
+
+- **Add existing folder** registers an absolute directory on the Kompile host and
+  shows its native CLI conversations without importing copies.
+- **New project** creates a fresh folder under an existing absolute parent, registers
+  it, and opens its first chat. Existing files/folders are never overwritten. This
+  is a lightweight chat folder, not a full scaffold or Git initialization; features
+  such as local crawls initialize their folder configuration when needed. If folder
+  creation succeeds but registry persistence fails, the error includes the created
+  path; fix the registry error and use **Add existing folder** to recover without deleting files.
+- Each chat uses its own folder's CLI configuration (or global defaults); no
+  credentials are copied from the launch folder into new projects. Configure missing
+  provider defaults through Session Configuration or `kompile chat --setup` in that folder.
+
+The non-secret folder/chat registry lives in `~/.kompile/chat-workspace.json`;
+conversation history stays in the native CLI transcripts. `--workspace` and the
+old `/#/workspace` URL remain compatible aliases. Use `kompile chat --web --single-chat`
+for the original single-chat view. Hosted launches without a CLI workspace still
+use ordinary web chat and cannot create/register host folders.
+
 Operators control network access and security. To opt into local-only access, use
 `KOMPILE_CHAT_ADDRESS=127.0.0.1 kompile chat --web` (Spring's `SERVER_ADDRESS`
 is also honored). The CLI no longer overrides the service's bind configuration.
@@ -69,6 +94,39 @@ retain the local process/subagent summary. While an interactive child transcript
 input is sent as a follow-up when that child supports it; select **Main chat** and press Enter, or use
 `/activity close`, to return explicitly. An expired or non-interactive child automatically returns to
 Main and the same input continues through the parent chat instead of being dropped.
+
+## Insights
+
+Judge verdicts and overrides, tool calls, test milestones, crawls and knowledge graphs are read back
+as one report per topic, across the project's chat sessions. Every surface reads the same reports:
+
+- The read-only `insights` MCP tool answers a topic and a plain-words question ("flags for bash",
+  "slowest calls of the read tool, last 3 days") with a table, sparklines or a small graph; the web
+  chat draws the chart in the tool's card.
+- When the project configures no dashboard of its own, the terminal chat's dashboard area shows
+  **Session insights**: this session's judge flags, tool calls and latency, the latest test result
+  and crawl progress. `/dashboard hide` hides it.
+- The web chat shows the same rows in a **Session insights** drawer in each chat, read again as tool
+  calls finish and replies end, and more often while a crawl runs. Its **All reports for this
+  project** link opens the **Insights** page (`/#/insights`, also in the top navigation): a tab per
+  topic plus an overview, a question and a window per report, an optional 30-second refresh, and a
+  URL that keeps the topic, question, window and project directory, so a report can be bookmarked.
+
+`~/.kompile/config/insights.json` holds the limits every report keeps to. A missing key or a limit
+that is not positive keeps its default, so a hand edit never breaks a report; a file that cannot be
+read keeps every default and the reports say so. The Insights page edits the file under **Report
+limits**: it writes only the settings changed and refuses a limit that is not a positive whole number.
+
+| Key | Default | Limit |
+|---|---|---|
+| `defaultWindowDays` | `7` | The window, in days, when a question names none |
+| `maxRows` | `10` | Rows in a ranked table |
+| `maxExamples` | `5` | Recent examples under a table, such as the newest judge flags |
+| `maxSessions` | `200` | Judge session logs read per report, newest first |
+| `maxBytesPerFile` | `4194304` (4 MiB) | Bytes read from the end of each judge session log |
+| `maxToolIndexBytes` | `268435456` (256 MiB) | Bytes read from the end of the tool-call index |
+| `sparklineBuckets` | `14` | Points in a sparkline and in a chart series |
+| `sessionPanel` | `true` | Whether the terminal shows Session insights when the project has no dashboard |
 
 ## Project chat profiles
 

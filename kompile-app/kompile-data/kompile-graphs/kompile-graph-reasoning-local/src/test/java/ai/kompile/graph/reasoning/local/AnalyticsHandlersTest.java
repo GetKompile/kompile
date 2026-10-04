@@ -15,7 +15,7 @@
  */
 package ai.kompile.graph.reasoning.local;
 
-import ai.kompile.graph.reasoning.model.SimpleGraphEntity;
+import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphKgeLifecycle;
 import ai.kompile.graph.reasoning.unified.Dtype;
 import ai.kompile.graph.reasoning.unified.MiniJson;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -307,32 +307,33 @@ class AnalyticsHandlersTest {
     // ═════════════════════════════════════════════════════════════════════════
 
     @Test
-    void scoreReturnsNumberBetweenMinusOneAndOne() {
-        String json = dispatcher.dispatch(embeddingSession, "graph_embeddings",
-                "{\"action\":\"score\",\"head\":\"alice\",\"tail\":\"bob\",\"layer\":\"" + LAYER + "\"}");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> res = (Map<String, Object>) MiniJson.parse(json);
-        assertEquals("OK", res.get("status"), "Expected OK: " + json);
-        assertTrue(res.containsKey("score"), "Response must contain 'score'");
-        double score = ((Number) res.get("score")).doubleValue();
-        assertTrue(score >= -1.0 && score <= 1.0,
-                "Cosine score must be in [-1,1], got " + score);
+    void vectorsWithoutModelNeverPretendToBeTrainedKge() {
+        for (String action : List.of("score", "predict_tails", "predict_heads", "predict_relations")) {
+            Map<String, Object> res = embeddingResult(embeddingSession.graph(), Map.of(
+                    "action", action, "head", "alice", "tail", "bob", "relation", "KNOWS"));
+            assertEquals("ERROR", res.get("status"), action + ": " + res);
+            assertTrue(res.get("message").toString().contains("No trained KGE model"));
+            assertFalse(res.containsKey("score"));
+            assertFalse(res.containsKey("predictions"));
+        }
     }
 
     @Test
-    void scoreAliceVsBobIsHigherThanAliceVsCharlie() {
-        String jsonClose = dispatcher.dispatch(embeddingSession, "graph_embeddings",
-                "{\"action\":\"score\",\"head\":\"alice\",\"tail\":\"bob\",\"layer\":\"" + LAYER + "\"}");
-        String jsonFar = dispatcher.dispatch(embeddingSession, "graph_embeddings",
-                "{\"action\":\"score\",\"head\":\"alice\",\"tail\":\"charlie\",\"layer\":\"" + LAYER + "\"}");
+    void transeScoreUsesRelationTranslationNotCosine() {
+        UnifiedGraph graph = trainedGraph("TRANSE");
+        // Alice and Bob are orthogonal. The learned translation makes KNOWS a perfect triple.
+        assertEquals(1.0, score(graph, "Alice", "knows", "Bob"), 1e-12);
+        assertEquals(0.5, score(graph, "alice", "PARTNER", "bob"), 1e-12);
+        assertEquals(1.0 / (1.0 + Math.sqrt(5.0)), score(graph, "bob", "PARTNER", "alice"), 1e-12);
+    }
 
-        @SuppressWarnings("unchecked")
-        double close = ((Number) ((Map<String, Object>) MiniJson.parse(jsonClose)).get("score")).doubleValue();
-        @SuppressWarnings("unchecked")
-        double far   = ((Number) ((Map<String, Object>) MiniJson.parse(jsonFar)).get("score")).doubleValue();
-
-        assertTrue(close > far,
-                "alice-bob cosine (" + close + ") must be higher than alice-charlie (" + far + ")");
+    @Test
+    void rotateScoreUsesComplexRotationNotCosineOrTranslation() {
+        UnifiedGraph graph = trainedGraph("ROTATE");
+        assertEquals(1.0, score(graph, "Alice", "knows", "Bob"), 1e-12);
+        assertEquals(1.0 / 3.0, score(graph, "alice", "PARTNER", "bob"), 1e-12);
+        assertEquals(1.0 / (1.0 + 2.0 * Math.sqrt(2.0)),
+                score(graph, "bob", "KNOWS", "alice"), 1e-12);
     }
 
     @Test
@@ -350,8 +351,8 @@ class AnalyticsHandlersTest {
 
     @Test
     void predictTailsReturnsRankedList() {
-        String json = dispatcher.dispatch(embeddingSession, "graph_embeddings",
-                "{\"action\":\"predict_tails\",\"head\":\"alice\",\"layer\":\"" + LAYER + "\",\"top_k\":2}");
+        String json = dispatcher.dispatch(LocalReasoningSession.of(trainedGraph("TRANSE")), "graph_embeddings",
+                "{\"action\":\"predict_tails\",\"head\":\"alice\",\"relation\":\"KNOWS\",\"top_k\":2}");
         @SuppressWarnings("unchecked")
         Map<String, Object> res = (Map<String, Object>) MiniJson.parse(json);
         assertEquals("OK", res.get("status"), "Expected OK: " + json);
@@ -359,7 +360,7 @@ class AnalyticsHandlersTest {
         List<Object> predictions = (List<Object>) res.get("predictions");
         assertNotNull(predictions);
         assertFalse(predictions.isEmpty());
-        // First prediction should be bob (closest to alice)
+        // First prediction should be bob (perfect learned relation translation).
         @SuppressWarnings("unchecked")
         Map<String, Object> first = (Map<String, Object>) predictions.get(0);
         assertEquals("bob", first.get("entityId"),
@@ -368,8 +369,8 @@ class AnalyticsHandlersTest {
 
     @Test
     void predictHeadsReturnsRankedList() {
-        String json = dispatcher.dispatch(embeddingSession, "graph_embeddings",
-                "{\"action\":\"predict_heads\",\"tail\":\"alice\",\"layer\":\"" + LAYER + "\",\"top_k\":2}");
+        String json = dispatcher.dispatch(LocalReasoningSession.of(trainedGraph("TRANSE")), "graph_embeddings",
+                "{\"action\":\"predict_heads\",\"tail\":\"bob\",\"relation\":\"KNOWS\",\"top_k\":2}");
         @SuppressWarnings("unchecked")
         Map<String, Object> res = (Map<String, Object>) MiniJson.parse(json);
         assertEquals("OK", res.get("status"), "Expected OK: " + json);
@@ -393,8 +394,8 @@ class AnalyticsHandlersTest {
 
     @Test
     void predictRelationsReturnsList() {
-        String json = dispatcher.dispatch(embeddingSession, "graph_embeddings",
-                "{\"action\":\"predict_relations\",\"head\":\"alice\",\"tail\":\"bob\",\"layer\":\"" + LAYER + "\",\"top_k\":5}");
+        String json = dispatcher.dispatch(LocalReasoningSession.of(trainedGraph("TRANSE")), "graph_embeddings",
+                "{\"action\":\"predict_relations\",\"head\":\"alice\",\"tail\":\"bob\",\"top_k\":5}");
         @SuppressWarnings("unchecked")
         Map<String, Object> res = (Map<String, Object>) MiniJson.parse(json);
         assertEquals("OK", res.get("status"), "Expected OK: " + json);
@@ -406,6 +407,200 @@ class AnalyticsHandlersTest {
         Map<String, Object> first = (Map<String, Object>) predictions.get(0);
         assertTrue(first.containsKey("relation"), "Each prediction must have 'relation'");
         assertTrue(first.containsKey("score"),    "Each prediction must have 'score'");
+    }
+
+    @Test
+    void bothAlgorithmsRankAllPredictionTargetsByTrainedScore() {
+        for (String algorithm : List.of("TRANSE", "ROTATE")) {
+            UnifiedGraph graph = trainedGraph(algorithm);
+            Map<String, Object> tails = embeddingResult(graph, Map.of("action", "predict_tails",
+                    "head", "Alice", "relation", "knows", "top_k", 1));
+            assertEquals(algorithm, tails.get("algorithm"));
+            assertEquals("bob", firstPrediction(tails).get("entityId"));
+            assertEquals(1.0, ((Number) firstPrediction(tails).get("score")).doubleValue(), 1e-12);
+            assertEquals(1, ((List<?>) tails.get("predictions")).size());
+            Map<String, Object> heads = embeddingResult(graph, Map.of("action", "predict_heads",
+                    "tail", "Bob", "relation", "KNOWS", "top_k", 1));
+            assertEquals("alice", firstPrediction(heads).get("entityId"));
+            assertEquals(1.0, ((Number) firstPrediction(heads).get("score")).doubleValue(), 1e-12);
+            Map<String, Object> relations = embeddingResult(graph, Map.of("action", "predict_relations",
+                    "head", "alice", "tail", "bob", "top_k", 2));
+            assertEquals("KNOWS", firstPrediction(relations).get("relation"));
+            assertFalse(relations.containsKey("pairCosine"));
+            // Changing only the relation changes the best tail, including self for identity rotation.
+            Map<String, Object> other = embeddingResult(graph, Map.of("action", "predict_tails",
+                    "head", "alice", "relation", "PARTNER", "top_k", 1));
+            assertEquals("ROTATE".equals(algorithm) ? "alice" : "charlie",
+                    firstPrediction(other).get("entityId"));
+        }
+    }
+
+    @Test
+    void requiredIdentifiersAndUnknownModelCoverageReturnErrors() {
+        UnifiedGraph graph = trainedGraph("TRANSE");
+        for (Map<String, Object> args : List.<Map<String, Object>>of(
+                Map.of("action", "score", "head", "alice", "tail", "bob"),
+                Map.of("action", "score", "head", "alice", "tail", "bob", "relation", ""),
+                Map.of("action", "score", "head", "alice", "relation", "KNOWS"),
+                Map.of("action", "predict_tails", "relation", "KNOWS"),
+                Map.of("action", "predict_heads", "tail", "bob"),
+                Map.of("action", "predict_relations", "head", "alice"),
+                Map.of("action", "score", "head", "alice", "tail", "nobody", "relation", "KNOWS"),
+                Map.of("action", "predict_tails", "head", "alice", "relation", "UNKNOWN"),
+                Map.of("action", "score", "head", "alice", "tail", "bob", "relation", "KNOWS", "layer", "sentence"))) {
+            assertEquals("ERROR", embeddingResult(graph, args).get("status"), args.toString());
+        }
+        graph.vectorLayer(LAYER).remove("bob");
+        assertKgeError(graph, "no trained KGE vector");
+        Map<String, Object> result = embeddingResult(graph, Map.of("action", "predict_tails",
+                "head", "alice", "relation", "KNOWS"));
+        assertEquals("OK", result.get("status"));
+        assertTrue(((List<?>) result.get("predictions")).stream()
+                .noneMatch(row -> "bob".equals(((Map<?, ?>) row).get("entityId"))));
+    }
+
+    @Test
+    void staleFlagAndMissingOrMismatchedCodeReceiptsRejectKgeButNotSimilarity() {
+        for (String algorithm : List.of("TRANSE", "ROTATE")) {
+            UnifiedGraph graph = trainedGraph(algorithm);
+            graph.meta("learning.kgeStale", true);
+            for (String action : List.of("score", "predict_tails", "predict_heads", "predict_relations")) {
+                Map<String, Object> res = embeddingResult(graph, Map.of("action", action,
+                        "head", "alice", "tail", "bob", "relation", "KNOWS"));
+                assertEquals("ERROR", res.get("status"));
+                assertTrue(res.get("message").toString().contains("stale"));
+            }
+            assertEquals("OK", embeddingResult(graph, Map.of("action", "similar", "entity_name", "alice")).get("status"));
+            graph.meta("learning.kgeStale", false).meta("codeIndexGeneration.p", "g2");
+            assertKgeError(graph, "generation receipt");
+            graph.meta("codeKgeGeneration.p", "g1");
+            assertKgeError(graph, "generation receipt");
+            graph.meta("codeKgeGeneration.p", "g2");
+            assertEquals(1.0, score(graph, "alice", "KNOWS", "bob"), 1e-12);
+        }
+    }
+
+    @Test
+    void malformedMetadataDoesNotDefaultToTranseOrGuessDimensions() {
+        for (String artifact : List.of("{", "[]", "null", "{}",
+                "{\"algorithm\":\"DISTMULT\",\"embeddingDim\":2}",
+                "{\"algorithm\":\"TRANSE\"}",
+                "{\"algorithm\":\"TRANSE\",\"embeddingDim\":\"2\"}",
+                "{\"algorithm\":\"TRANSE\",\"embeddingDim\":0}",
+                "{\"algorithm\":\"TRANSE\",\"embeddingDim\":-1}",
+                "{\"algorithm\":\"TRANSE\",\"embeddingDim\":1.5}",
+                "{\"algorithm\":\"TRANSE\",\"embeddingDim\":257}",
+                "{\"algorithm\":\"TRANSE\",\"embeddingDim\":2} trailing")) {
+            UnifiedGraph graph = trainedGraph("TRANSE");
+            graph.putArtifactText(UnifiedGraphKgeLifecycle.MODEL_ARTIFACT, artifact);
+            assertEquals("ERROR", embeddingResult(graph, Map.of("action", "score",
+                    "head", "alice", "tail", "bob", "relation", "KNOWS")).get("status"), artifact);
+        }
+    }
+
+    @Test
+    void relationPredictionsUseTrainedRowsAndDeterministicTies() {
+        for (String algorithm : List.of("TRANSE", "ROTATE")) {
+            UnifiedGraph graph = trainedGraph(algorithm);
+            // A learned relation need not have a currently observed edge.
+            graph.vectorLayer("kge-relations").put("A_LEARNED",
+                    graph.vectorLayer("kge-relations").get("KNOWS").clone());
+            Map<String, Object> result = embeddingResult(graph, Map.of("action", "predict_relations",
+                    "head", "alice", "tail", "bob", "top_k", 0));
+            assertEquals("A_LEARNED", firstPrediction(result).get("relation"));
+            assertEquals(1, ((List<?>) result.get("predictions")).size());
+        }
+    }
+
+    @Test
+    void missingWrongTargetAndWrongDimensionLayersAreErrors() {
+        UnifiedGraph missing = new UnifiedGraph();
+        missing.addEntity("alice", "PERSON", "Alice");
+        missing.addEntity("bob", "PERSON", "Bob");
+        missing.putArtifactText(UnifiedGraphKgeLifecycle.MODEL_ARTIFACT,
+                "{\"algorithm\":\"TRANSE\",\"embeddingDim\":2}");
+        assertKgeError(missing, "Missing trained KGE");
+        UnifiedGraph graph = trainedGraph("TRANSE");
+        graph.putVectorLayer(new VectorLayer("kge-relations", VectorLayer.Target.GLOBAL, 2, Dtype.F64));
+        assertKgeError(graph, "Missing trained KGE");
+        for (VectorLayer.Target target : List.of(VectorLayer.Target.ENTITY, VectorLayer.Target.RELATION)) {
+            graph = trainedGraph("TRANSE");
+            graph.putVectorLayer(new VectorLayer("kge-relations", target, 2, Dtype.F64)
+                    .put("KNOWS", new double[]{-1, 1}));
+            assertKgeError(graph, "target or dimensions");
+        }
+        graph = trainedGraph("ROTATE");
+        graph.putVectorLayer(new VectorLayer(LAYER, VectorLayer.Target.ENTITY, 2, Dtype.F64)
+                .put("alice", new double[]{1, 0}).put("bob", new double[]{0, 1}));
+        assertKgeError(graph, "target or dimensions");
+        graph = trainedGraph("TRANSE");
+        graph.putVectorLayer(new VectorLayer("kge-relations", VectorLayer.Target.GLOBAL, 1, Dtype.F64)
+                .put("KNOWS", new double[]{1}));
+        assertKgeError(graph, "target or dimensions");
+    }
+
+    @Test
+    void nonFiniteEntityAndRelationVectorsAndOverflowNeverBecomeScores() {
+        for (String algorithm : List.of("TRANSE", "ROTATE")) {
+            for (double value : new double[]{Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+                for (String layer : List.of(LAYER, "kge-relations")) {
+                    UnifiedGraph graph = trainedGraph(algorithm);
+                    graph.vectorLayer(layer).get(LAYER.equals(layer) ? "alice" : "KNOWS")[0] = value;
+                    assertKgeError(graph, "Non-finite trained KGE vector");
+                }
+            }
+        }
+        UnifiedGraph graph = trainedGraph("TRANSE");
+        graph.vectorLayer(LAYER).get("alice")[0] = Double.MAX_VALUE;
+        assertKgeError(graph, "Non-finite trained KGE distance");
+    }
+
+    private static UnifiedGraph trainedGraph(String algorithm) {
+        UnifiedGraph graph = new UnifiedGraph();
+        graph.addEntity("alice", "PERSON", "Alice");
+        graph.addEntity("bob", "PERSON", "Bob");
+        graph.addEntity("charlie", "PERSON", "Charlie");
+        graph.addRelation("r1", "alice", "bob", "KNOWS", 1.0);
+        // PARTNER is more frequent, so frequency-based relation proxies would rank it incorrectly.
+        graph.addRelation("r2", "bob", "charlie", "PARTNER", 0.5);
+        graph.addRelation("r3", "alice", "charlie", "PARTNER", 0.5);
+        boolean rotate = "ROTATE".equals(algorithm);
+        VectorLayer entities = new VectorLayer(LAYER, VectorLayer.Target.ENTITY, rotate ? 4 : 2, Dtype.F64);
+        entities.put("alice", rotate ? new double[]{1, 0, 0, 1} : new double[]{1, 0});
+        entities.put("bob", rotate ? new double[]{0, -1, 1, 0} : new double[]{0, 1});
+        entities.put("charlie", rotate ? new double[]{-1, 0, 0, -1} : new double[]{1, 1});
+        VectorLayer relations = new VectorLayer("kge-relations", VectorLayer.Target.GLOBAL, 2, Dtype.F64);
+        relations.put("KNOWS", rotate ? new double[]{Math.PI / 2, Math.PI / 2} : new double[]{-1, 1});
+        relations.put("PARTNER", rotate ? new double[]{0, 0} : new double[]{0, 1});
+        graph.putVectorLayer(entities).putVectorLayer(relations);
+        graph.putArtifactText(UnifiedGraphKgeLifecycle.MODEL_ARTIFACT,
+                MiniJson.write(Map.of("algorithm", algorithm, "embeddingDim", 2)));
+        return graph;
+    }
+
+    private static Map<String, Object> embeddingResult(UnifiedGraph graph, Map<String, Object> args) {
+        return MiniJson.parseObject(dispatcher.dispatch(LocalReasoningSession.of(graph),
+                "graph_embeddings", MiniJson.write(args)));
+    }
+
+    private static double score(UnifiedGraph graph, String head, String relation, String tail) {
+        Map<String, Object> result = embeddingResult(graph, Map.of("action", "score",
+                "head", head, "relation", relation, "tail", tail));
+        assertEquals("OK", result.get("status"), result.toString());
+        return ((Number) result.get("score")).doubleValue();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> firstPrediction(Map<String, Object> result) {
+        assertEquals("OK", result.get("status"), result.toString());
+        return (Map<String, Object>) ((List<?>) result.get("predictions")).get(0);
+    }
+
+    private static void assertKgeError(UnifiedGraph graph, String message) {
+        Map<String, Object> result = embeddingResult(graph, Map.of("action", "score",
+                "head", "alice", "relation", "KNOWS", "tail", "bob"));
+        assertEquals("ERROR", result.get("status"), result.toString());
+        assertTrue(result.get("message").toString().contains(message), result.toString());
     }
 
     // ═════════════════════════════════════════════════════════════════════════

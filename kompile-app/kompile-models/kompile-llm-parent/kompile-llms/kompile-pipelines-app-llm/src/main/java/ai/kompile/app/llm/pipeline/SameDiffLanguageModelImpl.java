@@ -396,7 +396,10 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         }
     }
 
-    /** Decode one inline chat image; a format ImageIO cannot read is rejected by name. */
+    /**
+     * Decode one inline chat image; one over the per-image byte limit, or in a format ImageIO
+     * cannot read, is rejected by name.
+     */
     static BufferedImage decodeChatImage(StructuredChatLanguageModel.InlineImage image) {
         byte[] bytes;
         try {
@@ -405,6 +408,11 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(
                     "Chat image (" + image.mimeType() + ") is not valid base64", e);
+        }
+        if (bytes.length > StructuredChatLanguageModel.MAX_INLINE_IMAGE_BYTES) {
+            throw new IllegalArgumentException("Chat image (" + image.mimeType() + ") is "
+                    + bytes.length + " bytes; local vision chat accepts at most "
+                    + StructuredChatLanguageModel.MAX_INLINE_IMAGE_BYTES + " bytes per image");
         }
         try {
             BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(bytes));

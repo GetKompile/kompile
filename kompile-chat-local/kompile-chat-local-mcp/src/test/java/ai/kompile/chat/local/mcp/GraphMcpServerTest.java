@@ -4,6 +4,10 @@ import ai.kompile.chat.local.GraphToolBackend;
 import ai.kompile.chat.local.GraphToolBridge;
 import ai.kompile.graph.reasoning.unified.MiniJson;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
+import ai.kompile.graph.reasoning.unified.KGraphCompatibilityPolicy;
+import java.nio.file.Path;
 
 import java.util.List;
 import java.util.Map;
@@ -104,6 +108,7 @@ class GraphMcpServerTest {
                     "ask_graph_claim",
                     "ask_graph_synthesize",
                     "graph_centrality",
+                    "graph_psl",
                     "graph_embeddings")));
 
             Map<String, Object> call = result(response(server, request(3, "tools/call", Map.of(
@@ -124,9 +129,10 @@ class GraphMcpServerTest {
                     list(capabilitiesCall.get("content")).get(0)).get("text"));
             assertEquals("CAPABILITIES", capabilities.get("intent"));
             List<?> supported = list(capabilities.get("capabilities"));
-            assertEquals(17, supported.size());
-            assertTrue(supported.stream().map(GraphMcpServerTest::object)
-                    .noneMatch(capability -> "CALCULATE".equals(capability.get("intent"))));
+            assertEquals(21, supported.size());
+            Set<String> operations = supported.stream().map(GraphMcpServerTest::object)
+                    .map(capability -> (String) capability.get("intent")).collect(Collectors.toSet());
+            assertTrue(operations.containsAll(Set.of("MODELS", "CALCULATE", "SCENARIO", "SOLVE_TARGET")));
 
             Map<String, Object> questionCall = result(response(server, request(
                     5, "tools/call", Map.of(
@@ -187,6 +193,54 @@ class GraphMcpServerTest {
         server.close();
         server.close();
         assertEquals(1, backend.closeCount);
+    }
+
+    @Test
+    void exportedInterchangeIsUsableThroughRealMcpWithoutPromotingConfidence(@TempDir Path temp) throws Exception {
+        UnifiedGraph graph = new UnifiedGraph();
+        graph.addEntity("alice", "PERSON", "Alice");
+        graph.addEntity("acme", "COMPANY", "Acme");
+        graph.addRelation("employment", "alice", "acme", "WORKS_AT", 0.7);
+        graph.putArtifact("unregistered.bin", new byte[]{1, 2, 3});
+        Path exported = temp.resolve("portable.kgraph");
+        graph.save(exported, KGraphCompatibilityPolicy.PORTABLE_V2);
+        try (GraphMcpServer server = new GraphMcpServer(GraphToolBridge.open(exported))) {
+            response(server, request(1, "initialize", Map.of()));
+            Map<String, Object> verified = toolText(server, 2, "ask_graph_verify", Map.of("atom", "WORKS_AT(alice, acme)"));
+            assertEquals("SUPPORTED", verified.get("verdict"));
+            assertEquals(0.7, ((Number) verified.get("confidence")).doubleValue(), 1e-9);
+            Map<?, ?> data = object(toolText(server, 3, "graph_reasoning_query", Map.of("operation", "ASSETS")).get("data"));
+            Map<?, ?> report = object(data.get("portability"));
+            assertEquals("kompile-graph-reasoning-local", report.get("consumer"));
+            Map<?, ?> artifact = object(list(report.get("artifacts")).get(0));
+            assertEquals("INSPECTION_ONLY", artifact.get("status"));
+        }
+    }
+
+    @Test
+    void portableCustomPslExecutesThroughRealMcp(@TempDir Path temp) throws Exception {
+        var p = new ai.kompile.graph.reasoning.psl.PslProgram()
+                .observe("Evidence", 0.8, "x").target("Prediction", "x")
+                .addRule("3: Evidence(X) -> Prediction(X) ^2");
+        UnifiedGraph graph = new UnifiedGraph().putArtifactText(
+                ai.kompile.graph.reasoning.psl.PslProgramArtifactCodec.ARTIFACT,
+                ai.kompile.graph.reasoning.psl.PslProgramArtifactCodec.encode(p));
+        Path exported = temp.resolve("program.kgraph");
+        graph.save(exported, KGraphCompatibilityPolicy.PORTABLE_V2);
+        try (GraphMcpServer server = new GraphMcpServer(GraphToolBridge.open(exported))) {
+            response(server, request(1, "initialize", Map.of()));
+            Map<String, Object> inferred = toolText(server, 2, "graph_psl", Map.of());
+            assertEquals("OK", inferred.get("status"), inferred.toString());
+            assertEquals("ADMM_JAVA", inferred.get("solver"));
+            assertEquals(false, inferred.get("binaryCacheUsed"));
+            assertTrue(((Number) object(inferred.get("targets")).get("Prediction(x)")).doubleValue() >= 0.799);
+        }
+    }
+
+    private static Map<String, Object> toolText(GraphMcpServer server, int id, String name, Map<String, Object> arguments) {
+        Map<String, Object> called = result(response(server, request(id, "tools/call", Map.of("name", name, "arguments", arguments))));
+        assertEquals(false, called.get("isError"), called.toString());
+        return MiniJson.parseObject((String) object(list(called.get("content")).get(0)).get("text"));
     }
 
     private static GraphMcpServer initializedServer() {

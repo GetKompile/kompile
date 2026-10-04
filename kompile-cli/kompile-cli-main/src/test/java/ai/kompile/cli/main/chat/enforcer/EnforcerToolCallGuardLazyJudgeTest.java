@@ -121,7 +121,7 @@ class EnforcerToolCallGuardLazyJudgeTest {
     }
 
     @Test
-    void liveRemindersReachNestedToolJudgeAndDisableRoutineBypass(@TempDir Path wd)
+    void liveTaskListRemindersReachNestedToolJudgeAndDisableRoutineBypass(@TempDir Path wd)
             throws Exception {
         ReminderManager reminders = ReminderManager.forStorage(objectMapper,
                 wd.resolve("session-reminders.json"),
@@ -150,14 +150,20 @@ class EnforcerToolCallGuardLazyJudgeTest {
 
         try (EnforcerToolCallGuard guard = new EnforcerToolCallGuard(
                 objectMapper, runtimePolicy, new EnforcerJudge(backend, objectMapper))) {
+            assertTrue(guard.evaluate("todowrite", Map.of("action", "set")).isAllowed());
+            assertEquals(0, calls.get(),
+                    "a reminder that never mentions the task list must keep the routine fast path");
+
+            reminders.add(ReminderManager.Scope.PROJECT, "Keep the todo list to three items");
             EnforcerToolCallDecision allowed = guard.evaluate(
                     "todowrite", Map.of("action", "set"));
 
             assertTrue(allowed.isAllowed());
             assertEquals(1, calls.get(),
-                    "an active reminder must disable the routine-tool judge bypass");
+                    "a task-list reminder must disable the routine-tool judge bypass");
             assertTrue(prompt.get().contains("[ACTIVE REMINDER CONSTRAINTS]"));
             assertTrue(prompt.get().contains("Plan before changing files"));
+            assertTrue(prompt.get().contains("Keep the todo list to three items"));
             assertTrue(prompt.get().contains("user: change the parser"));
 
             reminders.handleCommand(ReminderManager.Scope.PROJECT, "interval off");

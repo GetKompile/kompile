@@ -24,6 +24,8 @@ import java.util.Map;
 public class ToolResult {
     /** Metadata flag indicating that the output body was already emitted live. */
     public static final String OUTPUT_STREAMED_METADATA = "outputStreamed";
+    /** Metadata key for a chart description that the web tool card draws; the terminal skips it. */
+    public static final String CHART_METADATA = "chart";
 
     private final String title;
     private final String output;

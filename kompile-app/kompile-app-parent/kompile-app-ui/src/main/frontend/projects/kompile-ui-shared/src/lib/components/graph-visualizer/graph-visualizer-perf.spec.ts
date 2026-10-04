@@ -39,12 +39,10 @@
  * getTopKVisualization to the GraphService spy because loadGraph() now uses
  * getStatistics() → switchMap(…) as its LOD-first entry point.
  *
- * NOTE: graph-canvas.component (Sigma renderer) cannot be instantiated in
- * jsdom without a real WebGL canvas.  All tests here operate exclusively on
- * the GraphVisualizerComponent shell (the orchestrator), which is fully
- * isolatable.  Sigma-level diff tests (test 4 in the spec brief) are NOT
- * included here; a separate harness with a mock graphology Graph would be
- * needed for those — see report at the bottom of this file.
+ * NOTE: All tests here operate exclusively on the GraphVisualizerComponent
+ * shell (the orchestrator), which is fully isolatable.  The Sigma-level diff
+ * tests (test 4 in the spec brief) live in graph-canvas.component.spec.ts,
+ * which swaps out the WebGL renderer through GraphCanvasComponent.createRenderer.
  */
 
 import {
@@ -719,38 +717,3 @@ describe('GraphVisualizerComponent — perf fixes (LOD auto-refresh + in-memory 
   });
 
 });
-
-/*
- * ─────────────────────────────────────────────────────────────────────────────
- * REPORT: what could NOT be isolated in this spec file
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * Test 4 (task brief) — incremental diff in GraphCanvasComponent.updateGraph():
- *
- *   The brief asks to verify that calling updateGraph() twice with the same
- *   node/edge set does NOT call graph.clear(), and that adding one new node
- *   calls graph.addNode() exactly once without repositioning existing nodes.
- *
- *   Why it cannot be done here:
- *     GraphCanvasComponent imports Sigma and graphology directly and constructs
- *     a real Sigma instance from a DOM canvas element in ngOnInit / ngOnChanges.
- *     jsdom (the test environment) does not implement WebGL, so
- *     `new Sigma(graph, container)` throws or returns an unusable stub.
- *     There is no injection seam to replace the Sigma/Graph instances — they
- *     are constructed directly with `new Graph()` and `new Sigma(...)` inside
- *     the component, not via DI tokens.
- *
- *   What IS verifiable from the source:
- *     The updateGraph() implementation (line ≈631) reads:
- *       1. Compute incomingNodeIds from this.data.nodes.
- *       2. Drop nodes absent from incomingNodeIds (graph.dropNode per absent node).
- *       3. For each incoming node: graph.hasNode(id) → setNodeAttribute (existing)
- *                                                     → graph.addNode (new only).
- *       4. No graph.clear() call exists anywhere in the method.
- *     This textually confirms the desired behaviour; the runtime cannot be
- *     exercised without a WebGL-capable environment (e.g. a headless Chromium /
- *     Puppeteer harness with canvas enabled, or a graphology mock injected via
- *     a factory token added to the component).
- *
- * RUN AFTER BUILD: ng test (scoped to this perf spec file).
- */

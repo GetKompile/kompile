@@ -45,26 +45,34 @@ public final class SyncInventoryScanner {
     }
 
     public static Map<String, List<SyncEntry>> scan(Path scopeRoot, List<String> components) throws IOException {
+        return scan(SyncPaths.configured(scopeRoot, SyncScope.GLOBAL, null), components);
+    }
+
+    static Map<String, List<SyncEntry>> scan(SyncPaths paths, List<String> components) throws IOException {
+        paths.validateComponents(components);
         Map<String, List<SyncEntry>> inventory = new TreeMap<>();
         for (String component : components) {
-            Path root = scopeRoot.resolve(SyncCatalog.componentDir(scopeKind(scopeRoot), component));
             List<SyncEntry> entries = new ArrayList<>();
-            if (Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
-                scanComponent(root, component, entries);
+            if (SyncCatalog.isHarness(component)) {
+                for (var file : paths.harnessFiles(component).entrySet()) {
+                    SyncEntry candidate = SyncEntry.file(component, file.getKey(), null, 0, null);
+                    Path target = paths.resolve(candidate);
+                    if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                        byte[] bytes = paths.read(candidate);
+                        entries.add(SyncEntry.file(component, file.getKey(), SyncSession.sha256(bytes), bytes.length, null));
+                    }
+                }
+            } else {
+                Path root = paths.componentRoot(component);
+                SyncPaths.rejectLinks(root);
+                if (Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+                    scanComponent(root, component, entries);
+                }
             }
             entries.sort(Comparator.comparing(SyncEntry::relativePath));
             inventory.put(component, entries);
         }
         return inventory;
-    }
-
-    private static String scopeKind(Path scopeRoot) {
-        Path parent = scopeRoot.getParent();
-        if (parent == null) {
-            return SyncScope.GLOBAL;
-        }
-        return ".kompile".equals(parent.getFileName() == null ? "" : parent.getFileName().toString())
-                ? SyncScope.PROJECT : SyncScope.GLOBAL;
     }
 
     private static void scanComponent(Path componentRoot, String component, List<SyncEntry> out) throws IOException {

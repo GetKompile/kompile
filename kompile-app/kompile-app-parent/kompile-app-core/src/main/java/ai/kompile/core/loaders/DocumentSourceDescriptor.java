@@ -73,6 +73,11 @@ public class DocumentSourceDescriptor {
         NETSUITE,         // NetSuite REST record collection/detail reads
         ODOO,             // Odoo 19 JSON-2 fixed search_read operation
         SALESFORCE,       // Salesforce REST query/queryMore reads
+        ORACLE_FUSION,    // Fusion Cloud Financials REST collections
+        ORACLE_EBS,       // EBS ISG deployed open-interface table/view GETs
+        JD_EDWARDS,       // EnterpriseOne AIS v2 bounded Simple Table GET
+        INFOR_MONGOOSE,   // Mongoose REST v2 IDO LoadCollection through ION
+        ACUMATICA,        // Contract-based REST endpoint collection GETs
         S3,               // Represents an AWS S3 bucket or prefix
         SFTP,             // Represents files accessible via SFTP
         SQL,              // Represents a SQL database query or table

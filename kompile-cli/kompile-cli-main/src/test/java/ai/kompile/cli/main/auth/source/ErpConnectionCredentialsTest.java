@@ -51,7 +51,9 @@ class ErpConnectionCredentialsTest {
     @Test void vendorConnectionsAreBearerOnlyAndIsolatedByProfileAndRoot() throws Exception {
         var roots = Map.of("DYNAMICS365", "https://erp.example/data/",
                 "NETSUITE", "https://erp.example/services/rest/record/v1/",
-                "ODOO", "https://erp.example/json/2/", "SALESFORCE", "https://erp.example/services/data/v60.0/");
+                "ODOO", "https://erp.example/json/2/", "SALESFORCE", "https://erp.example/services/data/v60.0/",
+                "INFOR_MONGOOSE", "https://erp.example/TENANT/CSI/IDORequestService/ido/",
+                "ACUMATICA", "https://erp.example/entity/Default/24.200.001/");
         var store = store();
         for (var entry : roots.entrySet()) {
             String type = entry.getKey(), root = entry.getValue();
@@ -72,6 +74,56 @@ class ErpConnectionCredentialsTest {
         }
         assertThrows(java.io.IOException.class, () -> ErpConnectionCredentials.resolve(store, "ODATA",
                 new LinkedHashMap<>(Map.of("connectionName", "reader"))));
+    }
+    @Test void oracleConnectionsBindBasicOrBearerWithoutCrossProfileReuse() throws Exception {
+        var roots = Map.of("ORACLE_FUSION", "https://erp.example/fscmRestApi/resources/11.13.18.05/",
+                "ORACLE_EBS", "https://erp.example/webservices/rest/autoinvoice/",
+                "JD_EDWARDS", "https://erp.example/jderest/v2/dataservice/table/");
+        var store = store();
+        for (var entry : roots.entrySet()) {
+            String type = entry.getKey(), root = entry.getValue();
+            ErpConnectionCredentials.save(store, type, "basic", root, "finance", "reader", "private-password", 0);
+            var p = new LinkedHashMap<String, Object>(Map.of("connectionName", "basic", "serviceRoot", root));
+            ErpConnectionCredentials.resolve(store, type, p);
+            assertEquals("private-password", p.get("password")); assertEquals("basic", p.get("authMode"));
+            assertFalse(ErpConnectionCredentials.status(store, type, "basic").toString().contains("private-password"));
+            assertEquals(java.util.Set.of("password", "accessToken"), SourceCredentialResolver.sourceSecretFields(type));
+            assertThrows(IllegalArgumentException.class, () -> ErpConnectionCredentials.resolve(store, type,
+                    new LinkedHashMap<>(Map.of("connectionName", "basic", "serviceRoot", "https://other.example/"))));
+            assertThrows(IllegalArgumentException.class, () -> ErpConnectionCredentials.resolve(store, type,
+                    new LinkedHashMap<>(Map.of("connectionName", "basic", "authMode", "bearer"))));
+            if (type.equals("ORACLE_EBS")) {
+                assertThrows(IllegalArgumentException.class, () -> ErpConnectionCredentials.save(store, type, "token", root, null, null, "private-token", 0));
+            } else {
+                ErpConnectionCredentials.save(store, type, "token", root, null, null, "private-token", 0);
+                p = new LinkedHashMap<>(Map.of("connectionName", "token", "serviceRoot", root));
+                ErpConnectionCredentials.resolve(store, type, p); assertEquals("private-token", p.get("accessToken"));
+            }
+        }
+        assertThrows(java.io.IOException.class, () -> ErpConnectionCredentials.resolve(store, "ODATA",
+                new LinkedHashMap<>(Map.of("connectionName", "basic"))));
+    }
+    @Test void mongooseConfigurationIsRequiredAndBoundToNamedCredentials() throws Exception {
+        var store = store();
+        String root = "https://erp.example/TENANT/CSI/IDORequestService/ido/";
+        for (String config : List.of("", " ", "site\r\nInjected: value")) {
+            assertThrows(IllegalArgumentException.class, () -> ErpConnectionCredentials.save(
+                    store, "INFOR_MONGOOSE", "bad", root, config, null, "private-token", 0));
+        }
+        assertThrows(IllegalArgumentException.class, () -> ErpConnectionCredentials.save(
+                store, "INFOR_MONGOOSE", "bad", root, null, null, "private-token", 0));
+        ErpConnectionCredentials.save(store, "INFOR_MONGOOSE", "reader", root, "site-a", null, "private-token", 0);
+        var resolved = new LinkedHashMap<String, Object>(Map.of("connectionName", "reader"));
+        ErpConnectionCredentials.resolve(store, "INFOR_MONGOOSE", resolved);
+        assertEquals("site-a", resolved.get("tenant"));
+        for (var override : List.of(Map.of("tenant", "site-b"), Map.of("authMode", "basic"))) {
+            var rejected = new LinkedHashMap<String, Object>(Map.of("connectionName", "reader"));
+            rejected.putAll(override);
+            var error = assertThrows(IllegalArgumentException.class, () ->
+                    ErpConnectionCredentials.resolve(store, "INFOR_MONGOOSE", rejected));
+            assertFalse(error.toString().contains("private-token"));
+            assertFalse(rejected.containsKey("accessToken"));
+        }
     }
     @Test void authCommandRegisteredAndNoLiteralSecretOption() {
         var source=new CommandLine(new AuthSourceCommand());

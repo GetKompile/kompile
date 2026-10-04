@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.manage;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -13,6 +14,9 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
+import java.util.HashMap;
+import ai.kompile.cli.common.WebChatContext;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -23,10 +27,58 @@ import static org.junit.jupiter.api.Assertions.*;
  * Uses a real process launch with a trivial script/JAR to verify
  * the command structure is correct.
  */
+@TemporaryUserHome
 public class ServiceManagerNativeExeTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    public void testNativeWebContextTravelsThroughEnvironmentNotJvmArguments() throws Exception {
+        Path script = tempDir.resolve("kompile-chat");
+        Files.writeString(script, "#!/bin/bash\n"
+                + "echo \"ARGS: $@\"\n"
+                + "echo \"WORK: $KOMPILE_CHAT_HANDOFF_WORKING_DIRECTORY\"\n"
+                + "echo \"SCOPE: $KOMPILE_CHAT_HANDOFF_CONFIG_SCOPE\"\n"
+                + "echo \"MODE: $KOMPILE_CHAT_HANDOFF_MODE\"\n"
+                + "echo \"TEAM: $KOMPILE_CHAT_HANDOFF_WORKFLOW\"\n");
+        Files.setPosixFilePermissions(script, Set.of(PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
+        Process process = new ServiceManager().startProjectComponent("test-native-web-instance",
+                "kompile-app-chat", script.toFile(), 19879, tempDir.toFile(), List.of(),
+                List.of("--server.address=127.0.0.1"), null, false,
+                WebChatContext.environment(tempDir, false, "team", true));
+        String output = new String(process.getInputStream().readAllBytes());
+        assertEquals(0, process.waitFor());
+        assertTrue(output.contains("--server.port=19879"), output);
+        assertTrue(output.contains("--server.address=127.0.0.1"), output);
+        assertFalse(output.contains("-Dkompile.chat.handoff"), output);
+        assertTrue(output.contains("WORK: " + tempDir.toRealPath()), output);
+        assertTrue(output.contains("SCOPE: project"), output);
+        assertTrue(output.contains("MODE: workspace"), output);
+        assertTrue(output.contains("TEAM: team"), output);
+    }
+
+    @Test
+    public void testManagedChildNeverInheritsAnotherWebServersContext() throws Exception {
+        Map<String, String> inherited = new HashMap<>(WebChatContext.environment(tempDir, true, "old-team", true));
+        inherited.put("UNRELATED", "preserved");
+        Map<String, String> child = new HashMap<>(inherited);
+        ServiceManager.configureProjectEnvironment(child, null, tempDir.toFile(), Map.of());
+        assertFalse(child.containsKey(WebChatContext.ENV_WORKING_DIRECTORY));
+        assertFalse(child.containsKey(WebChatContext.ENV_CONFIG_SCOPE));
+        assertFalse(child.containsKey(WebChatContext.ENV_WORKFLOW));
+        assertFalse(child.containsKey(WebChatContext.ENV_MODE));
+        assertEquals("preserved", child.get("UNRELATED"));
+        assertEquals(tempDir.toFile().getAbsolutePath(), child.get("KOMPILE_PROJECT_ROOT"));
+        // A fresh single/project context replaces all optional enclosing workspace/global values.
+        Map<String, String> launch = WebChatContext.environment(tempDir, false, null, false);
+        child = new HashMap<>(inherited);
+        ServiceManager.configureProjectEnvironment(child, null, tempDir.toFile(), launch);
+        assertEquals("project", child.get(WebChatContext.ENV_CONFIG_SCOPE));
+        assertEquals("single", child.get(WebChatContext.ENV_MODE));
+        assertEquals("", child.get(WebChatContext.ENV_WORKFLOW));
+    }
 
     /**
      * Verify that a native executable is launched directly, NOT via "java -jar".

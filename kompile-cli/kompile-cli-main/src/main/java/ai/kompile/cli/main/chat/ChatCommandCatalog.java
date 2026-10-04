@@ -24,11 +24,11 @@ public final class ChatCommandCatalog {
             "queue-move", "queue-clear", "queue-status", "loop", "loop-global", "jobs", "jobs-remove",
             "jobs-clear", "activity", "processes", "process-kill", "process-output", "process-status",
             "statusbar", "auto-dequeue", "stats", "passthrough", "resume", "resume-all", "mode", "menu",
-            "skills", "roles", "role", "model", "fast", "ultracode", "enforce", "enforcer", "judge", "judge-global",
+            "skills", "roles", "role", "model", "fast", "ultracode", "mcp", "enforce", "enforcer", "judge", "judge-global",
             "direction", "forward", "image", "file", "attach", "attachments");
     private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar");
     private static final Set<String> LIVE = Arrays.stream((
-            "clear restart reset reset-all compact auto-compact rag agent local-agent role fast ultracode title "
+            "clear restart reset reset-all compact auto-compact rag agent local-agent role fast ultracode mcp title "
             + "memory permissions plan queue queues queue-send queue-send-all queue-remove queue-edit queue-move "
             + "queue-clear queue-status loop loop-global jobs jobs-remove jobs-clear auto-dequeue passthrough "
             + "resume resume-all mode enforce enforcer judge judge-global direction forward image file attach attachments "

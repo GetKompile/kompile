@@ -51,6 +51,7 @@ import { SourceCitationComponent } from '../source-citation/source-citation.comp
 import { ReasoningTrailComponent } from '../reasoning-trail/reasoning-trail.component';
 
 import { GraphCanvasComponent } from './graph-canvas.component';
+import { mergeVisualization, storedEdgeLinkIds, withoutVisualization } from './visualization-merge';
 import { GraphService, GraphBuildStatus, FactSheetGraphStatistics } from '../../services/graph.service';
 import { SourceWeightService } from '../../services/source-weight.service';
 import { AttributionService } from '../../services/attribution.service';
@@ -338,11 +339,13 @@ const DEFAULT_EDGE_TYPES: EdgeType[] = [
             [reasoningEdgeLayerMap]="reasoningEdgeLayerMap"
             [processEvidenceNodeIds]="processEvidenceNodeIds"
             [processEvidenceEdgeIds]="processEvidenceEdgeIds"
+            [focusNodeId]="focusRequest"
             (nodeSelected)="onNodeSelected($event)"
             (nodeDoubleClicked)="onNodeDoubleClicked($event)"
             (edgeCreated)="onEdgeCreated($event)"
             (nodeContextMenu)="onNodeContextMenu($event)"
-            (linkSourceChanged)="onLinkSourceChanged($event)">
+            (linkSourceChanged)="onLinkSourceChanged($event)"
+            (focused)="onFocused($event)">
           </app-graph-canvas>
         </div>
 
@@ -3315,7 +3318,22 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   // Fact sheet inputs
   @Input() factSheetId: number | null = null;
   @Input() factSheetName: string = '';
+  /**
+   * A node to show and select, such as a deep link's: its neighborhood is fetched into the view and
+   * the canvas centers on the node once it is drawn.
+   */
   @Input() focusNodeId: string | null = null;
+  /**
+   * The {@link focusNodeId} node for the canvas to select and center. Cleared once the canvas has
+   * focused it, so a canvas re-created by a later reload does not select it again.
+   */
+  focusRequest: string | null = null;
+  /** Neighborhoods fetched for this sheet by focus and expand, merged into every load and refresh. */
+  private expansions: D3VisualizationData | null = null;
+  /** Bumped on each sheet change; a response for an earlier sheet is dropped. */
+  private sheetGeneration = 0;
+  /** Bumped by each load; a load that a later one superseded is dropped. */
+  private loadSequence = 0;
   /** Graph-simulator ground-truth compare overlay (nodeId → recovery status); null = off. */
   @Input() simTruthNodeMap: Record<string, string> | null = null;
 
@@ -3396,6 +3414,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   focalConfidenceFloor = 0.0;
   focalEdgeTypes: string[] = [];    // empty = all
   private preFocalData: D3VisualizationData | null = null;  // cached full graph before focal switch
+  /** The focal subgraph as fetched; it is drawn under the view filters but not the search. */
+  private focalData: D3VisualizationData | null = null;
 
   // Phase-2 filter state
   allStrengthBands: StrengthBand[] = ['ESTABLISHED', 'HIGH', 'PROBABLE', 'SPECULATIVE', 'SUPPRESSED'];
@@ -3485,19 +3505,6 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   allNodeTypes: NodeLevel[] = [...DEFAULT_NODE_TYPES];
   allEdgeTypes: EdgeType[] = [...DEFAULT_EDGE_TYPES];
 
-  // Node colors for display
-  private nodeColors: Record<NodeLevel, string> = {
-    SOURCE: '#22c55e',
-    DOCUMENT: '#3b82f6',
-    SNIPPET: '#f59e0b',
-    ENTITY: '#a855f7',
-    CUSTOM: '#64748b',
-    TABLE: '#00bcd4',
-    ATTACHMENT: '#795548',
-    IDENTIFIER: '#3F51B5',
-    ALIAS: '#009688'  // Teal — synthetic cross-doc alias hub (matches NODE_COLORS)
-  };
-
   /** Reference to the canvas child — used for imperative LOD merge calls (addNodesToGraph). */
   @ViewChild('graphCanvas') private graphCanvas?: GraphCanvasComponent;
 
@@ -3574,12 +3581,17 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     this.loadTemporalBounds();
     this.loadProcessCandidates();
 
-    // Debounce search input
+    // Debounce search input. The search filters the loaded graph, so it loads only when none has landed.
     this.searchSubject.pipe(
       debounceTime(300),
       takeUntil(this.destroy$)
     ).subscribe(query => {
-      this.loadGraph(query);
+      if (this.fullGraphData) {
+        this.lastQuery = query || undefined;
+        this.renderFiltered();
+      } else {
+        this.loadGraph(query || undefined);
+      }
     });
 
     // Live-refresh: while the graph is changing (e.g. a crawl is writing to it), reload so the
@@ -3603,16 +3615,18 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
           ? this.graphService.getFactSheetVisualizationData(this.factSheetId, this.maxNodes)
           : this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
 
+      const load = this.loadSequence;
       refreshObs
         .pipe(takeUntil(this.destroy$))
         .subscribe({
           next: (data: any) => {
+            if (load !== this.loadSequence) return; // a load since, such as a sheet change's, is newer
             const sig = this.graphSignature(data);
             if (sig === this.lastGraphSignature) return; // unchanged → skip re-render (no layout jank)
             this.lastGraphSignature = sig;
-            this.fullGraphData = data;
+            this.fullGraphData = mergeVisualization(data, this.expansions);
             this.mergeAvailableGraphTypes(data);
-            this.graphData = this.applyFilters(data, this.lastQuery);
+            this.renderFiltered();
             this.refreshProcessEvidenceOverlay();
             if (this.strengthOverlayEnabled) {
               this.scheduleVisibleNodeVerify();
@@ -3634,20 +3648,38 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['factSheetId'] && !changes['factSheetId'].firstChange) {
+    const sheetChanged = !!changes['factSheetId'] && !changes['factSheetId'].firstChange;
+    if (sheetChanged) {
+      // Nothing from the previous sheet carries over, including a response still in flight.
+      this.sheetGeneration++;
+      this.expansions = null;
+      this.fullGraphData = null;
+      this.graphData = null;
+      this.focusRequest = null;
+      this.focalViewActive = false;
+      this.focalViewLoading = false;
+      this.focalData = null;
+      this.preFocalData = null;
+      this.selectNode(null);
+      this.clearNewRelation();
       this.clearReasoningLayers();
       this.clearProcessSelection();
       this.loadProcessCandidates();
       this.loadGraph(this.lastQuery);
     }
-    if (changes['focusNodeId'] && this.focusNodeId) {
-      this.expandNodeById(this.focusNodeId);
+    if (sheetChanged || changes['focusNodeId']) {
+      if (this.focusNodeId) {
+        this.focusOn(this.focusNodeId);
+      } else {
+        this.focusRequest = null;
+      }
     }
   }
 
-  loadGraph(query?: string): void {
+  loadGraph(query: string | undefined = this.searchQuery || undefined): void {
     this.loading = true;
     this.lastQuery = query;
+    const load = ++this.loadSequence;
 
     const from = this.temporalFilterActive && this.timeFrom ? this.timeFrom + 'T00:00:00' : undefined;
     const to = this.temporalFilterActive && this.timeTo ? this.timeTo + 'T23:59:59' : undefined;
@@ -3662,32 +3694,35 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
       ? this.graphService.getFactSheetVisualizationData(this.factSheetId, this.maxNodes)
       : this.graphService.getVisualizationData(undefined, this.maxDepth, this.maxNodes, from, to);
 
+    // A failing flat load is not retried: only the statistics and the top-K fetch fall back to it.
     const loadObservable = statisticsObservable.pipe(
+      catchError(() => of(null)),
       switchMap((stats: any) => {
         const totalNodes: number = stats?.totalNodes ?? stats?.nodeCount ?? 0;
         if (totalNodes > 2000) {
-          return this.graphService.getTopKVisualization(300, 'pagerank', this.factSheetId ?? undefined);
+          return this.graphService.getTopKVisualization(300, 'pagerank', this.factSheetId ?? undefined)
+            .pipe(catchError(() => flatVisualization()));
         }
         return flatVisualization();
-      }),
-      catchError(() => flatVisualization())
+      })
     );
 
     loadObservable
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (data) => {
+          if (load !== this.loadSequence) return; // a later load supersedes this one
           // Capture store totals from backend metadata (used to show "N of M" in the stats bar)
           const meta = data.statistics as any;
           this.totalAvailableNodes = meta?.totalAvailableNodes ?? null;
           this.totalAvailableEdges = meta?.totalAvailableEdges ?? null;
           this.nodeTypeCounts = meta?.nodeTypeCounts ?? {};
           this.edgeTypeCounts = meta?.edgeTypeCounts ?? {};
-          // Cache full data for timeline snapshots
-          this.fullGraphData = data;
+          // Cache full data for timeline snapshots, with the neighborhoods fetched for this sheet
+          this.fullGraphData = mergeVisualization(data, this.expansions);
           this.mergeAvailableGraphTypes(data);
           // Apply filters (snapshot filter handled inside applyFilters)
-          this.graphData = this.applyFilters(data, query);
+          this.renderFiltered();
           this.refreshProcessEvidenceOverlay();
           this.lastGraphSignature = this.graphSignature(data);
           this.loading = false;
@@ -3702,6 +3737,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
           }
         },
         error: (err) => {
+          if (load !== this.loadSequence) return;
           console.error('Failed to load graph:', err);
           this.snackBar.open('Failed to load knowledge graph', 'Dismiss', { duration: 3000 });
           this.loading = false;
@@ -4258,7 +4294,11 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
       return;
     }
 
-    // Normal selection
+    this.selectNode(node);
+  }
+
+  /** Shows node as the selected node, with its relations; null clears the selection. */
+  private selectNode(node: D3Node | null): void {
     this.selectedNode = node;
     this.attributionResult = null;
     this.attributionError = null;
@@ -4291,24 +4331,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   }
 
   onNodeDoubleClicked(node: D3Node): void {
-    // LOD expand: fetch the node's 1-hop neighborhood and merge it into the live graph
-    // without a full reload. Falls back to flat expandNodeById on error.
-    this.graphService.getNodeNeighborhood(node.id, 50)
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: (data) => {
-          if (this.graphCanvas) {
-            this.graphCanvas.addNodesToGraph(data);
-          } else {
-            // Canvas not yet rendered (should not happen during a double-click, but guard anyway)
-            this.expandNodeById(node.id);
-          }
-        },
-        error: (err) => {
-          console.error('Failed to expand node neighborhood:', err);
-          this.expandNodeById(node.id);
-        }
-      });
+    // LOD expand: merge the node's 1-hop neighborhood into the live graph without a full reload.
+    this.expandNodeById(node.id);
   }
 
   onEdgeCreated(edge: { source: string; target: string }): void {
@@ -4362,17 +4386,99 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     }
   }
 
+  /** Adds the node's 1-hop neighborhood in this sheet to the graph, placed around the node. */
   expandNodeById(nodeId: string): void {
-    this.graphService.getConnectedNodes(nodeId, 1)
+    this.showNeighborhood(nodeId, false);
+  }
+
+  /** The canvas has selected and centered the focus node: show it as the selected node. */
+  onFocused(node: D3Node): void {
+    this.focusRequest = null;
+    this.selectNode(node);
+  }
+
+  private focusOn(nodeId: string): void {
+    this.focusRequest = nodeId;
+    this.showNeighborhood(nodeId, true);
+  }
+
+  /**
+   * Fetches the node's neighborhood in this sheet and keeps it in the view. A response for an
+   * earlier sheet, or for a focus node since replaced, is dropped.
+   */
+  private showNeighborhood(nodeId: string, focus: boolean): void {
+    const generation = this.sheetGeneration;
+    const current = () => generation === this.sheetGeneration && (!focus || nodeId === this.focusNodeId);
+    this.graphService.getNodeNeighborhood(nodeId, 50, undefined, this.factSheetId)
       .pipe(takeUntil(this.destroy$))
       .subscribe({
-        next: () => {
-          this.loadGraph();
+        next: (data) => {
+          if (!current()) return;
+          if (focus && !data.nodes.some(n => n.id === nodeId)) {
+            // The backend answers a node or graph it does not have with an empty view.
+            this.focusRequest = null;
+            this.snackBar.open(`Node ${nodeId} is not in this graph`, 'Dismiss', { duration: 4000 });
+            return;
+          }
+          if (data.nodes.length > 0) {
+            this.keepNeighborhood(data);
+          }
         },
         error: (err) => {
-          console.error('Failed to expand node:', err);
+          if (!current()) return;
+          // A focus request stays pending: the canvas still centers the node if a load draws it.
+          console.error('Failed to load node neighborhood:', err);
+          this.snackBar.open(focus ? 'Failed to load the linked node' : 'Failed to expand node',
+            'Dismiss', { duration: 3000 });
         }
       });
+  }
+
+  /**
+   * Keeps a fetched neighborhood for this sheet: it joins the graph now and every later load and
+   * refresh, and the canvas places its new nodes around the nodes already drawn.
+   */
+  private keepNeighborhood(data: D3VisualizationData): void {
+    this.mergeAvailableGraphTypes(data);
+    this.expansions = mergeVisualization(this.expansions ?? { nodes: [], links: [] }, data);
+    this.fullGraphData = mergeVisualization(this.fullGraphData ?? { nodes: [], links: [] }, data);
+    if (this.focalViewActive && this.focalData) {
+      this.focalData = mergeVisualization(this.focalData, data);
+    }
+    // The canvas gets the new nodes first, so it places them around the nodes already drawn; their
+    // edges arrive with the view below, once links already drawn under another key are dropped.
+    const view = this.focalViewActive ? this.applyFilters(data) : this.applyFilters(data, this.lastQuery);
+    this.graphCanvas?.addNodesToGraph({ nodes: view.nodes, links: [] });
+    this.renderFiltered();
+    this.refreshProcessEvidenceOverlay();
+    if (this.strengthOverlayEnabled) {
+      this.scheduleVisibleNodeVerify();
+    }
+  }
+
+  /**
+   * Draws the loaded graph under the view filters and the applied search. While the focal view is
+   * open, that filtered graph is kept for its exit and the canvas draws the focal subgraph under the
+   * view filters alone.
+   */
+  private renderFiltered(): void {
+    if (this.fullGraphData) {
+      const view = this.applyFilters(this.fullGraphData, this.lastQuery);
+      if (this.focalViewActive) {
+        this.preFocalData = view;
+      } else {
+        this.graphData = view;
+      }
+    }
+    if (this.focalViewActive && this.focalData) {
+      this.graphData = this.applyFilters(this.focalData);
+    }
+  }
+
+  /** Drops deleted nodes and links from the kept neighborhoods and the focal subgraph. */
+  private forgetDeleted(nodeIds: ReadonlySet<string>, linkKeys: ReadonlySet<string>): void {
+    this.expansions = this.expansions && withoutVisualization(this.expansions, nodeIds, linkKeys);
+    this.focalData = this.focalData && withoutVisualization(this.focalData, nodeIds, linkKeys);
   }
 
   deleteNode(): void {
@@ -4399,7 +4505,8 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
           .subscribe({
             next: () => {
               this.snackBar.open('Node deleted successfully', 'Dismiss', { duration: 2000 });
-              this.selectedNode = null;
+              this.selectNode(null);
+              this.forgetDeleted(new Set([nodeId]), new Set());
               this.loadGraph();
             },
             error: (err) => {
@@ -4420,7 +4527,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     // Apply the type filter in-memory against the cached full data to avoid a
     // network round-trip. Only fall back to loadGraph() when no data is cached yet.
     if (this.fullGraphData) {
-      this.graphData = this.applyFilters(this.fullGraphData, this.lastQuery);
+      this.renderFiltered();
     } else if (this.graphData) {
       this.loadGraph();
     }
@@ -4526,7 +4633,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
         hour: '2-digit', minute: '2-digit'
       });
     }
-    this.graphData = this.applyFilters(this.fullGraphData);
+    this.renderFiltered();
   }
 
   timelineTogglePlay(): void {
@@ -4580,7 +4687,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     this.snapshotVisibleLinks = 0;
     // Restore full graph
     if (this.fullGraphData) {
-      this.graphData = this.applyFilters(this.fullGraphData);
+      this.renderFiltered();
     }
   }
 
@@ -4693,11 +4800,9 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
   // RELATION MANAGEMENT
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /**
-   * Get node color by type
-   */
+  /** The color the canvas draws a node of this type in. */
   getNodeColor(type: NodeLevel): string {
-    return this.nodeColors[type] || '#64748b';
+    return NODE_COLORS[type] || '#64748b';
   }
 
   /**
@@ -4803,9 +4908,11 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
       .pipe(takeUntil(this.destroy$))
       .subscribe({
         next: (edges) => {
+          if (this.selectedNode?.id !== nodeId) return; // another node has been selected since
           this.nodeRelations = edges;
         },
         error: (err) => {
+          if (this.selectedNode?.id !== nodeId) return;
           console.error('Failed to load node relations:', err);
           this.nodeRelations = [];
         }
@@ -4836,6 +4943,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
           .subscribe({
             next: () => {
               this.snackBar.open('Relation deleted successfully', 'Dismiss', { duration: 2000 });
+              this.forgetDeleted(new Set(), new Set(storedEdgeLinkIds(relation.edgeId, relation.sourceNodeId, relation.targetNodeId)));
               this.loadGraph();
               if (this.selectedNode) {
                 this.loadNodeRelations(this.selectedNode.id);
@@ -5286,17 +5394,21 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
       confidenceFloor: this.focalConfidenceFloor
     };
 
-    this.http.post<any>(url, body).subscribe({
+    const generation = this.sheetGeneration;
+    this.http.post<any>(url, body).pipe(takeUntil(this.destroy$)).subscribe({
       next: (result) => {
+        if (generation !== this.sheetGeneration) return; // built for the sheet shown before
         // Backend returns { nodes, links, edges, statistics }
         // The frontend D3VisualizationData shape uses 'links' as the edge array
         const focalData: D3VisualizationData = {
           nodes: result.nodes || [],
           links: result.links || result.edges || []
         };
-        this.graphData = focalData;
+        this.mergeAvailableGraphTypes(focalData);
+        this.focalData = focalData;
         this.focalViewActive = true;
         this.focalViewLoading = false;
+        this.renderFiltered();
 
         const stats = result.statistics || {};
         this.snackBar.open(
@@ -5305,6 +5417,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
           'Dismiss', { duration: 3000 });
       },
       error: (err) => {
+        if (generation !== this.sheetGeneration) return;
         this.focalViewLoading = false;
         const msg = err?.error?.error || err?.message || 'Subgraph build failed';
         this.snackBar.open('Focal view failed: ' + msg, 'Dismiss', { duration: 3000 });
@@ -5314,6 +5427,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
 
   exitFocalView(): void {
     this.focalViewActive = false;
+    this.focalData = null;
     // Restore the full graph from cache; if not available, reload from backend
     if (this.preFocalData) {
       this.graphData = this.preFocalData;
@@ -5332,7 +5446,7 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
     }
     // Trigger re-filter
     if (this.fullGraphData) {
-      this.graphData = this.applyFilters(this.fullGraphData, this.searchQuery || undefined);
+      this.renderFiltered();
     } else if (this.graphData) {
       this.loadGraph();
     }
@@ -5340,13 +5454,13 @@ export class GraphVisualizerComponent implements OnInit, OnDestroy, OnChanges {
 
   onCreationTimeChange(): void {
     if (this.fullGraphData) {
-      this.graphData = this.applyFilters(this.fullGraphData, this.searchQuery || undefined);
+      this.renderFiltered();
     }
   }
 
   onProvenanceFilterChange(): void {
     if (this.fullGraphData) {
-      this.graphData = this.applyFilters(this.fullGraphData, this.searchQuery || undefined);
+      this.renderFiltered();
     }
   }
 

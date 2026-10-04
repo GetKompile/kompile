@@ -1,12 +1,15 @@
 package ai.kompile.cli.main.chat.exec;
 
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.tools.McpToolResultSerializer;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -140,6 +143,52 @@ class ToolCallJsonTest {
     @Test
     void noResultMeansNoDetail() {
         assertEquals(0, ToolCallJson.detail(mapper, "read", "{}", null).size());
+    }
+
+    @Test
+    void chartGoesToTheBrowserAndStaysOffTheRow() {
+        String input = "{\"question\":\"slowest tools this week\"}";
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("topic", "tools");
+        metadata.put(ToolResult.CHART_METADATA, chart());
+        ToolResult result = ToolResult.success("Tools, this week: 2 calls", "table", metadata);
+
+        ObjectNode detail = ToolCallJson.detail(mapper, "insights", input, result);
+
+        assertEquals(chart(), detail.path("chart"));
+        assertEquals("(topic=tools)", detail.path("metadata").asText(), "the row names the topic, not the chart");
+        assertRow(TerminalRenderer.toolRow("insights", input, result, false), detail);
+    }
+
+    @Test
+    void chartSurvivesTheMcpRoundTrip() {
+        // Claude Code hands the model the structured content as text; read back, the chart is a map.
+        ToolResult sent = ToolResult.success("Tools, this week: 2 calls", "table",
+                Map.of("topic", "tools", ToolResult.CHART_METADATA, chart()));
+        String text = McpToolResultSerializer.toMcpCallResult(mapper, sent).path("structuredContent").toString();
+
+        ToolResult received = McpToolResultSerializer.fromStructuredContentText(mapper, text, false);
+
+        assertNotNull(received, text);
+        assertInstanceOf(Map.class, received.getMetadata().get(ToolResult.CHART_METADATA));
+        assertEquals(chart(), ToolCallJson.detail(mapper, "insights", "{}", received).path("chart"));
+    }
+
+    @Test
+    void failedCallCarriesNoChart() {
+        ToolResult failed = new ToolResult("error", "boom", Map.of(ToolResult.CHART_METADATA, chart()), true);
+
+        assertFalse(ToolCallJson.detail(mapper, "insights", "{}", failed).has("chart"));
+    }
+
+    /** A chart in the shape the insights tool describes one. */
+    private ObjectNode chart() {
+        ObjectNode chart = mapper.createObjectNode().put("v", 1).put("kind", "bar")
+                .put("title", "Tool calls per day, this week").put("unit", "calls");
+        chart.putArray("labels").add("10-02").add("10-03");
+        ObjectNode series = chart.putArray("series").addObject().put("name", "calls");
+        series.putArray("values").add(1.0).add(2.0);
+        return chart;
     }
 
     private static String numbers(int count) {

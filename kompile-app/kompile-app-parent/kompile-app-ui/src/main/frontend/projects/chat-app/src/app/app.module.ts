@@ -77,7 +77,9 @@ import { AppShellComponent } from '@shared/components/app-shell/app-shell.compon
 import { MarkdownRendererComponent } from '@shared/components/markdown-renderer/markdown-renderer.component';
 import { ProjectStorePanelComponent } from './components/project-store-panel/project-store-panel.component';
 import { ReasoningTrailComponent } from '@shared/components/reasoning-trail/reasoning-trail.component';
+import { SessionInsightsDrawerComponent } from './components/session-insights-drawer/session-insights-drawer.component';
 import { SourceCitationComponent } from '@shared/components/source-citation/source-citation.component';
+import { ToolCallChartComponent } from '@shared/components/tool-call-chart/tool-call-chart.component';
 
 /**
  * Root module of the Kompile chat app.
@@ -147,7 +149,9 @@ import { SourceCitationComponent } from '@shared/components/source-citation/sour
     MarkdownRendererComponent,
     ProjectStorePanelComponent,
     ReasoningTrailComponent,
-    SourceCitationComponent
+    SessionInsightsDrawerComponent,
+    SourceCitationComponent,
+    ToolCallChartComponent
   ],
   providers: [
     { provide: CURRENT_SERVICE_PERSONA, useValue: 'chat' },

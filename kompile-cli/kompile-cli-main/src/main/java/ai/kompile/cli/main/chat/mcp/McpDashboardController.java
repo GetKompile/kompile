@@ -6,6 +6,8 @@
 package ai.kompile.cli.main.chat.mcp;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.insights.InsightsConfig;
+import ai.kompile.cli.insights.Panel;
 import ai.kompile.cli.main.chat.ChatSessionContext;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -35,6 +37,13 @@ import java.util.function.Supplier;
  * the exact source retained by {@link McpBundleToolLoader} after project-workspace
  * trust succeeds. Refreshes occur once at startup, on explicit operator request,
  * or after an exact configured successful tool call; there is no polling loop.</p>
+ *
+ * <p>Without a project dashboard the area shows the chat's own {@link SessionInsightsPanel}
+ * instead, unless {@code insights.json} sets {@code "sessionPanel": false}. Its rows are cheap
+ * to rebuild: the judge and tool rows read only what was appended to their logs, the test row
+ * parses only a milestone file that changed, and the crawl row reuses a crawl-manager answer
+ * for a few seconds. So it refreshes after every tool call, failed ones included, when a file
+ * it reads changes, and on a timer ({@link PanelWatcher}).</p>
  */
 public final class McpDashboardController implements AutoCloseable {
     static final String SCHEMA_VERSION = "kompile.dashboard.v1";
@@ -61,6 +70,8 @@ public final class McpDashboardController implements AutoCloseable {
 
     private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final McpConfigStore.DashboardConfig config;
+    /** The chat's own session panel, shown when the project configures no dashboard; else null. */
+    private final SessionInsightsPanel panel;
     private final DashboardFetcher fetcher;
     private final KompileTui tui;
     private final ObjectMapper mapper;
@@ -82,6 +93,9 @@ public final class McpDashboardController implements AutoCloseable {
     private volatile DashboardSnapshot lastGood;
     private volatile boolean hiddenByUser;
     private volatile long appliedGeneration;
+    private final Object watcherLock = new Object();
+    /** Follows the files the session panel reads; created by its first refresh. Guarded by watcherLock. */
+    private PanelWatcher watcher;
 
     public McpDashboardController(
             McpBundleToolLoader loader, KompileTui tui,
@@ -94,7 +108,19 @@ public final class McpDashboardController implements AutoCloseable {
                         throw new IllegalStateException(safeFailure(result.content()));
                     }
                     return result.content();
-                }, tui, JsonUtils.standardMapper(), SOURCE_TIMEOUT_MILLIS);
+                }, tui, JsonUtils.standardMapper(), SOURCE_TIMEOUT_MILLIS,
+                sessionPanel(loader, tui, contextSupplier));
+    }
+
+    /** The chat's own panel, unless the project has a dashboard or {@code insights.json} turns it off. */
+    private static SessionInsightsPanel sessionPanel(
+            McpBundleToolLoader loader, KompileTui tui, Supplier<ToolContext> contextSupplier) {
+        if (contextSupplier == null || (loader != null && loader.dashboardConfig().isPresent())) {
+            return null;
+        }
+        InsightsConfig insightsConfig = InsightsConfig.load();
+        return insightsConfig.isSessionPanel()
+                ? new SessionInsightsPanel(contextSupplier, tui, insightsConfig) : null;
     }
 
     McpDashboardController(McpConfigStore.DashboardConfig config,
@@ -109,22 +135,41 @@ public final class McpDashboardController implements AutoCloseable {
                            KompileTui tui,
                            ObjectMapper mapper,
                            long sourceTimeoutMillis) {
+        this(config, fetcher, tui, mapper, sourceTimeoutMillis, null);
+    }
+
+    /** @param panel the session panel, shown only when {@code config} is null */
+    McpDashboardController(McpConfigStore.DashboardConfig config,
+                           DashboardFetcher fetcher,
+                           KompileTui tui,
+                           ObjectMapper mapper,
+                           long sourceTimeoutMillis,
+                           SessionInsightsPanel panel) {
         this.config = config;
-        this.fetcher = fetcher;
+        this.panel = config == null ? panel : null;
+        this.fetcher = this.panel != null ? this.panel : fetcher;
         this.tui = tui;
         this.mapper = mapper == null ? JsonUtils.standardMapper() : mapper;
         this.sourceTimeoutMillis = Math.max(1L,
                 Math.min(SOURCE_TIMEOUT_MILLIS, sourceTimeoutMillis));
+        if (this.panel != null && tui != null) {
+            // The panel fits its rows to the dashboard area, which a resize changes.
+            tui.addResizeListener(this::panelChanged);
+        }
     }
 
     public boolean isConfigured() {
-        return config != null;
+        return config != null || panel != null;
     }
 
     /** Reserve the persistent dashboard region before the TUI establishes its layout. */
     public void prepare() {
         if (!isConfigured() || hiddenByUser || tui == null) return;
-        tui.setDashboard("Game dashboard", List.of("Loading current state…"));
+        if (panel != null) {
+            tui.setDashboard(SessionInsightsPanel.TITLE, List.of("Loading session insights…"));
+        } else {
+            tui.setDashboard("Game dashboard", List.of("Loading current state…"));
+        }
     }
 
     public RefreshResult refresh() {
@@ -143,21 +188,65 @@ public final class McpDashboardController implements AutoCloseable {
             }
             lastGood = snapshot;
             appliedGeneration = requestedGeneration;
-            if (!hiddenByUser && tui != null) {
+            followPanel();
+            if (!hiddenByUser && tui != null && !showing(snapshot)) {
                 tui.setDashboard(snapshot.title(), snapshot.lines());
             }
             return new RefreshResult(true, true, "Dashboard refreshed.");
         } catch (Exception failure) {
             String message = "Dashboard refresh failed: " + safeFailure(failure.getMessage());
             if (lastGood == null && !hiddenByUser && tui != null) {
-                tui.setDashboard("Game dashboard", List.of(
-                        "Dashboard unavailable · use /dashboard refresh",
+                tui.setDashboard(panel != null ? SessionInsightsPanel.TITLE : "Game dashboard", List.of(
+                        panel != null ? "Session insights unavailable · /dashboard refresh"
+                                : "Dashboard unavailable · use /dashboard refresh",
                         safeFailure(failure.getMessage())));
-            } else if (tui != null) {
+            } else if (tui != null && panel == null) {
+                // The session panel keeps its last rows quietly and tries again on its timer.
                 tui.showAlert(message);
             }
+            followPanel();
             return new RefreshResult(true, false, message);
         }
+    }
+
+    /** True when the TUI already shows exactly this snapshot, so setting it would only redraw. */
+    private boolean showing(DashboardSnapshot snapshot) {
+        KompileTui.DashboardSnapshot shown = tui.getDashboardSnapshot();
+        return shown != null && shown.visible() && shown.title().equals(snapshot.title())
+                && shown.lines().equals(snapshot.lines());
+    }
+
+    /**
+     * Points the watcher at the files the session panel last read, and restarts its timer. Also
+     * called after a failed refresh, so a panel whose first read failed is retried on the timer.
+     */
+    private void followPanel() {
+        if (panel == null) return;
+        Panel shown = panel.lastPanel();
+        PanelWatcher current;
+        synchronized (watcherLock) {
+            if (closed.get()) return;
+            if (watcher == null) watcher = new PanelWatcher(this::panelChanged);
+            current = watcher;
+        }
+        current.update(shown == null ? List.of() : shown.watches(), shown != null && shown.live());
+    }
+
+    /** The session panel's watcher, once its first refresh has run; null otherwise. */
+    PanelWatcher panelWatcher() {
+        synchronized (watcherLock) {
+            return watcher;
+        }
+    }
+
+    /** Something the session panel shows may have changed: refresh it, or note that it is stale. */
+    private void panelChanged() {
+        if (closed.get()) return;
+        if (hiddenByUser || tui == null || !tui.isStarted()) {
+            dirtyGeneration.incrementAndGet();
+            return;
+        }
+        requestRefresh();
     }
 
     private String fetchWithTimeout() throws Exception {
@@ -205,8 +294,15 @@ public final class McpDashboardController implements AutoCloseable {
         }
     }
 
-    /** Refresh after a successful exact trigger, including the mcp_tool_call gateway. */
+    /**
+     * Refresh after a successful exact trigger, including the mcp_tool_call gateway. The session
+     * panel refreshes after every call, since a failed one changes its counts too.
+     */
     public void onToolComplete(String toolName, String rawInput, ToolResult result) {
+        if (panel != null) {
+            panelChanged();
+            return;
+        }
         if (!isConfigured() || result == null || result.isError()) return;
         String effectiveTool = effectiveToolName(toolName, rawInput, mapper);
         if (config.refreshAfterTools().contains(effectiveTool)) {
@@ -245,8 +341,10 @@ public final class McpDashboardController implements AutoCloseable {
             case "hide", "off" -> {
                 hiddenByUser = true;
                 if (tui != null) tui.clearDashboard();
-                yield new RefreshResult(isConfigured(), false,
-                        isConfigured() ? "Dashboard hidden." : "No project dashboard is configured.");
+                yield new RefreshResult(isConfigured(), false, panel != null
+                        ? "Dashboard hidden. To keep session insights off in new chats, set \"sessionPanel\": false in "
+                                + InsightsConfig.configFile() + "."
+                        : "Dashboard hidden.");
             }
             case "status" -> new RefreshResult(isConfigured(), false,
                     !isConfigured() ? "No project dashboard is configured."
@@ -339,6 +437,12 @@ public final class McpDashboardController implements AutoCloseable {
         if (closed.compareAndSet(false, true)) {
             refreshExecutor.shutdownNow();
             sourceExecutor.shutdownNow();
+            PanelWatcher current;
+            synchronized (watcherLock) {
+                current = watcher;
+                watcher = null;
+            }
+            if (current != null) current.close();
         }
     }
 }
