@@ -10,14 +10,14 @@
 
 package ai.kompile.cli.main.codeindex;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Function;
 
 /**
  * Computes per-file git signals for use in relevance ranking:
@@ -28,8 +28,8 @@ import java.util.*;
  * </ul>
  *
  * <p>All three signals are collected in a single {@code git log} pass and cached
- * per session. The ranker consults the cache via static methods — no separate DB
- * table is needed since the data is cheap to recompute at query time.</p>
+ * per project. Ranking only reads a completed immutable snapshot; a cold cache
+ * is collected in the background and contributes neutral boosts meanwhile.</p>
  *
  * <p>Co-change boosting is also provided: given a set of candidate result files,
  * files that frequently co-change with other candidates get a mutual boost.</p>
@@ -53,16 +53,21 @@ public class GitSignals {
 
     // --- Session cache ---
 
-    private static volatile Map<String, FileSignals> signalsCache = null;
-    private static volatile Path signalsCacheRoot = null;
+    private static final Map<Path, CompletableFuture<Map<String, FileSignals>>> signalsCache =
+            new ConcurrentHashMap<>();
+    private static final ExecutorService loader = Executors.newFixedThreadPool(2, task -> {
+        Thread thread = new Thread(task, "code-index-git-signals");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static volatile Function<Path, Map<String, FileSignals>> signalLoader = GitSignals::computeSignals;
 
     /**
-     * Get git signals for a file, computing the cache on first call.
+     * Get cached git signals without joining subprocess work.
      */
     static FileSignals getSignals(String relPath, Path rootDir) {
         if (relPath == null || rootDir == null) return FileSignals.EMPTY;
-        ensureCache(rootDir);
-        return signalsCache.getOrDefault(relPath, FileSignals.EMPTY);
+        return snapshot(rootDir).getOrDefault(relPath, FileSignals.EMPTY);
     }
 
     /**
@@ -70,7 +75,10 @@ public class GitSignals {
      * Range: 1.0 (no data / old) to the specified maxBoost (most recent files).
      */
     static double recencyMultiplier(String relPath, Path rootDir, double maxBoost) {
-        FileSignals sig = getSignals(relPath, rootDir);
+        return recencyMultiplier(getSignals(relPath, rootDir), maxBoost);
+    }
+
+    static double recencyMultiplier(FileSignals sig, double maxBoost) {
         if (sig.recency() <= 0) return 1.0;
         // Linear interpolation: 1.0 at recency=0 up to maxBoost at recency=1.0
         return 1.0 + sig.recency() * (maxBoost - 1.0);
@@ -82,7 +90,10 @@ public class GitSignals {
      * Range: 1.0 (0-1 commits) to 1.2 (high churn).
      */
     static double churnMultiplier(String relPath, Path rootDir) {
-        FileSignals sig = getSignals(relPath, rootDir);
+        return churnMultiplier(getSignals(relPath, rootDir));
+    }
+
+    static double churnMultiplier(FileSignals sig) {
         if (sig.commitCount() <= 1) return 1.0;
         // Log scale: diminishing returns above ~20 commits
         double normalized = Math.min(Math.log(sig.commitCount()) / Math.log(50), 1.0);
@@ -95,7 +106,10 @@ public class GitSignals {
      * Range: 1.0 (single author) to 1.1 (many authors).
      */
     static double authorMultiplier(String relPath, Path rootDir) {
-        FileSignals sig = getSignals(relPath, rootDir);
+        return authorMultiplier(getSignals(relPath, rootDir));
+    }
+
+    static double authorMultiplier(FileSignals sig) {
         if (sig.authorCount() <= 1) return 1.0;
         double normalized = Math.min((sig.authorCount() - 1.0) / 9.0, 1.0); // 2 authors=0.11, 10+=1.0
         return 1.0 + normalized * 0.1; // 1.0 to 1.1
@@ -116,12 +130,18 @@ public class GitSignals {
             return 1.0;
         }
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return coChangeBoost(relPath, resultFiles, db);
+        } catch (Exception e) {
+            return 1.0;
+        }
+    }
+
+    static double coChangeBoost(String relPath, Set<String> resultFiles, IndexDatabase db) {
+        if (relPath == null || resultFiles == null || resultFiles.isEmpty() || db == null) return 1.0;
+        try {
+            if (!db.hasTable("cochanges")) return 1.0;
             Connection conn = db.getConnection();
-            // Check if cochanges table exists
-            try (ResultSet rs = conn.getMetaData().getTables(null, null, "cochanges", null)) {
-                if (!rs.next()) return 1.0;
-            }
 
             // Count how many result files co-change with this file
             int coChangeHits = 0;
@@ -158,24 +178,26 @@ public class GitSignals {
 
     // --- Cache management ---
 
-    private static void ensureCache(Path rootDir) {
-        if (signalsCache != null && rootDir.equals(signalsCacheRoot)) return;
-
-        synchronized (GitSignals.class) {
-            if (signalsCache != null && rootDir.equals(signalsCacheRoot)) return;
-
-            Map<String, FileSignals> cache = computeSignals(rootDir);
-            signalsCache = cache;
-            signalsCacheRoot = rootDir;
-        }
+    static Map<String, FileSignals> snapshot(Path rootDir) {
+        if (rootDir == null) return Map.of();
+        Path root = rootDir.toAbsolutePath().normalize();
+        Function<Path, Map<String, FileSignals>> collector = signalLoader;
+        CompletableFuture<Map<String, FileSignals>> pending = signalsCache.computeIfAbsent(root,
+                key -> CompletableFuture.supplyAsync(() -> Map.copyOf(collector.apply(key)), loader)
+                        .exceptionally(failure -> Map.of()));
+        return pending.getNow(Map.of());
     }
 
     /**
      * Invalidate the cache (e.g., after re-indexing).
      */
     static void invalidateCache() {
-        signalsCache = null;
-        signalsCacheRoot = null;
+        signalsCache.clear();
+    }
+
+    static void setSignalLoaderForTests(Function<Path, Map<String, FileSignals>> collector) {
+        signalLoader = collector == null ? GitSignals::computeSignals : collector;
+        invalidateCache();
     }
 
     /**
@@ -189,31 +211,35 @@ public class GitSignals {
      *   (blank or next commit)
      */
     private static Map<String, FileSignals> computeSignals(Path rootDir) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                    "git", "log", "--all", "--name-only", "--format=%ae",
+                    "--diff-filter=AMCR", "-" + GIT_LOG_LIMIT);
+            pb.directory(rootDir.toFile());
+            pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+            return parseSignals(GitCommandOutput.readLines(pb, 60_000));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Map.of();
+        } catch (Exception e) {
+            return Map.of();
+        }
+    }
+
+    static Map<String, FileSignals> parseSignals(List<String> lines) {
         Map<String, Integer> commitCounts = new HashMap<>();
         Map<String, Set<String>> authorSets = new HashMap<>();
         Map<String, Integer> firstSeenOrder = new HashMap<>(); // lower = more recent
         int commitOrdinal = 0;
 
         try {
-            ProcessBuilder pb = new ProcessBuilder(
-                    "git", "log", "--all", "--name-only", "--format=%ae",
-                    "--diff-filter=AMCR", "-" + GIT_LOG_LIMIT);
-            pb.directory(rootDir.toFile());
-            pb.redirectErrorStream(true);
-            Process proc = pb.start();
-
             String currentAuthor = null;
-            boolean expectingFiles = false;
 
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
+            {
+                for (String line : lines) {
                     line = line.trim();
 
                     if (line.isEmpty()) {
-                        if (currentAuthor != null) {
-                            expectingFiles = true;
-                        }
                         continue;
                     }
 
@@ -223,7 +249,6 @@ public class GitSignals {
                             commitOrdinal++;
                         }
                         currentAuthor = line;
-                        expectingFiles = false;
                         continue;
                     }
 
@@ -238,10 +263,6 @@ public class GitSignals {
             // Count the last commit
             if (currentAuthor != null) {
                 commitOrdinal++;
-            }
-
-            if (!proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
-                proc.destroyForcibly();
             }
 
             // Build FileSignals
@@ -262,9 +283,6 @@ public class GitSignals {
 
             return results;
 
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return Map.of();
         } catch (Exception e) {
             return Map.of();
         }

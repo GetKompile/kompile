@@ -57,7 +57,7 @@ public class UnusedExportDetector {
      * @return detection results
      */
     public static UnusedExportReport detect(Path indexDir, Path rootDir) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             return detectInternal(db, rootDir);
         } catch (SQLException e) {
             throw new IOException("Unused export detection failed: " + e.getMessage(), e);

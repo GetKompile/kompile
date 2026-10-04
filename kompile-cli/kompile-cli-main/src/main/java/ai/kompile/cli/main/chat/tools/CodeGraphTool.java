@@ -687,7 +687,7 @@ public class CodeGraphTool implements CliTool {
 
                     // Report relation counts from the graph
                     try (IndexDatabase gdb =
-                             IndexDatabase.open(
+                             IndexDatabase.openReadOnly(
                                      LocalCodeIndexer.getIndexDir(projectId))) {
                         Map<String, Object> gStats = gdb.getGraphStats();
                         sb.append("- **Relations**: ").append(gStats.getOrDefault("totalRelations", 0)).append("\n");
@@ -799,7 +799,7 @@ public class CodeGraphTool implements CliTool {
                     }
 
                     try (IndexDatabase db =
-                             IndexDatabase.open(indexDir)) {
+                             IndexDatabase.openReadOnly(indexDir)) {
                         Map<String, Object> graph = db.getSymbolGraph(fqn, depth);
 
                         @SuppressWarnings("unchecked")
@@ -888,7 +888,7 @@ public class CodeGraphTool implements CliTool {
                     }
 
                     try (IndexDatabase db =
-                             IndexDatabase.open(indexDir)) {
+                             IndexDatabase.openReadOnly(indexDir)) {
                         Map<String, Object> graph = db.getFileGraph(filePath);
 
                         @SuppressWarnings("unchecked")

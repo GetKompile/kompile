@@ -23,10 +23,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
@@ -43,7 +41,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 /**
  * MCP-compatible CLI tool for local code indexing. Works entirely offline —
@@ -1278,8 +1275,8 @@ public class LocalCodeIndexTool implements CliTool {
         // If a specific file is requested, get clones for that file
         if (!filePath.isEmpty()) {
             List<CloneDetector.ClonePair> clones = CloneDetector.getClonesForFile(indexDir, filePath.trim());
-            if (clones.isEmpty()) {
-                // Run detection first, then retry
+            if (clones.isEmpty() && !CloneDetector.hasData(indexDir)) {
+                // Nothing detected yet: run detection once, then retry
                 CloneDetector.detect(indexDir, Path.of(cwd), 0.8);
                 clones = CloneDetector.getClonesForFile(indexDir, filePath.trim());
             }
@@ -1313,7 +1310,7 @@ public class LocalCodeIndexTool implements CliTool {
 
         // Default: show existing results (run detection if none exist)
         List<CloneDetector.ClonePair> clones = CloneDetector.getClones(indexDir, limit);
-        if (clones.isEmpty()) {
+        if (clones.isEmpty() && !CloneDetector.hasData(indexDir)) {
             CloneDetector.CloneReport report = CloneDetector.detect(indexDir, Path.of(cwd), 0.8);
             clones = CloneDetector.getClones(indexDir, limit);
             List<CloneDetector.FragmentCluster> fragments = CloneDetector.getFragments(indexDir, limit);
@@ -1441,7 +1438,7 @@ public class LocalCodeIndexTool implements CliTool {
             return ToolResult.error("No index found for project '" + projectId + "'. Run action='index' first.");
         }
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             List<Map<String, Object>> callers = db.getCallers(query, maxResults);
 
             if (callers.isEmpty()) {
@@ -1498,7 +1495,7 @@ public class LocalCodeIndexTool implements CliTool {
             return ToolResult.error("No index found for project '" + projectId + "'. Run action='index' first.");
         }
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             List<Map<String, Object>> impls = db.getImplementors(query, maxResults);
 
             if (impls.isEmpty()) {
@@ -1557,7 +1554,7 @@ public class LocalCodeIndexTool implements CliTool {
             return ToolResult.error("No index found for project '" + projectId + "'. Run action='index' first.");
         }
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             Map<String, Object> chain = db.getCallChain(query, maxDepth, direction);
 
             @SuppressWarnings("unchecked")
@@ -1633,7 +1630,7 @@ public class LocalCodeIndexTool implements CliTool {
             return ToolResult.error("No index found for project '" + projectId + "'. Run action='index' first.");
         }
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             Map<String, Object> resolution = db.resolveSpringBean(query);
 
             @SuppressWarnings("unchecked")
@@ -1769,7 +1766,7 @@ public class LocalCodeIndexTool implements CliTool {
             return ToolResult.error("No index found for project '" + projectId + "'. Run action='index' first.");
         }
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             StringBuilder sb = new StringBuilder();
             sb.append("# Debug Trace: **").append(query).append("**\n\n");
 
@@ -1921,7 +1918,7 @@ public class LocalCodeIndexTool implements CliTool {
                     "No uncommitted changes detected (compared to " + gitRef + ").");
         }
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             StringBuilder sb = new StringBuilder();
             sb.append("# Changed Context (").append(changedFiles.size()).append(" files changed vs ")
                     .append(gitRef).append(")\n\n");
@@ -2030,54 +2027,15 @@ public class LocalCodeIndexTool implements CliTool {
     private Set<String> getGitChangedFiles(String cwd, String gitRef) {
         Set<String> changed = new LinkedHashSet<>();
         try {
-            // Staged + unstaged changes
+            // diff against the ref already includes staged and unstaged changes.
             ProcessBuilder pb = new ProcessBuilder("git", "diff", "--name-only", gitRef);
             pb.directory(new File(cwd));
-            pb.redirectErrorStream(true);
-            Process proc = pb.start();
-
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    line = line.trim();
-                    if (!line.isEmpty()) changed.add(line);
-                }
+            for (String line : GitCommandOutput.readLines(pb, 30_000)) {
+                line = line.trim();
+                if (!line.isEmpty()) changed.add(line);
             }
-            if (!proc.waitFor(30, TimeUnit.SECONDS)) {
-                proc.destroyForcibly();
-            }
-
-            // Also include untracked files
-            ProcessBuilder pb2 = new ProcessBuilder("git", "diff", "--name-only", "--cached", gitRef);
-            pb2.directory(new File(cwd));
-            pb2.redirectErrorStream(true);
-            Process proc2 = pb2.start();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc2.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    line = line.trim();
-                    if (!line.isEmpty()) changed.add(line);
-                }
-            }
-            if (!proc2.waitFor(30, TimeUnit.SECONDS)) {
-                proc2.destroyForcibly();
-            }
-
-            // Unstaged modifications (not yet added)
-            ProcessBuilder pb3 = new ProcessBuilder("git", "diff", "--name-only");
-            pb3.directory(new File(cwd));
-            pb3.redirectErrorStream(true);
-            Process proc3 = pb3.start();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc3.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    line = line.trim();
-                    if (!line.isEmpty()) changed.add(line);
-                }
-            }
-            if (!proc3.waitFor(30, TimeUnit.SECONDS)) {
-                proc3.destroyForcibly();
-            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         } catch (Exception e) {
             // Git not available or not a git repo — return empty
         }
@@ -2218,7 +2176,7 @@ public class LocalCodeIndexTool implements CliTool {
         // If code index exists, show entity summary
         Path indexDir = LocalCodeIndexer.getIndexDir(projectId);
         if (Files.exists(indexDir.resolve("index.db"))) {
-            try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+            try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
                 int totalEntities = db.getEntityCount();
                 int totalFiles = db.getFileCount();
                 Map<String, Integer> langCounts = db.getLanguageCounts();

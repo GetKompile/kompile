@@ -288,14 +288,38 @@ OpenCode, and Kompile itself.
 
 | Action | Description |
 |--------|-------------|
-| `list` | List all available transcripts |
-| `read` | Read a specific session by ID |
-| `search` | Grep-style search across transcripts |
+| `list` | List transcripts, optionally filtered by `session_id` prefix and/or `agent` |
+| `read` | Read a specific session by exact ID or unique ID prefix |
+| `search` | Grep-style content search, or ID-prefix lookup when no pattern is supplied |
 | `recent` | Show recent sessions |
 
 Search supports regex/literal matching, case sensitivity, inverted
 matching, context lines (before/after), agent filter, session ID filter,
 `files_with_matches` mode, and result limits.
+
+For `list` and `search`, `session_id` is a literal, case-sensitive **begins-with**
+filter, not a regex or substring. Supply the prefix directly; no `*` is needed.
+For `read`, an exact ID takes precedence; otherwise the prefix must match exactly
+one saved session. An ambiguous prefix returns an error with candidate IDs, so
+use a longer prefix or an exact ID. `case_sensitive` controls content matching only.
+
+```json
+{"action":"search","session_id":"abc123"}
+```
+
+This lists sessions whose IDs begin with `abc123`, without requiring a content
+pattern. `{"action":"list","session_id":"abc123"}` does the same. Add
+`"agent":"codex"` to narrow the results and `"max_results":10` to cap the listing.
+
+```json
+{"action":"search","session_id":"abc123","pattern":"failure","literal":true}
+```
+
+This searches only those sessions' content. To read a uniquely matching session:
+
+```json
+{"action":"read","session_id":"abc123"}
+```
 
 ## Code search
 

@@ -89,9 +89,8 @@ public class CloneDetector {
      * Get previously computed clone results from the database.
      */
     public static List<ClonePair> getClones(Path indexDir, int limit) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
-            ensureTables(db);
-            return queryClones(db, limit);
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return db.hasTable("clones") ? queryClones(db, limit) : List.of();
         } catch (SQLException e) {
             throw new IOException("Clone query failed: " + e.getMessage(), e);
         }
@@ -101,9 +100,8 @@ public class CloneDetector {
      * Get repeated fragments from the database.
      */
     public static List<FragmentCluster> getFragments(Path indexDir, int limit) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
-            ensureTables(db);
-            return queryFragments(db, limit);
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return db.hasTable("fragments") ? queryFragments(db, limit) : List.of();
         } catch (SQLException e) {
             throw new IOException("Fragment query failed: " + e.getMessage(), e);
         }
@@ -113,11 +111,29 @@ public class CloneDetector {
      * Get clones for a specific file.
      */
     public static List<ClonePair> getClonesForFile(Path indexDir, String relPath) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
-            ensureTables(db);
-            return queryClonesForFile(db, relPath);
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return db.hasTable("clones") ? queryClonesForFile(db, relPath) : List.of();
         } catch (SQLException e) {
             throw new IOException("Clone query failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Check if detection has stored any results (clone pairs or repeated fragments).
+     */
+    public static boolean hasData(Path indexDir) throws IOException {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return hasRows(db, "clones") || hasRows(db, "fragments");
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    private static boolean hasRows(IndexDatabase db, String table) throws SQLException {
+        if (!db.hasTable(table)) return false;
+        try (Statement stmt = db.getConnection().createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT 1 FROM " + table + " LIMIT 1")) {
+            return rs.next();
         }
     }
 

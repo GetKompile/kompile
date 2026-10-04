@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -23,6 +24,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,17 +33,19 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
+import java.util.stream.Stream;
 
 /**
  * Tool that searches and retrieves previous conversation transcripts across all agents.
  * <p>
  * Actions:
  * <ul>
- *   <li><b>list</b> - List all saved conversations with metadata</li>
- *   <li><b>read</b> - Read the full transcript of a specific session</li>
+ *   <li><b>list</b> - List saved conversations with optional ID-prefix and agent filters</li>
+ *   <li><b>read</b> - Read a session by exact ID or unique ID prefix</li>
  *   <li><b>search</b> - Grep-style search across all transcripts, with regex or literal
  *       pattern, optional filters (agent, session_id), configurable context lines, case
- *       sensitivity, inverted match, files-with-matches mode, and line numbers.</li>
+ *       sensitivity, inverted match, files-with-matches mode, and line numbers.
+ *       Without a content pattern, session_id performs an ID-prefix lookup.</li>
  *   <li><b>recent</b> - Get the N most recent conversation summaries</li>
  * </ul>
  */
@@ -55,9 +60,10 @@ public class TranscriptSearchTool implements CliTool {
     @Override
     public String description() {
         return "Grep across saved conversation transcripts from all agents. Actions: " +
-                "'list' (all conversations), 'read' (full transcript by session_id), " +
-                "'recent' (N most recent), and 'search' (grep-style search). " +
-                "'search' supports regex or literal patterns, agent/session filters, " +
+                "'list' (conversations, optionally filtered by session-ID prefix or agent), " +
+                "'read' (full transcript by exact ID or unique prefix), 'recent' (N most recent), " +
+                "and 'search' (grep-style search, or ID-prefix lookup without a pattern). " +
+                "Content search supports regex/literal patterns, agent/session filters, " +
                 "context lines (before/after/context), case sensitivity, inverted match, " +
                 "files-with-matches mode, line numbers, and a result cap. " +
                 "Useful for recalling context from prior sessions after compaction.";
@@ -73,16 +79,18 @@ public class TranscriptSearchTool implements CliTool {
         prop(props, "action", "string",
                 "Action: 'list', 'read', 'search', or 'recent'");
         prop(props, "session_id", "string",
-                "Exact session ID for 'read'. For 'search', restricts to conversations whose " +
-                        "session ID equals or starts with this value.");
+                "Session ID or literal, case-sensitive ID prefix for 'list' and 'search'. " +
+                        "For 'read', an exact ID wins; a prefix must match exactly one session. " +
+                        "Example: 'abc123' matches IDs beginning with 'abc123' (no wildcard needed).");
         prop(props, "pattern", "string",
-                "Search pattern for 'search' (regex by default; set 'literal' to true for plain text).");
+                "Content pattern for 'search' (regex by default; set 'literal' to true for plain text). " +
+                        "Omit when supplying 'session_id' to list matching IDs without searching content.");
         prop(props, "query", "string",
                 "Alias for 'pattern' (backward compatibility).");
         prop(props, "literal", "boolean",
                 "If true, treat 'pattern' as literal text, not a regex (default: false).");
         prop(props, "case_sensitive", "boolean",
-                "If true, search is case-sensitive (default: false).");
+                "If true, content matching is case-sensitive (default: false). ID prefixes are always case-sensitive.");
         prop(props, "invert", "boolean",
                 "If true, return lines that do NOT match the pattern (grep -v, default: false).");
         prop(props, "before", "integer",
@@ -92,10 +100,11 @@ public class TranscriptSearchTool implements CliTool {
         prop(props, "context", "integer",
                 "Lines of context before AND after (grep -C). If set, overrides 'before' and 'after'.");
         prop(props, "agent", "string",
-                "Filter to conversations whose recorded agent name contains this value " +
+                "For 'list' and 'search', filter to conversations whose recorded agent name contains this value " +
                         "(case-insensitive substring). Example: 'claude', 'gpt'.");
         prop(props, "max_results", "integer",
-                "Maximum total matches to return across all transcripts (default: 50).");
+                "Maximum content matches for 'search' (default: 50), or sessions for 'list' / " +
+                        "ID-only 'search' (default: all).");
         prop(props, "files_with_matches", "boolean",
                 "If true, print only session IDs that contain a match (grep -l, default: false).");
         prop(props, "line_numbers", "boolean",
@@ -124,7 +133,7 @@ public class TranscriptSearchTool implements CliTool {
 
         switch (action) {
             case "list":
-                return listConversations();
+                return listConversations(params);
             case "read":
                 return readTranscript(params.path("session_id").asText(""));
             case "search":
@@ -137,30 +146,78 @@ public class TranscriptSearchTool implements CliTool {
         }
     }
 
-    private ToolResult listConversations() {
-        List<ChatHistory.ConversationSummary> convos = ChatHistory.listConversations();
+    private List<ChatHistory.ConversationSummary> filteredConversations(JsonNode params) {
+        String sessionPrefix = params.path("session_id").asText("").trim();
+        String agentFilter = params.path("agent").asText("").trim().toLowerCase(Locale.ROOT);
+        return ChatHistory.listConversations().stream()
+                .filter(c -> c.sessionId().startsWith(sessionPrefix))
+                .filter(c -> agentFilter.isEmpty()
+                        || (c.agent() != null && c.agent().toLowerCase(Locale.ROOT).contains(agentFilter)))
+                .toList();
+    }
+
+    private ToolResult listConversations(JsonNode params) {
+        List<ChatHistory.ConversationSummary> convos = filteredConversations(params);
         if (convos.isEmpty()) {
-            return ToolResult.success("No saved conversations found.");
+            return ToolResult.success("No saved conversations found matching the supplied filters.");
         }
 
+        int maxResults = params.path("max_results").asInt(Integer.MAX_VALUE);
+        if (maxResults <= 0) maxResults = Integer.MAX_VALUE;
+        int limit = Math.min(maxResults, convos.size());
         StringBuilder sb = new StringBuilder();
-        sb.append("Saved conversations (").append(convos.size()).append(" total):\n\n");
-        for (ChatHistory.ConversationSummary c : convos) {
+        sb.append("Saved conversations (").append(limit).append(" of ")
+                .append(convos.size()).append(" matching):\n\n");
+        for (ChatHistory.ConversationSummary c : convos.subList(0, limit)) {
             sb.append(String.format("  %-24s  %-20s  agent=%-8s  %s%n",
                     c.sessionId(), c.started(), c.agent(),
                     c.title().isEmpty() ? "(empty)" : c.title()));
         }
+        if (limit < convos.size()) {
+            sb.append("\n... (truncated at max_results=").append(maxResults).append(")\n");
+        }
         return ToolResult.success("transcript_search: list", sb.toString(),
-                Map.of("count", convos.size()));
+                Map.of("count", limit, "total", convos.size(), "truncated", limit < convos.size()));
+    }
+
+    private List<String> matchingTranscriptIds(String prefix) throws IOException {
+        Path directory = KompileHome.homeDirectory().toPath().resolve("conversations");
+        if (!Files.exists(directory)) return List.of();
+        // Resolve against filenames, including header-only or unreadable transcripts.
+        // Conversation summaries intentionally omit those and cannot establish uniqueness.
+        try (Stream<Path> files = Files.list(directory)) {
+            return files.filter(Files::isRegularFile)
+                    .map(file -> file.getFileName().toString())
+                    .filter(name -> name.endsWith(".txt"))
+                    .map(name -> name.substring(0, name.length() - 4))
+                    .filter(id -> id.startsWith(prefix))
+                    .sorted()
+                    .toList();
+        }
     }
 
     private ToolResult readTranscript(String sessionId) {
+        sessionId = sessionId.trim();
         if (sessionId.isEmpty()) {
             return ToolResult.error("session_id is required for 'read' action");
         }
 
         if (!ChatHistory.exists(sessionId)) {
-            return ToolResult.error("No transcript found for session: " + sessionId);
+            List<String> matches;
+            try {
+                matches = matchingTranscriptIds(sessionId);
+            } catch (IOException e) {
+                return ToolResult.error("Error resolving transcript prefix: " + e.getMessage());
+            }
+            if (matches.isEmpty()) {
+                return ToolResult.error("No transcript found for session ID or prefix: " + sessionId);
+            }
+            if (matches.size() > 1) {
+                return ToolResult.error("Ambiguous session ID prefix: " + sessionId +
+                        " (" + matches.size() + " sessions). Supply a longer prefix or an exact ID.\n" +
+                        String.join("\n", matches.subList(0, Math.min(10, matches.size()))));
+            }
+            sessionId = matches.get(0);
         }
 
         try {
@@ -194,7 +251,10 @@ public class TranscriptSearchTool implements CliTool {
             pattern = params.path("query").asText("");
         }
         if (pattern.isEmpty()) {
-            return ToolResult.error("'pattern' (or 'query') is required for 'search' action");
+            if (!params.path("session_id").asText("").trim().isEmpty()) {
+                return listConversations(params);
+            }
+            return ToolResult.error("'pattern' (or 'query') or a 'session_id' prefix is required for 'search' action");
         }
 
         boolean literal = params.path("literal").asBoolean(false);
@@ -217,7 +277,6 @@ public class TranscriptSearchTool implements CliTool {
         }
 
         String agentFilter = params.path("agent").asText("").trim().toLowerCase(Locale.ROOT);
-        String sessionFilter = params.path("session_id").asText("").trim();
 
         Pattern compiled;
         try {
@@ -230,9 +289,9 @@ public class TranscriptSearchTool implements CliTool {
                     ". Set 'literal' to true to search literally.");
         }
 
-        List<ChatHistory.ConversationSummary> convos = ChatHistory.listConversations();
+        List<ChatHistory.ConversationSummary> convos = filteredConversations(params);
         if (convos.isEmpty()) {
-            return ToolResult.success("No saved conversations to search.");
+            return ToolResult.success("No saved conversations to search matching the supplied filters.");
         }
 
         int scanned = 0;
@@ -243,16 +302,6 @@ public class TranscriptSearchTool implements CliTool {
 
         outer:
         for (ChatHistory.ConversationSummary c : convos) {
-            if (!agentFilter.isEmpty()) {
-                String a = c.agent() == null ? "" : c.agent().toLowerCase(Locale.ROOT);
-                if (!a.contains(agentFilter)) continue;
-            }
-            if (!sessionFilter.isEmpty()) {
-                if (!c.sessionId().equals(sessionFilter) && !c.sessionId().startsWith(sessionFilter)) {
-                    continue;
-                }
-            }
-
             scanned++;
 
             String content;

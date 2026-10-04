@@ -413,7 +413,7 @@ public class BlendedCodeSearch {
 
         // If no ranked results, pull top entities from the index directly
         if (results.isEmpty()) {
-            try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+            try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
                 List<Map<String, Object>> topEntities =
                         db.search("*", null, topK);
                 totalCandidates += topEntities.size();

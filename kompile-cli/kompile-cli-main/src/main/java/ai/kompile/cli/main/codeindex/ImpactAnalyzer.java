@@ -75,7 +75,7 @@ public class ImpactAnalyzer {
      */
     public static FileImpact analyzeFile(String relPath, Path indexDir,
                                           int maxDepth) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             return analyzeFileWithDb(db, relPath, maxDepth);
         } catch (SQLException e) {
             throw new IOException("Database error: " + e.getMessage(), e);
@@ -87,7 +87,7 @@ public class ImpactAnalyzer {
      */
     public static ImpactReport analyzeFiles(List<String> relPaths, Path indexDir,
                                              int maxDepth) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             List<FileImpact> impacts = new ArrayList<>();
             Set<String> allImpacted = new LinkedHashSet<>();
             Set<String> allTests = new LinkedHashSet<>();
@@ -116,7 +116,7 @@ public class ImpactAnalyzer {
      */
     public static AggregateImpact analyzeFilesAggregate(
             Collection<String> relPaths, Path indexDir, int maxDepth) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             Set<String> changedFiles = new LinkedHashSet<>();
             for (String relPath : relPaths) {
                 if (relPath != null && !relPath.isBlank()) changedFiles.add(relPath);

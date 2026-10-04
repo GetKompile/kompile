@@ -10,9 +10,7 @@
 
 package ai.kompile.cli.main.codeindex;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.file.Path;
 import java.sql.*;
 import java.time.Instant;
@@ -65,9 +63,8 @@ public class CoChangeAnalyzer {
      * Get co-change partners for a specific file.
      */
     public static List<CoChangePair> getCoChanges(Path indexDir, String relPath) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
-            ensureTable(db);
-            return queryCoChanges(db, relPath);
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return db.hasTable("cochanges") ? queryCoChanges(db, relPath) : List.of();
         } catch (SQLException e) {
             throw new IOException("Co-change query failed: " + e.getMessage(), e);
         }
@@ -77,9 +74,8 @@ public class CoChangeAnalyzer {
      * Get top co-change pairs across the entire codebase.
      */
     public static List<CoChangePair> getTopCoChanges(Path indexDir, int limit) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
-            ensureTable(db);
-            return queryTopCoChanges(db, limit);
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return db.hasTable("cochanges") ? queryTopCoChanges(db, limit) : List.of();
         } catch (SQLException e) {
             throw new IOException("Co-change query failed: " + e.getMessage(), e);
         }
@@ -89,8 +85,8 @@ public class CoChangeAnalyzer {
      * Check if co-change data exists.
      */
     public static boolean hasData(Path indexDir) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
-            ensureTable(db);
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            if (!db.hasTable("cochanges")) return false;
             Connection conn = db.getConnection();
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM cochanges")) {
@@ -211,12 +207,9 @@ public class CoChangeAnalyzer {
                     "--diff-filter=AMCR", "-" + commitLimit);
             pb.directory(rootDir.toFile());
             pb.redirectErrorStream(true);
-            Process proc = pb.start();
-
             Set<String> currentCommit = new HashSet<>();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
+            {
+                for (String line : GitCommandOutput.readLines(pb, 60_000)) {
                     line = line.trim();
                     if (line.equals("---COMMIT---")) {
                         if (!currentCommit.isEmpty()) {
@@ -236,9 +229,6 @@ public class CoChangeAnalyzer {
                 commits.add(currentCommit);
             }
 
-            if (!proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
-                proc.destroyForcibly();
-            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Exception e) {

@@ -107,7 +107,7 @@ public class CodeRelevanceRanker {
                     System.currentTimeMillis() - t0);
         }
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             // 3. Get candidate entities from FTS search (broader than final topK)
             int candidateLimit = Math.max(topK * 5, 100);
             List<Map<String, Object>> candidates = db.search(query, null, candidateLimit);
@@ -122,11 +122,15 @@ public class CodeRelevanceRanker {
             Set<String> hop2Neighbors = new HashSet<>();
             buildGraphNeighborSets(db, candidates, hop1Neighbors, hop2Neighbors);
 
+            // Optional signals are request-local snapshots, never foreground write/Git work.
+            Map<String, Double> pageRanks = readPageRankMultipliers(db);
+            Map<String, GitSignals.FileSignals> gitSignals = GitSignals.snapshot(rootDir);
+
             // 5. Score each candidate
             List<ScoredResult> scored = new ArrayList<>();
             for (Map<String, Object> entity : candidates) {
                 double score = scoreEntity(entity, queryTokens, weights,
-                        hop1Neighbors, hop2Neighbors, rootDir);
+                        hop1Neighbors, hop2Neighbors, pageRanks, gitSignals);
                 if (score > 0) {
                     scored.add(toScoredResult(entity, score, queryTokens, weights,
                             hop1Neighbors, hop2Neighbors, rootDir));
@@ -135,15 +139,16 @@ public class CodeRelevanceRanker {
 
             // 6. Co-change mutual boost: if a result file frequently co-changes
             //    with other files in the result set, boost it
-            Path projectIndexDir = LocalCodeIndexer.getIndexDir(projectId);
             Set<String> resultFiles = scored.stream()
                     .map(ScoredResult::filePath)
                     .filter(Objects::nonNull)
                     .collect(Collectors.toSet());
-            if (resultFiles.size() > 1) {
+            if (resultFiles.size() > 1 && db.hasTable("cochanges")) {
+                Map<String, Double> coBoosts = new HashMap<>();
                 List<ScoredResult> boosted = new ArrayList<>();
                 for (ScoredResult sr : scored) {
-                    double coBoost = GitSignals.coChangeBoost(sr.filePath(), resultFiles, projectIndexDir);
+                    double coBoost = coBoosts.computeIfAbsent(sr.filePath(),
+                            path -> GitSignals.coChangeBoost(path, resultFiles, db));
                     if (coBoost > 1.0) {
                         Map<String, Double> bd = new LinkedHashMap<>(sr.scoreBreakdown());
                         bd.put("coChangeBoost", coBoost);
@@ -197,7 +202,8 @@ public class CodeRelevanceRanker {
                                        IntentClassifier.WeightProfile weights,
                                        Set<String> hop1Neighbors,
                                        Set<String> hop2Neighbors,
-                                       Path rootDir) {
+                                       Map<String, Double> pageRanks,
+                                       Map<String, GitSignals.FileSignals> gitSignals) {
         String name = str(entity, "name");
         String fqn = str(entity, "fullyQualifiedName");
         String sig = str(entity, "signature");
@@ -249,13 +255,14 @@ public class CodeRelevanceRanker {
         double baseScore = exactScore + symbolScore + prefixScore + pathScore;
 
         // Apply git-based recency boost (real commit history, not indexer timestamp)
-        baseScore *= GitSignals.recencyMultiplier(filePath, rootDir, weights.recencyBoost());
+        GitSignals.FileSignals signals = gitSignals.getOrDefault(filePath, GitSignals.FileSignals.EMPTY);
+        baseScore *= GitSignals.recencyMultiplier(signals, weights.recencyBoost());
 
         // Apply git churn boost — frequently modified files are more likely relevant
-        baseScore *= GitSignals.churnMultiplier(filePath, rootDir);
+        baseScore *= GitSignals.churnMultiplier(signals);
 
         // Apply author diversity boost — files with many contributors are more central
-        baseScore *= GitSignals.authorMultiplier(filePath, rootDir);
+        baseScore *= GitSignals.authorMultiplier(signals);
 
         // Apply graph boost
         if (fqn != null) {
@@ -268,7 +275,7 @@ public class CodeRelevanceRanker {
 
         // Apply PageRank importance boost (if available)
         // High-PageRank files are central to the codebase — slight boost
-        baseScore *= computePageRankMultiplier(filePath, rootDir);
+        baseScore *= pageRanks.getOrDefault(filePath, 1.0);
 
         // Apply penalties
         double penaltyMultiplier = computePenalty(filePath);
@@ -307,55 +314,19 @@ public class CodeRelevanceRanker {
         );
     }
 
-    // Static cache for PageRank scores per search session
-    private static volatile Map<String, Double> pageRankCache = null;
-    private static volatile Path pageRankCacheDir = null;
-
-    /**
-     * Compute PageRank importance multiplier for a file.
-     * Files with higher PageRank (more central in the dependency graph) get a boost.
-     * Range: 1.0 (no data / below median) to 1.3 (top-ranked files).
-     */
-    private static double computePageRankMultiplier(String filePath, Path rootDir) {
-        if (filePath == null || rootDir == null) return 1.0;
-
-        try {
-            // Derive index dir from root dir (same convention as LocalCodeIndexer)
-            String projectId = rootDir.getFileName().toString();
-            Path indexDir = LocalCodeIndexer.getIndexDir(projectId);
-
-            // Lazy-load PageRank cache
-            if (pageRankCache == null || !indexDir.equals(pageRankCacheDir)) {
-                synchronized (CodeRelevanceRanker.class) {
-                    if (pageRankCache == null || !indexDir.equals(pageRankCacheDir)) {
-                        try {
-                            List<Map<String, Object>> topFiles = PageRankComputer.getTopFiles(indexDir, 500);
-                            Map<String, Double> cache = new HashMap<>();
-                            for (Map<String, Object> f : topFiles) {
-                                cache.put((String) f.get("relPath"), (Double) f.get("score"));
-                            }
-                            pageRankCache = cache;
-                            pageRankCacheDir = indexDir;
-                        } catch (Exception e) {
-                            pageRankCache = Map.of();
-                            pageRankCacheDir = indexDir;
-                        }
-                    }
-                }
-            }
-
-            Double score = pageRankCache.get(filePath);
-            if (score == null || score <= 0) return 1.0;
-
-            // Normalize: top PageRank files get up to 1.3x boost
-            // Median PR score is roughly 1/N, so files significantly above that are important
-            double maxScore = pageRankCache.values().stream().mapToDouble(Double::doubleValue).max().orElse(1.0);
-            double normalized = score / maxScore; // 0.0 to 1.0
-            return 1.0 + normalized * 0.3; // 1.0 to 1.3
-
-        } catch (Exception e) {
-            return 1.0;
+    /** Read already-computed importance from the selected database, without DDL or a global lock. */
+    private static Map<String, Double> readPageRankMultipliers(IndexDatabase db) throws SQLException {
+        if (!db.hasTable("pagerank")) return Map.of();
+        List<Map<String, Object>> files = PageRankComputer.queryTopFiles(db, 500);
+        double maxScore = files.stream().mapToDouble(file -> ((Number) file.get("score")).doubleValue())
+                .max().orElse(0.0);
+        if (maxScore <= 0) return Map.of();
+        Map<String, Double> multipliers = new HashMap<>();
+        for (Map<String, Object> file : files) {
+            double score = ((Number) file.get("score")).doubleValue();
+            if (score > 0) multipliers.put((String) file.get("relPath"), 1.0 + score / maxScore * 0.3);
         }
+        return multipliers;
     }
 
     /**

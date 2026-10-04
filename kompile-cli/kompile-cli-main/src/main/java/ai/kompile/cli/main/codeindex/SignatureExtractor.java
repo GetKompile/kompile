@@ -69,7 +69,7 @@ public class SignatureExtractor {
         int totalSignatureTokens = 0;
         int totalSignatures = 0;
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             Set<String> relPaths = db.getAllRelPaths();
             for (String relPath : relPaths) {
                 FileSignatures fs = extractFileFromDb(db, relPath, rootDir);
@@ -99,7 +99,7 @@ public class SignatureExtractor {
      */
     public static FileSignatures extractFile(String projectId, String relPath,
                                               Path indexDir, Path rootDir) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             return extractFileFromDb(db, relPath, rootDir);
         } catch (SQLException e) {
             throw new IOException("Database error: " + e.getMessage(), e);

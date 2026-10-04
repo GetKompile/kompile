@@ -184,7 +184,7 @@ public class ComplexityClassifier {
         byTier.put(Tier.BALANCED, new ArrayList<>());
         byTier.put(Tier.POWERFUL, new ArrayList<>());
 
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
             Set<String> relPaths = db.getAllRelPaths();
 
             for (String relPath : relPaths) {

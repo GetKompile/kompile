@@ -733,6 +733,11 @@ class CodeAnalysisIntegrationTest {
 
             GitSignals.invalidateCache();
 
+            // Foreground reads no longer collect Git synchronously. Await publication only here,
+            // so this integration test still verifies the collector's real metrics.
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (GitSignals.snapshot(gitDir).isEmpty() && System.nanoTime() < deadline) Thread.sleep(1);
+            assertFalse(GitSignals.snapshot(gitDir).isEmpty(), "Git snapshot must eventually publish");
             GitSignals.FileSignals hotSig = GitSignals.getSignals("Hot.java", gitDir);
             GitSignals.FileSignals coldSig = GitSignals.getSignals("Cold.java", gitDir);
 

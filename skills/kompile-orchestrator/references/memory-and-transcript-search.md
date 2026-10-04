@@ -59,16 +59,27 @@ Start with a modest result count. Lower thresholds increase recall but also nois
 
 Use transcripts to recover prior decisions, commands, failures, unresolved questions, agent reports, or exact wording.
 
-- `list`: enumerate saved sessions, optionally filtered by agent.
+- `list`: enumerate saved sessions, optionally filtered by `agent` and/or a `session_id` prefix.
 - `recent`: inspect recent sessions using `count`.
-- `read`: retrieve a known `session_id`.
-- `search`: grep history using `pattern` or `query`.
+- `read`: retrieve an exact `session_id` or a unique ID prefix. Exact IDs take precedence; ambiguous prefixes return an error with candidate IDs, never an arbitrary transcript.
+- `search`: grep history using `pattern` or `query`, or omit both and supply `session_id` to look up IDs only.
+
+For `list` and `search`, `session_id` is a literal, case-sensitive begins-with filter (not a regex or substring). No wildcard is needed. `case_sensitive` affects content only. For example:
+
+```json
+{"action":"search","session_id":"abc123","max_results":10}
+{"action":"list","session_id":"abc123","agent":"codex"}
+{"action":"read","session_id":"abc123"}
+```
+
+The first two list matching sessions; the last requires one unique match. Supply a longer prefix or a full ID if reading is ambiguous.
 
 Useful search controls include `literal`, `case_sensitive`, `agent`, `session_id`, `before`, `after`, `context`, `max_results`, `invert`, `files_with_matches`, and `line_numbers`.
 
 ```text
 transcript_search({
   action: "search",
+  session_id: "abc123",
   pattern: "role.*dispatch",
   case_sensitive: false,
   context: 4,

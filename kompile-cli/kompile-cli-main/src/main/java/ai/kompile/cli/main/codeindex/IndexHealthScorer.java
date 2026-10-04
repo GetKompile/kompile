@@ -111,7 +111,7 @@ public class IndexHealthScorer {
         int languageCount = 0;
 
         if (Files.exists(indexDir.resolve("index.db"))) {
-            try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+            try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
                 totalFiles = db.getFileCount();
                 totalEntities = db.getEntityCount();
 

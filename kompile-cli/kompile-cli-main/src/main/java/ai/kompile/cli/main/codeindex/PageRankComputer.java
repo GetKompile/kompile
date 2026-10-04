@@ -16,9 +16,7 @@
 
 package ai.kompile.cli.main.codeindex;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.file.Path;
 import java.sql.*;
 import java.time.Instant;
@@ -73,9 +71,8 @@ public class PageRankComputer {
      * Get top-ranked files by PageRank score.
      */
     public static List<Map<String, Object>> getTopFiles(Path indexDir, int limit) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
-            ensureTable(db);
-            return queryTopFiles(db, limit);
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return db.hasTable("pagerank") ? queryTopFiles(db, limit) : List.of();
         } catch (SQLException e) {
             throw new IOException("PageRank query failed: " + e.getMessage(), e);
         }
@@ -85,9 +82,8 @@ public class PageRankComputer {
      * Get a specific file's PageRank score.
      */
     public static double getFileRank(Path indexDir, String relPath) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
-            ensureTable(db);
-            return queryFileRank(db, relPath);
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return db.hasTable("pagerank") ? queryFileRank(db, relPath) : 0.0;
         } catch (SQLException e) {
             throw new IOException("PageRank query failed: " + e.getMessage(), e);
         }
@@ -97,9 +93,8 @@ public class PageRankComputer {
      * Check if PageRank has been computed (table exists and has data).
      */
     public static boolean isComputed(Path indexDir) throws IOException {
-        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
-            ensureTable(db);
-            return hasData(db);
+        try (IndexDatabase db = IndexDatabase.openReadOnly(indexDir)) {
+            return db.hasTable("pagerank") && hasData(db);
         } catch (SQLException e) {
             return false;
         }
@@ -216,21 +211,15 @@ public class PageRankComputer {
                     "--diff-filter=AMCR", "-" + GIT_LOG_COMMITS);
             pb.directory(rootDir.toFile());
             pb.redirectErrorStream(true);
-            Process proc = pb.start();
-
             Map<String, Integer> fileOrder = new HashMap<>();
             int order = 0;
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
+            {
+                for (String line : GitCommandOutput.readLines(pb, 60_000)) {
                     line = line.trim();
                     if (!line.isEmpty() && !fileOrder.containsKey(line)) {
                         fileOrder.put(line, order++);
                     }
                 }
-            }
-            if (!proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
-                proc.destroyForcibly();
             }
 
             if (!fileOrder.isEmpty()) {
@@ -243,6 +232,8 @@ public class PageRankComputer {
                     }
                 }
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         } catch (Exception ignored) {
             // Git not available or not a git repo — fall back to uniform
         }
@@ -370,7 +361,7 @@ public class PageRankComputer {
         conn.setAutoCommit(true);
     }
 
-    private static List<Map<String, Object>> queryTopFiles(IndexDatabase db, int limit) throws SQLException {
+    static List<Map<String, Object>> queryTopFiles(IndexDatabase db, int limit) throws SQLException {
         Connection conn = db.getConnection();
         List<Map<String, Object>> results = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(

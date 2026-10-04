@@ -2231,6 +2231,17 @@ public class IndexDatabase implements AutoCloseable {
         return conn;
     }
 
+    /** Optional analysis tables are created by writers, never by a query. */
+    boolean hasTable(String name) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Call-chain / injector private helpers
     // -----------------------------------------------------------------------
