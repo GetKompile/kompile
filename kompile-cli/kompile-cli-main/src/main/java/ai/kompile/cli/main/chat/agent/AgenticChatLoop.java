@@ -1799,11 +1799,14 @@ public class AgenticChatLoop {
         if (claudeCodeFallback && !directLlmClient.claudeCompactionFailed()) return;
         String pendingRequestMessage = reminderManager == null
                 ? pendingMessage : reminderManager.previewUserTurn(pendingMessage);
-        long projectedInputTokens = projectedInputTokens(pendingRequestMessage);
+        long fallbackInputTokens = projectedInputTokens(pendingRequestMessage);
         if (lastReportedInputTokens <= 0L && toolDefs != null) {
-            projectedInputTokens = saturatingAdd(projectedInputTokens,
+            fallbackInputTokens = saturatingAdd(fallbackInputTokens,
                     compactionService.estimateTextTokens(toolDefs.toString()));
         }
+        long projectedInputTokens = projectedRequestInputTokens(
+                fallbackInputTokens, pendingRequestMessage, systemPrompt, toolDefs,
+                null, modelOverride, pendingAttachments);
         // This counter has no attachment input. Do not label a text-only count as
         // authoritative for a request that will also send pending media/documents.
         DirectLlmClient.TokenCountResult exact = pendingAttachments == null || pendingAttachments.isEmpty()
@@ -1937,6 +1940,19 @@ public class AgenticChatLoop {
         }
         long historyGrowth = Math.max(0L, estimatedHistory - lastReportedHistoryTokens);
         return saturatingAdd(saturatingAdd(lastReportedInputTokens, historyGrowth), pendingTokens);
+    }
+
+    private long projectedRequestInputTokens(
+            long fallback, String message, String systemPrompt, ArrayNode toolDefs,
+            List<DirectLlmClient.ToolCallResultInput> toolResults, String modelOverride,
+            List<DirectLlmClient.AttachmentInput> attachments) {
+        if (lastReportedInputTokens > 0L || directLlmClient == null) return fallback;
+        // Cancellation repairs provider history from the ledger and invalidates
+        // its usage anchor. Both compaction decisions must then measure the wire
+        // projection, not repeated memory snapshots retained in that ledger.
+        DirectLlmClient.TokenCountResult estimate = directLlmClient.estimateInputTokens(
+                message, systemPrompt, toolDefs, toolResults, modelOverride, attachments);
+        return estimate.supported() ? estimate.inputTokens() : fallback;
     }
 
     private static long saturatingAdd(long left, long right) {
@@ -2281,17 +2297,6 @@ public class AgenticChatLoop {
             }
             iteration = nextStep;
             setForegroundActivity("Thinking");
-
-            // Check compaction (model-aware budget; also honors the provider-reported
-            // prompt size of the previous call, which sees system prompt + tool defs)
-            long projectedInputTokens = projectedInputTokens(null);
-            if (compactionService.needsCompaction(projectedInputTokens) && isDirectMode()) {
-                // A wholesale checkpoint is legal only at a completed-turn boundary.
-                // Mid-exchange, shrink provider tool bodies in place while retaining
-                // the canonical ledger and all call/result identifiers verbatim.
-                directLlmClient.compactToolHistory(
-                        8, CompactionService::summarizeToolResultContent);
-            }
 
             // Rebuild after every iteration. activate_tools mutates the active capability
             // set, so its selected group must be visible to the very next model call.
@@ -3872,6 +3877,17 @@ public class AgenticChatLoop {
                 directToolResults.add(new DirectLlmClient.ToolCallResultInput(
                         tr.callId, tr.toolName, tr.output, tr.isError));
             }
+        }
+
+        long projectedInputTokens = projectedRequestInputTokens(
+                projectedInputTokens(null), message, systemPrompt, toolDefs,
+                directToolResults, modelOverride, attachments);
+        if (!isCancelled() && compactionService.needsCompaction(projectedInputTokens)) {
+            // A wholesale checkpoint is legal only at a completed-turn boundary.
+            // Mid-exchange, shrink provider bodies in place, preserving call/result
+            // identifiers and the canonical ledger. Use this actual pending request
+            // so duplicate memory alone cannot silently truncate older context.
+            directLlmClient.compactToolHistory(8, CompactionService::summarizeToolResultContent);
         }
 
         StreamingMarkdownRenderer markdownRenderer =

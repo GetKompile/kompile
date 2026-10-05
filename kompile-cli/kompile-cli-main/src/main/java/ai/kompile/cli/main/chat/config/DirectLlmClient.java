@@ -855,6 +855,7 @@ public class DirectLlmClient implements AutoCloseable {
         request.put("model", model);
         ArrayNode input = request.putArray("input");
         conversationHistory.forEach(item -> input.add(item.deepCopy()));
+        request.set("input", MemoryContextProjection.project(input));
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofMinutes(2))
                 .header("content-type", "application/json")
@@ -879,6 +880,59 @@ public class DirectLlmClient implements AutoCloseable {
         // Do not mutate retained history yet. The ConversationLedger commits the
         // matching portable/native checkpoint first, then reprojects this payload.
         return new NativeCompactionResult(true, true, null, output.deepCopy(), null);
+    }
+
+    /**
+     * Estimate the projected OpenAI request locally, without sending it or changing
+     * retained history. This includes memory deduplication, tool envelopes, pending
+     * attachments and the route's tool schemas. Opaque Responses context cannot be
+     * measured from its ciphertext length; leave that to usage or an exact counter.
+     */
+    public TokenCountResult estimateInputTokens(
+            String userMessage, String systemPrompt, ArrayNode toolDefs,
+            List<ToolCallResultInput> toolResults, String modelOverride,
+            List<AttachmentInput> attachments) {
+        ResolvedRoute route = resolveRoute(modelOverride);
+        if (route.protocol() != WireProtocol.OPENAI_CHAT
+                && route.protocol() != WireProtocol.OPENAI_RESPONSES) {
+            return TokenCountResult.unsupported();
+        }
+        List<AttachmentInput> media = attachments == null ? List.of() : attachments;
+        synchronized (historyLock) {
+            List<ObjectNode> saved = route.protocol() == WireProtocol.OPENAI_RESPONSES
+                    ? deepCopyHistory() : null;
+            try {
+                ArrayNode input;
+                ArrayNode tools = null;
+                long instructions = 0L;
+                if (route.protocol() == WireProtocol.OPENAI_CHAT) {
+                    input = buildOpenAiMessages(userMessage, systemPrompt, toolResults, media);
+                    if (toolDefs != null) tools = convertToolDefsToOpenAi(toolDefs);
+                } else {
+                    ResponsesHistoryLinks links = sanitizeResponsesHistory(toolResults);
+                    input = buildResponsesInput(userMessage, systemPrompt,
+                            prepareResponsesToolResultItems(toolResults, links), route.codexBackend(), media);
+                    for (JsonNode item : input) {
+                        if (item.hasNonNull("encrypted_content")
+                                || "compaction".equals(item.path("type").asText())) {
+                            return TokenCountResult.unsupported();
+                        }
+                    }
+                    if (toolDefs != null) tools = convertToolDefsToResponses(toolDefs, route.codexBackend());
+                    if (route.codexBackend()) {
+                        instructions = (boundedOpenAiInstructions(systemPrompt).length() + 3L) / 4L;
+                    }
+                }
+                return new TokenCountResult(true, false,
+                        estimateRequestInputTokens(input, tools) + instructions,
+                        "projected-" + route.protocol().name().toLowerCase(Locale.ROOT), null);
+            } finally {
+                if (saved != null) {
+                    conversationHistory.clear();
+                    conversationHistory.addAll(saved);
+                }
+            }
+        }
     }
 
     /** Count the complete pending request when the resolved provider supports it. */
@@ -2740,7 +2794,7 @@ public class DirectLlmClient implements AutoCloseable {
         if (userMessage != null || !attachments.isEmpty()) {
             input.add(createResponsesUserMessage(userMessage, attachments));
         }
-        return input;
+        return MemoryContextProjection.project(input);
     }
 
     /**
@@ -3396,7 +3450,7 @@ public class DirectLlmClient implements AutoCloseable {
         if (userMessage != null || !attachments.isEmpty()) {
             messages.add(createPiUserMessage(userMessage, attachments));
         }
-        return messages;
+        return MemoryContextProjection.project(messages);
     }
 
     private void appendPiToolResultHistory(List<ToolCallResultInput> toolResults) {
@@ -4311,8 +4365,9 @@ public class DirectLlmClient implements AutoCloseable {
             messages.add(openAiUserMessage(userMessage, attachments));
         }
 
+        ArrayNode projected = MemoryContextProjection.project(messages);
         return "zai".equalsIgnoreCase(config.getProvider())
-                ? normalizeZaiMessages(messages) : messages;
+                ? normalizeZaiMessages(projected) : projected;
     }
 
     private ArrayNode normalizeZaiMessages(ArrayNode messages) {
@@ -4939,7 +4994,7 @@ public class DirectLlmClient implements AutoCloseable {
             messages.add(anthropicUserMessage(userMessage, attachments));
         }
 
-        return messages;
+        return MemoryContextProjection.project(messages);
     }
 
     private ObjectNode createAnthropicToolResultMessage(

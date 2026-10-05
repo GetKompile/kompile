@@ -31,6 +31,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -522,6 +523,84 @@ class AgenticChatLoopContextOverflowRecoveryTest {
     }
 
     @Test
+    void interruptedOpenAiTurnsDoNotCompactRepeatedMemoryOnTheNextTurn() throws Exception {
+        for (String provider : List.of("openai", "openai-codex")) {
+            assertInterruptedMemoryAccounting(provider, false, false);
+        }
+        assertInterruptedMemoryAccounting("openai", true, false);
+        assertInterruptedMemoryAccounting("openai-codex", false, true);
+    }
+
+    private void assertInterruptedMemoryAccounting(
+            String provider, boolean responsesModel, boolean cancelledCheckpoint) throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig(provider, "test-key",
+                responsesModel ? "gpt-6-astra" : "gpt-test", "http://unused.invalid");
+        config.setContextWindowTokens(128_000);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "interrupted-memory-" + UUID.randomUUID();
+        loop.configureConversationSession(session);
+        ConversationLedger ledger = ledgerOf(loop);
+        String memory = "<memory_context>\n[Persistent memory]\n" + "m".repeat(55_000)
+                + "</memory_context>\n\n";
+        for (int i = 0; i < 8; i++) {
+            ledger.append(CompactionService.ConversationEntry.user(memory + "request " + i));
+            ledger.append(CompactionService.ConversationEntry.assistant(i == 0
+                    ? "older answer " + "a".repeat(3_000) + " retained-assistant-tail" : "answer " + i));
+        }
+        loop.rebuildDirectHistoryForProviderSwitch();
+        long rawHistory = new CompactionService(mapper).estimateTokens(ledger.snapshot().activeEntries());
+        assertTrue(rawHistory > 108_800, "raw history must exceed the 85% trigger");
+        setUsageAnchor(loop, 20_000, rawHistory);
+        AtomicBoolean cancelled = new AtomicBoolean();
+        loop.setCancelSignal(cancelled);
+        client.interruptNextRequest = cancelled;
+        if (cancelledCheckpoint) {
+            client.nativeStreamPayload = mapper.createObjectNode()
+                    .put("type", "compaction").put("encrypted_content", "uncommitted");
+        }
+
+        loop.chat("interrupted request", session, "coder", "default", false);
+
+        assertTrue(cancelled.get());
+        assertEquals(0, client.summaryCalls);
+        assertEquals(0, loop.lastReportedInputTokens(), "history repair still invalidates stale usage");
+        assertTrue(client.replayedMessages.contains("user:interrupted request"),
+                "repair must preserve accepted input even without pending tool calls");
+        assertTrue(ledger.snapshot().checkpoint() == null,
+                "a cancelled Responses checkpoint must not be committed");
+        cancelled.set(false);
+        assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+
+        assertEquals(0, client.summaryCalls,
+                "the projected request fits even though the raw durable memory snapshots do not");
+        Field wireHistory = DirectLlmClient.class.getDeclaredField("conversationHistory");
+        wireHistory.setAccessible(true);
+        assertTrue(wireHistory.get(client).toString().contains("retained-assistant-tail"),
+                "a fitting request must not silently truncate older assistant text");
+        assertEquals(0, client.toolCompactionCalls, "mid-loop pruning must use the same projected fallback");
+        assertTrue(ledger.snapshot().checkpoint() == null);
+        assertEquals(2, client.chatCalls);
+    }
+
+    @Test
+    void missingUsageStillCompactsGenuinelyLargeProjectedOpenAiHistory() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("openai", "test-key", "gpt-test", "http://unused.invalid");
+        config.setContextWindowTokens(128_000);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "large-projected-history-" + UUID.randomUUID();
+        seedHistoryOfTokens(loop, session, 120_000);
+
+        assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+
+        assertEquals(1, client.summaryCalls, "request estimation must not disable real compaction");
+        assertTrue(ledgerOf(loop).snapshot().checkpoint() != null);
+    }
+
+    @Test
     void textOnlyCountCannotReplaceUsageForAPendingAttachmentRequest() throws Exception {
         ObjectMapper mapper = JsonUtils.standardMapper();
         ScriptedClient client = millionTokenClient(mapper);
@@ -726,6 +805,8 @@ class AgenticChatLoopContextOverflowRecoveryTest {
         private final List<String> replayedToolCalls = new ArrayList<>();
         private final List<String> replayedToolResults = new ArrayList<>();
         private NativeCompactionResult nativeCompaction = NativeCompactionResult.unsupported();
+        private JsonNode nativeStreamPayload;
+        private AtomicBoolean interruptNextRequest;
 
         private ScriptedClient(ObjectMapper mapper, Scenario scenario) {
             this(mapper, scenario, new ChatConfig(
@@ -780,6 +861,12 @@ class AgenticChatLoopContextOverflowRecoveryTest {
                 result.nativeCompactionSummary = "Earlier requests completed successfully.";
                 result.nativeCompactionStrategy = "test";
                 result.inputTokens = 120_000;
+            }
+            if (interruptNextRequest != null) {
+                interruptNextRequest.set(true);
+                interruptNextRequest = null;
+                result.cancelled = true;
+                result.nativeCompactionPayload = nativeStreamPayload;
             }
             if (getOutputConsumer() != null) getOutputConsumer().accept(result.text);
             return result;
