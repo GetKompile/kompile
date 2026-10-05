@@ -21,6 +21,7 @@ import ai.kompile.cli.common.KompileHome;
 import lombok.Getter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -30,14 +31,16 @@ import java.util.stream.Stream;
 /**
  * Smart output truncation for tool results, comparable to OpenCode's truncate.ts.
  *
- * Thresholds: content within 2000 lines AND 50KB passes unchanged.
+ * Thresholds: content within 2000 lines AND 12000 UTF-8 bytes passes unchanged.
+ * Previews contain at most 50 lines and 4000 UTF-8 bytes, excluding the notice.
  * Beyond that, the full output is saved to a temp file and a preview is returned.
  */
 public class OutputTruncator {
 
     private static final int MAX_LINES = 2000;
-    private static final int MAX_BYTES = 50 * 1024; // 50KB
+    private static final int MAX_BYTES = 12000;
     private static final int PREVIEW_LINES = 50;
+    private static final int PREVIEW_BYTES = 4000;
     private static final Duration CLEANUP_AGE = Duration.ofDays(7);
 
     private final Path truncationDir;
@@ -58,7 +61,7 @@ public class OutputTruncator {
             return new TruncationResult(output, false, null);
         }
 
-        int byteSize = output.getBytes().length;
+        int byteSize = output.getBytes(StandardCharsets.UTF_8).length;
         long lineCount = output.lines().count();
 
         if (lineCount <= MAX_LINES && byteSize <= MAX_BYTES) {
@@ -68,19 +71,34 @@ public class OutputTruncator {
         // Save full output to temp file
         Path savedFile = saveFullOutput(output, toolName);
 
-        // Build preview (head)
-        StringBuilder preview = new StringBuilder();
-        String[] lines = output.split("\n", -1);
-        int previewCount = Math.min(PREVIEW_LINES, lines.length);
+        // Copy a bounded prefix, including part of an overlong first line.
+        // Advance by code point so supplementary characters are never split.
+        int previewEnd = 0;
         int previewBytes = 0;
-
-        for (int i = 0; i < previewCount; i++) {
-            if (previewBytes + lines[i].length() > MAX_BYTES / 2) break;
-            preview.append(lines[i]).append("\n");
-            previewBytes += lines[i].length() + 1;
+        int completeLines = 0;
+        while (previewEnd < output.length() && completeLines < PREVIEW_LINES) {
+            int codePoint = output.codePointAt(previewEnd);
+            int charCount = Character.charCount(codePoint);
+            int bytes = codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2
+                    : codePoint <= 0xffff ? 3 : 4;
+            // UTF-8 replaces an unpaired surrogate with one byte ('?').
+            if (codePoint >= Character.MIN_SURROGATE && codePoint <= Character.MAX_SURROGATE) {
+                bytes = 1;
+            }
+            // Keep CRLF together and count it as one line, matching String.lines().
+            if (codePoint == '\r' && previewEnd + 1 < output.length()
+                    && output.charAt(previewEnd + 1) == '\n') {
+                charCount = 2;
+                bytes = 2;
+            }
+            if (previewBytes + bytes > PREVIEW_BYTES) break;
+            previewEnd += charCount;
+            previewBytes += bytes;
+            if (codePoint == '\n' || codePoint == '\r') completeLines++;
         }
+        StringBuilder preview = new StringBuilder(output.substring(0, previewEnd));
 
-        long truncatedLines = lineCount - previewCount;
+        long truncatedLines = lineCount - completeLines;
         int truncatedBytes = byteSize - previewBytes;
 
         preview.append("\n... ").append(truncatedLines).append(" lines / ")
@@ -104,7 +122,7 @@ public class OutputTruncator {
             String timestamp = String.valueOf(System.currentTimeMillis());
             String safeName = toolName.replaceAll("[^a-zA-Z0-9]", "_");
             Path file = truncationDir.resolve(safeName + "-" + timestamp + ".txt");
-            Files.writeString(file, output);
+            Files.writeString(file, output, StandardCharsets.UTF_8);
             return file;
         } catch (IOException e) {
             return null;

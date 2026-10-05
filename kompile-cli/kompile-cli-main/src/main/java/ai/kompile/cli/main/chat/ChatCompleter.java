@@ -130,7 +130,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/auto-dequeue", "Toggle auto-dequeue");
         COMMANDS.put("/loop", "Schedule recurring tasks for this session");
         COMMANDS.put("/loop-global", "Schedule recurring tasks for this project");
-        COMMANDS.put("/stats", "Show session statistics");
+        COMMANDS.put("/stats", "Session stats; /stats tools [tool:NAME session:ID call:ID offset:N] for token drill-down");
 
         // Roles & skills
         COMMANDS.put("/skills", "List available skills");

@@ -96,6 +96,64 @@ export interface InsightsTopicReport {
   /** The report as the terminal prints it: tables and sparklines in a monospace font. */
   text?: string;
   chart?: ToolCallChart;
+  /** Local tool measurements, never combined with the provider/model execution ledger. */
+  usage?: ToolUsageReport;
+}
+
+export interface ToolTokenMeasurement {
+  tokens?: number | null;
+  status: string;
+  representation?: string;
+  method?: string;
+  tokenizerId?: string;
+  tokenizerVersion?: string;
+  detail?: string;
+}
+
+export interface ToolUsageTotals {
+  calls: number;
+  argumentsTokens?: number | null;
+  /** Sum of FULLY_MEASURED payloads only; partial/unknown calls are not zero-token calls. */
+  payloadTokens?: number | null;
+  unmeasuredPayloadCalls: number;
+  partialPayloadCalls: number;
+  degradedCalls?: number;
+}
+
+export interface ToolUsageCall {
+  invocationId: string;
+  sessionId: string;
+  tool: string;
+  requestedToolName?: string;
+  resolvedToolName?: string;
+  startedEpochMs?: number;
+  finishedEpochMs?: number;
+  durationMs?: number;
+  outcome?: string;
+  disposition?: string;
+  errorResponse?: boolean;
+  arguments?: ToolTokenMeasurement;
+  payload?: ToolTokenMeasurement;
+  rawPayload?: ToolTokenMeasurement;
+  modelExecutions?: Record<string, unknown>[];
+  accountingDegraded?: boolean;
+  accountingNote?: string;
+}
+
+export interface ToolUsageReport {
+  summary: ToolUsageTotals;
+  perTool: (ToolUsageTotals & { tool: string; trend?: (number | null)[] })[];
+  perSession: (ToolUsageTotals & { sessionId: string })[];
+  calls: ToolUsageCall[];
+  offset: number;
+  limit: number;
+  totalCalls: number;
+  hasMore: boolean;
+  labels?: string[];
+  truncated?: boolean;
+  malformedLines?: number;
+  modelExecutions?: { inputTokens?: number; outputTokens?: number; [key: string]: unknown };
+  measurementBuckets?: Record<string, unknown>;
 }
 
 /** The limits every insights report keeps to, as insights.json holds them. */

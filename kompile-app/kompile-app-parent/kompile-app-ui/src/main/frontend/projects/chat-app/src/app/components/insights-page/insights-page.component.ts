@@ -27,6 +27,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatTabsModule } from '@angular/material/tabs';
 import { Subscription } from 'rxjs';
 import { ToolCallChartComponent } from '@shared/components/tool-call-chart/tool-call-chart.component';
+import { ToolUsageDetailsComponent } from '../tool-usage-details/tool-usage-details.component';
 import {
   InsightsSettings, InsightsSettingsView, InsightsTopicReport, LocalAgentChatService
 } from '@shared/services/local-agent-chat.service';
@@ -46,8 +47,8 @@ export const INSIGHTS_TOPICS: readonly InsightsTopic[] = [
     about: 'Judge verdicts: flags, stops, blocked turns, overrides and the most-flagged tools.',
     example: 'flags for bash' },
   { id: 'tools', label: 'Tools',
-    about: 'Tool calls: counts, errors and p50/p95 latency per tool, the slowest calls and the latest errors.',
-    example: 'slowest calls of the read tool' },
+    about: 'Locally measured tool tokens and call provenance, or counts, errors and p50/p95 latency.',
+    example: 'tokens last 7 days' },
   { id: 'tests', label: 'Tests',
     about: 'Test milestones: pass rate and latest result per module, failing test classes and known regressions.',
     example: 'the core tests' },
@@ -136,7 +137,7 @@ type SettingsForm = Record<SettingField['key'], string> & { sessionPanel: boolea
   standalone: true,
   imports: [
     CommonModule, FormsModule, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatInputModule,
-    MatProgressBarModule, MatSelectModule, MatTabsModule, ToolCallChartComponent
+    MatProgressBarModule, MatSelectModule, MatTabsModule, ToolCallChartComponent, ToolUsageDetailsComponent
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './insights-page.component.html',
@@ -152,7 +153,65 @@ export class InsightsPageComponent implements OnInit, OnDestroy {
   workingDirectory = '';
   autoRefresh = false;
   readonly states: Record<string, TopicState> = Object.fromEntries(
-    INSIGHTS_TOPICS.map(topic => [topic.id, { question: '', loading: false } as TopicState]));
+    INSIGHTS_TOPICS.map(topic => [topic.id, { question: topic.id === 'tools' ? 'tokens' : '', loading: false } as TopicState]));
+
+  toolFilter = '';
+  sessionFilter = '';
+  callFilter = '';
+  toolOffset = 0;
+
+  get tokenMode(): boolean {
+    return this.activeId === 'tools' && /\btokens\b/i.test(this.state.question);
+  }
+
+  /** The URL question is the source of truth, including when arriving from the session drawer. */
+  private readToolFilters(): void {
+    const question = this.states['tools'].question;
+    const selector = (name: string) => new RegExp(`(?:^|\\s)${name}:([^\\s,]+)`).exec(question)?.[1] ?? '';
+    this.toolFilter = selector('tool');
+    this.sessionFilter = selector('session');
+    this.callFilter = selector('call');
+    const offset = Number(selector('offset'));
+    this.toolOffset = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
+  }
+
+  setToolMode(tokens: boolean): void {
+    let context = this.states['tools'].question.replace(/\btokens\b|counts and latency/gi, '').trim();
+    if (!tokens) context = context.replace(/(?:^|\s)(?:tool|call|offset):[^\s,]+/g, '').trim();
+    this.states['tools'].question = [tokens ? 'tokens' : 'counts and latency', context].filter(Boolean).join(' ');
+    this.readToolFilters();
+    this.ask();
+  }
+
+  filterTools(kind: 'tool' | 'session' | 'call', value: string): void {
+    if (kind === 'tool') this.toolFilter = value;
+    if (kind === 'session') this.sessionFilter = value;
+    this.callFilter = kind === 'call' ? value : '';
+    this.applyToolFilters();
+  }
+
+  applyToolFilters(offset = 0): void {
+    const base = this.states['tools'].question.replace(/counts and latency/gi, 'tokens')
+      .replace(/(?:^|\s)(?:tool|session|call|offset):[^\s,]+/g, '').trim() || 'tokens';
+    const filters = [this.sessionFilter.trim() && `session:${this.sessionFilter.trim()}`,
+      this.toolFilter.trim() && `tool:${this.toolFilter.trim()}`,
+      this.callFilter.trim() && `call:${this.callFilter.trim()}`,
+      offset > 0 && `offset:${offset}`].filter(Boolean);
+    this.states['tools'].question = [base, ...filters].join(' ');
+    this.ask();
+  }
+
+  backToolFilter(): void {
+    if (this.callFilter) this.callFilter = '';
+    else if (this.sessionFilter) this.sessionFilter = '';
+    else this.toolFilter = '';
+    this.applyToolFilters();
+  }
+
+  resetToolFilters(): void {
+    this.toolFilter = this.sessionFilter = this.callFilter = '';
+    this.applyToolFilters();
+  }
 
   settingsView?: InsightsSettingsView;
   settingsForm?: SettingsForm;
@@ -217,6 +276,7 @@ export class InsightsPageComponent implements OnInit, OnDestroy {
 
   /** Reads the open tab's report for its question, even when it already shows that read. */
   ask(): void {
+    if (this.activeId === 'tools') this.readToolFilters();
     this.show(true);
     this.writeParams();
   }
@@ -329,6 +389,7 @@ export class InsightsPageComponent implements OnInit, OnDestroy {
     if (window !== null && INSIGHTS_WINDOWS.some(option => option.value === window)) this.window = window;
     const directory = params.get('workingDirectory');
     if (directory !== null) this.workingDirectory = directory;
+    if (this.activeId === 'tools') this.readToolFilters();
   }
 
   /** Keeps the URL on what the page shows; replacing the entry keeps Back for leaving the page. */
@@ -354,7 +415,12 @@ export class InsightsPageComponent implements OnInit, OnDestroy {
     if (this.destroyed) return;
     const topic = this.activeId;
     const state = this.states[topic];
-    const question = [state.question.trim(), this.window].filter(Boolean).join(', ');
+    // An explicit dropdown window wins over time phrases from a bookmarked question.
+    const requested = topic === 'tools' && this.window ? state.question.replace(
+      /(?:^|\s)(?:(?:(?:last|past|previous)\s+)?\d{1,4}\s*(?:hours?|hrs?|h|days?|d|weeks?|wks?|w)|(?:last|past|previous)\s+(?:hour|day|week|month)|today|yesterday|this\s+(?:week|month)|all[ -]time|ever|overall)(?=\s|,|$)/gi, '').trim() : state.question.trim();
+    const selectors = /(?:^|\s)(?:tool|session|call|offset):/.test(requested);
+    const question = [requested, this.window].filter(Boolean)
+      .join(this.tokenMode || (topic === 'tools' && selectors) ? ' ' : ', ');
     const directory = this.workingDirectory.trim();
     const key = JSON.stringify([topic, question, directory]);
     if (!force && state.readKey === key) {

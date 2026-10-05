@@ -850,6 +850,7 @@ public final class WebCommandResolver {
         data.put("headline", report.getHeadline());
         data.put("text", text);
         if (report.getChart() != null) data.set("chart", report.getChart());
+        if (report.getUsage() != null) data.set("usage", report.getUsage());
         return new Resolution(Status.COMPLETED, "/insights", text, null, data);
     }
 

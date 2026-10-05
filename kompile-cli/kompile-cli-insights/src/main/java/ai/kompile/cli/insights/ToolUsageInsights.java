@@ -70,6 +70,10 @@ public final class ToolUsageInsights implements InsightSource {
     private final InsightsConfig config;
     /** Follows the panel's session file; replaced when the panel asks about another session. Guarded by this. */
     private LogFollower<Tally> follower;
+    private InsightReport panelTokens;
+    private String panelTokenSession;
+    private long panelTokenSize = -1;
+    private java.nio.file.attribute.FileTime panelTokenModified;
 
     public ToolUsageInsights(Path toolCallsDir, InsightsConfig config) {
         this.toolCallsDir = toolCallsDir;
@@ -88,13 +92,13 @@ public final class ToolUsageInsights implements InsightSource {
 
     @Override
     public String description() {
-        return "tool calls: counts, errors and p50/p95 latency per tool, slowest calls, latest errors";
+        return "tool calls: tokens over time, per-tool/session/call drill-down, counts, errors and latency";
     }
 
     @Override
     public List<String> keywords() {
         return List.of("tool", "latency", "slow", "duration", "error", "fail", "call", "usage", "used", "p95",
-                "mcp");
+                "mcp", "token");
     }
 
     /** One indexed call. */
@@ -184,6 +188,8 @@ public final class ToolUsageInsights implements InsightSource {
 
     @Override
     public InsightReport report(InsightsQuery query) throws IOException {
+        InsightReport tokens = new ToolTokenInsights(toolCallsDir, config).report(query);
+        if (query.mentions("token", "tool:", "call:", "offset:")) return tokens;
         InsightsWindow window = query.getWindow();
         ZoneId zone = query.getZone();
         Scan scan = scan(query);
@@ -274,7 +280,9 @@ public final class ToolUsageInsights implements InsightSource {
             text.append('\n');
             notes.forEach(note -> text.append(note).append('\n'));
         }
-        return InsightReport.builder().topic(TOPIC).headline(headline).text(text.toString()).chart(chart).build();
+        text.append('\n').append(tokens.getText());
+        return InsightReport.builder().topic(TOPIC).headline(headline).text(text.toString()).chart(chart)
+                .usage(tokens.getUsage()).build();
     }
 
     private static String toolHeadline(String subject, String label, ToolStats stats) {
@@ -408,10 +416,23 @@ public final class ToolUsageInsights implements InsightSource {
                     : " (since " + Format.dateTime(tally.first, query.getZone()) + ")");
         }
         text.append(": ");
+        InsightReport tokens = panelTokens(query, session);
         if (tally.calls == 0) {
-            return Panel.Line.of(text.append("no calls yet").toString());
+            if (tokens == null) return Panel.Line.of(text.append("no calls yet").toString());
+            var summary = tokens.getUsage().path("summary");
+            return new Panel.Line(text.append(summary.path("calls").asLong()).append(" usage calls · payload ")
+                    .append(summary.path("payloadTokens").asLong()).append(" measured tok").toString(),
+                    "↳ /stats tools for coverage, trends and call detail", false);
         }
         text.append(Format.count(tally.calls, "call")).append(", ").append(Format.count(tally.errors, "error"));
+        if (tokens != null) {
+            var summary = tokens.getUsage().path("summary");
+            text.append(" · payload ").append(Format.count(summary.path("payloadTokens").asLong())).append(" tok");
+            long unknown = summary.path("unmeasuredPayloadCalls").asLong()
+                    + summary.path("partialPayloadCalls").asLong();
+            if (unknown > 0) text.append(" (").append(unknown).append(" incomplete)");
+            if (tokens.getUsage().path("truncated").asBoolean()) text.append(" [partial history]");
+        }
         long[] samples = tally.samples();
         if (samples.length > 0) {
             text.append(" · p50 ").append(latencyText(Values.percentile(samples, 50)))
@@ -433,14 +454,32 @@ public final class ToolUsageInsights implements InsightSource {
                     + latencyText(tally.slowest.durationMs()) + ", " + Format.ago(tally.slowest.at(), query.getNow())
                     + inputText(tally.slowest);
         }
+        if (tokens != null && detail == null) detail = "↳ tool tokens over time: /stats tools";
         return new Panel.Line(text.toString(), detail, false);
+    }
+
+    /** Reuse the bounded journal report until its bytes change; never rescan on an idle refresh. */
+    private InsightReport panelTokens(InsightsQuery query, String session) throws IOException {
+        Path journal = toolCallsDir.resolve("tool-usage.jsonl");
+        if (!Files.isRegularFile(journal)) return null;
+        var attributes = Files.readAttributes(journal, java.nio.file.attribute.BasicFileAttributes.class);
+        if (panelTokens == null || !session.equals(panelTokenSession)
+                || panelTokenSize != attributes.size() || !attributes.lastModifiedTime().equals(panelTokenModified)) {
+            panelTokens = new ToolTokenInsights(toolCallsDir, config).report(query);
+            panelTokenSession = session;
+            panelTokenSize = attributes.size();
+            panelTokenModified = attributes.lastModifiedTime();
+        }
+        return panelTokens.getUsage() == null || panelTokens.getUsage().path("summary").path("calls").asLong() == 0
+                ? null : panelTokens;
     }
 
     @Override
     public List<Panel.Watch> panelWatches(InsightsQuery query) {
         Path file = query.sessionScoped() ? sessionFile(query.getSessionIds().iterator().next()) : null;
         return file != null && Files.isDirectory(file.getParent())
-                ? List.of(new Panel.Watch(file.getParent(), file.getFileName().toString())) : List.of();
+                ? List.of(new Panel.Watch(file.getParent(), file.getFileName().toString()),
+                        new Panel.Watch(file.getParent(), "tool-usage.jsonl")) : List.of();
     }
 
     private static String inputText(Line line) {

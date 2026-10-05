@@ -962,17 +962,16 @@ public class AgenticChatLoop {
     }
 
     /**
-     * Folder-local models default to progressive tool disclosure because a large
-     * fixed catalog consumes attention even when it fits in the context window.
-     * A JVM property provides an explicit override for any provider.
+     * Direct models default to progressive tool disclosure: a large fixed catalog
+     * costs context on every tool step, whether the model is local or hosted.
+     * A JVM property preserves an explicit full-catalog override.
      */
     boolean usesProgressiveToolLoading() {
         String configured = System.getProperty("kompile.chat.progressiveTools");
         if (configured != null && !configured.isBlank()) {
             return Boolean.parseBoolean(configured);
         }
-        return isDirectMode()
-                && directLlmClient.getChatConfig().isKompileLocalServing();
+        return isDirectMode();
     }
 
     private ArrayNode toolDefinitions(AgentConfig agent, boolean progressive) {
@@ -1478,7 +1477,10 @@ public class AgenticChatLoop {
         candidate.addAll(toPreserve);
         progressRef.phase("Measuring the compacted checkpoint");
         int tokensAfter = compactionService.estimateTokens(candidate);
-        if (tokensAfter >= tokensBefore) {
+        // Opaque native payload occupancy cannot be measured by its portable digest.
+        // Only textual compactions must demonstrate a reduction in this estimate.
+        boolean opaqueNativeCheckpoint = nativeResult.applied() && nativeResult.nativePayload() != null;
+        if (!opaqueNativeCheckpoint && tokensAfter >= tokensBefore) {
             if (nativeResult.applied()) rebuildDirectHistoryForProviderSwitch();
             return ForceCompactResult.failed(
                     "Compaction did not reduce the active context; history unchanged.");
@@ -2444,7 +2446,10 @@ public class AgenticChatLoop {
                         ledgerBeforeRequest.activeEntries().size());
                 String model = agent.getModelOverride() != null
                         ? agent.getModelOverride() : directLlmClient.getConfiguredModel();
-                boolean committed = tokensAfter < tokensBefore
+                // The portable digest is a replay fallback, not a token count of
+                // encrypted native context. Keep the version/persistence guard,
+                // but never undo provider compaction because that fallback grows.
+                boolean committed = (result.nativeCompactionPayload != null || tokensAfter < tokensBefore)
                         && (result.nativeCompactionPayload == null
                         ? conversationLedger.commitCompaction(
                                 ledgerBeforeRequest.version(), coveredThrough, portableSummary,

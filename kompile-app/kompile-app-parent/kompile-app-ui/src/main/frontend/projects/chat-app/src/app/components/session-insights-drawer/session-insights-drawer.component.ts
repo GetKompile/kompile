@@ -66,6 +66,8 @@ const TOPIC = /^([A-Z][A-Za-z]{0,15}): (.*)$/;
       </ul>
       <a class="insights-page-link" data-testid="insights-page-link" [href]="pageHref" target="_blank"
          rel="noopener">All reports for this project</a>
+      <a *ngIf="sessionId" class="insights-page-link" data-testid="tool-token-breakdown-link"
+         [href]="toolTokenHref" target="_blank" rel="noopener">Tool token breakdown</a>
     </details>
   `,
   styleUrls: ['./session-insights-drawer.component.css']
@@ -101,6 +103,13 @@ export class SessionInsightsDrawerComponent implements OnInit, OnChanges, OnDest
   get pageHref(): string {
     const directory = this.workingDirectory?.trim();
     return directory ? `#/insights?workingDirectory=${encodeURIComponent(directory)}` : '#/insights';
+  }
+
+  get toolTokenHref(): string {
+    const question = `tokens last 7 days session:${this.sessionId}`;
+    const directory = this.workingDirectory?.trim();
+    return `#/insights?topic=tools&question=${encodeURIComponent(question)}`
+      + (directory ? `&workingDirectory=${encodeURIComponent(directory)}` : '');
   }
 
   ngOnInit(): void {

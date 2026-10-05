@@ -131,6 +131,7 @@ public class ChatInsightsService {
         data.put("headline", report.getHeadline());
         data.put("text", config.appendWarning(report.getText()));
         if (report.getChart() != null) data.set("chart", report.getChart());
+        if (report.getUsage() != null) data.set("usage", report.getUsage());
         return data;
     }
 

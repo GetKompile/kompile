@@ -502,7 +502,10 @@ public class ChatCommandRouter {
                 return true;
 
             case "/stats":
-                lifecycleManager.printSessionSummary();
+                if (rest.isBlank()) lifecycleManager.printSessionSummary();
+                else if (rest.trim().equals("tools") || rest.trim().startsWith("tools ")) {
+                    invokeLocalTool("insights " + toolStatsArguments(objectMapper, rest.trim().substring(5)));
+                } else System.out.println("Usage: /stats [tools [tokens] [tool:NAME] [session:ID] [call:ID] [offset:N] [last 7 days]]");
                 return true;
 
             case "/passthrough":
@@ -985,7 +988,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Configure automatic model-aware compaction\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
-            body.append("  ").append(renderer.cyan("/stats")).append("              Session statistics (tokens, timing, tools)\n");
+            body.append("  ").append(renderer.cyan("/stats [tools …]")).append("    Session stats; tool tokens + session/call drill-down\n");
             body.append("  ").append(renderer.cyan("/copy")).append("              Copy latest assistant response\n");
             body.append("  ").append(renderer.cyan("/help")).append("               This help message\n");
             body.append("  ").append(renderer.cyan("/quit")).append("               Exit the chat");
@@ -1958,6 +1961,16 @@ public class ChatCommandRouter {
         System.out.println();
         System.out.println(renderer.dim("  Use in chat: \"task an explore-deep to analyze the codebase\""));
         System.out.println(renderer.dim("  Or via /task tool: delegate specific subtasks to specialized agents"));
+    }
+
+    /** Shared, JSON-safe routing to the read-only report; bare /stats retains live summary semantics. */
+    static ObjectNode toolStatsArguments(ObjectMapper mapper, String rest) {
+        String question = rest == null ? "" : rest.trim();
+        if (!question.contains("session:") && !question.contains("all sessions")) question += " this session";
+        ObjectNode args = mapper.createObjectNode();
+        args.put("topic", "tools");
+        args.put("question", "tokens " + question.trim());
+        return args;
     }
 
     private void invokeLocalTool(String rest) {

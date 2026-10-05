@@ -92,6 +92,11 @@ public class InsightsQuery {
                 }
             }
         }
+        Matcher explicitSession = Pattern.compile("(?:^|\\s)session:([^\\s]+)").matcher(asked);
+        if (explicitSession.find()) {
+            sessions.clear();
+            sessions.add(explicitSession.group(1));
+        }
         return InsightsQuery.builder()
                 .topic(topic == null || topic.isBlank() ? null : topic.trim().toLowerCase(Locale.ROOT))
                 .question(asked)

@@ -46,6 +46,32 @@
       </div>
     </form>
 
+    <ng-container *ngIf="activeId === 'tools'">
+      <div class="query-actions" aria-label="Tool report mode">
+        <button mat-stroked-button type="button" data-testid="tools-token-mode" [attr.aria-pressed]="tokenMode" (click)="setToolMode(true)">Tokens</button>
+        <button mat-stroked-button type="button" data-testid="tools-count-mode" [attr.aria-pressed]="!tokenMode" (click)="setToolMode(false)">Counts / latency</button>
+      </div>
+      <form *ngIf="tokenMode" class="insights-query" (ngSubmit)="applyToolFilters()">
+        <mat-form-field appearance="outline"><mat-label>Tool name</mat-label>
+          <input matInput name="toolFilter" data-testid="tool-filter" [(ngModel)]="toolFilter">
+        </mat-form-field>
+        <mat-form-field appearance="outline"><mat-label>Full session ID</mat-label>
+          <input matInput name="sessionFilter" data-testid="session-filter" [(ngModel)]="sessionFilter">
+        </mat-form-field>
+        <mat-form-field appearance="outline"><mat-label>Full invocation ID</mat-label>
+          <input matInput name="callFilter" data-testid="call-filter" [(ngModel)]="callFilter">
+        </mat-form-field>
+        <div class="query-actions">
+          <button mat-stroked-button type="submit" data-testid="apply-tool-filters">Apply filters</button>
+          <button mat-stroked-button type="button" data-testid="back-tool-filter" [disabled]="!toolFilter && !sessionFilter && !callFilter && !toolOffset" (click)="backToolFilter()">Back to broader report</button>
+          <button mat-stroked-button type="button" data-testid="reset-tool-filters" (click)="resetToolFilters()">Reset filters</button>
+        </div>
+      </form>
+      <p *ngIf="tokenMode" aria-label="Tool filter breadcrumbs" data-testid="tool-breadcrumbs">
+        Tool tokens › {{ toolFilter || 'All tools' }} › {{ sessionFilter || 'All sessions' }} › {{ callFilter || 'All calls' }} · offset {{ toolOffset }}
+      </p>
+    </ng-container>
+
     <mat-progress-bar *ngIf="state.loading" mode="indeterminate"></mat-progress-bar>
     <p *ngIf="state.error" class="insights-error" role="alert">{{ state.error }}</p>
 
@@ -56,6 +82,9 @@
       <ng-container *ngIf="report.available">
         <h2 *ngIf="report.headline" class="report-headline">{{ report.headline }}</h2>
         <app-tool-call-chart *ngIf="report.chart" [chart]="report.chart"></app-tool-call-chart>
+        <app-tool-usage-details *ngIf="report.usage as usage" [usage]="usage" [selectedCall]="callFilter"
+          (toolSelected)="filterTools('tool', $event)" (sessionSelected)="filterTools('session', $event)"
+          (callSelected)="filterTools('call', $event)" (pageSelected)="applyToolFilters($event)"></app-tool-usage-details>
         <pre *ngIf="state.text" class="report-text">{{ state.text }}</pre>
       </ng-container>
       <p *ngIf="state.readAt" class="insights-meta">Read at {{ state.readAt | date:'HH:mm:ss' }}</p>

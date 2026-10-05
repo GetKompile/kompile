@@ -143,7 +143,8 @@ public class InsightsTool implements CliTool {
 
         props.putObject("question").put("type", "string")
                 .put("description", "The question in plain words, with any time window, module, tool, "
-                        + "crawl job, knowledge base, fact sheet, graph node or 'this session'");
+                        + "crawl job, knowledge base, fact sheet, graph node or 'this session'. Tool token drill-down: "
+                        + "tokens [tool:NAME] [session:ID] [call:ID] [offset:N] [last 7 days]");
 
         return schema;
     }
@@ -179,6 +180,7 @@ public class InsightsTool implements CliTool {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("topic", report.getTopic());
         if (report.getChart() != null) metadata.put(ToolResult.CHART_METADATA, report.getChart());
+        if (report.getUsage() != null) metadata.put("usage", report.getUsage());
         return ToolResult.success(report.getHeadline(), text, metadata);
     }
 

@@ -32,4 +32,6 @@ public class InsightReport {
     String text;
     /** What the web tool card draws (see {@link Charts}); null when there is nothing to chart. */
     ObjectNode chart;
+    /** Structured tool/session/call token drill-down, when the source supplies it. */
+    ObjectNode usage;
 }
