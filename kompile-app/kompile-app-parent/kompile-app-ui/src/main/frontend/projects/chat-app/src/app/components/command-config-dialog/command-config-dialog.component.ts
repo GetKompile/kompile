@@ -13,6 +13,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { Subject, takeUntil } from 'rxjs';
 import {
   CommandEventData,
+  CommandModelEntry,
   CommandOutcome,
   CommandRoleEntry
 } from '@shared/models/api-models';
@@ -57,6 +58,9 @@ export interface CommandConfigDialogData {
   /** Dispatch a bare CLI command (e.g. '/model') as if typed. */
   dispatch: (commandLine: string) => void;
   /** Select a model (raw '/model <id>' dispatch). */
+  selectModel?: (modelId: string) => void;
+  thinkingMenu?: CommandEventData | null;
+  selectThinking?: (value: string) => void;
   /** Select a role (raw '/role <name>' dispatch); 'none' clears (an empty argument is never sent). */
   selectRole: (roleName: string) => void;
   /** Toggle fast mode (raw '/fast on|off' dispatch). */
@@ -93,7 +97,56 @@ export interface CommandConfigDialogData {
         <ng-container *ngIf="!loading">
         <p class="cc-hint" *ngIf="busy()">Working…</p>
 
-        <p class="cc-hint">Model and vendor are selected directly above the conversation.</p>
+        <!-- Mid-session model/vendor picker, restored alongside the conversation selectors. -->
+        <section class="cc-section" data-testid="session-model-config">
+          <header class="cc-section-header">
+            <span class="cc-title">Model</span>
+            <span class="cc-meta" *ngIf="modelMenu?.provider">{{ modelMenu!.provider }}</span>
+            <button mat-icon-button type="button" class="cc-refresh" [disabled]="busy() || vendorsLoading"
+              (click)="refreshModels()" title="Reload the model catalog from the CLI"
+              aria-label="Reload the model catalog"><mat-icon>refresh</mat-icon></button>
+          </header>
+          <div class="cc-vendors" role="listbox" aria-label="Switch vendor" *ngIf="vendors().length">
+            <button type="button" role="option" class="cc-vendor-chip" *ngFor="let v of vendors()"
+              [class.current]="v.current" [class.selected]="selectedVendor === v.vendor"
+              [attr.aria-selected]="selectedVendor ? selectedVendor === v.vendor : !!v.current"
+              [disabled]="busy() || vendorsLoading" [title]="v.display || v.vendor" (click)="pickVendor(v.vendor)">
+              {{ v.display || v.vendor }}
+            </button>
+          </div>
+          <p class="cc-hint" *ngIf="vendorsLoading" role="status">Loading model catalog…</p>
+          <div class="cc-options" role="listbox" aria-label="Available models" *ngIf="models().length">
+            <button type="button" role="option" class="cc-option" *ngFor="let m of models()"
+              [class.current]="m.current" [attr.aria-selected]="!!m.current" [disabled]="busy() || vendorsLoading"
+              [title]="'Switch to ' + modelLabel(m) + ', as /model does in the terminal'" (click)="selectModel(m.id)">
+              <span class="cc-option-label">{{ modelLabel(m) }}</span>
+              <span class="cc-option-meta" *ngIf="m.contextLimit">ctx {{ m.contextLimit }}</span>
+              <span class="cc-current" *ngIf="m.current">current</span>
+            </button>
+          </div>
+          <p class="cc-empty" *ngIf="!models().length && !busy() && !vendorsLoading">
+            No models listed yet.
+            <button mat-button type="button" class="cc-link" (click)="refreshModels()">Load catalog</button>
+          </p>
+          <label class="cc-hint" *ngIf="modelMenu?.nativeModelSelection">Native model id or alias
+            <input class="cc-input" data-testid="native-model-editor" [(ngModel)]="manualModel"
+              [disabled]="busy() || vendorsLoading" (keyup.enter)="selectModel(manualModel)">
+            <button mat-button type="button" [disabled]="busy() || vendorsLoading || !manualModel.trim()"
+              (click)="selectModel(manualModel)">Select model</button>
+          </label>
+        </section>
+        <section class="cc-section" *ngIf="thinkingMenu?.supported" data-testid="session-thinking-config">
+          <header class="cc-section-header"><span class="cc-title">Thinking / effort</span></header>
+          <div class="cc-options" role="listbox" aria-label="Thinking effort">
+            <button type="button" role="option" class="cc-option" *ngFor="let option of thinkingMenu?.thinkingOptions"
+              [class.current]="option.value === (thinkingMenu?.currentThinking || '')"
+              [attr.aria-selected]="option.value === (thinkingMenu?.currentThinking || '')"
+              [disabled]="busy() || vendorsLoading || browsingOtherVendor()" (click)="selectThinking(option.value)">
+              {{ option.label }}
+            </button>
+          </div>
+          <p class="cc-hint" *ngIf="thinkingMenu?.note">{{ thinkingMenu?.note }}</p>
+        </section>
         <p class="cc-hint" *ngIf="modelMenu?.nativeModelSelection">Framework: {{ modelMenu?.provider }}.
           Start a new chat to switch framework.</p>
 
@@ -453,6 +506,12 @@ export interface CommandConfigDialogData {
     .cc-title { font-weight: 600; }
     .cc-meta { color: var(--text-tertiary, #888); font-size: 0.8em; }
 
+    .cc-vendors { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+    .cc-vendor-chip { border:1px solid var(--border-color, #ccc); border-radius:14px;
+      padding:6px 12px; background:transparent; color:var(--text-secondary, #555); cursor:pointer; }
+    .cc-vendor-chip.current { border-color:var(--status-success-text, #2e7d32); }
+    .cc-vendor-chip.selected { background:var(--color-primary-light, rgba(25,118,210,.1)); }
+    .cc-vendor-chip:disabled { opacity:.5; cursor:default; }
     .cc-keywords { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .cc-keyword { border: 1px solid var(--border-color, #ccc); border-radius: 12px;
       padding: 2px 10px; font-size: 0.78em; color: var(--text-secondary, #555); }
@@ -507,6 +566,10 @@ export interface CommandConfigDialogData {
 })
 export class CommandConfigDialogComponent implements OnInit, OnDestroy {
   modelMenu: CommandEventData | null;
+  thinkingMenu: CommandEventData | null = null;
+  manualModel = '';
+  selectedVendor?: string;
+  vendorsLoading = false;
   roleMenu: CommandEventData | null;
   fastMenu: CommandEventData | null;
   ultracodeMenu: CommandEventData | null;
@@ -533,6 +596,7 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     private agentChat: LocalAgentChatService
   ) {
     this.modelMenu = data.modelMenu;
+    this.thinkingMenu = data.thinkingMenu ?? null;
     this.roleMenu = data.roleMenu;
     this.fastMenu = data.fastMenu;
     this.ultracodeMenu = data.ultracodeMenu ?? null;
@@ -564,6 +628,7 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
             return;
           }
           this.modelMenu = snapshot?.model ?? this.modelMenu;
+          this.thinkingMenu = snapshot?.thinking ?? this.thinkingMenu;
           this.roleMenu = snapshot?.role ?? this.roleMenu;
           this.fastMenu = snapshot?.fast ?? this.fastMenu;
           this.ultracodeMenu = snapshot?.ultracode ?? this.ultracodeMenu;
@@ -594,6 +659,50 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
 
   liveSession(): boolean {
     return this.data.liveSession();
+  }
+
+  models(): CommandModelEntry[] { return this.modelMenu?.models ?? []; }
+  vendors(): { vendor: string; display?: string; current?: boolean }[] { return this.modelMenu?.vendors ?? []; }
+  modelLabel(model: CommandModelEntry): string { return model.display || model.id; }
+  browsingOtherVendor(): boolean {
+    return !!this.selectedVendor && !this.vendors().some(v => v.current && v.vendor === this.selectedVendor);
+  }
+  pickVendor(vendor: string): void {
+    if (this.busy() || this.vendorsLoading || vendor === this.selectedVendor) return;
+    this.loadModels(vendor);
+  }
+  refreshModels(): void {
+    if (!this.busy() && !this.vendorsLoading) this.loadModels();
+  }
+  private loadModels(vendor?: string): void {
+    this.vendorsLoading = true;
+    this.loadError = null;
+    this.agentChat.getSessionConfig(this.data.sessionId, this.data.workingDirectory, vendor)
+      .pipe(takeUntil(this.destroyed)).subscribe({
+        next: snapshot => {
+          this.vendorsLoading = false;
+          if (snapshot.available === false || !snapshot.model) {
+            this.loadError = snapshot.status || 'Could not load the model catalog.';
+            return;
+          }
+          this.selectedVendor = vendor;
+          this.modelMenu = snapshot.model;
+          this.thinkingMenu = snapshot.thinking ?? null;
+        },
+        error: () => { this.vendorsLoading = false; this.loadError = 'Could not load the model catalog.'; }
+      });
+  }
+  selectModel(modelId: string): void {
+    if (this.busy() || this.vendorsLoading || !modelId.trim()) return;
+    const value = this.browsingOtherVendor() ? this.selectedVendor + ':' + modelId.trim() : modelId.trim();
+    if (this.data.selectModel) this.data.selectModel(value);
+    else this.data.dispatch('/model ' + value);
+  }
+  selectThinking(value: string): void {
+    if (this.busy() || this.vendorsLoading || this.browsingOtherVendor()
+      || !this.thinkingMenu?.thinkingOptions?.some(option => option.value === value)) return;
+    if (this.data.selectThinking) this.data.selectThinking(value);
+    else this.data.dispatch('/thinking ' + (value || 'default'));
   }
 
   roles(): CommandRoleEntry[] {
@@ -715,6 +824,8 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     const data = outcome?.data;
     if (!data?.menu) return;
     if (data.menu === 'model') this.modelMenu = data;
+    if (data.menu === 'thinking') this.thinkingMenu = data;
+    if (outcome.ok && data.state?.model) this.loadModels();
     if (data.menu === 'role') this.roleMenu = data;
     if (data.menu === 'fast') this.fastMenu = data;
     if (data.menu === 'ultracode') this.ultracodeMenu = data;

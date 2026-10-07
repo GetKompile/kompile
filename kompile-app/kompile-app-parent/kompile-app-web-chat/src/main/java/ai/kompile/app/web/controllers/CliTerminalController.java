@@ -14,7 +14,10 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 
-/** A host terminal is privileged: only the loopback CLI handoff may mount usable sessions. */
+/**
+ * A host terminal is privileged: only the CLI web handoff may mount usable sessions, reached on
+ * loopback or through a same-host HTTPS proxy (never Tailscale Funnel).
+ */
 @RestController
 @RequestMapping("/api/agents/chat/terminal")
 public class CliTerminalController {
@@ -32,6 +35,14 @@ public class CliTerminalController {
     @GetMapping("/sessions") public List<CliTerminalService.View> list(HttpServletRequest request) {
         requireAccess(request, false);
         return terminals.list(request.getSession(true).getId());
+    }
+    @GetMapping("/sessions/{id}/transcript") public CliTerminalService.Transcript transcript(
+            HttpServletRequest request, @PathVariable String id) {
+        requireAccess(request, false);
+        try { return terminals.transcript(request.getSession(true).getId(), id); }
+        catch (IOException unavailable) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Transcript is unavailable", unavailable);
+        }
     }
     @PostMapping("/sessions") public CliTerminalService.View launch(HttpServletRequest request,
                                                                   @RequestBody CliTerminalService.Launch launch) {
@@ -56,6 +67,7 @@ public class CliTerminalController {
     @ExceptionHandler(IllegalStateException.class) @ResponseStatus(HttpStatus.CONFLICT)
     public Map<String, String> conflict(IllegalStateException error) { return Map.of("message", error.getMessage()); }
 
+    static final String TAILSCALE_FUNNEL_HEADER = "Tailscale-Funnel-Request";
     private static final Set<String> LOOPBACK = Set.of("localhost", "127.0.0.1", "::1", "[::1]", "0:0:0:0:0:0:0:1");
     public static void requireAccess(HttpServletRequest request, boolean mutation) {
         try {
@@ -64,10 +76,18 @@ public class CliTerminalController {
         } catch (IOException unavailable) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Web chat launch folder is unavailable", unavailable);
         }
-        // Host validation also blocks DNS rebinding. Forwarded headers grant no authority here.
-        if (!LOOPBACK.contains(request.getRemoteAddr()) || !LOOPBACK.contains(request.getLocalAddr())
-                || !LOOPBACK.contains(request.getServerName().toLowerCase(java.util.Locale.ROOT)))
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Host terminals are available on loopback only");
+        // Host validation also blocks DNS rebinding for plain HTTP. The other admitted path is a
+        // TLS-terminating proxy on this host (tailscale serve): the socket is loopback and the
+        // request is HTTPS only because LocalReverseProxyConfiguration honoured a loopback peer's
+        // X-Forwarded-Proto. Tailscale sets Funnel-Request authoritatively on public-internet
+        // traffic, which never gets a host shell.
+        boolean loopback = LOOPBACK.contains(request.getRemoteAddr()) && LOOPBACK.contains(request.getLocalAddr())
+                && LOOPBACK.contains(request.getServerName().toLowerCase(java.util.Locale.ROOT));
+        boolean localHttpsProxy = request.isSecure() && LOOPBACK.contains(request.getLocalAddr())
+                && request.getHeader(TAILSCALE_FUNNEL_HEADER) == null;
+        if (!loopback && !localHttpsProxy)
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Host terminals are available on loopback or through a local HTTPS proxy (not Tailscale Funnel)");
         String origin = request.getHeader("Origin");
         if (origin != null) {
             try {

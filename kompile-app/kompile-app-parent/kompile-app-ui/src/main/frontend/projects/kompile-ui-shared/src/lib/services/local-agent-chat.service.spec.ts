@@ -24,6 +24,23 @@ describe('LocalAgentChatService harness transport', () => {
     service = TestBed.inject(LocalAgentChatService);
   });
 
+  it('routes title metadata to its browser session without adding messages', async () => {
+    const sse = (type: string, data: unknown) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+    spyOn(window, 'fetch').and.resolveTo(new Response(new TextEncoder().encode(
+      sse('harness_session', { session_id: 'harness-title' })
+      + sse('title', { session_id: 'wrong-session', title: 'Ignore' })
+      + sse('title', { session_id: 'harness-title', title: '' })
+      + sse('title', { session_id: 'harness-title', title: 'Fix authentication' })
+      + sse('chunk', 'answer') + sse('complete', { content: 'answer' })), { status: 200 }));
+    const titles: { sessionId: string; title: string }[] = [];
+    service.getSessionTitle().subscribe(title => titles.push(title));
+    const session = service.createSession('New Chat');
+    await service.sendMessage(session, 'Fix this login', { name: 'coder' } as AgentProvider,
+      { sessionId: 'browser-title' });
+    expect(titles).toEqual([{ sessionId: 'browser-title', title: 'Fix authentication' }]);
+    expect(session.messages.map(message => message.content)).toEqual(['Fix this login', 'answer']);
+  });
+
   it('does not automatically steal a run back from a replacement subscriber', async () => {
     const events = 'id: 1\nevent: queued\ndata: {"processId":"harness-replaced","reconnectable":true}\n\n'
       + 'event: superseded\ndata: {"message":"another view"}\n\n';

@@ -155,6 +155,76 @@ describe('Chat model/vendor dropdowns', () => {
     expect(selected).not.toHaveBeenCalled();
   });
 
+  it('renders provider thinking options and emits selections including the default', async () => {
+    service.getSessionConfig.and.returnValue(of({ ...snapshot(menu), thinking: {
+      menu: 'thinking', supported: true, currentThinking: 'high',
+      thinkingOptions: [{ value: '', label: 'Provider default' }, { value: 'high', label: 'High effort' }]
+    } }));
+    const thinkingSelected = jasmine.createSpy('thinkingSelected');
+    component.thinkingSelected.subscribe(thinkingSelected);
+    component.refreshModels();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('[aria-label="Thinking effort"]').value).toBe('high');
+    change('Thinking effort', '');
+    expect(thinkingSelected).toHaveBeenCalledWith('');
+    expect(selected).not.toHaveBeenCalled();
+    component.selectThinking('imaginary');
+    expect(thinkingSelected.calls.count()).toBe(1);
+  });
+
+  it('reloads thinking after CLI success or rejection rather than retaining optimistic state', () => {
+    service.getSessionConfig.and.returnValue(of({ ...snapshot(menu), thinking: {
+      menu: 'thinking', supported: true, currentThinking: 'high',
+      thinkingOptions: [{ value: '', label: 'Default' }, { value: 'high', label: 'High' }]
+    } }));
+    component.refreshModels();
+    component.selectThinking('');
+    fixture.componentRef.setInput('outcome', { command: '/thinking default', ok: false });
+    fixture.detectChanges();
+    expect(component.thinkingChoice).toBe('high');
+    fixture.componentRef.setInput('outcome', { command: '/thinking', ok: true, data: { menu: 'thinking' } });
+    fixture.detectChanges();
+    expect(service.getSessionConfig.calls.count()).toBe(4);
+    component.selectThinking('');
+    const pending = new Subject<any>();
+    service.getSessionConfig.and.returnValue(pending.asObservable());
+    component.refreshModels();
+    pending.error(new Error('offline'));
+    expect(component.thinkingChoice).toBe('high');
+  });
+
+  it('does not apply thinking while busy, loading, or browsing another vendor', () => {
+    service.getSessionConfig.and.returnValue(of({ ...snapshot(menu), thinking: {
+      menu: 'thinking', supported: true, thinkingOptions: [{ value: 'high', label: 'High' }]
+    } }));
+    component.refreshModels();
+    const thinkingSelected = jasmine.createSpy('thinkingSelected');
+    component.thinkingSelected.subscribe(thinkingSelected);
+    component.busy = true;
+    component.selectThinking('high');
+    component.busy = false;
+    component.loading = true;
+    component.selectThinking('high');
+    component.loading = false;
+    component.selectedVendor = 'anthropic';
+    component.selectThinking('high');
+    expect(thinkingSelected).not.toHaveBeenCalled();
+  });
+
+  it('clears thinking controls when switching to a conversation without support', () => {
+    service.getSessionConfig.and.returnValue(of({ ...snapshot(menu), thinking: {
+      menu: 'thinking', supported: true, currentThinking: 'high'
+    } }));
+    component.refreshModels();
+    service.getSessionConfig.and.returnValue(of(snapshot(menu)));
+    fixture.componentRef.setInput('sessionId', 'other-session');
+    fixture.detectChanges();
+    expect(component.thinkingMenu).toBeNull();
+    expect(component.thinkingChoice).toBe('');
+    expect(fixture.nativeElement.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+  });
+
   it('preserves native framework IDs through the custom option and pins its vendor', async () => {
     service.getSessionConfig.and.returnValue(of(snapshot({ menu: 'model', provider: 'opencode',
       currentModel: 'zai/glm-5', nativeModelSelection: true })));

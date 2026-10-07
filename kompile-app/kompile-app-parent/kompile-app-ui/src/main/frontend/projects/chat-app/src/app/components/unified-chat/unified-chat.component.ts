@@ -15,15 +15,13 @@
  */
 
 import { Component, OnInit, OnDestroy, OnChanges, Input, Output, EventEmitter, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, NgZone, HostListener, Optional, Inject } from '@angular/core';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { HttpClient } from '@angular/common/http';
 import { MatDialog } from '@angular/material/dialog';
 import { MatSnackBar } from '@angular/material/snack-bar';
-import { Router } from '@angular/router';
-import { Subscription, fromEvent, firstValueFrom } from 'rxjs';
+import { Subject, Subscription, fromEvent, firstValueFrom } from 'rxjs';
 import { throttleTime, takeUntil, filter } from 'rxjs/operators';
-import { Subject } from 'rxjs';
 import { ConfirmDialogComponent, ConfirmDialogData } from '@shared/components/confirm-dialog/confirm-dialog.component';
 import { CommandConfigDialogComponent, CommandConfigDialogData } from '../command-config-dialog/command-config-dialog.component';
 import { ChatModelSelectorComponent } from '../chat-model-selector/chat-model-selector.component';
@@ -69,6 +67,46 @@ import {
   ToolUseEvent
 } from '@shared/models/api-models';
 import { ReasoningTrailDto } from '@shared/services/kb-grounding.service';
+
+// Unit conversions and display scales.
+const MILLISECONDS_PER_SECOND = 1_000;
+const SECONDS_PER_MINUTE = 60;
+const MINUTES_PER_HOUR = 60;
+const HOURS_PER_DAY = 24;
+const MILLISECONDS_PER_DAY = MILLISECONDS_PER_SECOND * SECONDS_PER_MINUTE * MINUTES_PER_HOUR * HOURS_PER_DAY;
+const DAYS_PER_WEEK = 7;
+const THOUSAND = 1_000;
+const MILLION = 1_000_000;
+const BYTES_PER_MIB = 1024 * 1024;
+
+// UI timing (milliseconds). Keep unrelated timings separate even when values match.
+const COPY_FEEDBACK_DURATION_MS = 2_000;
+const SOURCE_HIGHLIGHT_DURATION_MS = 2_000;
+const SYNC_POLL_INTERVAL_MS = 2_000;
+const SYNC_COMPLETE_DURATION_MS = 5_000;
+const SCROLL_THROTTLE_MS = 100;
+const INITIAL_VIEWPORT_CHECK_DELAY_MS = 100;
+const FOLLOW_UP_VIEWPORT_CHECK_DELAY_MS = 500;
+const STREAMING_UPDATE_INTERVAL_MS = 300;
+const SESSION_NAME_FOCUS_DELAY_MS = 50;
+const INFO_SNACKBAR_DURATION_MS = 3_000;
+const ERROR_SNACKBAR_DURATION_MS = 4_000;
+const IMPORT_ERROR_SNACKBAR_DURATION_MS = 5_000;
+
+// Chat defaults and limits.
+const DEFAULT_API_AGENT_TEMPERATURE = 0.7;
+const DEFAULT_API_AGENT_MAX_TOKENS = 4_096;
+const DEFAULT_TIMEOUT_SECONDS = 5 * SECONDS_PER_MINUTE;
+const ESTIMATED_CHARS_PER_TOKEN = 4;
+const DEFAULT_COMPACT_TRIGGER_RATIO = 0.8;
+const VIEWPORT_FILL_TOLERANCE_PX = 50;
+const SESSION_PREVIEW_MAX_CHARS = 50;
+const MAX_RENDER_CACHE_ENTRIES = 500;
+const MAX_ATTACHMENTS_PER_TURN = 8;
+const MAX_ATTACHMENT_MIB = 5;
+const MAX_TOTAL_ATTACHMENT_MIB = 20;
+const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MIB * BYTES_PER_MIB;
+const MAX_TOTAL_ATTACHMENT_BYTES = MAX_TOTAL_ATTACHMENT_MIB * BYTES_PER_MIB;
 
 // Unified message interface
 interface UnifiedMessage extends CommandMessageMetadata {
@@ -138,6 +176,8 @@ interface UnifiedMessage extends CommandMessageMetadata {
 interface ChatSession {
   id: string;
   name: string;
+  autoTitle?: boolean;
+  titleManuallySet?: boolean;
   messages: UnifiedMessage[];
   createdAt: string;
   updatedAt: string;
@@ -321,8 +361,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   apiAgentEndpointUrl: string = '';
   apiAgentApiKey: string = '';
   apiAgentModelName: string = '';
-  apiAgentTemperature: number = 0.7;
-  apiAgentMaxTokens: number = 4096;
+  apiAgentTemperature: number = DEFAULT_API_AGENT_TEMPERATURE;
+  apiAgentMaxTokens: number = DEFAULT_API_AGENT_MAX_TOKENS;
   apiAgentTestResult: string = '';
   apiAgentTestLoading: boolean = false;
   apiAgentSaving: boolean = false;
@@ -339,15 +379,15 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   graphRagMaxResults: number = 5;
 
   // Timeout settings (0 = server-owned five-minute safety default)
-  timeoutSeconds: number = 300; // Default 5 minutes
+  timeoutSeconds: number = DEFAULT_TIMEOUT_SECONDS;
   timeoutOptions: { label: string; value: number }[] = [
     { label: 'Default safety limit (5 minutes)', value: 0 },
-    { label: '1 minute', value: 60 },
-    { label: '2 minutes', value: 120 },
-    { label: '5 minutes', value: 300 },
-    { label: '10 minutes', value: 600 },
-    { label: '15 minutes', value: 900 },
-    { label: '30 minutes', value: 1800 }
+    { label: '1 minute', value: SECONDS_PER_MINUTE },
+    { label: '2 minutes', value: 2 * SECONDS_PER_MINUTE },
+    { label: '5 minutes', value: DEFAULT_TIMEOUT_SECONDS },
+    { label: '10 minutes', value: 10 * SECONDS_PER_MINUTE },
+    { label: '15 minutes', value: 15 * SECONDS_PER_MINUTE },
+    { label: '30 minutes', value: 30 * SECONDS_PER_MINUTE }
   ];
 
   // Agent session for chat
@@ -514,7 +554,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         const text = decodeURIComponent(encoded);
         navigator.clipboard.writeText(text).then(() => {
           copyBtn.textContent = 'Copied!';
-          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, COPY_FEEDBACK_DURATION_MS);
         }).catch(() => {});
       }
       return;
@@ -686,7 +726,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.ngZone.runOutsideAngular(() => {
       fromEvent(this.conversationArea.nativeElement, 'scroll')
         .pipe(
-          throttleTime(100), // Check frequently for responsive scrolling
+          throttleTime(SCROLL_THROTTLE_MS), // Check frequently for responsive scrolling
           takeUntil(this.destroy$)
         )
         .subscribe(() => {
@@ -695,8 +735,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     });
 
     // Also check immediately and after a short delay in case we start at top
-    setTimeout(() => this.checkAndLoadOlderMessages(), 100);
-    setTimeout(() => this.checkAndLoadOlderMessages(), 500);
+    setTimeout(() => this.checkAndLoadOlderMessages(), INITIAL_VIEWPORT_CHECK_DELAY_MS);
+    setTimeout(() => this.checkAndLoadOlderMessages(), FOLLOW_UP_VIEWPORT_CHECK_DELAY_MS);
   }
 
   /**
@@ -720,7 +760,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
 
     // Load more older messages when near the top
     const nearTop = scrollTop < this.PRELOAD_THRESHOLD;
-    const contentDoesntFillViewport = scrollHeight <= clientHeight + 50;
+    const contentDoesntFillViewport = scrollHeight <= clientHeight + VIEWPORT_FILL_TOLERANCE_PX;
 
     if ((nearTop || contentDoesntFillViewport) && this.hasMoreAbove && !this.isLoadingMore) {
       this.ngZone.run(() => {
@@ -813,7 +853,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     const failed = () => {
       this.workspaceTranscriptLoading = false;
       this.workspaceTranscriptFailed = true;
-      this.snackBar.open('Failed to load CLI transcript. Open the chat again to retry.', 'Dismiss', { duration: 4000 });
+      this.snackBar.open('Failed to load CLI transcript. Open the chat again to retry.', 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
       this.cdr.markForCheck();
     };
     this.http.get<{ sessionId: string; turns: { role: string; content: string }[] }>(
@@ -896,7 +936,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   private startSyncPolling(): void {
     if (this.syncPollTimer) return;
     this.pollSyncStatus();
-    this.syncPollTimer = setInterval(() => this.pollSyncStatus(), 2000);
+    this.syncPollTimer = setInterval(() => this.pollSyncStatus(), SYNC_POLL_INTERVAL_MS);
   }
 
   private stopSyncPolling(): void {
@@ -925,7 +965,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
           setTimeout(() => {
             this.showSyncComplete = false;
             this.cdr.markForCheck();
-          }, 5000);
+          }, SYNC_COMPLETE_DURATION_MS);
         }
 
         this.cdr.markForCheck();
@@ -1159,7 +1199,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       error: (err) => {
         if (!this.lifecycleIsCurrent(revision)) return;
         console.error('Failed to load synced session:', err);
-        this.snackBar.open('Failed to load session', 'Dismiss', { duration: 4000 });
+        this.snackBar.open('Failed to load session', 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
       }
     });
   }
@@ -1282,7 +1322,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       },
       error: (err) => {
         console.error('Failed to add session to folder:', err);
-        this.snackBar.open('Failed to add to folder', 'Dismiss', { duration: 4000 });
+        this.snackBar.open('Failed to add to folder', 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
       }
     });
   }
@@ -1299,7 +1339,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       },
       error: (err) => {
         console.error('Failed to remove session from folder:', err);
-        this.snackBar.open('Failed to remove from folder', 'Dismiss', { duration: 4000 });
+        this.snackBar.open('Failed to remove from folder', 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
       }
     });
   }
@@ -1313,12 +1353,14 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         input.focus();
         input.select();
       }
-    }, 50);
+    }, SESSION_NAME_FOCUS_DELAY_MS);
   }
 
   saveSessionName(session: ChatSession): void {
     if (this.editingSessionName.trim()) {
       session.name = this.editingSessionName.trim();
+      session.titleManuallySet = true;
+      session.autoTitle = false;
       session.updatedAt = new Date().toISOString();
       this.saveSessions();
     }
@@ -1355,20 +1397,23 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     const firstUserMsg = session.messages.find(m => m.role === 'user');
     if (!firstUserMsg) return '';
     const content = firstUserMsg.content;
-    return content.length > 50 ? content.substring(0, 47) + '...' : content;
+    const ellipsis = '...';
+    return content.length > SESSION_PREVIEW_MAX_CHARS
+      ? content.substring(0, SESSION_PREVIEW_MAX_CHARS - ellipsis.length) + ellipsis
+      : content;
   }
 
   formatSessionDate(dateString: string): string {
     const date = new Date(dateString);
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const diffDays = Math.floor(diffMs / MILLISECONDS_PER_DAY);
 
     if (diffDays === 0) {
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } else if (diffDays === 1) {
       return 'Yesterday';
-    } else if (diffDays < 7) {
+    } else if (diffDays < DAYS_PER_WEEK) {
       return `${diffDays}d ago`;
     } else {
       return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -1724,7 +1769,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       if (this.isStreaming) {
         this.cdr.detectChanges();
       }
-    }, 300); // Update UI every 300ms during streaming
+    }, STREAMING_UPDATE_INTERVAL_MS);
 
     // Clean up any stale streaming subs from a previous run
     this.unsubscribeStreamingSubs();
@@ -1757,6 +1802,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         lastMsg.toolUses = calls;
         this.shouldScrollToBottom = true;
       }
+    });
+
+    // Metadata only: title requests never appear as assistant messages or token stats.
+    const titleSub = this.agentChatService.getSessionTitle?.().subscribe(event => {
+      if (revision !== this.lifecycleRevision || this.harnessViewDestroyed) return;
+      this.applyGeneratedSessionTitle(event);
     });
 
     // Subscribe to chat stats (token metrics)
@@ -1856,6 +1907,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
 
     // Store subs so cancelStreaming() can clean them up
     this.activeStreamingSubs = [contentSub, completeSub, errorSub, statsSub];
+    if (titleSub) this.activeStreamingSubs.push(titleSub);
     if (liveMessagesSub) this.activeStreamingSubs.push(liveMessagesSub);
     if (toolCallsSub) this.activeStreamingSubs.push(toolCallsSub);
 
@@ -1967,7 +2019,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       userIdx--;
     }
     if (userIdx < 0) {
-      this.snackBar.open('No user message to retry', 'Dismiss', { duration: 3000 });
+      this.snackBar.open('No user message to retry', 'Dismiss', { duration: INFO_SNACKBAR_DURATION_MS });
       return;
     }
 
@@ -2013,6 +2065,17 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     return `Chat — ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
   }
 
+  private applyGeneratedSessionTitle(event: { sessionId: string; title: string }): void {
+    const session = this.currentSession;
+    if (!session || event.sessionId !== session.id || session.titleManuallySet
+        || (!session.autoTitle && session.name !== 'New Chat') || !event.title.trim()) return;
+    session.name = event.title.trim();
+    session.autoTitle = true;
+    if (this.agentSession) this.agentSession.name = session.name;
+    this.saveSessions();
+    this.cdr.markForCheck();
+  }
+
   private updateCurrentSession(): void {
     if (this.transcriptReadOnly) return;
     if (this.currentSession) {
@@ -2020,10 +2083,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       this.currentSession.updatedAt = new Date().toISOString();
 
       // Auto-name session based on first user message
-      if (this.currentSession.name === 'New Chat' && this.messages.length > 0) {
+      if (!this.currentSession.titleManuallySet && this.currentSession.name === 'New Chat' && this.messages.length > 0) {
         const firstUserMsg = this.messages.find(m => m.role === 'user');
         if (firstUserMsg) {
           this.currentSession.name = this.sanitizeSessionTitle(firstUserMsg.content);
+          this.currentSession.autoTitle = true;
         }
       }
 
@@ -2447,7 +2511,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     for (const m of msgs) {
       if (!m.commandOnly) chars += (m.content || '').length;
     }
-    return Math.round(chars / 4);
+    return Math.round(chars / ESTIMATED_CHARS_PER_TOKEN);
   }
 
   /** Context usage as a percentage of the model's input budget, or null when unknown. */
@@ -2468,7 +2532,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     const budget = this.contextBudget;
     if (!this.selectedAgent || !this.agentSession || !budget) return false;
     if (budget.source === 'kompile-cli-main') return false;
-    const trigger = budget.inputBudgetTokens * (budget.compactTriggerRatio || 0.8);
+    const trigger = budget.inputBudgetTokens * (budget.compactTriggerRatio || DEFAULT_COMPACT_TRIGGER_RATIO);
     return this.estimatedContextTokens > trigger;
   }
 
@@ -2622,7 +2686,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
           },
           error: (err: any) => {
         console.error('Failed to persist skipPermissions:', err);
-        this.snackBar.open('Failed to save permission setting', 'Dismiss', { duration: 4000 });
+        this.snackBar.open('Failed to save permission setting', 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
       }
         });
     }
@@ -2674,8 +2738,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.apiAgentEndpointUrl = '';
     this.apiAgentApiKey = '';
     this.apiAgentModelName = '';
-    this.apiAgentTemperature = 0.7;
-    this.apiAgentMaxTokens = 4096;
+    this.apiAgentTemperature = DEFAULT_API_AGENT_TEMPERATURE;
+    this.apiAgentMaxTokens = DEFAULT_API_AGENT_MAX_TOKENS;
     this.apiAgentTestResult = '';
     this.editingApiAgentName = null;
   }
@@ -2688,8 +2752,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.apiAgentEndpointUrl = agent.endpointUrl || '';
     this.apiAgentApiKey = ''; // Don't show masked key
     this.apiAgentModelName = agent.modelName || '';
-    this.apiAgentTemperature = agent.temperature ?? 0.7;
-    this.apiAgentMaxTokens = agent.maxTokens ?? 4096;
+    this.apiAgentTemperature = agent.temperature ?? DEFAULT_API_AGENT_TEMPERATURE;
+    this.apiAgentMaxTokens = agent.maxTokens ?? DEFAULT_API_AGENT_MAX_TOKENS;
     this.apiAgentTestResult = '';
     this.cdr.markForCheck();
   }
@@ -2728,7 +2792,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       error: (err: any) => {
         this.apiAgentSaving = false;
         this.apiAgentTestResult = 'Error: ' + (err.error?.error || err.message || 'Failed to save');
-        this.snackBar.open('Failed to save API agent', 'Dismiss', { duration: 4000 });
+        this.snackBar.open('Failed to save API agent', 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
         this.cdr.markForCheck();
       }
     });
@@ -2906,7 +2970,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         this.cliImporting = null;
         const errorMsg = err?.error?.error || 'Import failed';
         console.error('CLI import failed:', errorMsg);
-        this.snackBar.open('Import failed: ' + errorMsg, 'Dismiss', { duration: 5000 });
+        this.snackBar.open('Import failed: ' + errorMsg, 'Dismiss', { duration: IMPORT_ERROR_SNACKBAR_DURATION_MS });
         this.cdr.markForCheck();
       }
     });
@@ -3009,11 +3073,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     const date = new Date(timestamp);
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const diffDays = Math.floor(diffMs / MILLISECONDS_PER_DAY);
 
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return 'Yesterday';
-    if (diffDays < 7) return diffDays + 'd ago';
+    if (diffDays < DAYS_PER_WEEK) return diffDays + 'd ago';
     return date.toLocaleDateString();
   }
 
@@ -3077,24 +3141,21 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   }
 
   private processFiles(files: File[]): void {
-    const maxAttachments = 8;
-    const maxAttachmentBytes = 5 * 1024 * 1024;
-    const maxTotalBytes = 20 * 1024 * 1024;
     let reservedCount = this.pendingAttachments.length;
     let reservedBytes = this.pendingAttachments.reduce(
       (total, attachment) => total + (attachment.size || 0), 0);
 
     for (const file of files) {
-      if (reservedCount >= maxAttachments) {
-        this.snackBar.open('A chat turn may include at most 8 attachments', 'Dismiss', { duration: 4000 });
+      if (reservedCount >= MAX_ATTACHMENTS_PER_TURN) {
+        this.snackBar.open(`A chat turn may include at most ${MAX_ATTACHMENTS_PER_TURN} attachments`, 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
         break;
       }
-      if (file.size > maxAttachmentBytes) {
-        this.snackBar.open(`${file.name} exceeds the 5 MiB attachment limit`, 'Dismiss', { duration: 4000 });
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        this.snackBar.open(`${file.name} exceeds the ${MAX_ATTACHMENT_MIB} MiB attachment limit`, 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
         continue;
       }
-      if (reservedBytes + file.size > maxTotalBytes) {
-        this.snackBar.open('Attachments exceed the 20 MiB total limit', 'Dismiss', { duration: 4000 });
+      if (reservedBytes + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {
+        this.snackBar.open(`Attachments exceed the ${MAX_TOTAL_ATTACHMENT_MIB} MiB total limit`, 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
         break;
       }
 
@@ -3110,21 +3171,21 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         this.snackBar.open(
           `${file.name} is not a supported image type (attach PNG, JPEG, GIF or WebP)`,
           'Dismiss',
-          { duration: 4000 });
+          { duration: ERROR_SNACKBAR_DURATION_MS });
         continue;
       }
       if (!isImage && !isPdf && !isText) {
         this.snackBar.open(
           `${file.name} is not a supported image, PDF, or text file`,
           'Dismiss',
-          { duration: 4000 });
+          { duration: ERROR_SNACKBAR_DURATION_MS });
         continue;
       }
       if (isImage && !this.agentSupportsVision) {
         this.snackBar.open(
           'The active CLI provider does not accept image attachments',
           'Dismiss',
-          { duration: 4000 });
+          { duration: ERROR_SNACKBAR_DURATION_MS });
         continue;
       }
 
@@ -3152,7 +3213,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         this.cdr.markForCheck();
       };
       reader.onerror = () => {
-        this.snackBar.open(`Could not read ${file.name}`, 'Dismiss', { duration: 4000 });
+        this.snackBar.open(`Could not read ${file.name}`, 'Dismiss', { duration: ERROR_SNACKBAR_DURATION_MS });
       };
       if (isImage || isPdf) {
         reader.readAsDataURL(file);
@@ -3260,7 +3321,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
           message.sources[sourceIndex]._highlighted = false;
           this.cdr.markForCheck();
         }
-      }, 2000);
+      }, SOURCE_HIGHLIGHT_DURATION_MS);
     }
   }
 
@@ -3300,7 +3361,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       setTimeout(() => {
         source._copied = false;
         this.cdr.markForCheck();
-      }, 2000);
+      }, COPY_FEEDBACK_DURATION_MS);
     }).catch(err => {
       console.error('Failed to copy source:', err);
     });
@@ -3461,7 +3522,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   private cacheLatest<T>(cache: Map<string, T>, id: string, value: T): void {
     cache.delete(id);
     cache.set(id, value);
-    if (cache.size > 500) {
+    if (cache.size > MAX_RENDER_CACHE_ENTRIES) {
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);
     }
@@ -3517,10 +3578,21 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.pendingAttachments = attachments;
   }
 
+  selectThinking(value: string): void {
+    if (this.transcriptReadOnly || this.lifecycleBusy) return;
+    const draft = this.userInput;
+    const attachments = this.pendingAttachments;
+    this.pendingAttachments = [];
+    this.selectCliCommand('/thinking', value || 'default');
+    this.userInput = draft;
+    this.pendingAttachments = attachments;
+  }
+
   get modelSelectorOutcome(): CommandOutcome | null {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const outcome = this.messages[i].commandOutcome;
-      if (outcome?.data?.menu === 'model' || outcome?.command?.split(/\s+/)[0] === '/model') return outcome;
+      if (outcome && (outcome.data?.menu === 'model' || outcome.data?.menu === 'thinking'
+        || ['/model', '/thinking'].includes(outcome.command?.split(/\s+/)[0] || ''))) return outcome;
     }
     return null;
   }
@@ -3578,7 +3650,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
    * outcome carrying that payload. Seeds the command-config modal. Scope
    * defaults to session when the CLI payload omits it.
    */
-  private latestMenu(kind: 'model' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'continue' | 'judge',
+  private latestMenu(kind: 'model' | 'thinking' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'continue' | 'judge',
                      scope?: 'project'): CommandEventData | null {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const data = this.messages[i].commandOutcome?.data;
@@ -3608,12 +3680,15 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       judgeMenu: this.latestMenu('judge'),
       sessionId: this.currentSession?.id,
       workingDirectory: this.agentWorkingDirectory(),
-      busy: () => this.isStreaming || this.isLoading,
+      busy: () => this.isStreaming || this.isLoading || this.lifecycleBusy || this.transcriptReadOnly || this.isCompacting,
       liveSession: () => this.liveControlsReady,
       dispatch: (commandLine: string) => {
         this.userInput = commandLine;
         this.sendMessage();
       },
+      selectModel: (modelId: string) => this.selectModel(modelId),
+      thinkingMenu: this.latestMenu('thinking'),
+      selectThinking: (value: string) => this.selectThinking(value),
       selectRole: (roleName: string) => this.selectRole(roleName),
       toggleFastMode: (enabled: boolean) => this.toggleFastMode(enabled),
       toggleUltracode: (enabled: boolean) => this.toggleUltracode(enabled),
@@ -3764,8 +3839,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   }
 
   formatDuration(ms: number): string {
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
+    if (ms < MILLISECONDS_PER_SECOND) return `${ms}ms`;
+    return `${(ms / MILLISECONDS_PER_SECOND).toFixed(1)}s`;
   }
 
   getSessionTokenUsage(): { totalInput: number; totalOutput: number; totalTokens: number } {
@@ -3781,8 +3856,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   }
 
   formatTokenCount(count: number): string {
-    if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
-    if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+    if (count >= MILLION) return `${(count / MILLION).toFixed(1)}M`;
+    if (count >= THOUSAND) return `${(count / THOUSAND).toFixed(1)}k`;
     return count.toString();
   }
 
@@ -3819,7 +3894,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   private copyToClipboard(content: string, index: number): void {
     navigator.clipboard.writeText(content).then(() => {
       this.copiedIndex = index;
-      setTimeout(() => this.copiedIndex = null, 2000);
+      setTimeout(() => this.copiedIndex = null, COPY_FEEDBACK_DURATION_MS);
     }).catch(err => {
       console.error('Failed to copy:', err);
     });

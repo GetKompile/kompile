@@ -41,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -568,37 +569,79 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
                         embeddingDimensions, encoderType));
 
             } catch (Exception e) {
-                log.error("Failed to initialize embedding subprocess: {}", e.getMessage(), e);
-                this.initializationError = e.getMessage();
-                this.initializationErrorRetriable = isRetriableError(e);
-                loadingPhase = LoadingPhase.FAILED;
-                loadingMessage = "Error: " + e.getMessage();
-
-                // A failed initialization attempt must remain failed even if the launcher has stale
-                // model metadata from an earlier subprocess state. Retry may keep the process alive.
-                if (subprocessLauncher != null) {
-                    // Only stop subprocess on non-retriable errors
-                    if (!initializationErrorRetriable) {
-                        invalidateRestartPolicy();
-                        try {
-                            subprocessLauncher.stop();
-                        } catch (Exception stopEx) {
-                            log.warn("Failed to stop embedding subprocess after non-retriable init error: {}", stopEx.getMessage());
-                        }
-                        subprocessLauncher = null;
-                    } else {
-                        log.info("Keeping subprocess alive for retry (retriable error: {})", e.getMessage());
-                    }
-                }
-
-                this.modelSource = ModelSource.FAILED;
-
-                // Publish MODEL_FAILED event for job history tracking
-                publishEvent(EmbeddingSubprocessEvent.modelFailed(this, modelIdentifier, e.getMessage()));
+                recordInitializationFailure(e);
             } finally {
                 loading = false;
             }
         }
+    }
+
+    /**
+     * Records an {@link #ensureInitialized()} failure: sets the error/source state, stops the
+     * subprocess for non-retriable errors (kept alive for retriable ones per the existing retry
+     * behaviour), and — new — defers further auto-init via the SAME restart-governor circuit
+     * breaker used for native-crash/stall loops when the failure is permanent. Every existing
+     * caller that already respects that breaker then stops respawning the subprocess instead of
+     * looping forever: {@code ModelAutoInitializationService}'s scheduled poll (via
+     * {@link #isRestartDeferred()}) and {@code AnseriniEmbeddingStartupInitializer}'s
+     * staging-model-poller (via {@link #shouldContinuePolling()}, which checks {@code
+     * restartsPaused} first). Resume stays available via the existing explicit path (Developer >
+     * Embedding / POST /api/embedding-restart/resume).
+     *
+     * <p>Factored out of the {@code ensureInitialized()} catch block so a test can drive exactly
+     * this decision without starting a real subprocess. // visible for testing
+     */
+    void recordInitializationFailure(Exception e) {
+        log.error("Failed to initialize embedding subprocess: {}", e.getMessage(), e);
+        this.initializationError = e.getMessage();
+        this.initializationErrorRetriable = isRetriableError(e);
+        loadingPhase = LoadingPhase.FAILED;
+        loadingMessage = "Error: " + e.getMessage();
+
+        // A failed initialization attempt must remain failed even if the launcher has stale
+        // model metadata from an earlier subprocess state. Retry may keep the process alive.
+        if (subprocessLauncher != null) {
+            // Only stop subprocess on non-retriable errors
+            if (!initializationErrorRetriable) {
+                invalidateRestartPolicy();
+                try {
+                    subprocessLauncher.stop();
+                } catch (Exception stopEx) {
+                    log.warn("Failed to stop embedding subprocess after non-retriable init error: {}", stopEx.getMessage());
+                }
+                subprocessLauncher = null;
+            } else {
+                log.info("Keeping subprocess alive for retry (retriable error: {})", e.getMessage());
+            }
+        }
+
+        this.modelSource = ModelSource.FAILED;
+
+        // A permanent (non-retriable) load failure — e.g. the configured model id is not
+        // registered anywhere the staging service can see — will never succeed on retry.
+        if (!initializationErrorRetriable && !restartsPaused) {
+            pauseRestarts(buildPermanentLoadFailureReason(e.getMessage()));
+        }
+
+        // Publish MODEL_FAILED event for job history tracking
+        publishEvent(EmbeddingSubprocessEvent.modelFailed(this, modelIdentifier, e.getMessage()));
+    }
+
+    /**
+     * Builds the restart-governor deferral reason for a permanent (non-retriable) load failure —
+     * carries the model id, the staging URL (if configured) and the models actually available so
+     * the single WARN {@link #pauseRestarts(String)} logs is enough to diagnose without digging
+     * through the per-attempt stack traces.
+     */
+    private String buildPermanentLoadFailureReason(String errorMessage) {
+        String stagingUrl = AnseriniEncoderFactory.getStagingUrl();
+        Set<String> available = AnseriniEncoderFactory.getAvailableModelIds();
+        return "Permanent load failure for model '" + modelIdentifier + "'"
+                + (stagingUrl != null && !stagingUrl.isBlank() ? " (staging=" + stagingUrl + ")" : "")
+                + " — " + errorMessage
+                + ". Available models: " + available
+                + ". Resume via Developer > Embedding or POST /api/embedding-restart/resume once the "
+                + "model is configured correctly.";
     }
 
     /**
@@ -640,14 +683,65 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel, CrawlJobScope
         }
     }
 
-    private boolean isRetriableError(Exception e) {
-        String msg = e.getMessage();
-        if (msg == null) return false;
-        String upper = msg.toUpperCase();
-        return upper.contains("TIMEOUT") || upper.contains("CONNECTION") || upper.contains("UNAVAILABLE")
-                || upper.contains("STREAM CLOSED") || upper.contains("NOT ALIVE")
-                || upper.contains("PROCESS MAY HAVE CRASHED") || upper.contains("CRASH HANDLING TRIGGERED")
-                || upper.contains("SUBPROCESS CRASHED");
+    /**
+     * Subprocess crash / transport markers the shared {@link RetryableErrorClassifier} has no
+     * pattern for (they describe a live-launcher hiccup, not a problem with the model itself) and
+     * which must stay retriable regardless of the wrapping exception's type — including types the
+     * classifier always treats as permanent, like {@link IllegalStateException}. See {@link
+     * EmbeddingSubprocessLauncher} throw sites: "process is not alive", "communication failed -
+     * process may have crashed", "process was dead - crash handling triggered", "Subprocess
+     * crashed: ...", and the JDK's own "Stream closed" IOException when a pipe is written to after
+     * the subprocess has already exited.
+     */
+    private static final Pattern[] SUBPROCESS_CRASH_TRANSPORT_PATTERNS = {
+            Pattern.compile("(?i)stream closed"),
+            Pattern.compile("(?i)not alive"),
+            Pattern.compile("(?i)process may have crashed"),
+            Pattern.compile("(?i)crash handling triggered"),
+            Pattern.compile("(?i)subprocess crashed"),
+            Pattern.compile("(?i)connection"),
+    };
+
+    // visible for testing
+    static boolean isSubprocessCrashOrTransportError(Throwable e) {
+        Throwable current = e;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null) {
+                for (Pattern pattern : SUBPROCESS_CRASH_TRANSPORT_PATTERNS) {
+                    if (pattern.matcher(message).find()) {
+                        return true;
+                    }
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    // visible for testing
+    boolean isRetriableError(Exception e) {
+        // The shared classifier's own non-retriable MESSAGE patterns (e.g. "failed to load",
+        // "model file.*not found") must win EVEN IF the same message also contains one of our
+        // local crash/transport markers below — e.g. the model-not-found troubleshooting guidance
+        // text mentions "...check the staging service connection..." / "...if staging is
+        // unavailable...". Checking this first is what fixed the original bug (that guidance text
+        // being misread as transient) and must keep winning here.
+        if (RetryableErrorClassifier.matchesNonRetriableMessagePattern(e)) {
+            return false;
+        }
+
+        // A real subprocess crash / transport failure (broken pipe, dead process, crash handling)
+        // must keep retrying through the existing restart-governor/backoff machinery
+        // (StallCircuitBreaker, restart policy) rather than tripping the permanent-load-failure
+        // deferral added for model-not-found — regardless of what exception type the launcher
+        // wrapped it in, since RetryableErrorClassifier.isRetriable always treats
+        // IllegalStateException (among others) as non-retriable by type alone.
+        if (isSubprocessCrashOrTransportError(e)) {
+            return true;
+        }
+
+        return RetryableErrorClassifier.isRetriable(e);
     }
 
     // ========== Subprocess callbacks ==========

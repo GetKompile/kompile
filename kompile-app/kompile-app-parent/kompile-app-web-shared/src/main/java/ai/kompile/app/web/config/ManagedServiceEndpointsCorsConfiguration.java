@@ -65,7 +65,44 @@ public class ManagedServiceEndpointsCorsConfiguration {
                 || !request.getRequestURI().startsWith("/api/")) {
             return null;
         }
-        return currentConfiguration();
+        CorsConfiguration cors = currentConfiguration();
+        String sameHostOrigin = sameHostOrigin(request);
+        if (sameHostOrigin != null) {
+            cors.addAllowedOrigin(sameHostOrigin);
+        }
+        return cors;
+    }
+
+    /**
+     * The managed topology names personas by loopback URLs, but a browser that reached this
+     * component through Tailscale, a LAN IP or another alias sends an Origin with that host and
+     * the UI's own (possibly random web-chat) port. A page served under the exact hostname the
+     * browser used to address this request belongs to the same deployment, so it is allowed.
+     * Only the Host the browser connected with counts; Forwarded headers grant no authority.
+     */
+    static String sameHostOrigin(HttpServletRequest request) {
+        String origin = request.getHeader("Origin");
+        String serverName = request.getServerName();
+        if (origin == null || origin.isBlank() || serverName == null || serverName.isBlank()) {
+            return null;
+        }
+        try {
+            URI uri = URI.create(origin.strip());
+            String scheme = uri.getScheme();
+            if (uri.getHost() == null || uri.getRawUserInfo() != null
+                    || uri.getRawQuery() != null || uri.getRawFragment() != null
+                    || (uri.getRawPath() != null && !uri.getRawPath().isEmpty())
+                    || !("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))) {
+                return null;
+            }
+            return unbracket(uri.getHost()).equalsIgnoreCase(unbracket(serverName)) ? origin.strip() : null;
+        } catch (IllegalArgumentException invalid) {
+            return null;
+        }
+    }
+
+    private static String unbracket(String host) {
+        return host.startsWith("[") && host.endsWith("]") ? host.substring(1, host.length() - 1) : host;
     }
 
     CorsConfiguration currentConfiguration() {
@@ -74,8 +111,9 @@ public class ManagedServiceEndpointsCorsConfiguration {
         cors.setAllowedMethods(METHODS);
         cors.setAllowedHeaders(List.of("*"));
         cors.setExposedHeaders(List.of("Location", "Content-Disposition"));
-        // Origins are exact values from the managed topology (never '*'), so path-scoped HttpOnly
-        // integration cookies can safely cross persona ports on the same deployment.
+        // Origins are exact values from the managed topology or the request's own host (never
+        // '*'), so path-scoped HttpOnly integration cookies can safely cross persona ports on
+        // the same deployment.
         cors.setAllowCredentials(true);
         cors.setMaxAge(3600L);
         return cors;

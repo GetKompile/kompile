@@ -388,7 +388,10 @@ public class DirectLlmClient implements AutoCloseable {
         return client != null && config.isClaudeCliNative() && candidate.isClaudeCliNative()
                 && Objects.equals(config.getProvider(), candidate.getProvider())
                 && !Objects.equals(config.getModel(), candidate.getModel())
-                && client.selectModel(candidate.getModel(), accepted, rejected);
+                // streamChat captures config.getModel() under historyLock before
+                // entering Claude's turn lock. Keep selection/commit in that same
+                // lock order so a pending turn cannot restore the previous model.
+                && client.selectModel(candidate.getModel(), historyLock, accepted, rejected);
     }
 
     private static Consumer<String> followUpMarkers(Consumer<String> listener) {

@@ -19,6 +19,8 @@ package ai.kompile.cli.main.chat.exec;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ChatTitleGenerator;
+import ai.kompile.cli.common.chat.sources.KompileTranscriptFormat;
 import ai.kompile.cli.main.chat.ChatMemory;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
@@ -327,8 +329,9 @@ public final class HeadlessAgentRunner {
         boolean serverMode = opts.serverBaseUrl() != null && !opts.serverBaseUrl().isBlank();
 
         // ── Resolve the same project-scoped config used by interactive chat ──
-        ChatConfig config = opts.chatConfig() != null
-                ? opts.chatConfig() : ChatConfig.loadOrFromEnv(opts.workingDirectory());
+        ChatConfig config = opts.chatConfig();
+        if (config == null && opts.webInput() != null) config = ChatConfig.loadSession(opts.sessionId());
+        if (config == null) config = ChatConfig.loadOrFromEnv(opts.workingDirectory());
         if (config == null && serverMode) {
             config = new ChatConfig("kompile", null, null, opts.serverBaseUrl());
         }
@@ -365,7 +368,15 @@ public final class HeadlessAgentRunner {
                                 ChatConfig.authenticationMethodAfterProviderSwitch(persistedProvider));
                     }
                     config.setModel(persisted);
+                    config.setThinking(ai.kompile.cli.main.chat.config.SetupWizard.compatibleThinking(
+                            config.getProvider(), config.getModel(), config.getThinking(), null));
                 }
+            }
+            ChatSessionStateStore.SessionState sessionState = opts.sessionStateStoreOrDefault()
+                    .load(stateSessionId, opts.workingDirectory());
+            if (sessionState != null && sessionState.thinking() != null) {
+                config.setThinking(ai.kompile.cli.main.chat.config.SetupWizard.compatibleThinking(
+                        config.getProvider(), config.getModel(), sessionState.thinking(), null));
             }
             // A durable explicit web /role selection behaves like --role for this turn.
             if (opts.roleName() == null || opts.roleName().isBlank()) {
@@ -575,6 +586,30 @@ public final class HeadlessAgentRunner {
         } catch (Exception ignored) {
             // Transcript persistence is best-effort; never block the run on it.
         }
+        // Web chat shares the interactive title policy. Restore existing names; only
+        // a genuinely empty transcript gets one isolated first-prompt title request.
+        String storedTitle = history.readSessionTitle();
+        boolean emptyTranscript = false;
+        if (opts.webInput() != null && storedTitle == null) {
+            try { emptyTranscript = history.readTurns().isEmpty(); }
+            catch (java.io.IOException ignored) { /* Unreadable history is not a new session. */ }
+        }
+        boolean generateTitle = opts.webInput() != null && storedTitle == null && emptyTranscript;
+        String fallbackTitle = generateTitle ? KompileTranscriptFormat.normalizeTitle(
+                ReminderManager.stripReminderBlock(opts.webInput().rawInput())) : storedTitle;
+        if (generateTitle && fallbackTitle != null) history.logSessionTitle(fallbackTitle);
+        if (opts.webInput() != null && fallbackTitle != null)
+            events.publish(HeadlessRunEvent.sessionTitle(opts.sessionId(), fallbackTitle));
+        ChatTitleGenerator titleGeneration = generateTitle && fallbackTitle != null && !serverMode
+                ? ChatTitleGenerator.start(config, opts.workingDirectory(), opts.webInput().rawInput(), title -> {
+                    synchronized (history) {
+                        if (history.readTitleOverride() == null
+                                && fallbackTitle.equals(history.readSessionTitle())) {
+                            history.logSessionTitle(title);
+                            events.publish(HeadlessRunEvent.sessionTitle(opts.sessionId(), title));
+                        }
+                    }
+                }) : null;
         String resolvedPrompt = webResolution != null ? webResolution.modelPrompt()
                 : projectContext.skillRegistry().resolveInvocation(opts.prompt())
                 .map(SkillRegistry.SkillInvocation::prompt)
@@ -664,6 +699,12 @@ public final class HeadlessAgentRunner {
                 realErr.println("Error: " + failureMessage);
             }
         } finally {
+            // Text has already streamed. Keep metadata delivery alive only for the
+            // remainder of the bounded title job, never on a failed/cancelled run.
+            if (titleGeneration != null) {
+                if (exitCode == 0 && !cancel.get()) titleGeneration.await();
+                else titleGeneration.close();
+            }
             // Stop mirroring before the manager it feeds closes.
             if (sharedMirror != null) {
                 sharedMirror.close();

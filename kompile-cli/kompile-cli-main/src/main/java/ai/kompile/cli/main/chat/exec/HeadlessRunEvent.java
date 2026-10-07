@@ -36,6 +36,7 @@ public record HeadlessRunEvent(
     public enum Type {
         RUN_STARTED,
         BACKEND_STARTED,
+        SESSION_TITLE,
         SOURCES,
         STATS,
         ASSISTANT_DELTA,
@@ -99,6 +100,11 @@ public record HeadlessRunEvent(
                                            Map<String, String> configuration) {
         return new HeadlessRunEvent(0, Type.RUN_STARTED, sessionId, "", model, cwd,
                 "", true, 0, 0, "", configuration);
+    }
+
+    public static HeadlessRunEvent sessionTitle(String sessionId, String title) {
+        return new HeadlessRunEvent(0, Type.SESSION_TITLE, sessionId, "", "", "",
+                title, true, 0, 0, "", Map.of());
     }
 
     public static HeadlessRunEvent assistantDelta(String sessionId, String text) {

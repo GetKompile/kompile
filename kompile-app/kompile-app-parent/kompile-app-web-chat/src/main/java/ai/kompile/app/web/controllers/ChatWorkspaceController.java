@@ -24,6 +24,8 @@ public class ChatWorkspaceController {
     private final ChatWorkspaceStore store;
     private final KompileAdapter transcripts;
     private final ChatSourceRegistry sources;
+    @Autowired private ai.kompile.app.services.agent.ChatHarnessClient harness;
+    public record SetupRequest(String name, com.fasterxml.jackson.databind.JsonNode selection) { }
     private static final java.util.Map<String, String> NATIVE_FRAMEWORKS = java.util.Map.of(
             "claude-code", "claude", "codex", "codex", "gemini", "gemini",
             "qwen", "qwen", "opencode", "opencode", "pi", "pi");
@@ -217,6 +219,51 @@ public class ChatWorkspaceController {
         catch (IOException | IllegalArgumentException invalid) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid);
         }
+    }
+
+    @PostMapping("/projects/{projectId}/chat-setup/options")
+    public com.fasterxml.jackson.databind.JsonNode setupOptions(@PathVariable String projectId,
+                                                               @RequestBody(required = false) SetupRequest request) {
+        requireWorkspace();
+        try {
+            Path directory = setupDirectory(projectId);
+            var payload = ai.kompile.cli.common.util.JsonUtils.standardMapper().createObjectNode().put("action", "catalog");
+            if (request != null && request.selection() != null) payload.set("selection", request.selection());
+            return harness.setupChat(directory.toString(), payload);
+        } catch (IOException | IllegalArgumentException invalid) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid chat setup project", invalid);
+        }
+    }
+
+    @PostMapping("/projects/{projectId}/chat-setup/create")
+    public ChatWorkspaceStore.Chat setupCreate(@PathVariable String projectId, @RequestBody SetupRequest request) {
+        requireWorkspace();
+        try {
+            Path directory = setupDirectory(projectId);
+            if (request == null || request.selection() == null || !request.selection().isObject())
+                throw new IllegalArgumentException("Choose chat setup options");
+            String title = request.name() == null || request.name().isBlank() ? "New Chat" : request.name().strip();
+            if (title.length() > 256 || title.chars().anyMatch(Character::isISOControl))
+                throw new IllegalArgumentException("Invalid chat title");
+            String id = java.util.UUID.randomUUID().toString();
+            var payload = ai.kompile.cli.common.util.JsonUtils.standardMapper().createObjectNode()
+                    .put("action", "create").put("sessionId", id);
+            payload.set("selection", request.selection());
+            var result = harness.setupChat(directory.toString(), payload);
+            if (!result.path("ok").asBoolean(false))
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        result.path("status").asText("Chat setup failed; no chat was created"));
+            return store.createChat(projectId, title, result.path("framework").asText("standard"),
+                    result.path("model").asText(null), id);
+        } catch (IOException | IllegalArgumentException invalid) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot create configured chat", invalid);
+        }
+    }
+
+    private Path setupDirectory(String projectId) throws IOException {
+        var project = store.read().projects().stream().filter(p -> p.id().equals(projectId)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Unknown project"));
+        return store.resolveRegisteredDirectory(project.workingDirectory());
     }
 
     @PutMapping("/projects/{projectId}/chats/{sessionId}/title")

@@ -79,6 +79,23 @@ class KompileCliHarnessClientTest {
     }
 
     @Test
+    void setupUsesSecretSafeStdinAndNeverIncludesSecretsInLaunchArguments() throws Exception {
+        var fake = new FakeProcess("{\"ok\":true,\"available\":true}", "private diagnostic", 0);
+        client = clientWith(fake);
+        var payload = new ObjectMapper().createObjectNode().put("action", "create");
+        payload.putObject("selection").put("apiKey", "private-key");
+        assertTrue(client.setupChat(tempDir.toString(), payload).path("ok").asBoolean());
+        assertTrue(capturedCommand.get().contains("--web-setup"));
+        assertFalse(capturedCommand.get().toString().contains("private-key"));
+        assertEquals("private-key", new ObjectMapper().readTree(fake.stdin.toByteArray()).path("selection").path("apiKey").asText());
+    }
+    @Test
+    void unsupportedSetupDoesNotExposeAnOldLauncherEcho() {
+        client = clientWith(new FakeProcess("echoed private-key", "parser private-key", 2));
+        var result = client.setupChat(tempDir.toString(), new ObjectMapper().createObjectNode().put("action", "catalog"));
+        assertFalse(result.path("available").asBoolean()); assertFalse(result.toString().contains("private-key"));
+    }
+    @Test
     void commandUsesHarnessPersonaSessionAndStdinWithoutPuttingPromptInArgv() {
         client = clientWith(new FakeProcess("", "", 0));
         AgentChatRequest request = request("private prompt");
@@ -93,12 +110,13 @@ class KompileCliHarnessClientTest {
 
         assertEquals("/opt/kompile/bin/kompile", command.get(0));
         assertTrue(command.containsAll(List.of(
-                "chat", "--output-format", "stream-json", "--input-format", "web-json", "--local",
+                "chat", "--output-format", "stream-json", "--input-format", "web-json",
                 "--session-id", "web-session", "--role", "reviewer",
                 "--agent", "coder", "--rag", "--no-memory",
                 "--dangerously-skip-permissions", "--attachment")), command.toString());
         assertEquals("-", command.get(command.size() - 1));
         assertFalse(command.contains("private prompt"), command.toString());
+        assertFalse(command.contains("--local"), "The selected runtime must not be overwritten by a blanket --local flag");
     }
 
     @Test
@@ -288,6 +306,25 @@ class KompileCliHarnessClientTest {
         Map<String, Object> terminal = (Map<String, Object>) sink.events.get(6).data;
         assertEquals("kompile-cli-main", terminal.get("engine"));
         assertEquals("hello world", terminal.get("content"));
+    }
+
+    @Test
+    void forwardsTitleAsMetadataWithoutChangingAnswerContent() {
+        FakeProcess fake = new FakeProcess(String.join("\n", List.of(
+                "{\"seq\":1,\"type\":\"session\",\"session_id\":\"browser-session\"}",
+                "{\"seq\":2,\"type\":\"title\",\"session_id\":\"browser-session\",\"title\":\"Repair login authentication\"}",
+                "{\"seq\":3,\"type\":\"result\",\"text\":\"answer only\",\"exit\":0}"
+        )) + "\n", "", 0);
+        client = clientWith(fake);
+        RecordingSink sink = new RecordingSink();
+        AgentChatRequest request = request("fix login");
+        request.setSessionId("browser-session");
+        client.runTurn("title-run", request, sink);
+        assertEquals(List.of("start", "harness_session", "title", "complete"), sink.names());
+        JsonNode title = (JsonNode) sink.events.get(2).data;
+        assertEquals("Repair login authentication", title.path("title").asText());
+        assertEquals("browser-session", title.path("session_id").asText());
+        assertEquals("answer only", ((Map<?, ?>) sink.events.get(3).data).get("content"));
     }
 
     @Test

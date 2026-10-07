@@ -65,6 +65,13 @@ class CliTerminalTransportTest {
             WebSocket socket = http.newWebSocketBuilder().header("Cookie", cookie).header("Origin", origin)
                     .buildAsync(socketUri, first).get(5, TimeUnit.SECONDS);
             first.await("READY café");
+            var transcript = http.send(HttpRequest.newBuilder(URI.create(endpoint + "/" + id + "/transcript"))
+                    .header("Cookie", cookie).header("Origin", origin).timeout(Duration.ofSeconds(5)).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, transcript.statusCode(), transcript.body());
+            assertEquals(mapper.readTree(created.body()).path("sessionId"), mapper.readTree(transcript.body()).path("sessionId"));
+            var forbiddenTranscript = http.send(HttpRequest.newBuilder(URI.create(endpoint + "/" + id + "/transcript"))
+                    .header("Origin", origin).timeout(Duration.ofSeconds(5)).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(404, forbiddenTranscript.statusCode(), forbiddenTranscript.body());
             socket.sendText("{\"type\":\"resize\",\"cols\":113,\"rows\":37}", true).get(5, TimeUnit.SECONDS);
             socket.sendText("{\"type\":\"input\",\"data\":\"size\\nhello\\n\"}", true).get(5, TimeUnit.SECONDS);
             first.await("37 113"); first.await("GOT:hello");

@@ -344,6 +344,74 @@ class WebCommandResolverRoleFastTest {
         return config;
     }
 
+    @Test
+    void thinkingSelectionIsValidatedAndDurablePerSession() {
+        ChatConfig config = eligibleFastConfig();
+        config.setModel("gpt-5.5");
+        ChatSessionStateStore store = new ChatSessionStateStore();
+        WebCommandResolver.Resolution selected = WebCommandResolver.resolve(input("/thinking HIGH"), project, store, config);
+        assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED, selected.status());
+        assertEquals("high", store.load("web-session-1", project).thinking());
+        assertNull(config.getThinking(), "a session command must not mutate the shared project config");
+        assertNull(store.load("other-session", project));
+        assertNull(store.load("web-session-1", tempDir.resolve("other-project")));
+        assertEquals(WebCommandResolver.Status.INVALID,
+                WebCommandResolver.resolve(input("/thinking imaginary"), project, store, config).status());
+        assertEquals("high", store.load("web-session-1", project).thinking());
+        WebChatInput query = new WebChatInput(WebChatInput.VERSION, "", "", "web-session-1", true);
+        JsonNode thinking = WebCommandResolver.resolve(query, project, store, config).data().path("thinking");
+        assertTrue(thinking.path("supported").asBoolean());
+        assertEquals("high", thinking.path("currentThinking").asText());
+        assertTrue(thinking.path("thinkingOptions").size() > 1);
+    }
+
+    @Test
+    void thinkingDefaultClearsInheritedEffortWithoutLosingRoleOrModel() {
+        ChatConfig config = eligibleFastConfig();
+        config.setModel("gpt-5.5");
+        config.setThinking("high");
+        ChatSessionStateStore store = new ChatSessionStateStore();
+        store.updateModel("web-session-1", project, "gpt-5.5");
+        store.updateRole("web-session-1", project, "architect");
+        assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED,
+                WebCommandResolver.resolve(input("/thinking default"), project, store, config).status());
+        assertEquals("", store.load("web-session-1", project).thinking());
+        assertEquals("gpt-5.5", store.loadModel("web-session-1", project));
+        assertEquals("architect", store.loadRole("web-session-1", project));
+        assertEquals("high", config.getThinking());
+        assertEquals("", WebCommandResolver.resolve(input("/thinking"), project, store, config)
+                .data().path("currentThinking").asText());
+        store.updateRole("web-session-1", project, "coder");
+        assertEquals("", store.load("web-session-1", project).thinking(), "role writes preserve explicit default");
+    }
+
+    @Test
+    void thinkingUsesDurableModelAndProviderInsteadOfProjectDefaults() {
+        ChatSessionStateStore store = new ChatSessionStateStore();
+        store.updateModel("web-session-1", project, "openai", "gpt-5.5");
+        assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED,
+                WebCommandResolver.resolve(input("/thinking high"), project, store, configuredChatConfig()).status());
+        JsonNode menu = WebCommandResolver.resolve(input("/thinking"), project, store, configuredChatConfig()).data();
+        assertEquals("openai", menu.path("provider").asText());
+        assertEquals("gpt-5.5", menu.path("model").asText());
+        assertEquals("high", menu.path("currentThinking").asText());
+        store.updateModel("web-session-1", project, "custom", "non-reasoning-model");
+        assertNull(store.load("web-session-1", project).thinking(), "model/provider switches discard stale effort");
+    }
+
+    @Test
+    void unsupportedThinkingAndMissingSessionFailClosed() {
+        assertEquals(WebCommandResolver.Status.INVALID,
+                WebCommandResolver.resolve(input("/thinking high"), project,
+                        new ChatSessionStateStore(), configuredChatConfig()).status());
+        WebChatInput missingSession = new WebChatInput(WebChatInput.VERSION, "/thinking high", "", "");
+        ChatConfig config = eligibleFastConfig();
+        config.setModel("gpt-5.5");
+        assertEquals(WebCommandResolver.Status.INVALID,
+                WebCommandResolver.resolve(missingSession, project, new ChatSessionStateStore(), config).status());
+        assertEquals(ChatCommandCatalog.WebSupport.SUPPORTED, ChatCommandCatalog.webSupport("thinking"));
+    }
+
     private ChatConfig eligibleFastConfig() {
         ChatConfig config = configuredChatConfig();
         config.setProvider("openai");

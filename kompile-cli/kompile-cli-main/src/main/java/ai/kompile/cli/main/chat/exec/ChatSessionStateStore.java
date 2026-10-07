@@ -35,8 +35,8 @@ import java.util.Objects;
  * Durable, cross-process session state for web-JSON command runs
  * ({@code ~/.kompile/web-session-state/<sessionId>.json}).
  *
- * <p>Currently the durable fields are the explicit {@code /model} and {@code /role}
- * selections, but the schema is intentionally flat so future durable-session
+ * <p>Currently the durable fields are the explicit {@code /model}, {@code /role},
+ * and {@code /thinking} selections. The schema is intentionally flat so future durable-session
  * commands can extend it. A stored record is trusted only when its
  * {@code workingDirectory} still matches
  * the invoking run's directory; any mismatch (or an unreadable/corrupt file) is
@@ -62,7 +62,11 @@ public final class ChatSessionStateStore {
      * a provider predates vendor switching and applies to the configured provider).
      */
     public record SessionState(int schemaVersion, String sessionId, String workingDirectory,
-                               String model, String role, String updatedAt, String provider) {
+                               String model, String role, String updatedAt, String provider, String thinking) {
+        public SessionState(int schemaVersion, String sessionId, String workingDirectory,
+                            String model, String role, String updatedAt, String provider) {
+            this(schemaVersion, sessionId, workingDirectory, model, role, updatedAt, provider, null);
+        }
     }
 
     /** Result of a save: whether the mutation was applied and the resulting state. */
@@ -121,7 +125,8 @@ public final class ChatSessionStateStore {
         String provider = root.path("provider").isTextual()
                 ? root.path("provider").asText() : null;
         return new SessionState(root.path("schemaVersion").asInt(), root.path("sessionId").asText(),
-                recordedDirectory, model, role, updatedAt, provider);
+                recordedDirectory, model, role, updatedAt, provider,
+                root.path("thinking").isTextual() ? root.path("thinking").asText() : null);
     }
 
     private static boolean isKnownSchemaVersion(int version) {
@@ -208,7 +213,9 @@ public final class ChatSessionStateStore {
                         preservedDirectory, model.trim(),
                         current == null ? null : current.role(),
                         java.time.Instant.now().toString(),
-                        preservedProvider);
+                        preservedProvider,
+                        current != null && model.trim().equals(current.model())
+                                && Objects.equals(preservedProvider, current.provider()) ? current.thinking() : null);
                 writeAtomically(file, next);
                 return new SaveResult(true, next);
             } finally {
@@ -225,12 +232,21 @@ public final class ChatSessionStateStore {
      * Mirrors {@link #updateModel(String, Path, String)} locking semantics.
      */
     public SaveResult updateRole(String sessionId, Path workingDirectory, String role) {
+        return updateSelection(sessionId, workingDirectory, role, false);
+    }
+
+    /** Null means never selected; an empty value explicitly uses the provider/model default. */
+    public SaveResult updateThinking(String sessionId, Path workingDirectory, String thinking) {
+        return updateSelection(sessionId, workingDirectory, thinking, true);
+    }
+
+    private SaveResult updateSelection(String sessionId, Path workingDirectory, String value, boolean thinking) {
         Objects.requireNonNull(workingDirectory, "workingDirectory");
         Path file = stateFile(sessionId);
         if (file == null) {
             return new SaveResult(false, null); // reject path-traversing/invalid ids before any I/O
         }
-        if (role == null) {
+        if (value == null) {
             return new SaveResult(false, load(sessionId, workingDirectory));
         }
         try {
@@ -251,12 +267,14 @@ public final class ChatSessionStateStore {
                         ? current.workingDirectory()
                         : normalize(workingDirectory).toString();
                 String preservedModel = current == null ? null : current.model();
-                // An explicit empty string clears the role selection.
-                String storedRole = role.isBlank() ? "" : role.trim();
+                // Empty clears the role or explicitly selects provider-default thinking.
+                String selection = value.isBlank() ? "" : value.trim();
                 SessionState next = new SessionState(SCHEMA_VERSION, sessionId,
-                        preservedDirectory, preservedModel, storedRole,
+                        preservedDirectory, preservedModel,
+                        thinking ? (current == null ? null : current.role()) : selection,
                         java.time.Instant.now().toString(),
-                        current == null ? null : current.provider());
+                        current == null ? null : current.provider(),
+                        thinking ? selection : (current == null ? null : current.thinking()));
                 writeAtomically(file, next);
                 return new SaveResult(true, next);
             } finally {
@@ -277,6 +295,7 @@ public final class ChatSessionStateStore {
         root.put("role", next.role() == null ? "" : next.role());
         root.put("updatedAt", next.updatedAt());
         root.put("provider", next.provider() == null ? "" : next.provider());
+        if (next.thinking() != null) root.put("thinking", next.thinking());
         writeAtomically(file, root);
     }
 

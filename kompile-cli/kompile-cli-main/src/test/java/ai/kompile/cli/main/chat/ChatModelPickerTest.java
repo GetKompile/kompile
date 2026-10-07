@@ -294,7 +294,7 @@ class ChatModelPickerTest {
         try (Picker picker = new Picker(config("custom", null, "none", "http://endpoint.invalid/v1"),
                 models("gpt-5.5"))) {
             picker.choose("/model", answer("picker model", "provider"),
-                    answer("picker provider", "openai"), answer("picker model", "1"));
+                    answer("picker provider", "openai"), answer("picker model", "1"), answer("picker thinking", ""));
             ChatConfig active = picker.repl.getChatConfig();
             assertEquals("openai-codex", active.getProvider());
             assertEquals("oauth", active.getAuthenticationMethod());
@@ -385,7 +385,7 @@ class ChatModelPickerTest {
     }
 
     @Test
-    void claudeCodeModelOnlyKeepsCompatibleSettingsWithoutCredentialOrEffortPages() throws Exception {
+    void claudeCodeModelOnlyKeepsCompatibleSettingsWithEffortPageWithoutCredentials() throws Exception {
         ChatConfig config = config("anthropic", null, "oauth", null);
         config.setModel("claude-opus-5-5");
         config.setThinking("high");
@@ -394,7 +394,7 @@ class ChatModelPickerTest {
                 new LiveModelDiscovery.Model("claude-opus-5-5", List.of("high", "xhigh")),
                 new LiveModelDiscovery.Model("claude-opus-5-6", List.of("high", "xhigh"))), List.of());
         try (Picker picker = new Picker(config, models)) {
-            picker.choose("/model", answer("picker model", "2"));
+            picker.choose("/model", answer("picker model", "2"), answer("picker thinking", ""));
             assertEquals("claude-opus-5-6", picker.repl.getChatConfig().getModel());
             assertEquals("oauth", picker.repl.getChatConfig().getAuthenticationMethod());
             assertEquals("high", picker.repl.getChatConfig().getThinking());
@@ -405,7 +405,7 @@ class ChatModelPickerTest {
     }
 
     @Test
-    void oauthModelOnlyKeepsFastModeAndEffortWithOneAnswer() throws Exception {
+    void oauthModelOnlyKeepsFastModeAndEffortWhenThinkingIsBlank() throws Exception {
         store.put("openai-codex", "subscription", ManagedCredential.oauth(
                 "codex-access", "refresh-token", Long.MAX_VALUE, Map.of("accountId", "account-123")), true);
         ChatConfig config = config("openai-codex", null, "oauth", null);
@@ -416,7 +416,7 @@ class ChatModelPickerTest {
         ModelDiscovery.Result models = ModelDiscovery.Result.success(List.of(
                 new LiveModelDiscovery.Model("gpt-5.6-sol", List.of("high", "xhigh"))), List.of());
         try (Picker picker = new Picker(config, models)) {
-            picker.choose("/model", answer("picker model", "1"));
+            picker.choose("/model", answer("picker model", "1"), answer("picker thinking", ""));
             ChatConfig active = picker.repl.getChatConfig();
             assertEquals("subscription", active.getCredentialName());
             assertEquals("oauth", active.getAuthenticationMethod());
@@ -424,6 +424,74 @@ class ChatModelPickerTest {
             assertEquals("high", active.getThinking());
             assertTrue(picker.calls.get(0).auth().oauth());
             assertEquals("account-123", picker.calls.get(0).auth().headers().get("chatgpt-account-id"));
+        }
+    }
+
+    @Test
+    void modelPickerSelectsAndPersistsThinkingFromDiscovery() throws Exception {
+        ModelDiscovery.Result discovery = ModelDiscovery.Result.success(List.of(
+                new LiveModelDiscovery.Model("reasoning-model", List.of("high", "xhigh"))), List.of());
+        try (Picker picker = new Picker(config("openai", "key", "api-key", null), discovery)) {
+            picker.choose("/model", answer("picker model", "1"), answer("picker thinking", "bogus"),
+                    answer("picker thinking", "xhigh"));
+            assertEquals("xhigh", picker.repl.getChatConfig().getThinking());
+            assertEquals("xhigh", ChatConfig.loadSession("model-picker-test").getThinking());
+            assertEquals(1, picker.calls.size(), "effort selection reuses the model discovery result");
+        }
+    }
+
+    @Test
+    void modelPickerCanClearThinkingToProviderDefault() throws Exception {
+        ChatConfig config = config("openai", "key", "api-key", null);
+        config.setThinking("high");
+        ModelDiscovery.Result discovery = ModelDiscovery.Result.success(List.of(
+                new LiveModelDiscovery.Model("reasoning-model", List.of("high", "xhigh"))), List.of());
+        try (Picker picker = new Picker(config, discovery)) {
+            picker.choose("/model", answer("picker model", "1"), answer("picker thinking", "1"));
+            assertNull(picker.repl.getChatConfig().getThinking());
+            assertNull(ChatConfig.loadSession("model-picker-test").getThinking());
+        }
+    }
+
+    @Test
+    void cancellingThinkingLeavesModelCredentialsAndEffortUnchanged() throws Exception {
+        ChatConfig config = config("openai", "key", "api-key", null);
+        config.setThinking("high");
+        ModelDiscovery.Result discovery = ModelDiscovery.Result.success(List.of(
+                new LiveModelDiscovery.Model("reasoning-model", List.of("high", "xhigh"))), List.of());
+        try (Picker picker = new Picker(config, discovery)) {
+            picker.choose("/model", answer("picker model", "1"), answer("picker thinking", "cancel"));
+            assertEquals("original-model", picker.repl.getChatConfig().getModel());
+            assertEquals("high", picker.repl.getChatConfig().getThinking());
+            assertEquals("original-model", ChatConfig.loadSession("model-picker-test").getModel());
+        }
+    }
+
+    @Test
+    void thinkingBackReturnsToModelsWithoutApplyingTheCandidate() throws Exception {
+        ModelDiscovery.Result discovery = ModelDiscovery.Result.success(List.of(
+                new LiveModelDiscovery.Model("reasoning-model", List.of("high", "xhigh"))), List.of());
+        try (Picker picker = new Picker(config("openai", "key", "api-key", null), discovery)) {
+            picker.choose("/model", answer("picker model", "1"), answer("picker thinking", "back"),
+                    answer("picker model", "cancel"));
+            assertEquals("original-model", picker.repl.getChatConfig().getModel());
+        }
+    }
+
+    @Test
+    void thinkingCommandValidatesAndPersistsWithoutRediscoveringModels() throws Exception {
+        ChatConfig config = config("openai", "key", "api-key", null);
+        config.setModel("gpt-5.5");
+        try (Picker picker = new Picker(config, models("gpt-5.5"))) {
+            picker.choose("/thinking HIGH");
+            assertEquals("high", picker.repl.getChatConfig().getThinking());
+            assertEquals("high", ChatConfig.loadSession("model-picker-test").getThinking());
+            picker.choose("/thinking invalid");
+            assertEquals("high", picker.repl.getChatConfig().getThinking());
+            picker.choose("/thinking default");
+            assertNull(picker.repl.getChatConfig().getThinking());
+            assertNull(ChatConfig.loadSession("model-picker-test").getThinking());
+            assertTrue(picker.calls.isEmpty());
         }
     }
 

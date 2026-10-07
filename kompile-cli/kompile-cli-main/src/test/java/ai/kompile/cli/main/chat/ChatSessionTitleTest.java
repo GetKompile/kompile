@@ -38,6 +38,32 @@ class ChatSessionTitleTest {
     }
 
     @Test
+    void generatedTitleUpgradesOnlyProvisionalName() {
+        ChatSessionTitle title = new ChatSessionTitle();
+        title.initializeFromPrompt("Please help me debug this very long request");
+        assertTrue(title.applyGenerated("Debugging the chat request"));
+        assertFalse(title.applyGenerated("Duplicate result"));
+        assertEquals("Debugging the chat request", title.get());
+    }
+
+    @Test
+    void manualRenameWinsEvenWhenItMatchesFallback() {
+        ChatSessionTitle title = new ChatSessionTitle();
+        title.initializeFromPrompt("Original prompt");
+        title.replace("Original prompt");
+        assertFalse(title.applyGenerated("Generated summary"));
+        assertEquals("Original prompt", title.get());
+    }
+
+    @Test
+    void restoredTitleIsNotRegenerated() {
+        ChatSessionTitle title = new ChatSessionTitle();
+        title.replace("Restored title");
+        assertFalse(title.initializeFromPrompt("Next message"));
+        assertFalse(title.applyGenerated("Generated summary"));
+    }
+
+    @Test
     void blankPromptDoesNotInitializeTitle() {
         ChatSessionTitle title = new ChatSessionTitle();
 

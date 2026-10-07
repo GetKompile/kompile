@@ -49,6 +49,44 @@ export interface ManagedDependencyStatus {
 }
 
 /**
+ * The managed topology defaults to loopback URLs, which only name the Kompile host from a
+ * browser running on that same host. When the UI was opened under another name (Tailscale,
+ * LAN IP, 127.0.0.1 vs localhost) the sibling persona is addressed by that same name and its
+ * configured port. A page served over HTTPS (e.g. `tailscale serve`) reaches siblings over
+ * HTTPS on that port too, since browsers block http:// calls from it. Explicitly configured
+ * non-loopback URLs are untouched.
+ */
+export function reachableFromBrowser(
+  raw: string,
+  page: Pick<Location, 'hostname' | 'protocol'>
+): string {
+  if (!page?.hostname) {
+    return raw;
+  }
+  try {
+    const target = new URL(raw);
+    if (!isLoopbackHost(target.hostname)
+        || target.hostname.toLowerCase() === page.hostname.toLowerCase()) {
+      return raw;
+    }
+    target.hostname = page.hostname;
+    if (page.protocol === 'https:' && target.protocol === 'http:') {
+      const port = target.port || '80';
+      target.protocol = 'https:';
+      target.port = port;
+    }
+    return target.href;
+  } catch {
+    return raw;
+  }
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1');
+  return host === 'localhost' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
+/**
  * Browser-side companion to the CLI's managed service endpoint router.
  *
  * Each split UI obtains the same service-endpoints.json view from its own
@@ -180,7 +218,8 @@ export class ServiceEndpointRouter {
     if (!raw || typeof raw !== 'string') {
       return null;
     }
-    return raw.replace(/\/+$/, '');
+    const page = typeof window !== 'undefined' ? window.location : undefined;
+    return (page ? reachableFromBrowser(raw, page) : raw).replace(/\/+$/, '');
   }
 
   private normalizePrefix(prefix: string): string | null {

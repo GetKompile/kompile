@@ -8,6 +8,9 @@ import { By } from '@angular/platform-browser';
 import { responsiveLayout } from '../responsive-layout-test-helper';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
+import { MatDialog } from '@angular/material/dialog';
+import { Subject } from 'rxjs';
+import { NewChatDialogComponent, NewChatDialogResult } from '../new-chat-dialog/new-chat-dialog.component';
 import { ChatWorkspaceComponent, WorkspaceChatPaneComponent, WorkspaceProject } from './chat-workspace.component';
 import { LocalAgentChatService } from '@shared/services/local-agent-chat.service';
 import { AgentService } from '@shared/services/agent.service';
@@ -35,11 +38,17 @@ describe('Chat workspace', () => {
   let fixture: ComponentFixture<ChatWorkspaceComponent>;
   let http: HttpTestingController;
   let projects: WorkspaceProject[];
+  let closed: Subject<NewChatDialogResult | undefined>;
+  let dialogs: jasmine.SpyObj<MatDialog>;
   beforeEach(async () => {
     sessionStorage.clear();
+    closed = new Subject();
+    dialogs = jasmine.createSpyObj('MatDialog', ['open']);
+    dialogs.open.and.returnValue({afterClosed: () => closed.asObservable()} as any);
     await TestBed.configureTestingModule({
       imports: [CommonModule, FormsModule, RouterTestingModule, HttpClientTestingModule, MatButtonModule, MatIconModule, ChatActivityIndicatorComponent],
-      declarations: [ChatWorkspaceComponent, WorkspaceChatPaneComponent, StubChat, StubTerminal]
+      declarations: [ChatWorkspaceComponent, WorkspaceChatPaneComponent, StubChat, StubTerminal],
+      providers: [{provide: MatDialog, useValue: dialogs}]
     }).compileComponents();
     fixture = TestBed.createComponent(ChatWorkspaceComponent);
     http = TestBed.inject(HttpTestingController);
@@ -430,14 +439,8 @@ describe('Chat workspace', () => {
     workspace.open(projects[0], projects[0].chats[0]); fixture.detectChanges();
     const oldPane = workspace.panes.first;
     workspace.beginChat(projects[0]);
-    const capabilities = http.expectOne(r => r.url.endsWith('/agents/chat/capabilities'));
-    expect(capabilities.request.params.get('workingDirectory')).toBe('/projects/one');
-    capabilities.flush({ frameworks: [{ id: 'opencode', displayName: 'OpenCode', available: true }] });
-    workspace.newChat(projects[0], 'opencode', 'zai/glm-5');
-    const request = http.expectOne(r => r.url.endsWith('/workspace/projects/p1/chats'));
-    expect(request.request.body.framework).toBe('opencode');
-    expect(request.request.body.model).toBe('zai/glm-5');
-    request.flush({ id: 'zai', name: 'GLM', framework: 'opencode', model: 'zai/glm-5' }); fixture.detectChanges();
+    expect(dialogs.open).toHaveBeenCalledWith(NewChatDialogComponent, jasmine.objectContaining({data: jasmine.objectContaining({workingDirectory: '/projects/one'})}));
+    closed.next({chat: { id: 'zai', name: 'GLM', framework: 'opencode', model: 'zai/glm-5' }}); fixture.detectChanges();
     expect(workspace.panes.first).toBe(oldPane);
     expect(workspace.opened.map(item => item.chat.id)).toEqual(['c1', 'zai']);
     expect(fixture.nativeElement.querySelector('aside').textContent).toContain('opencode / zai/glm-5');
@@ -456,10 +459,9 @@ describe('Chat workspace', () => {
     const workspace = fixture.componentInstance;
     workspace.open(projects[1], projects[1].chats[0]); fixture.detectChanges();
     (fixture.debugElement.query(By.directive(StubChat)).componentInstance as StubChat).workspaceNewChat.emit();
-    http.expectOne(r => r.url.endsWith('/agents/chat/capabilities')).flush({ frameworks: [] });
     expect(workspace.newChatProject).toBe('p2');
-    workspace.newChat(projects[1]);
-    http.expectOne(r => r.url.endsWith('/workspace/projects/p2/chats')).flush({ id: 'c3', name: 'Chat 2' });
+    expect((dialogs.open.calls.mostRecent().args[1]?.data as {workingDirectory: string}).workingDirectory).toBe('/projects/two');
+    closed.next({chat: { id: 'c3', name: 'Chat 2' }});
     fixture.detectChanges();
     expect(workspace.activeId).toBe('c3');
     expect(workspace.opened.map(item => item.chat.id)).toEqual(['c2', 'c3']);
@@ -475,9 +477,8 @@ describe('Chat workspace', () => {
     expect(request.request.body).toEqual({ parentDirectory: '/projects', name: 'Three' });
     request.flush({ id: 'p3', name: 'Three', workingDirectory: '/projects/Three', chats: [] });
     flushVendorRequests('p3');
-    const chatRequest = http.expectOne(r => r.url.endsWith('/workspace/projects/p3/chats'));
-    expect(chatRequest.request.body.name).toBe('Chat 1');
-    chatRequest.flush({ id: 'c3', name: 'Chat 1' });
+    expect(dialogs.open.calls.mostRecent().args[1]?.data).toEqual(jasmine.objectContaining({name: 'Chat 1', workingDirectory: '/projects/Three'}));
+    closed.next({chat: { id: 'c3', name: 'Chat 1' }});
     fixture.detectChanges();
     expect(workspace.projects.length).toBe(3);
     expect(workspace.activeId).toBe('c3');
@@ -515,7 +516,7 @@ describe('Chat workspace', () => {
     workspace.directory = '/alias/one';
     workspace.addProject();
     http.expectOne(r => r.url.endsWith('/workspace/projects')).flush({ ...projects[0], chats: [] });
-    http.expectOne(r => r.url.endsWith('/workspace/projects/p1/chats')).flush({ id: 'fresh', name: 'Chat 1' });
+    closed.next({chat: { id: 'fresh', name: 'Chat 1' }});
     expect(workspace.projects.length).toBe(2);
     expect(workspace.opened[0].project).toBe(projects[0]);
     expect(workspace.projects[0].chats[0].id).toBe('fresh');
@@ -528,7 +529,8 @@ describe('Chat workspace', () => {
       enabled: true, workingDirectory: '/projects/one', projects: [{ ...projects[0], chats: [] }]
     });
     http.expectOne(r => r.url.endsWith('/workspace/native-sources')).flush([]);
-    http.expectOne(r => r.url.endsWith('/workspace/projects/p1/chats')).flush({ id: 'first', name: 'Chat 1' });
+    expect((dialogs.open.calls.mostRecent().args[1]?.data as {workingDirectory: string}).workingDirectory).toBe('/projects/one');
+    closed.next({chat: { id: 'first', name: 'Chat 1' }});
     expect(extra.componentInstance.activeId).toBe('first');
     expect(extra.componentInstance.parentDirectory).toBe('/projects/one');
     extra.destroy();

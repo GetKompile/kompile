@@ -42,6 +42,48 @@ class ChatWebHandoffTest {
         assertNull(command.opened);
     }
 
+    @Test void explicitWebPortIsPassedToStartupWithoutSetup() {
+        Stub command = new Stub();
+        String output = successfulOutput(command, "--web", "--web-port", "9181", "--open-browser");
+        assertEquals(9181, command.startedPort);
+        assertTrue(output.contains("http://127.0.0.1:9181/#/chat"), output);
+        assertEquals("http://127.0.0.1:9181/#/chat", command.opened);
+        assertFalse(command.selected);
+        assertFalse(command.wizard);
+        Stub automatic = new Stub();
+        successfulOutput(automatic, "--web", "--web-port", "0");
+        assertEquals(0, automatic.startedPort);
+    }
+
+    @Test void wizardPortCarriesToStartupAndTheExplicitFlagWins() {
+        for (boolean explicit : new boolean[] {false, true}) {
+            Stub command = new Stub();
+            command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
+            command.destination = SetupWizard.Destination.BROWSER;
+            command.wizardPort = 9181;
+            successfulOutput(command, explicit
+                    ? new String[] {"--setup", "--web-port", "9281"}
+                    : new String[] {"--setup"});
+            assertEquals(explicit ? 9281 : 9181, command.startedPort);
+            assertFalse(command.selected);
+        }
+        Stub configured = new Stub();
+        configured.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
+        configured.wizardPort = 9381;
+        successfulOutput(configured, "--web", "--setup");
+        assertEquals(9381, configured.startedPort);
+    }
+
+    @Test void invalidWebPortsFailBeforeWizardOrStartup() {
+        for (String port : new String[] {"-1", "65536", "not-a-port"}) {
+            Stub command = new Stub();
+            assertEquals(2, new CommandLine(command).execute("--web", "--web-port", port));
+            assertFalse(command.selected);
+            assertFalse(command.wizard);
+            assertNull(command.started);
+        }
+    }
+
     @Test void workspaceRequiresWebAndOpensTheWorkspaceRoute() {
         Stub invalid = new Stub();
         assertEquals(2, new CommandLine(invalid).execute("--workspace"));
@@ -279,10 +321,12 @@ class ChatWebHandoffTest {
     private static class Stub extends ChatCommand {
         SetupWizard.Destination destination = SetupWizard.Destination.TERMINAL;
         WorkflowTeamSnapshot wizardWorkflow;
+        Integer wizardPort;
+        Integer startedPort;
         boolean wizard;
         @Override SetupWizard.SetupResult runSetupWizard() {
             wizard = true;
-            return config == null ? null : new SetupWizard.SetupResult(config, destination, wizardWorkflow);
+            return config == null ? null : new SetupWizard.SetupResult(config, destination, wizardWorkflow, wizardPort);
         }
         ChatConfig config;
         boolean selected;
@@ -291,12 +335,14 @@ class ChatWebHandoffTest {
         String opened;
         @Override SetupWizard.SetupResult selectWebConfig(Path path) {
             selected = true;
-            return config == null ? null : new SetupWizard.SetupResult(config, SetupWizard.Destination.BROWSER);
+            return config == null ? null : new SetupWizard.SetupResult(config, SetupWizard.Destination.BROWSER, null, wizardPort);
         }
         @Override ChatInstanceBootstrap.StartupResult startWeb(Path path, String workflowName) {
+            startedPort = requestedWebPort();
             started = path;
             startedWorkflow = workflowName;
-            return new ChatInstanceBootstrap.StartupResult("http://127.0.0.1:1234", true);
+            int boundPort = startedPort == null || startedPort == 0 ? 1234 : startedPort;
+            return new ChatInstanceBootstrap.StartupResult("http://127.0.0.1:" + boundPort, true);
         }
         @Override void openWebBrowser(String address) { opened = address; }
     }

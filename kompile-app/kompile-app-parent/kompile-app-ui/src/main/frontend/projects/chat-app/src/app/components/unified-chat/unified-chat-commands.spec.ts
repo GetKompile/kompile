@@ -494,6 +494,29 @@ describe('UnifiedChat session configuration modal', () => {
     expect(document.activeElement).toBe(modelSelect);
   });
 
+  it('dispatches thinking choices without consuming the composer draft or attachments', () => {
+    component.userInput = 'Unfinished draft';
+    const attachments = [{ name: 'draft.txt' }] as any;
+    component.pendingAttachments = attachments;
+    const send = spyOn(component, 'sendMessage').and.callFake(() => {
+      expect(component.userInput).toBe('/thinking high');
+      expect(component.pendingAttachments).toEqual([]);
+    });
+    component.selectThinking('high');
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(component.userInput).toBe('Unfinished draft');
+    expect(component.pendingAttachments).toBe(attachments);
+    const select = spyOn(component as any, 'selectCliCommand');
+    component.selectThinking('');
+    expect(select).toHaveBeenCalledWith('/thinking', 'default');
+    spyOnProperty(component, 'transcriptReadOnly', 'get').and.returnValue(true);
+    component.selectThinking('low');
+    expect(select).toHaveBeenCalledTimes(1);
+    component.messages = [{ commandOutcome: { command: '/thinking high', status: 'INTERACTION_REQUIRED',
+      text: 'saved', ok: true, exit: 0, data: { menu: 'thinking', currentThinking: 'high' } } }] as any;
+    expect(component.modelSelectorOutcome?.data?.currentThinking).toBe('high');
+  });
+
   it('binds document Ctrl+B and renders safe process activity controls while the composer is live', () => {
     fixture.detectChanges();
     component.isStreaming = true;

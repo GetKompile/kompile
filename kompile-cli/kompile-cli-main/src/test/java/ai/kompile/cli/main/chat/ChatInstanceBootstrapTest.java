@@ -40,6 +40,42 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ChatInstanceBootstrapTest {
 
     @Test
+    void webPortSelectionPreservesFixedPortsAndRejectsBusyPorts() throws Exception {
+        int port;
+        try (java.net.ServerSocket listener = new java.net.ServerSocket(0)) {
+            port = listener.getLocalPort();
+            var error = org.junit.jupiter.api.Assertions.assertThrows(ChatInstanceBootstrap.BootstrapException.class,
+                    () -> ChatInstanceBootstrap.selectWebPort(port));
+            assertTrue(error.getMessage().contains("port " + port));
+            assertTrue(error.getMessage().contains("--web-port"));
+        }
+        assertEquals(port, ChatInstanceBootstrap.selectWebPort(port));
+        assertTrue(ChatInstanceBootstrap.selectWebPort(null) > 0);
+        assertTrue(ChatInstanceBootstrap.selectWebPort(0) > 0);
+        for (int invalid : new int[] {-1, 65536}) {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> ChatInstanceBootstrap.selectWebPort(invalid));
+        }
+    }
+
+    @Test
+    void fixedWebPortCanBeSelectedAfterAListenerStops() throws Exception {
+        int port;
+        try (java.net.ServerSocket listener = new java.net.ServerSocket()) {
+            listener.setReuseAddress(true);
+            listener.bind(new java.net.InetSocketAddress(0));
+            port = listener.getLocalPort();
+            try (java.net.Socket client = new java.net.Socket("127.0.0.1", port);
+                 java.net.Socket accepted = listener.accept()) {
+                client.setSoTimeout(2000);
+                accepted.close();
+                assertEquals(-1, client.getInputStream().read());
+            }
+        }
+        assertEquals(port, ChatInstanceBootstrap.selectWebPort(port));
+    }
+
+    @Test
     void distributionRequiresOnlyTheChatComponent(@TempDir Path tempDir) throws Exception {
         ComponentRegistry registry = new ComponentRegistry();
         registry.setInstallBaseDir(tempDir.toFile());

@@ -211,6 +211,38 @@ public final class RetryableErrorClassifier {
     }
 
     /**
+     * Checks ONLY the non-retriable MESSAGE patterns (e.g. "failed to load", "model file.*not
+     * found") against the exception's own message and cause chain — ignoring exception types,
+     * retriable patterns, and the default-to-permanent fallback that {@link #isRetriable} applies
+     * for messages that match nothing at all.
+     *
+     * <p>This exists so a caller with its OWN retriable-looking markers (e.g. a subprocess-crash /
+     * transport vocabulary the shared classifier has no pattern for) can give the classifier's
+     * permanent-failure patterns precedence first, without that caller's markers reclassifying a
+     * genuinely permanent error whose message incidentally also contains one of them (e.g. the
+     * model-not-found troubleshooting guidance text mentions "...staging service connection...").
+     * Does not change the semantics of {@link #isRetriable} or any existing caller.
+     *
+     * @param e The exception to check
+     * @return true if a non-retriable message pattern matched anywhere in the cause chain
+     */
+    public static boolean matchesNonRetriableMessagePattern(Throwable e) {
+        Throwable current = e;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && !message.isBlank()) {
+                for (Pattern pattern : NON_RETRIABLE_MESSAGE_PATTERNS) {
+                    if (pattern.matcher(message).find()) {
+                        return true;
+                    }
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    /**
      * Gets a human-readable classification of the error.
      *
      * @param e The exception to classify

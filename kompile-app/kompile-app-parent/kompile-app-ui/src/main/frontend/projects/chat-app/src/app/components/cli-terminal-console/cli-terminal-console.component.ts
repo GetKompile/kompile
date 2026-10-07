@@ -28,6 +28,8 @@ export interface CliTerminalView {
         <button type="button" (click)="launch()" [disabled]="!available || busy">Launch kompile chat</button>
         <button type="button" (click)="refresh()" [disabled]="!available || busy">Refresh</button>
         <button type="button" (click)="connect(selectedId)" [disabled]="!selectedId || busy">Reconnect</button>
+        <button type="button" (click)="toggleTranscript()" [disabled]="!current">{{showTranscript ? 'Back to terminal' : 'Transcript'}}</button>
+        <button *ngIf="showTranscript" type="button" (click)="loadTranscript()" [disabled]="transcriptLoading">Refresh transcript</button>
         <button type="button" (click)="interrupt()" [disabled]="!connected || current?.state !== 'RUNNING'">Ctrl-C</button>
         <button type="button" (click)="stop()" [disabled]="!current || current.state !== 'RUNNING' || busy">Stop process</button>
         <button type="button" (click)="remove()" [disabled]="!current || current.state === 'RUNNING' || busy">Remove</button>
@@ -37,7 +39,15 @@ export interface CliTerminalView {
       <small *ngIf="current">Session {{current.sessionId}} · PID {{current.pid}} · {{current.state}}<span *ngIf="current.exitCode !== null"> (exit {{current.exitCode}})</span> · {{connected ? 'Connected' : 'Disconnected'}}</small>
       <p *ngIf="error" role="alert">{{error}}</p>
       <p *ngIf="notice" role="status">{{notice}}</p>
-      <div #screen class="cli-console-screen" aria-label="Interactive CLI input and output"></div>
+      <small *ngIf="!showTranscript">Wheel and Page Up/Down scroll the CLI chat. Shift-drag selects terminal text.</small>
+      <small *ngIf="showTranscript">Saved transcript for {{current?.sessionId}}. Refresh for completed turns; reading does not move the live CLI.</small>
+      <div #screen class="cli-console-screen" [class.cli-view-hidden]="showTranscript" aria-label="Interactive CLI input and output"></div>
+      <p *ngIf="showTranscript && transcriptLoading" role="status">Loading transcript…</p>
+      <p *ngIf="showTranscript && transcriptError" role="alert">{{transcriptError}}</p>
+      <div class="cli-console-transcript" [class.cli-view-hidden]="!showTranscript" tabindex="0" role="region" aria-label="Saved CLI chat transcript">
+        <p *ngIf="!transcriptLoading && !transcriptError && !turns.length">No saved turns yet.</p>
+        <article *ngFor="let turn of turns; trackBy: trackTurn"><strong>{{turn.role}}</strong><pre>{{turn.content}}</pre></article>
+      </div>
     </section>`
 })
 export class CliTerminalConsoleComponent extends BaseService implements AfterViewInit, OnChanges, OnDestroy {
@@ -52,6 +62,12 @@ export class CliTerminalConsoleComponent extends BaseService implements AfterVie
   selectedId = '';
   error = '';
   notice = '';
+  showTranscript = false;
+  transcriptLoading = false;
+  transcriptError = '';
+  turns: {role: string; content: string}[] = [];
+  private attachedId = '';
+  private transcriptRequest = 0;
   private terminal?: Terminal;
   private fitAddon?: FitAddon;
   private socket?: WebSocket;
@@ -80,7 +96,7 @@ export class CliTerminalConsoleComponent extends BaseService implements AfterVie
     this.subscriptions.add(this.http.get<CliTerminalView[]>(`${this.url}/sessions`).subscribe({
       next: sessions => {
         this.sessions = sessions;
-        if (this.selectedId && !this.current) { this.disconnect(); this.selectedId = ''; }
+        if (this.selectedId && !this.current) { this.disconnect(); this.selectedId = ''; this.clearTranscript(); }
         if (!this.selectedId && sessions.length) { this.selectedId = sessions[0].id; this.connect(this.selectedId); }
       }, error: err => this.fail(err)
     }));
@@ -98,6 +114,8 @@ export class CliTerminalConsoleComponent extends BaseService implements AfterVie
   }
   connect(id: string): void {
     this.disconnect();
+    if (this.attachedId !== id) this.clearTranscript();
+    this.attachedId = id;
     if (!id || this.destroyed) return;
     this.selectedId = id; this.error = ''; this.notice = '';
     this.terminal?.dispose();
@@ -107,13 +125,23 @@ export class CliTerminalConsoleComponent extends BaseService implements AfterVie
     this.terminal.loadAddon(this.fitAddon);
     this.terminal.open(this.screen.nativeElement);
     this.terminal.onData(data => this.input(data));
+    this.terminal.onBinary(data => this.binaryInput(data));
+    this.terminal.attachCustomKeyEventHandler(event => {
+      // xterm normally consumes Shift-PageUp/Down for its own scrollback. In the CLI's
+      // retained-screen mode, these keys must reach the chat's scroll widgets instead.
+      if (event.type !== 'keydown' || this.terminal?.modes.mouseTrackingMode === 'none' || event.altKey || event.metaKey) return true;
+      const sequence = event.key === 'PageUp' ? '\x1b[5~' : event.key === 'PageDown' ? '\x1b[6~'
+        : event.ctrlKey && event.key === 'Home' ? '\x1b[1;5H' : event.ctrlKey && event.key === 'End' ? '\x1b[1;5F' : '';
+      if (!sequence) return true;
+      event.preventDefault(); this.input(sequence); return false;
+    });
     const url = new URL(`${this.url}/socket/${encodeURIComponent(id)}`, window.location.href);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(url.toString());
     this.socket = socket;
     socket.onopen = () => this.zone.run(() => {
       if (this.socket !== socket) return;
-      this.connected = true; this.scheduleFit(); this.terminal?.focus();
+      this.connected = true; this.scheduleFit(); if (!this.showTranscript) this.terminal?.focus();
     });
     socket.onmessage = event => {
       if (this.socket !== socket) return;
@@ -136,6 +164,37 @@ export class CliTerminalConsoleComponent extends BaseService implements AfterVie
       if (this.socket === socket) this.error = 'Cannot connect to the terminal. Use Refresh or Reconnect.';
     });
   }
+  toggleTranscript(): void {
+    this.showTranscript = !this.showTranscript;
+    if (this.showTranscript) this.loadTranscript();
+    else { this.scheduleFit(); this.terminal?.focus(); }
+  }
+  loadTranscript(): void {
+    if (!this.current) return;
+    const id = this.selectedId, request = ++this.transcriptRequest;
+    this.transcriptLoading = true; this.transcriptError = '';
+    this.subscriptions.add(this.http.get<{sessionId: string; turns: {role: string; content: string}[]}>(
+      `${this.url}/sessions/${encodeURIComponent(id)}/transcript`).subscribe({
+      next: transcript => {
+        if (request !== this.transcriptRequest || id !== this.selectedId) return;
+        this.turns = transcript.turns; this.transcriptLoading = false;
+        // No auto-scroll: preserve the reader's position when refreshed or when PTY output arrives.
+      }, error: err => {
+        if (request !== this.transcriptRequest || id !== this.selectedId) return;
+        this.transcriptLoading = false; this.transcriptError = err?.error?.message || 'Cannot read the saved transcript';
+      }
+    }));
+  }
+  trackTurn(index: number): number { return index; }
+  private clearTranscript(): void {
+    this.transcriptRequest++; this.showTranscript = false; this.transcriptLoading = false;
+    this.transcriptError = ''; this.turns = [];
+  }
+  private binaryInput(data: string): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    if (data.length > 16384 || this.socket.bufferedAmount > 128 * 1024) return;
+    this.socket.send(JSON.stringify({ type: 'binary-input', data: btoa(data) }));
+  }
   interrupt(): void { this.input('\x03'); }
   input(data: string): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
@@ -155,7 +214,7 @@ export class CliTerminalConsoleComponent extends BaseService implements AfterVie
     clearTimeout(this.resizeTimer);
     if (this.destroyed) return;
     this.resizeTimer = setTimeout(() => {
-      if (!this.visible || !this.terminal || !this.screen.nativeElement.clientWidth || !this.screen.nativeElement.clientHeight) return;
+      if (!this.visible || this.showTranscript || !this.terminal || !this.screen.nativeElement.clientWidth || !this.screen.nativeElement.clientHeight) return;
       this.fitAddon?.fit();
       if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: 'resize',
         cols: Math.max(10, Math.min(500, this.terminal.cols)), rows: Math.max(2, Math.min(200, this.terminal.rows)) }));
@@ -172,7 +231,7 @@ export class CliTerminalConsoleComponent extends BaseService implements AfterVie
     if (!this.current || this.current.state === 'RUNNING' || this.busy) return;
     this.busy = true;
     this.subscriptions.add(this.http.delete(`${this.url}/sessions/${this.selectedId}`, this.options).subscribe({
-      next: () => { this.busy = false; this.disconnect(); this.selectedId = ''; this.refresh(); },
+      next: () => { this.busy = false; this.disconnect(); this.selectedId = ''; this.clearTranscript(); this.refresh(); },
       error: err => { this.busy = false; this.fail(err); }
     }));
   }

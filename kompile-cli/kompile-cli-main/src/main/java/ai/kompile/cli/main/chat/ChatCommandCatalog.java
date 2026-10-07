@@ -24,7 +24,7 @@ public final class ChatCommandCatalog {
             "queue-move", "queue-clear", "queue-status", "loop", "loop-global", "jobs", "jobs-remove",
             "jobs-clear", "activity", "processes", "process-kill", "process-output", "process-status",
             "statusbar", "auto-dequeue", "stats", "passthrough", "resume", "resume-all", "mode", "menu",
-            "skills", "roles", "role", "model", "fast", "ultracode", "mcp", "enforce", "enforcer", "judge", "judge-global",
+            "skills", "roles", "role", "model", "thinking", "fast", "ultracode", "mcp", "enforce", "enforcer", "judge", "judge-global",
             "direction", "forward", "image", "file", "attach", "attachments");
     private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar");
     private static final Set<String> LIVE = Arrays.stream((
@@ -51,7 +51,7 @@ public final class ChatCommandCatalog {
     public static Set<String> liveRunCommands() { return LIVE_RUN; }
     public static WebSupport webSupport(String name) {
         if ("help".equals(name) || "skills".equals(name) || "model".equals(name)
-                || "role".equals(name) || "fast".equals(name) || "ultracode".equals(name)
+                || "role".equals(name) || "thinking".equals(name) || "fast".equals(name) || "ultracode".equals(name)
                 || "reminder".equals(name) || "reminder-global".equals(name)
                 || "continue".equals(name) || "judge".equals(name) || "judge-global".equals(name)
                 || "loop".equals(name) || "loop-global".equals(name)
@@ -73,6 +73,8 @@ public final class ChatCommandCatalog {
                 + "\n/model is fully supported over web input: bare /model lists locally known "
                 + "models (no live provider call), /model <id> validates and persists the selection "
                 + "for the session; later MODEL_INPUT turns use it."
+                + "\n/thinking lists supported effort options for the session's provider/model; "
+                + "/thinking <value> or /thinking default persists the choice for this session only."
                 + "\n/role and /fast are fully supported over web input: the bare form returns the "
                 + "current selection (with an optional menu), the explicit form validates and "
                 + "persists it durably per session id + working directory; /role '' clears the "

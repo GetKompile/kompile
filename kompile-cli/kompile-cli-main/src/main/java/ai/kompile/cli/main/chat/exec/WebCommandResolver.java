@@ -11,6 +11,7 @@ import ai.kompile.cli.main.chat.agent.CustomAgentLoader;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelCatalogFallback;
+import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.mcp.SessionInsightsPanel;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
@@ -161,6 +162,10 @@ public final class WebCommandResolver {
             if ("role".equals(name)) {
                 return resolveRoleCommand(raw.substring(Math.min(end, raw.length())),
                         command, input, stateStore, directory);
+            }
+            if ("thinking".equals(name)) {
+                return resolveThinkingCommand(raw.substring(Math.min(end, raw.length())),
+                        command, input, stateStore, directory, configOverride);
             }
             if ("fast".equals(name)) {
                 return resolveFastCommand(raw.substring(Math.min(end, raw.length())),
@@ -327,6 +332,7 @@ public final class WebCommandResolver {
                 : ChatConfig.loadOrFromEnv(directory == null ? Path.of(".") : directory);
         String sessionId = input.sessionId() == null || input.sessionId().isBlank()
                 ? null : input.sessionId();
+        config = sessionConfig(config, store, sessionId, directory);
         if (rest.isEmpty()) {
             String persisted = sessionId == null ? null : store.loadModel(sessionId, directory);
             return modelMenu(command, config, persisted, modelCatalogStorePath);
@@ -868,8 +874,8 @@ public final class WebCommandResolver {
         Path workDir = directory == null ? Path.of(".") : directory;
         String sessionId = input.sessionId() == null || input.sessionId().isBlank()
                 ? null : input.sessionId();
-        ChatConfig config = configOverride != null ? configOverride.get()
-                : ChatConfig.loadOrFromEnv(workDir);
+        ChatConfig config = sessionConfig(configOverride != null ? configOverride.get()
+                : ChatConfig.loadOrFromEnv(workDir), store, sessionId, workDir);
         ObjectNode data = JsonUtils.standardMapper().createObjectNode();
         data.put("menu", "config");
         if (sessionId != null) data.put("sessionId", sessionId);
@@ -886,6 +892,7 @@ public final class WebCommandResolver {
         data.set("role", roleMenu("/config", store, sessionId, workDir, roleManager).data());
         data.set("fast", fastSnapshot(config));
         data.set("ultracode", ultracodeSnapshot(config));
+        data.set("thinking", thinkingSnapshot(config));
         ReminderManager sessionReminders = new ReminderManager(JsonUtils.standardMapper(),
                 sessionId == null ? "unknown-session" : sessionId, workDir);
         data.set("reminders", reminderSnapshot(ReminderManager.Scope.SESSION, sessionReminders));
@@ -1068,6 +1075,91 @@ public final class WebCommandResolver {
                 clearing
                         ? "Role selection cleared for this session; the default persona applies."
                         : "Role selection saved for this session: " + canonical,
+                null, data);
+    }
+
+    /** Effective non-secret settings after the durable web model/effort overrides. */
+    private static ChatConfig sessionConfig(ChatConfig configured, ChatSessionStateStore store,
+                                            String sessionId, Path directory) {
+        ChatConfig pinned = sessionId == null || sessionId.isBlank() ? null : ChatConfig.loadSession(sessionId);
+        if (pinned != null) configured = pinned;
+        if (configured == null) return null;
+        ChatConfig config = configured.copy();
+        ChatSessionStateStore.SessionState state = store.load(sessionId, directory);
+        if (state != null) {
+            if (state.provider() != null && !state.provider().isBlank()
+                    && !state.provider().equalsIgnoreCase(config.getProvider())) {
+                config.setProvider(state.provider());
+                config.setApiKey(null);
+                config.setBaseUrl(null);
+                config.setAuthenticationMethod(ChatConfig.authenticationMethodAfterProviderSwitch(state.provider()));
+            }
+            if (state.model() != null && !state.model().isBlank()) config.setModel(state.model());
+            if (state.thinking() != null) config.setThinking(state.thinking());
+        }
+        if (state != null && (state.thinking() != null
+                || !java.util.Objects.equals(config.getProvider(), configured.getProvider())
+                || !java.util.Objects.equals(config.getModel(), configured.getModel()))) {
+            config.setThinking(SetupWizard.compatibleThinking(
+                    config.getProvider(), config.getModel(), config.getThinking(), null));
+        }
+        return config;
+    }
+
+    private static ObjectNode thinkingSnapshot(ChatConfig config) {
+        ObjectNode data = JsonUtils.standardMapper().createObjectNode();
+        data.put("menu", "thinking");
+        data.put("currentThinking", config == null || config.getThinking() == null ? "" : config.getThinking());
+        data.put("provider", config == null ? "" : config.getProvider());
+        data.put("model", config == null ? "" : config.getModel());
+        List<SetupWizard.ThinkingOption> options = config == null ? List.of()
+                : SetupWizard.thinkingOptions(config.getProvider(), config.getModel());
+        data.put("supported", options.size() > 1);
+        ArrayNode entries = data.putArray("thinkingOptions");
+        for (SetupWizard.ThinkingOption option : options) {
+            ObjectNode entry = entries.addObject();
+            entry.put("value", option.value());
+            entry.put("label", option.label());
+        }
+        if (config != null && config.useUltracode()) {
+            data.put("note", "Ultracode overrides the selected effort while enabled.");
+        }
+        return data;
+    }
+
+    private static Resolution resolveThinkingCommand(String argumentRegion, String command, WebChatInput input,
+            ChatSessionStateStore store, Path directory, Supplier<ChatConfig> configOverride) {
+        Path workDir = directory == null ? Path.of(".") : directory;
+        ChatConfig config = sessionConfig(configOverride != null ? configOverride.get()
+                : ChatConfig.loadOrFromEnv(workDir), store, input.sessionId(), workDir);
+        ObjectNode data = thinkingSnapshot(config);
+        String requested = argumentRegion == null ? "" : argumentRegion.strip();
+        if (requested.isEmpty() || "status".equalsIgnoreCase(requested)) {
+            return new Resolution(Status.INTERACTION_REQUIRED, command,
+                    "Thinking/effort: " + (config == null || config.getThinking() == null
+                            ? "provider/model default" : config.getThinking())
+                            + ". Select with /thinking <value> or /thinking default.", null, data);
+        }
+        String value = "default".equalsIgnoreCase(requested) ? "" : requested;
+        String canonical = null;
+        for (JsonNode option : data.path("thinkingOptions")) {
+            if (option.path("value").asText().equalsIgnoreCase(value)) canonical = option.path("value").asText();
+        }
+        if (config == null || (!value.isEmpty() && canonical == null)) {
+            return new Resolution(Status.INVALID, command,
+                    "Unsupported thinking/effort selection for the current provider/model; no state was changed.", null);
+        }
+        if (value.isEmpty()) canonical = "";
+        ChatSessionStateStore.SaveResult saved = store.updateThinking(input.sessionId(), workDir, canonical);
+        if (!saved.applied()) {
+            return new Resolution(Status.INVALID, command,
+                    "Thinking/effort could not be persisted; no durable change was made.", null);
+        }
+        config.setThinking(canonical);
+        data = thinkingSnapshot(config);
+        data.putObject("state").put("thinking", canonical);
+        return new Resolution(Status.INTERACTION_REQUIRED, command,
+                "Thinking/effort saved for this session: " + (canonical.isEmpty() ? "provider/model default" : canonical),
                 null, data);
     }
 

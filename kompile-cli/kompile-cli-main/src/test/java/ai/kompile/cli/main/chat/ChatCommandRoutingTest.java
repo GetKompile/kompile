@@ -682,6 +682,31 @@ class ChatCommandRoutingTest {
     }
 
     @Test
+    void firstBrowserTurnRestoresItsSetupWithoutRequiringATranscript(
+            @org.junit.jupiter.api.io.TempDir Path tempDir) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
+        try {
+            ChatConfig saved = new ChatConfig("custom", "session-secret", "selected-model", "https://provider.test/v1");
+            saved.bindSession("fresh-web-session");
+            ChatCommand command = parse("--session-id", "fresh-web-session", "--mode", "standard");
+            var input = ChatCommand.class.getDeclaredField("webInput");
+            input.setAccessible(true);
+            input.set(command, new ai.kompile.cli.main.chat.exec.WebChatInput(1, "hello", null, "fresh-web-session"));
+            assertFalse(ChatHistory.exists("fresh-web-session"));
+            ChatConfig selected = command.normalizeResumeConfig(null, false);
+            assertNotNull(selected);
+            assertEquals("custom", selected.getProvider());
+            assertEquals("selected-model", selected.getModel());
+            assertEquals("https://provider.test/v1", selected.getBaseUrl());
+            assertEquals("session-secret", selected.getApiKey());
+            ChatConfig folder = new ChatConfig("anthropic", null, "folder-model", null);
+            assertEquals("selected-model", command.normalizeResumeConfig(folder, false).getModel());
+            assertEquals("folder-model", folder.getModel());
+        } finally { System.setProperty("user.home", previousHome); }
+    }
+
+    @Test
     void providerOverrideDropsPreviousProviderBoundSettings() {
         ChatConfig config = new ChatConfig(
                 "openai", "old-secret", "old-model", "http://old-endpoint");

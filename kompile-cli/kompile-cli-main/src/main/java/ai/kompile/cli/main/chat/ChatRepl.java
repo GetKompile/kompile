@@ -155,6 +155,7 @@ public class ChatRepl implements AutoCloseable {
     private final ContinueManager continueManager;
     private final ChatSessionTitle sessionTitle = new ChatSessionTitle();
     private final AtomicBoolean sessionTitleSyncPending = new AtomicBoolean();
+    private ChatTitleGenerator titleGeneration;
     private boolean ragEnabled;
     private String agentName;
     private String localAgentName;
@@ -1455,6 +1456,7 @@ public class ChatRepl implements AutoCloseable {
     @Override
     public void close() {
         if (!resourcesClosed.compareAndSet(false, true)) return;
+        cancelTitleGeneration();
         try {
             if (interactiveInitialized && !interactiveFinished) finishInteractive(false, null);
             else if (!interactiveInitialized) {
@@ -2112,6 +2114,8 @@ public class ChatRepl implements AutoCloseable {
                 chatHistory.logSystem(
                         "Session interrupted unexpectedly; the transcript was preserved for resume.");
             }
+            cancelTitleGeneration();
+            syncPendingSessionTitle();
             chatHistory.close();
 
             // Save metrics JSON alongside transcript
@@ -2496,7 +2500,7 @@ public class ChatRepl implements AutoCloseable {
     }
 
     /** Set the title once from the first user prompt accepted by this session. */
-    void initializeSessionTitleFromPrompt(String prompt) {
+    synchronized void initializeSessionTitleFromPrompt(String prompt) {
         if (sessionTitle.initializeFromPrompt(prompt)) {
             // Persist the [title] marker so resume and compaction keep the original wording.
             chatHistory.logSessionTitle(sessionTitle.get());
@@ -2506,7 +2510,26 @@ public class ChatRepl implements AutoCloseable {
             if (activeTerminal != null) {
                 renderer.setReadyTerminalTitle(sessionTitle.get());
             }
+            if (chatConfig != null && !resourcesClosed.get() && !interactiveFinished) {
+                titleGeneration = ChatTitleGenerator.start(chatConfig, workingDirectory, prompt,
+                        this::applyGeneratedSessionTitle);
+            }
         }
+    }
+
+    private synchronized void applyGeneratedSessionTitle(String generated) {
+        if (resourcesClosed.get() || interactiveFinished) return;
+        // A rename from another UI/process is authoritative too.
+        if (chatHistory.readTitleOverride() != null || !sessionTitle.applyGenerated(generated)) return;
+        chatHistory.logSessionTitle(sessionTitle.get());
+        sessionTitleSyncPending.set(true);
+        if (activeTerminal != null) renderer.setReadyTerminalTitle(sessionTitle.get());
+    }
+
+    private void cancelTitleGeneration() {
+        ChatTitleGenerator pending;
+        synchronized (this) { pending = titleGeneration; }
+        if (pending != null) pending.close();
     }
 
     /** Called by the turn owner before model work; no extra executor is needed. */
@@ -2517,7 +2540,7 @@ public class ChatRepl implements AutoCloseable {
     }
 
     /** Replace the prompt-derived title with an explicit user-provided title. */
-    String setSessionTitle(String title) {
+    synchronized String setSessionTitle(String title) {
         String updated = sessionTitle.replace(chatHistory.renameSession(title));
         if (activeTerminal != null) {
             renderer.setReadyTerminalTitle(updated);
@@ -3924,7 +3947,7 @@ public class ChatRepl implements AutoCloseable {
                     }
                     if (!authenticationBlocked) {
                         modelPickerLines.add("Type credentials to change authentication, or provider to change vendor.");
-                        modelPickerLines.add("Reasoning/fast/ultracode settings are kept where supported; use /thinking, /fast or /ultracode to change them.");
+                        modelPickerLines.add("Thinking/effort is selected next where supported; fast/ultracode settings are kept where supported.");
                     }
                     tui.updateTemporaryWindow("Provider and model", withNotice(notice, modelPickerLines));
                     String modelInput = reader.readLine(
@@ -4002,6 +4025,41 @@ public class ChatRepl implements AutoCloseable {
                         notice.add("Type credentials to configure authentication, or provider to change vendor.");
                         continue;
                     }
+                    List<SetupWizard.ThinkingOption> thinkingOptions = SetupWizard.thinkingOptions(
+                            selectedProvider, selectedModel, authentication.apiKey(), discoveryConfig, discovery);
+                    boolean backToModels = false;
+                    if (thinkingOptions.size() > 1) {
+                        List<String> thinkingNotice = new ArrayList<>();
+                        while (true) {
+                            List<String> thinkingLines = new ArrayList<>();
+                            thinkingLines.add("Choose thinking/effort for " + selectedModel);
+                            thinkingLines.add("Current: " + (candidate.getThinking() == null
+                                    ? "provider/model default" : candidate.getThinking()));
+                            for (int i = 0; i < thinkingOptions.size(); i++) {
+                                thinkingLines.add("  " + (i + 1) + ". " + thinkingOptions.get(i).label());
+                            }
+                            tui.updateTemporaryWindow("Thinking / effort", withNotice(thinkingNotice, thinkingLines));
+                            String thinkingInput = reader.readLine(
+                                    "picker thinking (number/name, blank keeps current, back, Esc cancels): ");
+                            if (thinkingInput == null || "cancel".equalsIgnoreCase(thinkingInput.trim())) return;
+                            String value = thinkingInput.trim();
+                            if ("back".equalsIgnoreCase(value)) {
+                                backToModels = true;
+                                break;
+                            }
+                            if (value.isEmpty()) break;
+                            List<String> values = thinkingOptions.stream()
+                                    .map(option -> option.value().isBlank() ? "default" : option.value()).toList();
+                            String choice = parsePickerChoice(value, values);
+                            if (choice == null) {
+                                thinkingNotice.add("Invalid thinking/effort selection. Choose a listed number or name.");
+                                continue;
+                            }
+                            candidate.setThinking("default".equals(choice) ? null : choice);
+                            break;
+                        }
+                    }
+                    if (backToModels) continue;
                     if (commitModelProviderSelection(candidate)) {
                         committed = true;
                         if (usedFallback) {

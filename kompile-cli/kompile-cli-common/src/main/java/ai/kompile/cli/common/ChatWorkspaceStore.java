@@ -103,10 +103,16 @@ public final class ChatWorkspaceStore {
     }
 
     public Chat createChat(String projectId, String name, String framework, String model) throws IOException {
+        return createChat(projectId, name, framework, model, UUID.randomUUID().toString());
+    }
+
+    /** Register an identity whose session configuration was validated and pinned before publication. */
+    public Chat createChat(String projectId, String name, String framework, String model, String sessionId) throws IOException {
+        if (sessionId == null || !sessionId.matches("[A-Za-z0-9_-]+")) throw new IllegalArgumentException("Invalid chat identity");
         String title = name == null || name.isBlank() ? "New Chat" : name.strip();
         if (title.length() > 256 || title.chars().anyMatch(Character::isISOControl))
             throw new IllegalArgumentException("Chat title must be at most 256 characters without control characters");
-        return addChat(projectId, new Chat(UUID.randomUUID().toString(), title, framework, model));
+        return addChat(projectId, new Chat(sessionId, title, framework, model));
     }
 
     /** Routing metadata only. The vendor's transcript remains in its original store. */

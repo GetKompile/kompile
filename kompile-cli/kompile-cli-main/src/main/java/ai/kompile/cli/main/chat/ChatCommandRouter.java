@@ -557,6 +557,10 @@ public class ChatCommandRouter {
                 handleModelCommand(rest.trim());
                 return true;
 
+            case "/thinking":
+                handleThinkingCommand(rest.trim());
+                return true;
+
             case "/fast":
                 handleFastModeCommand(rest.trim());
                 return true;
@@ -887,7 +891,8 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/subagents")).append("          List available subagents for delegation\n");
             body.append("  ").append(renderer.cyan("/agents")).append("             List local agent types\n");
             body.append("  ").append(renderer.cyan("/agent")).append(" name         Switch agent type\n");
-            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Choose model for current vendor (/auth switches vendors)\n");
+            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Choose model and thinking/effort (/auth switches vendors)\n");
+            body.append("  ").append(renderer.cyan("/thinking")).append(" [value|default|status]  Configure supported reasoning effort\n");
             if (repl.getChatConfig() != null && repl.getChatConfig().supportsFastMode()) {
                 body.append("  ").append(renderer.cyan("/fast")).append(" [on|off|status]  Toggle premium fast mode\n");
             }
@@ -1001,7 +1006,8 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/local-tool")).append(" name    Invoke a local tool directly\n");
             body.append("  ").append(renderer.cyan("/local-agents")).append("       List local agent types\n");
             body.append("  ").append(renderer.cyan("/local-agent")).append(" name   Switch local agent type\n");
-            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Choose model for current vendor (/auth switches vendors)\n");
+            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Choose model and thinking/effort (/auth switches vendors)\n");
+            body.append("  ").append(renderer.cyan("/thinking")).append(" [value|default|status]  Configure supported reasoning effort\n");
             body.append("  ").append(renderer.cyan("/permissions")).append("        View or set tool permissions\n");
             body.append("  ").append(renderer.cyan("/todos")).append("              Show the session task list\n");
             body.append("  ").append(renderer.cyan("/plan")).append(" [on|off]       Toggle planning mode (plan → approve → execute)\n");
@@ -2061,6 +2067,41 @@ public class ChatCommandRouter {
     // ========================================================================
     // Model switching
     // ========================================================================
+
+    private void handleThinkingCommand(String rest) {
+        ChatConfig config = repl.getChatConfig();
+        if (!localMode || config == null) {
+            ChatCompleter.printAbove("Thinking/effort is only configurable in local standard chat.");
+            return;
+        }
+        List<SetupWizard.ThinkingOption> options = SetupWizard.thinkingOptions(config.getProvider(), config.getModel());
+        if (rest.isBlank() || "status".equalsIgnoreCase(rest)) {
+            ChatCompleter.printAbove("Thinking/effort: " + (config.getThinking() == null
+                    ? "provider/model default" : config.getThinking()));
+            ChatCompleter.printAbove("Use /thinking default or a supported value: " + options.stream()
+                    .map(option -> option.value().isEmpty() ? "default" : option.value())
+                    .collect(java.util.stream.Collectors.joining(", ")));
+            return;
+        }
+        String requested = "default".equalsIgnoreCase(rest) ? "" : rest;
+        String canonical = options.stream().map(SetupWizard.ThinkingOption::value)
+                .filter(value -> value.equalsIgnoreCase(requested)).findFirst().orElse(null);
+        if (canonical == null && !requested.isEmpty()) {
+            ChatCompleter.printAbove("Unsupported thinking/effort for this provider/model; no change was made. Use /thinking.");
+            return;
+        }
+        config.setThinking(requested.isEmpty() ? null : canonical);
+        try {
+            config.saveLoadedOrGlobal();
+        } catch (java.io.IOException error) {
+            ChatCompleter.printAbove(renderer.yellow(
+                    "Thinking/effort changed for this session, but could not be saved: " + error.getMessage()));
+        }
+        repl.refreshModelDisplay();
+        ChatCompleter.printAbove("Thinking/effort: " + (config.getThinking() == null
+                ? "provider/model default" : config.getThinking()));
+        if (config.useUltracode()) ChatCompleter.printAbove("Ultracode overrides this effort while enabled.");
+    }
 
     private void handleFastModeCommand(String rest) {
         String action = rest.toLowerCase(java.util.Locale.ROOT);

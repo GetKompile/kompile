@@ -1657,9 +1657,8 @@ describe('UnifiedChatComponent - RAG End-to-End', () => {
       completeSubject.next({ content: 'To configure reranker...' });
 
       expect(component.currentSession?.name).not.toBe('New Chat');
-      // 61 chars, so sanitizeSessionTitle() breaks on the last word boundary within 60 and appends
-      // a single-character ellipsis — "pipeline?" is dropped whole rather than sliced mid-word.
-      expect(component.currentSession?.name).toBe('How do I configure the reranker settings for my RAG…');
+      // sanitizeSessionTitle() keeps the full text; long titles wrap in the UI instead of truncating.
+      expect(component.currentSession?.name).toBe('How do I configure the reranker settings for my RAG pipeline?');
     }));
   });
 

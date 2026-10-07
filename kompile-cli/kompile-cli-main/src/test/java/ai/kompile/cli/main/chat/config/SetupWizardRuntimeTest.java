@@ -43,6 +43,25 @@ class SetupWizardRuntimeTest {
                 SetupWizard.selectDestination(reader(), config, false, true));
     }
 
+    @Test void browserPortPickerSupportsStableAndAutomaticUrls() {
+        assertEquals(9181, SetupWizard.selectWebPort(reader("9181"), SetupWizard.Destination.BROWSER, null));
+        assertEquals(0, SetupWizard.selectWebPort(reader(""), SetupWizard.Destination.BROWSER, null));
+        assertEquals(0, SetupWizard.selectWebPort(reader("0"), SetupWizard.Destination.BROWSER, null));
+        assertEquals(65535, SetupWizard.selectWebPort(reader("65535"), SetupWizard.Destination.BROWSER, null));
+        assertEquals(1, SetupWizard.selectWebPort(reader("1"), SetupWizard.Destination.BROWSER, null));
+        assertEquals(9181, SetupWizard.selectWebPort(reader("bad", "-1", "65536", "9181"),
+                SetupWizard.Destination.BROWSER, null));
+    }
+
+    @Test void browserPortPickerCanCancelAndSkipsInputForTerminalOrExplicitFlag() {
+        assertNull(SetupWizard.selectWebPort(reader("cancel"), SetupWizard.Destination.BROWSER, null));
+        assertNull(SetupWizard.selectWebPort(reader(), SetupWizard.Destination.BROWSER, null));
+        assertEquals(0, SetupWizard.selectWebPort(reader(), SetupWizard.Destination.TERMINAL, null));
+        assertEquals(9181, SetupWizard.selectWebPort(reader(), SetupWizard.Destination.BROWSER, 9181));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> SetupWizard.selectWebPort(reader(), SetupWizard.Destination.BROWSER, -1));
+    }
+
     private static final String THINKING_CATALOG_PROP = "kompile.cli.modelCatalogPaths";
 
     /** Point the catalog at an absent file so documented-fallback assertions are deterministic. */

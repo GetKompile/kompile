@@ -196,12 +196,24 @@ describe('UnifiedChatComponent Material buttons and dark mode', () => {
       fixture.detectChanges();
       component.showHistorySidebar = false;
       rerender();
-      const layout = responsiveLayout(host, width, 480);
+      // Phones get a phone-height viewport; desktop gets one tall enough for the pinned layout.
+      const height = width <= 768 ? 480 : 720;
+      const layout = responsiveLayout(host, width, height);
       try {
         const wrapper = layout.root.querySelector('.unified-chat-wrapper') as HTMLElement;
         const input = layout.root.querySelector('textarea') as HTMLElement;
         const composer = layout.root.querySelector('.input-area') as HTMLElement;
-        expect(wrapper.getBoundingClientRect().bottom).toBeLessThanOrEqual(480);
+        const conversation = layout.root.querySelector('.conversation-area') as HTMLElement;
+        if (width <= 768) {
+          // The page scrolls on mobile: the chat is not squeezed into the viewport, nothing is
+          // clipped by the wrapper, and only the conversation keeps its own bounded scroll box.
+          expect(wrapper.scrollHeight).toBeLessThanOrEqual(wrapper.clientHeight + 1);
+          expect(layout.view.getComputedStyle(conversation).overflowY).toBe('auto');
+          expect(conversation.getBoundingClientRect().height).toBeGreaterThanOrEqual(240);
+          expect(conversation.getBoundingClientRect().height).toBeLessThanOrEqual(height * 0.6 + 1);
+        } else {
+          expect(wrapper.getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
+        }
         expect(composer.getBoundingClientRect().bottom).toBeLessThanOrEqual(wrapper.getBoundingClientRect().bottom + 1);
         expect(layout.root.scrollWidth).toBeLessThanOrEqual(width);
         expect(input.getBoundingClientRect().right).toBeLessThanOrEqual(width);
@@ -216,6 +228,21 @@ describe('UnifiedChatComponent Material buttons and dark mode', () => {
       } finally { layout.dispose(); }
     });
   }
+
+  it('lets a short landscape viewport scroll the page instead of squeezing the chat', () => {
+    component.workspaceChat = { id: 'landscape-chat', name: 'Landscape chat' };
+    fixture.detectChanges();
+    component.showHistorySidebar = false;
+    rerender();
+    const layout = responsiveLayout(host, 844, 390);
+    try {
+      const wrapper = layout.root.querySelector('.unified-chat-wrapper') as HTMLElement;
+      const conversation = layout.root.querySelector('.conversation-area') as HTMLElement;
+      expect(wrapper.scrollHeight).toBeLessThanOrEqual(wrapper.clientHeight + 1);
+      expect(conversation.getBoundingClientRect().height).toBeGreaterThanOrEqual(240);
+      expect(layout.root.scrollWidth).toBeLessThanOrEqual(844);
+    } finally { layout.dispose(); }
+  });
 
   it('keeps send and stop controls reachable together on a narrow live chat', () => {
     component.workspaceChat = { id: 'mobile-chat', name: 'Mobile chat' };

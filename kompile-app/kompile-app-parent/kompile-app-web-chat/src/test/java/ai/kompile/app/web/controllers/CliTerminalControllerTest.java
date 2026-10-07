@@ -66,6 +66,33 @@ class CliTerminalControllerTest {
         verify(service).stop(first.getSession().getId(), "first-terminal");
         verify(service).list(second.getSession().getId());
     }
+    /** As Tomcat presents a tailscale-serve request once the loopback proxy's X-Forwarded-* is applied. */
+    private MockHttpServletRequest viaTailscaleServe() {
+        var request = new MockHttpServletRequest();
+        request.setScheme("https"); request.setSecure(true);
+        request.setServerName("kompile-box.tail1234.ts.net"); request.setServerPort(443);
+        request.setRemoteAddr("100.101.102.103"); request.setLocalAddr("127.0.0.1");
+        request.addHeader("Origin", "https://kompile-box.tail1234.ts.net");
+        request.addHeader("X-Kompile-Terminal", "1");
+        return request;
+    }
+    @Test void tailnetHttpsProxyIsAdmittedButFunnelAndCrossOriginAreNot() throws Exception {
+        assertEquals(true, controller.capabilities(viaTailscaleServe()).get("available"));
+        var proxied = viaTailscaleServe();
+        controller.launch(proxied, new CliTerminalService.Launch(null, 80, 24));
+        verify(service).launch(eq(proxied.getSession().getId()), any());
+
+        var funnel = viaTailscaleServe(); funnel.addHeader(CliTerminalController.TAILSCALE_FUNNEL_HEADER, "?1");
+        assertEquals(false, controller.capabilities(funnel).get("available"));
+        var crossOrigin = viaTailscaleServe(); crossOrigin.removeHeader("Origin");
+        crossOrigin.addHeader("Origin", "https://attacker.example");
+        assertThrows(ResponseStatusException.class, () -> controller.list(crossOrigin));
+        var plainHttpRemote = viaTailscaleServe(); plainHttpRemote.setSecure(false); plainHttpRemote.setScheme("http");
+        assertThrows(ResponseStatusException.class, () -> controller.list(plainHttpRemote));
+        var directTlsRemoteSocket = viaTailscaleServe(); directTlsRemoteSocket.setLocalAddr("100.64.0.9");
+        assertThrows(ResponseStatusException.class, () -> controller.list(directTlsRemoteSocket));
+        verifyNoMoreInteractions(service);
+    }
     @Test void hostedServerDoesNotOfferTerminal() {
         System.clearProperty(WebChatContext.WORKING_DIRECTORY);
         assertEquals(false, controller.capabilities(local()).get("available"));

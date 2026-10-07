@@ -144,6 +144,8 @@ class SetupWizardProfilesTest {
                 SetupWizard.selectDestination(reader(), config, true, true));
         assertEquals(SetupWizard.Destination.TERMINAL,
                 SetupWizard.selectDestination(reader(), config, false, false));
+        // Managed passthrough supports Browser; only the unmanaged/native UI is terminal-only.
+        config.setPassthroughManaged(false);
         for (String mode : List.of("passthrough", "resume", "resume-all")) {
             config.setChatMode(mode);
             assertEquals(SetupWizard.Destination.TERMINAL,

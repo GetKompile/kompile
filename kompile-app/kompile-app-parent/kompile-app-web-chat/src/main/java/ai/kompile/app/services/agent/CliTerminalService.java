@@ -2,6 +2,8 @@ package ai.kompile.app.services.agent;
 
 import ai.kompile.cli.common.ChatWorkspaceStore;
 import ai.kompile.cli.common.WebChatContext;
+import ai.kompile.cli.common.chat.sources.ChatTurn;
+import ai.kompile.cli.common.chat.sources.adapters.KompileAdapter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pty4j.PtyProcess;
@@ -28,6 +30,7 @@ public class CliTerminalService implements AutoCloseable {
     static final int REPLAY_LIMIT = 512 * 1024;
     private static final long RETENTION_MS = Duration.ofMinutes(30).toMillis();
     public record Launch(String workingDirectory, int cols, int rows) { }
+    public record Transcript(String sessionId, List<ChatTurn> turns) { }
     public record View(String id, String sessionId, String workingDirectory, long pid,
                        String state, Integer exitCode, int cols, int rows) { }
     @FunctionalInterface interface Launcher { List<String> resolve() throws IOException; }
@@ -38,6 +41,7 @@ public class CliTerminalService implements AutoCloseable {
     private final ObjectMapper mapper;
     private final Launcher launcher;
     private final Starter starter;
+    private final KompileAdapter transcripts;
     private final Map<String, Terminal> terminals = new ConcurrentHashMap<>();
     private final ExecutorService readers = Executors.newFixedThreadPool(32, r -> daemon(r, "cli-terminal-reader"));
     private final ScheduledExecutorService reaper = Executors.newSingleThreadScheduledExecutor(r -> daemon(r, "cli-terminal-reaper"));
@@ -51,9 +55,13 @@ public class CliTerminalService implements AutoCloseable {
                         .setInitialColumns(cols).setInitialRows(rows).start());
     }
     CliTerminalService(ObjectMapper mapper, Launcher launcher, Starter starter) {
+        this(mapper, launcher, starter, new KompileAdapter());
+    }
+    CliTerminalService(ObjectMapper mapper, Launcher launcher, Starter starter, KompileAdapter transcripts) {
         this.mapper = mapper;
         this.launcher = launcher;
         this.starter = starter;
+        this.transcripts = transcripts;
         reaper.scheduleWithFixedDelay(this::reap, 1, 1, TimeUnit.MINUTES);
     }
     private static Thread daemon(Runnable task, String name) {
@@ -108,6 +116,11 @@ public class CliTerminalService implements AutoCloseable {
         return terminals.values().stream().filter(t -> t.owner.equals(owner))
                 .sorted(Comparator.comparing(t -> t.id)).map(Terminal::view).toList();
     }
+    /** Saved chat turns survive screen redraws and bounded PTY replay; never accept a client file/session path. */
+    public Transcript transcript(String owner, String id) throws IOException {
+        Terminal t = owned(owner, id);
+        return new Transcript(t.sessionId, transcripts.readTurns(t.sessionId));
+    }
     private Terminal owned(String owner, String id) {
         Terminal t = terminals.get(id);
         if (t == null || !t.owner.equals(owner)) throw new NoSuchElementException("Unknown terminal");
@@ -145,6 +158,16 @@ public class CliTerminalService implements AutoCloseable {
                     if (!message.path("data").isTextual() || message.path("data").asText().length() > 16384)
                         throw new IllegalArgumentException("Terminal input exceeds 16 KiB");
                     t.process.getOutputStream().write(message.path("data").asText().getBytes(StandardCharsets.UTF_8));
+                    t.process.getOutputStream().flush();
+                }
+                case "binary-input" -> {
+                    if (!t.process.isAlive()) throw new IllegalStateException("Terminal has exited");
+                    if (!message.path("data").isTextual() || message.path("data").asText().length() > 21848)
+                        throw new IllegalArgumentException("Terminal binary input exceeds 16 KiB");
+                    byte[] bytes = Base64.getDecoder().decode(message.path("data").asText());
+                    if (bytes.length > 16384) throw new IllegalArgumentException("Terminal binary input exceeds 16 KiB");
+                    // Legacy mouse reports contain bytes above 127: UTF-8 encoding would corrupt their coordinates.
+                    t.process.getOutputStream().write(bytes);
                     t.process.getOutputStream().flush();
                 }
                 case "resize" -> {

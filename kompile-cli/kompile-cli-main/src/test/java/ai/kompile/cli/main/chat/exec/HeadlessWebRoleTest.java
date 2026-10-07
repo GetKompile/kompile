@@ -79,6 +79,45 @@ class HeadlessWebRoleTest {
         }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"high", "default"})
+    void durableWebThinkingReachesTheProvider(String thinking, @TempDir Path project) throws Exception {
+        ChatSessionStateStore store = new ChatSessionStateStore(project.resolve("state"));
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            try {
+                requests.add(mapper.readTree(exchange.getRequestBody()));
+                byte[] body = ("data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},"
+                        + "\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+                        .getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            } finally { exchange.close(); }
+        });
+        server.start();
+        try {
+            ChatConfig config = new ChatConfig("openai", "fixture-key", "gpt-5.5",
+                    "http://127.0.0.1:" + server.getAddress().getPort());
+            config.setThinking("low");
+            WebCommandResolver.Resolution selected = WebCommandResolver.resolve(
+                    new WebChatInput(WebChatInput.VERSION, "/thinking " + thinking, "", SESSION),
+                    project, store, config);
+            assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED, selected.status());
+            HeadlessAgentRunner.Options options = new HeadlessAgentRunner.Options(
+                    "hello", SESSION, false, null, null, HeadlessAgentRunner.OutputMode.JSON,
+                    project, 0, null, null, null, event -> {}, config, null, false, false, null, false)
+                    .withWebInput(new WebChatInput(WebChatInput.VERSION, "hello", "", SESSION))
+                    .withSessionStateStore(store);
+            HeadlessAgentRunner.Result result = new HeadlessAgentRunner().run(options);
+            assertEquals(0, result.exitCode(), result.text());
+            assertFalse(requests.isEmpty());
+            if ("default".equals(thinking)) assertFalse(requests.get(0).has("reasoning_effort"));
+            else assertEquals(thinking, requests.get(0).path("reasoning_effort").asText());
+        } finally { server.stop(0); }
+    }
+
     /** Every instruction-bearing part of an OpenAI-compatible request. */
     private static String instructions(JsonNode request) {
         StringBuilder text = new StringBuilder();

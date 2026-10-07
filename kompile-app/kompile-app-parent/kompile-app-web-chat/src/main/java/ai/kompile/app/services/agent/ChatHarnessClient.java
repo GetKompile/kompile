@@ -82,6 +82,11 @@ public interface ChatHarnessClient {
         throw new IllegalStateException("Insights reports unavailable");
     }
 
+    /** Quiet wizard operation; credentials are supplied on stdin, never process arguments. */
+    default JsonNode setupChat(String workingDirectory, JsonNode payload) {
+        throw new IllegalStateException("Chat setup unavailable");
+    }
+
     /** Model context budget projected from {@link #capabilities}. */
     Map<String, Object> contextBudget(String agentName, String workingDirectory);
 }

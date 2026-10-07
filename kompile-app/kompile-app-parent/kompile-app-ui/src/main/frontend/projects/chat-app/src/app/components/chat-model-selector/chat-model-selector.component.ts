@@ -29,6 +29,14 @@ import { LocalAgentChatService } from '@shared/services/local-agent-chat.service
           <option *ngIf="modelMenu?.nativeModelSelection" value="__custom__">Custom model…</option>
         </select>
       </label>
+      <label *ngIf="thinkingMenu?.supported">Thinking / effort
+        <select aria-label="Thinking effort" data-testid="chat-thinking-select"
+          [ngModel]="thinkingChoice" (ngModelChange)="selectThinking($event)"
+          [disabled]="busy || loading || selectedVendor !== currentVendor()">
+          <option *ngFor="let option of thinkingMenu?.thinkingOptions" [value]="option.value">{{ option.label }}</option>
+        </select>
+      </label>
+      <span *ngIf="thinkingMenu?.note">{{ thinkingMenu?.note }}</span>
       <button type="button" (click)="refreshModels()" [disabled]="busy || loading" aria-label="Refresh model catalog">↻</button>
       <span *ngIf="loading" role="status">Loading models…</span>
       <span *ngIf="loadError" role="alert">{{ loadError }}</span>
@@ -67,6 +75,9 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
   /** Only this conversation's outcomes; never the shared cross-pane command bus. */
   @Input() outcome: CommandOutcome | null = null;
   @Output() modelSelected = new EventEmitter<string>();
+  @Output() thinkingSelected = new EventEmitter<string>();
+  thinkingMenu: CommandEventData | null = null;
+  thinkingChoice = '';
   @ViewChild('modelSelect') private modelSelect?: ElementRef<HTMLSelectElement>;
 
   modelMenu: CommandEventData | null = null;
@@ -82,6 +93,8 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['sessionId'] || changes['workingDirectory']) {
       this.modelMenu = null;
+      this.thinkingMenu = null;
+      this.thinkingChoice = '';
       this.selectedVendor = '';
       this.modelChoice = '';
       this.nativeModelId = '';
@@ -89,7 +102,7 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
     } else if (changes['outcome'] && this.outcome) {
       // Applied outcomes carry state without a catalog. Failed selections also
       // reload so the dropdown never presents a rejected choice as applied.
-      if (!this.outcome.ok || this.outcome.data?.state?.model) this.fetchModels();
+      if (!this.outcome.ok || this.outcome.data?.state?.model || this.outcome.data?.menu === 'thinking') this.fetchModels();
       else if (this.outcome.data?.menu === 'model') {
         this.request?.unsubscribe();
         this.loading = false;
@@ -132,7 +145,15 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
     this.modelSelected.emit(browsingOtherVendor ? this.selectedVendor + ':' + modelId : modelId);
   }
 
-  private currentVendor(): string {
+  selectThinking(value: string): void {
+    if (this.busy || this.loading || !this.thinkingMenu?.supported
+      || this.selectedVendor !== this.currentVendor()
+      || !this.thinkingMenu.thinkingOptions?.some(option => option.value === value)) return;
+    this.thinkingChoice = value;
+    this.thinkingSelected.emit(value);
+  }
+
+  currentVendor(): string {
     return this.modelMenu?.vendors?.find(vendor => vendor.current)?.vendor
       || this.modelMenu?.currentVendor || this.modelMenu?.provider || '';
   }
@@ -146,6 +167,7 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
   private restoreVendor(): void {
     this.selectedVendor = this.modelMenu?.vendor || this.currentVendor();
     this.modelChoice = this.currentModel();
+    this.thinkingChoice = this.thinkingMenu?.currentThinking ?? '';
   }
 
   private fetchModels(vendor?: string): void {
@@ -162,6 +184,8 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
           return;
         }
         this.applyMenu(snapshot.model, vendor);
+        this.thinkingMenu = snapshot.thinking ?? null;
+        this.thinkingChoice = snapshot.thinking?.currentThinking ?? '';
       },
       error: () => {
         this.loading = false;

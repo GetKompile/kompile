@@ -89,6 +89,90 @@ describe('Inline CLI terminal', () => {
     expect(sockets[1].close).toHaveBeenCalled();
     http.expectNone(r => r.method === 'DELETE' || r.url.endsWith('/stop'));
   }));
+  it('forwards CLI mouse-wheel reports and transcript paging keys instead of consuming them as scrollback', async () => {
+    const socket = launch();
+    const terminal = (fixture.componentInstance as any).terminal;
+    await new Promise<void>(resolve => terminal.write('\x1b[?1002h\x1b[?1006h', resolve));
+    const screen: HTMLElement = fixture.nativeElement.querySelector('.xterm-screen');
+    const rect = screen.getBoundingClientRect();
+    screen.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, clientX: rect.left + 20,
+      clientY: rect.top + 20, bubbles: true, cancelable: true }));
+    const textarea: HTMLElement = fixture.nativeElement.querySelector('.xterm-helper-textarea');
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', keyCode: 33,
+      shiftKey: true, bubbles: true, cancelable: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', code: 'End', keyCode: 35,
+      ctrlKey: true, bubbles: true, cancelable: true }));
+    const messages = socket.send.calls.allArgs().map(args => JSON.parse(args[0]));
+    expect(messages.some(m => m.type === 'input' && /^\x1b\[<64;[0-9]+;[0-9]+M$/.test(m.data))).toBeTrue();
+    expect(messages).toContain({ type: 'input', data: '\x1b[5~' });
+    expect(messages).toContain({ type: 'input', data: '\x1b[1;5F' });
+    // Older terminal applications use legacy binary reports, not UTF-8 strings.
+    await new Promise<void>(resolve => terminal.write('\x1b[?1006l', resolve));
+    screen.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, clientX: rect.left + 20,
+      clientY: rect.top + 20, bubbles: true, cancelable: true }));
+    const binary = socket.send.calls.allArgs().map(args => JSON.parse(args[0])).find(m => m.type === 'binary-input');
+    expect(binary).toBeDefined();
+    expect(atob(binary.data).startsWith('\x1b[M')).toBeTrue();
+  });
+  it('keeps native terminal scrollback when an application is not capturing the mouse', async () => {
+    launch();
+    const terminal = (fixture.componentInstance as any).terminal;
+    await new Promise<void>(resolve => terminal.write(Array.from({length: 100}, (_, i) => `line ${i}\r\n`).join(''), resolve));
+    // The write callback signals parsing, not rendering. xterm synchronizes its
+    // DOM scroll area on animation frames; wait for that before sending a wheel.
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    terminal.scrollToTop();
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    expect(terminal.buffer.active.viewportY).toBe(0);
+    const screen: HTMLElement = fixture.nativeElement.querySelector('.xterm-screen');
+    const rect = screen.getBoundingClientRect();
+    screen.dispatchEvent(new WheelEvent('wheel', {deltaY: 120, clientX: rect.left + 20,
+      clientY: rect.top + 20, bubbles: true, cancelable: true}));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(terminal.buffer.active.viewportY).toBeGreaterThan(0);
+  });
+  it('lets readers scroll a saved transcript without reconnecting or snapping to incoming terminal output', fakeAsync(() => {
+    const socket = launch();
+    const component = fixture.componentInstance;
+    const turns = [{role: 'user', content: '<script>not HTML</script>'},
+      {role: 'assistant', content: 'old chat line\n'.repeat(200)}];
+    component.toggleTranscript();
+    http.expectOne(r => r.url.endsWith('/sessions/terminal-id/transcript')).flush({sessionId: session.sessionId, turns});
+    fixture.detectChanges();
+    const region: HTMLElement = fixture.nativeElement.querySelector('.cli-console-transcript');
+    region.style.height = '100px'; region.style.flex = 'none';
+    expect(region.scrollHeight).toBeGreaterThan(region.clientHeight);
+    region.scrollTop = 120;
+    const position = region.scrollTop;
+    expect(position).toBeGreaterThan(0);
+    expect(region.querySelector('script')).toBeNull();
+    expect(region.textContent).toContain('<script>not HTML</script>');
+    socket.onmessage!({data: JSON.stringify({type: 'output', data: 'new live output\r\n'})});
+    component.loadTranscript();
+    http.expectOne(r => r.url.endsWith('/sessions/terminal-id/transcript')).flush({sessionId: session.sessionId,
+      turns: [...turns, {role: 'assistant', content: 'new completed turn'}]});
+    fixture.detectChanges();
+    expect(region.scrollTop).toBe(position);
+    component.toggleTranscript(); fixture.detectChanges();
+    component.toggleTranscript();
+    http.expectOne(r => r.url.endsWith('/sessions/terminal-id/transcript')).flush({sessionId: session.sessionId, turns});
+    fixture.detectChanges();
+    expect(region.scrollTop).toBe(position);
+    expect(sockets.length).toBe(1); expect(socket.close).not.toHaveBeenCalled();
+    http.expectNone(r => r.method !== 'GET');
+    fixture.destroy(); tick(200);
+  }));
+  it('ignores a stale transcript response after switching CLI sessions', fakeAsync(() => {
+    launch();
+    const component = fixture.componentInstance;
+    component.toggleTranscript();
+    const old = http.expectOne(r => r.url.endsWith('/sessions/terminal-id/transcript'));
+    component.sessions.push({...session, id: 'other-terminal'});
+    component.connect('other-terminal');
+    old.flush({sessionId: session.sessionId, turns: [{role: 'user', content: 'wrong session'}]});
+    expect(component.turns).toEqual([]); expect(component.showTranscript).toBeFalse();
+    fixture.destroy(); tick(200);
+  }));
   it('hides without disconnecting and uses explicit stop with CSRF header', fakeAsync(() => {
     const socket = launch();
     fixture.componentInstance.visible = false; fixture.detectChanges();

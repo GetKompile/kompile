@@ -8,6 +8,8 @@ import { ConversationalRagService } from '@shared/services/conversational-rag.se
 import { UnifiedChatComponent } from '../unified-chat/unified-chat.component';
 import { ChatActivity, IDLE_CHAT_ACTIVITY } from '../chat-activity-indicator/chat-activity-indicator.component';
 import { Subscription } from 'rxjs';
+import { MatDialog } from '@angular/material/dialog';
+import { NewChatDialogComponent, NewChatDialogResult } from '../new-chat-dialog/new-chat-dialog.component';
 
 export interface WorkspaceChat { id: string; name: string; framework?: string | null; model?: string | null; nativeSource?: string | null; }
 interface NativeChat { sessionId: string; title: string; workingDirectory?: string | null; }
@@ -24,7 +26,8 @@ interface OpenChat { project: WorkspaceProject; chat: WorkspaceChat; }
   providers: [LocalAgentChatService, AgentService, FolderService, ConversationalRagService],
   template: `<app-unified-chat [workingDirectory]="project.workingDirectory"
     [workspaceChat]="chat" [viewActive]="active" (workspaceNewChat)="newChatRequested.emit()"></app-unified-chat>`,
-  styles: [':host { display:block; height:100%; min-height:0; }']
+  styles: [':host { display:block; height:100%; min-height:0; }',
+    '@media(max-width:768px), (max-height:560px) { :host { height:auto; } }']
 })
 export class WorkspaceChatPaneComponent {
   @Input() project!: WorkspaceProject;
@@ -92,21 +95,7 @@ export class WorkspaceChatPaneComponent {
           <h3 [title]="project.workingDirectory">{{ project.name }}</h3>
           <small>{{ project.workingDirectory }}</small>
           <button mat-stroked-button type="button" (click)="beginChat(project)" [disabled]="saving"
-            title="Choose a chat framework; open chats keep running"><mat-icon>add</mat-icon> New chat</button>
-          <form *ngIf="newChatProject === project.id" (ngSubmit)="newChat(project, newFramework || undefined, newModel.trim() || undefined)">
-            <label [for]="'framework-' + project.id">Chat framework</label>
-            <select [id]="'framework-' + project.id" name="framework" [(ngModel)]="newFramework">
-              <option value="">Folder default</option><option value="standard">Kompile standard (configured vendor)</option>
-              <option *ngFor="let framework of frameworks" [value]="framework.id" [disabled]="!framework.available">
-                {{ framework.displayName }}{{ framework.available ? '' : ' (not installed)' }}
-              </option>
-            </select>
-            <label [for]="'model-' + project.id">Model (optional)</label>
-            <input [id]="'model-' + project.id" name="model" [(ngModel)]="newModel" maxlength="256" placeholder="Default, or e.g. zai/glm-5 for OpenCode">
-            <small>Native frameworks use their own vendor login. The framework is pinned to this chat; other chats are unchanged.</small>
-            <button mat-button type="submit" [disabled]="saving">Create chat</button>
-            <button mat-button type="button" (click)="newChatProject = ''" [disabled]="saving">Cancel</button>
-          </form>
+            title="Configure a new chat; open chats keep running"><mat-icon>add</mat-icon> New chat</button>
           <details class="vendor-folder kompile-folder" [open]="!vendorCollapsed(project.id, 'kompile')"
             (toggle)="rememberVendorCollapse(project.id, 'kompile', $event)">
             <summary>Kompile ({{ workspaceChats(project).length }}{{ titleSearch.trim() ? ' / ' + workspaceChatCount(project) : '' }})</summary>
@@ -243,6 +232,11 @@ export class WorkspaceChatPaneComponent {
       input, select, textarea { font-size:16px; }
       input, select { min-height:44px; }
     }
+    /* The page scrolls on narrow or short viewports (see the app shell), so nothing here
+       pins itself to the viewport height. */
+    @media(max-width:768px), (max-height:560px) {
+      :host, :host > app-unified-chat { height:auto; }
+    }
   `]
 })
 export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDestroy {
@@ -291,7 +285,7 @@ export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDes
   private statusTimer?: ReturnType<typeof setInterval>;
   private titleTimer?: ReturnType<typeof setInterval>;
   private titleReadPending = false;
-  constructor(private http: HttpClient, private cdr: ChangeDetectorRef) { super(); }
+  constructor(private http: HttpClient, private cdr: ChangeDetectorRef, private dialogs: MatDialog) { super(); }
   ngOnInit(): void {
     this.statusTimer = setInterval(() => this.cdr.markForCheck(), 1000);
     this.titleTimer = setInterval(() => this.refreshTitles(), 10_000);
@@ -315,7 +309,7 @@ export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDes
           const project = this.projects.find(p => p.workingDirectory === view.workingDirectory);
           if (project) {
             if (project.chats.length) this.open(project, project.chats[0]);
-            else this.newChat(project);
+            else this.beginChat(project);
           }
         }
       }, error: err => { this.loading = false; this.fail(err); }
@@ -465,7 +459,7 @@ export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDes
         this.syncNativeProjects();
         this.directory = ''; this.projectForm = ''; this.saving = false;
         if (project.chats.length) this.open(project, project.chats[0]);
-        else this.newChat(project);
+        else this.beginChat(project);
       }, error: err => { this.saving = false; this.fail(err); }
     }));
   }
@@ -479,17 +473,26 @@ export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDes
         this.projects = [...this.projects, project];
         this.syncNativeProjects();
         this.projectName = ''; this.projectForm = ''; this.saving = false;
-        this.newChat(project);
+        this.beginChat(project);
       }, error: err => { this.saving = false; this.fail(err); }
     }));
   }
   beginChat(project: WorkspaceProject): void {
-    this.foldersOpen = true;
-    this.newChatProject = project.id; this.newFramework = ''; this.newModel = ''; this.frameworks = []; this.error = '';
-    this.subscriptions.add(this.http.get<{ frameworks?: NativeFramework[] }>(`${this.backendUrl}/agents/chat/capabilities`,
-      { params: { workingDirectory: project.workingDirectory } }).subscribe({
-      next: report => { if (this.newChatProject === project.id) this.frameworks = report.frameworks || []; },
-      error: err => this.fail(err)
+    if (!this.enabled || this.saving || this.newChatProject) return;
+    if (this.opened.length >= 8) { this.error = 'Close a chat tab before opening another (limit 8).'; return; }
+    this.newChatProject = project.id; this.error = '';
+    const dialog = this.dialogs.open(NewChatDialogComponent, {
+      width: '880px', maxWidth: '96vw', maxHeight: '94vh', autoFocus: 'first-heading',
+      data: { url: `${this.url}/projects/${encodeURIComponent(project.id)}`, workingDirectory: project.workingDirectory, name: `Chat ${project.chats.length + 1}` }
+    });
+    this.subscriptions.add(dialog.afterClosed().subscribe((result?: NewChatDialogResult) => {
+      this.newChatProject = '';
+      if (result?.chat) {
+        const chat: WorkspaceChat = result.chat;
+        project.chats = [...project.chats, chat]; this.titleRevision++;
+        this.open(project, chat);
+      } else if (result?.refresh) this.refreshNativeFolders(project);
+      this.cdr.markForCheck();
     }));
   }
   newChat(project: WorkspaceProject, framework?: string, model?: string): void {

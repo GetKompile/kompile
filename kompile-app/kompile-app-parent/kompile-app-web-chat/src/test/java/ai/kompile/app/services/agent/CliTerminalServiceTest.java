@@ -125,6 +125,52 @@ class CliTerminalServiceTest {
         assertThrows(IllegalStateException.class, () -> service.message("owner", terminal.id(), "replay",
                 mapper.readTree("{\"type\":\"input\",\"data\":\"closed\"}")));
     }
+    @Test void forwardsBinaryMouseCoordinatesWithoutUtf8RecodingAndRejectsInvalidFrames() throws Exception {
+        PtyProcess process = mock(PtyProcess.class);
+        ByteArrayOutputStream input = new ByteArrayOutputStream();
+        when(process.getInputStream()).thenReturn(new ByteArrayInputStream(new byte[0]));
+        when(process.getOutputStream()).thenReturn(input);
+        service = new CliTerminalService(mapper, () -> List.of("kompile"), (cmd, dir, env, cols, rows) -> process);
+        var terminal = service.launch("owner", new CliTerminalService.Launch(null, 80, 24));
+        await(() -> service.list("owner").get(0).exitCode() != null);
+        Socket socket = socket("mouse");
+        service.attach("owner", terminal.id(), socket.socket);
+        when(process.isAlive()).thenReturn(true);
+        try {
+            byte[] report = new byte[]{27, '[', 'M', 96, (byte) 200, (byte) 150};
+            var message = mapper.createObjectNode().put("type", "binary-input").put("data", Base64.getEncoder().encodeToString(report));
+            service.message("owner", terminal.id(), "mouse", message);
+            assertArrayEquals(report, input.toByteArray());
+            assertThrows(NoSuchElementException.class, () -> service.message("other", terminal.id(), "mouse", message));
+            assertThrows(IllegalStateException.class, () -> service.message("owner", terminal.id(), "stale", message));
+            assertThrows(IllegalArgumentException.class, () -> service.message("owner", terminal.id(), "mouse", message.deepCopy().put("data", "not base64!")));
+            assertThrows(IllegalArgumentException.class, () -> service.message("owner", terminal.id(), "mouse",
+                    message.deepCopy().put("data", Base64.getEncoder().encodeToString(new byte[16385]))));
+            assertArrayEquals(report, input.toByteArray());
+        } finally { when(process.isAlive()).thenReturn(false); }
+        assertThrows(IllegalStateException.class, () -> service.message("owner", terminal.id(), "mouse",
+                mapper.createObjectNode().put("type", "binary-input").put("data", "AA==")));
+    }
+    @Test void readsOwnedSavedTranscriptBeyondTheTerminalReplayLimit() throws Exception {
+        PtyProcess process = mock(PtyProcess.class);
+        when(process.getInputStream()).thenReturn(new ByteArrayInputStream(new byte[0]));
+        var adapter = new ai.kompile.cli.common.chat.sources.adapters.KompileAdapter(directory);
+        service = new CliTerminalService(mapper, () -> List.of("kompile"), (cmd, dir, env, cols, rows) -> process, adapter);
+        var terminal = service.launch("owner", new CliTerminalService.Launch(null, 80, 24));
+        assertTrue(service.transcript("owner", terminal.id()).turns().isEmpty());
+        String answer = "Earlier café\n" + "x".repeat(CliTerminalService.REPLAY_LIMIT + 10);
+        try (var writer = new java.io.PrintWriter(java.nio.file.Files.newBufferedWriter(directory.resolve(terminal.sessionId() + ".txt")))) {
+            ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.writeTurn(writer, "user", "first question");
+            ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.writeTurn(writer, "assistant", answer);
+        }
+        var transcript = service.transcript("owner", terminal.id());
+        assertEquals(terminal.sessionId(), transcript.sessionId());
+        assertEquals(2, transcript.turns().size());
+        assertEquals("first question", transcript.turns().get(0).content());
+        assertEquals(answer, transcript.turns().get(1).content());
+        assertThrows(NoSuchElementException.class, () -> service.transcript("other", terminal.id()));
+        assertThrows(NoSuchElementException.class, () -> service.transcript("owner", "../another-session"));
+    }
     private CliTerminalService realService(String script) {
         return new CliTerminalService(mapper, () -> List.of("kompile"), (command, dir, env, cols, rows) -> {
             assertEquals("chat", command.get(1));

@@ -245,7 +245,11 @@ public class SetupWizard {
      * The result carries the workflow team picked here, which new web sessions start with.
      */
     public static SetupResult runForWeb(ChatConfig.Scope scope, Path projectRoot) {
-        return run(scope, projectRoot, true, false);
+        return runForWeb(scope, projectRoot, null);
+    }
+
+    public static SetupResult runForWeb(ChatConfig.Scope scope, Path projectRoot, Integer webPort) {
+        return run(scope, projectRoot, true, false, webPort);
     }
 
     public enum Destination { TERMINAL, BROWSER }
@@ -253,17 +257,53 @@ public class SetupWizard {
     /**
      * Invocation-only routing plus the workflow team chosen during setup; never
      * part of a profile, credential, or persisted session config. {@code workflow}
-     * is null when the user declined a workflow (or selected None).
+     * is null when the user declined a workflow (or selected None). {@code webPort}
+     * is the launch-only browser port; null or 0 retains automatic selection.
      */
     public record SetupResult(ChatConfig config, Destination destination,
-                              WorkflowTeamSnapshot workflow) {
+                              WorkflowTeamSnapshot workflow, Integer webPort) {
         public SetupResult(ChatConfig config, Destination destination) {
-            this(config, destination, null);
+            this(config, destination, null, null);
+        }
+
+        public SetupResult(ChatConfig config, Destination destination, WorkflowTeamSnapshot workflow) {
+            this(config, destination, workflow, null);
         }
     }
 
     public static SetupResult runWithDestination(ChatConfig.Scope scope, Path projectRoot) {
-        return run(scope, projectRoot, false, true);
+        return runWithDestination(scope, projectRoot, null);
+    }
+
+    public static SetupResult runWithDestination(ChatConfig.Scope scope, Path projectRoot, Integer webPort) {
+        return run(scope, projectRoot, false, true, webPort);
+    }
+
+    /** Launch-only port: 0 selects automatically; null means the picker was cancelled. */
+    static Integer selectWebPort(LineReader reader, Destination destination, Integer explicitPort) {
+        if (destination != Destination.BROWSER) return 0;
+        if (explicitPort != null) return validateWebPort(explicitPort);
+        while (true) {
+            String input;
+            try {
+                input = reader.readLine("  Web UI port (1-65535 for a stable URL, Enter/0 = automatic, cancel to quit): ");
+            } catch (UserInterruptException | EndOfFileException e) {
+                return null;
+            }
+            String value = input == null ? "cancel" : input.trim();
+            if (List.of("q", "quit", "cancel").contains(value.toLowerCase(java.util.Locale.ROOT))) return null;
+            if (value.isEmpty()) return 0;
+            try {
+                return validateWebPort(Integer.parseInt(value));
+            } catch (IllegalArgumentException e) {
+                System.out.println("  Enter a port from 1 to 65535, or 0 for automatic selection.");
+            }
+        }
+    }
+
+    public static int validateWebPort(int port) {
+        if (port < 0 || port > 65535) throw new IllegalArgumentException("Web UI port must be between 0 and 65535 (0 = automatic).");
+        return port;
     }
 
     static Destination selectDestination(LineReader reader, ChatConfig config,
@@ -302,6 +342,11 @@ public class SetupWizard {
 
     private static SetupResult run(ChatConfig.Scope scope, Path projectRoot,
                                    boolean webHandoff, boolean offerDestination) {
+        return run(scope, projectRoot, webHandoff, offerDestination, null);
+    }
+
+    private static SetupResult run(ChatConfig.Scope scope, Path projectRoot,
+                                   boolean webHandoff, boolean offerDestination, Integer explicitWebPort) {
         ChatConfig.Scope targetScope = scope != null ? scope : ChatConfig.Scope.PROJECT;
         Path targetPath = ChatConfig.configPath(targetScope, projectRoot).toAbsolutePath().normalize();
         ChatConfig existingConfig = targetScope == ChatConfig.Scope.GLOBAL
@@ -434,9 +479,11 @@ public class SetupWizard {
                 Destination destination = workflowRequested || nativeTeam ? Destination.TERMINAL
                         : selectDestination(reader, selected, webHandoff, offerDestination);
                 if (destination == null) return null;
+                Integer webPort = selectWebPort(reader, destination, explicitWebPort);
+                if (webPort == null) return null;
                 JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, selected);
                 selected.save(targetScope, projectRoot);
-                return new SetupResult(selected, destination, workflow.snapshot());
+                return new SetupResult(selected, destination, workflow.snapshot(), webPort);
             }
 
             // Step 2: Select the passthrough style and agent when no profile was chosen.
@@ -626,10 +673,12 @@ public class SetupWizard {
             Destination destination = workflowRequested || nativeTeam ? Destination.TERMINAL
                     : selectDestination(reader, config, webHandoff, offerDestination);
             if (destination == null) return null;
+            Integer webPort = selectWebPort(reader, destination, explicitWebPort);
+            if (webPort == null) return null;
             if (!saveProjectProfile(reader, projectRoot, config)) return null;
             JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, config);
 
-            SetupResult result = new SetupResult(config, destination, workflow.snapshot());
+            SetupResult result = new SetupResult(config, destination, workflow.snapshot(), webPort);
             if (saveConfiguration(config, destination, targetScope, projectRoot)) {
                 System.out.println();
                 System.out.println(GREEN + "  ✓ Configuration saved!" + RESET);

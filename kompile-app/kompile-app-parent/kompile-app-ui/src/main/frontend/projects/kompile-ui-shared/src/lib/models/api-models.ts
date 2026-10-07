@@ -2976,7 +2976,7 @@ export interface CommandRoleEntry {
  * and {@code menu:"clear"}; unknown menus degrade to status text.
  */
 export interface CommandEventData {
-  menu?: 'model' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'clear' | 'continue' | 'judge';
+  menu?: 'model' | 'thinking' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'clear' | 'continue' | 'judge';
   provider?: string;
   currentModel?: string;
   /** Native framework owns the vendor catalog; accept its exact model identifier. */
@@ -2988,6 +2988,9 @@ export interface CommandEventData {
   /** /role menu payload. */
   currentRole?: string;
   roles?: CommandRoleEntry[];
+  /** Provider/model-resolved /thinking payload (empty value means provider default). */
+  currentThinking?: string;
+  thinkingOptions?: { value: string; label: string }[];
   /** /fast payload. */
   fastMode?: boolean;
   /** /ultracode payload (Claude Code route). */
@@ -3035,6 +3038,7 @@ export interface CommandEventData {
     sessionId?: string;
     workingDirectory?: string;
     model?: string;
+    thinking?: string;
     /** Wire provider of the stored model (vendor switch). */
     provider?: string;
     /** Empty string means the role selection was cleared. */

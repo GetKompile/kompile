@@ -26,9 +26,33 @@ import {
 
 import {
   ManagedServiceEndpoints,
+  reachableFromBrowser,
   ServiceEndpointRouter,
   ServiceEndpointRoutingInterceptor
 } from './service-endpoint-routing';
+
+describe('reachableFromBrowser', () => {
+  const tailscaleServe = { hostname: 'kompile-box.tail1234.ts.net', protocol: 'https:' };
+
+  it('reaches loopback personas over HTTPS on their port from a tailscale-serve page', () => {
+    expect(reachableFromBrowser('http://localhost:8080', tailscaleServe))
+      .toBe('https://kompile-box.tail1234.ts.net:8080/');
+    expect(reachableFromBrowser('http://127.0.0.1:8082/', tailscaleServe))
+      .toBe('https://kompile-box.tail1234.ts.net:8082/');
+  });
+
+  it('keeps the configured scheme for a plain-HTTP tailnet page', () => {
+    expect(reachableFromBrowser('http://localhost:8080', { hostname: '100.101.102.103', protocol: 'http:' }))
+      .toBe('http://100.101.102.103:8080/');
+  });
+
+  it('leaves same-host and explicitly configured endpoints alone', () => {
+    expect(reachableFromBrowser('http://localhost:8080', { hostname: 'localhost', protocol: 'http:' }))
+      .toBe('http://localhost:8080');
+    expect(reachableFromBrowser('https://admin.example.com', tailscaleServe))
+      .toBe('https://admin.example.com');
+  });
+});
 
 describe('ServiceEndpointRouter', () => {
   let client: HttpClient;
@@ -138,6 +162,22 @@ describe('ServiceEndpointRouter', () => {
     const absoluteSameOrigin = `${window.location.origin}${path}`;
     expect(router.resolve(absoluteSameOrigin)).toBe(absoluteSameOrigin);
     expect(router.resolve('/api/chat/sessions')).toBe('/api/chat/sessions');
+  });
+
+  it('addresses loopback personas by the host the browser used (Tailscale/LAN/alias)', async () => {
+    router = new ServiceEndpointRouter(client, 'chat');
+    await load({
+      ...endpoints,
+      adminUrl: 'http://127.0.0.1:9380',
+      crawlUrl: 'http://kompile.internal:9382/'
+    });
+
+    // A remote browser cannot reach the Kompile host's loopback; keep scheme + port, swap host.
+    expect(router.resolve('/api/staging-config/configs/active'))
+      .toBe(`http://${window.location.hostname}:9380/api/staging-config/configs/active`);
+    // Explicitly configured non-loopback endpoints are authoritative.
+    expect(router.resolve('/api/cross-index/status/1'))
+      .toBe('http://kompile.internal:9382/api/cross-index/status/1');
   });
 
   it('still routes other personas and longest-prefix overrides from the chat UI', async () => {

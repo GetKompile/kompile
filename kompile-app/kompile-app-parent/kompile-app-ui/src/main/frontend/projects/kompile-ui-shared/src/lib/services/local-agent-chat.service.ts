@@ -52,6 +52,7 @@ export interface SessionConfigSnapshot {
   status?: string;
   sessionId?: string;
   model?: CommandEventData;
+  thinking?: CommandEventData;
   role?: CommandEventData;
   fast?: CommandEventData;
   ultracode?: CommandEventData;
@@ -405,6 +406,7 @@ export class LocalAgentChatService extends BaseService {
   private filesModified$ = new Subject<string[]>();
   private sources$ = new Subject<RetrievedSource[]>();
   private chatStats$ = new Subject<ChatStats>();
+  private sessionTitle$ = new Subject<{ sessionId: string; title: string }>();
   private compaction$ = new Subject<CompactionEvent>();
 
   // Array buffer for efficient string accumulation
@@ -1009,6 +1011,13 @@ export class LocalAgentChatService extends BaseService {
                 this.storageService.updateSession(session);
                 // The team the session started with; a resumed run restores it. None: no team.
                 this.rememberWorkflowTeam(this.browserSessionId, LocalAgentChatService.workflowTeamOf(parsed.workflow));
+                break;
+
+              case 'title':
+                if (typeof parsed.title === 'string' && parsed.title.trim()
+                    && parsed.session_id === session.metadata?.['harnessSessionId']) {
+                  this.sessionTitle$.next({ sessionId: this.browserSessionId, title: parsed.title.trim() });
+                }
                 break;
 
               case 'queued':
@@ -1822,6 +1831,10 @@ export class LocalAgentChatService extends BaseService {
 
   getSources(): Observable<RetrievedSource[]> {
     return this.sources$.asObservable();
+  }
+
+  getSessionTitle(): Observable<{ sessionId: string; title: string }> {
+    return this.sessionTitle$.asObservable();
   }
 
   getChatStats(): Observable<ChatStats> {

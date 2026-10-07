@@ -27,6 +27,43 @@ class ChatWorkspaceControllerTest {
     @AfterEach void restore() {
         restore(WebChatContext.MODE, mode); restore(WebChatContext.WORKING_DIRECTORY, directory);
     }
+    @Test void setupCatalogDelegatesToCliInTheRegisteredProjectWithoutCreatingChat() throws Exception {
+        var harness = org.mockito.Mockito.mock(ai.kompile.app.services.agent.ChatHarnessClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(controller, "harness", harness);
+        var project = controller.addProject(new ChatWorkspaceController.ProjectRequest(temp.toString()));
+        var options = ai.kompile.cli.common.util.JsonUtils.standardMapper().createObjectNode().put("available", true);
+        org.mockito.Mockito.when(harness.setupChat(org.mockito.ArgumentMatchers.eq(temp.toRealPath().toString()), org.mockito.ArgumentMatchers.any())).thenReturn(options);
+        assertSame(options, controller.setupOptions(project.id(), new ChatWorkspaceController.SetupRequest(null,
+                ai.kompile.cli.common.util.JsonUtils.standardMapper().createObjectNode().put("runtime", "direct"))));
+        assertTrue(controller.workspace().projects().get(0).chats().isEmpty());
+        org.mockito.Mockito.verify(harness).setupChat(org.mockito.ArgumentMatchers.eq(temp.toRealPath().toString()),
+                org.mockito.ArgumentMatchers.argThat(p -> "catalog".equals(p.path("action").asText()) && "direct".equals(p.path("selection").path("runtime").asText())));
+    }
+    @Test void configuredChatUsesTheSameSessionIdForCliPinsAndWorkspaceMetadata() throws Exception {
+        var harness = org.mockito.Mockito.mock(ai.kompile.app.services.agent.ChatHarnessClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(controller, "harness", harness);
+        var project = controller.addProject(new ChatWorkspaceController.ProjectRequest(temp.toString()));
+        var result = ai.kompile.cli.common.util.JsonUtils.standardMapper().createObjectNode().put("ok", true).put("framework", "standard").put("model", "fresh-model");
+        org.mockito.Mockito.when(harness.setupChat(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any())).thenReturn(result);
+        var chat = controller.setupCreate(project.id(), new ChatWorkspaceController.SetupRequest("New configured chat",
+                ai.kompile.cli.common.util.JsonUtils.standardMapper().createObjectNode().put("model", "fresh-model")));
+        assertEquals("fresh-model", chat.model());
+        org.mockito.Mockito.verify(harness).setupChat(org.mockito.ArgumentMatchers.eq(temp.toRealPath().toString()),
+                org.mockito.ArgumentMatchers.argThat(p -> "create".equals(p.path("action").asText()) && chat.id().equals(p.path("sessionId").asText())));
+        assertEquals(chat, controller.workspace().projects().get(0).chats().get(0));
+    }
+    @Test void rejectedSetupDoesNotRegisterAnUnconfiguredConversation() throws Exception {
+        var harness = org.mockito.Mockito.mock(ai.kompile.app.services.agent.ChatHarnessClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(controller, "harness", harness);
+        var project = controller.addProject(new ChatWorkspaceController.ProjectRequest(temp.toString()));
+        org.mockito.Mockito.when(harness.setupChat(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(ai.kompile.cli.common.util.JsonUtils.standardMapper().createObjectNode().put("ok", false).put("status", "Unsupported model option"));
+        assertThrows(ResponseStatusException.class, () -> controller.setupCreate(project.id(), new ChatWorkspaceController.SetupRequest("Rejected",
+                ai.kompile.cli.common.util.JsonUtils.standardMapper().createObjectNode())));
+        assertTrue(controller.workspace().projects().get(0).chats().isEmpty());
+        assertThrows(ResponseStatusException.class, () -> controller.setupOptions("unregistered", null));
+        org.mockito.Mockito.verify(harness, org.mockito.Mockito.times(1)).setupChat(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+    }
     static void restore(String key, String value) {
         if (value == null) System.clearProperty(key); else System.setProperty(key, value);
     }

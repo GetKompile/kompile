@@ -114,6 +114,11 @@ public final class ExecJsonEvents {
                     }
                 });
             }
+            case SESSION_TITLE -> {
+                n.put("type", "title");
+                n.put("session_id", event.sessionId());
+                n.put("title", event.text());
+            }
             case BACKEND_STARTED -> {
                 n.put("type", "backend");
                 n.put("session_id", event.sessionId());

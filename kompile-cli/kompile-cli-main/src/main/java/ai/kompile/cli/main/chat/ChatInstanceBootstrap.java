@@ -79,14 +79,31 @@ final class ChatInstanceBootstrap {
 
     static StartupResult startWeb(Path workingDirectory, boolean globalConfig, String workflow, int timeout,
                                   boolean workspace) throws BootstrapException, IOException {
+        return startWeb(workingDirectory, globalConfig, workflow, timeout, workspace, null);
+    }
+
+    static StartupResult startWeb(Path workingDirectory, boolean globalConfig, String workflow, int timeout,
+                                  boolean workspace, Integer requestedPort) throws BootstrapException, IOException {
+        int port = selectWebPort(requestedPort);
         if (workspace) new ai.kompile.cli.common.ChatWorkspaceStore().register(workingDirectory);
-        // A fresh port/instance avoids reusing an admin persona or another project's harness.
-        int port;
-        try (ServerSocket socket = new ServerSocket(0)) {
-            port = socket.getLocalPort();
-        }
         return ensureReady("http://127.0.0.1:" + port, timeout, new ComponentRegistry(),
                 new ServiceManager(), workingDirectory.toRealPath().toFile(), true, globalConfig, workflow, workspace);
+    }
+
+    /** Never silently replace a requested port or attach another project's web harness. */
+    static int selectWebPort(Integer requestedPort) throws BootstrapException, IOException {
+        int port = ai.kompile.cli.main.chat.config.SetupWizard.validateWebPort(requestedPort == null ? 0 : requestedPort);
+        try (ServerSocket socket = new ServerSocket()) {
+            // Allow a stopped HTTP listener's TIME_WAIT connections, not an active listener.
+            socket.setReuseAddress(true);
+            socket.bind(new java.net.InetSocketAddress(port));
+            return socket.getLocalPort();
+        } catch (IOException e) {
+            if (port == 0) throw e;
+            throw new BootstrapException("Cannot bind web UI port " + port
+                    + "; it may already be in use. Stop the existing listener or choose another --web-port."
+                    + " No existing server was reused: " + e.getMessage(), e);
+        }
     }
 
     static StartupResult ensureReady(String requestedChatUrl, int startupTimeoutSeconds,
@@ -132,7 +149,9 @@ final class ChatInstanceBootstrap {
 
         int chatPort = portForLocalChatUrl(requestedChatUrl);
         if (serviceManager.checkHealth(chatPort)) {
-            if (webHandoff) throw new BootstrapException("Web handoff will not reuse an existing server; retry for a fresh port.");
+            if (webHandoff) throw new BootstrapException("Web UI port " + chatPort
+                    + " is already in use. Web handoff will not reuse an existing server;"
+                    + " stop it or choose another --web-port.");
             return new StartupResult(requestedChatUrl, false);
         }
 

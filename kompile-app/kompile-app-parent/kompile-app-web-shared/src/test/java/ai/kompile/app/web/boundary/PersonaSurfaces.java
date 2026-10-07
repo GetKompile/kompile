@@ -35,6 +35,8 @@ public final class PersonaSurfaces {
             "/api/agents",
             "/api/agents/chat",
             "/api/agents/chat/insights",
+            "/api/agents/chat/terminal",
+            "/api/agents/chat/tool-details",
             "/api/agents/chat/workspace",
             "/api/agents/kompile-local",
             "/api/agents/models",

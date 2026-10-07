@@ -95,6 +95,13 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--web", description = "Start a fresh installed CHAT web UI (LAN-accessible by default) and print its local URL without requiring chat configuration. Configure sessions in the browser, or combine with --setup to configure first.")
     private boolean web;
 
+    @CommandLine.Option(names = "--web-port", paramLabel = "PORT",
+            description = "Port for the launched web UI (0 = automatic). Use with --web or choose Browser in the setup wizard; --port remains the terminal server connection option.")
+    private Integer webPort;
+
+    @CommandLine.Option(names = "--web-setup", hidden = true)
+    private boolean webSetup;
+
     @CommandLine.Option(names = "--workspace", description = "Manage folder-based projects and independent chats (the default with --web).")
     private boolean workspace;
 
@@ -375,6 +382,14 @@ public class ChatCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        if (webSetup) return runWebSetup();
+        if (webPort != null) {
+            try {
+                SetupWizard.validateWebPort(webPort);
+            } catch (IllegalArgumentException e) {
+                return printError(e.getMessage(), 2);
+            }
+        }
         if (workspace && !web) return printError("--workspace requires --web.", 2);
         if (singleWebChat && !web) return printError("--single-chat requires --web.", 2);
         if (workspace && singleWebChat) return printError("Choose --workspace or --single-chat, not both.", 2);
@@ -466,7 +481,7 @@ public class ChatCommand implements Callable<Integer> {
             SetupWizard.SetupResult result = runSetupWizard();
             if (result == null) return 1;
             return result.destination() == SetupWizard.Destination.BROWSER
-                    ? runWebHandoff(result.config(), result.workflow()) : 0;
+                    ? runWebHandoff(result.config(), result.workflow(), result.webPort()) : 0;
         }
 
         // Handle --list: just print conversations and exit
@@ -559,7 +574,7 @@ public class ChatCommand implements Callable<Integer> {
             SetupWizard.SetupResult result = runSetupWizard();
             config = result == null ? null : result.config();
             if (result != null && result.destination() == SetupWizard.Destination.BROWSER) {
-                return runWebHandoff(config, result.workflow());
+                return runWebHandoff(config, result.workflow(), result.webPort());
             }
             configSelectedInThisRun = true;
             if (config == null) {
@@ -598,7 +613,7 @@ public class ChatCommand implements Callable<Integer> {
         // ── the wizard's choice wins, then the explicit flag, then one prompt.       ──
         WorkflowTeamSnapshot workflowSnapshot = null;
         boolean resumedWorkflow = false;
-        if (isResume) {
+        if (isResume || (webInput != null && ChatConfig.loadSession(sessionId) != null)) {
             try {
                 workflowSnapshot = WorkflowSessionContext.restore(sessionId, effectiveWorkingDirectory());
                 resumedWorkflow = workflowSnapshot != null;
@@ -629,7 +644,8 @@ public class ChatCommand implements Callable<Integer> {
         }
 
         try {
-            applyCommandLineOverrides(config);
+            // Workspace metadata and persona flags cannot replace a browser's pinned launch selection.
+            if (webInput == null || ChatConfig.loadSession(sessionId) == null) applyCommandLineOverrides(config);
         } catch (IllegalArgumentException e) {
             return headless ? headlessError(e.getMessage(), 2) : printError(e.getMessage(), 2);
         }
@@ -701,10 +717,30 @@ public class ChatCommand implements Callable<Integer> {
         }
     }
 
+    private int runWebSetup() {
+        var mapper = JsonUtils.standardMapper();
+        var out = System.out;
+        var err = System.err;
+        // Helpers may print discovery diagnostics; no credentials or incidental text may enter this wire.
+        try (var quiet = new PrintStream(java.io.OutputStream.nullOutputStream())) {
+            System.setOut(quiet); System.setErr(quiet);
+            byte[] bytes = System.in.readNBytes(65537);
+            if (bytes.length > 65536) throw new IllegalArgumentException("Setup request too large");
+            JsonNode result = ai.kompile.cli.main.chat.config.WebChatSetup.handle(effectiveWorkingDirectory(), mapper.readTree(bytes));
+            out.println(mapper.writeValueAsString(result));
+            return 0;
+        } catch (Exception invalid) {
+            var failure = mapper.createObjectNode().put("available", false).put("ok", false);
+            failure.put("status", invalid instanceof IllegalArgumentException ? invalid.getMessage() : "Chat setup unavailable; use terminal setup");
+            out.println(failure.toString());
+            return 2;
+        } finally { System.setOut(out); System.setErr(err); }
+    }
+
     String webOptionError() {
         if (!promptParts.isEmpty()) return "--web does not accept a prompt; send it in the browser.";
         if (commandSpec != null && commandSpec.commandLine().getParseResult() != null) {
-            var allowed = java.util.Set.of("--web", "--workspace", "--single-chat", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout", "--workflow");
+            var allowed = java.util.Set.of("--web", "--web-port", "--workspace", "--single-chat", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout", "--workflow");
             for (var option : commandSpec.commandLine().getParseResult().matchedOptions()) {
                 if (!allowed.contains(option.longestName())) {
                     return "--web cannot be combined with " + option.longestName()
@@ -727,13 +763,15 @@ public class ChatCommand implements Callable<Integer> {
     SetupWizard.SetupResult selectWebConfig(Path directory) {
         ChatConfig.Scope scope = globalConfig ? ChatConfig.Scope.GLOBAL : ChatConfig.Scope.PROJECT;
         ChatConfig saved = globalConfig ? ChatConfig.loadGlobalOrFromEnv() : ChatConfig.loadOrFromEnv(directory);
-        return runSetup || saved == null ? SetupWizard.runForWeb(scope, directory)
+        return runSetup || saved == null ? SetupWizard.runForWeb(scope, directory, webPort)
                 : new SetupWizard.SetupResult(saved, SetupWizard.Destination.BROWSER);
     }
 
+    Integer requestedWebPort() { return webPort; }
+
     /** {@code workflowName} is the team new web sessions start with, or {@code null}. */
     ChatInstanceBootstrap.StartupResult startWeb(Path directory, String workflowName) throws Exception {
-        return ChatInstanceBootstrap.startWeb(directory, globalConfig, workflowName, startupTimeoutSeconds, webWorkspace());
+        return ChatInstanceBootstrap.startWeb(directory, globalConfig, workflowName, startupTimeoutSeconds, webWorkspace(), webPort);
     }
 
     void openWebBrowser(String address) {
@@ -752,14 +790,14 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     private int runWebHandoff() {
-        return runWebHandoff(null, null);
+        return runWebHandoff(null, null, null);
     }
 
     /**
      * Starts the web chat. {@code wizardConfig} and {@code wizardWorkflow} come from a setup
      * wizard that already ran; as in the terminal, an explicit {@code --workflow} wins over its team.
      */
-    private int runWebHandoff(ChatConfig wizardConfig, WorkflowTeamSnapshot wizardWorkflow) {
+    private int runWebHandoff(ChatConfig wizardConfig, WorkflowTeamSnapshot wizardWorkflow, Integer wizardPort) {
         String error = webOptionError();
         if (error != null) return printError(error, 2);
         try {
@@ -794,6 +832,8 @@ public class ChatCommand implements Callable<Integer> {
                 return printError("The browser starts a team through --workflow, where 'create' opens the"
                         + " creation wizard; rename the team or continue in the terminal.", 2);
             }
+            if (webPort == null) webPort = wizardPort;
+            if (webPort == null && selected != null) webPort = selected.webPort();
             ChatInstanceBootstrap.StartupResult result = startWeb(directory, teamName);
             String address = result.chatUrl() + (webWorkspace() ? "/#/chat" : "/#/single-chat");
             System.out.println("Web chat: " + address);
@@ -1151,11 +1191,15 @@ public class ChatCommand implements Callable<Integer> {
             ChatConfig config = SetupWizard.run(scope, effectiveWorkingDirectory());
             return config == null ? null : new SetupWizard.SetupResult(config, SetupWizard.Destination.TERMINAL);
         }
-        return SetupWizard.runWithDestination(scope, effectiveWorkingDirectory());
+        return SetupWizard.runWithDestination(scope, effectiveWorkingDirectory(), webPort);
     }
 
     ChatConfig normalizeResumeConfig(ChatConfig config, boolean isResume) {
         String requestedMode = mode == null ? "" : mode.trim();
+        if (webInput != null && sessionId != null) {
+            ChatConfig pinned = ChatConfig.loadSession(sessionId);
+            if (pinned != null) return pinned;
+        }
         if (isResume && resumeSessionId != null) {
             ChatConfig saved = ChatConfig.loadSession(resumeSessionId);
             if (saved != null) return saved;

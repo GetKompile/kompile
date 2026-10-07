@@ -342,6 +342,45 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     }
 
     @Override
+    public JsonNode setupChat(String workingDirectory, JsonNode payload) {
+        Process child = null;
+        Thread reader = null;
+        Thread errors = null;
+        StringBuffer stdout = new StringBuffer();
+        StringBuffer discarded = new StringBuffer();
+        try {
+            Path directory = resolveWorkingDirectory(workingDirectory);
+            byte[] input = mapper.writeValueAsBytes(payload);
+            if (input.length > 65536) throw new IllegalArgumentException("Setup request too large");
+            List<String> command = new ArrayList<>(launcherResolver.resolve());
+            command.add("chat"); command.add("--web-setup");
+            command.add("--working-dir"); command.add(directory.toString());
+            child = processStarter.start(List.copyOf(command), directory);
+            // Drain before writing to avoid pipe deadlocks; diagnostics are never returned or logged.
+            reader = drain(child.getInputStream(), stdout, "web-chat-setup-stdout");
+            errors = drain(child.getErrorStream(), discarded, "web-chat-setup-stderr");
+            try (var stdin = child.getOutputStream()) { stdin.write(input); stdin.write('\n'); }
+            if (!child.waitFor(45, TimeUnit.SECONDS)) {
+                terminate(child);
+                return mapper.createObjectNode().put("available", false).put("ok", false)
+                        .put("status", "Chat setup timed out; use terminal setup");
+            }
+            join(reader, 2000L); join(errors, 2000L);
+            JsonNode result = mapper.readTree(stdout.toString().trim());
+            if (result == null || !result.isObject()) throw new IOException("Invalid setup response");
+            return result;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            if (child != null) terminate(child);
+        } catch (Exception unavailable) {
+            if (child != null) terminate(child);
+        } finally { join(reader, 500L); join(errors, 500L); }
+        // In particular, do not expose an old launcher's stdin echo or argument-parser diagnostic.
+        return mapper.createObjectNode().put("available", false).put("ok", false)
+                .put("status", "Installed CLI does not support web setup; update it or use terminal setup");
+    }
+
+    @Override
     public Map<String, Object> contextBudget(String agentName, String workingDirectory) {
         JsonNode capability = capabilities(workingDirectory, false);
         Map<String, Object> result = new LinkedHashMap<>();
@@ -951,6 +990,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         String type = event.path("type").asText("");
         return switch (type) {
             case "session" -> { run.sink.send("harness_session", event); yield false; }
+            case "title" -> { run.sink.send("title", event); yield false; }
             case "backend" -> { run.sink.send("backend", event); yield false; }
             case "control", "activity", "turn_started", "turn_complete" -> {
                 if (!event.path("data").isObject()) throw new IOException("Missing live control event data");
@@ -1075,7 +1115,6 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         command.add("--input-format");
         command.add("web-json");
         command.add("--web-controls");
-        command.add("--local");
         command.add("--working-dir");
         command.add(workDir.toString());
         command.add(resume ? "--resume" : "--session-id");

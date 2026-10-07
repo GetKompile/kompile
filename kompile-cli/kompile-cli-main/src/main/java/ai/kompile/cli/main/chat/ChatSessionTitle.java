@@ -10,6 +10,7 @@ package ai.kompile.cli.main.chat;
 final class ChatSessionTitle {
 
     private String title;
+    private boolean promptDerived;
 
     /** Set the title from the first non-blank prompt only. */
     synchronized boolean initializeFromPrompt(String prompt) {
@@ -17,6 +18,7 @@ final class ChatSessionTitle {
         String derived = fromPrompt(prompt);
         if (derived == null) return false;
         title = derived;
+        promptDerived = true;
         return true;
     }
 
@@ -27,7 +29,18 @@ final class ChatSessionTitle {
             throw new IllegalArgumentException("Session title must not be blank");
         }
         title = replacement;
+        promptDerived = false;
         return title;
+    }
+
+    /** Upgrade the provisional title only; explicit and restored names always win. */
+    synchronized boolean applyGenerated(String generated) {
+        if (!promptDerived) return false;
+        String normalized = fromPrompt(generated);
+        if (normalized == null) return false;
+        title = normalized;
+        promptDerived = false;
+        return true;
     }
 
     synchronized String get() {

@@ -786,50 +786,58 @@ final class ClaudeCliClient implements AutoCloseable {
         }
     }
 
-    /**
-     * Confirm a live model selection before the caller publishes it. The worker
-     * waits for any current turn, then keeps the turn lock through the commit so
-     * the next send cannot restore the old config between acknowledgement and UI.
-     */
+    /** Confirm a live model selection before the caller publishes it. */
     boolean selectModel(String model, Runnable accepted, Consumer<String> rejected) {
+        return selectModel(model, turnLock, accepted, rejected);
+    }
+
+    /**
+     * Serialize acknowledgement and commit with the caller's model capture as well
+     * as the native send. Acquire requestLock before turnLock, matching the send
+     * path; taking only turnLock lets a waiting request capture the old config
+     * and undo an acknowledged selection. All waiting stays on the worker thread.
+     */
+    boolean selectModel(String model, Object requestLock, Runnable accepted, Consumer<String> rejected) {
         Cli running;
         synchronized (this) {
             running = cli;
         }
         if (running == null || !running.alive() || !running.isReading()) return false;
         daemon("kompile-claude-cli-model-selection", () -> {
-            synchronized (turnLock) {
-                try {
-                    synchronized (this) {
-                        if (cli != running || !running.alive()) {
-                            throw new IOException("Claude Code session ended before applying the model");
+            synchronized (requestLock) {
+                synchronized (turnLock) {
+                    try {
+                        synchronized (this) {
+                            if (cli != running || !running.alive()) {
+                                throw new IOException("Claude Code session ended before applying the model");
+                            }
                         }
+                        String nextModel = normalized(model);
+                        if (!nextModel.equals(running.model)) {
+                            JsonNode response;
+                            try {
+                                response = running.setModel(nextModel).get(10, TimeUnit.SECONDS);
+                            } catch (TimeoutException e) {
+                                // Its eventual answer is unknown. Stop only this process;
+                                // the next turn resumes with the still-active old config.
+                                running.stop();
+                                throw new IOException("Claude Code did not acknowledge the model change within 10 s", e);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                running.stop();
+                                throw new IOException("Model selection was interrupted", e);
+                            } catch (ExecutionException e) {
+                                throw new IOException("Claude Code could not apply the model: "
+                                        + e.getCause().getMessage(), e.getCause());
+                            }
+                            if (!"success".equals(response.path("subtype").asText())) {
+                                throw new IOException(response.path("error").asText("no reason given"));
+                            }
+                        }
+                        accepted.run();
+                    } catch (IOException e) {
+                        rejected.accept(e.getMessage());
                     }
-                    String nextModel = normalized(model);
-                    if (!nextModel.equals(running.model)) {
-                        JsonNode response;
-                        try {
-                            response = running.setModel(nextModel).get(10, TimeUnit.SECONDS);
-                        } catch (TimeoutException e) {
-                            // Its eventual answer is unknown. Stop only this process;
-                            // the next turn resumes with the still-active old config.
-                            running.stop();
-                            throw new IOException("Claude Code did not acknowledge the model change within 10 s", e);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            running.stop();
-                            throw new IOException("Model selection was interrupted", e);
-                        } catch (ExecutionException e) {
-                            throw new IOException("Claude Code could not apply the model: "
-                                    + e.getCause().getMessage(), e.getCause());
-                        }
-                        if (!"success".equals(response.path("subtype").asText())) {
-                            throw new IOException(response.path("error").asText("no reason given"));
-                        }
-                    }
-                    accepted.run();
-                } catch (IOException e) {
-                    rejected.accept(e.getMessage());
                 }
             }
         }).start();
