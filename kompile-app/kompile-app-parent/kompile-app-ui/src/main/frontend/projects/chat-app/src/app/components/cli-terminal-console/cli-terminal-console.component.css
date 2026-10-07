@@ -1,0 +1,16 @@
+@import '@xterm/xterm/css/xterm.css';
+
+app-cli-terminal-console { display: block; flex-shrink: 0; min-width: 0; }
+.cli-console { box-sizing: border-box; display: flex; flex-direction: column; height: 42vh; min-height: 240px; max-height: 75vh; resize: vertical; overflow: auto; border-top: 2px solid var(--color-primary, #1976d2); background: #111827; color: #e5e7eb; }
+.cli-console.cli-console-hidden { display: none; }
+.cli-console header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; }
+.cli-console header select { flex: 1; min-width: 120px; max-width: 360px; }
+.cli-console button, .cli-console select { background: #1f2937; color: #e5e7eb; border: 1px solid #6b7280; border-radius: 4px; padding: 6px; font: inherit; }
+.cli-console button { cursor: pointer; }
+.cli-console button:disabled { opacity: .5; cursor: default; }
+.cli-console button:focus-visible, .cli-console select:focus-visible { outline: 2px solid #93c5fd; }
+.cli-console small, .cli-console p { margin: 0; padding: 3px 8px; overflow-wrap: anywhere; }
+.cli-console [role=alert] { color: #fca5a5; }
+.cli-console-screen { flex: 1; min-height: 80px; min-width: 0; padding: 4px 8px; overflow: hidden; }
+.cli-console-screen .xterm { height: 100%; }
+@media(max-width:768px) { .cli-console { height: 55vh; } .cli-console button, .cli-console select { min-height: 36px; } }

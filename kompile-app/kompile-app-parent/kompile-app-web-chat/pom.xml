@@ -142,6 +142,16 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
+        </dependency>
+        <!-- Already used by app-agent; declare the terminal's PTY API directly. -->
+        <dependency>
+            <groupId>org.jetbrains.pty4j</groupId>
+            <artifactId>pty4j</artifactId>
+            <version>0.12.13</version>
+        </dependency>
         <!-- ConversationalRagController streams with reactor.core.publisher.Flux. It arrives
              transitively through kompile-orchestrator; declared here so a dependency change
              there cannot silently break this module. -->
@@ -163,4 +173,13 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+    <repositories>
+        <!-- pty4j's runtime purejavacomm dependency is published by JetBrains. -->
+        <repository>
+            <id>intellij-dependencies</id>
+            <url>https://cache-redirector.jetbrains.com/intellij-dependencies</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+    </repositories>
 </project>

@@ -39,6 +39,12 @@ export class WorkspaceChatPaneComponent {
 @Component({
   selector: 'app-chat-workspace', standalone: false,
   template: `
+    <div class="terminal-launcher" *ngIf="!loading && (enabled || parentDirectory)">
+      <button mat-stroked-button type="button" (click)="terminalMounted = true; terminalVisible = !terminalVisible"
+        [attr.aria-expanded]="terminalVisible" aria-controls="workspace-cli-terminal">
+        <mat-icon>terminal</mat-icon> CLI terminal
+      </button>
+    </div>
     <p *ngIf="loading" role="status">Loading chats…</p>
     <p *ngIf="!loading && !enabled && error" role="alert">{{ error }}</p>
     <!-- Hosted/single-folder launches keep their original chat without granting folder management. -->
@@ -159,10 +165,13 @@ export class WorkspaceChatPaneComponent {
           (newChatRequested)="beginChat(item.project)">
         </app-workspace-chat-pane>
       </main>
-    </div>`,
+    </div>
+    <app-cli-terminal-console id="workspace-cli-terminal" *ngIf="terminalMounted"
+      [visible]="terminalVisible" [workingDirectory]="terminalDirectory" (hidden)="terminalVisible = false">
+    </app-cli-terminal-console>`,
   styles: [`
     :host {
-      display:block; height:100%; min-height:0;
+      display:flex; flex-direction:column; height:100%; min-height:0;
       --mdc-text-button-container-height: 32px;
       --mdc-outlined-button-container-height: 32px;
       --mdc-filled-button-container-height: 32px;
@@ -173,9 +182,10 @@ export class WorkspaceChatPaneComponent {
     }
     /* Native inputs and scrollbars follow the page theme. */
     :host-context(body.dark-theme) { color-scheme: dark; }
-    .workspace { position:relative; display:flex; height:100%; min-height:0; }
+    .workspace { position:relative; display:flex; flex:1; min-height:0; }
+    .terminal-launcher { padding:4px 8px; flex-shrink:0; }
     .mobile-folder-toolbar, .folder-backdrop, .close-folders { display:none; }
-    :host > app-unified-chat { display:block; height:100%; }
+    :host > app-unified-chat { display:block; flex:1; min-height:0; }
     aside { width:260px; flex-shrink:0; overflow:auto; padding:16px; border-right:1px solid var(--border-color, #dee2e6); }
     aside a { color: var(--color-primary, #1976d2); }
     main { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
@@ -238,6 +248,11 @@ export class WorkspaceChatPaneComponent {
 export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDestroy {
   @ViewChildren(WorkspaceChatPaneComponent) panes!: QueryList<WorkspaceChatPaneComponent>;
   @ViewChild('folderToggle', { read: ElementRef }) folderToggle?: ElementRef<HTMLButtonElement>;
+  terminalMounted = false;
+  terminalVisible = false;
+  get terminalDirectory(): string {
+    return this.opened.find(item => item.chat.id === this.activeId)?.project.workingDirectory || this.parentDirectory;
+  }
   foldersOpen = false;
   closeFolders(): void {
     if (!this.foldersOpen) return;

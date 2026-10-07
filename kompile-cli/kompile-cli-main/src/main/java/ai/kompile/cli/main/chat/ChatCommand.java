@@ -92,7 +92,7 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Spec
     private CommandLine.Model.CommandSpec commandSpec;
 
-    @CommandLine.Option(names = "--web", description = "Start a fresh installed CHAT web UI (LAN-accessible by default) and print its local URL using CLI config (CHAT JAR tier only). Combine with --setup to configure first.")
+    @CommandLine.Option(names = "--web", description = "Start a fresh installed CHAT web UI (LAN-accessible by default) and print its local URL without requiring chat configuration. Configure sessions in the browser, or combine with --setup to configure first.")
     private boolean web;
 
     @CommandLine.Option(names = "--workspace", description = "Manage folder-based projects and independent chats (the default with --web).")
@@ -765,18 +765,24 @@ public class ChatCommand implements Callable<Integer> {
         try {
             Path directory = effectiveWorkingDirectory().toRealPath();
             if (!Files.isDirectory(directory)) return printError("Not a working directory: " + directory, 2);
+            // Launching the console does not need a model/provider. Sessions configure
+            // themselves in the browser; only explicit setup or a workflow needs config here.
+            boolean requiresConfig = wizardConfig != null || runSetup || workflow != null;
             SetupWizard.SetupResult selected = wizardConfig != null
                     ? new SetupWizard.SetupResult(wizardConfig, SetupWizard.Destination.BROWSER, wizardWorkflow)
-                    : selectWebConfig(directory);
+                    : requiresConfig ? selectWebConfig(directory) : null;
             ChatConfig config = selected == null ? null : selected.config();
-            error = webConfigError(config);
-            if (error != null) return printError(error, 1);
+            if (requiresConfig) {
+                error = webConfigError(config);
+                if (error != null) return printError(error, 1);
+            }
             // Each new web session's harness starts the team by name on its first turn and
             // records it; later turns resume and restore it. Check now that this config can
             // lead it, so a bad team fails here rather than on every browser turn.
             WorkflowTeamSnapshot team;
             try {
-                team = workflow == null ? selected.workflow() : resolveWorkflow(false, config);
+                team = workflow != null ? resolveWorkflow(false, config)
+                        : selected == null ? null : selected.workflow();
                 if (team != null && "passthrough".equalsIgnoreCase(config.getChatMode()))
                     throw new IllegalArgumentException("Native workflow teams require the terminal; web passthrough runs individual chats.");
                 if (team != null) workflowLeadConfig(config, team.team());

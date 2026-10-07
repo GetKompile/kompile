@@ -27,7 +27,6 @@ import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
-import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -38,9 +37,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.Set;
 import java.nio.file.StandardOpenOption;
 
@@ -210,13 +215,14 @@ public class TokenEncryptionService {
         String keyBase64 = Base64.getEncoder().encodeToString(key.getEncoded());
         Path temporary = Files.createTempFile(keyFilePath.getParent(), ".oauth-key-", ".tmp");
         try {
+            // Inherited Windows ACLs may be broad: secure the empty file before writing secrets.
+            restrictPermissions(temporary);
             Files.writeString(
                     temporary,
                     keyBase64,
                     StandardCharsets.UTF_8,
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE);
-            restrictPermissions(temporary);
             try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
                 channel.force(true);
             }
@@ -248,16 +254,27 @@ public class TokenEncryptionService {
             }
             return;
         } catch (UnsupportedOperationException unsupportedPosix) {
-            // Windows/non-POSIX fallback below.
+            // Windows exposes ACLs, not POSIX modes. java.io.File setters cannot establish
+            // owner-only access reliably and may return false even for an already private file.
         }
-        File file = path.toFile();
-        boolean secured = file.setReadable(false, false)
-                && file.setWritable(false, false)
-                && file.setExecutable(false, false)
-                && file.setReadable(true, true)
-                && file.setWritable(true, true);
-        if (!secured) {
-            throw new IOException("Could not establish owner-only permissions for " + path);
+        AclFileAttributeView aclView = Files.getFileAttributeView(path, AclFileAttributeView.class);
+        if (aclView == null) {
+            throw new IOException("No supported owner-only permission view for " + path);
+        }
+        restrictAclPermissions(path, aclView);
+    }
+
+    static void restrictAclPermissions(Path path, AclFileAttributeView aclView) throws IOException {
+        AclEntry ownerAccess = AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(aclView.getOwner())
+                .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+                .build();
+        List<AclEntry> ownerOnly = List.of(ownerAccess);
+        // Replace the DACL rather than appending an owner entry to inherited broad grants.
+        aclView.setAcl(ownerOnly);
+        if (!aclView.getAcl().equals(ownerOnly)) {
+            throw new IOException("Could not verify owner-only ACL for " + path);
         }
     }
 

@@ -4,8 +4,10 @@ Kompile supports first-party local model chat, external/direct model chat, an in
 
 ## Web chat
 
-Run `kompile chat --web` (add `--open-browser` to open it locally). The installed
-CHAT service listens on all interfaces by default, including for published distributions.
+Run `kompile chat --web` (add `--open-browser` to open it locally). This launches
+the web console directly: no setup wizard or saved provider configuration is required.
+Configure sessions in the browser; use `--setup --web` only to configure before launching.
+The installed CHAT service listens on all interfaces by default, including for published distributions.
 The CLI prints the selected port and a local URL; from another machine use
 `http://<server-hostname-or-LAN-IP>:<port>/`. Both `/` and `/chat` open the UI;
 `/chat` and `/chat/` redirect to the browser's `/#/chat` route automatically.

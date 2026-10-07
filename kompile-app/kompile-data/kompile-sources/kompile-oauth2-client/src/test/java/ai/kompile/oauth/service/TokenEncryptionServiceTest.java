@@ -1,22 +1,34 @@
 package ai.kompile.oauth.service;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 @DisplayName("TokenEncryptionService")
 class TokenEncryptionServiceTest {
@@ -237,6 +249,105 @@ class TokenEncryptionServiceTest {
 
         assertEquals(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
                 Files.getPosixFilePermissions(keyPath));
+    }
+
+    @Test
+    @DisplayName("ACL restriction replaces all grants with a verified owner-only ACL")
+    void aclPermissionsAreRestrictedAndVerified() throws Exception {
+        AclFileAttributeView view = mock(AclFileAttributeView.class);
+        UserPrincipal owner = () -> "owner";
+        List<AclEntry> expected = ownerAcl(owner);
+        when(view.getOwner()).thenReturn(owner);
+        when(view.getAcl()).thenReturn(expected);
+
+        TokenEncryptionService.restrictAclPermissions(tempDir.resolve("key"), view);
+
+        verify(view).setAcl(expected);
+        verify(view).getAcl();
+    }
+
+    @Test
+    @DisplayName("ACL verification rejects residual non-owner grants and empty ACLs")
+    void aclVerificationFailsClosed() throws Exception {
+        AclFileAttributeView view = mock(AclFileAttributeView.class);
+        UserPrincipal owner = () -> "owner";
+        UserPrincipal everyone = () -> "everyone";
+        when(view.getOwner()).thenReturn(owner);
+        when(view.getAcl()).thenReturn(List.of(ownerAcl(owner).get(0), ownerAcl(everyone).get(0)))
+                .thenReturn(List.of());
+
+        assertThrows(IOException.class,
+                () -> TokenEncryptionService.restrictAclPermissions(tempDir.resolve("key"), view));
+        assertThrows(IOException.class,
+                () -> TokenEncryptionService.restrictAclPermissions(tempDir.resolve("key"), view));
+    }
+
+    @Test
+    @DisplayName("ACL write failures are not silently ignored")
+    void aclWriteFailureFailsClosed() throws Exception {
+        AclFileAttributeView view = mock(AclFileAttributeView.class);
+        when(view.getOwner()).thenReturn(() -> "owner");
+        doThrow(new IOException("ACL write denied")).when(view).setAcl(anyList());
+
+        assertThrows(IOException.class,
+                () -> TokenEncryptionService.restrictAclPermissions(tempDir.resolve("key"), view));
+        verify(view, never()).getAcl();
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    @DisplayName("Windows file-backed initialization keeps the key and lock private across restart")
+    void windowsFileKeyIsPrivateAndPersistent() throws Exception {
+        TokenEncryptionService first = fileBackedService();
+        first.init();
+        Path keyPath = tempDir.resolve("config/oauth-encryption.key");
+        Path lockPath = tempDir.resolve("config/oauth-encryption.key.lock");
+        String originalKey = Files.readString(keyPath);
+        String ciphertext = first.encrypt("windows-secret");
+        assertOwnerOnlyAcl(keyPath);
+        assertOwnerOnlyAcl(lockPath);
+
+        TokenEncryptionService restarted = fileBackedService();
+        restarted.init();
+        assertEquals(originalKey, Files.readString(keyPath));
+        assertEquals("windows-secret", restarted.decrypt(ciphertext));
+        assertOwnerOnlyAcl(keyPath);
+        assertOwnerOnlyAcl(lockPath);
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    @DisplayName("Windows existing keys and temporary key files use owner-only ACLs")
+    void windowsExistingAndTemporaryKeyAclsAreRestricted() throws Exception {
+        Path keyPath = tempDir.resolve("config/oauth-encryption.key");
+        Files.createDirectories(keyPath.getParent());
+        byte[] keyBytes = new byte[32];
+        new SecureRandom().nextBytes(keyBytes);
+        String originalKey = Base64.getEncoder().encodeToString(keyBytes);
+        // Starts with the directory's inherited ACL, just like an older distribution's key.
+        Files.writeString(keyPath, originalKey);
+        fileBackedService().init();
+        assertEquals(originalKey, Files.readString(keyPath));
+        assertOwnerOnlyAcl(keyPath);
+        assertOwnerOnlyAcl(tempDir.resolve("config/oauth-encryption.key.lock"));
+
+        Path temporary = Files.createTempFile(keyPath.getParent(), ".oauth-key-", ".tmp");
+        ReflectionTestUtils.invokeMethod(TokenEncryptionService.class, "restrictPermissions", temporary);
+        assertOwnerOnlyAcl(temporary);
+    }
+
+    private static List<AclEntry> ownerAcl(UserPrincipal owner) {
+        return List.of(AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(owner)
+                .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+                .build());
+    }
+
+    private static void assertOwnerOnlyAcl(Path path) throws IOException {
+        AclFileAttributeView view = Files.getFileAttributeView(path, AclFileAttributeView.class);
+        assertNotNull(view, "Windows tests require an ACL-capable filesystem");
+        assertEquals(ownerAcl(view.getOwner()), view.getAcl(), "Unexpected ACL on " + path);
     }
 
     @Test

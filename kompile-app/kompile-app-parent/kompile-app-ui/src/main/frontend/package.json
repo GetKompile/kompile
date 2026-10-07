@@ -3,28 +3,22 @@
   "version": "0.0.0",
   "scripts": {
     "ng": "ng",
-
     "check:boundaries": "node tools/check-project-boundaries.mjs",
-
     "start:chat": "ng serve chat-app",
     "start:crawl": "ng serve crawl-app",
     "start:admin": "ng serve admin-app",
-
     "build:chat": "ng build chat-app",
     "build:crawl": "ng build crawl-app",
     "build:admin": "ng build admin-app",
     "build:all": "npm run check:boundaries && npm run build:chat && npm run build:crawl && npm run build:admin",
-
     "watch:chat": "ng build chat-app --watch --configuration development",
     "watch:crawl": "ng build crawl-app --watch --configuration development",
     "watch:admin": "ng build admin-app --watch --configuration development",
-
     "test:shared": "ng test kompile-ui-shared --watch=false --browsers=ChromeHeadless",
     "test:chat": "ng test chat-app --watch=false --browsers=ChromeHeadless",
     "test:crawl": "ng test crawl-app --watch=false --browsers=ChromeHeadless",
     "test:admin": "ng test admin-app --watch=false --browsers=ChromeHeadless",
     "test": "npm run test:shared && npm run test:chat && npm run test:crawl && npm run test:admin",
-
     "e2e": "playwright test",
     "e2e:chat": "playwright test --project=chat",
     "e2e:crawl": "playwright test --project=crawl",
@@ -32,14 +26,12 @@
     "e2e:headed": "playwright test --headed",
     "e2e:ui": "playwright test --ui",
     "e2e:report": "playwright show-report playwright-report",
-
     "e2e:cy": "cypress run",
     "e2e:cy:admin": "KOMPILE_PERSONA=admin cypress run",
     "e2e:cy:chat": "KOMPILE_PERSONA=chat cypress run",
     "e2e:cy:crawl": "KOMPILE_PERSONA=crawl cypress run",
     "e2e:cy:all": "npm run e2e:cy:admin && npm run e2e:cy:chat && npm run e2e:cy:crawl",
     "e2e:cy:open": "cypress open",
-
     "e2e:cli": "playwright test --config=playwright-cli.config.ts",
     "e2e:cli:help": "playwright test --config=playwright-cli.config.ts cli-help",
     "e2e:cli:build": "playwright test --config=playwright-cli.config.ts cli-build",
@@ -60,6 +52,8 @@
     "@angular/platform-browser-dynamic": "19.2.11",
     "@angular/router": "19.2.11",
     "@stomp/stompjs": "^7.0.0",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/xterm": "5.5.0",
     "bpmn-js": "^18.18.0",
     "d3": "^7.8.5",
     "dompurify": "^3.4.11",

@@ -68,6 +68,33 @@ class ChatWebHandoffTest {
         assertFalse(output.contains("Workflow team:"), output);
     }
 
+    @Test void webAloneLaunchesWithoutConfigurationOrWizard() throws Exception {
+        Stub command = new Stub();
+        String output = successfulOutput(command, "--web");
+        assertEquals(Path.of(System.getProperty("user.dir")).toRealPath(), command.started);
+        assertTrue(output.contains("http://127.0.0.1:1234/#/chat"), output);
+        assertFalse(command.selected, "launching the console must not select or configure a provider");
+        assertFalse(command.wizard);
+        assertNull(command.startedWorkflow);
+        assertNull(command.opened);
+    }
+
+    @Test void webLaunchDoesNotGateOnIncompleteOrTerminalOnlyDefaults() throws Exception {
+        for (ChatConfig config : new ChatConfig[] {
+                new ChatConfig("custom", null, null, null),
+                new ChatConfig("kompile", null, null, "http://localhost:8081")}) {
+            assertNotNull(ChatCommand.webConfigError(config));
+            Stub command = new Stub();
+            command.config = config;
+            successfulOutput(command, "--web", "--open-browser", "--global-config",
+                    "--working-dir", directory.toString());
+            assertEquals(directory.toRealPath(), command.started);
+            assertEquals("http://127.0.0.1:1234/#/chat", command.opened);
+            assertFalse(command.selected);
+            assertFalse(command.wizard);
+        }
+    }
+
     @Test void singleChatRemainsExplicitAndDoesNotEnableWorkspace() {
         Stub command = new Stub();
         command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
@@ -136,7 +163,7 @@ class ChatWebHandoffTest {
             String output = successfulOutput(command, args);
             assertTrue(output.contains("Web chat: http://127.0.0.1:1234"));
             assertEquals("http://127.0.0.1:1234/#/chat", command.opened);
-            assertTrue(command.selected);
+            assertEquals(setup, command.selected);
             assertFalse(command.wizard);
         }
     }

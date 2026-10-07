@@ -24,6 +24,13 @@ class StubChat {
   refreshWorkspaceTranscript(): void { }
 }
 
+@Component({ selector: 'app-cli-terminal-console', standalone: false, template: '' })
+class StubTerminal {
+  @Input() workingDirectory = '';
+  @Input() visible = true;
+  @Output() hidden = new EventEmitter<void>();
+}
+
 describe('Chat workspace', () => {
   let fixture: ComponentFixture<ChatWorkspaceComponent>;
   let http: HttpTestingController;
@@ -32,7 +39,7 @@ describe('Chat workspace', () => {
     sessionStorage.clear();
     await TestBed.configureTestingModule({
       imports: [CommonModule, FormsModule, RouterTestingModule, HttpClientTestingModule, MatButtonModule, MatIconModule, ChatActivityIndicatorComponent],
-      declarations: [ChatWorkspaceComponent, WorkspaceChatPaneComponent, StubChat]
+      declarations: [ChatWorkspaceComponent, WorkspaceChatPaneComponent, StubChat, StubTerminal]
     }).compileComponents();
     fixture = TestBed.createComponent(ChatWorkspaceComponent);
     http = TestBed.inject(HttpTestingController);
@@ -59,6 +66,25 @@ describe('Chat workspace', () => {
     }
   }
   afterEach(() => { fixture.destroy(); http.verify(); sessionStorage.clear(); });
+
+  it('keeps the inline terminal mounted while hidden and follows the selected folder for new launches', () => {
+    const workspace = fixture.componentInstance;
+    workspace.open(projects[0], projects[0].chats[0]); fixture.detectChanges();
+    const toggle: HTMLButtonElement = fixture.nativeElement.querySelector('.terminal-launcher button');
+    toggle.click(); fixture.detectChanges();
+    const terminal = fixture.debugElement.query(By.directive(StubTerminal)).componentInstance as StubTerminal;
+    expect(terminal.visible).toBeTrue();
+    expect(terminal.workingDirectory).toBe('/projects/one');
+    workspace.open(projects[1], projects[1].chats[0]); fixture.detectChanges();
+    expect(terminal.workingDirectory).toBe('/projects/two');
+    terminal.hidden.emit(); fixture.detectChanges();
+    expect(terminal.visible).toBeFalse();
+    expect(fixture.debugElement.query(By.directive(StubTerminal)).componentInstance).toBe(terminal);
+    toggle.click(); fixture.detectChanges();
+    expect(terminal.visible).toBeTrue();
+    expect(fixture.debugElement.query(By.directive(StubTerminal)).componentInstance).toBe(terminal);
+    http.expectNone(r => r.method === 'POST');
+  });
 
   it('refreshes each chat indicator in its sidebar and tab while another pane is selected', fakeAsync(() => {
     const workspace = fixture.componentInstance;

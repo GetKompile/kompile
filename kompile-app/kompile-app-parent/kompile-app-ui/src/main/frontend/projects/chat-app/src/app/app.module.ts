@@ -69,6 +69,7 @@ import { ProjectManagerComponent } from './components/project-manager/project-ma
 import { ProjectPageComponent } from './components/project-page/project-page.component';
 import { UnifiedChatComponent } from './components/unified-chat/unified-chat.component';
 import { ChatActivityIndicatorComponent } from './components/chat-activity-indicator/chat-activity-indicator.component';
+import { CliTerminalConsoleComponent } from './components/cli-terminal-console/cli-terminal-console.component';
 import { ChatWorkspaceComponent, WorkspaceChatPaneComponent } from './components/chat-workspace/chat-workspace.component';
 
 // Standalone components referenced from the templates above. Standalone components
@@ -103,6 +104,7 @@ import { ChatModelSelectorComponent } from './components/chat-model-selector/cha
     WorkspaceChatPaneComponent
   ],
   imports: [
+    CliTerminalConsoleComponent,
     ChatActivityIndicatorComponent,
     BrowserModule,
     BrowserAnimationsModule,
