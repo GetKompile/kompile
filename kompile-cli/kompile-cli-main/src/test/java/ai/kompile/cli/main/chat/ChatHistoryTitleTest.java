@@ -28,16 +28,22 @@ class ChatHistoryTitleTest {
             history.open("", "coder", false, tempDir);
             history.logUserMessage("Original first prompt");
             history.logSessionTitle("First custom title");
-            history.logSessionTitle("Final custom title");
+            String fullTitle = "A very long custom title ".repeat(20) + "important ending";
+            history.renameSession(fullTitle);
+            assertEquals(fullTitle, history.readTitleOverride());
+            history.logUserMessage("A later prompt must not replace the rename");
             history.close();
 
-            assertEquals("Final custom title",
+            assertEquals(fullTitle,
                     new ChatHistory("title-history-test").readSessionTitle());
             ChatHistory.ConversationSummary summary = ChatHistory.listConversations().stream()
                     .filter(conversation -> "title-history-test".equals(conversation.sessionId()))
                     .findFirst()
                     .orElseThrow();
-            assertEquals("Final custom title", summary.title());
+            assertEquals(fullTitle, summary.title());
+            var adapter = new ai.kompile.cli.common.chat.sources.adapters.KompileAdapter(home.resolve(".kompile/conversations"));
+            adapter.rename(tempDir, "title-history-test", "Renamed from web");
+            assertEquals("Renamed from web", history.readTitleOverride());
         } finally {
             if (previousHome == null) System.clearProperty("user.home");
             else System.setProperty("user.home", previousHome);

@@ -76,6 +76,59 @@ class McpToolInjectionTest {
     }
 
     @Test
+    void nativeShellHookUsesTheCliPolicyWithoutOptionalEnforcerRules() throws Exception {
+        assumeTrue(Files.exists(Path.of("/bin/sh")));
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path binary = tempDir.resolve("kompile cli's gate");
+        String javaExecutable = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+        Files.writeString(binary, "#!/bin/sh\nexec '" + javaExecutable.replace("'", "'\"'\"'")
+                + "' -cp '" + classpath.replace("'", "'\"'\"'")
+                + "' ai.kompile.cli.main.MainCommand \"$@\"\n");
+        Files.setPosixFilePermissions(binary, PosixFilePermissions.fromString("rwx------"));
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            McpToolInjection.ensureHooksPreConfigured(tempDir);
+            McpToolInjection.ensureHooksPreConfigured(tempDir);
+            JsonNode settings = new ObjectMapper().readTree(tempDir.resolve(".claude/settings.local.json").toFile());
+            List<String> gates = new ArrayList<>();
+            for (JsonNode matcher : settings.path("hooks").path("PreToolUse")) {
+                for (JsonNode hook : matcher.path("hooks")) {
+                    String command = hook.path("command").asText();
+                    if (command.contains("--shell-mandate-hook")) gates.add(command);
+                }
+            }
+            assertEquals(1, gates.size(), "the native mandate hook must be installed once, independently of keyword rules");
+            for (String command : List.of("cd project && sed -n 1p input.txt", "cat input.txt", "printf MATCH")) {
+                var event = new ObjectMapper().createObjectNode().put("tool_name", "Bash");
+                event.putObject("tool_input").put("command", command);
+                Process process = new ProcessBuilder("/bin/sh", "-c", gates.get(0)).start();
+                try {
+                    process.getOutputStream().write(event.toString().getBytes(StandardCharsets.UTF_8));
+                    process.getOutputStream().close();
+                    assertTrue(process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS));
+                    String error = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+                    assertEquals(command.equals("printf MATCH") ? 0 : 2, process.exitValue(), error);
+                } finally {
+                    if (process.isAlive()) process.destroyForcibly();
+                }
+            }
+            Files.writeString(binary, "#!/bin/sh\nexit 1\n");
+            Process brokenGate = new ProcessBuilder("/bin/sh", "-c", gates.get(0)).start();
+            try {
+                brokenGate.getOutputStream().close();
+                assertTrue(brokenGate.waitFor(15, java.util.concurrent.TimeUnit.SECONDS));
+                assertEquals(2, brokenGate.exitValue(), "a failed hook launch must block, not use Claude's nonblocking exit code 1");
+            } finally {
+                if (brokenGate.isAlive()) brokenGate.destroyForcibly();
+            }
+        } finally {
+            if (previousBinary == null) System.clearProperty("kompile.cli.binary");
+            else System.setProperty("kompile.cli.binary", previousBinary);
+        }
+    }
+
+    @Test
     void codexCommandLineOverridesDoNotMutateGlobalConfig() throws Exception {
         String previousHome = System.getProperty("user.home");
         String previousBinary = System.getProperty("kompile.cli.binary");

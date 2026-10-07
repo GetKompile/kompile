@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.CliTool;
@@ -52,6 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * sized so the boundary planner keeps the newest exchange verbatim and only
  * the older exchange is summarized away.
  */
+@TemporaryUserHome
 class DirectSubagentRunnerCompactionTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -73,14 +75,18 @@ class DirectSubagentRunnerCompactionTest {
      */
     private static final class ProbeTool implements CliTool {
         final AtomicInteger calls = new AtomicInteger();
-        private final int padLength;
+        private final String padding;
 
         ProbeTool(int padLength) {
-            this.padLength = padLength;
+            this("p".repeat(padLength));
+        }
+
+        ProbeTool(String padding) {
+            this.padding = padding;
         }
 
         String pad() {
-            return "p".repeat(padLength);
+            return padding;
         }
 
         @Override public String id() { return "compaction_probe"; }
@@ -352,6 +358,50 @@ class DirectSubagentRunnerCompactionTest {
                     "the oldest exchange must be summarized away");
             assertFalse(compacted.contains("marker-2"),
                     "older exchanges are summarized, not kept verbatim");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    void oversizedUnicodeToolResultIsBoundedBeforeItReachesTheChildModel(@TempDir Path workspace)
+            throws Exception {
+        List<String> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            requests.add(body);
+            respondSse(exchange, "tool".equals(lastRole(body))
+                    ? textChunk("completed-run") : TOOL_CALL_CHUNK);
+        });
+        server.start();
+        try {
+            PermissionService permissions = new PermissionService();
+            permissions.allowAll();
+            ToolRegistry tools = new ToolRegistry(MAPPER);
+            ProbeTool probe = new ProbeTool("😀".repeat(6_000) + "unique-tail");
+            tools.register(probe);
+            DirectSubagentRunner runner = runner(
+                    config(250_000, server.getAddress().getPort(), false), tools, permissions);
+            ToolContext parent = new ToolContext("budget-parent",
+                    AgentConfig.builder("parent").build(), permissions, workspace, tools);
+            String answer = runner.runSubagent(AgentConfig.builder("explore").isSubagent(true)
+                    .systemPrompt("Child system prompt").build(), "Read the probe", parent);
+            assertTrue(answer.contains("completed-run"), answer);
+            assertEquals(1, probe.calls.get());
+            String toolRequest = requests.stream().filter(r -> "tool".equals(lastRole(r)))
+                    .findFirst().orElseThrow();
+            JsonNode messages = MAPPER.readTree(toolRequest).path("messages");
+            String content = messages.get(messages.size() - 1).path("content").asText();
+            assertTrue(content.getBytes(StandardCharsets.UTF_8).length < 5_000, content);
+            assertTrue(content.startsWith("marker-1 😀"));
+            assertFalse(content.contains("unique-tail"));
+            assertFalse(content.contains("�"), "Unicode must not be split");
+            String pathLine = content.lines().filter(l -> l.startsWith("Full output saved to: "))
+                    .findFirst().orElseThrow();
+            Path saved = Path.of(pathLine.substring("Full output saved to: ".length()));
+            assertEquals("marker-1 " + probe.pad(), java.nio.file.Files.readString(saved));
         } finally {
             server.stop(0);
         }

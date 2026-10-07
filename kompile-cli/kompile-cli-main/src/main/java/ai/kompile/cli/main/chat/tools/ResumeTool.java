@@ -535,6 +535,9 @@ public class ResumeTool implements CliTool {
                         break;
                     }
                     processCommand(line);
+                    if (ai.kompile.cli.main.chat.SessionRestartLauncher.isRestartPending()) {
+                        return ToolResult.success("Session restart requested.");
+                    }
                 }
                 if (shouldQuit) {
                     // Clean up terminal state before exiting
@@ -830,7 +833,7 @@ public class ResumeTool implements CliTool {
                         : normalizedAgent;
                 allConversations.add(new ConversationSummary(
                         session.sessionId(),
-                        formatTitle(session.title()),
+                        ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.normalizeTitle(session.title()),
                         session.started(),
                         displayAgent,
                         "kompile",
@@ -888,7 +891,7 @@ public class ResumeTool implements CliTool {
                 ? "kompile" : normalizedAgent;
         return new ConversationSummary(
                 stored.sessionId(),
-                formatTitle(stored.title()),
+                ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.normalizeTitle(stored.title()),
                 stored.started(),
                 displayAgent,
                 "kompile",
@@ -1052,7 +1055,7 @@ public class ResumeTool implements CliTool {
     }
 
     /**
-     * Format a title - extract meaningful preview from content, truncate long titles.
+     * Derive a title from legacy prompt content without clipping it.
      * Returns empty string if no usable title can be derived (callers use sessionId as fallback).
      */
     private String formatTitle(String title) {
@@ -1100,10 +1103,6 @@ public class ResumeTool implements CliTool {
         int newlineIdx = cleaned.indexOf('\n');
         if (newlineIdx > 0) {
             cleaned = cleaned.substring(0, newlineIdx).trim();
-        }
-        // Truncate to 60 chars
-        if (cleaned.length() > 60) {
-            cleaned = cleaned.substring(0, 57) + "...";
         }
         return cleaned;
     }
@@ -1677,6 +1676,7 @@ public class ResumeTool implements CliTool {
         refreshPageGeometry();
         syncPageWindow();
         loadTitlesForVisiblePage();
+        syncPageWindow();
         terminal.writer().print("\033[r\033[2J\033[H");
         printViewportLine(BOLD + CYAN + "Kompile Conversation Resume" + RESET);
         renderTabs();
@@ -1710,7 +1710,7 @@ public class ResumeTool implements CliTool {
     }
 
     private void refreshPageGeometry() {
-        visiblePageSize = Math.max(1, Math.min(PAGE_SIZE, viewportHeight() - 14));
+        visiblePageSize = Math.max(1, Math.min(PAGE_SIZE, (viewportHeight() - 14) / 4));
         pageStart = filteredConversations.isEmpty()
                 ? 0
                 : Math.max(0, Math.min(pageStart, filteredConversations.size() - 1));
@@ -1720,8 +1720,31 @@ public class ResumeTool implements CliTool {
     }
 
     private int effectivePageEnd() {
-        int naturalEnd = Math.min(pageStart + pageSize(), filteredConversations.size());
-        return Math.min(pageEndLimit, naturalEnd);
+        int naturalEnd = Math.min(pageEndLimit, Math.min(pageStart + pageSize(), filteredConversations.size()));
+        int remaining = Math.max(1, viewportHeight() - 14);
+        int end = pageStart;
+        while (end < naturalEnd) {
+            int rows = conversationRowCount(filteredConversations.get(end));
+            // Always show one complete title. Oversized titles use native terminal
+            // scrollback (mouse tracking is disabled here), never silent truncation.
+            if (end > pageStart && rows > remaining) break;
+            remaining -= rows;
+            end++;
+        }
+        return end;
+    }
+
+    private int wrappedRows(String text) {
+        int width = terminal.getWidth() > 0 ? terminal.getWidth() : 80;
+        return Math.max(1, new org.jline.utils.AttributedString(terminalSafe(text))
+                .columnSplitLength(Math.max(1, width - 1)).size());
+    }
+
+    private int conversationRowCount(ConversationSummary conversation) {
+        return wrappedRows("  ▸99 " + java.util.Objects.toString(conversation.title(), "session"))
+                + wrappedRows("      " + wizardSessionIdentifier(conversation.sessionId(),
+                        nativeSessionIds.get(conversation.sessionId())) + "  " + conversation.agent()
+                        + "  " + conversation.lastModified());
     }
 
     private void syncPageWindow() {
@@ -1744,7 +1767,9 @@ public class ResumeTool implements CliTool {
         int width = terminal.getWidth() > 0 ? terminal.getWidth() : 80;
         var line = org.jline.utils.AttributedString.fromAnsi(
                 text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' '));
-        terminal.writer().println(line.columnSubSequence(0, Math.max(1, width - 1)).toAnsi());
+        for (var row : line.columnSplitLength(Math.max(1, width - 1))) {
+            terminal.writer().println(row.toAnsi());
+        }
     }
 
     /**
@@ -1783,12 +1808,12 @@ public class ResumeTool implements CliTool {
             return;
         }
 
-        printViewportLine(BOLD + String.format(
-                "  %-3s %-44s  %-36s  %-10s  %s",
-                "#", "Title", "Session ID / UUID", "Agent", "Date") + RESET);
-        printViewportLine(DIM + "  " + "─".repeat(114) + RESET);
+        printViewportLine(BOLD + "  # Title / Session ID / Agent / Date" + RESET);
+        printViewportLine(DIM + "  " + "─".repeat(Math.max(1, (terminal.getWidth() > 0 ? terminal.getWidth() : 80) - 3)) + RESET);
 
-        int detailBudget = Math.max(0, viewportHeight() - 10 - (end - start));
+        int listRows = 0;
+        for (int i = start; i < end; i++) listRows += conversationRowCount(filteredConversations.get(i));
+        int detailBudget = Math.max(0, viewportHeight() - 14 - listRows);
 
         for (int i = start; i < end; i++) {
             ConversationSummary conversation = filteredConversations.get(i);
@@ -1801,15 +1826,11 @@ public class ResumeTool implements CliTool {
             String marker = expanded ? "▾" : "▸";
             String color = number % 2 == 0 ? WHITE : DIM;
 
-            printViewportLine(color + String.format(
-                    "  %s%2d %-44s  %-36s  %-10s  %s",
-                    marker,
-                    number,
-                    truncateColumn(title, 44),
-                    wizardSessionIdentifier(
-                            conversation.sessionId(), nativeSessionIds.get(conversation.sessionId())),
-                    truncateColumn(conversation.agent(), 10),
-                    terminalSafe(conversation.lastModified())) + RESET);
+            printViewportLine(color + String.format("  %s%2d %s", marker, number, terminalSafe(title)) + RESET);
+            printViewportLine(DIM + "      " + wizardSessionIdentifier(
+                    conversation.sessionId(), nativeSessionIds.get(conversation.sessionId()))
+                    + "  " + terminalSafe(conversation.agent()) + "  "
+                    + terminalSafe(conversation.lastModified()) + RESET);
 
             if (expanded && detailBudget > 0) {
                 detailBudget -= renderExpandedConversation(conversation, detailBudget);
@@ -2182,7 +2203,16 @@ public class ResumeTool implements CliTool {
         refreshPageGeometry();
         int currentStart = renderedPageStart > 0 ? renderedPageStart : pageStart;
         if (currentStart > 0) {
-            pageStart = Math.max(0, currentStart - pageSize());
+            // Fill backwards so wrapped titles cannot leave a gap before the current page.
+            int start = currentStart;
+            int remaining = Math.max(1, viewportHeight() - 14);
+            while (start > 0 && currentStart - start < pageSize()) {
+                int rows = conversationRowCount(filteredConversations.get(start - 1));
+                if (start < currentStart && rows > remaining) break;
+                remaining -= rows;
+                start--;
+            }
+            pageStart = start;
             pageEndLimit = currentStart;
             syncPageWindow();
             loadTitlesForVisiblePage();
@@ -2735,6 +2765,7 @@ public class ResumeTool implements CliTool {
             }
             int exitCode = new picocli.CommandLine(new ai.kompile.cli.main.chat.ChatCommand())
                     .execute(args.toArray(String[]::new));
+            if (ai.kompile.cli.main.chat.SessionRestartLauncher.isRestartPending()) return;
 
             Terminal newTerminal = TerminalBuilder.builder().system(true).build();
             LineReader newLineReader = LineReaderBuilder.builder().terminal(newTerminal).build();
@@ -2805,6 +2836,7 @@ public class ResumeTool implements CliTool {
             int exitCode = new picocli.CommandLine(
                     new ai.kompile.cli.main.chat.EmulatedPassthroughCommand())
                     .execute(args.toArray(new String[0]));
+            if (ai.kompile.cli.main.chat.SessionRestartLauncher.isRestartPending()) return;
 
             // Re-open terminal after managed UI exits
             Terminal newTerminal = TerminalBuilder.builder().system(true).build();

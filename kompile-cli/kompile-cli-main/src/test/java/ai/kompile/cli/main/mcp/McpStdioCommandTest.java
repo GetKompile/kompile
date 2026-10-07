@@ -341,6 +341,16 @@ class McpStdioCommandTest {
     }
 
     @Test
+    void buildCallResult_namedSearchUsesLeanWireShape() {
+        McpStdioCommand command = new McpStdioCommand();
+        ObjectNode wire = command.buildCallResult(
+                ToolResult.success("grep", "match", Map.of("matches", 1)), null, "grep");
+        assertFalse(wire.has("structuredContent"));
+        assertEquals("grep\nmatch", wire.path("content").get(0).path("text").asText());
+        assertEquals(1, wire.path("_meta").path("ai.kompile/toolResult").path("matches").asInt());
+    }
+
+    @Test
     void buildCallResult_omitsStructuredContentWhenMetadataIsEmpty() {
         McpStdioCommand command = new McpStdioCommand();
 

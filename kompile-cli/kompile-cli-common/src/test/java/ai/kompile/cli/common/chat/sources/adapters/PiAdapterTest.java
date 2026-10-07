@@ -322,15 +322,17 @@ class PiAdapterTest {
     }
 
     @Test
-    void testResolveTitleTruncatesLongFirstMessage() throws IOException {
+    void testResolveTitleAndListingPreserveLongFirstMessage() throws IOException {
         Path projectDir = createProjectDir("home-user-project");
         String longMessage = "A".repeat(100);
         writeSession(projectDir, "1234_sess-long.jsonl", "sess-long", "/home/user/project",
                 userEntry(longMessage));
 
         String title = adapter.resolveTitle("sess-long");
-        assertEquals(80, title.length());
-        assertTrue(title.endsWith("..."));
+        assertEquals(longMessage, title);
+        assertEquals(longMessage, adapter.list().stream()
+                .filter(session -> "sess-long".equals(session.sessionId()))
+                .findFirst().orElseThrow().title());
     }
 
     @Test

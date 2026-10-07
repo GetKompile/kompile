@@ -186,6 +186,7 @@ public final class PersistentJudgeProcessPool {
 
     static {
         factory = DEFAULT_FACTORY;
+        ai.kompile.cli.main.chat.SessionRestartLauncher.registerRestartCleanup(PersistentJudgeProcessPool::closeAll);
         Runtime.getRuntime().addShutdownHook(new Thread(
                 PersistentJudgeProcessPool::closeAll, "judge-pool-shutdown"));
     }

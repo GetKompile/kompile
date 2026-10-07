@@ -105,6 +105,30 @@ class StandardChatActivityPanelTest {
     }
 
     @Test
+    void toolDetailRetainsStreamedProcessAndBashOutput() {
+        for (String toolName : List.of("process", "bash", "mcp__kompile__process")) {
+            BackgroundTaskManager tasks = new BackgroundTaskManager();
+            try (BackgroundProcessManager processes = new BackgroundProcessManager("stream-detail")) {
+                StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+                StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+                ToolResult result = new ToolResult("stream proc-1",
+                        "Process: proc-1\ncompiling sources\nBUILD SUCCESS", Map.of(
+                        ToolResult.OUTPUT_STREAMED_METADATA, true));
+                panel.recordToolComplete("streamed", toolName,
+                        "{\"action\":\"stream\",\"process_id\":\"proc-1\"}", result);
+
+                assertTrue(panel.selectNext());
+                StandardChatActivityPanel.ActivityView view = panel.openSelectedView();
+                assertNotNull(view);
+                assertTrue(view.content().contains("compiling sources"), view.content());
+                assertTrue(view.content().contains("BUILD SUCCESS"), view.content());
+                assertFalse(view.content().contains(ToolResult.OUTPUT_STREAMED_METADATA), view.content());
+                assertTrue(result.isOutputStreamed(), "opening details must not mutate the result");
+            }
+        }
+    }
+
+    @Test
     void reservesBoundedRowsWithoutChangingThemForActivity() {
         assertEquals(1, StandardChatActivityPanel.reservedRowsForTerminal(12, 100));
         assertEquals(3, StandardChatActivityPanel.reservedRowsForTerminal(16, 100));

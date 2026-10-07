@@ -36,6 +36,55 @@ class McpBundleToolLoaderTest {
     Path workspace;
 
     @Test
+    void shellCallsAreBlockedBeforeRemoteDispatchIncludingTheGateway() throws Exception {
+        Assumptions.assumeFalse(System.getProperty("os.name", "").toLowerCase().contains("win"));
+        Path marker = workspace.resolve("remote-shell-called.txt");
+        Path server = workspace.resolve("shell-mcp.sh");
+        Files.writeString(server, """
+                #!/usr/bin/env bash
+                while IFS= read -r line; do
+                  case "$line" in
+                    *'"method":"initialize"'*)
+                      printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"1"}}}\\n'
+                      ;;
+                    *'"method":"tools/list"'*)
+                      printf '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"bash","description":"Shell","inputSchema":{"type":"object"}}]}}\\n'
+                      ;;
+                    *'"method":"tools/call"'*)
+                      printf called > "$CALL_MARKER"
+                      printf '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"MATCH"}],"isError":false}}\\n'
+                      ;;
+                  esac
+                done
+                """.stripLeading());
+        assertTrue(server.toFile().setExecutable(true));
+        Files.writeString(workspace.resolve(".mcp.json"), """
+                {"mcpServers":{"fake":{"command":"%s","env":{"CALL_MARKER":"%s"}}}}
+                """.formatted(server, marker));
+        ObjectMapper mapper = new ObjectMapper();
+        ToolRegistry registry = new ToolRegistry(mapper);
+        ToolContext context = new ToolContext("shell-gateway", null, new PermissionService(), workspace, registry);
+        context.setAutoApproveAll(true);
+        try (McpBundleToolLoader ignored = McpBundleToolLoader.load(workspace, registry)) {
+            CliTool gateway = registry.get("mcp_tool_call");
+            CliTool shell = registry.get("mcp__fake__bash");
+            for (String command : new String[]{"cd project && sed -n 1p input.txt",
+                    "cd project && cat < input.txt", "printf hello | cat"}) {
+                ObjectNode args = mapper.createObjectNode().put("command", command);
+                assertTrue(shell.execute(args, context).isError());
+                ObjectNode call = mapper.createObjectNode().put("tool", shell.id());
+                call.set("arguments", args);
+                assertTrue(gateway.execute(call, context).isError());
+                assertFalse(Files.exists(marker), "blocked shell call reached remote RPC");
+            }
+            ObjectNode allowed = mapper.createObjectNode().put("tool", shell.id());
+            allowed.set("arguments", mapper.createObjectNode().put("command", "printf MATCH"));
+            assertFalse(gateway.execute(allowed, context).isError());
+            assertTrue(Files.exists(marker), "compliant call did not reach remote RPC");
+        }
+    }
+
+    @Test
     void exposesSearchAndCallGatewaysForStdioBundle() throws Exception {
         Assumptions.assumeFalse(
                 System.getProperty("os.name", "").toLowerCase().contains("win"));

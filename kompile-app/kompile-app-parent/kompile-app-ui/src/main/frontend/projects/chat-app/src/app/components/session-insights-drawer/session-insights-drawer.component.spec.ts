@@ -264,6 +264,25 @@ describe('SessionInsightsDrawerComponent', () => {
     fixture.destroy();
   }));
 
+  it('links to session tool tokens with full IDs and encoded project context', fakeAsync(() => {
+    create();
+    fixture.componentRef.setInput('sessionId', 'full-session-id-123456789');
+    fixture.componentRef.setInput('workingDirectory', '/work/a project & notes');
+    fixture.detectChanges();
+    const link: HTMLAnchorElement = fixture.nativeElement.querySelector('[data-testid="tool-token-breakdown-link"]');
+    const params = new URLSearchParams(link.getAttribute('href')!.split('?')[1]);
+    expect(params.get('topic')).toBe('tools');
+    expect(params.get('question')).toBe('tokens last 7 days session:full-session-id-123456789');
+    expect(params.get('workingDirectory')).toBe('/work/a project & notes');
+    expect(link.target).toBe('_blank');
+    expect(link.rel).toBe('noopener');
+    fixture.componentRef.setInput('sessionId', undefined);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('[data-testid="tool-token-breakdown-link"]')).toBeNull();
+    expect(fixture.nativeElement.querySelector('[data-testid="insights-page-link"]')).not.toBeNull();
+    fixture.destroy();
+  }));
+
   it('links to the insights page on the chat\'s project, in its own tab', fakeAsync(() => {
     create();
     const link: HTMLAnchorElement = fixture.nativeElement.querySelector('[data-testid="insights-page-link"]');

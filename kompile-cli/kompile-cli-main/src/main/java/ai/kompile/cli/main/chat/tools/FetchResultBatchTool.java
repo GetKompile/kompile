@@ -50,14 +50,16 @@ public class FetchResultBatchTool implements CliTool {
                 + "several windows of one big result). Each requests[] entry takes the same "
                 + "parameters as fetch_result: result_id (required), offset (1-based line), limit "
                 + "(default 200), pattern (regex filter over lines). Sections come back in order; "
-                + "an expired or unknown handle reports in its section without failing the rest.";
+                + "an expired or unknown handle reports in its section without failing the rest. "
+                + "The batch shares a bounded output budget; continue each section with its returned "
+                + "offset and character_offset. With pattern, offset is a matching-line index.";
     }
 
     @Override
     public String compactHint() {
         return "MANY fetch_results in ONE call: requests=[{result_id,offset?,limit?,pattern?}] — "
                 + "same semantics as fetch_result (1-based offset, pattern greps the cached result). "
-                + "Per-entry sections; expired handles don't fail the rest.";
+                + "Per-entry sections; expired handles don't fail the rest. Bounded pages supply offset/character_offset continuations.";
     }
 
     @Override
@@ -76,11 +78,13 @@ public class FetchResultBatchTool implements CliTool {
         itemProps.putObject("result_id").put("type", "string")
                 .put("description", "Reference handle from a previous tool call");
         itemProps.putObject("offset").put("type", "integer")
-                .put("description", "Starting line (1-based). Default: 1.");
+                .put("description", "Starting line (1-based); with pattern, matching-line index. Default: 1.");
         itemProps.putObject("limit").put("type", "integer")
                 .put("description", "Maximum lines. Default: 200.");
         itemProps.putObject("pattern").put("type", "string")
                 .put("description", "Optional regex — return only matching lines (grep the cached result)");
+        itemProps.putObject("character_offset").put("type", "integer")
+                .put("description", "0-based character offset within the first selected line, supplied by a bounded page. Default: 0.");
         item.putArray("required").add("result_id");
 
         schema.putArray("required").add("requests");
@@ -106,6 +110,8 @@ public class FetchResultBatchTool implements CliTool {
                     + ") — split into several fetch_result_batch calls");
         }
 
+        // One shared response budget, not MAX_FETCH_CHARS multiplied by request count.
+        int sliceBudget = (ToolResultReferenceCache.MAX_FETCH_CHARS - 512) / requests.size() - 160;
         StringBuilder out = new StringBuilder();
         int succeeded = 0;
         int failed = 0;
@@ -120,19 +126,21 @@ public class FetchResultBatchTool implements CliTool {
             String label = "[" + index + "] " + resultId
                     + (pattern.isBlank() ? "" : " /" + pattern + "/")
                     + (offset > 1 ? " @" + offset : "");
+            if (label.length() > 128) label = label.substring(0, 128) + "…";
             if (resultId.isEmpty()) {
                 failed++;
                 out.append("== ").append(label).append(" — ERROR: result_id is required\n\n");
                 continue;
             }
             ToolResult result = cache.getSlice(resultId, offset - 1, limit,
-                    pattern.isBlank() ? null : pattern);
+                    pattern.isBlank() ? null : pattern,
+                    request.path("character_offset").asInt(0), sliceBudget);
             if (result.isError()) {
                 failed++;
+                String error = result.getOutput() == null ? ""
+                        : result.getOutput().lines().findFirst().orElse("");
                 out.append("== ").append(label).append(" — ERROR: ")
-                        .append(result.getOutput() != null
-                                ? result.getOutput().lines().findFirst().orElse("") : "")
-                        .append("\n\n");
+                        .append(error, 0, Math.min(200, error.length())).append("\n\n");
             } else {
                 succeeded++;
                 out.append("== ").append(label).append('\n');

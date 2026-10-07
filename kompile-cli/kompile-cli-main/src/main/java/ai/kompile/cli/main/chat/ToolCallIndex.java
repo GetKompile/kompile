@@ -99,6 +99,29 @@ public class ToolCallIndex {
         appendRecord(record);
     }
 
+    /** Record local chat content under the exact catalog ID, including the provider call ID. */
+    public void recordWithDetails(String sessionId, String toolName, String toolInput, String agentName,
+            String source, boolean isError, long durationMs, String projectDirectory, String clientRequestId,
+            ai.kompile.cli.main.chat.tools.ToolResult result, ai.kompile.cli.main.chat.tools.ToolResult rawResult) {
+        String id = sessionId + "-" + idGenerator.incrementAndGet();
+        Instant finished = Instant.now();
+        ToolCallRecord record = new ToolCallRecord(id, sessionId, toolName, toolInput, summarize(toolName, toolInput),
+                finished, source, agentName, isError, durationMs, ToolCallRecord.categorize(toolName), projectDirectory);
+        try {
+            var context = new ai.kompile.cli.common.metrics.ToolInvocationContext(id, sessionId, "transcript-resolved",
+                    null, clientRequestId, null, null, toolName, toolName, agentName, source,
+                    finished.toEpochMilli() - Math.max(0, durationMs));
+            var details = new ai.kompile.cli.common.metrics.ToolInvocationDetails(toolCallsDir);
+            details.request(context, toolInput);
+            details.result(context, result == null ? null : result.getOutput(),
+                    rawResult == null ? null : rawResult.getOutput(),
+                    result == null || result.getMetadata() == null ? null : MAPPER.writeValueAsString(result.getMetadata()));
+        } catch (Exception e) {
+            System.err.println("Warning: Failed to save invocation details: " + e.getMessage());
+        }
+        appendRecord(record);
+    }
+
     /**
      * Record a pre-built ToolCallRecord.
      */

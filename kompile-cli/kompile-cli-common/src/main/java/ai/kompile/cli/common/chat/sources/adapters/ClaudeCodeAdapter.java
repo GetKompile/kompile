@@ -565,11 +565,7 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
     }
 
     private static String summarizeTitle(String content) {
-        String normalized = content.replaceAll("\\s+", " ").trim();
-        if (normalized.length() <= 120) {
-            return normalized;
-        }
-        return normalized.substring(0, 117) + "...";
+        return content.replaceAll("\\s+", " ").trim();
     }
 
     private static boolean hasTranscriptSidechainFlag(Path path) {

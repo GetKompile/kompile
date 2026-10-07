@@ -20,12 +20,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for {@link OutputTruncator}.
  * <p>
- * Tests truncation thresholds (2000 lines / 50KB), preview generation,
+ * Tests truncation thresholds (2000 lines / 12000 UTF-8 bytes), preview generation,
  * file save behaviour, and edge cases (null/empty input).
  */
 class OutputTruncatorTest {
@@ -74,7 +77,7 @@ class OutputTruncatorTest {
             }
             OutputTruncator.TruncationResult result = truncator.truncate(sb.toString(), "bash");
 
-            // 2000 lines at 2 bytes each = 4000 bytes, well under 50KB
+            // 2000 lines at 2 bytes each = 4000 bytes, well under 12000 bytes
             assertFalse(result.isTruncated());
         }
     }
@@ -170,8 +173,94 @@ class OutputTruncatorTest {
 
             OutputTruncator.TruncationResult result = truncator.truncate(sb.toString(), "bash");
 
-            // 1 line but > 50KB → should be truncated
+            // 1 line but > 12000 bytes → should be truncated
             assertTrue(result.isTruncated());
+        }
+    }
+
+    @Nested
+    class Utf8Budgets {
+
+        @Test
+        void mediumOutput_shouldBeTruncated() {
+            String output = "x".repeat(20000);
+            OutputTruncator.TruncationResult result = truncator.truncate(output, "medium");
+
+            assertTrue(result.isTruncated(), "Results between 12KB and 50KB must truncate");
+            assertEquals("x".repeat(4000), previewOf(result));
+            assertTrue(result.getOutput().contains("1 lines / "),
+                    "The partially omitted line must be counted");
+        }
+
+        @Test
+        void longSingleLine_shouldHaveBoundedNonemptyPreview() {
+            OutputTruncator.TruncationResult result = truncator.truncate("x".repeat(100000), "long-line");
+
+            assertTrue(result.isTruncated());
+            assertEquals("x".repeat(4000), previewOf(result));
+            assertTrue(result.getOutput().getBytes(StandardCharsets.UTF_8).length < 5000,
+                    "The notice must not reintroduce a huge result");
+        }
+
+        @Test
+        void nonAsciiOutput_shouldRespectBytesAndSaveCompleteOutput() throws Exception {
+            // Only 6250 UTF-16 code units, but 14000 UTF-8 bytes.
+            String output = "\u00e9\u6f22\ud83d\ude00".repeat(1500) + "\u00e9".repeat(250);
+            OutputTruncator.TruncationResult result = truncator.truncate(output, "unicode");
+
+            assertTrue(result.isTruncated());
+            String preview = previewOf(result);
+            assertFalse(preview.isEmpty());
+            assertTrue(preview.getBytes(StandardCharsets.UTF_8).length <= 4000);
+            assertTrue(output.startsWith(preview));
+            assertEquals(preview, new String(preview.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8),
+                    "Preview must not contain a split surrogate pair");
+            assertNotNull(result.getSavedFile());
+            assertEquals(output, Files.readString(result.getSavedFile(), StandardCharsets.UTF_8));
+            assertArrayEquals(output.getBytes(StandardCharsets.UTF_8), Files.readAllBytes(result.getSavedFile()));
+        }
+
+        @Test
+        void supplementaryCharacterAtBudgetBoundary_shouldNotBeSplit() {
+            String output = "x".repeat(3999) + "\ud83d\ude00" + "y".repeat(10000);
+            OutputTruncator.TruncationResult result = truncator.truncate(output, "surrogate-boundary");
+
+            assertTrue(result.isTruncated());
+            assertEquals("x".repeat(3999), previewOf(result));
+        }
+
+        @Test
+        void exactlyAtUtf8ByteLimit_shouldRemainUnchanged() {
+            String output = "\u6f22".repeat(4000);
+            OutputTruncator.TruncationResult result = truncator.truncate(output, "unicode-limit");
+
+            assertFalse(result.isTruncated());
+            assertEquals(output, result.getOutput());
+            assertNull(result.getSavedFile());
+        }
+
+        @Test
+        void byteLimitedPreview_shouldCountOnlyCompletedLines() {
+            String output = ("x".repeat(99) + "\n").repeat(200);
+            OutputTruncator.TruncationResult result = truncator.truncate(output, "line-count");
+
+            assertEquals(4000, previewOf(result).getBytes(StandardCharsets.UTF_8).length);
+            assertTrue(result.getOutput().contains("160 lines / "));
+        }
+
+        @Test
+        void crlfPreview_shouldKeepLineLimitAndCorrectNotice() {
+            String output = "x\r\n".repeat(2500);
+            OutputTruncator.TruncationResult result = truncator.truncate(output, "crlf");
+
+            assertEquals("x\r\n".repeat(50), previewOf(result));
+            assertTrue(result.getOutput().contains("2450 lines / "));
+        }
+
+        private String previewOf(OutputTruncator.TruncationResult result) {
+            int noticeStart = result.getOutput().indexOf("\n... ");
+            assertTrue(noticeStart > 0, "Truncation should retain a nonempty preview");
+            return result.getOutput().substring(0, noticeStart);
         }
     }
 

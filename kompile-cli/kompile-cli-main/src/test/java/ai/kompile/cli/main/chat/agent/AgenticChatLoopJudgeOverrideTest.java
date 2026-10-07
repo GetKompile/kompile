@@ -36,6 +36,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
@@ -240,6 +242,55 @@ class AgenticChatLoopJudgeOverrideTest {
         loop.chat("inspect history", UUID.randomUUID().toString(), "coder", "default", false);
         assertEquals(1, executions.get());
         assertEquals(0, reviews.get());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "cd project && sed -n 1p input.txt",
+            "cd project && cat input.txt",
+            "cd project && cat < input.txt",
+            "cd project && printf hello | cat",
+            "cd project && grep MATCH input.txt"
+    })
+    void shellMandateStopsExecutionWithoutOptionalJudgeReview(String command) throws Exception {
+        for (boolean judgeDisabled : new boolean[]{false, true}) {
+            ObjectMapper mapper = JsonUtils.standardMapper();
+            ToolRegistry tools = new ToolRegistry(mapper);
+            AtomicInteger executions = new AtomicInteger();
+            // Deliberately no intrinsic guard: also covers externally supplied shell tools.
+            tools.register(countingTool(mapper, executions, "bash"));
+            ToolCallingClient client = new ToolCallingClient(mapper);
+            client.command = command;
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, tools, new PermissionService(),
+                    new AgentRegistry(), workingDirectory, client, null);
+            JudgeControl control = new JudgeControl(UUID.randomUUID().toString(), sessionsDirectory);
+            control.setEnabled(!judgeDisabled);
+            loop.setJudgeControl(control);
+            loop.chat("inspect the project", control.getSessionId(), "coder", "default", false);
+            assertEquals(0, executions.get(), command + " judgeDisabled=" + judgeDisabled);
+        }
+    }
+
+    @Test
+    void rewrittenShellCommandCannotBypassTheMandate() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ToolRegistry tools = new ToolRegistry(mapper);
+        AtomicInteger executions = new AtomicInteger();
+        tools.register(countingTool(mapper, executions, "bash"));
+        ToolCallingClient client = new ToolCallingClient(mapper);
+        client.command = "printf hello";
+        AgenticChatLoop loop = new AgenticChatLoop(null, mapper, tools, new PermissionService(),
+                new AgentRegistry(), workingDirectory, client, null);
+        loop.setInlineEnforcer(new RecordingEnforcerEvaluator(), new EnforcerPolicy("rules", 2, false), 2);
+        AtomicInteger reviews = new AtomicInteger();
+        loop.setEnforcerToolCallInterceptor((u, a, t, i) -> {
+            reviews.incrementAndGet();
+            return new EnforcerToolCallDecision(EnforcerToolCallDecision.Action.REWRITE,
+                    "fixture rewrite", List.of(), "", java.util.Map.of("command", "cat input.txt"));
+        });
+        loop.chat("inspect the project", UUID.randomUUID().toString(), "coder", "default", false);
+        assertEquals(1, reviews.get());
+        assertEquals(0, executions.get());
     }
 
     private void assertCommandReview(String command, String approved, boolean allowed, int expectedReviews)

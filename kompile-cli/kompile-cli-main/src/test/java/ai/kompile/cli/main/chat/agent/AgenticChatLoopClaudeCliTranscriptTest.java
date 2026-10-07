@@ -261,6 +261,79 @@ class AgenticChatLoopClaudeCliTranscriptTest {
         return config;
     }
 
+    @Test
+    void quietClaudePhasesAndConcurrentToolHeartbeatsReachTheLiveActivity() throws Exception {
+        String home = System.getProperty("user.home");
+        System.setProperty("user.home", directory.toString());
+        List<String> activities = Collections.synchronizedList(new ArrayList<>());
+        List<String> completions = Collections.synchronizedList(new ArrayList<>());
+        List<String> lines = Collections.synchronizedList(new ArrayList<>());
+        ChatCompleter.setActivityListener(activities::add);
+        ChatCompleter.setContentOutput(lines::add);
+        var mapper = JsonUtils.standardMapper();
+        try (DirectLlmClient client = new DirectLlmClient(claudeConfig(), mapper, directory)) {
+            FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("phases"), """
+                    turn() {
+                      say_init
+                      emit '{"type":"system","subtype":"status","status":"requesting"}'
+                      emit '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}'
+                      emit '{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"bash-1","name":"Bash","input":{}}}}'
+                      emit '{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":\\"mvn test\\"}"}}}'
+                      emit '{"type":"stream_event","event":{"type":"content_block_stop","index":1}}'
+                      emit '{"type":"stream_event","event":{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"read-2","name":"mcp__kompile__read","input":{"file_path":"NOTES.md"}}}}'
+                      emit '{"type":"tool_progress","tool_use_id":"bash-1","tool_name":"Bash","elapsed_time_seconds":12.5}'
+                      emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash-1","content":"done"}]}}'
+                      emit '{"type":"tool_progress","tool_use_id":"bash-1","tool_name":"Bash","elapsed_time_seconds":99}'
+                      emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-2","content":"not found","is_error":true}]}}'
+                      emit '{"type":"system","subtype":"status","status":"compacting"}'
+                      emit '{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":100}}'
+                      emit '{"type":"system","subtype":"thinking_tokens","estimated_tokens":120}'
+                      say_text 'Done'
+                      say_result
+                    }
+                    """);
+            fake.install(client, directory, "claude-phases");
+            client.setProviderActivityListener(new DirectLlmClient.ProviderActivityListener() {
+                @Override
+                public void onToolStart(String id, String name, String input) { }
+                @Override
+                public void onToolComplete(String id, String name, String output, int exit, boolean error) {
+                    completions.add(ChatCompleter.getActivity());
+                }
+            });
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            String session = "claude-phases-test";
+            loop.configureConversationSession(session);
+            loop.chat("check tools", session, "coder", "default", false);
+
+            assertTrue(activities.contains("Waiting for Claude response"), activities.toString());
+            assertTrue(activities.contains("Thinking"), "empty/redacted thinking is still an activity");
+            assertTrue(activities.stream().anyMatch(s -> s != null && s.startsWith("Preparing tool:")), activities.toString());
+            assertTrue(activities.stream().anyMatch(s -> s != null && s.startsWith("Running:")
+                    && s.contains("mvn test") && s.contains("tool 12s")), activities.toString());
+            assertFalse(activities.stream().anyMatch(s -> s != null && s.contains("tool 99s")),
+                    "late heartbeat must not revive a completed tool: " + activities);
+            assertEquals(2, completions.size());
+            assertTrue(completions.get(0).contains("NOTES.md"), "other concurrent tool stays visible: " + completions);
+            assertEquals("Waiting for Claude response", completions.get(1));
+            assertTrue(activities.contains("Compacting Claude context"), activities.toString());
+            assertTrue(activities.contains("Responding"), activities.toString());
+            String transcript = plain(String.join("\n", lines));
+            assertFalse(transcript.contains("elapsed_time_seconds") || transcript.contains("thinking_tokens"), transcript);
+            assertFalse(transcript.contains("tool 12s"), "heartbeats are transient, not transcript output");
+            // The REPL owns final cleanup (completeTaskWithAutoDequeue), not the
+            // transport loop. Until then the last phase must not be a finished tool.
+            assertEquals("Responding", ChatCompleter.getActivity());
+        } finally {
+            ChatCompleter.setActivityListener(null);
+            ChatCompleter.setContentOutput(null);
+            ChatCompleter.setActivity(null);
+            if (home == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", home);
+        }
+    }
+
     /** Visible text: SGR styling and OSC 8 hyperlinks removed. */
     private static String plain(String text) {
         return text.replaceAll("\u001B\\][^\u0007\u001B]*(?:\u0007|\u001B\\\\)", "")

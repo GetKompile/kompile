@@ -249,6 +249,170 @@ public class SubprocessAgentRunner {
         this.exactResumeRequired = exactResumeRequired;
     }
 
+    /** Restore only an explicitly recorded native session; never resume the provider's latest. */
+    public void restoreNativeSession(String nativeId) {
+        if (nativeId == null || nativeId.isBlank()) {
+            throw new IllegalArgumentException("Missing native session id for exact resume");
+        }
+        agentSessionId = nativeId;
+        firstMessageSent = true;
+        exactResumeRequired = true;
+    }
+
+    public String getNativeSessionId() { return agentSessionId; }
+
+    public static boolean supportsHeadless(String framework) {
+        return framework != null && Set.of("claude", "codex", "gemini", "qwen", "opencode", "pi")
+                .contains(framework.toLowerCase(Locale.ROOT));
+    }
+
+    public record NativeResult(int exitCode, String error, String nativeSessionId) { }
+
+    protected String resolveHeadlessBinary() { return resolveAgentBinary(agent); }
+
+    /** Test seam for a fake native adapter. Production always launches the managed command. */
+    protected Process startHeadlessProcess(ProcessBuilder builder) throws IOException {
+        return builder.start();
+    }
+
+    /** Bounded, renderer-free one-shot path sharing managed flags, MCP environment and parser. */
+    public NativeResult runHeadless(String prompt, long timeoutMs,
+                                   Consumer<PassthroughStreamParser.PassthroughEvent> events) {
+        if (!supportsHeadless(agent)) return new NativeResult(2,
+                "No verified structured/exact-resume contract for native agent: " + agent, null);
+        if (firstMessageSent && (agentSessionId == null || agentSessionId.isBlank())) {
+            return new NativeResult(2, "Missing native session id for exact resume", null);
+        }
+        String binary = resolveHeadlessBinary();
+        if (binary == null) return new NativeResult(1, "Native agent not installed: " + agent, null);
+        AtomicReference<String> failure = new AtomicReference<>();
+        StringBuilder diagnostic = new StringBuilder();
+        Thread stdout = null;
+        Thread stderr = null;
+        Process process = null;
+        try {
+            cancelSignal.set(false);
+            reinjectMissingLaunchConfig();
+            ProcessBuilder builder = new ProcessBuilder(buildCommand(binary, prompt));
+            builder.directory(Path.of(workingDir).toFile());
+            builder.redirectErrorStream(false);
+            if (systemPromptManager != null) builder.environment().putAll(systemPromptManager.getExtraEnv(agent));
+            builder.environment().putAll(extraEnvironment);
+            builder.environment().put("GEMINI_CLI_TRUST_WORKSPACE", "true");
+            McpToolInjection.applyLaunchEnvironment(builder.environment(), mcpLaunchConfig());
+            synchronized (lifecycleLock) {
+                if (closed.get()) return new NativeResult(130, "Native run cancelled", agentSessionId);
+                process = startHeadlessProcess(builder);
+                activeProcess = process;
+            }
+            Process child = process;
+            // Native interactive input cannot be serviced by this one-turn transport.
+            child.getOutputStream().close();
+            stdout = new Thread(() -> {
+                try {
+                    readBoundedLines(child.getInputStream(), line -> {
+                        for (var event : parseAgentLineMulti(agent.toLowerCase(Locale.ROOT), line)) {
+                            if (event instanceof PassthroughStreamParser.InteractiveQuestion
+                                    || event instanceof PassthroughStreamParser.InteractiveApproval
+                                    || event instanceof PassthroughStreamParser.PromptDetected) {
+                                throw new IllegalStateException("Native interactive input is unsupported in web passthrough; use the terminal");
+                            }
+                            if (event instanceof PassthroughStreamParser.SessionInit init) {
+                                if (firstMessageSent && !Objects.equals(agentSessionId, init.sessionId())) {
+                                    throw new IllegalStateException("Native adapter changed the exact resumed session id");
+                                }
+                                agentSessionId = init.sessionId();
+                            }
+                            events.accept(event);
+                        }
+                    });
+                } catch (Exception e) {
+                    failure.compareAndSet(null, e.getMessage());
+                    destroyHeadlessTree(child);
+                }
+            }, "native-headless-events");
+            stderr = new Thread(() -> {
+                try {
+                    readBoundedLines(child.getErrorStream(), line -> {
+                        if (diagnostic.length() < 4096) diagnostic.append(line, 0,
+                                Math.min(line.length(), 4096 - diagnostic.length())).append('\n');
+                    });
+                } catch (Exception e) {
+                    failure.compareAndSet(null, e.getMessage());
+                    destroyHeadlessTree(child);
+                }
+            }, "native-headless-diagnostics");
+            stdout.setDaemon(true);
+            stderr.setDaemon(true);
+            stdout.start();
+            stderr.start();
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs > 0 ? timeoutMs : 300_000L);
+            while (!child.waitFor(100, TimeUnit.MILLISECONDS)) {
+                if (cancelSignal.get() || System.nanoTime() >= deadline) {
+                    failure.compareAndSet(null, cancelSignal.get() ? "Native run cancelled" : "Native run timed out");
+                    destroyHeadlessTree(child);
+                    child.waitFor(2, TimeUnit.SECONDS);
+                    break;
+                }
+            }
+            stdout.join(2000);
+            stderr.join(2000);
+            if (stdout.isAlive() || stderr.isAlive()) failure.compareAndSet(null, "Native stream did not close");
+            int exit = child.isAlive() ? 124 : child.exitValue();
+            if (failure.get() != null) return new NativeResult(cancelSignal.get() ? 130 : 1, failure.get(), agentSessionId);
+            if (exit != 0) return new NativeResult(exit, "Native agent failed (exit " + exit + ")"
+                    + (diagnostic.isEmpty() ? "" : ": " + diagnostic.toString().strip()), agentSessionId);
+            firstMessageSent = true;
+            return new NativeResult(0, null, agentSessionId);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new NativeResult(130, "Native run cancelled", agentSessionId);
+        } catch (Exception e) {
+            return new NativeResult(1, "Could not run native agent: " + e.getMessage(), agentSessionId);
+        } finally {
+            destroyHeadlessTree(process);
+            if (process != null) {
+                try { process.getInputStream().close(); } catch (IOException ignored) { }
+                try { process.getErrorStream().close(); } catch (IOException ignored) { }
+            }
+            activeProcess = null;
+        }
+    }
+
+    /** A native stream frame is bounded independently of the provider's response length. */
+    private static void readBoundedLines(InputStream input, Consumer<String> lines) throws IOException {
+        try (Reader reader = new InputStreamReader(input, StandardCharsets.UTF_8)) {
+            StringBuilder line = new StringBuilder();
+            char[] buffer = new char[4096];
+            int count;
+            while ((count = reader.read(buffer)) != -1) {
+                for (int i = 0; i < count; i++) {
+                    if (buffer[i] == '\n') {
+                        lines.accept(line.toString());
+                        line.setLength(0);
+                    } else {
+                        if (line.length() >= 1_048_576) throw new IOException("Native stream frame exceeds 1 MiB");
+                        line.append(buffer[i]);
+                    }
+                }
+            }
+            if (!line.isEmpty()) lines.accept(line.toString());
+        }
+    }
+
+    public void cancelHeadless() {
+        cancelSignal.set(true);
+        destroyHeadlessTree(activeProcess);
+    }
+
+    private static void destroyHeadlessTree(Process process) {
+        if (process == null) return;
+        // Snapshot before killing the parent: descendants can otherwise be reparented.
+        var descendants = process.descendants().toList();
+        for (int i = descendants.size() - 1; i >= 0; i--) descendants.get(i).destroyForcibly();
+        process.destroyForcibly();
+    }
+
     /**
      * Set an output consumer — all streamed text output goes through this.
      * When null, falls back to System.out.println.

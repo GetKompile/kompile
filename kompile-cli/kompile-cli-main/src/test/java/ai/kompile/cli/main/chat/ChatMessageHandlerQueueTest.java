@@ -4,6 +4,7 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.FakeClaudeCode;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.CliTool;
@@ -43,6 +44,123 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @TemporaryUserHome
 class ChatMessageHandlerQueueTest {
+
+    @Test
+    void nativeClaudeAgentBackgroundReleasesQueuedAndFreshInput(@TempDir Path temp) throws Exception {
+        verifyNativeClaudeBackground(temp, "Agent", false);
+    }
+
+    @Test
+    void nativeClaudeLegacyTaskBackgroundReleasesInput(@TempDir Path temp) throws Exception {
+        verifyNativeClaudeBackground(temp, "Task", false);
+    }
+
+    @Test
+    void nativeClaudeBashBackgroundReleasesInput(@TempDir Path temp) throws Exception {
+        verifyNativeClaudeBackground(temp, "Bash", false);
+    }
+
+    @Test
+    void rejectedNativeClaudeBackgroundKeepsOwnerAndQueue(@TempDir Path temp) throws Exception {
+        verifyNativeClaudeBackground(temp, "Agent", true);
+    }
+
+    private void verifyNativeClaudeBackground(Path temp, String tool, boolean reject) throws Exception {
+        FakeClaudeCode fake = new FakeClaudeCode(temp, "TOOL='" + tool + "'\nREJECT="
+                + (reject ? "1" : "0") + "\n" + """
+                turn() {
+                  say_init
+                  if [ "$1" = 1 ]; then
+                    emit '{"type":"assistant","message":{"id":"agent-message","content":[{"type":"tool_use","id":"native-call","name":"'"$TOOL"'","input":{"description":"Long native work"}}]}}'
+                    emit '{"type":"system","subtype":"task_started","task_id":"native-task","tool_use_id":"native-call","description":"Long native work","task_type":"agent","is_backgrounded":false}'
+                  else
+                    say_text "new message processed"
+                    say_result
+                  fi
+                }
+                control() {
+                  if [ "$2" != background_tasks ]; then
+                    emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{}}}'
+                  elif [ "$REJECT" = 1 ]; then
+                    emit '{"type":"control_response","response":{"subtype":"error","request_id":"'"$1"'","error":"background tasks disabled"}}'
+                  else
+                    emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{}}}'
+                    # Keep the parent alive after acknowledgement to exercise fresh input admission.
+                    (
+                      while [ ! -f "$DIR/release-parent" ]; do sleep 0.01; done
+                      emit '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"native-task","task_type":"agent"}]}'
+                      emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"native-call","content":"Running in the background"}]}}'
+                      say_text "parent resumed"
+                      say_result
+                    ) &
+                  fi
+                }
+                """);
+        ChatConfig config = new ChatConfig("anthropic", null, "claude-sonnet-4-6", null);
+        config.setAuthenticationMethod("oauth");
+        config.setDefaultMemory(false);
+        ChatRepl repl = new ChatRepl(null, null, "native-background-" + System.nanoTime(),
+                false, "default", false, config);
+        ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+        AgenticChatLoop loop = field(repl, "agenticLoop", AgenticChatLoop.class);
+        BackgroundProcessManager processes = field(repl, "processManager", BackgroundProcessManager.class);
+        MessageQueue queue = field(repl, "messageQueue", MessageQueue.class);
+        List<String> notices = new CopyOnWriteArrayList<>();
+        try {
+            fake.installBinary(repl.getDirectClient());
+            loop.setPerformanceHarness(null);
+            ChatCompleter.setAlertOutput(notices::add);
+            if (repl.isAutoDequeueEnabled()) {
+                field(repl, "queueManager", MessageQueueManager.class).toggleAutoDequeue();
+            }
+            queue.clear();
+            assertFalse(handler.requestBackground());
+            handler.handleChatMessage("start native work");
+            assertTrue(awaitCondition(loop::isBackgroundableToolPhaseActive, 5, TimeUnit.SECONDS));
+            FakeClaudeCode.await("native task row", () -> processes.listAll().stream()
+                    .anyMatch(row -> "native-task".equals(row.getMetadata().get("task_id"))));
+            var task = processes.listAll().stream()
+                    .filter(row -> "native-task".equals(row.getMetadata().get("task_id")))
+                    .findFirst().orElseThrow();
+            handler.handleChatMessage("queued before native background");
+            assertEquals(1, queue.size());
+            assertTrue(handler.requestBackground());
+            fake.awaitControl("background_tasks");
+            if (reject) {
+                FakeClaudeCode.await("background rejection notice", () -> notices.stream().anyMatch(n -> n.contains("background tasks disabled")));
+                assertEquals(1, queue.size(), "rejection must not release queued input");
+                assertEquals(0, handler.pendingBackgroundInputCount());
+                assertTrue(loop.isBackgroundableToolPhaseActive(), "rejected work remains eligible");
+                assertTrue(repl.isLlmBusy(), "rejection must not release the provider owner");
+            } else {
+                FakeClaudeCode.await("native input release", () -> handler.pendingBackgroundInputCount() == 1);
+                assertEquals(0, queue.size(), "explicit Ctrl+B releases input even in manual queue mode");
+                assertFalse(handler.requestBackground(), "do not submit the same native call twice");
+                handler.handleChatMessage("fresh after native background");
+                assertEquals(0, queue.size());
+                assertEquals(2, handler.pendingBackgroundInputCount());
+                Files.writeString(fake.path("release-parent"), "release");
+                FakeClaudeCode.await("queued and fresh messages consumed", () -> fake.messages().size() == 3 && !repl.isLlmBusy());
+                assertTrue(fake.messages().get(1).contains("queued before native background"));
+                assertTrue(fake.messages().get(2).contains("fresh after native background"));
+                assertFalse(loop.isBackgroundableToolPhaseActive());
+                assertTrue(notices.stream().anyMatch(n -> n.contains("Claude work backgrounded")));
+            }
+            assertTrue(task.isRunning(), "native task must outlive the parent and new messages");
+            assertEquals(1, fake.argv().size(), "backgrounding must retain the original Claude session");
+            assertTrue(fake.controls("interrupt").isEmpty());
+            assertTrue(fake.controls("stop_task").isEmpty());
+            assertEquals(1, fake.controls("background_tasks").size());
+        } finally {
+            Files.writeString(fake.path("release-parent"), "release");
+            handler.shutdown();
+            queue.clear();
+            repl.close();
+            processes.close();
+            ChatCompleter.setAlertOutput(null);
+            ChatCompleter.setActivity(null);
+        }
+    }
 
     @Test
     void quotaWakeResumesTheSameVendorAndPreservesTheRetryBudget() throws Exception {

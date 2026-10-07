@@ -61,6 +61,39 @@ class McpToolResultSerializerTest {
     }
 
     @Test
+    void fileAndSearchResultsUsePlainTextWithClientOnlyMetadata() {
+        String output = "     1\t{\"nested\":\"value\"}\n     2\tbackslash \\\\ and emoji 😀";
+        Map<String, Object> metadata = Map.of("totalLines", 2,
+                "fileContext", Map.of("notes", List.of("client note")));
+        for (String tool : List.of("read", "read_batch", "grep", "grep_batch", "glob", "list",
+                "fetch_result", "fetch_result_batch")) {
+            ObjectNode wire = McpToolResultSerializer.toMcpCallResult(M,
+                    new ToolResult("A.java", output, metadata, false), null, tool);
+            assertFalse(wire.has("structuredContent"), tool);
+            assertEquals("A.java\n" + output, wire.path("content").get(0).path("text").asText(), tool);
+            assertEquals(M.valueToTree(metadata), wire.path("_meta").path("ai.kompile/toolResult"), tool);
+        }
+    }
+
+    @Test
+    void namedDomainToolsKeepTheirStructuredContract() {
+        ToolResult result = ToolResult.success("layers", "graph", Map.of("factSheetId", 42));
+        for (String tool : List.of("file_context", "graph_reasoning_query", "crawl_source", "chart")) {
+            assertEquals(McpToolResultSerializer.toMcpCallResult(M, result),
+                    McpToolResultSerializer.toMcpCallResult(M, result, null, tool), tool);
+        }
+    }
+
+    @Test
+    void namedSearchErrorsKeepTheirErrorStatusAndText() {
+        ObjectNode wire = McpToolResultSerializer.toMcpCallResult(M,
+                new ToolResult("", "bad pattern", Map.of("exitCode", 2), true), null, "grep");
+        assertTrue(wire.path("isError").asBoolean());
+        assertEquals("bad pattern", wire.path("content").get(0).path("text").asText());
+        assertFalse(wire.has("structuredContent"));
+    }
+
+    @Test
     void anyOtherTextIsLeftAsReceived() {
         for (String text : List.of(
                 "plain output",

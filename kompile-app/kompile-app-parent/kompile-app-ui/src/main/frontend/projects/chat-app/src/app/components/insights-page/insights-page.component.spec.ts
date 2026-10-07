@@ -20,7 +20,7 @@ import { ActivatedRoute, NavigationExtras, ParamMap, Params, Router, convertToPa
 import { BehaviorSubject, Observable, Subject, of, throwError } from 'rxjs';
 import { map } from 'rxjs/operators';
 import {
-  InsightsSettings, InsightsSettingsView, InsightsTopicReport, LocalAgentChatService
+  InsightsSettings, InsightsSettingsView, InsightsTopicReport, LocalAgentChatService, ToolUsageReport
 } from '@shared/services/local-agent-chat.service';
 import { AUTO_REFRESH_MS, InsightsPageComponent } from './insights-page.component';
 
@@ -89,7 +89,7 @@ describe('InsightsPageComponent', () => {
       return Promise.resolve(true);
     });
     chatService = jasmine.createSpyObj<LocalAgentChatService>('LocalAgentChatService',
-      ['getInsightsReport', 'getInsightsSettings', 'saveInsightsSettings']);
+      ['getInsightsReport', 'getInsightsSettings', 'saveInsightsSettings', 'getToolInvocationPage']);
     chatService.getInsightsReport.and.callFake(() => {
       const answer = new Subject<InsightsTopicReport>();
       answers.push(answer);
@@ -174,13 +174,13 @@ describe('InsightsPageComponent', () => {
   function chooseWindow(label: string): void {
     query<HTMLElement>('[data-testid="insights-window"] .mat-mdc-select-trigger')!.click();
     fixture.detectChanges();
-    flush();
+    tick(500);
     const option = Array.from(document.querySelectorAll<HTMLElement>('mat-option'))
       .find(candidate => candidate.textContent?.trim() === label);
     expect(option).withContext(`window option ${label}`).toBeDefined();
     option!.click();
     fixture.detectChanges();
-    flush();
+    tick(500);
   }
 
   /** As a click on the summary does: the element opens or closes, then fires toggle. */
@@ -195,6 +195,134 @@ describe('InsightsPageComponent', () => {
   function setting(key: string): HTMLInputElement {
     return query<HTMLInputElement>(`input[data-setting="${key}"]`)!;
   }
+
+  const tokenUsage = (changes: Partial<ToolUsageReport> = {}): ToolUsageReport => ({
+    summary: { calls: 12, argumentsTokens: 90, payloadTokens: 120, unmeasuredPayloadCalls: 2, partialPayloadCalls: 1, degradedCalls: 1 },
+    perTool: [{ tool: 'read', calls: 12, argumentsTokens: 90, payloadTokens: 120, unmeasuredPayloadCalls: 2, partialPayloadCalls: 1 }],
+    perSession: [{ sessionId: 'full-session-id-123456789', calls: 12, argumentsTokens: 90, payloadTokens: 120, unmeasuredPayloadCalls: 2, partialPayloadCalls: 1 }],
+    calls: [{ invocationId: 'full-invocation-id-987654321', sessionId: 'full-session-id-123456789', tool: 'read',
+      requestedToolName: 'functions.read', resolvedToolName: 'read', outcome: 'SUCCESS', disposition: 'DELIVERED', durationMs: 42,
+      arguments: { tokens: 0, status: 'FULLY_MEASURED', representation: 'JSON', method: 'tokenizer', tokenizerId: 'local', tokenizerVersion: '1' },
+      payload: { status: 'UNAVAILABLE' }, rawPayload: { tokens: 17, status: 'FULLY_MEASURED', representation: 'raw text' },
+      modelExecutions: [{ inputTokens: 500, outputTokens: 10 }], accountingDegraded: true }],
+    offset: 0, limit: 5, totalCalls: 12, hasMore: true,
+    ...changes
+  });
+
+  it('defaults tools to tokens but retains counts/latency mode and the window', fakeAsync(() => {
+    create({ topic: 'tools', window: 'last 30 days', workingDirectory: '/work/app' });
+    expect(lastRead()).toEqual(['tools', 'tokens last 30 days', '/work/app']);
+    answer(0, report('tools'));
+    click('tools-count-mode');
+    expect(lastRead()).toEqual(['tools', 'counts and latency, last 30 days', '/work/app']);
+    expect(query('[data-testid="tool-filter"]')).toBeNull();
+    answer(1, report('tools'));
+    click('tools-token-mode');
+    expect(lastRead()).toEqual(['tools', 'tokens last 30 days', '/work/app']);
+    answer(2, report('tools'));
+    fixture.destroy();
+  }));
+
+  it('switches a token drilldown to counts without token-only selectors and preserves session scope', fakeAsync(() => {
+    create({ topic: 'tools', question: 'tokens session:full-session tool:read call:full-call offset:5',
+      window: 'last 30 days', workingDirectory: '/work/app' });
+    answer(0, report('tools', { usage: tokenUsage() }));
+    click('tools-count-mode');
+    expect(lastRead()).toEqual(['tools', 'counts and latency session:full-session last 30 days', '/work/app']);
+    answer(1, report('tools', { usage: tokenUsage() }));
+    click('usage-call');
+    expect(lastRead()[1]).toBe('tokens session:full-session call:full-invocation-id-987654321 last 30 days');
+    answer(2, report('tools', { usage: tokenUsage() }));
+    expect(query('[data-testid="tool-filter"]')).not.toBeNull();
+    fixture.destroy();
+  }));
+
+  it('lets a selected window override the time phrase in a session bookmark', fakeAsync(() => {
+    create({ topic: 'tools', question: 'tokens last 7 days session:full-session',
+      window: 'last 30 days', workingDirectory: '/work/app' });
+    expect(lastRead()).toEqual(['tools', 'tokens session:full-session last 30 days', '/work/app']);
+    answer(0, report('tools'));
+    fixture.destroy();
+  }));
+
+  it('rereads on tool/session navigation and discards stale filter responses', fakeAsync(() => {
+    create({ topic: 'tools', question: 'tokens last 7 days', workingDirectory: '/work/app' });
+    answer(0, report('tools', { usage: tokenUsage() }));
+    click('usage-tool');
+    expect(lastRead()).toEqual(['tools', 'tokens last 7 days tool:read', '/work/app']);
+    expect(query('[data-testid="tool-usage-details"]')).toBeNull();
+    expect(route.params['question']).toBe('tokens last 7 days tool:read');
+    // Navigate while this tool read is still in flight, as a bookmark/browser navigation can.
+    route.setQueryParams({ ...route.params, question: 'tokens last 7 days tool:read session:full-session-id-123456789' });
+    expect(answers[1].observed).toBeFalse();
+    answers[1].next(report('tools', { headline: 'STALE FILTER' }));
+    answer(2, report('tools', { usage: tokenUsage() }));
+    expect(textOf('.report-headline')).not.toBe('STALE FILTER');
+    expect(textOf('[data-testid="tool-breadcrumbs"]')).toContain('full-session-id-123456789');
+    click('usage-session');
+    expect(lastRead()[1]).toBe('tokens last 7 days session:full-session-id-123456789 tool:read');
+    answer(3, report('tools', { usage: tokenUsage() }));
+    fixture.destroy();
+  }));
+
+  it('paginates via the URL and rereads a full invocation before showing provenance', fakeAsync(() => {
+    create({ topic: 'tools', question: 'tokens', window: 'last 30 days', workingDirectory: '/work/app' });
+    answer(0, report('tools', { usage: tokenUsage() }));
+    click('usage-next');
+    expect(lastRead()).toEqual(['tools', 'tokens offset:5 last 30 days', '/work/app']);
+    expect(route.params['question']).toBe('tokens offset:5');
+    answer(1, report('tools', { usage: tokenUsage({ offset: 5 }) }));
+    expect(textOf('[data-testid="usage-totals"]')).toContain('12 filtered calls');
+    click('usage-previous');
+    expect(lastRead()).toEqual(['tools', 'tokens last 30 days', '/work/app']);
+    answer(2, report('tools', { usage: tokenUsage() }));
+    click('usage-call');
+    expect(lastRead()).toEqual(['tools', 'tokens call:full-invocation-id-987654321 last 30 days', '/work/app']);
+    expect(query('[data-testid="call-provenance"]')).toBeNull();
+    answer(3, report('tools', { usage: tokenUsage({ totalCalls: 1, hasMore: false }) }));
+    const provenance = textOf('[data-testid="call-provenance"]')!;
+    expect(provenance).toContain('full-invocation-id-987654321');
+    expect(provenance).toContain('functions.read');
+    expect(provenance).toContain('DELIVERED');
+    expect(provenance).toContain('42 ms');
+    expect(provenance).toContain('Raw payload measurement: 17');
+    expect(provenance).toContain('Tokenizer ID / version');
+    expect(provenance).toContain('separate provider ledger');
+    click('back-tool-filter');
+    expect(lastRead()).toEqual(['tools', 'tokens last 30 days', '/work/app']);
+    answer(4, report('tools', { usage: tokenUsage() }));
+    fixture.destroy();
+  }));
+
+  it('submits visible token filters and charts the server per-tool token series', fakeAsync(() => {
+    create({ topic: 'tools', question: 'tokens', workingDirectory: '/work/a project' });
+    answer(0, report('tools', { usage: tokenUsage(), chart: {
+      v: 1, kind: 'line', title: 'Measured tool payload tokens', unit: 'tokens', labels: ['1', '2', '3'],
+      series: [{ name: 'read', values: [0, null, 120] }]
+    } }));
+    expect(query('[data-testid="tool-call-chart"]')).not.toBeNull();
+    type('[data-testid="tool-filter"]', 'functions.read');
+    type('[data-testid="session-filter"]', 'full-session');
+    type('[data-testid="call-filter"]', 'full-call');
+    click('apply-tool-filters');
+    expect(lastRead()).toEqual(['tools', 'tokens session:full-session tool:functions.read call:full-call', '/work/a project']);
+    expect(route.params['question']).toBe('tokens session:full-session tool:functions.read call:full-call');
+    expect(query('[data-testid="tool-call-chart"]')).toBeNull();
+    answer(1, report('tools', { usage: tokenUsage() }));
+    fixture.destroy();
+  }));
+
+  it('opens a selected-call bookmark and resets only filters, retaining context', fakeAsync(() => {
+    create({ topic: 'tools', question: 'tokens last 7 days tool:read session:full-session call:full-call offset:5',
+      window: 'last 30 days', workingDirectory: '/work/app' });
+    expect(query<HTMLInputElement>('[data-testid="call-filter"]')!.value).toBe('full-call');
+    answer(0, report('tools', { usage: tokenUsage() }));
+    click('reset-tool-filters');
+    expect(lastRead()).toEqual(['tools', 'tokens last 30 days', '/work/app']);
+    expect(route.params).toEqual({ topic: 'tools', question: 'tokens last 7 days', window: 'last 30 days', workingDirectory: '/work/app' });
+    answer(1, report('tools'));
+    fixture.destroy();
+  }));
 
   it('reads the overview when it opens and shows the text under the headline', fakeAsync(() => {
     create();
@@ -387,13 +515,12 @@ describe('InsightsPageComponent', () => {
     fixture.destroy();
   }));
 
-  it('reads the open report every 30 seconds while auto-refresh is on', fakeAsync(() => {
+  it('reads the open report every 10 seconds by default', fakeAsync(() => {
     create();
+    expect(fixture.componentInstance.autoRefresh).toBeTrue();
+    expect(AUTO_REFRESH_MS).toBe(10_000);
     answer(0, report('overview'));
     tick(AUTO_REFRESH_MS);
-    expect(reads()).toBe(1);
-
-    check('[data-testid="insights-auto-refresh"]');
     expect(reads()).toBe(2);
     // No read is stacked on one in flight; the next waits a full period after it answers.
     tick(AUTO_REFRESH_MS);
@@ -416,33 +543,28 @@ describe('InsightsPageComponent', () => {
     const visibility = spyOnProperty(document, 'visibilityState').and.returnValue('visible');
     create();
     answer(0, report('overview'));
-    check('[data-testid="insights-auto-refresh"]');
-    answer(1, report('overview'));
-
     visibility.and.returnValue('hidden');
     document.dispatchEvent(new Event('visibilitychange'));
     tick(AUTO_REFRESH_MS * 2);
-    expect(reads()).toBe(2);
+    expect(reads()).toBe(1);
 
     visibility.and.returnValue('visible');
     document.dispatchEvent(new Event('visibilitychange'));
-    expect(reads()).toBe(3);
-    answer(2, report('overview'));
+    expect(reads()).toBe(2);
+    answer(1, report('overview'));
     fixture.destroy();
   }));
 
   it('stops reading once destroyed', fakeAsync(() => {
     create();
     answer(0, report('overview'));
-    check('[data-testid="insights-auto-refresh"]');
-    answer(1, report('overview'));
     click('insights-refresh');
     fixture.destroy();
 
-    expect(answers[2].observed).toBeFalse();
+    expect(answers[1].observed).toBeFalse();
     tick(AUTO_REFRESH_MS);
     document.dispatchEvent(new Event('visibilitychange'));
-    expect(reads()).toBe(3);
+    expect(reads()).toBe(2);
   }));
 
   it('loads insights.json the first time the limits open, with byte counts in MiB', fakeAsync(() => {
@@ -506,6 +628,27 @@ describe('InsightsPageComponent', () => {
     click('insights-settings-save');
     expect(chatService.saveInsightsSettings).toHaveBeenCalledTimes(1);
     expect(textOf('.insights-settings [role="status"]')).toBe('Nothing changed.');
+    fixture.destroy();
+  }));
+
+  it('pages exact local catalog content and preserves the page across live refreshes', fakeAsync(() => {
+    create({ topic: 'tools', question: 'tokens session:session call:catalog-call' });
+    const usage: ToolUsageReport = {
+      summary: { calls: 0, unmeasuredPayloadCalls: 0, partialPayloadCalls: 0 },
+      perTool: [], perSession: [], calls: [], offset: 0, limit: 10, totalCalls: 0, hasMore: false,
+      catalog: { calls: [{ id: 'catalog-call', sessionId: 'session', toolName: 'read',
+        detail: { available: true, output: { available: true, offset: 0, text: 'first page' } } }] }
+    };
+    answer(0, report('tools', { usage }));
+    chatService.getToolInvocationPage.and.returnValue(of({ available: true, offset: 32768, text: 'next page' }));
+    fixture.componentInstance.readContentPage({ sessionId: 'session', invocationId: 'catalog-call', field: 'output', offset: 32768 });
+    fixture.detectChanges();
+    expect(chatService.getToolInvocationPage).toHaveBeenCalledOnceWith('session', 'catalog-call', 'output', 32768);
+    expect(fixture.nativeElement.textContent).toContain('next page');
+    tick(AUTO_REFRESH_MS);
+    answer(1, report('tools', { usage: { ...usage, catalog: { calls: [{ ...usage.catalog!.calls[0],
+      detail: { available: true, output: { available: true, offset: 0, text: 'first page' } } }] } } }));
+    expect(fixture.componentInstance.state.report!.usage!.catalog!.calls[0].detail!.output!.offset).toBe(32768);
     fixture.destroy();
   }));
 

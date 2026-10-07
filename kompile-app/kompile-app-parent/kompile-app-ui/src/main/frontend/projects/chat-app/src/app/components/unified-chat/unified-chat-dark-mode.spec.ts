@@ -25,6 +25,7 @@ import { MatMenuModule } from '@angular/material/menu';
 import { of, Subject } from 'rxjs';
 
 import { UnifiedChatComponent } from './unified-chat.component';
+import { responsiveLayout } from '../responsive-layout-test-helper';
 import { AgentProvider } from '@shared/models/api-models';
 import { AgentService } from '@shared/services/agent.service';
 import { ChatHistoryService } from '@shared/services/chat-history.service';
@@ -188,6 +189,49 @@ describe('UnifiedChatComponent Material buttons and dark mode', () => {
     service.harnessActivity = activity;
     rerender();
   }
+
+  for (const width of [320, 375, 768, 1280]) {
+    it(`keeps a full-width composer inside its chat pane at ${width}px`, () => {
+      component.workspaceChat = { id: 'mobile-chat', name: 'Mobile chat' };
+      fixture.detectChanges();
+      component.showHistorySidebar = false;
+      rerender();
+      const layout = responsiveLayout(host, width, 480);
+      try {
+        const wrapper = layout.root.querySelector('.unified-chat-wrapper') as HTMLElement;
+        const input = layout.root.querySelector('textarea') as HTMLElement;
+        const composer = layout.root.querySelector('.input-area') as HTMLElement;
+        expect(wrapper.getBoundingClientRect().bottom).toBeLessThanOrEqual(480);
+        expect(composer.getBoundingClientRect().bottom).toBeLessThanOrEqual(wrapper.getBoundingClientRect().bottom + 1);
+        expect(layout.root.scrollWidth).toBeLessThanOrEqual(width);
+        expect(input.getBoundingClientRect().right).toBeLessThanOrEqual(width);
+        if (width <= 768) {
+          const container = layout.root.querySelector('.input-container') as HTMLElement;
+          expect(input.getBoundingClientRect().width).toBeCloseTo(container.getBoundingClientRect().width, 0);
+          expect(layout.view.getComputedStyle(input).fontSize).toBe('16px');
+          for (const button of Array.from(container.querySelectorAll<HTMLElement>('button'))) {
+            expect(button.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+          }
+        }
+      } finally { layout.dispose(); }
+    });
+  }
+
+  it('keeps send and stop controls reachable together on a narrow live chat', () => {
+    component.workspaceChat = { id: 'mobile-chat', name: 'Mobile chat' };
+    fixture.detectChanges();
+    component.showHistorySidebar = false;
+    showHarnessActivity({ backgroundable: true, turnActive: true, tasks: [], processes: [], subagents: [] });
+    const layout = responsiveLayout(host, 320);
+    try {
+      for (const selector of ['.send-btn', '.stop-btn']) {
+        const button = layout.root.querySelector(selector) as HTMLElement;
+        expect(button).not.toBeNull();
+        expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(320);
+        expect(button.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+      }
+    } finally { layout.dispose(); }
+  });
 
   it('renders every chat button through Angular Material', () => {
     fixture.detectChanges();

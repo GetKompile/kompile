@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.chat.sources.KompileTranscriptFormat;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -73,7 +74,9 @@ public class SessionIndex {
                 for (var node : root.get("sessions")) {
                     ObjectNode obj = (ObjectNode) node;
                     SessionMetadata meta = SessionMetadata.fromJson(obj);
-                    loaded.put(meta.sessionId, meta);
+                    String title = KompileTranscriptFormat.readHeader(conversationsDir.resolve(meta.sessionId + ".txt")).title();
+                    loaded.put(meta.sessionId, new SessionMetadata(meta.sessionId, meta.source, meta.originalId,
+                            meta.indexedAt, meta.messageCount, title, meta.lastModified));
                 }
             }
 
@@ -200,7 +203,7 @@ public class SessionIndex {
                     sessionId.startsWith("imported-") ? sessionId.substring(sessionId.indexOf("-") + 1) : sessionId,
                     Instant.now(),
                     messageCount,
-                    title,
+                    KompileTranscriptFormat.readHeader(transcriptFile).title(),
                     transcriptFile.toFile().lastModified()
             );
 

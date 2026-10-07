@@ -72,7 +72,7 @@ export const INSIGHTS_WINDOWS: readonly { value: string; label: string }[] = [
 ];
 
 /** How often the shown report is read again while auto-refresh is on and the page is visible. */
-export const AUTO_REFRESH_MS = 30_000;
+export const AUTO_REFRESH_MS = 10_000;
 
 /** What a tab shows: its question, and the report last read for it. */
 interface TopicState {
@@ -129,7 +129,7 @@ type SettingsForm = Record<SettingField['key'], string> & { sessionPanel: boolea
  * tool calls, test milestones, crawls and knowledge graphs — each read across the project's chat
  * sessions, with a question that narrows it and a window. A report is drawn as the tool's chart
  * above the text the terminal prints. Reads happen when a tab is opened or asked, on Refresh, and
- * every 30 seconds while auto-refresh is on and the page is visible; the topic, question, window
+ * every 10 seconds by default while auto-refresh is on and the page is visible; the topic, question, window
  * and directory stay in the URL, so a report can be bookmarked or opened from a chat.
  */
 @Component({
@@ -151,7 +151,29 @@ export class InsightsPageComponent implements OnInit, OnDestroy {
   activeId = INSIGHTS_TOPICS[0].id;
   window = '';
   workingDirectory = '';
-  autoRefresh = false;
+  autoRefresh = true;
+  private readonly detailReads = new Subscription();
+  detailError = '';
+
+  readContentPage(request: { sessionId: string; invocationId: string;
+    field: 'arguments' | 'output' | 'rawOutput' | 'structured'; offset: number }): void {
+    const report = this.state.report;
+    this.detailError = '';
+    this.detailReads.add(this.chatService.getToolInvocationPage(request.sessionId, request.invocationId, request.field, request.offset)
+      .subscribe({
+        next: page => {
+          if (this.destroyed || this.state.report !== report) return;
+          const call = report?.usage?.calls.find(row => row.sessionId === request.sessionId && row.invocationId === request.invocationId)
+            ?? report?.usage?.catalog?.calls.find(row => row.sessionId === request.sessionId && row.id === request.invocationId);
+          if (call?.detail) {
+            call.detail[request.field] = page;
+            report!.usage = { ...report!.usage! };
+            this.render();
+          }
+        },
+        error: error => { if (!this.destroyed && this.state.report === report) { this.detailError = failure(error, 'Invocation content could not be read'); this.render(); } }
+      }));
+  }
   readonly states: Record<string, TopicState> = Object.fromEntries(
     INSIGHTS_TOPICS.map(topic => [topic.id, { question: topic.id === 'tools' ? 'tokens' : '', loading: false } as TopicState]));
 
@@ -257,6 +279,7 @@ export class InsightsPageComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.destroyed = true;
     this.subscriptions.unsubscribe();
+    this.detailReads.unsubscribe();
     Object.values(this.states).forEach(state => state.inFlight?.unsubscribe());
     this.settingsRead?.unsubscribe();
     this.clearTimer();
@@ -442,6 +465,21 @@ export class InsightsPageComponent implements OnInit, OnDestroy {
     const read = this.chatService.getInsightsReport(topic, question || undefined, directory || undefined)
       .subscribe({
         next: report => {
+          // Keep the user's reading position while live counters and titles refresh.
+          for (const call of report.usage?.calls ?? []) {
+            const prior = state.report?.usage?.calls.find(row => row.invocationId === call.invocationId && row.sessionId === call.sessionId);
+            for (const field of ['arguments', 'output', 'rawOutput', 'structured'] as const) {
+              const page = prior?.detail?.[field];
+              if (call.detail && page?.offset) call.detail[field] = page;
+            }
+          }
+          for (const call of report.usage?.catalog?.calls ?? []) {
+            const prior = state.report?.usage?.catalog?.calls.find(row => row.id === call.id && row.sessionId === call.sessionId);
+            for (const field of ['arguments', 'output', 'rawOutput', 'structured'] as const) {
+              const page = prior?.detail?.[field];
+              if (call.detail && page?.offset) call.detail[field] = page;
+            }
+          }
           state.report = report;
           state.text = reportText(report);
           state.reportKey = key;

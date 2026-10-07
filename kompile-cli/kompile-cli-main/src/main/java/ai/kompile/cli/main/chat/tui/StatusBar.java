@@ -725,15 +725,24 @@ public class StatusBar {
                 segments.add(YELLOW + "■" + RESET + " " + YELLOW + activity + RESET);
             } else {
                 String spinner = YELLOW + SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length] + RESET;
-                // Thinking/Responding are phase noise; the random working word is the
-                // visible label while a request runs. Functional labels (Working: <tool>,
-                // reconnect warnings) keep their text.
+                // Keep the working word, but never hide the real phase: a quiet
+                // reasoning burst must be distinguishable from tool execution.
                 String label = activity;
                 if (progress != null && progress.active()
                         && ("Thinking".equals(activity) || "Responding".equals(activity))) {
-                    label = progress.word() + "…";
+                    label = activity + " · " + progress.word() + "…";
                 }
                 String progressTail = progressTail(progress);
+                // Long bash commands/MCP arguments must not push the live timer
+                // off the terminal. Reserve its space before trimming the label.
+                if (!progressTail.isEmpty()) {
+                    int labelWidth = Math.max(1, safeDrawWidth(width) - 4
+                            - AnsiConstants.stripAnsi(progressTail).length());
+                    String plainLabel = AnsiConstants.stripAnsi(label);
+                    label = plainLabel.length() > labelWidth
+                            ? plainLabel.substring(0, labelWidth - 1) + "…"
+                            : plainLabel;
+                }
                 String backgroundHint = taskManager.isCurrentTaskBackgroundable()
                         ? DIM + " (Ctrl+B backgrounds active subagent)" + RESET
                         : "";

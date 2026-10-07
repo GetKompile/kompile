@@ -148,6 +148,7 @@
             <div class="chat-details">
               <span class="chat-name">
                 {{ session.name || 'Unnamed Chat' }}
+                <app-chat-activity-indicator [activity]="sessionActivity(session.id)"></app-chat-activity-indicator>
                 <span class="source-badge-inline" *ngIf="getEffectiveSource(session)"
                   [style.background-color]="getSourceColor(getEffectiveSource(session)!)">
                   {{ getSourceDisplayName(getEffectiveSource(session)!) }}
@@ -409,13 +410,13 @@
         <p class="setting-hint">Personas and roles come from kompile-cli-main. Configure its provider and model with <code>kompile chat --setup</code>.</p>
       </div>
 
-      <!-- Session Configuration (CLI model / role / fast mode) -->
+      <!-- Session Configuration (CLI role / fast mode and session controls) -->
       <div class="settings-section">
         <h4>Session Configuration</h4>
-        <p class="setting-hint">Pick the model and role this session uses, and toggle fast mode. Clicks dispatch the CLI commands; the CLI resolves and persists them.</p>
+        <p class="setting-hint">Pick this session's role and toggle fast mode. Model and vendor dropdowns are above the conversation. The CLI resolves and persists selections.</p>
         <button mat-stroked-button type="button" class="text-btn" data-testid="command-config-open"
           [disabled]="!selectedAgent || isStreaming || isLoading"
-          title="Switch model or role and toggle fast mode, as /model, /role and /fast do in the terminal"
+          title="Switch role and toggle fast mode, as /role and /fast do in the terminal"
           (click)="openCommandConfig()">
           Open Session Configuration…
         </button>
@@ -1003,6 +1004,26 @@
         </button>
       </div>
     </header>
+
+    <section class="active-chat-title" aria-label="Current chat">
+      <h2 data-testid="active-chat-title">{{ workspaceChat?.name || currentSession?.name || 'New Chat' }}</h2>
+      <app-chat-activity-indicator [activity]="activityIndicator"></app-chat-activity-indicator>
+      <button *ngIf="!workspaceChat && currentSession && !transcriptReadOnly" mat-icon-button type="button"
+        (click)="startEditSessionName(currentSession)" aria-label="Rename current chat"><mat-icon>edit</mat-icon></button>
+      <form *ngIf="!workspaceChat && currentSession && editingSessionId === currentSession.id"
+        (ngSubmit)="saveSessionName(currentSession)">
+        <textarea class="chat-name-input" aria-label="Chat title" name="chatTitle" [(ngModel)]="editingSessionName"></textarea>
+        <button mat-button type="submit" [disabled]="!editingSessionName.trim()">Save</button>
+        <button mat-button type="button" (click)="cancelEditSessionName()">Cancel</button>
+      </form>
+    </section>
+
+    <app-chat-model-selector
+      [sessionId]="currentSession?.id" [workingDirectory]="workingDirectory"
+      [outcome]="modelSelectorOutcome"
+      [busy]="!selectedAgent || isStreaming || isLoading || lifecycleBusy || transcriptReadOnly || isCompacting"
+      (modelSelected)="selectModel($event)">
+    </app-chat-model-selector>
 
     <!-- Conversation Area -->
     <div class="conversation-area" #conversationArea data-testid="conversation-area">

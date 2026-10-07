@@ -15,7 +15,28 @@ public final class ChatWorkspaceStore {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private final Path file;
 
-    public record Chat(String id, String name) { }
+    /** Non-secret immutable launch selection. Null framework means this folder's saved default. */
+    public record Chat(String id, String name, String framework, String model,
+                       String nativeSource, String nativeSessionId) {
+        public Chat(String id, String name) { this(id, name, null, null); }
+        public Chat(String id, String name, String framework, String model) {
+            this(id, name, framework, model, null, null);
+        }
+        public Chat {
+            if ((nativeSource == null) != (nativeSessionId == null)
+                    || (nativeSource != null && (!nativeSource.matches("[a-z][a-z0-9_-]{0,63}")
+                    || nativeSessionId.isBlank() || nativeSessionId.length() > 4096
+                    || nativeSessionId.chars().anyMatch(Character::isISOControl))))
+                throw new IllegalArgumentException("Invalid native chat reference");
+            framework = framework == null || framework.isBlank() ? null : framework.strip().toLowerCase(java.util.Locale.ROOT);
+            model = model == null || model.isBlank() ? null : model.strip();
+            if (framework != null && !framework.matches("[a-z][a-z0-9_-]{0,63}"))
+                throw new IllegalArgumentException("Invalid chat framework");
+            if (model != null && (model.length() > 256 || model.startsWith("-")
+                    || model.chars().anyMatch(Character::isISOControl)))
+                throw new IllegalArgumentException("Invalid chat model");
+        }
+    }
     public record Project(String id, String name, String workingDirectory, List<Chat> chats) { }
     public record Workspace(int version, List<Project> projects) { }
 
@@ -78,10 +99,32 @@ public final class ChatWorkspaceStore {
     }
 
     public Chat createChat(String projectId, String name) throws IOException {
+        return createChat(projectId, name, null, null);
+    }
+
+    public Chat createChat(String projectId, String name, String framework, String model) throws IOException {
         String title = name == null || name.isBlank() ? "New Chat" : name.strip();
         if (title.length() > 256 || title.chars().anyMatch(Character::isISOControl))
             throw new IllegalArgumentException("Chat title must be at most 256 characters without control characters");
-        Chat chat = new Chat(UUID.randomUUID().toString(), title);
+        return addChat(projectId, new Chat(UUID.randomUUID().toString(), title, framework, model));
+    }
+
+    /** Routing metadata only. The vendor's transcript remains in its original store. */
+    public Chat referenceNativeChat(Path directory, String source, String nativeSessionId,
+                                    String framework, String title) throws IOException {
+        // Validate before registering a directory, and use a stable source/folder-qualified identity.
+        if (source == null || nativeSessionId == null || framework == null || framework.isBlank())
+            throw new IllegalArgumentException("Native source, session and framework are required");
+        new Chat("", "", framework, null, source, nativeSessionId);
+        Project project = register(directory);
+        String identity = project.workingDirectory() + "\0" + source + "\0" + nativeSessionId;
+        String id = UUID.nameUUIDFromBytes(identity.getBytes(StandardCharsets.UTF_8)).toString();
+        String name = title == null || title.isBlank() ? nativeSessionId : title;
+        return addChat(project.id(), new Chat(id, name, framework, null, source, nativeSessionId));
+    }
+
+    private Chat addChat(String projectId, Chat chat) throws IOException {
+        final Chat[] selected = {chat};
         locked(true, workspace -> {
             List<Project> projects = new ArrayList<>(workspace.projects());
             for (int i = 0; i < projects.size(); i++) {
@@ -90,6 +133,8 @@ public final class ChatWorkspaceStore {
                 Path root = Path.of(project.workingDirectory());
                 if (!Files.isDirectory(root) || !root.toRealPath().toString().equals(project.workingDirectory()))
                     throw new IOException("Workspace project is no longer available: " + root);
+                var existing = project.chats().stream().filter(c -> c.id().equals(chat.id())).findFirst();
+                if (existing.isPresent()) { selected[0] = existing.get(); return workspace; }
                 if (project.chats().size() >= 128) throw new IOException("Project chat limit (128) reached");
                 List<Chat> chats = new ArrayList<>(project.chats());
                 chats.add(chat);
@@ -98,7 +143,14 @@ public final class ChatWorkspaceStore {
             }
             throw new IllegalArgumentException("Unknown workspace project: " + projectId);
         });
-        return chat;
+        return selected[0];
+    }
+
+    /** Lookup by canonical folder and browser identity; never take routing from an arbitrary request. */
+    public Chat findChat(Path directory, String sessionId) throws IOException {
+        String root = directory.toRealPath().toString();
+        return read().projects().stream().filter(p -> p.workingDirectory().equals(root))
+                .flatMap(p -> p.chats().stream()).filter(c -> c.id().equals(sessionId)).findFirst().orElse(null);
     }
 
     /** Exact canonical roots only; subdirectories and symlink escapes must be registered separately. */

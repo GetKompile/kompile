@@ -22,6 +22,29 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CustomToolCancellationTest {
 
     @Test
+    void customBashCannotBypassTheShellMandate() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        ToolContext context = new ToolContext("custom-shell", null, new PermissionService(),
+                Path.of(".").toAbsolutePath(), null);
+        context.setAutoApproveAll(true);
+        for (String command : new String[]{"cat < input.txt", "cd project && sed -n 1p input.txt"}) {
+            CustomToolDefinition definition = CustomToolDefinition.builder()
+                    .name("shell_fixture").description("Shell fixture").parameters(mapper.createObjectNode())
+                    .execute(ExecuteConfig.builder().type("bash").command(command).build())
+                    .timeoutSeconds(5).build();
+            ToolResult result = new CustomToolBridge(definition).execute(mapper.createObjectNode(), context);
+            assertTrue(result.isError());
+            assertTrue(result.getOutput().contains("blocked by the kompile tool mandate"), result.getOutput());
+        }
+        CustomToolDefinition allowed = CustomToolDefinition.builder()
+                .name("shell_fixture").description("Shell fixture").parameters(mapper.createObjectNode())
+                .execute(ExecuteConfig.builder().type("bash").command("printf MATCH").build())
+                .timeoutSeconds(5).build();
+        org.junit.jupiter.api.Assertions.assertFalse(
+                new CustomToolBridge(allowed).execute(mapper.createObjectNode(), context).isError());
+    }
+
+    @Test
     void inheritedCancellationAbortsInFlightHttpTool() throws Exception {
         CountDownLatch requestStarted = new CountDownLatch(1);
         CountDownLatch releaseResponse = new CountDownLatch(1);

@@ -24,6 +24,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SetupWizardRuntimeTest {
 
+    @Test void browserDestinationIsOfferedForManagedFrameworksWithoutProviderCredentials() {
+        ChatConfig config = new ChatConfig(null, null, null, null);
+        config.setChatMode("passthrough");
+        config.setPassthroughManaged(true);
+        for (String framework : List.of("claude", "codex", "opencode", "gemini", "qwen")) {
+            config.setPassthroughAgent(framework);
+            assertTrue(SetupWizard.supportsWeb(config));
+            assertEquals(SetupWizard.Destination.BROWSER,
+                    SetupWizard.selectDestination(reader("2"), config, false, true));
+            assertEquals(SetupWizard.Destination.BROWSER,
+                    SetupWizard.selectDestination(reader(), config, true, false));
+        }
+        config.setPassthroughManaged(false);
+        assertFalse(SetupWizard.supportsWeb(config));
+        assertNull(SetupWizard.selectDestination(reader(), config, true, false));
+        assertEquals(SetupWizard.Destination.TERMINAL,
+                SetupWizard.selectDestination(reader(), config, false, true));
+    }
+
     private static final String THINKING_CATALOG_PROP = "kompile.cli.modelCatalogPaths";
 
     /** Point the catalog at an absent file so documented-fallback assertions are deterministic. */

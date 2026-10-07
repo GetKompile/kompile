@@ -105,6 +105,8 @@ final class ClaudeCliClient implements AutoCloseable {
         void onToolStart(String callId, String name, String input);
         default void onToolInput(String callId, String name, String input) { }
         default void onToolOutput(String callId, String name, String output) { }
+        default void onToolProgress(String callId, String name, long elapsedMillis) { }
+        default void onActivity(String label) { }
         /**
          * A fragment of the arguments the model is writing for a tool call, as it
          * streams. Its tokens are output the request's usage reports when it ends.
@@ -1113,7 +1115,13 @@ final class ClaudeCliClient implements AutoCloseable {
     private static boolean render(ClaudeCliStreamParser.Event event, TurnOutcome outcome,
                                   Consumer<String> output, ActivityListener activityListener, Cli source) {
         StringBuilder streamed = outcome.streamed;
-        if (event instanceof ClaudeCliStreamParser.Thinking thinking) {
+        if (event instanceof ClaudeCliStreamParser.Activity activity) {
+            if (activityListener != null) activityListener.onActivity(activity.label());
+        } else if (event instanceof ClaudeCliStreamParser.ToolProgress progress) {
+            if (activityListener != null) {
+                activityListener.onToolProgress(progress.callId(), progress.name(), progress.elapsedMillis());
+            }
+        } else if (event instanceof ClaudeCliStreamParser.Thinking thinking) {
             if (!thinking.text().isEmpty() && activityListener != null) {
                 activityListener.onThinking(thinking.text());
             }
@@ -1274,6 +1282,25 @@ final class ClaudeCliClient implements AutoCloseable {
             if (!id.isEmpty()) ids.add(id);
         }
         return ids;
+    }
+
+    /** Native Ctrl+B: release foreground tool calls without interrupting the turn or its tasks. */
+    CompletableFuture<Void> backgroundTasks() {
+        Cli running;
+        synchronized (this) { running = cli; }
+        if (mode.toolFree() || mode.oneShot() || running == null || !running.alive()) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("No live Claude Code tool session"));
+        }
+        // No tool_use_id means all foreground tasks, like Ctrl+B in Claude Code.
+        return running.control("background_tasks", request -> { })
+                .orTimeout(5, TimeUnit.SECONDS)
+                .thenApply(response -> {
+                    if ("error".equals(response.path("subtype").asText(""))) {
+                        throw new IllegalStateException(response.path("error").asText("no reason given"));
+                    }
+                    return null;
+                });
     }
 
     /** Ask Claude Code to stop one of its tasks, whose row was killed in the process panel. */
@@ -1697,12 +1724,15 @@ final class ClaudeCliClient implements AutoCloseable {
             cmd.add("--effort");
             cmd.add(effort.trim());
         }
-        if (fastMode) {
-            // Headless sessions honor fast mode only when launched with it in
-            // --settings (Claude Code v2.1.205+); it applies to this session only
-            // and never writes the user's settings file.
+        if (effort != null && !effort.isBlank() || fastMode) {
+            // Startup must enforce the same effort ceiling as runtime switches:
+            // --effort alone loses to CLAUDE_CODE_EFFORT_LEVEL. This applies only
+            // to this process, without changing the user's settings file.
+            ObjectNode settings = effort != null && !effort.isBlank()
+                    ? flagSettings(effort.trim(), fastMode)
+                    : mapper.createObjectNode().put("fastMode", true);
             cmd.add("--settings");
-            cmd.add("{\"fastMode\":true}");
+            cmd.add(settings.toString());
         }
         return cmd;
     }
@@ -2095,6 +2125,8 @@ final class ClaudeCliClient implements AutoCloseable {
                 }
                 controls.put(requestId, response);
             }
+            // Timed-out/cancelled controls must not accumulate in a persistent session.
+            response.whenComplete((value, failure) -> controls.remove(requestId, response));
             ObjectNode message = mapper.createObjectNode();
             message.put("type", "control_request");
             message.put("request_id", requestId);

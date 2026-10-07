@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ChatActivityIndicatorComponent } from '../chat-activity-indicator/chat-activity-indicator.component';
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
@@ -150,7 +151,7 @@ describe('UnifiedChat session insights drawer', () => {
     });
     await TestBed.configureTestingModule({
       imports: [FormsModule, NoopAnimationsModule, HttpClientTestingModule, MatMenuModule,
-        SessionInsightsDrawerComponent],
+        SessionInsightsDrawerComponent, ChatActivityIndicatorComponent],
       declarations: [UnifiedChatComponent],
       providers: bed.providers,
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
@@ -175,6 +176,49 @@ describe('UnifiedChat session insights drawer', () => {
     answer.next({ menu: 'insights', available: true, sessionId, lines });
     answer.complete();
   }
+
+  it('shows live work above the chat without changing its editable title', () => {
+    fixture.detectChanges();
+    component.newChat();
+    component.currentSession!.name = 'Unchanged title';
+    component.isStreaming = true;
+    // Streaming refreshes this OnPush view directly, not the fixture's root view.
+    (component as any).cdr.detectChanges();
+    const badge: HTMLElement = fixture.nativeElement.querySelector('.active-chat-title app-chat-activity-indicator');
+    expect(text(badge)).toBe('Thinking');
+    expect(badge.querySelector('.spinner')).not.toBeNull();
+    expect(text(fixture.nativeElement.querySelector('[data-testid="active-chat-title"]'))).toBe('Unchanged title');
+    component.isStreaming = false;
+    (component as any).cdr.detectChanges();
+    expect(text(badge)).toBe('Idle');
+    expect(badge.querySelector('.spinner')).toBeNull();
+  });
+
+  it('shows the complete workspace title above the conversation and follows renames', () => {
+    const title = 'Long workspace title '.repeat(20) + 'TITLE_END';
+    fixture.componentRef.setInput('workspaceChat', { id: 'workspace-chat', name: title });
+    fixture.detectChanges();
+    const heading: HTMLElement = fixture.nativeElement.querySelector('[data-testid="active-chat-title"]');
+    expect(text(heading)).toBe(title);
+    expect(getComputedStyle(heading).whiteSpace).not.toBe('nowrap');
+    expect(getComputedStyle(heading).textOverflow).not.toBe('ellipsis');
+
+    fixture.componentRef.setInput('workspaceChat', { id: 'workspace-chat', name: 'Renamed in sidebar' });
+    fixture.detectChanges();
+    expect(text(heading)).toBe('Renamed in sidebar');
+  });
+
+  it('updates the active heading when a browser-local chat is renamed', () => {
+    fixture.detectChanges();
+    component.newChat();
+    component.startEditSessionName(component.currentSession!);
+    component.editingSessionName = 'Full browser title '.repeat(20) + 'TITLE_END';
+    component.saveSessionName(component.currentSession!);
+    fixture.detectChanges();
+    expect(text(fixture.nativeElement.querySelector('[data-testid="active-chat-title"]')))
+      .toBe(component.currentSession!.name);
+    expect(component.currentSession!.name.endsWith('TITLE_END')).toBeTrue();
+  });
 
   it('reads the session the harness keys this chat by, in the chat\'s working directory', () => {
     fixture.detectChanges();

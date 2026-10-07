@@ -38,6 +38,24 @@ class TopBarTest {
         }
     }
 
+    @Test
+    void wrapsFullTitleAndAllowsScrollingWithoutTakingOverTheChat() {
+        var title = new java.util.concurrent.atomic.AtomicReference<>("x".repeat(240) + " THE END");
+        var bar = new TopBar(new Object());
+        bar.setChatTitleSupplier(title::get);
+        String full = AnsiConstants.stripAnsi(bar.render(40));
+        assertTrue(full.contains("THE END"), full);
+        assertTrue(bar.getHeight(40) > TopBar.TOP_HEIGHT + 1);
+        bar.setMaxTitleRows(2);
+        assertEquals(TopBar.TOP_HEIGHT + 2, bar.getHeight(40));
+        assertTrue(bar.scrollTitle(1000, 40));
+        assertTrue(AnsiConstants.stripAnsi(bar.render(40)).contains("THE END"));
+        title.set("Renamed chat");
+        assertEquals(TopBar.TOP_HEIGHT + 1, bar.getHeight(40));
+        assertTrue(AnsiConstants.stripAnsi(bar.render(40)).contains("Chat: Renamed chat"));
+        assertFalse(bar.scrollTitle(1, 40));
+    }
+
     private static String tokenRow(TopBar bar, int width) {
         String frame = bar.render(width);
         int start = frame.indexOf("\u001b[2;1H") + "\u001b[2;1H".length();

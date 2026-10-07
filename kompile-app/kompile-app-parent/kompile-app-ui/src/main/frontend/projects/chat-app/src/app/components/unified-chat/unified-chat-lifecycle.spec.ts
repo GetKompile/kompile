@@ -52,6 +52,21 @@ describe('Browser conversation lifecycle', () => {
     (component as any).loadSessions();
     return http.expectOne(request => request.url.endsWith('/agents/chat/workspace/transcript'));
   };
+  it('derives the active title indicator from live state and clears it after transport cleanup', () => {
+    component.isStreaming = true;
+    component.messages = [{ id: 'live-answer', role: 'assistant', content: 'Answer', timestamp: new Date(), isStreaming: true }];
+    expect(component.activityIndicator.label).toBe('Responding');
+    component.isCompacting = true;
+    expect(component.activityIndicator.label).toBe('Compacting');
+    component.isCompacting = false;
+    service.harnessActivity = { backgroundable: false, turnActive: false,
+      processes: [{ id: 'p', description: 'Build', state: 'RUNNING', kind: 'command' }], tasks: [] };
+    expect(component.activityIndicator.label).toBe('Running 1 process');
+    (service as any).closeHarnessControls();
+    component.isStreaming = false;
+    expect(component.activityIndicator.active).toBeFalse();
+  });
+
   it('creates UUID conversation identities while retaining existing local IDs', () => {
     expect(component.currentSession!.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     const legacy = { ...transcript('legacy-browser-id'), synced: false };

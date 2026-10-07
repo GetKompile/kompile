@@ -119,6 +119,19 @@ public class KompileAdapter implements ChatSourceAdapter {
         return id;
     }
 
+    public String readTitle(String sessionId) throws IOException {
+        String safe = ChatAdapterSupport.safeSessionId(sessionId)
+                .orElseThrow(() -> new IOException("Invalid session id"));
+        Path file = conversationsDir().resolve(safe + ".txt");
+        String override = KompileTranscriptFormat.readTitleOverride(file);
+        return override != null ? override : KompileTranscriptFormat.readHeader(file).title();
+    }
+
+    public String rename(Path workingDirectory, String sessionId, String title) throws IOException {
+        String id = resolveSessionId(workingDirectory, sessionId);
+        return KompileTranscriptFormat.writeTitleOverride(conversationsDir().resolve(id + ".txt"), title);
+    }
+
     /** Compatibility only: never use this to allocate a new transcript. */
     public static String legacyBrowserSessionId(Path directory, String browserSessionId) {
         try {

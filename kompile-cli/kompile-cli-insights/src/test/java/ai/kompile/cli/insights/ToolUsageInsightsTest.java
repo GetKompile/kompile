@@ -410,11 +410,31 @@ class ToolUsageInsightsTest {
     }
 
     @Test
+    void thePanelReportsJournalOnlyTokensAndRefreshesOnAppend() throws IOException {
+        String record = "{'recordType':'usage','revision':1,'invocationId':'first','sessionId':'aaaaaaaa-1111',"
+                + "'resolvedToolName':'read','startedEpochMs':"
+                + Instant.parse("2026-10-03T09:00:00Z").toEpochMilli()
+                + ",'payload':{'status':'MEASURED','tokens':7}}";
+        Path journal = tempDir.resolve("tool-usage.jsonl");
+        Files.writeString(journal, record.replace('\'', '"') + "\n");
+        ToolUsageInsights tools = new ToolUsageInsights(tempDir, CONFIG);
+        Panel.Line first = tools.panelLine(panelQuery("aaaaaaaa-1111"));
+        assertTrue(first.toString().contains("1 usage calls · payload 7 measured tok"), first.toString());
+        assertTrue(first.toString().contains("/stats tools"));
+        assertEquals(Panel.Line.of("Tools: no calls yet"), tools.panelLine(panelQuery("other")));
+        Files.writeString(journal, record.replace("first", "second").replace('\'', '"') + "\n",
+                java.nio.file.StandardOpenOption.APPEND);
+        Panel.Line updated = tools.panelLine(panelQuery("aaaaaaaa-1111"));
+        assertTrue(updated.toString().contains("2 usage calls · payload 14 measured tok"), updated.toString());
+    }
+
+    @Test
     void aSessionWithoutAFileHasNoCallsAndIsWatchedForOne() throws IOException {
         ToolUsageInsights tools = new ToolUsageInsights(tempDir, CONFIG);
 
         assertEquals(Panel.Line.of("Tools: no calls yet"), tools.panelLine(panelQuery("aaaaaaaa-1111")));
-        assertEquals(List.of(new Panel.Watch(tempDir.toAbsolutePath().normalize(), "aaaaaaaa-1111.jsonl")),
+        assertEquals(List.of(new Panel.Watch(tempDir.toAbsolutePath().normalize(), "aaaaaaaa-1111.jsonl"),
+                        new Panel.Watch(tempDir.toAbsolutePath().normalize(), "tool-usage.jsonl")),
                 tools.panelWatches(panelQuery("aaaaaaaa-1111")));
         assertEquals(List.of(),
                 new ToolUsageInsights(tempDir.resolve("missing"), CONFIG).panelWatches(panelQuery("aaaaaaaa-1111")));

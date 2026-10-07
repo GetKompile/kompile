@@ -130,7 +130,6 @@ public class PiAdapter implements ChatSourceAdapter {
         for (ChatTurn turn : turns) {
             if ("user".equals(turn.role()) && turn.content() != null && !turn.content().isBlank()) {
                 String title = turn.content().trim();
-                if (title.length() > 80) title = title.substring(0, 77) + "...";
                 return title;
             }
         }
@@ -313,7 +312,6 @@ public class PiAdapter implements ChatSourceAdapter {
             for (ChatTurn turn : turns) {
                 if ("user".equals(turn.role()) && turn.content() != null && !turn.content().isBlank()) {
                     title = turn.content().trim();
-                    if (title.length() > 80) title = title.substring(0, 77) + "...";
                     break;
                 }
             }

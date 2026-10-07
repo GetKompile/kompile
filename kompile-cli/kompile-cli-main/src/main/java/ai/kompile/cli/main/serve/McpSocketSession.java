@@ -358,7 +358,7 @@ public class McpSocketSession implements Runnable {
                             if (progressToken != null) sendProgress(om, progressToken, 1, 1);
 
                             result.set("result",
-                                    McpToolResultSerializer.toMcpCallResult(om, tr));
+                                    McpToolResultSerializer.toMcpCallResult(om, tr, null, toolName));
                         }
                     }
                 }

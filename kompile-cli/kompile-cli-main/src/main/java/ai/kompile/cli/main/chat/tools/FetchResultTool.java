@@ -54,14 +54,16 @@ public class FetchResultTool implements CliTool {
                 "to return only matching lines (grep over the cached result) so you pull just what you " +
                 "need. Prefer this over re-running the tool or falling back to bash to dodge the handle — " +
                 "that repeats work and can miss data; only re-run when you genuinely need a narrower or " +
-                "different query.";
+                "different query. Pages are bounded to protect context; continue with the returned " +
+                "offset and character_offset (for a partial long line). With pattern, offset is a " +
+                "1-based matching-line index.";
     }
 
     @Override
     public String compactHint() {
         return "READ a large cached result (not an error) by result_id — don't re-run or use bash. "
                 + "offset=1-based line; limit=lines(200); pattern=<regex> filters to matching lines "
-                + "(grep it). Expires ~15min.";
+                + "(grep it). Pages are bounded; use returned offset/character_offset to continue. Expires ~15min.";
     }
 
     @Override
@@ -77,7 +79,7 @@ public class FetchResultTool implements CliTool {
 
         ObjectNode offset = props.putObject("offset");
         offset.put("type", "integer");
-        offset.put("description", "Starting line to retrieve (1-based, like the read tool). Default: 1.");
+        offset.put("description", "Starting line (1-based); with pattern, starting matching-line index. Default: 1.");
 
         ObjectNode limit = props.putObject("limit");
         limit.put("type", "integer");
@@ -90,6 +92,8 @@ public class FetchResultTool implements CliTool {
                 + "is prefixed with its 1-based line number. Use it to pull just the relevant lines instead "
                 + "of paging the whole result.");
 
+        props.putObject("character_offset").put("type", "integer")
+                .put("description", "0-based character offset within the first selected line; use the continuation supplied by a bounded page. Default: 0.");
         schema.putArray("required").add("result_id");
         return schema;
     }
@@ -116,6 +120,7 @@ public class FetchResultTool implements CliTool {
 
         // Public contract is a 1-based line offset (consistent with the read tool); the cache
         // slice primitive is 0-based, so convert here. A blank pattern means a plain slice.
-        return cache.getSlice(resultId, offset - 1, limit, pattern.isBlank() ? null : pattern);
+        return cache.getSlice(resultId, offset - 1, limit, pattern.isBlank() ? null : pattern,
+                params.path("character_offset").asInt(0), ToolResultReferenceCache.MAX_FETCH_CHARS);
     }
 }

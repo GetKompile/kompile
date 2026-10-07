@@ -253,6 +253,10 @@ public class PassthroughCommand implements Callable<Integer> {
                 } catch (IOException e) {
                     System.err.println("Warning: Could not open chat history: " + e.getMessage());
                 }
+                if (history.getTranscriptFile() != null) {
+                    metrics.enableLivePersistence(history.getTranscriptFile().resolveSibling(
+                            sessionId + ".metrics.json"), objectMapper);
+                }
 
                 try {
                     ProcessBuilder pb = new ProcessBuilder(agentCommand);

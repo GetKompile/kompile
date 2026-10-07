@@ -268,13 +268,23 @@ public class SetupWizard {
 
     static Destination selectDestination(LineReader reader, ChatConfig config,
                                          boolean explicitWeb, boolean offerChoice) {
-        boolean supported = config != null && "standard".equalsIgnoreCase(config.getChatMode())
-                && !config.isKompileServer() && config.isValid();
+        boolean supported = supportsWeb(config);
         if (explicitWeb) return supported ? Destination.BROWSER : null;
         if (!offerChoice || !supported) return Destination.TERMINAL;
         int choice = selectNumbered(reader, "Where would you like to continue?",
                 List.of("Continue in terminal", "Start web UI (print localhost URL)"));
         return choice < 0 ? null : choice == 0 ? Destination.TERMINAL : Destination.BROWSER;
+    }
+
+    /** Browser passthrough uses the managed per-message adapter, never a native terminal UI. */
+    public static boolean supportsWeb(ChatConfig config) {
+        if (config == null) return false;
+        if ("passthrough".equalsIgnoreCase(config.getChatMode())) {
+            return config.isPassthroughManaged()
+                    && ai.kompile.cli.main.chat.agent.SubprocessAgentRunner.supportsHeadless(config.getPassthroughAgent());
+        }
+        return "standard".equalsIgnoreCase(config.getChatMode())
+                && !config.isKompileServer() && config.isValid();
     }
 
     static boolean saveConfiguration(ChatConfig config, Destination destination,
@@ -314,8 +324,8 @@ public class SetupWizard {
             // Step 1: Select chat mode — ALWAYS first
             String chatMode = selectChatMode(reader);
             if (chatMode == null) return null;
-            if (webHandoff && !"standard".equals(chatMode)) {
-                System.err.println("Web handoff requires Standard Chat; no resume or passthrough action was started.");
+            if (webHandoff && ("resume".equals(chatMode) || "resume-all".equals(chatMode))) {
+                System.err.println("Select Standard Chat or managed Passthrough for the web UI; no terminal resume action was started.");
                 return null;
             }
 
@@ -416,7 +426,12 @@ public class SetupWizard {
                 // a saved profile is used (templates offered when none exist).
                 WorkflowSelection workflow = workflowStep(reader, projectRoot, selected, workflowRequested);
                 if (workflow.cancelled()) return null;
-                Destination destination = workflowRequested ? Destination.TERMINAL
+                boolean nativeTeam = workflow.snapshot() != null && "passthrough".equalsIgnoreCase(selected.getChatMode());
+                if (nativeTeam && webHandoff) {
+                    System.err.println("  Native workflow teams require the terminal; browser passthrough supports individual chats.");
+                    return null;
+                }
+                Destination destination = workflowRequested || nativeTeam ? Destination.TERMINAL
                         : selectDestination(reader, selected, webHandoff, offerDestination);
                 if (destination == null) return null;
                 JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, selected);
@@ -430,7 +445,7 @@ public class SetupWizard {
             if ("passthrough".equals(chatMode)) {
                 // Ask managed vs direct first. A workflow lead is always managed: a
                 // direct agent has no Kompile REPL to manage the team or approve gates.
-                if (!workflowRequested) {
+                if (!workflowRequested && !webHandoff) {
                     List<String> styles = List.of(
                         "Kompile managed — kompile REPL with tools, memory, skills (recommended)",
                         "Direct — agent owns the terminal (raw native experience, no kompile features)"
@@ -603,7 +618,12 @@ public class SetupWizard {
             // chosen and offered for every fresh config that can lead a team.
             WorkflowSelection workflow = workflowStep(reader, projectRoot, config, workflowRequested);
             if (workflow.cancelled()) return null;
-            Destination destination = workflowRequested ? Destination.TERMINAL
+            boolean nativeTeam = workflow.snapshot() != null && "passthrough".equalsIgnoreCase(config.getChatMode());
+            if (nativeTeam && webHandoff) {
+                System.err.println("  Native workflow teams require the terminal; browser passthrough supports individual chats.");
+                return null;
+            }
+            Destination destination = workflowRequested || nativeTeam ? Destination.TERMINAL
                     : selectDestination(reader, config, webHandoff, offerDestination);
             if (destination == null) return null;
             if (!saveProjectProfile(reader, projectRoot, config)) return null;

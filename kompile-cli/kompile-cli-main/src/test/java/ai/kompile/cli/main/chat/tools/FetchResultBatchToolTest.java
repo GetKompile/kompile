@@ -63,6 +63,37 @@ class FetchResultBatchToolTest {
     }
 
     @Test
+    void batchUsesOneSharedOutputBudgetAndSupportsLongLineContinuation() throws Exception {
+        String id = cache.store("read", "x".repeat(40_000) + "TAIL", Map.of());
+        ObjectNode[] requests = new ObjectNode[20];
+        for (int i = 0; i < requests.length; i++) requests[i] = request(id);
+        ToolResult result = tool.execute(params(requests), context);
+        assertFalse(result.isError());
+        assertTrue(result.getOutput().length() <= ToolResultReferenceCache.MAX_FETCH_CHARS);
+        assertTrue(result.getOutput().contains("20/20 slices read"));
+        assertTrue(result.getOutput().contains("character_offset="));
+        ObjectNode tailRequest = request(id);
+        tailRequest.put("character_offset", 39_995);
+        ToolResult tail = tool.execute(params(tailRequest), context);
+        assertTrue(tail.getOutput().contains("xxxxxTAIL"));
+    }
+
+    @Test
+    void singleFetchAcceptsItsReturnedLongLineContinuation() throws Exception {
+        String id = cache.store("read", "x".repeat(20_000) + "TAIL", Map.of());
+        FetchResultTool single = new FetchResultTool(cache);
+        ObjectNode first = request(id);
+        ToolResult page = single.execute(first, context);
+        assertTrue(page.getOutput().length() <= ToolResultReferenceCache.MAX_FETCH_CHARS);
+        first.put("offset", (int) page.getMetadata().get("nextOffset"));
+        first.put("character_offset", (int) page.getMetadata().get("nextCharacterOffset"));
+        ToolResult tail = single.execute(first, context);
+        assertTrue(tail.getOutput().contains("TAIL"));
+        assertFalse((boolean) tail.getMetadata().get("truncated"));
+        assertTrue(single.parameterSchema().path("properties").has("character_offset"));
+    }
+
+    @Test
     void readsMultipleSlicesInOneCall() throws Exception {
         String idA = cache.store("grep", "alpha-1\nalpha-2\nalpha-3\n", Map.of());
         String idB = cache.store("read", "beta-1\nbeta-2\n", Map.of());

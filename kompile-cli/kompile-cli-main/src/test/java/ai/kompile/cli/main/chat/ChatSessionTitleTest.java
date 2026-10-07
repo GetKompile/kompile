@@ -20,13 +20,11 @@ class ChatSessionTitleTest {
     }
 
     @Test
-    void promptTitleUsesOnlyTheLeadingEightyCharacters() {
-        String prompt = "x".repeat(ChatSessionTitle.MAX_LENGTH + 20);
-
-        String title = ChatSessionTitle.fromPrompt(prompt);
-
-        assertEquals(ChatSessionTitle.MAX_LENGTH, title.length());
-        assertTrue(title.endsWith("..."));
+    void longTitlesKeepTheirEnding() {
+        String prompt = "x".repeat(240) + " important ending";
+        assertEquals(prompt, ChatSessionTitle.fromPrompt(prompt));
+        ChatSessionTitle title = new ChatSessionTitle();
+        assertEquals(prompt, title.replace(prompt));
     }
 
     @Test

@@ -661,8 +661,8 @@ class ClaudeCliClientTest {
         List<String> argv = fake.argv();
         assertEquals(1, argv.size(), argv.toString());
         assertTrue(argv.get(0).contains("--effort ultracode"), argv.get(0));
-        assertTrue(argv.get(0).contains("--settings {\"fastMode\":true}"),
-                "headless fast mode is only honored through --settings: " + argv.get(0));
+        assertTrue(argv.get(0).contains("--settings {\"ultracode\":true,\"maxEffortLevel\":null,\"fastMode\":true}"),
+                "startup settings must carry ultracode and fast mode without an effort cap: " + argv.get(0));
         List<JsonNode> flags = fake.controls("apply_flag_settings");
         assertEquals(2, flags.size(), flags.toString());
         JsonNode high = flags.get(0).path("settings");
@@ -686,6 +686,19 @@ class ClaudeCliClientTest {
                 ultracode.toString());
         assertFalse(ultracode.path("fastMode").asBoolean(true), ultracode.toString());
         assertTrue(fake.controls("set_model").isEmpty(), fake.controls().toString());
+    }
+
+    @Test
+    void startupFastModeWithoutExplicitEffortDoesNotResetTheUsersEffort() throws Exception {
+        FakeClaudeCode fake = fake();
+        try (ClaudeCliClient client = client(fake)) {
+            assertEquals("ok", client.send("sonnet", null, true, null, "hi", "", null, null));
+        }
+        String args = fake.argv().get(0);
+        assertTrue(args.contains("--settings {\"fastMode\":true}"), args);
+        assertFalse(args.contains("--effort"), args);
+        assertFalse(args.contains("effortLevel"), args);
+        assertFalse(args.contains("maxEffortLevel"), args);
     }
 
     @Test
@@ -1547,6 +1560,10 @@ class ClaudeCliClientTest {
         }
         String chatArgs = Files.readString(chat.path("args"), StandardCharsets.UTF_8);
         assertFalse(chatArgs.contains("[--tools]"), chatArgs);
+        assertFalse(chatArgs.contains("[--disallowedTools]"),
+                "native availability and Kompile MCP injection must remain unchanged: " + chatArgs);
+        assertFalse(chatArgs.contains("[--settings]"),
+                "a default-effort launch must leave the user's settings alone: " + chatArgs);
         assertFalse(chatArgs.contains("[--strict-mcp-config]"), chatArgs);
         assertFalse(chatArgs.contains("[--disable-slash-commands]"), chatArgs);
         assertFalse(chatArgs.contains("[--no-session-persistence]"), chatArgs);
@@ -1597,6 +1614,9 @@ class ClaudeCliClientTest {
             assertEquals("ok", client.send("sonnet", "high", false, null, "judge this", "", null, null));
         }
         assertTrue(named.argv().get(0).contains("--effort high"), named.argv().get(0));
+        assertTrue(named.argv().get(0).contains(
+                "--settings {\"effortLevel\":\"high\",\"maxEffortLevel\":\"high\",\"ultracode\":false,\"fastMode\":false}"),
+                "startup must pin the requested effort, not just runtime switches: " + named.argv().get(0));
         assertEquals(List.of(), named.controls("apply_flag_settings"));
 
         // A chat's own session keeps Claude Code's default.

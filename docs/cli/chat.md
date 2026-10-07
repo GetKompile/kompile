@@ -25,9 +25,25 @@ stopping runs in the other panes; stop a running chat before closing its tab.
   such as local crawls initialize their folder configuration when needed. If folder
   creation succeeds but registry persistence fails, the error includes the created
   path; fix the registry error and use **Add existing folder** to recover without deleting files.
+- **New chat** offers **Folder default**, **Kompile standard**, or an installed native
+  framework (Claude, Codex, Gemini, Qwen, OpenCode, Pi). An optional model belongs to
+  that chat: for example OpenCode with `zai/glm-5`, alongside Claude and OpenAI chats
+  in the same folder. Framework/vendor login stays in the framework's own configuration;
+  Kompile standard keeps its existing cross-vendor model picker.
 - Each chat uses its own folder's CLI configuration (or global defaults); no
   credentials are copied from the launch folder into new projects. Configure missing
   provider defaults through Session Configuration or `kompile chat --setup` in that folder.
+- Native framework selection is pinned per chat. Resume uses its recorded native
+  session ID and folder, never the vendor's latest conversation. Use another **New chat**
+  to change frameworks. **Session Configuration → Model** accepts the framework's
+  own model ID; `/model <native-model-id>` does the same and changes only this chat.
+
+The setup wizard offers **Browser** for supported **managed passthrough** as well as
+standard chat. Native web passthrough streams text, thinking, tools and usage through
+Kompile's normal transport and supports process-tree cancellation. It is one bounded
+native turn per request: native interactive approvals/questions, live input/background
+controls, Kompile roles/workflow controls and attachments require the terminal or standard
+harness. Permission bypass is opt-in; it is not silently enabled for browser chats.
 
 The non-secret folder/chat registry lives in `~/.kompile/chat-workspace.json`;
 conversation history stays in the native CLI transcripts. `--workspace` and the
@@ -79,6 +95,8 @@ At the standard chat prompt, Ctrl-C exits through the normal session cleanup pat
 
 While a `task` delegation runs, the main transcript shows a collapsed subagent block rather than a running transcript: a header line with the child id/type and elapsed time, plus only the last few one-line steps — `⟳` marks the command currently in flight, `⎿` its finished outcome — and a hidden-step count. Raw tool output and the child's streamed text never repaint the main window; they stay in the retained transcript, opened with Down then Enter.
 
+With Claude Code in standard `kompile chat`, Ctrl+B also backgrounds its native `Agent` (legacy `Task`) and `Bash` calls. Kompile sends Claude's native background control, keeping the agent and session alive while the parent resumes and queued or fresh messages proceed. These tasks retain their process-panel rows; they are not detached copies of the parent conversation. If Claude rejects the request (for example, background tasks are disabled or the installed CLI does not support the control), chat shows the error and leaves the work running.
+
 The agent can background its own work without waiting for Ctrl+B: a `task` or `bash` call with `background: true` requests the same transfer while the invocation is starting. The parent turn continues immediately with a placeholder result, and each detached item delivers its final result as a `[System background task completion]` message at the next boundary — so several independent delegations and commands can run concurrently and are collected as they finish. For long-lived processes the `process` tool remains the better fit (monitoring and output capture); for server-side crawls and pipelines the native async job APIs (`_background: true` on the MCP stdio surface) already detach. If the running harness cannot background (headless runs, subagent child contexts), the request is silently ignored and the call runs synchronously; the tool result metadata reports `backgrounded` either way.
 
 Direct task subagents apply the same context compaction as the main chat loop. Each child session sizes its budget from its own model (context overrides in the chat config apply to children too) and shares the auto-compact policy: when the next child request approaches the trigger, old tool bodies are pruned first, and if that is not enough the older half of the child conversation is summarized at a complete-exchange boundary. A retained child keeps accepting follow-ups across compaction. If the provider still rejects a child request as too long, the child history is summarized once and the same request is retried; a child whose context cannot shrink below the provider limit fails its task with an explicit error instead of looping.
@@ -112,6 +130,29 @@ as one report per topic, across the project's chat sessions. Every surface reads
   topic plus an overview, a question and a window per report, an optional 30-second refresh, and a
   URL that keeps the topic, question, window and project directory, so a report can be bookmarked.
 
+### Tool token drill-down
+
+Bare `/stats` keeps the live session summary. `/stats tools` adds measured argument and returned-payload
+tokens, per-tool trends, per-session totals and paginated individual calls. For example:
+
+```text
+/stats tools
+/stats tools tool:read
+/stats tools session:SESSION_ID call:INVOCATION_ID
+/stats tools all sessions last 7 days offset:10
+```
+
+The default is the current session; `session:` and `call:` use full exact IDs. In the web **Insights →
+Tools** tab, use token mode and click a tool, session or invocation to narrow the report. Call details
+show timing, outcome, measurement status and tokenizer provenance. Filters and call pages are
+bookmarkable; the session drawer also links to token details. Count/latency reports remain available.
+
+These are **local tool measurements**, not billed provider tokens. Partial/unavailable payloads are
+excluded from measured totals and appear as chart gaps, not zeroes. Provider/model execution usage
+is shown separately and deduplicated by event ID. Coverage includes only calls in the usage journal;
+legacy calls without token records are not counted. Bounded-tail truncation is disclosed, and totals
+are computed before pagination.
+
 `~/.kompile/config/insights.json` holds the limits every report keeps to. A missing key or a limit
 that is not positive keeps its default, so a hand edit never breaks a report; a file that cannot be
 read keeps every default and the reports say so. The Insights page edits the file under **Report
@@ -120,11 +161,11 @@ limits**: it writes only the settings changed and refuses a limit that is not a 
 | Key | Default | Limit |
 |---|---|---|
 | `defaultWindowDays` | `7` | The window, in days, when a question names none |
-| `maxRows` | `10` | Rows in a ranked table |
+| `maxRows` | `10` | Rows in a ranked table or call page |
 | `maxExamples` | `5` | Recent examples under a table, such as the newest judge flags |
 | `maxSessions` | `200` | Judge session logs read per report, newest first |
 | `maxBytesPerFile` | `4194304` (4 MiB) | Bytes read from the end of each judge session log |
-| `maxToolIndexBytes` | `268435456` (256 MiB) | Bytes read from the end of the tool-call index |
+| `maxToolIndexBytes` | `268435456` (256 MiB) | Bytes read from the end of the tool-call index or usage journal |
 | `sparklineBuckets` | `14` | Points in a sparkline and in a chart series |
 | `sessionPanel` | `true` | Whether the terminal shows Session insights when the project has no dashboard |
 
@@ -453,14 +494,22 @@ Run `kompile chat --setup` first when no usable provider configuration exists. C
 remain in the managed credential store or provider environment variables and are never
 included in JSON events. The Standard Chat route is provider-neutral: API-key and
 OAuth/subscription providers, native OpenCode, external local endpoints, first-party local
-serving, and Kompile instances all use the same event contract. Streaming JSON currently
-targets standard chat; passthrough mode continues to use the native agent's own
-structured-output protocol.
+serving, and Kompile instances all use the same event contract. Managed passthrough also
+adapts native framework events to this contract; direct terminal passthrough keeps the
+native agent's own structured-output protocol.
 
 Use `/clear` to end the current conversation and immediately start a fresh one. Kompile
 closes the old transcript, generates a new transcript UUID, clears and redraws the chat
 window, and keeps the same CLI process running. Server connections and an owned first-party
 local model runtime stay alive across the reset; the old transcript remains available to resume.
+
+Use `/reset` (or `/restart`) to reload the CLI in a fresh process and resume the **same**
+transcript in the **current terminal**, including over SSH or inside tmux. No desktop
+terminal popup or terminal-launcher configuration is needed. Chat and terminal cleanup
+finish before handoff; repeated resets reuse one foreground supervisor instead of nesting
+waiting CLI processes. Managed passthrough retains its agent and Kompile UI.
+`/reset-all` also resets the invoking chat in place; peer chats retain the existing
+independent-terminal launch behavior.
 
 ### Judge control and conversation
 

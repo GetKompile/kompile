@@ -115,21 +115,95 @@ public final class KompileTranscriptFormat {
         return readTurns(file).size();
     }
 
+    /** Explicit renames live beside the transcript so a running writer is never rewritten. */
+    public static String readTitleOverride(Path file) throws IOException {
+        if (file == null) return null;
+        Path titleFile = file.resolveSibling(file.getFileName() + ".title");
+        return Files.isRegularFile(titleFile) ? normalizeTitle(Files.readString(titleFile, StandardCharsets.UTF_8)) : null;
+    }
+
+    public static String normalizeTitle(String title) {
+        if (title == null) return null;
+        String normalized = title.replaceAll("[\\p{Cntrl}]", " ").strip().replaceAll("\\s+", " ");
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    public static String writeTitleOverride(Path file, String title) throws IOException {
+        String normalized = normalizeTitle(title);
+        if (normalized == null) throw new IllegalArgumentException("Session title must not be blank");
+        Path destination = file.resolveSibling(file.getFileName() + ".title");
+        Files.createDirectories(destination.getParent());
+        Path temporary = Files.createTempFile(destination.getParent(), ".chat-title-", ".tmp");
+        try {
+            Files.writeString(temporary, normalized, StandardCharsets.UTF_8);
+            try {
+                Files.move(temporary, destination, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, destination, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally { Files.deleteIfExists(temporary); }
+        return normalized;
+    }
+
     public static Header readHeader(Path file) throws IOException {
         String started = null;
         String agent = "";
         String workingDirectory = null;
+        String title = "";
         if (file == null || !Files.isRegularFile(file)) {
-            return new Header(started, agent, workingDirectory);
+            String override = readTitleOverride(file);
+            return new Header(started, agent, workingDirectory, override == null ? "(untitled)" : override);
         }
 
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
             boolean metadataWindow = true;
+            boolean reminders = false;
+            boolean enforcer = false;
+            boolean userPrompt = false;
             while ((line = reader.readLine()) != null) {
-                if (line.startsWith("> ") || line.startsWith("< ")
-                        || line.startsWith("[agent:")) {
+                if (line.startsWith("[title] ")) {
+                    String explicit = line.substring(8).strip();
+                    if (!explicit.isEmpty()) title = explicit;
+                    continue;
+                }
+                if (line.startsWith("> ")) {
                     metadataWindow = false;
+                    String candidate = line.substring(2).strip();
+                    if (candidate.startsWith("<kompile_reminders>")) {
+                        reminders = !candidate.contains("</kompile_reminders>");
+                        continue;
+                    }
+                    if (reminders) {
+                        if (candidate.startsWith("</kompile_reminders>")) reminders = false;
+                        continue;
+                    }
+                    if (!title.isEmpty() || candidate.isEmpty()
+                            || candidate.startsWith("<local-command-") || candidate.startsWith("<command-")) continue;
+                    if (candidate.startsWith("# Enforcer-Controlled Task")) {
+                        enforcer = true;
+                        continue;
+                    }
+                    if (enforcer) {
+                        if (candidate.equals("## User Prompt")) { userPrompt = true; continue; }
+                        if (!userPrompt) continue;
+                        if (candidate.startsWith("## ") || candidate.startsWith("Produce the response now")) {
+                            userPrompt = false;
+                            continue;
+                        }
+                    }
+                    title = candidate;
+                } else if (line.startsWith("< ") || line.startsWith("[agent:")) {
+                    metadataWindow = false;
+                    reminders = false;
+                    enforcer = false;
+                    userPrompt = false;
+                } else if (enforcer && title.isEmpty() && !line.isBlank()) {
+                    String candidate = line.strip();
+                    if (candidate.equals("## User Prompt")) userPrompt = true;
+                    else if (candidate.startsWith("## ") || candidate.startsWith("Produce the response now")) userPrompt = false;
+                    else if (userPrompt) title = candidate;
                 } else if (line.startsWith("[resumed")) {
                     metadataWindow = true;
                 } else if (metadataWindow && line.startsWith("Started:")) {
@@ -141,7 +215,10 @@ public final class KompileTranscriptFormat {
                 }
             }
         }
-        return new Header(started, agent, workingDirectory);
+        title = title.replace("\u001b", "").replace("\u0007", "").strip().replaceAll("\\s+", " ");
+        String override = readTitleOverride(file);
+        if (override != null) title = override;
+        return new Header(started, agent, workingDirectory, title.isEmpty() ? "(untitled)" : title);
     }
 
     public static Optional<Path> resolveWorkingDirectory(Path file) throws IOException {
@@ -178,13 +255,14 @@ public final class KompileTranscriptFormat {
                 || line.startsWith("[subagent:")
                 || line.startsWith("[todo:")
                 || line.startsWith("[harvested:")
+                || line.startsWith("[title] ")
                 || line.startsWith("  [") && (line.contains("docs retrieved")
                 || line.contains("completed in"));
     }
 
-    public record Header(String started, String agent, String workingDirectory) {
-        public String title() {
-            return started == null || started.isBlank() ? "(untitled)" : started;
+    public record Header(String started, String agent, String workingDirectory, String title) {
+        public Header(String started, String agent, String workingDirectory) {
+            this(started, agent, workingDirectory, "(untitled)");
         }
     }
 

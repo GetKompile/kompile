@@ -105,6 +105,18 @@ class AgenticChatLoopPlanningTest {
     }
 
     @Test
+    void cloudModelsUseProgressiveToolsByDefault() {
+        for (String provider : List.of("openai", "codex", "claude", "custom")) {
+            ChatConfig config = new ChatConfig(provider, "test-key", "test-model", null);
+            AgenticChatLoop directLoop = new AgenticChatLoop(
+                    null, om, toolRegistry, perms, agentRegistry, Paths.get("."),
+                    new DirectLlmClient(config, om), null);
+            assertTrue(directLoop.usesProgressiveToolLoading(), provider);
+        }
+        assertFalse(loop.usesProgressiveToolLoading(), "server route remains unchanged");
+    }
+
+    @Test
     void progressiveToolPropertyCanOverrideAnyProvider() {
         String property = "kompile.chat.progressiveTools";
         String previous = System.getProperty(property);

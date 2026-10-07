@@ -58,6 +58,7 @@ public class LspServerManager {
             return thread;
         });
         this.reaper.scheduleWithFixedDelay(this::reapIdle, 5, 5, TimeUnit.MINUTES);
+        ai.kompile.cli.main.chat.SessionRestartLauncher.registerRestartCleanup(this::stopAll);
         Runtime.getRuntime().addShutdownHook(new Thread(this::stopAll, "lsp-shutdown"));
     }
 

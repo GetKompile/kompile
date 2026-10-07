@@ -602,6 +602,10 @@ public final class McpBundleToolLoader implements AutoCloseable {
         @Override public JsonNode parameterSchema() { return info.inputSchema(); }
         @Override public String permissionKey() { return "mcp." + serverId; }
         @Override public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
+            // Check the resolved target, not the outer mcp_tool_call gateway name.
+            var mandate = ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy
+                    .evaluateFromSerializedArgs(id(), params == null ? "{}" : params.toString());
+            if (mandate != null) return ToolResult.error(mandate.getCorrectionPrompt());
             try {
                 context.checkPermission(permissionKey(), "Call MCP " + serverId + "/" + info.name());
                 RemoteCallResult result = client.callTool(info.name(), params);

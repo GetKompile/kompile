@@ -379,6 +379,45 @@ class ClaudeCliStreamParserTest {
     }
 
     @Test
+    void elapsedOnlyHeartbeatsAreActivityNotToolOutput() {
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        assertEquals(List.of(new ClaudeCliStreamParser.ToolProgress("tool-1", "Bash", 12_500)),
+                parser.parse("""
+                        {"type":"tool_progress","tool_use_id":"tool-1","tool_name":"Bash","elapsed_time_seconds":12.5}
+                        """));
+        assertEquals(List.of(), parser.parse("""
+                {"type":"tool_progress","tool_use_id":"tool-1","elapsed_time_seconds":-1}
+                """));
+        assertEquals(List.of(), parser.parse("""
+                {"type":"tool_progress","tool_use_id":"tool-1","elapsed_time_seconds":15,"parent_tool_use_id":"agent-1"}
+                """));
+    }
+
+    @Test
+    void quietProviderPhasesAreTransientActivity() {
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        assertEquals(List.of(new ClaudeCliStreamParser.Activity("Waiting for Claude response")),
+                parser.parse("""
+                        {"type":"system","subtype":"status","status":"requesting"}
+                        """));
+        for (String line : List.of(
+                """
+                {"type":"system","subtype":"thinking_tokens","estimated_tokens":120}
+                """,
+                """
+                {"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}
+                """,
+                """
+                {"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"private"}}}
+                """)) {
+            assertEquals(List.of(new ClaudeCliStreamParser.Activity("Thinking")), parser.parse(line));
+        }
+        assertEquals(List.of(), parser.parse("""
+                {"type":"system","subtype":"thinking_tokens","estimated_tokens":120,"parent_tool_use_id":"agent-1"}
+                """));
+    }
+
+    @Test
     void initSystemEventBindsSessionButLaterSystemEventsDoNot() {
         ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
         assertEquals(List.of(new ClaudeCliStreamParser.SessionInit("native-1")),
@@ -394,19 +433,15 @@ class ClaudeCliStreamParserTest {
     }
 
     @Test
-    void requestHookAndSessionBookkeepingProducesNoEvents() {
+    void hookAndSessionBookkeepingProducesNoEvents() {
         // Claude Code 2.1.282 shapes. Each used to render as "[Claude] <status>",
         // "[Claude] <subtype>" or the event's JSON.
         ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
         for (String line : List.of(
                 """
-                {"type":"system","subtype":"status","status":"requesting","session_id":"s","uuid":"u"}""",
-                """
                 {"type":"system","subtype":"status","status":null,"permissionMode":"plan","session_id":"s","uuid":"u"}""",
                 """
                 {"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s","uuid":"u"}""",
-                """
-                {"type":"system","subtype":"thinking_tokens","estimated_tokens":120,"estimated_tokens_delta":40,"session_id":"s","uuid":"u"}""",
                 """
                 {"type":"system","subtype":"hook_started","hook_id":"h","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","session_id":"s","uuid":"u"}""",
                 """
@@ -540,6 +575,7 @@ class ClaudeCliStreamParserTest {
             events.addAll(parser.parse(line));
         }
         assertEquals(List.of(
+                new ClaudeCliStreamParser.Activity("Compacting Claude context"),
                 new ClaudeCliStreamParser.Notice("Compacting conversation"),
                 new ClaudeCliStreamParser.Notice("Fast mode is unavailable"),
                 new ClaudeCliStreamParser.Notice("Context is 90% full"),

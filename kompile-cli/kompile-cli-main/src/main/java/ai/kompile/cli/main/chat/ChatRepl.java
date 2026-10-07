@@ -1400,6 +1400,8 @@ public class ChatRepl implements AutoCloseable {
         chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled,
                 workingDirectory);
         restoreSessionTitle();
+        sessionMetrics.enableLivePersistence(chatHistory.getTranscriptFile().resolveSibling(
+                sessionId + ".metrics.json"), objectMapper);
         lifecycleManager.registerSession();
         lifecycleManager.syncSessionTitle(currentSessionTitle());
         registerProjectActivityPresence();
@@ -1510,6 +1512,8 @@ public class ChatRepl implements AutoCloseable {
         chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled,
                 workingDirectory);
         restoreSessionTitle();
+        sessionMetrics.enableLivePersistence(chatHistory.getTranscriptFile().resolveSibling(
+                sessionId + ".metrics.json"), objectMapper);
         lifecycleManager.registerSession();
         lifecycleManager.syncSessionTitle(currentSessionTitle());
         registerProjectActivityPresence();
@@ -1587,6 +1591,10 @@ public class ChatRepl implements AutoCloseable {
             public boolean apply() {
                 if (messageHandler.requestBackground()) {
                     BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
+                    // Native Claude backgrounding reports its asynchronous acknowledgement
+                    // itself and retains the provider's task row, not the parent /jobs row.
+                    if (task == null || task.getStatus()
+                            != BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.BACKGROUNDED) return true;
                     int releasedInput = messageHandler.pendingBackgroundInputCount();
                     ChatCompleter.showNotice(renderer.yellow("  ◐ Work backgrounded")
                             + renderer.dim(" [" + (task != null ? task.getId() : "?") + "] · "
@@ -1811,6 +1819,7 @@ public class ChatRepl implements AutoCloseable {
         // Start the unified TUI: TopBar + scroll region + StatusBar
         tui.setAgentName(localMode ? activeModelTopPaneLabel() : agentName);
         tui.setSessionId(sessionId);
+        tui.getTopBar().setChatTitleSupplier(this::displayedSessionTitle);
         tui.setMode(localMode ? "local" : "server");
         tui.setPlanningMode(agenticLoop.isPlanningMode());
         tui.setReservedRowsCalculator(StandardChatActivityPanel::reservedRowsForTerminal);
@@ -2033,8 +2042,9 @@ public class ChatRepl implements AutoCloseable {
             if (hostManaged && trimmed.equalsIgnoreCase("/help")) {
                 ChatCompleter.printAbove(MultiChatSessionHost.HELP);
             }
-            boolean keepRunning = tui.runCommandOutput(() -> commandRouter.handleSlashCommand(trimmed));
-            if (!keepRunning && isRestartCommand(trimmed)) {
+            boolean keepRunning = tui.runCommandOutput(() -> commandRouter.handleSlashCommand(trimmed))
+                    && !SessionRestartLauncher.isRestartPending();
+            if (!keepRunning && (isRestartCommand(trimmed) || SessionRestartLauncher.isRestartPending())) {
                 // Its replacement resumes this transcript, where the turn the
                 // shutdown cancels must not read as the user's Escape.
                 messageHandler.noteSessionRestarting();
@@ -2508,8 +2518,7 @@ public class ChatRepl implements AutoCloseable {
 
     /** Replace the prompt-derived title with an explicit user-provided title. */
     String setSessionTitle(String title) {
-        String updated = sessionTitle.replace(title);
-        chatHistory.logSessionTitle(updated);
+        String updated = sessionTitle.replace(chatHistory.renameSession(title));
         if (activeTerminal != null) {
             renderer.setReadyTerminalTitle(updated);
         }
@@ -2521,6 +2530,8 @@ public class ChatRepl implements AutoCloseable {
     }
 
     String currentSessionTitle() {
+        String override = chatHistory.readTitleOverride();
+        if (override != null && !override.equals(sessionTitle.get())) sessionTitle.replace(override);
         return sessionTitle.get();
     }
 
@@ -2529,7 +2540,7 @@ public class ChatRepl implements AutoCloseable {
     }
 
     private String readyTerminalTitle(String fallback) {
-        String current = sessionTitle.get();
+        String current = currentSessionTitle();
         return current == null ? fallback : current;
     }
 
@@ -3033,8 +3044,8 @@ public class ChatRepl implements AutoCloseable {
                 if (event != null && tui != null) {
                     previousMouseEvent[0] = event;
                     switch (event.getButton()) {
-                        case WheelUp -> changed = tui.scrollContent(3);
-                        case WheelDown -> changed = tui.scrollContent(-3);
+                        case WheelUp -> changed = tui.scrollChatTitle(3, event.getY()) || tui.scrollContent(3);
+                        case WheelDown -> changed = tui.scrollChatTitle(-3, event.getY()) || tui.scrollContent(-3);
                         case Button1 -> {
                             switch (event.getType()) {
                                 case Pressed -> {

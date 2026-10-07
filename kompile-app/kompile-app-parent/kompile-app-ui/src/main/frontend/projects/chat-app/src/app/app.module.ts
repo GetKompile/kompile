@@ -68,6 +68,7 @@ import { FolderSidebarComponent } from './components/folder-sidebar/folder-sideb
 import { ProjectManagerComponent } from './components/project-manager/project-manager.component';
 import { ProjectPageComponent } from './components/project-page/project-page.component';
 import { UnifiedChatComponent } from './components/unified-chat/unified-chat.component';
+import { ChatActivityIndicatorComponent } from './components/chat-activity-indicator/chat-activity-indicator.component';
 import { ChatWorkspaceComponent, WorkspaceChatPaneComponent } from './components/chat-workspace/chat-workspace.component';
 
 // Standalone components referenced from the templates above. Standalone components
@@ -80,6 +81,7 @@ import { ReasoningTrailComponent } from '@shared/components/reasoning-trail/reas
 import { SessionInsightsDrawerComponent } from './components/session-insights-drawer/session-insights-drawer.component';
 import { SourceCitationComponent } from '@shared/components/source-citation/source-citation.component';
 import { ToolCallChartComponent } from '@shared/components/tool-call-chart/tool-call-chart.component';
+import { ChatModelSelectorComponent } from './components/chat-model-selector/chat-model-selector.component';
 
 /**
  * Root module of the Kompile chat app.
@@ -101,6 +103,7 @@ import { ToolCallChartComponent } from '@shared/components/tool-call-chart/tool-
     WorkspaceChatPaneComponent
   ],
   imports: [
+    ChatActivityIndicatorComponent,
     BrowserModule,
     BrowserAnimationsModule,
     CommonModule,
@@ -151,7 +154,8 @@ import { ToolCallChartComponent } from '@shared/components/tool-call-chart/tool-
     ReasoningTrailComponent,
     SessionInsightsDrawerComponent,
     SourceCitationComponent,
-    ToolCallChartComponent
+    ToolCallChartComponent,
+    ChatModelSelectorComponent
   ],
   providers: [
     { provide: CURRENT_SERVICE_PERSONA, useValue: 'chat' },

@@ -162,6 +162,30 @@ class ChatInsightsServiceTest {
     }
 
     @Test
+    void tokenDrillDownPreservesStructuredUsageAndMeasurementProvenance() throws IOException {
+        write(home.resolve(".kompile/conversations/tool-calls/tool-usage.jsonl"),
+                "{'recordType':'usage','revision':1,'invocationId':'invocation-full',"
+                        + "'sessionId':'s1','requestedToolName':'read','resolvedToolName':'read',"
+                        + "'startedEpochMs':" + Instant.parse("2026-09-15T09:00:00Z").toEpochMilli() + ","
+                        + "'durationMs':40,'outcome':'EXECUTED','disposition':'DELIVERED',"
+                        + "'arguments':{'status':'MEASURED','tokens':2,'tokenizerId':'fixture'},"
+                        + "'payload':{'status':'MEASURED','tokens':9,'tokenizerId':'fixture'},"
+                        + "'modelExecutions':[]}\n");
+        JsonNode report = service().report("tools", "tokens session:s1 call:invocation-full last 30 days", null);
+        assertTrue(report.path("available").asBoolean(), report.toString());
+        JsonNode usage = report.path("usage");
+        assertEquals(1, usage.path("summary").path("calls").asInt(), report.toString());
+        assertEquals(9, usage.path("summary").path("payloadTokens").asInt());
+        assertEquals("invocation-full", usage.path("calls").get(0).path("invocationId").asText());
+        assertEquals("MEASURED", usage.path("calls").get(0).path("payload").path("status").asText());
+        assertEquals("fixture", usage.path("calls").get(0).path("payload").path("tokenizerId").asText());
+        assertEquals("line", report.path("chart").path("kind").asText());
+        JsonNode shorter = service().report("tools", "tokens session:s1 call:invocation-full last 7 days", null);
+        assertEquals(0, shorter.path("usage").path("summary").path("calls").asInt());
+        verifyNoInteractions(harness);
+    }
+
+    @Test
     void crawlsGraphsAndTheOverviewComeFromTheHarness() {
         ObjectNode answer = MAPPER.createObjectNode().put("menu", "insights").put("topic", "crawl");
         when(harness.insightsReport(any(), any(), any())).thenReturn(answer);

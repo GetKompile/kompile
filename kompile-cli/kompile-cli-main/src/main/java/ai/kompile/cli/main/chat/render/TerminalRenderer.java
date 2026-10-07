@@ -267,7 +267,18 @@ public class TerminalRenderer {
      * the source-side changes for edit/patch calls.
      */
     public String renderToolResultDetail(String toolName, String rawInput, ToolResult result) {
-        if (result == null || result.isOutputStreamed()) return "";
+        return renderToolResultDetail(toolName, rawInput, result,
+                result != null && result.isOutputStreamed());
+    }
+
+    /**
+     * Render detail for a particular viewer. A reopened tool view did not receive
+     * the live stream, even when the main transcript did; pass false to retain
+     * its output body without changing the shared result's streaming metadata.
+     */
+    public String renderToolResultDetail(String toolName, String rawInput, ToolResult result,
+                                         boolean outputShownLive) {
+        if (result == null || outputShownLive) return "";
 
         StringBuilder detail = new StringBuilder();
         for (DetailSection section : toolResultDetailSections(toolName, rawInput, result)) {
@@ -1541,7 +1552,8 @@ public class TerminalRenderer {
         }
         if (!result.getMetadata().isEmpty()) {
             for (Map.Entry<String, Object> entry : result.getMetadata().entrySet()) {
-                if (isSensitiveParam(entry.getKey()) || "path".equals(entry.getKey())) continue;
+                if (isSensitiveParam(entry.getKey()) || "path".equals(entry.getKey())
+                        || ToolResult.OUTPUT_STREAMED_METADATA.equals(entry.getKey())) continue;
                 if (summary.length() > 0) summary.append(" · ");
                 summary.append(entry.getKey()).append("=").append(entry.getValue());
                 if (summary.length() >= maxLen) break;

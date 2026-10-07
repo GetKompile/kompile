@@ -134,6 +134,64 @@ class ToolResultReferenceCacheTest {
     class GetSlice {
 
         @Test
+        void oversizedPageReturnsContinuationAndRetainsFullCache() {
+            String content = ("x".repeat(500) + "\n").repeat(100);
+            String id = cache.store("Read", content, Map.of());
+            ToolResult page = cache.getSlice(id, 0, Integer.MAX_VALUE);
+            assertTrue(page.getOutput().length() <= ToolResultReferenceCache.MAX_FETCH_CHARS);
+            assertTrue((boolean) page.getMetadata().get("truncated"));
+            assertEquals(0, page.getMetadata().get("nextCharacterOffset"));
+            int next = (int) page.getMetadata().get("nextOffset");
+            assertEquals((int) page.getMetadata().get("linesReturned") + 1, next);
+            assertEquals(content, cache.get(id).orElseThrow().output());
+            assertTrue(cache.getSlice(id, next - 1, 1).getOutput().startsWith("x"));
+        }
+
+        @Test
+        void oversizedSingleLineCanBeReadWithoutDroppingItsTail() {
+            String content = "x".repeat(40_000) + "TAIL";
+            String id = cache.store("Read", content, Map.of());
+            StringBuilder recovered = new StringBuilder();
+            int offset = 0;
+            int character = 0;
+            for (int i = 0; i < 10; i++) {
+                ToolResult page = cache.getSlice(id, offset, 200, null, character,
+                        ToolResultReferenceCache.MAX_FETCH_CHARS);
+                assertTrue(page.getOutput().length() <= ToolResultReferenceCache.MAX_FETCH_CHARS);
+                recovered.append(page.getOutput().substring(0, page.getOutput().indexOf('\n')));
+                if (!(boolean) page.getMetadata().get("truncated")) break;
+                offset = (int) page.getMetadata().get("nextOffset") - 1;
+                character = (int) page.getMetadata().get("nextCharacterOffset");
+            }
+            assertEquals(content, recovered.toString());
+        }
+
+        @Test
+        void pageBoundaryDoesNotSplitASurrogatePair() {
+            String content = "x".repeat(15_742) + "😀" + "TAIL";
+            String id = cache.store("Read", content, Map.of());
+            ToolResult first = cache.getSlice(id, 0, 1, null, 0, 16_000);
+            int split = (int) first.getMetadata().get("nextCharacterOffset");
+            assertEquals(15_742, split);
+            assertFalse(first.getOutput().contains("😀"));
+            ToolResult tail = cache.getSlice(id, 0, 1, null, split, 16_000);
+            assertEquals("😀TAIL\n", tail.getOutput());
+        }
+
+        @Test
+        void filteredOversizedLineContinuesAtMatchIndexNotSourceLine() {
+            String id = cache.store("Read", "skip\nmatch " + "x".repeat(20_000) + "TAIL\nskip", Map.of());
+            ToolResult page = cache.getSlice(id, 0, 200, "match");
+            assertTrue(page.getOutput().length() <= ToolResultReferenceCache.MAX_FETCH_CHARS);
+            assertEquals(1, page.getMetadata().get("nextOffset"));
+            ToolResult tail = cache.getSlice(id, 0, 200, "match",
+                    (int) page.getMetadata().get("nextCharacterOffset"), ToolResultReferenceCache.MAX_FETCH_CHARS);
+            assertTrue(tail.getOutput().startsWith("2: "));
+            assertTrue(tail.getOutput().contains("TAIL"));
+            assertFalse((boolean) tail.getMetadata().get("truncated"));
+        }
+
+        @Test
         void sliceFromBeginning() {
             String content = "line0\nline1\nline2\nline3\nline4\n";
             String id = cache.store("Read", content, Map.of());

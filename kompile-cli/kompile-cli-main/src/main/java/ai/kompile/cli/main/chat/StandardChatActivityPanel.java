@@ -1083,7 +1083,7 @@ final class StandardChatActivityPanel {
                                 TerminalRenderer.summarizeToolResult(activity.result, 500)).append("\n");
                     }
                     String renderedDetail = toolRenderer.renderToolResultDetail(
-                            activity.toolName, activity.rawInput, activity.result);
+                            activity.toolName, activity.rawInput, activity.result, false);
                     if (!renderedDetail.isBlank()) {
                         details.append("\n").append(renderedDetail);
                     }

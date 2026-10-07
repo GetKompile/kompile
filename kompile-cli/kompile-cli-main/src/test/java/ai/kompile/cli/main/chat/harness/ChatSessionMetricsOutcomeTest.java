@@ -190,6 +190,21 @@ class ChatSessionMetricsOutcomeTest {
         assertEquals(1, root.get("escapes").get("totalEscapes").asInt());
     }
 
+    @Test
+    void publishesUsageAndCompactionsBeforeSessionEnds(@TempDir Path tempDir) throws Exception {
+        Path file = tempDir.resolve("live.metrics.json");
+        metrics.enableLivePersistence(file, mapper);
+        metrics.recordTokenUsage(120, 40, 5, 0);
+        metrics.recordCompaction(1000, 250);
+        JsonNode live = mapper.readTree(file.toFile());
+        assertEquals(120, live.path("tokens").path("input").asLong());
+        assertEquals(40, live.path("tokens").path("output").asLong());
+        assertEquals(5, live.path("tokens").path("cacheRead").asLong());
+        assertEquals(165, live.path("tokens").path("total").asLong());
+        assertEquals(1, live.path("agentic").path("compactions").asInt());
+        assertEquals(750, live.path("agentic").path("tokensSavedByCompaction").asLong());
+    }
+
     // ========================================================================
     // Aggregate getters
     // ========================================================================

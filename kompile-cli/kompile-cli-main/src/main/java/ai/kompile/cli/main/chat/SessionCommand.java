@@ -147,8 +147,7 @@ public class SessionCommand implements Callable<Integer> {
                         s.started().isEmpty() ? "(no date)" : s.started(),
                         s.agent());
                 if (!s.title().isEmpty()) {
-                    System.out.printf("    %s%n", s.title().length() > 70 ? 
-                            s.title().substring(0, 67) + "..." : s.title());
+                    System.out.printf("    %s%n", s.title());
                 }
             }
             System.out.println();

@@ -31,6 +31,37 @@ public final class StdioInvocationAccounting {
     private final PayloadTokenCounter counter;
     private final ObjectMapper mapper;
     private final ai.kompile.cli.common.metrics.ToolUsageRecorder recorder;
+    private ai.kompile.cli.common.metrics.ToolInvocationDetails details;
+    private final Map<String, TokenMeasurement> arguments = java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<>() {
+                @Override protected boolean removeEldestEntry(Map.Entry<String, TokenMeasurement> eldest) {
+                    return size() > 2048;
+                }
+            });
+
+    public StdioInvocationAccounting withDetails(ai.kompile.cli.common.metrics.ToolInvocationDetails store) {
+        this.details = store;
+        return this;
+    }
+
+    /** Capture real request arguments and transport correlation before any policy rewrite. */
+    public ToolInvocationContext begin(String sessionId, String parentInvocationId, String requestedToolName,
+                                       String resolvedToolName, String agentName, String source,
+                                       com.fasterxml.jackson.databind.JsonNode requestArguments, String clientRequestId) {
+        ToolInvocationContext base = begin(sessionId, parentInvocationId, requestedToolName, resolvedToolName, agentName, source);
+        ToolInvocationContext ctx = new ToolInvocationContext(base.invocationId(), base.sessionId(),
+                base.sessionProvenance(), base.parentInvocationId(), clientRequestId, null, null,
+                base.requestedToolName(), base.resolvedToolName(), base.agentName(), base.source(), base.startedEpochMs());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> value = requestArguments == null || !requestArguments.isObject()
+                ? Map.of() : mapper.convertValue(requestArguments, Map.class);
+        arguments.put(ctx.invocationId(), counter.measureArgumentsJsonV1(value, mapper));
+        if (details != null) {
+            try { details.request(ctx, mapper.writeValueAsString(value)); }
+            catch (Exception e) { System.err.println("[MCP] detail recording failure: " + e.getMessage()); }
+        }
+        return ctx;
+    }
 
     public StdioInvocationAccounting(ObjectMapper mapper,
                                      ai.kompile.cli.common.metrics.ToolUsageRecorder recorder) {
@@ -98,6 +129,20 @@ public final class StdioInvocationAccounting {
                              boolean errorResponse,
                              Long finishedEpochMs,
                              java.util.List<ai.kompile.cli.common.metrics.ModelUsageEvent> modelEvents) {
+        return finalizeCall(ctx, result, rawResultBeforeReferenceSubstitution, outcome, disposition,
+                errorResponse, finishedEpochMs, modelEvents, true);
+    }
+
+    /** An ACK is transport content, not the eventual execution result; it must not overwrite that result. */
+    public ToolCallUsage finalizeBackgroundAcknowledgement(ToolInvocationContext ctx, ToolResult result, Long finishedEpochMs) {
+        return finalizeCall(ctx, result, null, ToolCallUsage.ExecutionOutcome.EXECUTED,
+                ToolCallUsage.ResponseDisposition.BACKGROUND_ACK, false, finishedEpochMs, null, false);
+    }
+
+    private ToolCallUsage finalizeCall(ToolInvocationContext ctx, ToolResult result, ToolResult rawResultBeforeReferenceSubstitution,
+            ToolCallUsage.ExecutionOutcome outcome, ToolCallUsage.ResponseDisposition disposition,
+            boolean errorResponse, Long finishedEpochMs, List<ai.kompile.cli.common.metrics.ModelUsageEvent> modelEvents,
+            boolean recordContent) {
         try {
             TokenMeasurement payload = null;
             TokenMeasurement raw = null;
@@ -130,11 +175,19 @@ public final class StdioInvocationAccounting {
                     ctx.startedEpochMs(), finishedEpochMs,
                     finishedEpochMs != null ? finishedEpochMs - ctx.startedEpochMs() : null,
                     outcome, disposition, errorResponse,
-                    counter.measureArgumentsJsonV1(Map.of(), mapper), // args measured at begin; kept minimal here
+                    arguments.getOrDefault(ctx.invocationId(), TokenMeasurement.unavailable(
+                            "json", "args-json-v1", "unknown", "unknown", "Request arguments not captured")),
                     payload, raw,
                     modelEvents == null ? List.of() : modelEvents,
                     payload == null,
                     payload == null ? "no payload measurement available" : null);
+            if (details != null && recordContent) {
+                try {
+                    details.result(ctx, result == null ? null : result.getOutput(),
+                            rawResultBeforeReferenceSubstitution == null ? null : rawResultBeforeReferenceSubstitution.getOutput(),
+                            structured);
+                } catch (Exception e) { System.err.println("[MCP] detail recording failure: " + e.getMessage()); }
+            }
             if (recorder != null) {
                 recorder.record(usage);
             }

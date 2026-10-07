@@ -96,6 +96,8 @@ public class ChatMessageHandler {
     private final ReminderManager reminderManager;
     private final ContinueManager continueManager;
     private final Object turnDispatchLock = new Object();
+    /** Explicit native Ctrl+B releases input, but never transfers Claude's turn owner. */
+    private boolean claudeBackgroundInputReleased;
     /** Serializes synchronous crawl/headless turns without blocking cancellation. */
     private final Object synchronousTurnLock = new Object();
     /** Auto-continue watchdog for provider usage-limit windows (e.g. 5-hour quota). */
@@ -616,6 +618,7 @@ public class ChatMessageHandler {
             boolean ownerReleased = activeDispatchThread.compareAndSet(
                     Thread.currentThread(), null);
             if (ownerReleased) {
+                claudeBackgroundInputReleased = false;
                 activeResponseBody.set(null);
                 activeRemoteProcessId.set(null);
                 repl.setLlmBusy(false);
@@ -800,8 +803,8 @@ public class ChatMessageHandler {
     }
 
     /**
-     * Detach the blocking backgroundable tool worker without cancelling it. The
-     * parent resumes with an explicit pending tool result, so queued and fresh
+     * Background the blocking tool without cancelling it (local worker transfer
+     * or Claude's native control). The parent resumes with a pending tool result, so queued and fresh
      * input reach a model boundary without waiting for that worker to finish.
      */
     public boolean requestBackground() {
@@ -813,6 +816,21 @@ public class ChatMessageHandler {
             if (!turnActive.get() || cancelSignal.get()) {
                 return false;
             }
+            // Claude-owned tools have no local worker to detach. Its native control
+            // returns a pending tool_result and resumes the same provider turn; the
+            // ordinary successor queue then advances without waiting for the task.
+            Thread owner = activeDispatchThread.get();
+            if (agenticLoop.requestClaudeBackground(() -> {
+                synchronized (turnDispatchLock) {
+                    if (releaseUserInput && acceptingDispatches.get() && !cancelSignal.get()
+                            && turnActive.get() && activeDispatchThread.get() == owner) {
+                        claudeBackgroundInputReleased = true;
+                        sessionMetrics.recordTaskBackgrounded();
+                        releaseQueuedInputToBackgroundTurn();
+                        repl.requestStatusRedraw();
+                    }
+                }
+            }, text -> ChatCompleter.showNotice(renderer.dim("  " + text)))) return true;
             BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.requestBackground();
             if (task == null) {
                 return false;
@@ -1347,9 +1365,9 @@ public class ChatMessageHandler {
 
     private boolean hasBackgroundedActiveTurn() {
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
-        return turnActive.get() && activeDispatchThread.get() != null && task != null
-                && task.getStatus()
-                == BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.BACKGROUNDED;
+        return turnActive.get() && activeDispatchThread.get() != null
+                && (claudeBackgroundInputReleased || (task != null && task.getStatus()
+                == BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.BACKGROUNDED));
     }
 
     private void acceptBackgroundInput(String message, String formerQueueId) {

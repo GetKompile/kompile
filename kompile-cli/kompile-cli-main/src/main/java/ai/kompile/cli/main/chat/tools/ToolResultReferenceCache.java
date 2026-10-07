@@ -49,6 +49,8 @@ public class ToolResultReferenceCache {
      *  enough that ordinary reads/greps still return inline, so caching fires only on genuinely
      *  large output that would otherwise flood the context window. */
     public static final int DEFAULT_CACHE_THRESHOLD_CHARS = 16000;
+    /** A fetch must not bypass the output guard and refill the model's context. */
+    public static final int MAX_FETCH_CHARS = 16000;
 
     /** Default TTL for cached entries (15 minutes). */
     private static final long DEFAULT_TTL_MS = 15 * 60 * 1000L;
@@ -174,6 +176,12 @@ public class ToolResultReferenceCache {
      * @param pattern optional regex/substring filter; {@code null}/blank returns a raw slice
      */
     public ToolResult getSlice(String id, int offset, int limit, String pattern) {
+        return getSlice(id, offset, limit, pattern, 0, MAX_FETCH_CHARS);
+    }
+
+    /** Character offset continues a long line; maxChars also bounds each batch share. */
+    ToolResult getSlice(String id, int offset, int limit, String pattern,
+                        int characterOffset, int maxChars) {
         Optional<CacheEntry> entry = get(id);
         if (entry.isEmpty()) {
             return ToolResult.error("Result '" + id + "' not found or expired. Reference handles "
@@ -189,10 +197,9 @@ public class ToolResultReferenceCache {
         if (limit <= 0) limit = 200;
 
         if (pattern != null && !pattern.isBlank()) {
-            return filterSlice(id, e, lines, totalLines, offset, limit, pattern);
+            return filterSlice(id, e, lines, totalLines, offset, limit, pattern,
+                    characterOffset, maxChars);
         }
-
-        int end = Math.min(offset + limit, totalLines);
 
         if (offset >= totalLines) {
             return ToolResult.success("fetch_result: " + id,
@@ -200,26 +207,18 @@ public class ToolResultReferenceCache {
                     Map.of("result_id", id, "totalLines", totalLines));
         }
 
-        StringBuilder sb = new StringBuilder();
-        for (int i = offset; i < end; i++) {
-            sb.append(lines[i]).append("\n");
-        }
-
-        boolean truncated = end < totalLines;
         LinkedHashMap<String, Object> meta = new LinkedHashMap<>();
         meta.put("result_id", id);
         meta.put("toolName", e.toolName);
         meta.put("totalLines", totalLines);
-        meta.put("linesReturned", end - offset);
-        meta.put("truncated", truncated);
-
-        return ToolResult.success("fetch_result: " + id + " [" + e.toolName + "]",
-                sb.toString(), meta);
+        String output = boundedSlice(lines, null, offset, limit, characterOffset, maxChars, meta);
+        return ToolResult.success("fetch_result: " + id + " [" + e.toolName + "]", output, meta);
     }
 
     /** Return only the lines matching {@code pattern}, each prefixed with its 1-based line number. */
     private ToolResult filterSlice(String id, CacheEntry e, String[] lines, int totalLines,
-                                   int offset, int limit, String pattern) {
+                                   int offset, int limit, String pattern,
+                                   int characterOffset, int maxChars) {
         Predicate<String> matcher = buildMatcher(pattern);
         List<Integer> matches = new ArrayList<>();
         for (int i = 0; i < totalLines; i++) {
@@ -236,25 +235,53 @@ public class ToolResultReferenceCache {
             return ToolResult.success("fetch_result: " + id + " /" + pattern + "/",
                     "(no lines match /" + pattern + "/ in " + totalLines + " lines)", meta);
         }
-        int end = Math.min(offset + limit, totalMatches);
         if (offset >= totalMatches) {
             return ToolResult.success("fetch_result: " + id + " /" + pattern + "/",
                     "(offset " + offset + " past " + totalMatches + " matches)", meta);
         }
 
-        StringBuilder sb = new StringBuilder();
-        for (int k = offset; k < end; k++) {
-            int i = matches.get(k);
-            sb.append(i + 1).append(": ").append(lines[i]).append("\n");
-        }
-        boolean truncated = end < totalMatches;
-        meta.put("matchesReturned", end - offset);
-        meta.put("truncated", truncated);
+        String output = boundedSlice(lines, matches, offset, limit, characterOffset, maxChars, meta);
         return ToolResult.success(
                 "fetch_result: " + id + " /" + pattern + "/ [" + e.toolName + "] " + totalMatches + " matches",
-                sb.toString() + (truncated
-                        ? "\n... (" + (totalMatches - end) + " more matches — raise offset/limit)" : ""),
-                meta);
+                output, meta);
+    }
+
+    /** Page without losing the remainder of an oversized line or splitting a surrogate pair. */
+    private String boundedSlice(String[] lines, List<Integer> matches, int offset, int limit,
+                                int characterOffset, int maxChars, Map<String, Object> meta) {
+        int count = matches == null ? lines.length : matches.size();
+        int end = (int) Math.min((long) offset + limit, count);
+        int budget = Math.max(128, Math.min(MAX_FETCH_CHARS, maxChars) - 256);
+        StringBuilder sb = new StringBuilder();
+        int cursor = offset;
+        int nextCharacter = 0;
+        int returned = 0;
+        for (; cursor < end; cursor++) {
+            int lineIndex = matches == null ? cursor : matches.get(cursor);
+            String line = lines[lineIndex];
+            int start = cursor == offset ? Math.min(Math.max(0, characterOffset), line.length()) : 0;
+            String prefix = matches == null ? "" : (lineIndex + 1) + ": ";
+            int available = budget - sb.length() - prefix.length() - 1;
+            if (available <= 0 || (line.length() - start > available && !sb.isEmpty())) break;
+            int stop = Math.min(line.length(), start + available);
+            if (stop < line.length() && stop > start && Character.isHighSurrogate(line.charAt(stop - 1))) stop--;
+            sb.append(prefix).append(line, start, stop).append('\n');
+            returned++;
+            if (stop < line.length()) {
+                nextCharacter = stop;
+                break;
+            }
+        }
+        boolean truncated = cursor < count;
+        meta.put(matches == null ? "linesReturned" : "matchesReturned", returned);
+        meta.put("truncated", truncated);
+        if (truncated) {
+            meta.put("nextOffset", cursor + 1); // external offsets are 1-based (match index in pattern mode)
+            meta.put("nextCharacterOffset", nextCharacter);
+            sb.append("\n... (page bounded; continue with offset=").append(cursor + 1)
+                    .append(", character_offset=").append(nextCharacter).append(")");
+        }
+        return sb.toString();
     }
 
     /** Number of live entries. */

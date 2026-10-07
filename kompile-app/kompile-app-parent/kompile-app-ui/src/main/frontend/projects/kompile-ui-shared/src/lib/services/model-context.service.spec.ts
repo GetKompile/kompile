@@ -16,6 +16,10 @@
 
 import { TestBed } from '@angular/core/testing';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { HTTP_INTERCEPTORS, HttpClient } from '@angular/common/http';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { HttpErrorInterceptor, SKIP_ERROR_SNACKBAR } from './http-error.interceptor';
+import { CURRENT_SERVICE_PERSONA, ServiceEndpointRouter } from './service-endpoint-routing';
 import { ModelContextService } from './model-context.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ActiveModelContext } from '../models/api-models';
@@ -24,6 +28,8 @@ describe('ModelContextService', () => {
   let service: ModelContextService;
   let httpMock: HttpTestingController;
   let registryService: ModelRegistryService;
+  let router: jasmine.SpyObj<ServiceEndpointRouter>;
+  let snackBar: jasmine.SpyObj<MatSnackBar>;
 
   const mockContext: ActiveModelContext = {
     embedding: {
@@ -47,9 +53,21 @@ describe('ModelContextService', () => {
   };
 
   beforeEach(() => {
+    router = jasmine.createSpyObj('ServiceEndpointRouter', ['dependencyStatus']);
+    router.dependencyStatus.and.returnValue({
+      dependency: 'admin', configured: false, endpointUrl: 'http://localhost:8080',
+      reachable: true, statusCode: 200
+    });
+    snackBar = jasmine.createSpyObj('MatSnackBar', ['open']);
     TestBed.configureTestingModule({
       imports: [HttpClientTestingModule],
-      providers: [ModelContextService, ModelRegistryService]
+      providers: [
+        ModelContextService, ModelRegistryService,
+        { provide: CURRENT_SERVICE_PERSONA, useValue: 'chat' },
+        { provide: ServiceEndpointRouter, useValue: router },
+        { provide: MatSnackBar, useValue: snackBar },
+        { provide: HTTP_INTERCEPTORS, useClass: HttpErrorInterceptor, multi: true }
+      ]
     });
 
     service = TestBed.inject(ModelContextService);
@@ -70,6 +88,7 @@ describe('ModelContextService', () => {
 
     const req = httpMock.expectOne(r => r.url.endsWith('/models/active-context'));
     expect(req.request.method).toBe('GET');
+    expect(req.request.context.get(SKIP_ERROR_SNACKBAR)).toBeTrue();
     req.flush(mockContext);
 
     service.context$.subscribe(ctx => {
@@ -113,7 +132,58 @@ describe('ModelContextService', () => {
     // Should make a request due to auto-refresh
     const req = httpMock.expectOne(r => r.url.endsWith('/models/active-context'));
     expect(req.request.method).toBe('GET');
+    expect(req.request.context.get(SKIP_ERROR_SNACKBAR)).toBeTrue();
     req.flush(mockContext);
+  });
+
+  it('does not probe admin model context from standalone chat with unknown admin health', () => {
+    router.dependencyStatus.and.returnValue(null);
+    service.refresh();
+    registryService.notifyChange('model_loaded');
+    httpMock.expectNone(r => r.url.endsWith('/models/active-context'));
+    service.context$.subscribe(ctx => expect(ctx).toBeNull());
+    service.loading$.subscribe(loading => expect(loading).toBeFalse());
+    expect(snackBar.open).not.toHaveBeenCalled();
+  });
+
+  it('clears stale model context and does not probe an offline admin dependency', () => {
+    service.refresh();
+    httpMock.expectOne(r => r.url.endsWith('/models/active-context')).flush(mockContext);
+    router.dependencyStatus.and.returnValue({
+      dependency: 'admin', configured: true, endpointUrl: 'http://localhost:8080',
+      reachable: false, statusCode: 0
+    });
+    service.refresh();
+    httpMock.expectNone(r => r.url.endsWith('/models/active-context'));
+    service.context$.subscribe(ctx => expect(ctx).toBeNull());
+    service.loading$.subscribe(loading => expect(loading).toBeFalse());
+    expect(service.getStagingModelCardUrl('bge-base-en-v1.5')).toBeNull();
+  });
+
+  it('still probes same-origin model context on the admin persona without dependency health', () => {
+    router.dependencyStatus.and.returnValue(null);
+    const adminService = new ModelContextService(TestBed.inject(HttpClient), registryService, router, 'admin');
+    adminService.refresh();
+    httpMock.expectOne(r => r.url.endsWith('/models/active-context')).flush(mockContext);
+    adminService.context$.subscribe(ctx => expect(ctx).toEqual(mockContext));
+  });
+
+  it('does not show a global snackbar for an optional model-context 404', () => {
+    service.refresh();
+    httpMock.expectOne(r => r.url.endsWith('/models/active-context')).flush(mockContext);
+    service.refresh();
+    httpMock.expectOne(r => r.url.endsWith('/models/active-context'))
+      .flush({}, { status: 404, statusText: 'Not Found' });
+    service.context$.subscribe(ctx => expect(ctx).toBeNull());
+    service.loading$.subscribe(loading => expect(loading).toBeFalse());
+    expect(snackBar.open).not.toHaveBeenCalled();
+  });
+
+  it('keeps global error reporting for actual chat API failures', () => {
+    TestBed.inject(HttpClient).get('/api/agents/chat/model-context-regression').subscribe({ error: () => {} });
+    httpMock.expectOne('/api/agents/chat/model-context-regression').error(new ProgressEvent('error'));
+    expect(snackBar.open).toHaveBeenCalled();
+    expect(snackBar.open.calls.mostRecent().args[0]).toContain('Network error');
   });
 
   it('handles HTTP errors gracefully', (done) => {
@@ -121,6 +191,7 @@ describe('ModelContextService', () => {
 
     const req = httpMock.expectOne(r => r.url.endsWith('/models/active-context'));
     req.error(new ProgressEvent('error'));
+    expect(snackBar.open).not.toHaveBeenCalled();
 
     service.context$.subscribe(ctx => {
       // Should remain null on error

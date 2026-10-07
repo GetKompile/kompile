@@ -23,6 +23,7 @@ import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.render.OutputTruncator;
 import ai.kompile.cli.main.chat.tools.*;
 import ai.kompile.cli.main.chat.workflow.WorkflowLaunch;
 import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
@@ -58,6 +59,7 @@ public class DirectSubagentRunner implements SubagentRunner {
     private final ToolRegistry toolRegistry;
     private final PermissionService permissionService;
     private final TerminalRenderer renderer;
+    private final OutputTruncator outputTruncator = new OutputTruncator();
     private volatile LifecycleListener lifecycleListener;
     private volatile java.util.function.BiConsumer<String, String> asyncCompletionListener;
 
@@ -439,10 +441,9 @@ public class DirectSubagentRunner implements SubagentRunner {
                             renderer.renderSubagentToolCall(tc.name, rawInput, toolResult),
                             session.parentContext);
 
-                    String output = toolResult.getOutput();
-                    if (output != null && output.length() > 50_000) {
-                        output = output.substring(0, 50_000) + "\n... (truncated, " + output.length() + " chars total)";
-                    }
+                    // Match main chat's UTF-8/line budget and preserve the full
+                    // result on disk instead of silently discarding the tail.
+                    String output = outputTruncator.truncate(toolResult.getOutput(), tc.name).getOutput();
 
                     session.compactor.appendToolResult(tc.name, tc.id, output);
 

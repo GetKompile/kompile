@@ -17,7 +17,11 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
+import sun.misc.Signal;
+import sun.misc.SignalHandler;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -41,9 +45,10 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
- * Starts a fresh Kompile process in an independent terminal and resumes the
- * current transcript after the old process has completed normal session and
- * terminal cleanup.
+ * Restarts the invoking chat in its existing terminal after command cleanup.
+ * A single foreground supervisor waits for fresh CLI processes, including their
+ * shutdown hooks, before resuming the transcript. Peer resets still use their
+ * independent terminal and parent-exit handoff.
  */
 public final class SessionRestartLauncher {
 
@@ -51,6 +56,184 @@ public final class SessionRestartLauncher {
     static final Duration PARENT_EXIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration PROCESS_START_TOLERANCE = Duration.ofSeconds(5);
     private static final String MAIN_CLASS = "ai.kompile.cli.main.MainCommand";
+    static final String SUPERVISOR_ARGUMENT = "--internal-restart-supervisor-file=";
+    static final int RESTART_EXIT_CODE = 75;
+    private static final RestartHandoff HANDOFF = new RestartHandoff();
+
+    @FunctionalInterface
+    interface ForegroundRunner {
+        int run(List<String> command, Path workingDirectory) throws IOException, InterruptedException;
+    }
+
+    record PendingRestart(List<String> command, Path directory) {
+        PendingRestart {
+            command = List.copyOf(command);
+        }
+    }
+
+    /** The mailbox lets repeated resets reuse one supervisor, not nest JVMs. */
+    static final class RestartHandoff {
+        private PendingRestart pending;
+        private Path supervisorFile;
+        private final List<Runnable> cleanups = new ArrayList<>();
+
+        synchronized boolean isPending() {
+            return pending != null;
+        }
+
+        synchronized void registerCleanup(Runnable cleanup) {
+            cleanups.add(Objects.requireNonNull(cleanup));
+        }
+
+        synchronized long queue(List<String> command, Path directory, long pid) {
+            if (pending != null) {
+                throw new IllegalStateException("A session restart is already pending.");
+            }
+            // This owner remains alive as the foreground supervisor; waiting on
+            // its PID in the replacement would deadlock the handoff.
+            List<String> resume = command.stream()
+                    .filter(arg -> !arg.startsWith(PARENT_PID_ARGUMENT)).toList();
+            pending = new PendingRestart(resume, directory);
+            return pid;
+        }
+
+        String[] prepare(String[] args) {
+            List<String> remaining = new ArrayList<>();
+            for (String arg : args == null ? new String[0] : args) {
+                if (arg != null && arg.startsWith(SUPERVISOR_ARGUMENT)) {
+                    if (supervisorFile != null) {
+                        throw new IllegalArgumentException("Duplicate internal restart supervisor argument.");
+                    }
+                    supervisorFile = Path.of(arg.substring(SUPERVISOR_ARGUMENT.length()));
+                    if (!supervisorFile.isAbsolute() || !Files.isRegularFile(supervisorFile)) {
+                        throw new IllegalArgumentException("Invalid restart supervisor mailbox.");
+                    }
+                } else {
+                    remaining.add(arg);
+                }
+            }
+            return remaining.toArray(String[]::new);
+        }
+
+        int finish(int exitCode, ForegroundRunner runner) throws IOException, InterruptedException {
+            PendingRestart next;
+            synchronized (this) {
+                next = pending;
+                pending = null;
+            }
+            if (next == null || exitCode != 0) return exitCode;
+            List<Runnable> beforeHandoff;
+            synchronized (this) {
+                beforeHandoff = List.copyOf(cleanups);
+                cleanups.clear();
+            }
+            for (Runnable cleanup : beforeHandoff) cleanup.run();
+            if (supervisorFile != null) {
+                writeRequest(supervisorFile, next);
+                return RESTART_EXIT_CODE;
+            }
+
+            // Keep the original foreground process alive so the invoking shell
+            // cannot take the TTY back. inheritIO uses the same SSH/tmux/console
+            // terminal without a desktop launcher. Child exit includes all hooks.
+            Path mailbox = Files.createTempFile("kompile-restart-", ".bin");
+            Thread mailboxCleanup = new Thread(() -> {
+                try { Files.deleteIfExists(mailbox); } catch (IOException ignored) { }
+            }, "restart-mailbox-cleanup");
+            Runtime.getRuntime().addShutdownHook(mailboxCleanup);
+            SignalHandler previousInterrupt = null;
+            try {
+                // Ctrl-C belongs to the active CLI, not this idle supervisor.
+                // Use a handler, not SIG_IGN: exec resets handled signals in the
+                // child, whereas an ignored disposition may survive exec.
+                try { previousInterrupt = Signal.handle(new Signal("INT"), signal -> { }); }
+                catch (IllegalArgumentException unsupported) { /* platform has no SIGINT */ }
+                while (true) {
+                    // Truncate in place: retain the private temp-file permissions.
+                    try (var ignored = Files.newOutputStream(mailbox)) { }
+                    List<String> command = new ArrayList<>(next.command());
+                    command.add(SUPERVISOR_ARGUMENT + mailbox);
+                    int result = runner.run(List.copyOf(command), next.directory());
+                    if (result != RESTART_EXIT_CODE || Files.size(mailbox) == 0) return result;
+                    next = readRequest(mailbox);
+                }
+            } finally {
+                if (previousInterrupt != null) {
+                    Signal.handle(new Signal("INT"), previousInterrupt);
+                }
+                try { Runtime.getRuntime().removeShutdownHook(mailboxCleanup); }
+                catch (IllegalStateException shuttingDown) { /* hook owns cleanup */ }
+                Files.deleteIfExists(mailbox);
+            }
+        }
+
+        private static void writeRequest(Path mailbox, PendingRestart request) throws IOException {
+            try (var out = new DataOutputStream(Files.newOutputStream(mailbox))) {
+                out.writeUTF(request.directory().toString());
+                out.writeInt(request.command().size());
+                for (String arg : request.command()) out.writeUTF(arg);
+            }
+        }
+
+        private static PendingRestart readRequest(Path mailbox) throws IOException {
+            if (Files.size(mailbox) > 1024 * 1024) throw new IOException("Restart request is too large.");
+            try (var in = new DataInputStream(Files.newInputStream(mailbox))) {
+                Path directory = Path.of(in.readUTF());
+                int count = in.readInt();
+                if (count <= 0 || count > 1024 || !directory.isAbsolute()
+                        || !Files.isDirectory(directory)) {
+                    throw new IOException("Invalid restart request.");
+                }
+                List<String> command = new ArrayList<>(count);
+                for (int i = 0; i < count; i++) command.add(in.readUTF());
+                return new PendingRestart(command, directory);
+            }
+        }
+    }
+
+    /** Allows nested resume/menu routes to unwind without reopening their prompts. */
+    public static boolean isRestartPending() {
+        return HANDOFF.isPending();
+    }
+
+    /** Register only initialized, process-owned resources; normal JVM hooks remain intact. */
+    public static void registerRestartCleanup(Runnable cleanup) {
+        HANDOFF.registerCleanup(cleanup);
+    }
+
+    /** Strip the private supervisor argument before picocli or library startup. */
+    public static String[] prepareStartupArguments(String[] args) throws InterruptedException {
+        return awaitRestartParentAndStrip(HANDOFF.prepare(args));
+    }
+
+    /** Called only after command execution has unwound all chat/terminal scopes. */
+    public static int finishRestart(int exitCode) {
+        try {
+            return HANDOFF.finish(exitCode, SessionRestartLauncher::runForeground);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            System.err.println("Session restart interrupted.");
+            return 1;
+        } catch (IOException | RuntimeException failure) {
+            System.err.println("Session restart failed: " + failure.getMessage());
+            return 1;
+        }
+    }
+
+    static int runForeground(List<String> command, Path directory) throws IOException, InterruptedException {
+        Process child = new ProcessBuilder(command).directory(directory.toFile()).inheritIO().start();
+        Thread childCleanup = new Thread(child::destroy, "restart-child-cleanup");
+        Runtime.getRuntime().addShutdownHook(childCleanup);
+        try {
+            return child.waitFor();
+        } catch (InterruptedException interrupted) {
+            child.destroy();
+            throw interrupted;
+        } finally {
+            try { Runtime.getRuntime().removeShutdownHook(childCleanup); }
+            catch (IllegalStateException shuttingDown) { /* hook owns cleanup */ }
+        }
+    }
 
     @FunctionalInterface
     interface ProcessSpawner {
@@ -532,7 +715,13 @@ public final class SessionRestartLauncher {
     private static SessionRestartLauncher systemLauncher() {
         return new SessionRestartLauncher(
                 SessionRestartLauncher::resolveLaunchPrefix,
-                SessionRestartLauncher::spawnInNewTerminal,
+                (command, directory) -> {
+                    long pid = ProcessHandle.current().pid();
+                    if (command.contains(PARENT_PID_ARGUMENT + pid)) {
+                        return HANDOFF.queue(command, directory, pid);
+                    }
+                    return spawnInNewTerminal(command, directory);
+                },
                 () -> ProcessHandle.current().pid());
     }
 

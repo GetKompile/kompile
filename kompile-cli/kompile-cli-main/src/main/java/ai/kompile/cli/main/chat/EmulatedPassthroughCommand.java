@@ -617,6 +617,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             } catch (IOException e) {
                 System.err.println("Warning: Could not open chat history: " + e.getMessage());
             }
+            if (history.getTranscriptFile() != null) {
+                metrics.enableLivePersistence(history.getTranscriptFile().resolveSibling(
+                        sessionId + ".metrics.json"), objectMapper);
+            }
             registerManagedSession(sessionId);
             restoreResumedSessionTitle(history);
 
@@ -665,6 +669,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             bgProcMgr.addOutputListener((entry, line) -> redrawActivityPanelOnly());
             tui.setAgentName(agent);
             tui.setSessionId(sessionId);
+            tui.getTopBar().setChatTitleSupplier(this::readyTerminalTitle);
             tui.setMode("passthrough");
             tui.setEnforcerActive(enforcerEvaluator != null);
             // Make the unified judge visible as one watcher in the status/activity surface.
@@ -751,7 +756,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             replThread = Thread.currentThread();
             try {
                 while (true) {
-                    if (shutdownSignal.get()) break;
+                    if (shutdownSignal.get() || SessionRestartLauncher.isRestartPending()) break;
 
                     // Raw key pass-through runs its own input loop instead of the line
                     // editor, forwarding every keystroke to the agent until Ctrl+].
@@ -891,6 +896,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             // here as well so partial terminal/TUI initialization cannot leak files.
             cleanupConfiguredContext();
             mcpLogCleanup.run();
+            if (bgProcMgr != null) {
+                bgProcMgr.close();
+                bgProcMgr = null;
+            }
             // Close terminal in a guarded block — stty may fail if the
             // thread was interrupted during shutdown (GraalVM native image
             // or Ctrl+C race). Swallow the error for a clean exit.
@@ -2243,7 +2252,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             int index = historicalActivityOffset + 1;
             for (ConversationActivitySummary row : rows) {
                 safePrintln("  [" + (index++) + "] " + row.identity().key() + " · "
-                        + safeActivityText(row.title(), 80)
+                        + java.util.Objects.toString(ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.normalizeTitle(row.title()), "")
                         + " · outcome=" + row.outcome() + " (" + row.evidenceBasis() + ")");
             }
         }
@@ -6210,11 +6219,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     break;
                 }
                 if (history != null) {
-                    history.logSystem("Session restart requested; replacement process "
-                            + result.processId() + " will resume this transcript.");
+                    history.logSystem("Session restart requested; a fresh process will resume this transcript in place.");
                 }
-                safePrintln(renderer.cyan("  Opening the restarted session in a new terminal"
-                        + " (launcher process " + result.processId() + ")..."));
+                safePrintln(renderer.cyan("  Restarting this session in the current terminal..."));
                 return "restart";
             }
             case "/reset-all" -> {
@@ -6975,13 +6982,18 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             safePrintln(renderer.dim("  Session title: ") + readyTerminalTitle());
             return;
         }
-        String updated = sessionTitle.replace(requestedTitle);
-        history.logSessionTitle(updated);
+        String updated = sessionTitle.replace(history.renameSession(requestedTitle));
         renderer.setReadyTerminalTitle(updated);
         safePrintln(renderer.green("  Session title updated: ") + updated);
     }
 
     private void restoreResumedSessionTitle(ChatHistory history) {
+        String override = history.readTitleOverride();
+        if (override != null) {
+            sessionTitle.replace(override);
+            renderer.setReadyTerminalTitle(override);
+            return;
+        }
         if (resumeSessionId == null || resumeSessionId.isBlank()) return;
         ChatHistory.listConversations().stream()
                 .filter(conversation -> resumeSessionId.equals(conversation.sessionId()))
@@ -6996,6 +7008,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private String readyTerminalTitle() {
+        String override = sessionHistory == null ? null : sessionHistory.readTitleOverride();
+        if (override != null) sessionTitle.replace(override);
         String current = sessionTitle.get();
         return current == null ? "kompile [" + agent + "]" : current;
     }
@@ -7361,8 +7375,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             MouseEvent event = impl.getTerminal().readMouseEvent();
             if (event == null || !decoderOwnsScreen()) return true;
             switch (event.getButton()) {
-                case WheelUp -> scrollTranscriptBy(WHEEL_SCROLL_LINES);
-                case WheelDown -> scrollTranscriptBy(-WHEEL_SCROLL_LINES);
+                case WheelUp -> {
+                    if (tui == null || !tui.scrollChatTitle(WHEEL_SCROLL_LINES, event.getY()))
+                        scrollTranscriptBy(WHEEL_SCROLL_LINES);
+                }
+                case WheelDown -> {
+                    if (tui == null || !tui.scrollChatTitle(-WHEEL_SCROLL_LINES, event.getY()))
+                        scrollTranscriptBy(-WHEEL_SCROLL_LINES);
+                }
                 default -> { /* consume clicks/motion; do not scroll or forward */ }
             }
         } catch (RuntimeException ignored) {

@@ -100,7 +100,7 @@ class DirectLlmClientPortableSeedTest {
 
     @Test
     void seedKeepsTheNewestMessagesThatFitTheContextWindow() throws Exception {
-        int window = 1_000;
+        int window = 4_000;
         try (DirectLlmClient client = client()) {
             for (int i = 0; i < 10; i++) {
                 client.addToHistory(i % 2 == 0 ? "user" : "assistant",
@@ -121,6 +121,40 @@ class DirectLlmClientPortableSeedTest {
                 "the newest messages must be kept in order\n" + prompt);
         assertTrue(prompt.length() + "system rules".length() <= window * 4,
                 "prompt of " + prompt.length() + " chars must fit a " + window + "-token window");
+    }
+
+    @Test
+    void seedIsBoundedEvenWhenCatalogAdvertisesOneMillionTokens() throws Exception {
+        try (DirectLlmClient client = client()) {
+            for (int i = 0; i < 100; i++) {
+                client.addToHistory("assistant", "message-" + i + " " + "漢".repeat(2_000));
+            }
+            client.setContextWindowTokens(1_000_000);
+            installFakeClaude(client);
+            assertTurn(client.streamChat("next question", "system rules", null, null));
+        }
+        String prompt = prompt(1);
+        assertTrue(prompt.contains("message-99"));
+        assertFalse(prompt.contains("message-0 "));
+        assertTrue(prompt.getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 51_000,
+                "native restoration must not fill a catalog-sized window");
+    }
+
+    @Test
+    void instructionsAndNewTurnConsumeTheConservativeSeedBudget() throws Exception {
+        try (DirectLlmClient client = client()) {
+            for (int i = 0; i < 10; i++) {
+                client.addToHistory("assistant", "message-" + i + " " + "漢".repeat(200));
+            }
+            client.setContextWindowTokens(4_000);
+            installFakeClaude(client);
+            assertTurn(client.streamChat("next question", "rules".repeat(100), null, null));
+        }
+        String prompt = prompt(1);
+        assertTrue(prompt.contains("message-9"));
+        assertFalse(prompt.contains("message-7"));
+        assertTrue(prompt.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                + "rules".repeat(100).length() <= 2_000);
     }
 
     @Test

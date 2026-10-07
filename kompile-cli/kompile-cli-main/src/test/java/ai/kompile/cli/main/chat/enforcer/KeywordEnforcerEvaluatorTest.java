@@ -242,14 +242,13 @@ class KeywordEnforcerEvaluatorTest {
 
     @Test
     void toolCallAllowedWhenShellMandateIsCompliant() {
-        // No rules at all — the deterministic shell mandate alone must not block
-        // a pipe-filtering build command.
+        // No rules at all — a build without shell search remains compliant.
         KeywordEnforcerEvaluator eval = new KeywordEnforcerEvaluator(List.of(), "");
 
-        EnforcerToolCallDecision piped = eval.evaluateToolCall("bash",
-                "{\"command\": \"mvn test | grep ERROR\"}", EnforcerPolicy.from("", 2));
+        EnforcerToolCallDecision build = eval.evaluateToolCall("bash",
+                "{\"command\": \"mvn test\"}", EnforcerPolicy.from("", 2));
 
-        assertTrue(piped.isAllowed());
+        assertTrue(build.isAllowed());
     }
 
     @Test

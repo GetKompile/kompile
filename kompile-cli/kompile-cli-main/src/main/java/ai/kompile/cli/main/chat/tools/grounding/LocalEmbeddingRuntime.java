@@ -107,6 +107,7 @@ final class LocalEmbeddingRuntime {
     private static final ScheduledThreadPoolExecutor IDLE_REAPER = createIdleReaper();
 
     static {
+        ai.kompile.cli.main.chat.SessionRestartLauncher.registerRestartCleanup(LocalEmbeddingRuntime::shutdownAll);
         Runtime.getRuntime().addShutdownHook(new Thread(
                 LocalEmbeddingRuntime::shutdownAll,
                 "kompile-local-rag-embedding-shutdown"));

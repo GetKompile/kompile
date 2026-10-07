@@ -83,6 +83,9 @@ public class DirectLlmClient implements AutoCloseable {
         void onToolStart(String callId, String name, String input);
         default void onToolInput(String callId, String name, String input) { }
         default void onToolOutput(String callId, String name, String output) { }
+        default void onToolProgress(String callId, String name, long elapsedMillis) { }
+        /** Transient provider phase, not transcript text. */
+        default void onActivity(String label) { }
         /**
          * A fragment of tool-call arguments as the model streams them. Their tokens
          * are output the request's usage reports when it ends.
@@ -343,6 +346,14 @@ public class DirectLlmClient implements AutoCloseable {
     public boolean injectIntoClaudeTurn(String id, String text) {
         ClaudeCliClient client = claudeServeClient;
         return client != null && client.injectIntoRunningTurn(id, text);
+    }
+
+    /** Background Claude-owned Agent/Bash tasks without acquiring the running turn's history lock. */
+    public java.util.concurrent.CompletableFuture<Void> backgroundClaudeTasks() {
+        ClaudeCliClient client = claudeServeClient;
+        return client != null ? client.backgroundTasks()
+                : java.util.concurrent.CompletableFuture.failedFuture(
+                        new IllegalStateException("No live Claude Code session"));
     }
 
     /**
@@ -1444,6 +1455,18 @@ public class DirectLlmClient implements AutoCloseable {
     private ClaudeCliClient.ActivityListener claudeActivity(StreamResult result, String effectiveModel) {
         return new ClaudeCliClient.ActivityListener() {
             @Override
+            public void onActivity(String label) {
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onActivity(label);
+            }
+
+            @Override
+            public void onToolProgress(String callId, String name, long elapsedMillis) {
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onToolProgress(callId, name, elapsedMillis);
+            }
+
+            @Override
             public void onToolStart(String callId, String name, String input) {
                 result.providerSideEffectsObserved = true;
                 ProviderActivityListener listener = providerActivityListener;
@@ -2049,25 +2072,41 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     /**
-     * Earlier conversation for a new native session (route switch, lost session,
-     * post-compaction), labeled as past turns. Only the newest messages that fit the
-     * auto-compaction share of the context window left after the instructions and the
-     * new turn are kept; older ones collapse into an omission marker. An unknown window
-     * is budgeted at the default rather than left unbounded.
+     * A replacement native session must not start at the auto-compaction threshold.
+     * Leave at least half the window for the native prompt, tools and ongoing work.
+     * Until that process reports its actual usage, UTF-8 bytes are a conservative
+     * text-token bound; chars/4 badly underestimates code and non-ASCII history.
+     * Cap history independently of catalog windows (which may advertise 1M while
+     * native settings enforce 200K). Keep whole newest messages, not raw tool output.
      */
     private String restoredConversation(String systemPrompt, String userMessage) {
         int window = contextWindowTokens > 0
                 ? contextWindowTokens : ModelContextWindows.DEFAULT_CONTEXT_WINDOW;
-        long budgetChars = (long) (window * config.getAutoCompactThreshold()) * CHARS_PER_TOKEN
-                - RESTORED_CONVERSATION_OPEN.length() - RESTORED_CONVERSATION_CLOSE.length()
-                - (systemPrompt == null ? 0 : systemPrompt.length())
-                - (userMessage == null ? 0 : userMessage.length());
-        String history = portableHistoryText(budgetChars);
+        boolean conservative = config.isClaudeCliNative();
+        long budget;
+        if (conservative) {
+            long inputBudget = (long) (window * Math.min(0.5, config.getAutoCompactThreshold()));
+            budget = Math.min(50_000L, inputBudget
+                    - utf8Bytes(systemPrompt) - utf8Bytes(userMessage)
+                    - utf8Bytes(RESTORED_CONVERSATION_OPEN) - utf8Bytes(RESTORED_CONVERSATION_CLOSE)
+                    - 256); // omission marker and native turn envelope
+        } else {
+            // Preserve the existing OpenCode restoration policy.
+            budget = (long) (window * config.getAutoCompactThreshold()) * CHARS_PER_TOKEN
+                    - RESTORED_CONVERSATION_OPEN.length() - RESTORED_CONVERSATION_CLOSE.length()
+                    - (systemPrompt == null ? 0 : systemPrompt.length())
+                    - (userMessage == null ? 0 : userMessage.length());
+        }
+        String history = portableHistoryText(budget, conservative);
         return history.isEmpty() ? ""
                 : RESTORED_CONVERSATION_OPEN + history + RESTORED_CONVERSATION_CLOSE;
     }
 
-    private String portableHistoryText(long budgetChars) {
+    private static int utf8Bytes(String text) {
+        return text == null ? 0 : text.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private String portableHistoryText(long budget, boolean conservative) {
         List<String> kept = new ArrayList<>();
         int omitted = 0;
         synchronized (historyLock) {
@@ -2076,8 +2115,9 @@ public class DirectLlmClient implements AutoCloseable {
             for (; index >= 0; index--) {
                 String message = portableMessageText(conversationHistory.get(index));
                 if (message.isEmpty()) continue;
-                if (used + message.length() > budgetChars) break;
-                used += message.length();
+                int size = conservative ? utf8Bytes(message) : message.length();
+                if (used + size > budget) break;
+                used += size;
                 kept.add(message);
             }
             for (; index >= 0; index--) {

@@ -193,6 +193,7 @@ public final class LocalServingRuntimePool {
                     KompileLocalServingBootstrap.StartupResult::close);
 
     static {
+        SessionRestartLauncher.registerRestartCleanup(POOL::close);
         Runtime.getRuntime().addShutdownHook(new Thread(
                 POOL::close, "local-model-runtime-pool-shutdown"));
     }

@@ -87,7 +87,8 @@ export interface ShellNavItem {
     ProjectExplorerComponent
   ],
   templateUrl: './app-shell.component.html',
-  styleUrls: ['./app-shell.component.css']
+  styleUrls: ['./app-shell.component.css'],
+  host: { '[class.chat-shell]': "persona === 'chat'" }
 })
 export class AppShellComponent implements OnInit, OnDestroy {
   /** The persona owning this shell; shared chrome uses it to avoid probing unrelated services. */

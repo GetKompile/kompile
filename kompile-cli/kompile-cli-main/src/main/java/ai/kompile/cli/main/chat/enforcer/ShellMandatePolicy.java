@@ -50,8 +50,8 @@ import java.util.regex.Pattern;
  *       managed memory must use the {@code memory} tool.</li>
  *   <li><b>Managed-memory shell access</b> — a shell command may not name Kompile or
  *       provider memory paths, including through an inline Python/Node script.</li>
- *   <li><b>File-content search</b> — {@code grep}/egrep/fgrep/rg/ag/ack reading a file or
- *       directory. Must use the {@code grep} tool.</li>
+ *   <li><b>Shell search/filtering</b> — {@code grep}/egrep/fgrep/rg/ag/ack on files,
+ *       directories, piped streams, or stdin. Must use the {@code grep} tool.</li>
  *   <li><b>Direct file reads</b> — {@code cat}/head/tail/less/more/tac on a file. Must use
  *       the {@code read} tool.</li>
  *   <li><b>Shell sed</b> — blocked on files, piped streams, and stdin alike. Search/filter
@@ -68,17 +68,12 @@ import java.util.regex.Pattern;
  *
  * <h3>What stays allowed (deliberate, to protect legitimate work)</h3>
  * <ul>
-     *   <li><b>Filtering a piped stream</b> — {@code mvn test | grep ERROR},
-     *       {@code ps aux | awk '{print $2}'}. The stream source
-     *       (a build, a process list, git) is not a project file, so nothing was searched or
-     *       read via shell. A banned reader reading a FILE and piping onward
-     *       ({@code cat build.log | grep error}) is still a violation — it is semantically
-     *       {@code grep error build.log}. The exception is stream slicing: {@code head}/{@code tail}
-     *       as pipeline filters are banned too — page results with {@code fetch_result},
-     *       {@code process action=output} + {@code tail_lines}, or native flags ({@code git log -5}).
-     *       {@code sed} is also banned as a stream filter — use the {@code grep} tool.</li>
+ *   <li><b>Other piped filters</b> — {@code ps aux | awk '{print $2}'}. Shell search commands,
+ *       {@code sed}, and {@code head}/{@code tail} are banned even as pipeline filters.
+ *       Capture command output with {@code process}, then use the {@code grep} tool on its
+ *       output file; page results with {@code fetch_result} or {@code process action=output}.</li>
  *   <li><b>Stdin sources</b> — {@code <} redirects, herestrings/heredocs, {@code -} stdin
- *       placeholders, except for {@code sed}.</li>
+ *       placeholders, except for {@code sed} and shell search commands.</li>
  *   <li><b>Null-device redirects</b> — {@code 2>/dev/null} and equivalent forms suppress
  *       process output without creating or modifying an artifact.</li>
  *   <li><b>Non-shell tools</b> — the dedicated {@code grep}/{@code read}/{@code edit}/...
@@ -152,6 +147,9 @@ public final class ShellMandatePolicy {
      */
     private static final Set<String> STREAM_SLICERS = Set.of("head", "tail");
 
+    /** Search commands never bypass the dedicated tool via pipes or stdin. */
+    private static final Set<String> SEARCH_COMMANDS = Set.of("grep", "egrep", "fgrep", "rg", "ag", "ack");
+
     /** Argument keys (checked in order) that carry the shell command text. */
     private static final List<String> COMMAND_FIELDS =
             List.of("command", "cmd", "script", "shell_command", "bash_command");
@@ -163,7 +161,16 @@ public final class ShellMandatePolicy {
 
     private static final Pattern ENV_ASSIGNMENT = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*=.*");
     private static final Pattern PERL_IN_PLACE_FLAG = Pattern.compile("-[A-Za-z]*i[A-Za-z.]*");
-    private static final Pattern DURATION = Pattern.compile("[0-9]+[a-zA-Z]*");
+    private static final Pattern DURATION = Pattern.compile("[0-9]+(?:\\.[0-9]+)?[a-zA-Z]*");
+
+    /** Wrapper options whose next word is an option value, not the command. */
+    private static final Map<String, Set<String>> WRAPPER_VALUE_OPTIONS = Map.of(
+            "sudo", Set.of("-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-C", "--close-from", "-D", "--chdir"),
+            "env", Set.of("-u", "--unset", "-C", "--chdir"),
+            "timeout", Set.of("-s", "--signal", "-k", "--kill-after"),
+            "nice", Set.of("-n", "--adjustment"),
+            "stdbuf", Set.of("-i", "--input", "-o", "--output", "-e", "--error"),
+            "time", Set.of("-f", "--format", "-o", "--output"));
 
     /** A pipeline segment plus whether stdin is fed by a preceding pipe. */
     private static final class Segment {
@@ -333,10 +340,22 @@ public final class ShellMandatePolicy {
         }
 
         String head = headCommand(tokens);
-        // Unlike grep/awk, sed must not bypass the mandate via a pipe or stdin source.
+        // Dedicated-tool commands are banned before any pipe/stdin exceptions.
+        if ("cat".equals(head)) {
+            violations.add("Shell `cat` is banned, including pipelines and stdin — use the kompile"
+                    + " `read` tool, or `process action=output`/`stream` for captured command output"
+                    + (text.length() > 120 ? "" : ": `" + text + "`"));
+            return;
+        }
         if ("sed".equals(head)) {
             violations.add("Shell `sed` is banned, including pipeline and stdin filtering — use the kompile"
                     + " `grep` tool for searching/filtering, `read` for line ranges, or `edit` for file rewrites"
+                    + (text.length() > 120 ? "" : ": `" + text + "`"));
+            return;
+        }
+        if (head != null && SEARCH_COMMANDS.contains(head)) {
+            violations.add("Shell `" + head + "` is banned, including pipeline and stdin filtering — use the kompile"
+                    + " `grep` tool instead; search captured command output with its path argument"
                     + (text.length() > 120 ? "" : ": `" + text + "`"));
             return;
         }
@@ -366,7 +385,7 @@ public final class ShellMandatePolicy {
         if (segment.pipedFromPrevious || hasStdinSource(tokens)) {
             // Slicing a stream (or a redirected file) with head/tail is the exact misuse the
             // dedicated result-paging and process-output paths exist for — block it; other
-            // filters (grep/awk over a pipe) remain allowed.
+            // filters (awk over a pipe) remain allowed.
             if (STREAM_SLICERS.contains(head) && !consumesInlinedText(tokens)) {
                 violations.add("Shell `" + head + "` output slicing is banned — page large results with"
                         + " `fetch_result` (offset/limit), read command output via `process action=output`"
@@ -391,7 +410,7 @@ public final class ShellMandatePolicy {
         boolean seenHead = false;
         for (Token token : tokens) {
             if (!seenHead) {
-                if (basename(token.text).equals(head) && !token.quotedStart) {
+                if (basename(token.text).equals(head)) {
                     seenHead = true;
                 }
                 continue;
@@ -437,8 +456,7 @@ public final class ShellMandatePolicy {
 
     /**
      * Extract quoted script bodies passed to a nested shell ({@code bash -c '<script>'}).
-     * The tokenizer never stores an opening quote and keeps the closing one, so stripping
-     * a trailing quote character is enough to recover the raw script text.
+     * Tokens carry shell-decoded words, including concatenated quoted/unquoted fragments.
      */
     private static List<String> collectNestedShellBodies(List<Token> tokens) {
         List<String> bodies = new ArrayList<>();
@@ -446,27 +464,18 @@ public final class ShellMandatePolicy {
         boolean expectScript = false;
         for (Token token : tokens) {
             if (head == null) {
-                if (!token.quotedStart && NESTED_SHELL_HEADS.contains(basename(token.text))) {
+                if (NESTED_SHELL_HEADS.contains(basename(token.text))) {
                     head = basename(token.text);
                 }
                 continue;
             }
             if (expectScript) {
-                if (token.quotedStart) {
-                    String body = token.text;
-                    if (body.endsWith("'") || body.endsWith("\"")) {
-                        body = body.substring(0, body.length() - 1);
-                    }
-                    if (body.startsWith("'") || body.startsWith("\"")) {
-                        body = body.substring(1);
-                    }
-                    bodies.add(body);
-                }
+                bodies.add(token.text);
                 expectScript = false;
                 head = null;
                 continue;
             }
-            if ((token.text.equals("-c") || token.text.equals("-lc") || token.text.equals("-cl"))) {
+            if (token.text.startsWith("-") && !token.text.startsWith("--") && token.text.contains("c")) {
                 expectScript = true;
                 continue;
             }
@@ -486,7 +495,7 @@ public final class ShellMandatePolicy {
         boolean seenHead = false;
         for (Token token : tokens) {
             if (!seenHead) {
-                if (basename(token.text).equals(head) && !token.quotedStart) {
+                if (basename(token.text).equals(head)) {
                     seenHead = true;
                 }
                 continue;
@@ -513,33 +522,35 @@ public final class ShellMandatePolicy {
     private static String headCommand(List<Token> tokens) {
         String head = stripPrefixes(tokens);
         if (head == null) return null;
-        // tokenize omits the opening quote but retains the closing one, even on executables.
-        if (head.endsWith("'") || head.endsWith("\"")) {
-            head = head.substring(0, head.length() - 1);
-        }
         return basename(head);
     }
 
     private static String stripPrefixes(List<Token> tokens) {
-        boolean skipDuration = false;
-        for (Token token : tokens) {
+        for (int i = 0; i < tokens.size();) {
+            Token token = tokens.get(i);
             String text = token.text;
-            if (skipDuration) {
-                skipDuration = false;
-                if (DURATION.matcher(text).matches()) {
-                    continue;
-                }
-                return text;
-            }
             if (!token.quotedStart && (ENV_ASSIGNMENT.matcher(text).matches()
                     || CONTROL_PREFIXES.contains(text))) {
+                i++;
                 continue;
             }
-            if (COMMAND_PREFIXES.contains(text)) {
-                skipDuration = "timeout".equals(text);
-                continue;
+            String wrapper = basename(text);
+            if (!COMMAND_PREFIXES.contains(wrapper)) return text;
+            i++;
+            while (i < tokens.size() && tokens.get(i).text.startsWith("-")) {
+                String option = tokens.get(i++).text;
+                if ("command".equals(wrapper) && ("-v".equals(option) || "-V".equals(option))) {
+                    return text; // command lookup, not execution
+                }
+                if ("--".equals(option)) break;
+                if (WRAPPER_VALUE_OPTIONS.getOrDefault(wrapper, Set.of()).contains(option) && i < tokens.size()) {
+                    i++;
+                }
             }
-            return text;
+            if ("timeout".equals(wrapper) && i < tokens.size()
+                    && DURATION.matcher(tokens.get(i).text).matches()) {
+                i++;
+            }
         }
         return null;
     }
@@ -689,8 +700,8 @@ public final class ShellMandatePolicy {
     // ── Shell text plumbing ──────────────────────────────────────────────
 
     /**
-     * Split a command into pipeline segments on unquoted {@code |}, {@code ;}, {@code &&},
-     * {@code ||}, and newlines. Command substitutions are kept intact inside their segment
+     * Split a command into pipeline segments on unquoted {@code |}, {@code ;}, {@code &},
+     * {@code &&}, {@code ||}, and newlines. Command substitutions are kept intact inside their segment
      * (and analyzed separately), so pipes inside {@code $(...)} do not create segments.
      */
     private static List<Segment> splitPipeline(String command) {
@@ -778,7 +789,9 @@ public final class ShellMandatePolicy {
                 i += 2;
                 continue;
             }
-            if (c == ';' || c == '\n') {
+            // A single '&' separates background commands, except in fd redirects (&> / >& / <&).
+            if ((c == '&' && (i == 0 || (command.charAt(i - 1) != '>' && command.charAt(i - 1) != '<'))
+                    && (i + 1 == n || command.charAt(i + 1) != '>')) || c == ';' || c == '\n') {
                 segments.add(new Segment(current.toString(), pipedFromPrevious));
                 current.setLength(0);
                 pipedFromPrevious = false;
@@ -832,19 +845,24 @@ public final class ShellMandatePolicy {
         while (i < n) {
             char c = text.charAt(i);
             if (inSingle) {
-                current.append(c);
                 if (c == '\'') inSingle = false;
+                else current.append(c);
                 i++;
                 continue;
             }
             if (inDouble) {
                 if (c == '\\' && i + 1 < n) {
-                    current.append(c).append(text.charAt(i + 1));
+                    // Shell line continuations contribute no characters to the token.
+                    if (text.charAt(i + 1) != '\n') {
+                        char escaped = text.charAt(i + 1);
+                        if (escaped != '$' && escaped != '`' && escaped != '"' && escaped != '\\') current.append(c);
+                        current.append(escaped);
+                    }
                     i += 2;
                     continue;
                 }
                 if (c == '"') inDouble = false;
-                current.append(c);
+                else current.append(c);
                 i++;
                 continue;
             }
@@ -863,8 +881,11 @@ public final class ShellMandatePolicy {
                 continue;
             }
             if (c == '\\' && i + 1 < n) {
-                current.append(text.charAt(i + 1));
-                hasContent = true;
+                // Do not turn a continued line into a fake command head or split executable.
+                if (text.charAt(i + 1) != '\n') {
+                    current.append(text.charAt(i + 1));
+                    hasContent = true;
+                }
                 i += 2;
                 continue;
             }
@@ -875,7 +896,8 @@ public final class ShellMandatePolicy {
                 i = close + 1;
                 continue;
             }
-            if (Character.isWhitespace(c)) {
+            // Unquoted subshell delimiters are shell operators, not executable-name suffixes.
+            if (Character.isWhitespace(c) || c == '(' || c == ')') {
                 if (hasContent) {
                     tokens.add(new Token(current.toString(), quotedStart));
                     current.setLength(0);
@@ -910,17 +932,17 @@ public final class ShellMandatePolicy {
 
         correction.append("\n## The Rule\n");
         correction.append("Use the dedicated kompile MCP tools for file operations:\n");
-        correction.append("- File content search → `grep` tool (never `grep`/`rg`/`ag` in bash)\n");
+        correction.append("- Search/filtering → `grep` tool (never shell `grep`/`egrep`/`fgrep`/`rg`/`ag`/`ack`, even in pipelines or on stdin)\n");
         correction.append("- `sed` search/filtering → `grep` tool; line ranges → `read` offset/limit"
                 + " (never shell `sed`, even in pipelines or on stdin)\n");
-        correction.append("- Reading files → `read` tool (never `cat`/`head`/`tail` on files)\n");
+        correction.append("- Reading files → `read` tool (never shell `cat`, including pipelines/stdin; never `head`/`tail` on files)\n");
         correction.append("- Editing files → `edit` tool (never `sed -i`/`perl -i`/`awk -i inplace`)\n");
         correction.append("- Creating/replacing files → `write`/`patch` (never shell redirects, `tee`, `cp`, `mv`, etc.)\n");
         correction.append("- Persistent memory → `memory` tool (`todowrite` for task state); never generic file tools\n");
         correction.append("- Listing directories → `list` tool; finding files by pattern → `glob` tool\n");
-        correction.append("`bash`/`process` remain available for builds/tests/git/system commands and for\n");
-        correction.append("filtering piped streams with allowed filters (e.g. `mvn test | grep ERROR`,"
-                + " `ps aux | grep java`), never `sed`.\n");
+        correction.append("`bash`/`process` remain available for builds/tests/git/system commands.\n");
+        correction.append("Capture command output with `process`, then use the `grep` tool on the output file;"
+                + " never retry shell search/filter commands after `cd`, in a chain, or behind a wrapper.\n");
 
         correction.append("\n## How to Re-Comply\n");
         correction.append("1. Re-issue the operation with the dedicated tool named above.\n");

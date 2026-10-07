@@ -120,9 +120,42 @@ export interface ToolUsageTotals {
   degradedCalls?: number;
 }
 
+export interface InvocationContentPage {
+  available: boolean;
+  status?: string;
+  text?: string;
+  offset: number;
+  nextOffset?: number;
+  hasMore?: boolean;
+  sizeBytes?: number;
+}
+
+export interface ToolSessionDetails {
+  sessionId: string;
+  title?: string;
+  metricsStatus?: string;
+  sessionMetrics?: {
+    tokens?: { input?: number; output?: number; total?: number; cacheRead?: number; cacheCreation?: number;
+      estimatedInput?: number; estimatedOutput?: number; estimatedTotal?: number };
+    agentic?: { compactions?: number; compactionTokensBefore?: number; compactionTokensAfter?: number; tokensSavedByCompaction?: number };
+    [key: string]: unknown;
+  };
+}
+
 export interface ToolUsageCall {
   invocationId: string;
   sessionId: string;
+  title?: string;
+  detail?: {
+    available: boolean;
+    status?: string;
+    context?: Record<string, unknown>;
+    catalog?: Record<string, unknown>;
+    arguments?: InvocationContentPage;
+    output?: InvocationContentPage;
+    rawOutput?: InvocationContentPage;
+    structured?: InvocationContentPage;
+  };
   tool: string;
   requestedToolName?: string;
   resolvedToolName?: string;
@@ -143,7 +176,12 @@ export interface ToolUsageCall {
 export interface ToolUsageReport {
   summary: ToolUsageTotals;
   perTool: (ToolUsageTotals & { tool: string; trend?: (number | null)[] })[];
-  perSession: (ToolUsageTotals & { sessionId: string })[];
+  perSession: (ToolUsageTotals & ToolSessionDetails)[];
+  selectedSession?: ToolSessionDetails;
+  /** Historical catalog records are not part of the measured token ledger. */
+  catalog?: { calls: { id: string; sessionId: string; toolName: string; toolInput?: string; summary?: string;
+    timestamp?: string | number; source?: string; agentName?: string; durationMs?: number; isError?: boolean;
+    detail?: ToolUsageCall['detail']; [key: string]: unknown }[]; hasMore?: boolean; truncated?: boolean; status?: string };
   calls: ToolUsageCall[];
   offset: number;
   limit: number;
@@ -1861,6 +1899,13 @@ export class LocalAgentChatService extends BaseService {
     return this.http.get<InsightsTopicReport>(
       `${this.backendUrl}/agents/chat/insights`,
       { params, context: new HttpContext().set(SKIP_ERROR_SNACKBAR, true) });
+  }
+
+  getToolInvocationPage(sessionId: string, invocationId: string, field: string, offset: number): Observable<InvocationContentPage> {
+    return this.http.get<InvocationContentPage>(`${this.backendUrl}/agents/chat/tool-details`, {
+      params: { sessionId, invocationId, field, offset: String(offset) },
+      context: new HttpContext().set(SKIP_ERROR_SNACKBAR, true)
+    });
   }
 
   /** insights.json, which the insights page edits and shows its own errors for. */

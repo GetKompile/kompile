@@ -57,7 +57,7 @@ class McpSocketSessionTest {
         ToolResult result = ToolResult.success("file_context: A.java", "context",
                 Map.of("graphStatus", "AVAILABLE", "notes", java.util.List.of("note")));
 
-        ObjectNode wire = McpToolResultSerializer.toMcpCallResult(mapper, result);
+        ObjectNode wire = McpToolResultSerializer.toMcpCallResult(mapper, result, null, "file_context");
 
         assertFalse(wire.path("isError").asBoolean());
         assertTrue(wire.path("content").get(0).path("text").asText()

@@ -127,7 +127,7 @@ public class GeminiAdapter implements ChatSourceAdapter {
         for (ChatTurn turn : readTurns(sessionId)) {
             if (turn.isUser() && turn.content() != null && !turn.content().isBlank()) {
                 String title = turn.content().trim();
-                return title.length() > 80 ? title.substring(0, 77) + "..." : title;
+                return title;
             }
         }
         return sessionId;
@@ -156,7 +156,7 @@ public class GeminiAdapter implements ChatSourceAdapter {
             String content = ChatAdapterSupport.extractContent(message);
             if ("user".equals(role) && content != null && !content.isBlank()) {
                 String title = content.trim();
-                return title.length() > 80 ? title.substring(0, 77) + "..." : title;
+                return title;
             }
         }
         return fallback;

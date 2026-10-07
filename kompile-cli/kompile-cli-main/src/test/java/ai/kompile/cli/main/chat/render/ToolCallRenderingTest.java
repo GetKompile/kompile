@@ -51,6 +51,22 @@ class ToolCallRenderingTest {
     }
 
     @Test
+    void reopenedDetailShowsStreamedOutputWithoutChangingMainTranscriptSuppression() {
+        ToolResult result = new ToolResult("stream proc-1", "compiling\nBUILD SUCCESS", Map.of(
+                ToolResult.OUTPUT_STREAMED_METADATA, true));
+
+        String detail = renderer.renderToolResultDetail("process", "{}", result, false);
+
+        assertTrue(detail.contains("compiling"), detail);
+        assertTrue(detail.contains("BUILD SUCCESS"), detail);
+        assertTrue(result.isOutputStreamed());
+        assertEquals("", renderer.renderToolResultDetail("process", "{}", result));
+        assertFalse(renderer.renderToolCallComplete("process", result).contains("BUILD SUCCESS"));
+        assertFalse(TerminalRenderer.summarizeToolResult(result, 500)
+                .contains(ToolResult.OUTPUT_STREAMED_METADATA));
+    }
+
+    @Test
     void streamedOutputRemovesTerminalControlCharacters() {
         String rendered = new TerminalRenderer(false).renderToolOutput(
                 "before\u001bc\bafter\u001b[2J\u009b31m");

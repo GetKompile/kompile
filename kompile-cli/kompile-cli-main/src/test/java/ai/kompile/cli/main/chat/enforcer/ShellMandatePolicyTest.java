@@ -163,10 +163,91 @@ class ShellMandatePolicyTest {
                 "bash -c 'echo sed'",
                 "if true; then echo sed; fi",
                 "if true; then printf '%s' 'sed -n 1p build.log'; fi",
-                "mvn test | grep ERROR",
+                "mvn test | awk '/ERROR/'",
                 "ps aux | awk '{print $2}'"
         })
         void textMentionsAndOtherStreamFiltersStayAllowed(String command) {
+            assertAllowed("bash", command);
+        }
+    }
+
+    @Nested
+    @DisplayName("Sed, cat and grep-family calls cannot bypass dedicated tools")
+    class SearchBan {
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "%s",
+                "cd project && %s",
+                "cd project&&%s",
+                "cd 'project directory'; %s",
+                "cd project & %s",
+                "cd project&%s",
+                "cd project || %s",
+                "(cd project && %s)",
+                "cd project && { %s; }",
+                "cd project && \\\n%s",
+                "cd project && sudo -n %s",
+                "cd project && sudo -u root %s",
+                "cd project && /usr/bin/env -u FLAG %s",
+                "cd project && /usr/bin/timeout --signal TERM 1.5s %s",
+                "cd project && command -- %s",
+                "cd project && nice -n 5 %s",
+                "cd project && stdbuf -o L %s",
+                "'bash' -euc 'cd project && %s'",
+                "printf hello | %s",
+                "printf hello |& %s",
+                "cd project && %s < input.txt",
+                "cd project && %s <<< hello",
+                "echo $(cd project && %s)",
+                "echo `cd project && %s`"
+        })
+        void allCommandFormsAreBlocked(String form) throws Exception {
+            for (String command : new String[]{"sed -n 1p", "grep MATCH", "egrep MATCH", "fgrep MATCH",
+                    "rg MATCH", "ag MATCH", "ack MATCH", "cat"}) {
+                String shell = form.formatted(command);
+                String input = JsonUtils.standardMapper().writeValueAsString(Map.of("command", shell));
+                for (String tool : new String[]{"bash", "mcp__kompile__bash", "process", "mcp__kompile__process"}) {
+                    EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs(tool, input);
+                    assertNotNull(decision, shell);
+                    assertFalse(decision.isAllowed(), shell);
+                    assertTrue(decision.getCorrectionPrompt().contains("`grep` tool"), shell);
+                }
+            }
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "cd project && s'e'd -n 1p input.txt",
+                "cd project && \"s\"ed -n 1p input.txt",
+                "cd project && se\\d -n 1p input.txt",
+                "cd project && gr'e'p MATCH input.txt",
+                "cd project && \"gr\"ep MATCH input.txt",
+                "cd project && /usr/bin/s'e'd -n 1p input.txt",
+                "bash -c 'cd project && '\"sed -n 1p input.txt\"",
+                "cd project && c'a't < input.txt",
+                "cd project && /bin/cat -",
+                "cd project && cat <<'EOF'\nhello\nEOF",
+                "cd project && grep MATCH -",
+                "cd project && grep MATCH <<'EOF'\nhello\nEOF"
+        })
+        void quotedNamesAndStdinAreStillBlocked(String command) {
+            assertBlocked("bash", command);
+            assertBlocked("process", command);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "cd project && echo sed grep rg",
+                "cd project && printf '%s' 'sed -n 1p input.txt'",
+                "printf '%s' 'cd project && grep MATCH input.txt'",
+                "printf '%s' 'cd project & sed -n 1p input.txt'",
+                "cd project && command -v sed",
+                "cd project && command -v grep",
+                "cd project && mvn test 2>&1",
+                "cd project & printf hello",
+                "bash -c 'printf \"%s\" hello'"
+        })
+        void mentionsAndSystemCommandsRemainAllowed(String command) {
             assertAllowed("bash", command);
         }
     }
@@ -293,22 +374,15 @@ class ShellMandatePolicyTest {
     class AllowedForms {
         @ParameterizedTest
         @ValueSource(strings = {
-                "mvn test | grep ERROR",                     // project convention: consume build logs
-                "mvn -q test 2>&1 | grep -i failure",
-                "ps aux | grep java",
-                "ps aux | grep java | grep -v grep",
+                "mvn test",
+                "mvn -q test 2>&1",
+                "ps aux",
                 "ps aux | awk '{print $2}'",
                 "git log --oneline -5",
-                "jcmd 1 Thread.print | grep RUNNABLE",
-                "echo hello | grep hello",
-                "printf '%s\\n' a b | grep a",
-                "grep pattern -",                            // explicit stdin
-                "grep pat - < input.txt",
-                "grep foo < data.txt",
-                "grep foo <<< 'some text'",
-                "grep -e foo <<'EOF'\nbar\nEOF",
-                "git log | grep Merge",
-                "docker logs c 2>&1 | grep error",
+                "jcmd 1 Thread.print",
+                "echo hello",
+                "printf '%s\\n' a b",
+                "docker logs c 2>&1",
                 "nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null",
                 "ps -o pid= -p 123 >/dev/null",
                 "mvn test > '/dev/null' 2>&1",
@@ -335,6 +409,40 @@ class ShellMandatePolicyTest {
             assertBlocked("bash", "ls && grep pattern x.txt");
         }
 
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "cd project && grep -rn MATCH src/",
+                "cd 'project directory'&&grep MATCH src/Main.java",
+                "cd project && /usr/bin/grep MATCH src/Main.java",
+                "cd project && command grep MATCH src/Main.java",
+                "bash -lc 'cd project && grep MATCH src/Main.java'",
+                "cd project && \\\ngrep MATCH src/Main.java",
+                "cd project && gr\\\nep MATCH src/Main.java",
+                "cd project && \"gr\\\nep\" MATCH src/Main.java",
+                "cd project && \\\n env LC_ALL=C grep MATCH src/Main.java",
+                "bash -lc 'cd project && \\\ngrep MATCH src/Main.java'"
+        })
+        void directoryChangeDoesNotHideFileSearch(String command) throws Exception {
+            for (String tool : new String[]{"bash", "mcp__kompile__bash", "process", "mcp__kompile__process"}) {
+                String input = JsonUtils.standardMapper().writeValueAsString(Map.of("command", command));
+                EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs(tool, input);
+                assertNotNull(decision, command);
+                assertFalse(decision.isAllowed(), command);
+                assertTrue(decision.getViolations().get(0).contains("`grep` tool"), command);
+            }
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "cd project && mvn test | awk '/ERROR/'",
+                "cd project && \\\n mvn test | awk '/ERROR/'",
+                "cd project && printf '%s' 'grep MATCH src/'",
+                "cd project && mvn test"
+        })
+        void directoryChangesAndStreamOnlyFiltersStayAllowed(String command) {
+            assertAllowed("bash", command);
+        }
+
         @Test
         void orFallbackCommandStillAnalyzed() {
             assertBlocked("bash", "mvn test || grep foo pom.xml");
@@ -354,13 +462,13 @@ class ShellMandatePolicyTest {
 
         @Test
         void allowedChainWithPipeFilter() {
-            assertAllowed("bash", "mvn test 2>&1 | grep ERROR; git status");
+            assertAllowed("bash", "mvn test 2>&1 | awk '/ERROR/'; git status");
         }
 
         @Test
         void quotedPipeDoesNotSplitSegments() {
             // A quoted '|' belongs to a sed script / grep pattern, not the pipeline.
-            assertAllowed("bash", "mvn test | grep -E 'foo|bar'");
+            assertAllowed("bash", "mvn test | awk '/foo|bar/'");
             assertAllowed("bash", "echo 'a|b'");
         }
 
@@ -383,7 +491,7 @@ class ShellMandatePolicyTest {
 
         @Test
         void extractsCommandFieldAndAllows() {
-            String args = "{\"command\":\"mvn test | grep ERROR\",\"description\":\"run tests\"}";
+            String args = "{\"command\":\"mvn test\",\"description\":\"run tests\"}";
             assertNull(ShellMandatePolicy.evaluateFromSerializedArgs("bash", args));
         }
 
@@ -496,6 +604,13 @@ class ShellMandatePolicyTest {
             assertFalse(ShellMandatePolicy.containsShellLoop(command));
         }
 
+        @ParameterizedTest
+        @ValueSource(strings = {"monitor", "status", "output", "stream"})
+        void processMonitoringRemainsAllowed(String action) {
+            assertNull(ShellMandatePolicy.evaluateFromSerializedArgs(
+                    "mcp__kompile__process", "{\"action\":\"" + action + "\",\"process_id\":\"build\"}"));
+        }
+
         @Test
         void serializedUntilLoopRoutesToHostMonitoring() {
             EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs(
@@ -577,7 +692,7 @@ class ShellMandatePolicyTest {
 
         @ParameterizedTest
         @ValueSource(strings = {
-                "mvn test | grep ERROR",                     // search filter over a stream stays legal
+                "mvn test",                                  // builds remain legal
                 "ps aux | awk '{print $2}'",                 // awk filter unchanged
                 "git log --oneline -5",                      // native limit flag
                 "git status | wc -l",                        // non-slicing filter unchanged
@@ -642,10 +757,19 @@ class ShellMandatePolicyTest {
             }
         }
 
-        @Test
-        void sedFilteringIsBlockedAcrossEnforcerLanesWithoutAJudge() throws Exception {
-            String command = "mvn test | sed -n '/ERROR/p'";
-            String input = "{\"command\":\"" + command + "\"}";
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "mvn test | sed -n '/ERROR/p'",
+                "cd project && sed -n 1p src/Main.java",
+                "cd project & sed -n 1p src/Main.java",
+                "cd project && sudo -n sed -n 1p src/Main.java",
+                "cd project && s'e'd -n 1p src/Main.java",
+                "cd project && mvn test | grep ERROR",
+                "cd project && grep MATCH src/Main.java",
+                "cd project && \\\ngrep MATCH src/Main.java"
+        })
+        void shellSearchIsBlockedAcrossEnforcerLanesWithoutAJudge(String command) throws Exception {
+            String input = JsonUtils.standardMapper().writeValueAsString(Map.of("command", command));
             EnforcerPolicy policy = new EnforcerPolicy("", 1, false);
             try (EnforcerToolCallGuard guard = guardWithRules("Use tools relevant to the request.")) {
                 assertFalse(guard.evaluate("bash", Map.of("command", command)).isAllowed());
@@ -657,7 +781,7 @@ class ShellMandatePolicyTest {
             JudgeBackend unavailable = new JudgeBackend() {
                 @Override
                 public String generate(String userPrompt, String systemPrompt) {
-                    throw new AssertionError("sed must be blocked before calling the judge");
+                    throw new AssertionError("shell search must be blocked before calling the judge");
                 }
 
                 @Override
@@ -673,10 +797,20 @@ class ShellMandatePolicyTest {
             }
         }
 
-        @Test
-        void executionBoundariesRejectSedWithoutAnEnforcerOrPermissions() throws Exception {
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "printf hello | sed -n '1p'",
+                "cd project && sed -n 1p src/Main.java",
+                "cd project & sed -n 1p src/Main.java",
+                "cd project && sudo -n sed -n 1p src/Main.java",
+                "cd project && s'e'd -n 1p src/Main.java",
+                "cd project && mvn test | grep ERROR",
+                "cd project && grep MATCH src/Main.java",
+                "cd project && \\\ngrep MATCH src/Main.java"
+        })
+        void executionBoundariesRejectShellSearchWithoutAnEnforcerOrPermissions(String command) throws Exception {
             var params = JsonUtils.standardMapper().createObjectNode();
-            params.put("command", "printf hello | sed -n '1p'");
+            params.put("command", command);
             // Null contexts prove rejection happens before permission checks or process execution.
             ToolResult bash = new BashTool().execute(params, null);
             assertTrue(bash.isError());
@@ -713,7 +847,7 @@ class ShellMandatePolicyTest {
         void guardAllowsCompliantCommandsAfterInspectingTheirArguments() throws Exception {
             try (EnforcerToolCallGuard guard = guardWithInMemoryAllowJudge(
                     "Use tools relevant to the request.")) {
-                assertTrue(guard.evaluate("bash", Map.of("command", "mvn test | grep ERROR")).isAllowed());
+                assertTrue(guard.evaluate("bash", Map.of("command", "mvn test")).isAllowed());
                 assertTrue(guard.evaluate("bash", Map.of("command",
                         "nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null")).isAllowed());
             }
@@ -733,14 +867,21 @@ class ShellMandatePolicyTest {
         }
 
         @Test
-        void guardInactiveMeansNoMandateBlock() throws Exception {
+        void inactiveJudgeDoesNotDisableShellMandate() throws Exception {
             ObjectMapper om = JsonUtils.standardMapper();
             EnforcerRuntimePolicy runtimePolicy = EnforcerRuntimePolicy.create(wd,
                     new EnforcerPolicy("rules", 1, false), new HarnessConfig(), om);
             runtimePolicy.setEnabled(false, om);
             try (EnforcerToolCallGuard guard = new EnforcerToolCallGuard(om, runtimePolicy)) {
                 assertFalse(guard.isActive());
-                assertTrue(guard.evaluate("bash", Map.of("command", "cat pom.xml")).isAllowed());
+                assertFalse(guard.evaluate("bash", Map.of("command", "cat pom.xml")).isAllowed());
+                assertFalse(guard.evaluate("bash", Map.of("cmd", "cd project && sed -n 1p input.txt")).isAllowed());
+                assertFalse(guard.evaluate("bash", Map.of("command", "until false; do :; done")).isAllowed());
+                assertFalse(guard.evaluate("mcp__kompile__process", Map.of(
+                        "action", "launch", "command", "until false; do :; done")).isAllowed());
+                assertTrue(guard.evaluate("mcp__kompile__process", Map.of(
+                        "action", "monitor", "process_id", "build")).isAllowed());
+                assertTrue(guard.evaluate("bash", Map.of("command", "mvn test")).isAllowed());
             }
         }
 
@@ -750,7 +891,7 @@ class ShellMandatePolicyTest {
             EnforcerPolicy policy = new EnforcerPolicy("", 1, false);
             assertFalse(evaluator.evaluateToolCall("bash",
                     "{\"command\":\"grep -rn TODO src/\"}", policy).isAllowed());
-            assertTrue(evaluator.evaluateToolCall("bash",
+            assertFalse(evaluator.evaluateToolCall("bash",
                     "{\"command\":\"ps aux | grep java\"}", policy).isAllowed());
         }
     }

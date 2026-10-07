@@ -210,6 +210,50 @@ class AgenticChatLoopContextOverflowRecoveryTest {
     }
 
     @Test
+    void opaqueInlineCheckpointSurvivesNonReducingPortableDigest() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.NATIVE_COMPACTION);
+        client.nativeStreamPayload = mapper.createObjectNode()
+                .put("type", "compaction").put("encrypted_content", "opaque-checkpoint");
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "native-opaque-inline-" + UUID.randomUUID();
+        ConversationLedger ledger = seedShortHistory(loop, session);
+        client.replayedMessages.clear();
+
+        loop.chat("x", session, "coder", "default", false);
+
+        assertEquals(client.nativeStreamPayload, ledger.snapshot().checkpoint().nativePayload());
+        assertTrue(ledger.snapshot().checkpoint().tokensAfter()
+                >= ledger.snapshot().checkpoint().tokensBefore(), "fixture must not shrink the portable digest");
+        assertTrue(client.replayedMessages.isEmpty(), "must not restore the pre-compaction history");
+        Field usage = AgenticChatLoop.class.getDeclaredField("lastReportedInputTokens");
+        usage.setAccessible(true);
+        assertEquals(0L, usage.getLong(loop));
+        loop.chat("continue", session, "coder", "default", false);
+        assertEquals(0, client.summaryCalls);
+    }
+
+    @Test
+    void opaqueManualCheckpointDoesNotRequirePortableDigestReduction() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS);
+        JsonNode payload = mapper.createArrayNode().add(mapper.createObjectNode()
+                .put("type", "compaction").put("encrypted_content", "opaque-checkpoint"));
+        client.nativeCompaction = new DirectLlmClient.NativeCompactionResult(
+                true, true, null, payload, null);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        ConversationLedger ledger = seedShortHistory(loop, "native-opaque-manual-" + UUID.randomUUID());
+
+        AgenticChatLoop.ForceCompactResult result = loop.forceCompact(null);
+
+        assertEquals(AgenticChatLoop.ForceCompactResult.Status.OK, result.getStatus());
+        assertEquals(payload, ledger.snapshot().checkpoint().nativePayload());
+        assertTrue(ledger.snapshot().checkpoint().tokensAfter()
+                >= ledger.snapshot().checkpoint().tokensBefore(), "fixture must not shrink the portable digest");
+        assertEquals(0, client.summaryCalls);
+    }
+
+    @Test
     void disablingAutoCompactionClearsProviderNativeTrigger() throws Exception {
         ObjectMapper mapper = JsonUtils.standardMapper();
         ChatConfig config = new ChatConfig("openai", null, "gpt-4o", "https://api.openai.com/v1");
@@ -858,7 +902,9 @@ class AgenticChatLoopContextOverflowRecoveryTest {
             StreamResult result = new StreamResult();
             result.text = scenario == Scenario.FIRST_OVERFLOW ? "recovered" : "done";
             if (scenario == Scenario.NATIVE_COMPACTION && chatCalls == 1) {
-                result.nativeCompactionSummary = "Earlier requests completed successfully.";
+                result.nativeCompactionSummary = nativeStreamPayload == null
+                        ? "Earlier requests completed successfully." : null;
+                result.nativeCompactionPayload = nativeStreamPayload;
                 result.nativeCompactionStrategy = "test";
                 result.inputTokens = 120_000;
             }

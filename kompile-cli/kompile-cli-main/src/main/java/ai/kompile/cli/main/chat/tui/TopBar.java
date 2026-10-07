@@ -20,6 +20,9 @@ import ai.kompile.utils.AnsiConstants;
 import ai.kompile.utils.StringUtils;
 
 import java.io.PrintStream;
+import java.util.List;
+import java.util.function.Supplier;
+import org.jline.utils.AttributedString;
 
 import static ai.kompile.utils.AnsiConstants.*;
 
@@ -27,14 +30,14 @@ import static ai.kompile.utils.AnsiConstants.*;
  * Persistent top bar pinned to the first row of the terminal.
  * Shows the current agent name, session ID, mode, and key shortcuts.
  *
- * The top bar occupies 3 terminal rows:
+ * The top bar reserves 3 base rows plus wrapped, scrollable chat-title rows:
  * <pre>
  *   Row 1:  kompile  [claude]  session: cli-a1b2c3d4  passthrough  [plan]
  *   Row 2:  ⚠ transient alert (blank when idle)
  *   Row 3:  ─────────────────────────────────────────  (dim separator)
  * </pre>
  *
- * The scroll region starts at row 4, after the top bar.
+ * The scroll region starts after the dynamically sized top bar.
  */
 public class TopBar {
 
@@ -50,6 +53,51 @@ public class TopBar {
     private volatile String tokenSummary = "";
     private volatile String judgeTokenSummary = "";
     private volatile int terminalWidth = 80;
+    private volatile Supplier<String> chatTitleSupplier = () -> "";
+    private int maxTitleRows = Integer.MAX_VALUE;
+    private int titleOffset;
+    private String lastTitle = "";
+
+    public synchronized void setMaxTitleRows(int rows) {
+        maxTitleRows = Math.max(1, rows);
+    }
+
+    public synchronized boolean scrollTitle(int delta, int width) {
+        List<AttributedString> rows = allTitleRows(width);
+        int maximum = Math.max(0, rows.size() - maxTitleRows);
+        int next = Math.max(0, Math.min(maximum, titleOffset + delta));
+        if (next == titleOffset) return false;
+        titleOffset = next;
+        return true;
+    }
+
+    public void setChatTitleSupplier(Supplier<String> supplier) {
+        chatTitleSupplier = supplier == null ? () -> "" : supplier;
+    }
+
+    private synchronized List<AttributedString> allTitleRows(int width) {
+        String title = chatTitleSupplier.get();
+        if (title == null) title = "";
+        if (!title.equals(lastTitle)) { lastTitle = title; titleOffset = 0; }
+        if (title.isBlank()) return List.of();
+        String safe = AnsiConstants.stripAnsi(title).replaceAll("[\\p{Cntrl}]", " ");
+        return new AttributedString("Chat: " + safe).columnSplitLength(Math.max(1, width - 1));
+    }
+
+    private synchronized List<AttributedString> titleRows(int width) {
+        List<AttributedString> rows = allTitleRows(width);
+        titleOffset = Math.min(titleOffset, Math.max(0, rows.size() - maxTitleRows));
+        if (rows.size() <= maxTitleRows) return rows;
+        return rows.subList(titleOffset, titleOffset + maxTitleRows);
+    }
+
+    private boolean titleScrollable(int width) {
+        return allTitleRows(width).size() > maxTitleRows;
+    }
+
+    public int getHeight(int width) {
+        return TOP_HEIGHT + titleRows(width).size();
+    }
 
     private final Object drawLock;
 
@@ -126,8 +174,16 @@ public class TopBar {
                 .append(buildContent(w));
         frame.append(ESC).append("2;1H").append(ESC).append("2K")
                 .append(buildAlert(w));
-        frame.append(ESC).append("3;1H").append(ESC).append("2K")
-                .append(DIM).append(HORIZONTAL_LINE.repeat(Math.min(drawWidth, 200)))
+        int row = 3;
+        for (AttributedString titleRow : titleRows(w)) {
+            frame.append(ESC).append(row++).append(";1H").append(ESC).append("2K")
+                    .append(BOLD).append(titleRow.toAnsi()).append(RESET);
+        }
+        frame.append(ESC).append(row).append(";1H").append(ESC).append("2K")
+                .append(DIM).append(titleScrollable(w)
+                        ? new AttributedString("↕ Scroll title with mouse wheel; /title shows full title")
+                                .columnSubSequence(0, drawWidth).toString()
+                        : HORIZONTAL_LINE.repeat(Math.min(drawWidth, 200)))
                 .append(RESET);
         return frame.toString();
     }

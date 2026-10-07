@@ -9,8 +9,6 @@ package ai.kompile.cli.main.chat;
 /** Mutable title shared by the standard and managed-passthrough chat sessions. */
 final class ChatSessionTitle {
 
-    static final int MAX_LENGTH = 80;
-
     private String title;
 
     /** Set the title from the first non-blank prompt only. */
@@ -36,14 +34,8 @@ final class ChatSessionTitle {
         return title;
     }
 
-    /** Normalize a prompt and retain only its short leading portion. */
+    /** Normalize without discarding title text. */
     static String fromPrompt(String prompt) {
-        if (prompt == null) return null;
-        String normalized = prompt.replace('\033', ' ').replace('\007', ' ')
-                .strip().replaceAll("\\s+", " ");
-        if (normalized.isEmpty()) return null;
-        return normalized.length() <= MAX_LENGTH
-                ? normalized
-                : normalized.substring(0, MAX_LENGTH - 3) + "...";
+        return ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.normalizeTitle(prompt);
     }
 }

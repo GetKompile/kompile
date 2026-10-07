@@ -155,6 +155,11 @@ public class MainCommand implements Callable<Integer> {
 
 
     public static void main(String...args) {
+        // Native-provider PreToolUse hooks need only the deterministic policy, not CLI/JNI startup.
+        if (args.length == 1 && ai.kompile.cli.main.chat.enforcer.ShellMandateHook.ARGUMENT.equals(args[0])) {
+            System.exit(ai.kompile.cli.main.chat.enforcer.ShellMandateHook.run(System.in, System.err));
+            return;
+        }
         // Must run before any org.jline.utils.AttributedString use anywhere in the
         // process (JLine reads this property once, in a static initializer) —
         // see configureJLineRendering() for why.
@@ -162,10 +167,9 @@ public class MainCommand implements Callable<Integer> {
 
         String[] effectiveArgs;
         try {
-            // A /restart replacement is a real process, but it must not initialize
-            // libraries, MCP tools, or a second terminal reader until the old owner
-            // has flushed the transcript and completed normal shutdown.
-            effectiveArgs = SessionRestartLauncher.awaitRestartParentAndStrip(args);
+            // Same-terminal replacements start after command cleanup. Peer
+            // replacements still wait for the old owner to finish shutdown.
+            effectiveArgs = SessionRestartLauncher.prepareStartupArguments(args);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             System.err.println("Session restart interrupted while waiting for the previous process to exit.");
@@ -216,6 +220,9 @@ public class MainCommand implements Callable<Integer> {
             // Shade plugin classloader can lose picocli inner classes during shutdown
             exitCode = 0;
         }
+        // A requested reset starts a fresh process on the inherited terminal only
+        // after execute() has returned through normal chat/session cleanup.
+        exitCode = SessionRestartLauncher.finishRestart(exitCode);
         // Always terminate the JVM explicitly — do NOT fall through to a bare return
         // on exit code 0. Long-running commands (mcp-stdio, chat) start non-daemon
         // background threads (file watcher, ambient gardener, semantic memory, async

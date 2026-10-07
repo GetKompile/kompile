@@ -26,6 +26,8 @@ import { throttleTime, takeUntil, filter } from 'rxjs/operators';
 import { Subject } from 'rxjs';
 import { ConfirmDialogComponent, ConfirmDialogData } from '@shared/components/confirm-dialog/confirm-dialog.component';
 import { CommandConfigDialogComponent, CommandConfigDialogData } from '../command-config-dialog/command-config-dialog.component';
+import { ChatModelSelectorComponent } from '../chat-model-selector/chat-model-selector.component';
+import { ChatActivity, chatActivity, IDLE_CHAT_ACTIVITY } from '../chat-activity-indicator/chat-activity-indicator.component';
 
 // Services
 import { ConversationalRagService } from '@shared/services/conversational-rag.service';
@@ -59,6 +61,7 @@ import {
   LocalAgentSession,
   CommandMessageMetadata,
   CommandEventData,
+  CommandOutcome,
   RagServiceStatus,
   ChatFolder,
   ActiveModelContext,
@@ -171,6 +174,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   }
 
   @ViewChild('conversationArea') private conversationArea!: ElementRef;
+  @ViewChild(ChatModelSelectorComponent) private modelSelector?: ChatModelSelectorComponent;
 
   // Destroy subject for cleanup
   private destroy$ = new Subject<void>();
@@ -849,7 +853,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
           .filter(s => s.source) // Only sessions with a source (synced from CLI)
           .map(s => ({
             id: s.sessionId,
-            name: this.sanitizeSessionTitle(s.title || ''),
+            name: s.title?.trim() || this.fallbackSessionTitle(),
             messages: [],
             createdAt: s.createdAt,
             updatedAt: s.updatedAt,
@@ -939,7 +943,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
           .filter(s => s.source)
           .map(s => ({
             id: s.sessionId,
-            name: this.sanitizeSessionTitle(s.title || ''),
+            name: s.title?.trim() || this.fallbackSessionTitle(),
             messages: [],
             createdAt: s.createdAt,
             updatedAt: s.updatedAt,
@@ -1324,6 +1328,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   cancelEditSessionName(): void {
     this.editingSessionId = null;
     this.editingSessionName = '';
+    this.cdr.markForCheck();
   }
 
   getFilteredSessions(): ChatSession[] {
@@ -1391,6 +1396,14 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.cdr.detectChanges();
   }
   get harnessActivity() { return this.agentChatService.harnessActivity; }
+  get activityIndicator(): ChatActivity {
+    return chatActivity({ streaming: this.isStreaming, loading: this.isLoading, compacting: this.isCompacting,
+      transcriptLoading: this.workspaceTranscriptLoading, harness: this.harnessActivity,
+      message: this.messages[this.messages.length - 1] });
+  }
+  sessionActivity(sessionId: string): ChatActivity {
+    return this.currentSession?.id === sessionId ? this.activityIndicator : IDLE_CHAT_ACTIVITY;
+  }
   get liveControlsReady(): boolean { return this.isStreaming && !!this.agentChatService.liveControlsReady; }
   get liveInputHistory(): string[] { return this.agentChatService.liveInputHistory || []; }
   harnessControlPending = false;
@@ -1974,8 +1987,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
    *  1. Strip HTML tags.
    *  2. Remove markdown formatting characters (**, __, ~~, #, `, [](), ![]()).
    *  3. Collapse whitespace/underscore/dash-only runs.
-   *  4. Trim to ≤60 chars on a word boundary.
-   *  5. Fallback to "Chat — {short date}" when result is empty.
+   *  4. Preserve the full text and fallback to "Chat — {short date}" when result is empty.
    */
   sanitizeSessionTitle(raw: string): string {
     if (!raw) return this.fallbackSessionTitle();
@@ -1991,12 +2003,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       .replace(/[*_~#>]+/g, ' ');        // bold/italic/heading/blockquote markers
     // 3. Collapse whitespace, underscore-only and dash-only runs
     title = title.replace(/[\s_-]+/g, ' ').trim();
-    // 4. Trim to ≤60 chars, break on word boundary
-    if (title.length > 60) {
-      const cut = title.substring(0, 60).lastIndexOf(' ');
-      title = (cut > 20 ? title.substring(0, cut) : title.substring(0, 60)).trimEnd() + '…';
-    }
-    // 5. Fallback
+    // Keep the full title; every title surface wraps instead of truncating it.
+    // Fallback
     return title.length > 0 ? title : this.fallbackSessionTitle();
   }
 
@@ -2312,7 +2320,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.agentsLoading = true;
     this.agentsError = null;
     this.cdr.markForCheck();
-    this.agentService.getChatHarnessAgents(false, this.agentWorkingDirectory()).subscribe({
+    this.agentService.getChatHarnessAgents(false, this.agentWorkingDirectory(), this.workspaceChat?.id).subscribe({
       next: (agents: AgentProvider[]) => {
         this.ngZone.run(() => {
           this.agents = agents;
@@ -2359,7 +2367,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.agentsLoading = true;
     this.agentsError = null;
     this.cdr.markForCheck();
-    this.agentService.refreshChatHarnessAgents(this.agentWorkingDirectory()).subscribe({
+    this.agentService.refreshChatHarnessAgents(this.agentWorkingDirectory(), this.workspaceChat?.id).subscribe({
       next: (agents: AgentProvider[]) => {
         this.ngZone.run(() => {
           this.agents = agents;
@@ -3499,7 +3507,22 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
    * validates, and persists the id; the outcome streams to the modal bus.
    */
   selectModel(modelId: string): void {
+    if (this.transcriptReadOnly || this.lifecycleBusy) return;
+    // Header selection must not consume an unfinished composer draft or its files.
+    const draft = this.userInput;
+    const attachments = this.pendingAttachments;
+    this.pendingAttachments = [];
     this.selectCliCommand('/model', modelId);
+    this.userInput = draft;
+    this.pendingAttachments = attachments;
+  }
+
+  get modelSelectorOutcome(): CommandOutcome | null {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const outcome = this.messages[i].commandOutcome;
+      if (outcome?.data?.menu === 'model' || outcome?.command?.split(/\s+/)[0] === '/model') return outcome;
+    }
+    return null;
   }
 
   /**
@@ -3534,13 +3557,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.sendMessage();
   }
 
-  /**
-   * Welcome-state entry point into the same CLI /model flow as the settings
-   * modal: open the Session Configuration dialog. The CLI replies with the
-   * real catalog, which the dialog renders.
-   */
+  /** Welcome action focuses the model dropdown above the conversation. */
   openWelcomeModelPicker(): void {
-    this.openCommandConfig();
+    this.modelSelector?.focus();
   }
 
   /**
@@ -3595,7 +3614,6 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         this.userInput = commandLine;
         this.sendMessage();
       },
-      selectModel: (modelId: string) => this.selectModel(modelId),
       selectRole: (roleName: string) => this.selectRole(roleName),
       toggleFastMode: (enabled: boolean) => this.toggleFastMode(enabled),
       toggleUltracode: (enabled: boolean) => this.toggleUltracode(enabled),

@@ -13,6 +13,33 @@ class ChatWorkspaceStoreTest {
     @TempDir Path temp;
     private ChatWorkspaceStore store() { return new ChatWorkspaceStore(temp.resolve(".kompile/chat-workspace.json")); }
 
+    @Test void nativeReferencesAreStableSourceAndFolderQualifiedWithoutCopyingTranscripts() throws Exception {
+        Path vendor = Files.createDirectory(temp.resolve("vendor"));
+        Path transcript = vendor.resolve("original.jsonl");
+        Files.writeString(transcript, "native transcript remains unchanged");
+        var claude = store().referenceNativeChat(temp, "claude-code", "native-id", "claude", "Original title");
+        assertEquals(claude, store().referenceNativeChat(temp, "claude-code", "native-id", "claude", "Updated vendor title"));
+        assertEquals(claude, store().findChat(temp, claude.id()));
+        assertEquals("claude-code", claude.nativeSource());
+        assertEquals("native-id", claude.nativeSessionId());
+        assertEquals("claude", claude.framework());
+        var codex = store().referenceNativeChat(temp, "codex", "native-id", "codex", "Codex title");
+        var other = store().referenceNativeChat(vendor, "claude-code", "native-id", "claude", "Other folder");
+        assertNotEquals(claude.id(), codex.id());
+        assertNotEquals(claude.id(), other.id());
+        assertEquals(2, store().read().projects().get(0).chats().size());
+        assertEquals("native transcript remains unchanged", Files.readString(transcript));
+        assertFalse(Files.exists(temp.resolve("conversations")));
+    }
+
+    @Test void invalidNativeReferencesDoNotRegisterDirectories() throws Exception {
+        assertThrows(IllegalArgumentException.class, () -> store().referenceNativeChat(temp, null, null, "claude", "title"));
+        assertThrows(IllegalArgumentException.class, () -> store().referenceNativeChat(temp, "../claude", "id", "claude", "title"));
+        assertThrows(IllegalArgumentException.class, () -> store().referenceNativeChat(temp, "codex", "", "codex", "title"));
+        assertThrows(IllegalArgumentException.class, () -> store().referenceNativeChat(temp, "codex", "id", null, "title"));
+        assertTrue(store().read().projects().isEmpty());
+    }
+
     @Test void projectsAndIndependentChatsSurviveReopening() throws Exception {
         Path first = Files.createDirectory(temp.resolve("first"));
         Path second = Files.createDirectory(temp.resolve("second"));
@@ -30,6 +57,21 @@ class ChatWorkspaceStoreTest {
         assertNotEquals(a.id(), c.id());
         assertEquals("New Chat", c.name());
         assertEquals(first.toRealPath(), store().resolveRegisteredDirectory(first.toString()));
+    }
+
+    @Test void frameworkSelectionsAreIndependentAndSurviveReopening() throws Exception {
+        var project = store().register(temp);
+        var claude = store().createChat(project.id(), "Claude", "claude", "sonnet");
+        var zai = store().createChat(project.id(), "Z.ai", "opencode", "zai/glm-5");
+        var legacy = store().createChat(project.id(), "Folder default");
+        assertEquals(claude, store().findChat(temp, claude.id()));
+        assertEquals(zai, store().findChat(temp, zai.id()));
+        assertNull(store().findChat(temp.resolve(".kompile"), claude.id()));
+        assertNull(legacy.framework());
+        assertNull(legacy.model());
+        assertThrows(IllegalArgumentException.class, () -> store().createChat(project.id(), "bad", "../claude", null));
+        assertThrows(IllegalArgumentException.class, () -> store().createChat(project.id(), "bad", "codex", "--last"));
+        assertEquals(3, store().read().projects().get(0).chats().size());
     }
 
     @Test void newProjectCreatesOnlyItsFolderAndPersistsCanonicalIdentity() throws Exception {

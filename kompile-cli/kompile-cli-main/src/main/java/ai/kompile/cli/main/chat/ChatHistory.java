@@ -232,8 +232,25 @@ public class ChatHistory {
         }
     }
 
+    public String renameSession(String title) {
+        try {
+            String updated = KompileTranscriptFormat.writeTitleOverride(transcriptFile, title);
+            logSessionTitle(updated);
+            return updated;
+        } catch (IOException failed) {
+            throw new IllegalStateException("Could not save session title", failed);
+        }
+    }
+
+    public String readTitleOverride() {
+        try { return KompileTranscriptFormat.readTitleOverride(transcriptFile); }
+        catch (IOException unavailable) { return null; }
+    }
+
     /** Return the latest explicit title recorded for this transcript, if any. */
     public String readSessionTitle() {
+        String override = readTitleOverride();
+        if (override != null) return override;
         if (!Files.exists(transcriptFile)) return null;
         String latest = null;
         try (BufferedReader reader = Files.newBufferedReader(transcriptFile, StandardCharsets.UTF_8)) {
@@ -339,6 +356,9 @@ public class ChatHistory {
     }
 
     public synchronized void close() {
+        // A late dispatch callback must not lazily reopen the previous owner's
+        // transcript after a same-terminal reset has resumed it in a new process.
+        opened = false;
         if (writer != null) {
             writer.close();
             writer = null;
@@ -401,71 +421,18 @@ public class ChatHistory {
             File file = transcript.file();
             String fileName = file.getName();
             String sid = fileName.substring(0, fileName.length() - ".txt".length());
-            String title = "";
             List<String> harvested = new ArrayList<>();
             try (BufferedReader reader = new BufferedReader(
                     new FileReader(file, StandardCharsets.UTF_8))) {
                 String line;
-                String started = "";
-                String agent = "";
-                String recordedDirectory = null;
-                boolean metadataWindow = true;
-                boolean insideReminderBlock = false;
+                var header = KompileTranscriptFormat.readHeader(file.toPath());
+                String title = header.title();
+                String started = header.started() == null ? "" : header.started();
+                String agent = header.agent();
+                String recordedDirectory = header.workingDirectory();
                 while ((line = reader.readLine()) != null) {
                     if (line.startsWith("[harvested:") && line.endsWith("]")) {
                         harvested.add(line.substring(11, line.length() - 1));
-                    }
-                    if (line.startsWith(TITLE_PREFIX)) {
-                        String explicitTitle = line.substring(TITLE_PREFIX.length()).strip();
-                        if (!explicitTitle.isEmpty()) title = explicitTitle;
-                        continue;
-                    }
-                    if (line.startsWith("[resumed")) {
-                        metadataWindow = true;
-                        continue;
-                    }
-                    if (line.startsWith("> ")) {
-                        metadataWindow = false;
-                        if (!title.isEmpty()) {
-                            continue;
-                        }
-                        String candidate = line.substring(2).trim();
-                        // Reminder decoration wraps the outbound prompt; skip the whole
-                        // block so titles reflect the real user request, not the wrapper.
-                        if (ReminderManager.opensReminderBlock(candidate)) {
-                            insideReminderBlock = true;
-                            continue;
-                        }
-                        if (insideReminderBlock) {
-                            if (ReminderManager.closesReminderBlock(candidate)) {
-                                insideReminderBlock = false;
-                            }
-                            continue;
-                        }
-                        // Skip Claude Code internal command messages — not real user content
-                        if (candidate.startsWith("<local-command-") || candidate.startsWith("<command-")) {
-                            continue;
-                        }
-                        title = candidate;
-                        // For enforcer sessions, the first user message is boilerplate.
-                        // Read ahead to find the actual user prompt after "## User Prompt".
-                        if (title.startsWith("# Enforcer-Controlled Task")) {
-                            String userPrompt = extractEnforcerUserPrompt(reader);
-                            if (userPrompt != null && !userPrompt.isEmpty()) {
-                                title = userPrompt;
-                            }
-                        }
-                        continue;
-                    }
-                    if (line.startsWith("< ") || line.startsWith("[agent:")) {
-                        metadataWindow = false;
-                        insideReminderBlock = false;
-                    } else if (metadataWindow && line.startsWith("Started:")) {
-                        started = line.substring(8).trim();
-                    } else if (metadataWindow && line.startsWith("Agent:")) {
-                        agent = line.substring(6).trim();
-                    } else if (metadataWindow && line.startsWith("CWD:")) {
-                        recordedDirectory = line.substring(4).trim();
                     }
                 }
 
@@ -474,12 +441,12 @@ public class ChatHistory {
                     continue;
                 }
                 // Skip empty sessions (header-only stubs with no user messages)
-                if (title.isEmpty()) {
+                if ("(untitled)".equals(title)) {
                     continue;
                 }
                 results.add(new ConversationSummary(
                         sid,
-                        title.length() > 80 ? title.substring(0, 77) + "..." : title,
+                        title,
                         started,
                         agent,
                         transcript.lastModified(),

@@ -21,7 +21,6 @@ import java.util.concurrent.TimeUnit;
 public final class TerminalTitleController {
     private static final String ESC = "\033]";
     private static final String BEL = "\007";
-    private static final int MAX_TITLE_LENGTH = 120;
     private static final String[] BUSY_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"};
     /** Fixed icon so a foreground tool call reads differently from model thinking. */
     private static final String TOOL_ICON = "⚙";
@@ -202,8 +201,6 @@ public final class TerminalTitleController {
     private static String sanitize(String title) {
         String clean = title.replace("\033", "").replace("\007", "")
                 .replace('\n', ' ').replace('\r', ' ').trim();
-        return clean.length() <= MAX_TITLE_LENGTH
-                ? clean
-                : clean.substring(0, MAX_TITLE_LENGTH - 1) + "…";
+        return clean;
     }
 }

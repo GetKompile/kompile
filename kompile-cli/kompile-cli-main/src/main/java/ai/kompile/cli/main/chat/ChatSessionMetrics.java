@@ -704,13 +704,31 @@ public class ChatSessionMetrics {
     /**
      * Saves metrics to a JSON file alongside the transcript.
      */
-    public void saveToFile(Path metricsFile, ObjectMapper mapper) {
+    /** Publish completed usage/compaction events while the session is still running. */
+    public void enableLivePersistence(Path metricsFile, ObjectMapper mapper) {
+        if (metricsFile == null) return;
+        addChangeListener(() -> saveToFile(metricsFile, mapper));
+        saveToFile(metricsFile, mapper);
+    }
+
+    public synchronized void saveToFile(Path metricsFile, ObjectMapper mapper) {
+        Path temporary = null;
         try {
-            Files.createDirectories(metricsFile.getParent());
+            Path target = metricsFile.toAbsolutePath();
+            Files.createDirectories(target.getParent());
             String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(toJson(mapper));
-            Files.writeString(metricsFile, json);
+            temporary = Files.createTempFile(target.getParent(), ".metrics-", ".tmp");
+            Files.writeString(temporary, json);
+            try {
+                Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(temporary, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
             System.err.println("Warning: Failed to save session metrics: " + e.getMessage());
+        } finally {
+            if (temporary != null) try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
         }
     }
 

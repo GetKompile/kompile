@@ -22,9 +22,9 @@ You MUST use kompile MCP tools for ALL file I/O, search, and web operations. Thi
 
 The `bash` and `process` tools are RESTRICTED to system commands only: compiling, testing, git operations, package managers, and starting services. Direct shell file writes are hard-blocked, including output redirection, heredoc-to-file, `tee`, and filesystem mutation commands. `head`/`tail` are banned as bash commands — on files (use `read`) and as pipeline filters (`| head`/`| tail` hard-blocked); page with `fetch_result`, use `process action=output` + `tail_lines`/`stream`, native flags (`git log -5`), and the `grep` tool.
 
-`sed` is hard-blocked in `bash`/`process`, including pipeline filters and stdin. Use the Kompile `grep` tool for searching/filtering, `read` with offset/limit for line ranges, and `edit` for file rewrites. Do not retry with a shell workaround.
+`cat` (use `read`), `sed`, and `grep`/`egrep`/`fgrep`/`rg`/`ag`/`ack` are hard-blocked in `bash`/`process`, including after `cd`, in command chains, behind wrappers, on pipelines, and on stdin. Capture build/process output with `process`, then search its output file using the `grep` tool. Use the Kompile `grep` tool for searching/filtering, `read` with offset/limit for line ranges, and `edit` for file rewrites. Do not retry with a shell workaround.
 
-Waiting is monitor-only. NEVER block on `sleep`/`usleep`/`at` in `bash`/`process` — the harness hard-blocks them. Launch work with `process action=launch` (completion monitor installed automatically) or `action=monitor` for an existing process; the harness wakes you on exit. Poll `action=status`/`output`/`stream` between other work.
+Waiting is monitor-only. NEVER use `until` loops (even without `sleep`), other shell loops (`while`/`for`/`select`), or `sleep`/`usleep`/`at` in `bash`/`process` — the harness hard-blocks them. Launch work with `process action=launch` (completion monitor installed automatically) or `action=monitor` for an existing process; the harness wakes you on exit. Poll `action=status`/`output`/`stream` between other work.
 
 Managed memory is hard-routed. NEVER target `.kompile/memory/**` or provider memory directories with generic `write`, `edit`, `edit_batch`, `edit_patch`, or `patch`; use `memory` for Kompile memory (`todowrite` for task state). Provider memory is read-only through the `memory` scan/read actions.
 

@@ -330,6 +330,18 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     }
 
     @Override
+    public JsonNode capabilities(String workingDirectory, boolean refresh, String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return capabilities(workingDirectory, refresh);
+        try {
+            Path directory = resolveWorkingDirectory(workingDirectory);
+            // Session selections must never leak through the folder capability cache.
+            return normalizeCapabilities(probeCapabilities(directory, sessionId));
+        } catch (IOException invalid) {
+            return unavailableCapabilities(invalid.getMessage());
+        }
+    }
+
+    @Override
     public Map<String, Object> contextBudget(String agentName, String workingDirectory) {
         JsonNode capability = capabilities(workingDirectory, false);
         Map<String, Object> result = new LinkedHashMap<>();
@@ -373,7 +385,21 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         Thread outReader = null;
         Thread errReader = null;
         try {
-            process = processStarter.start(oneShotCommand(workDir), workDir);
+            List<String> command = new ArrayList<>(oneShotCommand(workDir));
+            var route = workspaceRoute(workDir, browserSessionId);
+            if (route != null && route.framework() != null && !transcriptExists(harnessSessionId)) {
+                command.add("--mode");
+                command.add(route.framework().equals("standard") ? "standard" : "passthrough");
+                if (!route.framework().equals("standard")) {
+                    command.add("--agent");
+                    command.add(route.framework());
+                }
+                if (route.model() != null) {
+                    command.add("--model");
+                    command.add(route.model());
+                }
+            }
+            process = processStarter.start(command, workDir);
             ObjectNode input = mapper.createObjectNode();
             input.put("version", 1);
             input.put("rawInput", "");
@@ -1058,8 +1084,14 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         // restores the team it recorded, so the flag is never repeated.
         String workflow = WebChatContext.workflow();
         if (!resume && workflow != null) command.add("--workflow=" + workflow);
+        var route = workspaceRoute(workDir, browserSessionId(request));
         String selector = effectiveSelector(request);
-        if (selector.startsWith("role:")) {
+        if (!resume && route != null && route.framework() != null && !route.framework().equals("standard")) {
+            command.add("--mode");
+            command.add("passthrough");
+            command.add("--agent");
+            command.add(route.framework());
+        } else if (selector.startsWith("role:")) {
             command.add("--role");
             command.add(selector.substring("role:".length()));
             command.add("--agent");
@@ -1067,6 +1099,16 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         } else {
             command.add("--agent");
             command.add(selector);
+        }
+        if (!resume && route != null) {
+            if ("standard".equals(route.framework())) {
+                command.add("--mode");
+                command.add("standard");
+            }
+            if (route.model() != null) {
+                command.add("--model");
+                command.add(route.model());
+            }
         }
         command.add(request.isEnableRag() || request.isEnableGraphRag() ? "--rag" : "--no-rag");
         command.add(request.isEnableMemory() ? "--memory" : "--no-memory");
@@ -1079,6 +1121,15 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         }
         command.add("-");
         return List.copyOf(command);
+    }
+
+    private ai.kompile.cli.common.ChatWorkspaceStore.Chat workspaceRoute(Path directory, String browserId) {
+        if (!WebChatContext.workspace()) return null;
+        try {
+            return new ai.kompile.cli.common.ChatWorkspaceStore().findChat(directory, browserId);
+        } catch (IOException invalid) {
+            throw new IllegalArgumentException("Cannot read the workspace chat route: " + invalid.getMessage(), invalid);
+        }
     }
 
     String buildSupplementalContext(AgentChatRequest request, boolean resume) {
@@ -1174,7 +1225,9 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         return result.append("</browser_attachment_files>").toString();
     }
 
-    private JsonNode probeCapabilities(Path workDir) {
+    private JsonNode probeCapabilities(Path workDir) { return probeCapabilities(workDir, null); }
+
+    private JsonNode probeCapabilities(Path workDir, String sessionId) {
         Process process = null;
         StringBuffer stdout = new StringBuffer();
         StringBuffer stderr = new StringBuffer();
@@ -1185,6 +1238,16 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             command.add("chat");
             if (WebChatContext.globalConfig()) command.add("--global-config");
             command.add("--capabilities");
+            if (sessionId != null && !sessionId.isBlank()) {
+                String canonicalId = harnessSessionId(workDir, sessionId);
+                command.add("--resume"); command.add(canonicalId);
+                var route = workspaceRoute(workDir, sessionId);
+                if (route != null && route.framework() != null) {
+                    command.add("--mode"); command.add("standard".equals(route.framework()) ? "standard" : "passthrough");
+                    if (!"standard".equals(route.framework())) { command.add("--agent"); command.add(route.framework()); }
+                    if (route.model() != null) { command.add("--model"); command.add(route.model()); }
+                }
+            }
             command.add("--working-dir");
             command.add(workDir.toString());
             process = processStarter.start(command, workDir);

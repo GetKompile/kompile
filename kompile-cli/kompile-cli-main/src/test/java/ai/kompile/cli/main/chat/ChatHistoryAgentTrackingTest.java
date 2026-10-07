@@ -166,6 +166,25 @@ class ChatHistoryAgentTrackingTest {
         assertEquals("", NativeResumeCoordinator.normalizeAgent(null));
     }
 
+    @Test
+    void closedHistoryCannotReopenFromLateCallbacksUntilExplicitlyOpened() throws Exception {
+        ChatHistory history = new ChatHistory("closed-owner");
+        history.open("(local)", "codex", false, tempDir);
+        history.logUserMessage("before reset");
+        history.close();
+        String closed = Files.readString(transcriptPath("closed-owner"));
+        history.logSystem("late system callback");
+        history.logUserMessage("late user callback");
+        history.logAssistantMessage("late assistant callback", 0, 0);
+        history.logAgentResponse("codex", "late agent callback", 0);
+        assertEquals(closed, Files.readString(transcriptPath("closed-owner")));
+
+        history.open("(local)", "codex", false, tempDir);
+        history.logUserMessage("explicitly reopened");
+        history.close();
+        assertTrue(Files.readString(transcriptPath("closed-owner")).contains("explicitly reopened"));
+    }
+
     private static long countAgentLines(Path transcript) throws Exception {
         return Files.readAllLines(transcript).stream()
                 .filter(line -> line.startsWith("Agent:"))

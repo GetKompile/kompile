@@ -47,6 +47,17 @@ class InsightsQueryTest {
     }
 
     @Test
+    void allSessionsCanBeRequestedExplicitly() {
+        InsightsQuery scoped = InsightsQuery.parse("tools", "tokens session:other tool:read last 7 days",
+                List.of(), NOW, ZoneOffset.UTC, 7);
+        assertEquals(Set.of("other"), scoped.getSessionIds());
+        assertFalse(scoped.inScope("chat-1"));
+        assertTrue(scoped.inScope("other"));
+        assertEquals("last 7 days", scoped.getWindow().label());
+        assertEquals(Set.of("other"), ask("tokens this session session:other").getSessionIds());
+    }
+
+    @Test
     void theDefaultWindowIsTheConfiguredDays() {
         InsightsWindow window = window("slowest tools");
 

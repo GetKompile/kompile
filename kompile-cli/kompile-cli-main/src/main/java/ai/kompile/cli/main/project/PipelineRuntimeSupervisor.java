@@ -182,6 +182,7 @@ public final class PipelineRuntimeSupervisor {
                     ManagedRuntime::close);
 
     static {
+        ai.kompile.cli.main.chat.SessionRestartLauncher.registerRestartCleanup(POOL::close);
         Runtime.getRuntime().addShutdownHook(new Thread(
                 POOL::clear, "pipeline-runtime-pool-shutdown"));
     }

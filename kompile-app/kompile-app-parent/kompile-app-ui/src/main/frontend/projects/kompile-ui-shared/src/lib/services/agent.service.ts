@@ -150,11 +150,12 @@ export class AgentService extends BaseService {
    * a second web-owned agent registry.
    */
   getChatHarnessAgents(refresh: boolean = false,
-                       workingDirectory?: string): Observable<AgentProvider[]> {
+                       workingDirectory?: string, sessionId?: string): Observable<AgentProvider[]> {
     this.loadingSubject.next(true);
     this.errorSubject.next(null);
     const params: { [key: string]: string } = { refresh: String(refresh) };
     if (workingDirectory) params['workingDirectory'] = workingDirectory;
+    if (sessionId) params['sessionId'] = sessionId;
     return this.http.get<ChatHarnessCapabilities>(
       `${this.backendUrl}/agents/chat/capabilities`, { params }).pipe(
       tap(capabilities => {
@@ -205,8 +206,8 @@ export class AgentService extends BaseService {
     );
   }
 
-  refreshChatHarnessAgents(workingDirectory?: string): Observable<AgentProvider[]> {
-    return this.getChatHarnessAgents(true, workingDirectory);
+  refreshChatHarnessAgents(workingDirectory?: string, sessionId?: string): Observable<AgentProvider[]> {
+    return this.getChatHarnessAgents(true, workingDirectory, sessionId);
   }
 
   /**

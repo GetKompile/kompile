@@ -90,7 +90,7 @@ public final class ChatHarnessCapabilities {
         return inspect(workDir, config);
     }
 
-    static Report inspect(Path workingDirectory, ChatConfig config) {
+    public static Report inspect(Path workingDirectory, ChatConfig config) {
         AgentRegistry registry = new AgentRegistry();
         for (AgentConfig custom : new CustomAgentLoader(workingDirectory).loadAll().values()) {
             registry.register(custom);
@@ -114,10 +114,17 @@ public final class ChatHarnessCapabilities {
                     "role", role.getName(), false, role.isCustom(), ready));
         }
 
+        if (config != null && "passthrough".equalsIgnoreCase(config.getChatMode())) {
+            personas.clear();
+            personas.add(new Persona(config.getPassthroughAgent(), config.getPassthroughAgent(),
+                    "Managed native framework (its own vendor login and model)", "agent",
+                    config.getPassthroughAgent(), true, false, ready));
+        }
         int contextWindow = 0;
         int maxOutputTokens = 0;
         int inputBudgetTokens = 0;
-        if (config != null && config.getModel() != null && !config.getModel().isBlank()) {
+        boolean passthrough = config != null && "passthrough".equalsIgnoreCase(config.getChatMode());
+        if (!passthrough && config != null && config.getModel() != null && !config.getModel().isBlank()) {
             ModelContextResolver.ModelLimits limits =
                     new ModelContextResolver().resolveLimits(config, null);
             contextWindow = limits.contextWindow();
@@ -133,7 +140,7 @@ public final class ChatHarnessCapabilities {
         ObjectMapper mapper = JsonUtils.standardMapper();
         boolean workflowEnabled = HarnessConfig.load(mapper).isJudgeGlobalEnabled();
         boolean attachmentsSupported = false;
-        if (ready) {
+        if (ready && !passthrough) {
             try (DirectLlmClient client = new DirectLlmClient(
                     config, mapper, workingDirectory)) {
                 attachmentsSupported = client.supportsAttachments(null);
@@ -143,16 +150,16 @@ public final class ChatHarnessCapabilities {
                 "kompile-cli-main",
                 ready,
                 status,
-                config == null ? "" : empty(config.getProvider()),
+                config == null ? "" : empty(passthrough ? config.getPassthroughAgent() : config.getProvider()),
                 config == null ? "" : empty(config.getModel()),
                 config == null ? "" : empty(config.getChatMode()),
                 contextWindow,
                 maxOutputTokens,
                 inputBudgetTokens,
                 config == null ? 0.85d : config.getAutoCompactThreshold(),
-                config == null || config.isDefaultMemory(),
-                config != null && config.isDefaultRag(),
-                workflowEnabled,
+                !passthrough && (config == null || config.isDefaultMemory()),
+                !passthrough && config != null && config.isDefaultRag(),
+                !passthrough && workflowEnabled,
                 attachmentsSupported,
                 List.copyOf(personas));
     }
@@ -177,8 +184,22 @@ public final class ChatHarnessCapabilities {
         root.put("ragEnabled", report.ragEnabled());
         root.put("workflowEnabled", report.workflowEnabled());
         root.put("attachmentsSupported", report.attachmentsSupported());
+        boolean passthrough = "passthrough".equalsIgnoreCase(report.chatMode());
+        ArrayNode frameworks = root.putArray("frameworks");
+        ChatConfig.getPassthroughAgents().forEach((id, label) -> {
+            ObjectNode nativeFramework = frameworks.addObject();
+            nativeFramework.put("id", id);
+            nativeFramework.put("name", label);
+            nativeFramework.put("displayName", label);
+            nativeFramework.put("mode", "passthrough");
+            nativeFramework.put("managed", true);
+            nativeFramework.put("supported", ai.kompile.cli.main.chat.agent.SubprocessAgentRunner.supportsHeadless(id));
+            nativeFramework.put("available", ai.kompile.cli.main.chat.agent.SubprocessAgentRunner.supportsHeadless(id)
+                    && ai.kompile.cli.main.chat.agent.SubprocessAgentRunner.resolveAgentBinary(id) != null);
+        });
         ObjectNode controls = root.putObject("webControls");
-        controls.put("supported", true);
+        controls.put("supported", !passthrough);
+        if (passthrough) controls.put("limitation", "One-turn native run; process-tree cancellation only. No background, live input, subagent or native interactive approval controls.");
         controls.put("optIn", true);
         controls.put("option", "--web-controls");
         controls.put("version", 1);
@@ -193,10 +214,15 @@ public final class ChatHarnessCapabilities {
         controls.putArray("actions").add("background").add("process_list").add("process_output")
                 .add("process_kill").add("input").add("command").add("subagent_input").add("subagent_cancel")
                 .add("workflow_approve");
+        if (passthrough) {
+            controls.putArray("actions");
+            controls.put("eofBehavior", "one turn; stdin is not a native interaction channel");
+        }
         // Slash commands the running harness answers itself; other builtins wait for the run to end.
         ArrayNode liveCommands = controls.putArray("liveCommands");
         ChatCommandCatalog.liveRunCommands().stream().sorted().forEach(liveCommands::add);
         controls.putArray("events").add("control").add("activity").add("turn_started").add("turn_complete");
+        if (passthrough) { controls.putArray("liveCommands"); controls.putArray("events"); }
         controls.put("backgroundEligibility", "blocking subagent invocation only; acknowledged after detach");
         ObjectNode webInput = root.putObject("webInput");
         webInput.put("format", WebChatInput.FORMAT);
@@ -219,6 +245,10 @@ public final class ChatHarnessCapabilities {
                 "/model, /role, /fast, and /ultracode persist their selections per session id + working "
                         + "directory; a stored model or role applies to later MODEL_INPUT turns "
                         + "and /fast and /ultracode write the chat configuration toggle.");
+        if (passthrough) {
+            webInput.putArray("durableSessionCommandNames").add("model");
+            webInput.put("durableSessionCommandsNote", "Native /model accepts the framework's own model ID and persists it for this chat only. Create a new chat to switch framework.");
+        }
         ArrayNode commands = root.putArray("commands");
         for (var entry : ChatCommandCatalog.entries()) {
             ObjectNode command = commands.addObject();
@@ -242,10 +272,11 @@ public final class ChatHarnessCapabilities {
     }
 
     private static boolean isRunnable(ChatConfig config) {
-        return config != null
-                && config.isValid()
-                && !"passthrough".equalsIgnoreCase(config.getChatMode())
-                && !config.isKompileServer();
+        if (config != null && "passthrough".equalsIgnoreCase(config.getChatMode()))
+            return config.isPassthroughManaged()
+                    && ai.kompile.cli.main.chat.agent.SubprocessAgentRunner.supportsHeadless(config.getPassthroughAgent())
+                    && ai.kompile.cli.main.chat.agent.SubprocessAgentRunner.resolveAgentBinary(config.getPassthroughAgent()) != null;
+        return config != null && config.isValid() && !config.isKompileServer();
     }
 
     private static String status(ChatConfig config) {
@@ -253,7 +284,8 @@ public final class ChatHarnessCapabilities {
             return "No standard chat configuration found. Run `kompile chat --setup`.";
         }
         if ("passthrough".equalsIgnoreCase(config.getChatMode())) {
-            return "Web harness chat requires standard mode; configure a provider with `kompile chat --setup`.";
+            return isRunnable(config) ? "ready (bounded native passthrough; no live controls)"
+                    : "Native web passthrough requires an installed managed framework with a verified structured/exact-resume contract.";
         }
         if (config.isKompileServer()) {
             return "Web harness chat cannot target the same Kompile chat server recursively; configure a direct or kompile-local provider.";

@@ -32,6 +32,7 @@ import ai.kompile.cli.main.chat.exec.ChatAttachmentLoader;
 import ai.kompile.cli.main.chat.exec.ChatHarnessCapabilities;
 import ai.kompile.cli.main.chat.exec.ExecJsonEvents;
 import ai.kompile.cli.main.chat.exec.HeadlessAgentRunner;
+import ai.kompile.cli.main.chat.exec.HeadlessPassthroughRunner;
 import ai.kompile.cli.main.chat.exec.HeadlessRunEvent;
 import ai.kompile.cli.main.chat.exec.PromptResolver;
 import ai.kompile.cli.main.chat.exec.WebChatInput;
@@ -384,8 +385,9 @@ public class ChatCommand implements Callable<Integer> {
             if (unsupported != null) return printError(unsupported, 2);
         }
         if (printCapabilities) {
+            ChatConfig capabilityConfig = resolveWebRouteConfig(resumeSessionId);
             System.out.println(ChatHarnessCapabilities.toJson(
-                    ChatHarnessCapabilities.inspect(effectiveWorkingDirectory(), globalConfig)));
+                    ChatHarnessCapabilities.inspect(effectiveWorkingDirectory(), capabilityConfig)));
             return 0;
         }
         boolean headless = isHeadlessRequested();
@@ -409,6 +411,17 @@ public class ChatCommand implements Callable<Integer> {
                         throw new IllegalArgumentException("Unsupported --input-format: " + inputFormat);
                     }
                     webInput = WebChatInput.parse(resolvedPrompt);
+                    ChatConfig nativeConfig = resolveWebRouteConfig(webInput.sessionId());
+                    if (nativeConfig != null && "passthrough".equalsIgnoreCase(nativeConfig.getChatMode())) {
+                        if (webInput.sessionId() != null && !webInput.sessionId().isBlank()) sessionId = webInput.sessionId();
+                        if (sessionId == null || sessionId.isBlank()) sessionId = newTranscriptUuid();
+                        if (ChatConfig.loadSession(sessionId) == null) applyCommandLineOverrides(nativeConfig);
+                        if (blankToNull(role) != null || blankToNull(workflow) != null)
+                            return headlessError("Native web passthrough does not support Kompile roles or workflow controls.", 2);
+                        if (liveControls != null) { liveControls.close(); liveControls = null; }
+                        return runHeadlessTurn(nativeConfig, null, resumeSessionId != null, null,
+                                webInput.rawInput(), headlessMode);
+                    }
                     // Headless session-configuration read: no model configuration or
                     // transcript machinery is required — the runner answers directly.
                     if (webInput.configQuery()) {
@@ -704,8 +717,8 @@ public class ChatCommand implements Callable<Integer> {
 
     static String webConfigError(ChatConfig config) {
         if (config == null) return "Setup cancelled, save failed, or no saved chat configuration found.";
-        if (!"standard".equalsIgnoreCase(config.getChatMode()) || config.isKompileServer()) {
-            return "--web requires a saved Standard Chat direct/local provider, not passthrough, resume, or a Kompile server.";
+        if (!SetupWizard.supportsWeb(config)) {
+            return "--web requires a saved Standard Chat direct/local provider or managed passthrough; direct passthrough styles and Kompile servers are terminal-only.";
         }
         return config.isValid() ? null : "Incomplete chat configuration; run kompile chat --setup --web.";
     }
@@ -764,6 +777,8 @@ public class ChatCommand implements Callable<Integer> {
             WorkflowTeamSnapshot team;
             try {
                 team = workflow == null ? selected.workflow() : resolveWorkflow(false, config);
+                if (team != null && "passthrough".equalsIgnoreCase(config.getChatMode()))
+                    throw new IllegalArgumentException("Native workflow teams require the terminal; web passthrough runs individual chats.");
                 if (team != null) workflowLeadConfig(config, team.team());
             } catch (IllegalArgumentException e) {
                 return printError(e.getMessage(), 2);
@@ -863,6 +878,15 @@ public class ChatCommand implements Callable<Integer> {
 
     void applyCommandLineOverrides(ChatConfig config) {
         if (config == null) return;
+        // Native model ids and frameworks are not standard provider aliases or catalogs.
+        if ("passthrough".equalsIgnoreCase(config.getChatMode())) {
+            if (blankToNull(provider) != null || blankToNull(providerBaseUrl) != null
+                    || blankToNull(authenticationMethod) != null)
+                throw new IllegalArgumentException("Native passthrough uses --agent and native --model, not --provider/--auth/--base-url");
+            if (blankToNull(model) != null) config.setModel(model.trim());
+            if (blankToNull(thinking) != null) config.setThinking(thinking.trim());
+            return;
+        }
         if (blankToNull(provider) != null) {
             String resolvedProvider = resolveProviderOverride(config);
             boolean providerChanged = config.getProvider() == null
@@ -970,9 +994,13 @@ public class ChatCommand implements Callable<Integer> {
             HeadlessAgentRunner.OutputMode outputMode,
             boolean startInstalledChatSubprocess) {
         if ("passthrough".equalsIgnoreCase(config.getChatMode())) {
-            return headlessError(
-                    "Streaming JSON currently requires standard chat mode; use --mode standard with a configured provider or Kompile server.",
-                    2);
+            if (liveControls != null) return headlessError(
+                    "--web-controls lifecycle is unsupported for native passthrough. Use one-turn web-json; cancellation kills the native process tree.", 2);
+            if (isResume && "passthrough".equalsIgnoreCase(mode) && blankToNull(agentName) != null
+                    && !agentName.equalsIgnoreCase(config.getPassthroughAgent()))
+                return headlessError("Native framework is pinned on resume; create a new chat to switch framework.", 2);
+            if (!isResume && "passthrough".equalsIgnoreCase(mode) && blankToNull(agentName) != null) config.setPassthroughAgent(agentName);
+            return runHeadlessTurn(config, null, isResume, resolvedRole, prompt, outputMode);
         }
 
         if (forceLocal && config.isKompileServer()) {
@@ -1060,7 +1088,9 @@ public class ChatCommand implements Callable<Integer> {
                 resolvedRole,
                 dangerouslySkipPermissions,
                 attachments, webInput);
-        return new HeadlessAgentRunner(liveControls).run(options).exitCode();
+        return "passthrough".equalsIgnoreCase(config.getChatMode())
+                ? new HeadlessPassthroughRunner().run(options).exitCode()
+                : new HeadlessAgentRunner(liveControls).run(options).exitCode();
     }
 
     private int headlessError(String message, int exitCode) {
@@ -1120,7 +1150,7 @@ public class ChatCommand implements Callable<Integer> {
 
     ChatConfig normalizeResumeConfig(ChatConfig config, boolean isResume) {
         String requestedMode = mode == null ? "" : mode.trim();
-        if (isResume && resumeSessionId != null && !"passthrough".equalsIgnoreCase(requestedMode)) {
+        if (isResume && resumeSessionId != null) {
             ChatConfig saved = ChatConfig.loadSession(resumeSessionId);
             if (saved != null) return saved;
         }
@@ -1208,6 +1238,16 @@ public class ChatCommand implements Callable<Integer> {
         return config != null && config.isKompileServer() && distributionInstalled
                 && canUseInstalledChatSubprocessFallback()
                 && ChatInstanceBootstrap.isLoopbackHttpUrl(resolveServerUrl(config));
+    }
+
+    private ChatConfig resolveWebRouteConfig(String id) {
+        ChatConfig pinned = id == null || id.isBlank() ? null : ChatConfig.loadSession(id);
+        if (pinned != null) return pinned;
+        ChatConfig config = globalConfig ? ChatConfig.loadGlobalOrFromEnv()
+                : ChatConfig.loadOrFromEnv(effectiveWorkingDirectory());
+        if ("passthrough".equalsIgnoreCase(mode)) return configFromExplicitRoute();
+        if (config != null && "standard".equalsIgnoreCase(mode)) config.setChatMode("standard");
+        return config;
     }
 
     ChatConfig configFromExplicitRoute() {

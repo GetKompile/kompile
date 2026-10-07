@@ -35,6 +35,9 @@ final class ClaudeCliStreamParser {
     record SessionInit(String sessionId) implements Event { }
     record Text(String text) implements Event { }
     record Thinking(String text) implements Event { }
+    /** Transient provider phase; never assistant text or a transcript notice. */
+    record Activity(String label) implements Event { }
+    record ToolProgress(String callId, String name, long elapsedMillis) implements Event { }
     record ToolStart(String callId, String name, String input) implements Event { }
     record ToolInput(String callId, String name, String input) implements Event { }
     record ToolOutput(String callId, String name, String output) implements Event { }
@@ -268,10 +271,9 @@ final class ClaudeCliStreamParser {
      * Claude Code emits many system events for SDK hosts. Only those carrying
      * something a reader should see become events: a {@link Notice}, a
      * {@link Compacted} / {@link CompactionFailed} for session compaction, or a task
-     * lifecycle event for the process panel. Request status, thinking-token
-     * estimates, hook lifecycles and session-state changes are bookkeeping: they
-     * produce nothing, and neither their subtype name nor their JSON is transcript
-     * text.
+     * lifecycle event for the process panel. Request/thinking phases become
+     * transient activity, never transcript text or token usage. Hook lifecycles
+     * and session-state changes remain bookkeeping.
      */
     private List<Event> parseSystem(JsonNode node) {
         return switch (node.path("subtype").asText("")) {
@@ -282,7 +284,9 @@ final class ClaudeCliStreamParser {
                 String session = node.path("session_id").asText("");
                 yield session.isBlank() ? List.of() : List.of(new SessionInit(session));
             }
-            case "status" -> parseStatus(node);
+            case "status" -> mainThread(node) ? parseStatus(node) : List.of();
+            case "thinking_tokens" -> mainThread(node)
+                    ? List.of(new Activity("Thinking")) : List.of();
             case "compact_boundary" -> {
                 // Requests before the boundary measured the context it replaced.
                 requestContextTokens = 0;
@@ -344,14 +348,18 @@ final class ClaudeCliStreamParser {
 
     private static List<Event> parseStatus(JsonNode node) {
         if ("compacting".equals(node.path("status").asText(""))) {
-            return List.of(new Notice("Compacting conversation"));
+            return List.of(new Activity("Compacting Claude context"),
+                    new Notice("Compacting conversation"));
+        }
+        if ("requesting".equals(node.path("status").asText(""))) {
+            return List.of(new Activity("Waiting for Claude response"));
         }
         if ("failed".equals(node.path("compact_result").asText(""))) {
             String detail = node.path("compact_error").asText("").strip();
             return harmlessCompactionFailure(detail) ? List.of() : List.of(new CompactionFailed(detail));
         }
-        // "requesting", a finished compaction and permission-mode changes are
-        // request-lifecycle state. A successful compaction is reported by its
+        // A finished compaction and permission-mode changes carry no live phase.
+        // A successful compaction is reported by its
         // compact_boundary event.
         return List.of();
     }
@@ -423,6 +431,9 @@ final class ClaudeCliStreamParser {
                 block.name = contentBlock.path("name").asText("unknown");
                 block.input = jsonText(contentBlock.path("input"));
                 return startTool(block);
+            }
+            if ("thinking".equals(blockType) || "redacted_thinking".equals(blockType)) {
+                return List.of(new Activity("Thinking"));
             }
             return List.of();
         }
@@ -542,9 +553,18 @@ final class ClaudeCliStreamParser {
 
     private List<Event> parseToolProgress(JsonNode node) {
         String callId = node.path("tool_use_id").asText(node.path("call_id").asText(""));
+        if (callId.isBlank()) return List.of();
+        String name = toolNames.getOrDefault(callId, node.path("tool_name").asText("unknown"));
+        List<Event> events = new ArrayList<>();
+        // Claude's normal heartbeat has elapsed_time_seconds, not output text.
+        JsonNode elapsed = node.path("elapsed_time_seconds");
+        double seconds = elapsed.asDouble(-1);
+        if (elapsed.isNumber() && Double.isFinite(seconds) && seconds >= 0) {
+            events.add(new ToolProgress(callId, name, (long) (seconds * 1000)));
+        }
         String output = firstText(node, "content", "output", "message");
-        if (callId.isBlank() || output.isBlank()) return List.of();
-        return List.of(new ToolOutput(callId, toolNames.getOrDefault(callId, "unknown"), output));
+        if (!output.isBlank()) events.add(new ToolOutput(callId, name, output));
+        return events;
     }
 
     private List<Event> parseResult(JsonNode node) {

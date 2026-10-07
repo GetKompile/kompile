@@ -102,6 +102,33 @@ class KompileCliHarnessClientTest {
     }
 
     @Test
+    void workspaceFrameworkRouteIsUsedOnlyOnTheFirstTurn() throws Exception {
+        String oldMode = System.getProperty(WebChatContext.MODE);
+        System.setProperty(WebChatContext.MODE, "workspace");
+        try {
+            var store = new ai.kompile.cli.common.ChatWorkspaceStore();
+            var project = store.register(tempDir);
+            var nativeChat = store.createChat(project.id(), "Z.ai", "opencode", "zai/glm-5");
+            client = clientWith(new FakeProcess("", "", 0));
+            AgentChatRequest request = request("Hello");
+            request.setSessionId(nativeChat.id());
+            var first = client.buildCommand(List.of("kompile"), request, tempDir, nativeChat.id(), false, 30, List.of());
+            assertEquals("passthrough", first.get(first.indexOf("--mode") + 1));
+            assertEquals("opencode", first.get(first.indexOf("--agent") + 1));
+            assertEquals("zai/glm-5", first.get(first.indexOf("--model") + 1));
+            var resume = client.buildCommand(List.of("kompile"), request, tempDir, nativeChat.id(), true, 30, List.of());
+            assertFalse(resume.contains("--mode"), "resume restores its pinned CLI config");
+            assertFalse(resume.contains("--model"), "do not overwrite later per-session model selections");
+            var otherFolder = Files.createDirectory(tempDir.resolve("other"));
+            var other = client.buildCommand(List.of("kompile"), request, otherFolder, nativeChat.id(), false, 30, List.of());
+            assertFalse(other.contains("--mode"), "routing is scoped to the registered folder");
+        } finally {
+            if (oldMode == null) System.clearProperty(WebChatContext.MODE);
+            else System.setProperty(WebChatContext.MODE, oldMode);
+        }
+    }
+
+    @Test
     void sessionIdentityIsNativeAndNeverAddsOrStripsPrefixes() throws Exception {
         String first = KompileCliHarnessClient.harnessSessionId(tempDir, "browser-42");
         String repeated = KompileCliHarnessClient.harnessSessionId(tempDir, "browser-42");

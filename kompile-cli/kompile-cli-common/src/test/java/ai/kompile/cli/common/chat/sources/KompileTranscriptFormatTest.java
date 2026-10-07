@@ -33,6 +33,12 @@ class KompileTranscriptFormatTest {
     Path tempDir;
 
     @Test
+    void missingTranscriptHasNoTitleOverride() throws Exception {
+        assertEquals("(untitled)", KompileTranscriptFormat.readHeader(null).title());
+        org.junit.jupiter.api.Assertions.assertNull(KompileTranscriptFormat.readTitleOverride(null));
+    }
+
+    @Test
     void roundTripsMultilineAndMultiParagraphTurns() throws Exception {
         Path transcript = tempDir.resolve("session.txt");
         try (PrintWriter writer = new PrintWriter(Files.newBufferedWriter(
@@ -117,6 +123,46 @@ class KompileTranscriptFormatTest {
         assertEquals(List.of(
                 new ChatTurn("user", "hello"),
                 new ChatTurn("assistant", "hi there")), turns);
+    }
+
+    @Test
+    void explicitTitleOverrideKeepsFullTitleWithoutRewritingLiveTranscript() throws Exception {
+        Path transcript = tempDir.resolve("renamed.txt");
+        String content = "> Original prompt\n[title] Older title\n";
+        Files.writeString(transcript, content);
+        String title = "Long title ".repeat(30) + "important ending";
+        assertEquals(title, KompileTranscriptFormat.writeTitleOverride(transcript, title));
+        assertEquals(title, KompileTranscriptFormat.readHeader(transcript).title());
+        assertEquals(content, Files.readString(transcript));
+        Files.writeString(transcript, "[title] Later automatic title\n", java.nio.file.StandardOpenOption.APPEND);
+        assertEquals(title, KompileTranscriptFormat.readHeader(transcript).title());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> KompileTranscriptFormat.writeTitleOverride(transcript, "  \n\t "));
+        Path pending = tempDir.resolve("before-first-turn.txt");
+        KompileTranscriptFormat.writeTitleOverride(pending, "Before first turn");
+        assertEquals("Before first turn", KompileTranscriptFormat.readHeader(pending).title());
+    }
+
+    @Test
+    void titlesUseThePromptAndLatestExplicitRenameNotTheTimestamp() throws Exception {
+        Path transcript = tempDir.resolve("titles.txt");
+        Files.writeString(transcript, "Started: 2026-10-06 10:00:00\n> <kompile_reminders>\n> rule\n> </kompile_reminders>\n> <command-name>/status</command-name>\n> Fix the sidebar\n\n< Done\n");
+        assertEquals("Fix the sidebar", KompileTranscriptFormat.readHeader(transcript).title());
+        Files.writeString(transcript, "[title] First title\n[title] Renamed sidebar\n", java.nio.file.StandardOpenOption.APPEND);
+        assertEquals("Renamed sidebar", KompileTranscriptFormat.readHeader(transcript).title());
+        assertEquals("Done", KompileTranscriptFormat.readTurns(transcript).get(1).content());
+        Files.writeString(transcript, "Started: 2026-10-06 10:00:00\n");
+        assertEquals("(untitled)", KompileTranscriptFormat.readHeader(transcript).title());
+    }
+
+    @Test
+    void extractsEnforcerUserPromptFromLegacyAndPrefixedTranscripts() throws Exception {
+        Path transcript = tempDir.resolve("enforcer.txt");
+        for (String prefix : List.of("", "> ")) {
+            Files.writeString(transcript, "> # Enforcer-Controlled Task\n" + prefix + "## Policy\n"
+                    + prefix + "policy text\n" + prefix + "## User Prompt\n" + prefix + "Investigate titles\n");
+            assertEquals("Investigate titles", KompileTranscriptFormat.readHeader(transcript).title());
+        }
     }
 
     @Test

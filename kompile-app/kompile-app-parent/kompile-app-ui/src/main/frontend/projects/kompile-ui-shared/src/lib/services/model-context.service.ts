@@ -14,14 +14,16 @@
  * limitations under the License.
  */
 
-import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { Inject, Injectable, Optional } from '@angular/core';
+import { HttpClient, HttpContext } from '@angular/common/http';
 import { BehaviorSubject, Observable } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { BaseService } from './base.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ActiveModelContext } from '../models/api-models';
 import { environment } from '../../environments/environment';
+import { SKIP_ERROR_SNACKBAR } from './http-error.interceptor';
+import { CURRENT_SERVICE_PERSONA, RoutedPersona, ServiceEndpointRouter } from './service-endpoint-routing';
 
 /**
  * Service for fetching and caching the active model context.
@@ -42,7 +44,9 @@ export class ModelContextService extends BaseService {
 
   constructor(
     private http: HttpClient,
-    private registryService: ModelRegistryService
+    private registryService: ModelRegistryService,
+    private endpointRouter: ServiceEndpointRouter,
+    @Optional() @Inject(CURRENT_SERVICE_PERSONA) private currentPersona: RoutedPersona | null = null
   ) {
     super();
     this.apiUrl = `${this.backendUrl}/models/active-context`;
@@ -58,14 +62,22 @@ export class ModelContextService extends BaseService {
    *
    * The endpoint is served by the admin persona; persona-limited deployments
    * (kompile chat --web hands off to the chat jar) answer 404/CONNECTION_REFUSED.
-   * That is a capability absence, not a chat failure — degrade silently (the
-   * Active Models settings card simply stays hidden) instead of spamming a
-   * console.error that makes a working chat look broken.
+   * Only probe it from chat when the managed admin dependency is known reachable.
+   * Its optional failure must not trigger the global error snackbar; the Active
+   * Models settings card stays hidden and CLI model selection remains available.
    */
   refresh(): void {
+    if (this.currentPersona === 'chat' && !this.endpointRouter.dependencyStatus('admin')?.reachable) {
+      this.contextSubject.next(null);
+      this.loadingSubject.next(false);
+      return;
+    }
     this.loadingSubject.next(true);
-    this.http.get<ActiveModelContext>(this.apiUrl).pipe(
+    this.http.get<ActiveModelContext>(this.apiUrl, {
+      context: new HttpContext().set(SKIP_ERROR_SNACKBAR, true)
+    }).pipe(
       catchError(err => {
+        this.contextSubject.next(null);
         if (!environment.production) {
           console.info('[ModelContext] active-context unavailable on this deployment:', err.status || err.message);
         }

@@ -834,10 +834,8 @@ public class ChatCommandRouter {
             return true;
         }
 
-        chatHistory.logSystem("Session restart requested; replacement process "
-                + result.processId() + " will resume this transcript.");
-        System.out.println(renderer.cyan("  Opening the restarted session in a new terminal"
-                + " (launcher process " + result.processId() + ")..."));
+        chatHistory.logSystem("Session restart requested; a fresh process will resume this transcript in place.");
+        System.out.println(renderer.cyan("  Restarting this session in the current terminal..."));
         return false;
     }
 

@@ -32,6 +32,10 @@ public interface ChatHarnessClient {
     /** Non-secret harness/provider/persona capabilities for a project directory. */
     JsonNode capabilities(String workingDirectory, boolean refresh);
 
+    default JsonNode capabilities(String workingDirectory, boolean refresh, String sessionId) {
+        return capabilities(workingDirectory, refresh);
+    }
+
     /**
      * Quiet session-configuration snapshot (model / role / fast / reminders /
      * loops / queue menus) resolved headlessly through the CLI. Sends no chat

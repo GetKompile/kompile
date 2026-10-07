@@ -95,6 +95,8 @@ public class CustomToolBridge implements CliTool {
     private ToolResult executeBash(ExecuteConfig exec,
                                    JsonNode params, ToolContext context) {
         String command = substituteTemplateVars(exec.getCommand(), params, true);
+        var mandate = ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy.evaluateCommand("bash", command);
+        if (mandate != null) return ToolResult.error(mandate.getCorrectionPrompt());
 
         Path workDir = context.getWorkingDirectory();
         if (exec.getWorkingDir() != null && !exec.getWorkingDir().isBlank()) {

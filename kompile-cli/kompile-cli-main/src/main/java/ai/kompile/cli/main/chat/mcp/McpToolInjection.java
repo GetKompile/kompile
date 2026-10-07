@@ -866,6 +866,19 @@ public class McpToolInjection {
             preMatcher.putArray("hooks").addObject().put("type", "command").put("command", preCmd);
             preArray.add(preMatcher);
 
+            // Gate native shell tools before execution, even without optional keyword/judge rules.
+            var launcher = ai.kompile.cli.main.CliProcessLauncher.find();
+            List<String> gateCommand = launcher == null
+                    ? List.of("kompile", ai.kompile.cli.main.chat.enforcer.ShellMandateHook.ARGUMENT)
+                    : launcher.withArgs(List.of(ai.kompile.cli.main.chat.enforcer.ShellMandateHook.ARGUMENT));
+            String gateShell = gateCommand.stream()
+                    .map(arg -> "'" + arg.replace("'", "'\"'\"'") + "'")
+                    .collect(java.util.stream.Collectors.joining(" "));
+            ObjectNode mandateMatcher = preArray.addObject();
+            mandateMatcher.put("matcher", ".*");
+            mandateMatcher.putArray("hooks").addObject().put("type", "command")
+                    .put("command", gateShell + " || exit 2").put("timeout", 30);
+
             ArrayNode postArray = hooks.has("PostToolUse") && hooks.get("PostToolUse").isArray()
                     ? (ArrayNode) hooks.get("PostToolUse")
                     : hooks.putArray("PostToolUse");
@@ -1003,7 +1016,8 @@ public class McpToolInjection {
         }
         for (JsonNode hook : hooks) {
             String command = hook.path("command").asText("");
-            if (command.contains("[kompile]") || command.contains("Kompile MCP")) {
+            if (command.contains("[kompile]") || command.contains("Kompile MCP")
+                    || command.contains(ai.kompile.cli.main.chat.enforcer.ShellMandateHook.ARGUMENT)) {
                 return true;
             }
         }

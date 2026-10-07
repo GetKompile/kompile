@@ -13,7 +13,6 @@ import { MatIconModule } from '@angular/material/icon';
 import { Subject, takeUntil } from 'rxjs';
 import {
   CommandEventData,
-  CommandModelEntry,
   CommandOutcome,
   CommandRoleEntry
 } from '@shared/models/api-models';
@@ -58,7 +57,6 @@ export interface CommandConfigDialogData {
   /** Dispatch a bare CLI command (e.g. '/model') as if typed. */
   dispatch: (commandLine: string) => void;
   /** Select a model (raw '/model <id>' dispatch). */
-  selectModel: (modelId: string) => void;
   /** Select a role (raw '/role <name>' dispatch); 'none' clears (an empty argument is never sent). */
   selectRole: (roleName: string) => void;
   /** Toggle fast mode (raw '/fast on|off' dispatch). */
@@ -95,49 +93,11 @@ export interface CommandConfigDialogData {
         <ng-container *ngIf="!loading">
         <p class="cc-hint" *ngIf="busy()">Working…</p>
 
-        <!-- Model -->
-        <section class="cc-section">
-          <header class="cc-section-header">
-            <span class="cc-title">Model</span>
-            <span class="cc-meta" *ngIf="modelMenu?.provider">{{ modelMenu!.provider }}</span>
-            <button mat-icon-button type="button" class="cc-refresh" [disabled]="busy()"
-              (click)="refreshModels()" title="Reload the model catalog from the CLI"
-              aria-label="Reload the model catalog"><mat-icon>refresh</mat-icon></button>
-          </header>
-          <!-- Vendor selector: same vendor set the interactive /model picker
-               offers. Clicking a chip quietly re-scopes the model list over
-               HTTP — no chat messages. -->
-          <div class="cc-vendors" role="listbox" aria-label="Switch vendor" *ngIf="vendors().length">
-            <button type="button" role="option" class="cc-vendor-chip"
-              *ngFor="let v of vendors()"
-              [class.current]="v.current"
-              [class.selected]="selectedVendor === v.vendor"
-              [disabled]="busy() || vendorsLoading"
-              [title]="v.display || v.vendor"
-              (click)="pickVendor(v.vendor)">
-              {{ v.display || v.vendor }}
-            </button>
-          </div>
-          <div class="cc-options" role="listbox" aria-label="Available models" *ngIf="models().length">
-            <button type="button" role="option" class="cc-option"
-              *ngFor="let m of models()"
-              [class.current]="m.current"
-              [attr.aria-selected]="m.current ? 'true' : 'false'"
-              [disabled]="busy()"
-              [title]="'Switch to ' + modelLabel(m) + ', as /model does in the terminal'"
-              (click)="selectModel(m.id)">
-              <span class="cc-option-label">{{ modelLabel(m) }}</span>
-              <span class="cc-option-meta" *ngIf="m.contextLimit">ctx {{ m.contextLimit }}</span>
-              <span class="cc-current" *ngIf="m.current">current</span>
-            </button>
-          </div>
-          <p class="cc-empty" *ngIf="!models().length && !busy() && !vendorsLoading">
-            No models listed yet.
-            <button mat-button type="button" class="cc-link" [disabled]="busy()" (click)="refreshModels()"
-              title="Load the model catalog from the CLI">Load catalog</button>
-          </p>
-        </section>
+        <p class="cc-hint">Model and vendor are selected directly above the conversation.</p>
+        <p class="cc-hint" *ngIf="modelMenu?.nativeModelSelection">Framework: {{ modelMenu?.provider }}.
+          Start a new chat to switch framework.</p>
 
+        <ng-container *ngIf="!modelMenu?.nativeModelSelection">
         <!-- Role -->
         <section class="cc-section">
           <header class="cc-section-header">
@@ -445,6 +405,7 @@ export interface CommandConfigDialogData {
           </div>
         </section>
         </ng-container>
+        </ng-container>
       </mat-dialog-content>
       <mat-dialog-actions align="end">
         <!-- Staging connection stays reachable without leaving the chat: new tab,
@@ -492,18 +453,6 @@ export interface CommandConfigDialogData {
     .cc-title { font-weight: 600; }
     .cc-meta { color: var(--text-tertiary, #888); font-size: 0.8em; }
 
-    .cc-vendors { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-    .cc-vendor-chip { border: 1px solid var(--border-color, #ccc); border-radius: 14px;
-      padding: 3px 12px; font-size: 0.82em; background: transparent;
-      color: var(--text-secondary, #555); cursor: pointer; }
-    .cc-vendor-chip:hover:not(:disabled) { border-color: var(--color-primary, #1976d2);
-      color: var(--color-primary, #1976d2); }
-    .cc-vendor-chip.current { border-color: var(--status-success-text, #2e7d32);
-      color: var(--status-success-text, #2e7d32); }
-    .cc-vendor-chip.selected:not(.current) { border-color: var(--color-primary, #1976d2);
-      background: var(--color-primary-light, rgba(25, 118, 210, 0.1));
-      color: var(--color-primary, #1976d2); }
-    .cc-vendor-chip:disabled { opacity: 0.5; cursor: default; }
     .cc-keywords { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .cc-keyword { border: 1px solid var(--border-color, #ccc); border-radius: 12px;
       padding: 2px 10px; font-size: 0.78em; color: var(--text-secondary, #555); }
@@ -576,10 +525,6 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
   loading = true;
   /** Human-readable error when the quiet snapshot could not be fetched. */
   loadError: string | null = null;
-  /** Vendor whose models are currently listed (undefined = current provider). */
-  selectedVendor?: string;
-  /** True while a vendor-scoped quiet re-fetch is in flight. */
-  vendorsLoading = false;
   private readonly destroyed = new Subject<void>();
 
   constructor(
@@ -651,58 +596,6 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     return this.data.liveSession();
   }
 
-  models(): CommandModelEntry[] {
-    return this.modelMenu?.models ?? [];
-  }
-
-  /** Switchable vendor chips (mirrors the interactive picker's vendor page). */
-  vendors(): { vendor: string; display?: string; current?: boolean }[] {
-    return this.modelMenu?.vendors ?? [];
-  }
-
-  /**
-   * Quiet vendor switch: re-fetch the snapshot scoped to the picked vendor.
-   * HTTP only — no dispatch, no transcript turn. The model list swaps in
-   * place; selecting a model from a NON-current vendor then dispatches the
-   * vendor-scoped "/model <vendor>:<model>" form.
-   */
-  pickVendor(vendor: string): void {
-    if (this.busy() || this.vendorsLoading || vendor === this.selectedVendor) return;
-    this.selectedVendor = vendor;
-    this.vendorsLoading = true;
-    this.agentChat.getSessionConfig(this.data.sessionId, this.data.workingDirectory, vendor)
-      .pipe(takeUntil(this.destroyed))
-      .subscribe({
-        next: (snapshot: SessionConfigSnapshot) => {
-          this.vendorsLoading = false;
-          if (snapshot?.model) {
-            this.modelMenu = snapshot.model;
-          }
-        },
-        error: () => {
-          this.vendorsLoading = false;
-        }
-      });
-  }
-
-  /** Quiet re-fetch of the default (current-provider) model list. */
-  refreshModels(): void {
-    if (this.busy() || this.vendorsLoading) return;
-    this.selectedVendor = undefined;
-    this.vendorsLoading = true;
-    this.agentChat.getSessionConfig(this.data.sessionId, this.data.workingDirectory)
-      .pipe(takeUntil(this.destroyed))
-      .subscribe({
-        next: (snapshot: SessionConfigSnapshot) => {
-          this.vendorsLoading = false;
-          if (snapshot?.model) this.modelMenu = snapshot.model;
-        },
-        error: () => {
-          this.vendorsLoading = false;
-        }
-      });
-  }
-
   roles(): CommandRoleEntry[] {
     return this.roleMenu?.roles ?? [];
   }
@@ -741,30 +634,12 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     return this.judgeMenu?.guidance ?? '';
   }
 
-  modelLabel(model: CommandModelEntry): string {
-    return model.display || model.id;
-  }
-
   roleLabel(role: CommandRoleEntry): string {
     return role.display || role.name;
   }
 
   dispatch(commandLine: string): void {
     if (!this.busy()) this.data.dispatch(commandLine);
-  }
-
-  /**
-   * Select a model from the currently listed menu. When the list is scoped
-   * to a NON-current vendor, the vendor-scoped "/model <vendor>:<model>"
-   * form switches provider and model in one step; otherwise the plain id.
-   */
-  selectModel(modelId: string): void {
-    if (this.busy()) return;
-    const browsingOtherVendor = this.selectedVendor
-      && !this.vendors().some(v => v.current && v.vendor === this.selectedVendor);
-    this.data.selectModel(browsingOtherVendor
-      ? this.selectedVendor + ':' + modelId
-      : modelId);
   }
 
   selectRole(roleName: string): void {

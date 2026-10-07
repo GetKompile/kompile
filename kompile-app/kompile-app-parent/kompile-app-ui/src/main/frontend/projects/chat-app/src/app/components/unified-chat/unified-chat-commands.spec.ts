@@ -18,6 +18,7 @@ import { WebSocketService } from '@shared/services/websocket.service';
 import { AgentProvider, CommandEventData, CommandOutcome, LocalAgentSession } from '@shared/models/api-models';
 import { UnifiedChatComponent } from './unified-chat.component';
 import { CommandConfigDialogComponent, CommandConfigDialogData } from '../command-config-dialog/command-config-dialog.component';
+import { ChatModelSelectorComponent } from '../chat-model-selector/chat-model-selector.component';
 
 /** Fixture-mounted TestBed harness (mirrors unified-chat-rag.spec.ts) for DOM assertions. */
 function createMenuTestBed() {
@@ -25,7 +26,7 @@ function createMenuTestBed() {
     'getStreamingContent', 'getStreamingComplete', 'getStreamingError',
     'getChatStats', 'getSources', 'getFilesModified', 'sendMessage',
     'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction', 'getContextBudget',
-    'getCommandOutcomes'
+    'getCommandOutcomes', 'getSessionConfig'
   ]);
   const agentServiceSpy = jasmine.createSpyObj('AgentService', [
     'getAllAgents', 'getAvailableAgents', 'getChatHarnessAgents',
@@ -62,6 +63,10 @@ function createMenuTestBed() {
   ragServiceSpy.getStatus.and.returnValue(of({ available: false, service: '' }));
   const dialogSpy = jasmine.createSpyObj('MatDialog', ['open']);
 
+  agentChatServiceSpy.getSessionConfig.and.returnValue(of({ menu: 'config', available: true, model: {
+    menu: 'model', provider: 'openai', currentModel: 'm1',
+    vendors: [{ vendor: 'openai', current: true }], models: [{ id: 'm1', current: true }, { id: 'm2' }]
+  } }));
   agentChatServiceSpy.getStreamingContent.and.returnValue(new Subject<string>().asObservable());
   agentChatServiceSpy.getStreamingComplete.and.returnValue(new Subject<any>().asObservable());
   agentChatServiceSpy.getStreamingError.and.returnValue(new Subject<string>().asObservable());
@@ -447,7 +452,7 @@ describe('UnifiedChat session configuration modal', () => {
     savedStorage = localStorage.getItem('unified_chat_sessions');
     spies = createMenuTestBed();
     await TestBed.configureTestingModule({
-      imports: [FormsModule, NoopAnimationsModule, HttpClientTestingModule, MatMenuModule],
+      imports: [FormsModule, NoopAnimationsModule, HttpClientTestingModule, MatMenuModule, ChatModelSelectorComponent],
       declarations: [UnifiedChatComponent],
       providers: spies.providers,
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
@@ -462,6 +467,31 @@ describe('UnifiedChat session configuration modal', () => {
   afterEach(() => {
     if (savedStorage === null) localStorage.removeItem('unified_chat_sessions');
     else localStorage.setItem('unified_chat_sessions', savedStorage);
+  });
+
+  it('places model/vendor dropdowns directly above the conversation and reuses CLI dispatch without consuming a draft', async () => {
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const element: HTMLElement = fixture.nativeElement;
+    const conversation = element.querySelector('[data-testid="conversation-area"]')!;
+    expect(conversation.previousElementSibling?.tagName.toLowerCase()).toBe('app-chat-model-selector');
+    expect(element.querySelector('select[aria-label="Model vendor"]')).not.toBeNull();
+    const modelSelect = element.querySelector('select[aria-label="Chat model"]') as HTMLSelectElement;
+    component.userInput = 'Unfinished draft';
+    const attachments = [{ name: 'draft.txt' }] as any;
+    component.pendingAttachments = attachments;
+    const send = spyOn(component, 'sendMessage').and.callFake(() => {
+      expect(component.userInput).toBe('/model m2');
+      expect(component.pendingAttachments).toEqual([]);
+      component.userInput = '';
+    });
+    modelSelect.value = 'm2';
+    modelSelect.dispatchEvent(new Event('change'));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(component.userInput).toBe('Unfinished draft');
+    expect(component.pendingAttachments).toBe(attachments);
+    component.openWelcomeModelPicker();
+    expect(document.activeElement).toBe(modelSelect);
   });
 
   it('binds document Ctrl+B and renders safe process activity controls while the composer is live', () => {
@@ -700,7 +730,6 @@ describe('UnifiedChat session configuration modal', () => {
       busy: () => false,
       liveSession: () => false,
       dispatch: () => undefined,
-      selectModel: () => undefined,
       selectRole: () => undefined,
       toggleFastMode: () => undefined,
       toggleUltracode: () => undefined,
@@ -747,7 +776,6 @@ describe('UnifiedChat session configuration modal', () => {
       busy: () => false,
       liveSession: () => false,
       dispatch: () => undefined,
-      selectModel: () => undefined,
       selectRole: () => undefined,
       toggleFastMode: () => undefined,
       toggleUltracode: () => undefined,
@@ -782,7 +810,6 @@ describe('UnifiedChat session configuration modal', () => {
       busy: () => false,
       liveSession: () => false,
       dispatch: () => undefined,
-      selectModel: () => undefined,
       selectRole: () => undefined,
       toggleFastMode: () => undefined,
       toggleUltracode: () => undefined,
@@ -809,9 +836,11 @@ describe('UnifiedChat session configuration modal', () => {
 
   it('senders route through the same select methods as the modal', () => {
     fixture.detectChanges();
-    const send = spyOn(component, 'sendMessage');
+    const send = spyOn(component, 'sendMessage').and.callFake(() => {
+      if (send.calls.count() === 1) expect(component.userInput).toBe('/model m-small');
+    });
     component.selectModel('m-small');
-    expect(component.userInput).toBe('/model m-small');
+    expect(component.userInput).toBe('');
     component.selectRole('architect');
     expect(component.userInput).toBe('/role architect');
     component.toggleFastMode(true);

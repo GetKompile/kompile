@@ -191,7 +191,7 @@ public class ClineAdapter implements ChatSourceAdapter {
                     JsonNode first = node.get(0);
                     String text = ChatAdapterSupport.extractContent(first);
                     if (text != null && !text.isBlank()) {
-                        return text.length() > 80 ? text.substring(0, 77) + "..." : text;
+                        return text;
                     }
                 }
             } catch (Exception ignore) {

@@ -455,7 +455,7 @@ public final class ProjectActivityController implements ProjectActivityView, Aut
             for (ConversationActivitySummary row : rows) {
                 out.append("  [").append(index++).append("] ")
                         .append(ActivityToolText.boundedClean(row.identity().key(), 100))
-                        .append(" · ").append(ActivityToolText.boundedClean(row.title(), 72))
+                        .append(" · ").append(ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.normalizeTitle(row.title()))
                         .append(" · outcome=").append(row.outcome())
                         .append(" (").append(row.evidenceBasis()).append(")")
                         .append(" · elapsed=").append(metric(row.elapsed()))
@@ -534,7 +534,7 @@ public final class ProjectActivityController implements ProjectActivityView, Aut
         if (transcript == null) return "  Transcript unavailable";
         StringBuilder out = new StringBuilder("Read-only transcript\n");
         if (!transcript.title().isBlank()) out.append("Title: ")
-                .append(ActivityToolText.boundedClean(transcript.title(), 300)).append("\n");
+                .append(ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.normalizeTitle(transcript.title())).append("\n");
         if (!transcript.agent().isBlank()) out.append("Agent: ")
                 .append(ActivityToolText.boundedClean(transcript.agent(), 120)).append("\n");
         transcript.turns().forEach(turn -> out.append("\n").append(turn.role()).append(":\n")

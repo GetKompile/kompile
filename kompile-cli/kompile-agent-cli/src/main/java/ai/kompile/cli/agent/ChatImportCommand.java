@@ -573,7 +573,7 @@ public class ChatImportCommand implements Callable<Integer> {
                     StringUtils.truncate(nullToDash(s.sessionId()), 36),
                     s.messageCount(),
                     ts,
-                    StringUtils.truncate(nullToDash(s.title()), 60));
+                    nullToDash(s.title()));
         }
     }
 

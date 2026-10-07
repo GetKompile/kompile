@@ -549,7 +549,8 @@ public class McpStdioCommand implements Callable<Integer> {
                                 com.fasterxml.jackson.databind.ObjectMapper mapper) {
                             return null;
                         }
-                    });
+                    }).withDetails(new ai.kompile.cli.common.metrics.ToolInvocationDetails(
+                            ai.kompile.cli.common.KompileHome.homeDirectory().toPath().resolve("conversations/tool-calls")));
 
             // Load enforcer tool call guard from environment (if enforcer mode is active)
             enforcerGuard = EnforcerToolCallGuard.fromEnvironment(om, wd);
@@ -901,7 +902,8 @@ public class McpStdioCommand implements Callable<Integer> {
                                     ? usageAccounting.begin(toolContextSessionId(transcriptId),
                                             null, toolName,
                                             tools.containsKey(toolName) ? toolName : toolName,
-                                            detectOwningAgent(), "mcp-stdio")
+                                            detectOwningAgent(), "mcp-stdio", args,
+                                            idNode == null ? null : idNode.asText())
                                     : null;
                     if (usageCtx != null) {
                         InFlightCall inFlightForUsage = CURRENT_CALL.get();
@@ -1112,13 +1114,10 @@ public class McpStdioCommand implements Callable<Integer> {
                             // disposition BACKGROUND_ACK. Later execution is linked via the
                             // same invocationId (finalize above), NOT a new execution.
                             if (usageAccounting != null && usageCtx != null) {
-                                usageAccounting.finalizeCall(usageCtx,
+                                usageAccounting.finalizeBackgroundAcknowledgement(usageCtx,
                                         ai.kompile.cli.main.chat.tools.ToolResult.success(
                                                 callResult.path("content").get(0).path("text").asText()),
-                                        null,
-                                        ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTED,
-                                        ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.BACKGROUND_ACK,
-                                        false, System.currentTimeMillis());
+                                        System.currentTimeMillis());
                             }
 
                         } else if ("poll".equals(toolName) && asyncExecutor != null) {
@@ -1213,7 +1212,7 @@ public class McpStdioCommand implements Callable<Integer> {
                                         tr.isError(), System.currentTimeMillis())
                                     : null;
 
-                            result.set("result", buildCallResult(tr, syncUsage));
+                            result.set("result", buildCallResult(tr, syncUsage, toolName));
                         }
                     }
                 }
@@ -2032,6 +2031,13 @@ public class McpStdioCommand implements Callable<Integer> {
                                ai.kompile.cli.common.metrics.ToolCallUsage usage) {
         ObjectMapper mapper = om != null ? om : JsonUtils.standardMapper();
         return McpToolResultSerializer.toMcpCallResult(mapper, tr, usage);
+    }
+
+    ObjectNode buildCallResult(ToolResult tr,
+                               ai.kompile.cli.common.metrics.ToolCallUsage usage,
+                               String toolName) {
+        ObjectMapper mapper = om != null ? om : JsonUtils.standardMapper();
+        return McpToolResultSerializer.toMcpCallResult(mapper, tr, usage, toolName);
     }
 
     /** Register single and parallel delegation together, including compact discovery guidance. */

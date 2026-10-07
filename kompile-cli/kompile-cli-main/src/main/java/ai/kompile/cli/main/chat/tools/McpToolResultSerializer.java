@@ -12,12 +12,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.LinkedHashMap;
+import java.util.Set;
 
 /** Shared MCP wire representation for local {@link ToolResult} values. */
 public final class McpToolResultSerializer {
 
     private static final TypeReference<LinkedHashMap<String, Object>> METADATA_TYPE =
             new TypeReference<>() { };
+
+    // These tools already render their model-facing payload as bounded text.
+    // structuredContent makes Claude render the output again as escaped JSON,
+    // including bookkeeping that belongs to the client, not the conversation.
+    private static final Set<String> TEXT_TOOLS = Set.of(
+            "read", "read_batch", "grep", "grep_batch", "glob", "list",
+            "fetch_result", "fetch_result_batch");
 
     private McpToolResultSerializer() {
     }
@@ -68,6 +76,15 @@ public final class McpToolResultSerializer {
      */
     public static ObjectNode toMcpCallResult(ObjectMapper mapper, ToolResult result,
                                              ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+        return toMcpCallResult(mapper, result, usage, null);
+    }
+
+    /** Named filesystem/search tools keep bookkeeping in client-only MCP _meta.
+     * Domain tools and legacy callers retain their structured payload contract.
+     */
+    public static ObjectNode toMcpCallResult(ObjectMapper mapper, ToolResult result,
+                                             ai.kompile.cli.common.metrics.ToolCallUsage usage,
+                                             String toolName) {
         ObjectNode callResult = mapper.createObjectNode();
         var content = callResult.putArray("content");
         var text = content.addObject();
@@ -77,13 +94,17 @@ public final class McpToolResultSerializer {
         String output = result.getOutput() != null ? result.getOutput() : "";
         text.put("text", title + output);
         if (result.getMetadata() != null && !result.getMetadata().isEmpty()) {
-            ObjectNode structured = mapper.createObjectNode();
-            if (result.getTitle() != null && !result.getTitle().isEmpty()) {
-                structured.put("title", result.getTitle());
+            if (toolName != null && TEXT_TOOLS.contains(toolName)) {
+                callResult.putObject("_meta").set("ai.kompile/toolResult", mapper.valueToTree(result.getMetadata()));
+            } else {
+                ObjectNode structured = mapper.createObjectNode();
+                if (result.getTitle() != null && !result.getTitle().isEmpty()) {
+                    structured.put("title", result.getTitle());
+                }
+                structured.put("output", output);
+                structured.set("metadata", mapper.valueToTree(result.getMetadata()));
+                callResult.set("structuredContent", structured);
             }
-            structured.put("output", output);
-            structured.set("metadata", mapper.valueToTree(result.getMetadata()));
-            callResult.set("structuredContent", structured);
         }
         callResult.put("isError", result.isError());
         if (usage != null) {

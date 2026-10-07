@@ -342,8 +342,21 @@ public class KompileTui {
     /**
      * The first row of the scrollable content region.
      */
+    private int topBarHeight() {
+        topBar.setMaxTitleRows(Math.max(1, ((terminalHeight > 0 ? terminalHeight : 24) - 12) / 4));
+        return topBar.getHeight(terminalWidth);
+    }
+
+    /** Wheel over a long header scrolls its title, not the transcript. */
+    public boolean scrollChatTitle(int delta, int mouseY) {
+        if (mouseY < 2 || mouseY >= topBarHeight() - 1) return false;
+        topBar.scrollTitle(-delta, terminalWidth);
+        requestRedraw();
+        return true;
+    }
+
     public int scrollTop() {
-        return TopBar.TOP_HEIGHT + getDashboardRegionRows() + 1;
+        return topBarHeight() + getDashboardRegionRows() + 1;
     }
 
     /** Stable responsive row budget; dashboard updates never resize the transcript. */
@@ -351,7 +364,8 @@ public class KompileTui {
         if (!dashboard.visible()) return 0;
         int height = terminalHeight > 0 ? terminalHeight : 24;
         return dashboardRowsForLayout(
-                height, reservedMiddleRows, queueRowsForTerminal(height));
+                height - (topBarHeight() - TopBar.TOP_HEIGHT),
+                reservedMiddleRows, queueRowsForTerminal(height));
     }
 
     static int dashboardRowsForLayout(int height, int reservedRows, int queueRows) {
@@ -1858,7 +1872,7 @@ public class KompileTui {
         if (!snapshot.visible() || rows <= 0) return "";
 
         int width = Math.max(8, terminalWidth > 0 ? terminalWidth : 80);
-        int top = TopBar.TOP_HEIGHT + 1;
+        int top = topBarHeight() + 1;
         StringBuilder frame = new StringBuilder();
         for (int row = top; row < top + rows; row++) {
             frame.append(ESC).append(row).append(";1H").append(ESC).append("2K");

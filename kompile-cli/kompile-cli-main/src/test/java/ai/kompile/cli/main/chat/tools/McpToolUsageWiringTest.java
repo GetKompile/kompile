@@ -56,6 +56,26 @@ class McpToolUsageWiringTest {
     }
 
     @Test
+    void realArgumentsAndReturnedAndRawContentAreRecordedUnderTheSameInvocation(@org.junit.jupiter.api.io.TempDir java.nio.file.Path temp) throws Exception {
+        RecordingRecorder recorder = new RecordingRecorder();
+        var store = new ai.kompile.cli.common.metrics.ToolInvocationDetails(temp);
+        var accounting = new StdioInvocationAccounting(M, recorder).withDetails(store);
+        var context = accounting.begin("session", null, "read", "read", "codex", "mcp-stdio",
+                M.readTree("{\"file_path\":\"source.java\"}"), "rpc-call");
+        var usage = accounting.finalizeCall(context, ToolResult.success(null, "ref:summary"),
+                ToolResult.success(null, "full original result"), ToolCallUsage.ExecutionOutcome.EXECUTED,
+                ToolCallUsage.ResponseDisposition.DELIVERED, false, System.currentTimeMillis());
+        assertTrue(usage.argumentsMeasurement().tokens() > 0);
+        accounting.finalizeBackgroundAcknowledgement(context, ToolResult.success(null, "background ACK"),
+                System.currentTimeMillis());
+        var recorded = store.read("session", context.invocationId());
+        assertEquals("rpc-call", recorded.path("context").path("clientRequestId").asText());
+        assertTrue(recorded.path("arguments").path("text").asText().contains("source.java"));
+        assertEquals("ref:summary", recorded.path("output").path("text").asText());
+        assertEquals("full original result", recorded.path("rawOutput").path("text").asText());
+    }
+
+    @Test
     @DisplayName("legacy serializer shape unchanged when usage is null (no _meta)")
     void legacyShapeUnchanged() {
         ToolResult result = ToolResult.success("title", "output body");
@@ -80,6 +100,17 @@ class McpToolUsageWiringTest {
         assertEquals(legacy.path("isError").asBoolean(), withUsage.path("isError").asBoolean());
         // usage payload carries the measured tokens, not invented values
         assertEquals(9L, withUsage.path("_meta").path("ai.kompile/usage")
+                .path("payload").path("tokens").asLong());
+    }
+
+    @Test
+    void usageAndClientOnlySearchMetadataCoexist() {
+        ToolResult result = ToolResult.success("grep", "match", java.util.Map.of("matches", 1));
+        ObjectNode wire = McpToolResultSerializer.toMcpCallResult(M, result,
+                usage("inv-search", "sess-1"), "grep");
+        assertFalse(wire.has("structuredContent"));
+        assertEquals(1, wire.path("_meta").path("ai.kompile/toolResult").path("matches").asInt());
+        assertEquals(9L, wire.path("_meta").path("ai.kompile/usage")
                 .path("payload").path("tokens").asLong());
     }
 

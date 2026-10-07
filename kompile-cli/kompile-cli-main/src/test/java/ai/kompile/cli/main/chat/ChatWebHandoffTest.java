@@ -177,11 +177,21 @@ class ChatWebHandoffTest {
     }
 
     @Test void incompatibleConfigurationsAreNotReinterpreted() {
-        for (String mode : new String[] {"passthrough", "resume", "resume-all"}) {
+        for (String mode : new String[] {"resume", "resume-all"}) {
             ChatConfig config = new ChatConfig("custom", "secret", "model", "https://example.test/v1");
             config.setChatMode(mode);
             assertNotNull(ChatCommand.webConfigError(config));
         }
+        ChatConfig nativeConfig = new ChatConfig(null, null, null, null);
+        nativeConfig.setChatMode("passthrough");
+        nativeConfig.setPassthroughAgent("opencode");
+        nativeConfig.setPassthroughManaged(true);
+        assertNull(ChatCommand.webConfigError(nativeConfig));
+        nativeConfig.setPassthroughManaged(false);
+        assertNotNull(ChatCommand.webConfigError(nativeConfig));
+        nativeConfig.setPassthroughManaged(true);
+        nativeConfig.setPassthroughAgent("unsupported");
+        assertNotNull(ChatCommand.webConfigError(nativeConfig));
         assertNotNull(ChatCommand.webConfigError(new ChatConfig("kompile", null, null, "http://localhost:8081")));
     }
 

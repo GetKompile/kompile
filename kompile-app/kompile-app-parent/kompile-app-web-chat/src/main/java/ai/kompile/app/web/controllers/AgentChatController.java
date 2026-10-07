@@ -278,12 +278,20 @@ public class AgentChatController {
     public ResponseEntity<JsonNode> capabilities(
             @RequestParam(required = false) String workingDirectory,
             @RequestParam(defaultValue = "false") boolean refresh,
+            @RequestParam(required = false) String sessionId,
             HttpServletRequest servletRequest) {
         if (harnessClient == null) {
             throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE, "Kompile CLI harness is unavailable");
         }
-        return ResponseEntity.ok(harnessClient.capabilities(workingDirectory, refresh));
+        return ResponseEntity.ok(sessionId == null || sessionId.isBlank()
+                ? harnessClient.capabilities(workingDirectory, refresh)
+                : harnessClient.capabilities(workingDirectory, refresh, sessionId));
+    }
+
+    public ResponseEntity<JsonNode> capabilities(String workingDirectory, boolean refresh,
+                                                HttpServletRequest request) {
+        return capabilities(workingDirectory, refresh, null, request);
     }
 
     /**

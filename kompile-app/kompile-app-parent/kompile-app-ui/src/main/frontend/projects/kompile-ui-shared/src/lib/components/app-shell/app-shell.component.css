@@ -319,6 +319,12 @@ header {
   background: #d32f2f;
 }
 
+/* Chat scrolls inside its panes, not below the viewport. Other personas keep their page layout. */
+:host(.chat-shell) { display:flex; flex-direction:column; height:100dvh; min-height:0; }
+:host(.chat-shell) .app-container { flex:1; min-height:0; }
+:host(.chat-shell) header, :host(.chat-shell) nav, :host(.chat-shell) app-index-status-banner { flex-shrink:0; }
+:host(.chat-shell) main { box-sizing:border-box; }
+
 /* Keep the shared shell usable without removing or hiding navigation. */
 @media (max-width: 768px) {
   .content-with-explorer {

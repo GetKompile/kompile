@@ -2979,6 +2979,8 @@ export interface CommandEventData {
   menu?: 'model' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'clear' | 'continue' | 'judge';
   provider?: string;
   currentModel?: string;
+  /** Native framework owns the vendor catalog; accept its exact model identifier. */
+  nativeModelSelection?: boolean;
   liveListingAvailable?: boolean;
   persistedForSession?: boolean;
   note?: string;

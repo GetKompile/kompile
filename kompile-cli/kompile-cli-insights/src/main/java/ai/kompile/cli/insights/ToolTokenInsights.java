@@ -35,9 +35,11 @@ public final class ToolTokenInsights {
             .comparingLong(ToolCallUsage::startedEpochMs).reversed()
             .thenComparing(ToolCallUsage::invocationId);
     private final Path file;
+    private final Path toolCallsDir;
     private final InsightsConfig config;
 
     public ToolTokenInsights(Path toolCallsDir, InsightsConfig config) {
+        this.toolCallsDir = toolCallsDir;
         this.file = toolCallsDir == null ? null : ToolCallUsageJournal.defaultJournalFile(toolCallsDir);
         this.config = config;
     }
@@ -122,6 +124,11 @@ public final class ToolTokenInsights {
             measurementBucket(payloadBuckets, u.payloadMeasurement());
         }
         ObjectNode usage = MAPPER.createObjectNode();
+        ToolInsightDetails enrichment = new ToolInsightDetails(toolCallsDir, config.getMaxBytesPerFile());
+        if (session != null && query.inScope(session)) {
+            usage.set("selectedSession", enrichment.session(session));
+            usage.set("catalog", enrichment.catalog(session, query, tool, callId, offset, limit));
+        }
         usage.set("summary", summary.json());
         usage.set("measurementBuckets", measurements);
         usage.put("offset", offset);
@@ -156,7 +163,7 @@ public final class ToolTokenInsights {
         for (Map.Entry<String, Counts> entry : ranked(sessions, limit)) {
             Counts c = entry.getValue();
             ObjectNode row = c.json();
-            row.put("sessionId", entry.getKey());
+            row.setAll(enrichment.session(entry.getKey()));
             perSession.add(row);
             sessionTable.row(entry.getKey(), c.calls, c.arguments, c.payload, c.unmeasured, c.partial);
         }
@@ -167,6 +174,11 @@ public final class ToolTokenInsights {
         for (ToolCallUsage u : calls.stream().skip(offset).limit(limit).toList()) {
             ObjectNode row = u.toJsonNode(MAPPER);
             row.put("tool", toolName(u));
+            row.put("title", enrichment.session(u.sessionId()).path("title").asText());
+            if (callId != null && callId.equals(u.invocationId())) {
+                row.set("detail", enrichment.call(u.sessionId(), u.invocationId()));
+                if (session == null) usage.set("selectedSession", enrichment.session(u.sessionId()));
+            }
             details.add(row);
             callTable.row(u.invocationId(), u.sessionId(), toolName(u), Instant.ofEpochMilli(u.startedEpochMs()),
                     u.durationMs() == null ? "-" : Format.duration(u.durationMs()), u.outcome(), u.disposition(),
@@ -183,8 +195,8 @@ public final class ToolTokenInsights {
                 .append("Newest calls, offset ").append(offset).append(", limit ").append(limit)
                 .append(", total ").append(calls.size()).append('\n').append(callTable.render());
         if (callId != null && !calls.isEmpty()) {
-            text.append("Selected call provenance (measurement metadata only):\n")
-                    .append(calls.get(0).toJsonNode(MAPPER).toPrettyString()).append('\n');
+            text.append("Selected call provenance and recorded content:\n")
+                    .append(details.isEmpty() ? "No call on this page" : details.get(0).toPrettyString()).append('\n');
         }
         text.append("Model executions (separate ledger): ").append(models.path("uniqueExecutions").asLong())
                 .append(" unique, input ").append(models.path("inputTokens").asLong())

@@ -156,26 +156,17 @@ public class EnforcerToolCallGuard implements AutoCloseable {
 
     private EnforcerToolCallDecision evaluate(String toolName, Map<String, Object> args,
                                                String guidance, boolean reportOnly, JudgeControl control) {
+        // Deterministic tool protections do not depend on an enabled/configured judge.
+        // Use the same argument extraction as the session and chat boundaries.
+        String serializedArgs = args == null ? "{}" : objectMapper.valueToTree(args).toString();
+        EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateFromSerializedArgs(toolName, serializedArgs);
+        if (mandate != null) return mandate;
         if (!isActive()) {
             return EnforcerToolCallDecision.allow("No active enforcer policy");
         }
         if (toolName == null || toolName.isBlank()) {
             return EnforcerToolCallDecision.block("Missing MCP tool name");
         }
-
-        // Deterministic shell-mandate layer: bash must not smuggle sed/grep/cat/find over
-        // files when dedicated kompile tools exist. Hard block, no LLM, no fail-open.
-        if (args != null) {
-            Object command = args.get("command");
-            if (command instanceof String commandText) {
-                EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateCommand(toolName, commandText);
-                if (mandate != null) {
-                    return mandate;
-                }
-            }
-        }
-
-        String serializedArgs = args == null ? "{}" : objectMapper.valueToTree(args).toString();
         EnforcerToolCallDecision readOnlyGit = JudgeToolPolicy.evaluateReadOnlyGitTool(
                 toolName, serializedArgs, runtimePolicy.getPolicy(), objectMapper);
         if (readOnlyGit != null) {

@@ -67,6 +67,7 @@ class StatusBarProgressTailTest {
         String rendered = AnsiConstants.stripAnsi(bar.buildStatusContent(200));
 
         assertTrue(rendered.contains("Pondering"), rendered);
+        assertTrue(rendered.contains("Thinking"), "the working word must not hide the phase: " + rendered);
         assertTrue(rendered.contains("~200"), rendered);
         assertTrue(rendered.contains("tokens"), rendered);
 
@@ -84,6 +85,22 @@ class StatusBarProgressTailTest {
         progress.finish(seq);
         rendered = AnsiConstants.stripAnsi(bar.buildStatusContent(200));
         assertFalse(rendered.contains("tokens"), rendered);
+    }
+
+    @Test
+    void quietToolAndProviderWaitsKeepTheirPhaseAndAdvancingTimer() {
+        bar = barFor();
+        AtomicLong clock = new AtomicLong(10_000);
+        session.progress().setClockMillis(clock::get);
+        session.progress().begin();
+        for (String phase : new String[]{"Running: Bash mvn test", "Waiting for Claude response",
+                "Compacting Claude context", "Responding"}) {
+            ChatCompleter.setActivity(phase);
+            clock.addAndGet(11_000);
+            String rendered = AnsiConstants.stripAnsi(bar.buildStatusContent(200));
+            assertTrue(rendered.contains(phase), rendered);
+            assertTrue(rendered.contains((clock.get() - 10_000) / 1000 + "s"), rendered);
+        }
     }
 
     @Test
@@ -108,6 +125,20 @@ class StatusBarProgressTailTest {
         String rendered = AnsiConstants.stripAnsi(bar.buildStatusContent(200));
         assertTrue(rendered.contains("Thinking"), rendered);
         assertFalse(rendered.contains("tokens"), rendered);
+    }
+
+    @Test
+    void longCommandDoesNotHideTheElapsedTimer() {
+        bar = barFor();
+        AtomicLong clock = new AtomicLong(10_000);
+        session.progress().setClockMillis(clock::get);
+        session.progress().begin();
+        ChatCompleter.setActivity("Running: Bash " + "very-long-command ".repeat(20));
+        clock.set(55_000);
+        String rendered = AnsiConstants.stripAnsi(bar.buildStatusContent(80));
+        assertTrue(rendered.contains("Running:"), rendered);
+        assertTrue(rendered.contains("45s"), rendered);
+        assertEquals(79, rendered.length());
     }
 
     @Test

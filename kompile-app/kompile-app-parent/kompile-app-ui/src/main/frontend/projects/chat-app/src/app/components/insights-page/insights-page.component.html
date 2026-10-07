@@ -42,7 +42,7 @@
         <button mat-raised-button color="primary" type="submit" data-testid="insights-ask">Ask</button>
         <button mat-stroked-button type="button" data-testid="insights-refresh" (click)="refresh()">Refresh</button>
         <mat-checkbox name="autoRefresh" data-testid="insights-auto-refresh"
-                      [(ngModel)]="autoRefresh" (change)="onAutoRefreshChange()">Every 30 s</mat-checkbox>
+                      [(ngModel)]="autoRefresh" (change)="onAutoRefreshChange()">Live · every 10 s</mat-checkbox>
       </div>
     </form>
 
@@ -84,7 +84,9 @@
         <app-tool-call-chart *ngIf="report.chart" [chart]="report.chart"></app-tool-call-chart>
         <app-tool-usage-details *ngIf="report.usage as usage" [usage]="usage" [selectedCall]="callFilter"
           (toolSelected)="filterTools('tool', $event)" (sessionSelected)="filterTools('session', $event)"
-          (callSelected)="filterTools('call', $event)" (pageSelected)="applyToolFilters($event)"></app-tool-usage-details>
+          (callSelected)="filterTools('call', $event)" (pageSelected)="applyToolFilters($event)"
+          (contentPageRequested)="readContentPage($event)"></app-tool-usage-details>
+        <p *ngIf="detailError" role="alert">{{ detailError }}</p>
         <pre *ngIf="state.text" class="report-text">{{ state.text }}</pre>
       </ng-container>
       <p *ngIf="state.readAt" class="insights-meta">Read at {{ state.readAt | date:'HH:mm:ss' }}</p>

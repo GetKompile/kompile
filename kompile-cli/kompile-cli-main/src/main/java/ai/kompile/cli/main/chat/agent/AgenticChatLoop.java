@@ -564,6 +564,9 @@ public class AgenticChatLoop {
     private record ToolDetach(Consumer<String> output, Runnable detached,
                               Consumer<ToolResult> completed, Runnable rejected) { }
     private final Object backgroundTransferLock = new Object();
+    /** Claude owns these calls; they need its native control, not a local worker transfer. */
+    private final java.util.Set<String> claudeBackgroundableCalls = new java.util.HashSet<>();
+    private boolean claudeBackgroundRequestPending;
     private final java.util.Set<Runnable> detachedInvocations = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /** Owning live harness shutdown; detached children must not outlive their session. */
@@ -610,10 +613,49 @@ public class AgenticChatLoop {
      * excluded: neither owns the foreground work these are meant to detach.
      */
     public boolean isBackgroundableToolPhaseActive() {
-        return backgroundableToolPhase.get();
+        synchronized (backgroundTransferLock) {
+            return backgroundableToolPhase.get()
+                    || (!claudeBackgroundRequestPending && !claudeBackgroundableCalls.isEmpty());
+        }
     }
 
-    /** Repaint the owning REPL when TaskTool enters or leaves its blocking phase. */
+    /** Submit native Ctrl+B without surrendering the provider turn's single owner. */
+    public boolean requestClaudeBackground(Runnable accepted, Consumer<String> notice) {
+        java.util.Set<String> requested;
+        synchronized (backgroundTransferLock) {
+            if (directLlmClient == null || claudeBackgroundRequestPending
+                    || claudeBackgroundableCalls.isEmpty()) return false;
+            claudeBackgroundRequestPending = true;
+            requested = java.util.Set.copyOf(claudeBackgroundableCalls);
+        }
+        notifyBackgroundEligibility();
+        directLlmClient.backgroundClaudeTasks().whenComplete((ignored, failure) -> sessionContext.wrap(() -> {
+            synchronized (backgroundTransferLock) {
+                claudeBackgroundRequestPending = false;
+                if (failure == null) claudeBackgroundableCalls.removeAll(requested);
+            }
+            if (failure == null) accepted.run();
+            notifyBackgroundEligibility();
+            Throwable problem = failure;
+            while (problem != null && problem.getCause() != null) problem = problem.getCause();
+            notice.accept(problem == null
+                    ? "Claude work backgrounded; the conversation can continue. ↓ selects its task row."
+                    : "Claude could not background work: " + (problem.getMessage() == null
+                            ? problem.getClass().getSimpleName() : problem.getMessage()));
+        }).run());
+        return true;
+    }
+
+    private void trackClaudeBackgroundableCall(String callId, String name, boolean started) {
+        boolean changed;
+        synchronized (backgroundTransferLock) {
+            changed = started && ("Agent".equals(name) || "Task".equals(name) || "Bash".equals(name))
+                    ? claudeBackgroundableCalls.add(callId) : claudeBackgroundableCalls.remove(callId);
+        }
+        if (changed) notifyBackgroundEligibility();
+    }
+
+    /** Repaint the owning REPL when local or Claude-native background eligibility changes. */
     public void setBackgroundEligibilityListener(Runnable listener) {
         backgroundEligibilityListener = listener != null ? listener : () -> { };
     }
@@ -628,6 +670,10 @@ public class AgenticChatLoop {
             try { rejected.rejected().run(); }
             catch (RuntimeException ignored) { /* observational callback */ }
         }
+        notifyBackgroundEligibility();
+    }
+
+    private void notifyBackgroundEligibility() {
         try {
             backgroundEligibilityListener.run();
         } catch (RuntimeException ignored) {
@@ -2799,6 +2845,8 @@ public class AgenticChatLoop {
 
                     workflowController.afterTool(call.name, call.arguments, toolResult);
 
+                    // Keep the full result readable in insights even when the model receives a shortened payload.
+                    ToolResult rawToolResult = toolResult;
                     // Truncate large outputs
                     OutputTruncator.TruncationResult truncResult =
                             truncator.truncate(toolResult.getOutput(), call.name);
@@ -2824,6 +2872,9 @@ public class AgenticChatLoop {
                     if ("side_panel".equals(normalizedToolName) && !toolResult.isError()) {
                         renderSidePanelUpdate(true);
                     }
+
+                    // Persist exact call content before special tools can terminate the loop.
+                    recordToolDetails(toolContext, call, toolResult, rawToolResult, toolDurationMs);
 
                     // Check if exit_plan_mode was called — stop tool loop
                     if ("exit_plan_mode".equals(call.name) && exitPlanModeTool != null
@@ -2855,15 +2906,6 @@ public class AgenticChatLoop {
                         sessionMetrics.recordToolCall(call.name, toolResult.isError(), toolDurationMs);
                     }
 
-                    // Index the tool call so kompile-managed local/headless agent sessions surface
-                    // in the MCP Hub tool-call catalog alongside passthrough + MCP server calls.
-                    ToolCallIndex.getInstance().record(
-                            toolContext.getSessionId(), call.name, argsStr,
-                            toolContext.getAgent() != null ? toolContext.getAgent().getName() : "kompile-agent",
-                            "local-chat", toolResult.isError(), toolDurationMs,
-                            toolContext.getWorkingDirectory() != null
-                                    ? toolContext.getWorkingDirectory().toString() : null);
-
                     // Track in conversation history (include file path for compaction)
                     conversationLedger.append(CompactionService.ConversationEntry.toolResult(
                             call.name, call.id, outputWithPath));
@@ -2887,6 +2929,7 @@ public class AgenticChatLoop {
                                 call.name, call.arguments, ToolResult.error(errMsg));
                     }
                     toolResultStore.save(call.name, call.id, null, errMsg, true);
+                    recordToolDetails(toolContext, call, ToolResult.error(errMsg), ToolResult.error(errMsg), 0);
                     toolResults.add(new ToolCallResult(call.id, call.name, errMsg, true));
                     conversationLedger.append(CompactionService.ConversationEntry.toolResult(
                             call.name, call.id, errMsg));
@@ -2906,6 +2949,7 @@ public class AgenticChatLoop {
                     String errMsg = "Error: " + failure;
                     workflowController.afterTool(call.name, call.arguments, failed);
                     toolResultStore.save(call.name, call.id, null, errMsg, true);
+                    recordToolDetails(toolContext, call, ToolResult.error(errMsg), ToolResult.error(errMsg), 0);
                     toolResults.add(new ToolCallResult(call.id, call.name, errMsg, true));
                     conversationLedger.append(CompactionService.ConversationEntry.toolResult(
                             call.name, call.id, errMsg));
@@ -3102,22 +3146,24 @@ public class AgenticChatLoop {
             return new ToolInterception(arguments, "workflow", workflow.reason(),
                     workflow.correctionPrompt(), true);
         }
+        String toolInput = arguments == null ? "{}" : arguments.toString();
+        // Hard tool protections apply even without an optional judge/interceptor,
+        // including external shell tools that do not guard their own execution.
+        EnforcerToolCallDecision mandate = ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy
+                .evaluateFromSerializedArgs(toolName, toolInput);
+        if (mandate != null) {
+            return new ToolInterception(arguments, "shell mandate", mandate.blockMessage(),
+                    mandate.getCorrectionPrompt(), true);
+        }
         if (!activeJudgeSnapshot.enabled()) {
             return new ToolInterception(arguments, "", "", "", false);
         }
-        String toolInput = arguments == null ? "{}" : arguments.toString();
         // Controls enforce user confirmation/permission in the tool, not through the judge
         // they are meant to correct. Workflow and child supervision remain independent.
         if ("judge_control".equals(toolName)) {
             return new ToolInterception(arguments, "judge control", "", "", false);
         }
         if (activeJudgeSnapshot.approvesCommand(toolName, toolInput)) {
-            EnforcerToolCallDecision mandate = ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy
-                    .evaluateFromSerializedArgs(toolName, toolInput);
-            if (mandate != null) {
-                return new ToolInterception(arguments, "shell mandate", mandate.blockMessage(),
-                        mandate.getCorrectionPrompt(), true);
-            }
             emitInlineEnforcerActivity("[user command approval] " + toolName + " " + toolInput);
             if (judgeControl != null) {
                 judgeControl.recordApprovalUsed(activeJudgeSnapshot, toolName, toolInput);
@@ -3182,9 +3228,14 @@ public class AgenticChatLoop {
         }
 
         if (decision.isRewrite()) {
-            return new ToolInterception(
-                    objectMapper.valueToTree(decision.getRewrittenArgs()),
-                    enforcement.source(), "", "", false);
+            JsonNode rewritten = objectMapper.valueToTree(decision.getRewrittenArgs());
+            EnforcerToolCallDecision rewrittenMandate = ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy
+                    .evaluateFromSerializedArgs(toolName, rewritten.toString());
+            if (rewrittenMandate != null) {
+                return new ToolInterception(rewritten, "shell mandate", rewrittenMandate.blockMessage(),
+                        rewrittenMandate.getCorrectionPrompt(), true);
+            }
+            return new ToolInterception(rewritten, enforcement.source(), "", "", false);
         }
         return new ToolInterception(arguments, "", "", "", false);
     }
@@ -3802,6 +3853,19 @@ public class AgenticChatLoop {
         }
     }
 
+    private void recordToolDetails(ToolContext toolContext, ToolCallRequest call, ToolResult result, ToolResult rawResult, long durationMs) {
+        try {
+            ToolCallIndex.getInstance().recordWithDetails(toolContext.getSessionId(), call.name,
+                    call.arguments != null ? call.arguments.toString() : "{}",
+                    toolContext.getAgent() != null ? toolContext.getAgent().getName() : "kompile-agent",
+                    "local-chat", result.isError(), durationMs,
+                    toolContext.getWorkingDirectory() != null ? toolContext.getWorkingDirectory().toString() : null,
+                    call.id, result, rawResult);
+        } catch (RuntimeException ignored) {
+            // Optional diagnostic persistence must not turn a completed tool into a failure.
+        }
+    }
+
     private void notifyToolComplete(ToolCallRequest call, String rawInput, ToolResult result) {
         ToolActivityListener listener = toolActivityListener;
         if (listener == null) return;
@@ -3912,7 +3976,7 @@ public class AgenticChatLoop {
                 new ThinkingStreamRenderer(this::emitLine, asciiRenderer.getTerminalRenderer());
         Map<String, ToolTranscriptBlock> providerToolBlocks = new HashMap<>();
         Map<String, String> providerToolInputs = new HashMap<>();
-        Map<String, String> providerToolNames = new HashMap<>();
+        Map<String, String> providerToolNames = new LinkedHashMap<>();
         // Model requests of the agent loop the provider runs for this call.
         AtomicInteger providerSteps = new AtomicInteger();
         // Live usage is per-call. Reconcile the final result against these deltas
@@ -3948,8 +4012,37 @@ public class AgenticChatLoop {
                     + " in " + event.delay().toMillis() + " ms (" + event.reason() + ")";
             if (!ChatCompleter.showAlert(warning)) setForegroundActivity(warning);
         }));
+        if (claudeCliRoute) setForegroundActivity("Waiting for Claude response");
         directLlmClient.setProviderActivityListener(
                 new DirectLlmClient.ProviderActivityListener() {
+                    @Override
+                    public void onActivity(String label) {
+                        sessionContext.wrap(() -> {
+                            if (claudeCliRoute) {
+                                reconnecting.set(false);
+                                setForegroundActivity(label);
+                            }
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onActivity(label);
+                            }
+                        }).run();
+                    }
+
+                    @Override
+                    public void onToolProgress(String callId, String name, long elapsedMillis) {
+                        sessionContext.wrap(() -> {
+                            // Ignore late heartbeats for already-completed/backgrounded calls.
+                            if (claudeCliRoute && providerToolNames.containsKey(callId)) {
+                                setForegroundActivity("Running: " + TerminalRenderer.summarizeToolCall(
+                                        name, providerToolInputs.get(callId), 72)
+                                        + " · tool " + elapsedMillis / 1000 + "s");
+                            }
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onToolProgress(callId, name, elapsedMillis);
+                            }
+                        }).run();
+                    }
+
                     @Override
                     public void onToolStart(String callId, String name, String input) {
                         sessionContext.wrap(() -> {
@@ -3957,13 +4050,14 @@ public class AgenticChatLoop {
                             if (claudeCliRoute) {
                                 thinkingRenderer.flush();
                                 fireFirstOutput();
-                                setForegroundActivity("Working: "
+                                setForegroundActivity((isEmptyToolInput(input) ? "Preparing tool: " : "Running: ")
                                         + TerminalRenderer.summarizeToolCall(name, input, 96));
                                 String key = "provider-tool:" + conversationSessionId + ":" + callId;
                                 providerToolBlocks.put(callId, new ToolTranscriptBlock(
                                         key, name, input, isEmptyToolInput(input)));
                                 providerToolInputs.put(callId, input == null ? "" : input);
                                 providerToolNames.put(callId, name);
+                                trackClaudeBackgroundableCall(callId, name, true);
                             }
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onToolStart(callId, name, input);
@@ -3978,6 +4072,8 @@ public class AgenticChatLoop {
                         sessionContext.wrap(() -> {
                             if (claudeCliRoute) {
                                 providerToolInputs.put(callId, input == null ? "" : input);
+                                setForegroundActivity("Running: "
+                                        + TerminalRenderer.summarizeToolCall(name, input, 96));
                                 ToolTranscriptBlock block = providerToolBlocks.get(callId);
                                 if (block != null) block.updateInput(input);
                             }
@@ -4026,6 +4122,7 @@ public class AgenticChatLoop {
                                 rawInput = providerToolInputs.remove(callId);
                                 if (rawInput == null) rawInput = "";
                                 toolName = providerToolNames.remove(callId);
+                                trackClaudeBackgroundableCall(callId, name, false);
                                 if (toolName == null || toolName.isBlank()) toolName = name;
                             }
                             ToolTranscriptBlock block = claudeCliRoute
@@ -4048,6 +4145,12 @@ public class AgenticChatLoop {
                                     block.updateInput(rawInput);
                                 }
                                 block.complete(providerResult);
+                                // The tool is done even if Claude takes a long time to
+                                // start its next request. Keep other concurrent calls visible.
+                                String pending = providerToolNames.keySet().stream().findFirst().orElse(null);
+                                setForegroundActivity(pending == null ? "Waiting for Claude response"
+                                        : "Running: " + TerminalRenderer.summarizeToolCall(
+                                                providerToolNames.get(pending), providerToolInputs.get(pending), 96));
                             }
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onToolComplete(
@@ -4104,6 +4207,7 @@ public class AgenticChatLoop {
                     @Override
                     public void onCompacted(String trigger, long tokensBefore) {
                         sessionContext.wrap(() -> {
+                            if (claudeCliRoute) setForegroundActivity("Waiting for Claude response");
                             thinkingRenderer.flush();
                             fireFirstOutput();
                             // Earlier usage measured the context the provider just
@@ -4121,6 +4225,7 @@ public class AgenticChatLoop {
                     @Override
                     public void onCompactionFailed(String detail) {
                         sessionContext.wrap(() -> {
+                            if (claudeCliRoute) setForegroundActivity("Waiting for Claude response");
                             thinkingRenderer.flush();
                             fireFirstOutput();
                             emitLine(renderer.dim(detail == null || detail.isBlank()
@@ -4162,6 +4267,8 @@ public class AgenticChatLoop {
                 if (listener != null) listener.onToolComplete(callId, name, input, incomplete);
             }
             providerToolBlocks.clear();
+            synchronized (backgroundTransferLock) { claudeBackgroundableCalls.clear(); }
+            notifyBackgroundEligibility();
             directLlmClient.setOutputConsumer(previousConsumer);
             directLlmClient.setThinkingConsumer(previousThinkingConsumer);
             directLlmClient.setConnectivityEventConsumer(previousConnectivityConsumer);
