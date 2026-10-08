@@ -1254,20 +1254,9 @@ public final class KompileLocalServingBootstrap {
                     requested, installHome, kompileHome, environment);
         }
 
-        Set<Path> roots = new LinkedHashSet<>();
-        if (installHome != null) {
-            roots.add(installHome.resolve("models").resolve("chat"));
-            roots.add(installHome.resolve("sdx-sdk").resolve("models"));
-        }
-        if (kompileHome != null) {
-            roots.add(kompileHome.resolve("models").resolve("chat"));
-        }
-        roots.add((kompileHome != null ? kompileHome
-                : Path.of(System.getProperty("user.home", ".")).resolve(".kompile"))
-                .resolve("models"));
-        Path userHome = Path.of(System.getProperty("user.home", "."));
-        roots.add(userHome.resolve(".cache").resolve("dl4j-llm-models"));
-        roots.add(userHome.resolve(".cache").resolve("kompile").resolve("models").resolve("pipelines"));
+        Set<Path> roots = installedModelRoots(installHome, kompileHome);
+        roots.add(Path.of(System.getProperty("user.home", "."))
+                .resolve(".cache").resolve("kompile").resolve("models").resolve("pipelines"));
 
         String normalizedRequest = normalizeName(requested);
         List<Path> matches = new ArrayList<>();
@@ -1276,14 +1265,18 @@ public final class KompileLocalServingBootstrap {
             try (var files = Files.walk(root, 3)) {
                 files.filter(path -> Files.isRegularFile(path)
                                 ? isSupportedModelFile(path)
-                                : VisionLanguagePackageLayout.isPackageDirectory(path))
+                                : isModelDirectory(path))
                         .filter(path -> matchesModel(
                                 normalizeName(path.getFileName().toString()),
                                 normalizedRequest))
                         .forEach(matches::add);
             }
         }
-        matches.sort(Comparator.comparingInt(KompileLocalServingBootstrap::modelPriority)
+        // The id the picker listed names its model exactly; the fuzzy match only
+        // decides between models nobody named outright.
+        matches.sort(Comparator.comparing((Path path) ->
+                        !normalizeName(modelUnitId(path)).equals(normalizedRequest))
+                .thenComparingInt(KompileLocalServingBootstrap::modelPriority)
                 .thenComparing(path -> path.getFileName().toString()));
 
         if (matches.isEmpty()) {
@@ -1295,6 +1288,119 @@ public final class KompileLocalServingBootstrap {
         }
         return resolveLocalModel(
                 matches.get(0), requested, installHome, kompileHome, environment);
+    }
+
+    /** Installed-model directories {@link #resolveModel} scans, in search order. */
+    static Set<Path> installedModelRoots(Path installHome, Path kompileHome) {
+        Set<Path> roots = new LinkedHashSet<>();
+        if (installHome != null) {
+            roots.add(installHome.resolve("models").resolve("chat"));
+            roots.add(installHome.resolve("sdx-sdk").resolve("models"));
+        }
+        if (kompileHome != null) {
+            roots.add(kompileHome.resolve("models").resolve("chat"));
+        }
+        roots.add((kompileHome != null ? kompileHome
+                : Path.of(System.getProperty("user.home", ".")).resolve(".kompile"))
+                .resolve("models"));
+        roots.add(Path.of(System.getProperty("user.home", "."))
+                .resolve(".cache").resolve("dl4j-llm-models"));
+        return roots;
+    }
+
+    /**
+     * Every installed model {@link #resolveModel} serves, as the id that selects it, for the
+     * same install and user homes {@link #ensureReady} resolves against. {@code excluded} (the
+     * HuggingFace cache, which pickers list by repo id) is skipped.
+     */
+    public static List<String> installedModelIds(Path excluded) {
+        return installedModelIds(resolveInstallHome(componentDirectory()),
+                KompileHome.homeDirectory().toPath(), excluded, System.getenv());
+    }
+
+    /**
+     * A vision-language package or a directory carrying its own tokenizer is one model named by
+     * its directory — its component, alternate-precision and scratch files are not models of
+     * their own. A loose {@code .gguf}/{@code .sdz} is a model named by its file stem, listed
+     * only when a tokenizer resolves for it, because serving refuses it otherwise. Hidden
+     * directories (staging, caches) never hold a selectable model.
+     */
+    static List<String> installedModelIds(
+            Path installHome, Path kompileHome, Path excluded, Map<String, String> environment) {
+        Path skip = excluded == null ? null : excluded.toAbsolutePath().normalize();
+        Set<String> ids = new LinkedHashSet<>();
+        for (Path root : installedModelRoots(installHome, kompileHome)) {
+            if (!Files.isDirectory(root)) continue;
+            List<Path> paths;
+            try (var walk = Files.walk(root, 3)) {
+                paths = walk.filter(path -> !path.equals(root))
+                        .filter(path -> skip == null
+                                || !path.toAbsolutePath().normalize().startsWith(skip))
+                        .filter(path -> !isHiddenBelow(root, path))
+                        .sorted()
+                        .toList();
+            } catch (IOException unreadable) {
+                continue;
+            }
+            List<Path> modelDirectories = new ArrayList<>();
+            for (Path path : paths) {
+                if (modelDirectories.stream().anyMatch(path::startsWith)) continue;
+                if (Files.isDirectory(path)) {
+                    if (isModelDirectory(path)) {
+                        modelDirectories.add(path);
+                        ids.add(modelUnitId(path));
+                    }
+                } else if (isSupportedModelFile(path)
+                        && hasTokenizer(path, installHome, kompileHome, environment)) {
+                    ids.add(modelUnitId(path));
+                }
+            }
+        }
+        return List.copyOf(ids);
+    }
+
+    /** A vision-language package, or a directory holding a runnable model and its tokenizer. */
+    static boolean isModelDirectory(Path directory) {
+        if (directory == null || !Files.isDirectory(directory)) return false;
+        if (VisionLanguagePackageLayout.isPackageDirectory(directory)) return true;
+        if (!Files.isRegularFile(directory.resolve(VisionLanguagePackageLayout.TOKENIZER))) {
+            return false;
+        }
+        try (var files = Files.list(directory)) {
+            return files.anyMatch(path -> Files.isRegularFile(path) && isSupportedModelFile(path));
+        } catch (IOException unreadable) {
+            return false;
+        }
+    }
+
+    /** The id selecting a model unit: a directory's name, or a model file's stem. */
+    private static String modelUnitId(Path path) {
+        String name = path.getFileName().toString();
+        if (Files.isDirectory(path)) return name;
+        String lower = name.toLowerCase(Locale.ROOT);
+        for (String extension : List.of(".gguf", ".sdz")) {
+            if (lower.endsWith(extension)) {
+                return name.substring(0, name.length() - extension.length());
+            }
+        }
+        return name;
+    }
+
+    private static boolean isHiddenBelow(Path root, Path path) {
+        for (Path segment : root.relativize(path)) {
+            if (segment.toString().startsWith(".")) return true;
+        }
+        return false;
+    }
+
+    private static boolean hasTokenizer(Path model, Path installHome, Path kompileHome,
+                                        Map<String, String> environment) {
+        try {
+            return resolveTokenizer(model, modelUnitId(model),
+                    installHome, kompileHome, environment) != null;
+        } catch (IOException misconfigured) {
+            return false;
+        }
     }
 
     /**

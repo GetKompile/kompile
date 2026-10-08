@@ -7,6 +7,7 @@ package ai.kompile.cli.main.chat.exec;
 import ai.kompile.cli.main.chat.ChatCommandCatalog;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
+import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -44,6 +45,8 @@ class WebCommandResolverRoleFastTest {
         previousHome = System.getProperty("user.home");
         home = Files.createDirectories(tempDir.resolve("home"));
         System.setProperty("user.home", home.toString());
+        // Every route's live discovery answers with this list; tests never reach a provider.
+        WebModelCatalog.useDiscovery(config -> liveList("base-model", "m1", "gpt-5.6", "claude-opus-5-5"));
         project = Files.createDirectories(tempDir.resolve("project"));
         // Built-in roles come from the classpath; a project role proves loading works.
         Path rolesDir = Files.createDirectories(project.resolve(".kompile").resolve("roles"));
@@ -61,7 +64,13 @@ class WebCommandResolverRoleFastTest {
 
     @AfterEach
     void tearDown() {
+        WebModelCatalog.useDiscovery(null);
         if (previousHome != null) System.setProperty("user.home", previousHome);
+    }
+
+    private static ModelDiscovery.Result liveList(String... ids) {
+        return ModelDiscovery.Result.success(java.util.Arrays.stream(ids)
+                .map(id -> new LiveModelDiscovery.Model(id, List.of())).toList(), List.of("https://example.test/v1/models"));
     }
 
     private static WebChatInput input(String raw) {
@@ -400,6 +409,26 @@ class WebCommandResolverRoleFastTest {
     }
 
     @Test
+    void anEffortOnlyTheLiveModelOffersStaysSelected() {
+        // A day-one model the docs do not know yet; only its live metadata offers "max".
+        WebModelCatalog.useDiscovery(config -> ModelDiscovery.Result.success(
+                List.of(new LiveModelDiscovery.Model("day-one-model", List.of("low", "max"))),
+                List.of("https://example.test/v1/models")));
+        ChatConfig route = configuredChatConfig();
+        route.setProvider("openai");
+        route.setModel("day-one-model");
+        ChatSessionStateStore store = new ChatSessionStateStore();
+        assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED,
+                WebCommandResolver.resolve(input("/thinking max"), project, store, route.copy()).status());
+        assertEquals("max", store.load("web-session-1", project).thinking());
+        WebChatInput query = new WebChatInput(WebChatInput.VERSION, "", "", "web-session-1", true);
+        assertEquals("max", WebCommandResolver.resolve(query, project, store, route.copy())
+                .data().path("thinking").path("currentThinking").asText(), "the selector's snapshot keeps it");
+        assertEquals("max", WebCommandResolver.resolve(input("/thinking"), project, store, route.copy())
+                .data().path("currentThinking").asText());
+    }
+
+    @Test
     void unsupportedThinkingAndMissingSessionFailClosed() {
         assertEquals(WebCommandResolver.Status.INVALID,
                 WebCommandResolver.resolve(input("/thinking high"), project,
@@ -692,6 +721,61 @@ class WebCommandResolverRoleFastTest {
             if (vendor.path("current").asBoolean()) sawCurrent = true;
         }
         assertTrue(sawCurrent, "the configured provider's vendor must be marked current");
+    }
+
+    @Test
+    void modelMenuIsTheProvidersLiveListWithLastKnownGoodOnlyWhenUnreachable() {
+        java.util.concurrent.atomic.AtomicReference<String> routed = new java.util.concurrent.atomic.AtomicReference<>();
+        WebModelCatalog.useDiscovery(config -> {
+            routed.set(config.getProvider());
+            return liveList("base-model", "fresh-model");
+        });
+        JsonNode live = WebCommandResolver.resolve(input("/model"), project, new ChatSessionStateStore(),
+                configuredChatConfig(), null).data();
+        assertEquals("custom", routed.get(), "discovery runs on the session's own route");
+        assertTrue(live.path("liveListingAvailable").asBoolean());
+        assertEquals(List.of("base-model", "fresh-model"), ids(live.path("models")));
+        assertTrue(live.path("models").get(0).path("current").asBoolean());
+
+        WebModelCatalog.useDiscovery(config -> ModelDiscovery.Result.failure(
+                ModelDiscovery.Status.UNAVAILABLE, "connection refused", List.of()));
+        JsonNode fallback = WebCommandResolver.resolve(input("/model"), project, new ChatSessionStateStore(),
+                configuredChatConfig(), null).data();
+        assertFalse(fallback.path("liveListingAvailable").asBoolean());
+        assertEquals(List.of("base-model", "fresh-model"), ids(fallback.path("models")));
+        assertTrue(fallback.path("note").asText().contains("last known good"), fallback.toString());
+
+        WebModelCatalog.useDiscovery(config -> ModelDiscovery.Result.failure(
+                ModelDiscovery.Status.AUTH_REQUIRED, "missing key", List.of()));
+        WebCommandResolver.Resolution blocked = WebCommandResolver.resolve(input("/model"), project,
+                new ChatSessionStateStore(), configuredChatConfig(), null);
+        assertEquals(0, blocked.data().path("models").size(), "an auth failure never shows a stale list");
+        assertFalse(blocked.data().path("note").asText().isBlank());
+        assertEquals(WebCommandResolver.Status.INVALID, WebCommandResolver.resolve(input("/model fresh-model"),
+                project, new ChatSessionStateStore(), configuredChatConfig(), null).status());
+    }
+
+    @Test
+    void vendorSwitchIsDecidedByTheTargetVendorsLiveList() {
+        LiveModelDiscovery.useClaudeCodeLoginProbe(
+                () -> new LiveModelDiscovery.ClaudeCodeLogin(true, "claude.ai", "max", false));
+        WebModelCatalog.useDiscovery(config -> ModelDiscovery.Result.success(List.of(), List.of()));
+        try {
+            WebCommandResolver.Resolution resolution = WebCommandResolver.resolve(
+                    input("/model anthropic:claude-opus-5-5"), project, new ChatSessionStateStore(),
+                    configuredChatConfig(), null);
+            assertEquals(WebCommandResolver.Status.INVALID, resolution.status(), resolution.text());
+            assertTrue(resolution.text().contains("live model list"), resolution.text());
+            assertNull(new ChatSessionStateStore().load("web-session-1", project));
+        } finally {
+            LiveModelDiscovery.useClaudeCodeLoginProbe(null);
+        }
+    }
+
+    private static List<String> ids(JsonNode models) {
+        List<String> ids = new java.util.ArrayList<>();
+        models.forEach(model -> ids.add(model.path("id").asText()));
+        return ids;
     }
 
     @Test

@@ -762,17 +762,24 @@ describe('UnifiedChat session configuration modal', () => {
     // uses (these tests build the dialog directly against a stub service).
     const snapshot$ = new Subject<any>();
     let requestedSessionId: string | undefined;
+    let routeSessionId: string | undefined;
     const svc = {
       getCommandOutcomes: () => bus.asObservable(),
       getSessionConfig: (sessionId?: string) => {
         requestedSessionId = sessionId;
         return snapshot$.asObservable();
+      },
+      // The route wizard asks the CLI for this same chat's setup catalog.
+      setupSession: (sessionId: string) => {
+        routeSessionId = sessionId;
+        return new Subject<any>().asObservable();
       }
     } as unknown as LocalAgentChatService;
     const dialog = new CommandConfigDialogComponent(
       { close: () => undefined } as any, data, svc);
     dialog.ngOnInit();
     expect(requestedSessionId).toBe('browser-session-1');
+    expect(routeSessionId).toBe('browser-session-1');
     expect(dialog.loading).toBeTrue();
     expect(dialog.modelMenu).toBeNull();
     snapshot$.next(snapshot);

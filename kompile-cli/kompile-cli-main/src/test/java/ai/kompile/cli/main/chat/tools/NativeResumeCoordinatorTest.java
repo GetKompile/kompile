@@ -17,6 +17,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NativeResumeCoordinatorTest {
@@ -102,6 +103,29 @@ class NativeResumeCoordinatorTest {
             } else {
                 System.setProperty("kompile.codex.executable", originalExecutable);
             }
+        }
+    }
+
+    /** A vendor switch hands the transcript to a framework as a new native session of its own. */
+    @Test
+    void seedStartsANewNativeSessionHoldingTheTranscript() throws Exception {
+        String originalHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.resolve("home-seed").toString());
+        try {
+            List<ChatHistory.Turn> turns = List.of(
+                    new ChatHistory.Turn("user", "asked on another vendor"),
+                    new ChatHistory.Turn("assistant", "answered on another vendor"));
+            String first = NativeResumeCoordinator.seed("pi", turns, tempDir);
+            String second = NativeResumeCoordinator.seed("PI", turns, tempDir);
+            assertNotNull(first);
+            assertNotEquals(first, second, "every switch-in starts its own session");
+            assertTrue(Files.walk(tempDir.resolve("home-seed")).anyMatch(path -> Files.isRegularFile(path)
+                    && path.getFileName().toString().contains(first)));
+
+            assertThrows(java.io.IOException.class, () -> NativeResumeCoordinator.seed("pi", List.of(), tempDir));
+            assertThrows(java.io.IOException.class, () -> NativeResumeCoordinator.seed("not-an-agent", turns, tempDir));
+        } finally {
+            System.setProperty("user.home", originalHome);
         }
     }
 

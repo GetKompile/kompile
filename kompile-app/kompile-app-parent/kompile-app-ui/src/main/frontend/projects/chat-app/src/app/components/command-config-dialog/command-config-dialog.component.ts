@@ -10,14 +10,20 @@ import { FormsModule } from '@angular/forms';
 import { MatDialogModule, MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { Subject, takeUntil } from 'rxjs';
 import {
   CommandEventData,
-  CommandModelEntry,
   CommandOutcome,
   CommandRoleEntry
 } from '@shared/models/api-models';
 import { LocalAgentChatService, SessionConfigSnapshot } from '@shared/services/local-agent-chat.service';
+import {
+  ChatRouteFieldsComponent, ChatSetupCatalog, ChatSetupSelection, Choice, clearRouteDependents, mergeRouteCatalog
+} from '../chat-route-fields/chat-route-fields.component';
+
+/** What the session wizard's update answers: the CLI's ok/status plus the route it pinned. */
+interface RouteUpdate { ok?: boolean; status?: string; framework?: string; model?: string; }
 
 /**
  * Data for the command configuration modal. The parent owns all CLI
@@ -57,10 +63,6 @@ export interface CommandConfigDialogData {
   liveSession: () => boolean;
   /** Dispatch a bare CLI command (e.g. '/model') as if typed. */
   dispatch: (commandLine: string) => void;
-  /** Select a model (raw '/model <id>' dispatch). */
-  selectModel?: (modelId: string) => void;
-  thinkingMenu?: CommandEventData | null;
-  selectThinking?: (value: string) => void;
   /** Select a role (raw '/role <name>' dispatch); 'none' clears (an empty argument is never sent). */
   selectRole: (roleName: string) => void;
   /** Toggle fast mode (raw '/fast on|off' dispatch). */
@@ -69,6 +71,8 @@ export interface CommandConfigDialogData {
   toggleUltracode: (enabled: boolean) => void;
   /** Start a fresh conversation (browser-side /clear hand-off). */
   clearConversation: () => void;
+  /** The session wizard re-pinned this chat's route; the selector above the chat reloads. */
+  routeUpdated?: () => void;
 }
 
 /**
@@ -80,75 +84,60 @@ export interface CommandConfigDialogData {
 @Component({
   selector: 'app-command-config-dialog',
   standalone: true,
-  imports: [CommonModule, FormsModule, MatDialogModule, MatButtonModule, MatIconModule],
+  imports: [CommonModule, FormsModule, MatDialogModule, MatButtonModule, MatIconModule, MatProgressBarModule,
+    ChatRouteFieldsComponent],
   template: `
     <div class="command-config">
       <h2 mat-dialog-title>Session Configuration</h2>
+      <!-- Every CLI round trip the dialog waits on shows here, wherever the content is scrolled. -->
+      <mat-progress-bar class="cc-progress" mode="indeterminate" [class.cc-progress-idle]="!working()"
+        data-testid="command-config-progress" [attr.aria-hidden]="!working()"></mat-progress-bar>
       <mat-dialog-content>
         <!-- Quiet-load state: the snapshot is one background CLI query; nothing is
              dispatched into the transcript, so until it resolves this is ALL the
              dialog shows. -->
-        <div class="cc-loading" *ngIf="loading" data-testid="command-config-loading">
+        <div class="cc-loading" *ngIf="loading" role="status" data-testid="command-config-loading">
           <span class="cc-loading-spinner"></span>
-          Loading…
+          Loading this chat's configuration from the CLI…
         </div>
         <p class="cc-error" *ngIf="!loading && loadError" data-testid="command-config-error">{{ loadError }}</p>
 
         <ng-container *ngIf="!loading">
         <p class="cc-hint" *ngIf="busy()">Working…</p>
 
-        <!-- Mid-session model/vendor picker, restored alongside the conversation selectors. -->
-        <section class="cc-section" data-testid="session-model-config">
+        <!-- The CLI setup wizard for this chat: the same route fields as a new chat, seeded from this chat. -->
+        <section class="cc-section" data-testid="session-route-config">
           <header class="cc-section-header">
-            <span class="cc-title">Model</span>
+            <span class="cc-title">Route and model</span>
             <span class="cc-meta" *ngIf="modelMenu?.provider">{{ modelMenu!.provider }}</span>
-            <button mat-icon-button type="button" class="cc-refresh" [disabled]="busy() || vendorsLoading"
-              (click)="refreshModels()" title="Reload the model catalog from the CLI"
-              aria-label="Reload the model catalog"><mat-icon>refresh</mat-icon></button>
+            <button mat-icon-button type="button" class="cc-refresh" [disabled]="busy() || routeLoading || routeSaving"
+              (click)="loadRoute()" title="Rediscover vendors, accounts and models from the CLI"
+              aria-label="Rediscover setup options"><mat-icon>refresh</mat-icon></button>
           </header>
-          <div class="cc-vendors" role="listbox" aria-label="Switch vendor" *ngIf="vendors().length">
-            <button type="button" role="option" class="cc-vendor-chip" *ngFor="let v of vendors()"
-              [class.current]="v.current" [class.selected]="selectedVendor === v.vendor"
-              [attr.aria-selected]="selectedVendor ? selectedVendor === v.vendor : !!v.current"
-              [disabled]="busy() || vendorsLoading" [title]="v.display || v.vendor" (click)="pickVendor(v.vendor)">
-              {{ v.display || v.vendor }}
-            </button>
+          <div class="cc-loading cc-loading-inline" *ngIf="routeLoading || routeSaving" role="status"
+            data-testid="session-route-loading">
+            <span class="cc-loading-spinner"></span>{{ routeActivity() }}
           </div>
-          <p class="cc-hint" *ngIf="vendorsLoading" role="status">Loading model catalog…</p>
-          <div class="cc-options" role="listbox" aria-label="Available models" *ngIf="models().length">
-            <button type="button" role="option" class="cc-option" *ngFor="let m of models()"
-              [class.current]="m.current" [attr.aria-selected]="!!m.current" [disabled]="busy() || vendorsLoading"
-              [title]="'Switch to ' + modelLabel(m) + ', as /model does in the terminal'" (click)="selectModel(m.id)">
-              <span class="cc-option-label">{{ modelLabel(m) }}</span>
-              <span class="cc-option-meta" *ngIf="m.contextLimit">ctx {{ m.contextLimit }}</span>
-              <span class="cc-current" *ngIf="m.current">current</span>
-            </button>
+          <label class="cc-grow" *ngIf="routeCatalog">Chat mode
+            <select class="cc-input" name="routeMode" data-testid="session-route-mode" [(ngModel)]="route.mode"
+              [disabled]="busy() || routeLoading || routeSaving" (ngModelChange)="routeChange('mode')">
+              <option *ngFor="let m of routeModes(); trackBy: modeId" [value]="m.id">{{ m.label }}</option></select></label>
+          <p class="cc-hint" *ngIf="routeCatalog">Mode, native framework, vendor, authentication, account, endpoint, model
+            and effort apply from the next turn. A newly chosen native framework starts its own session.</p>
+          <p class="cc-error" *ngIf="routeError" role="alert" data-testid="session-route-error">{{ routeError }}</p>
+          <app-chat-route-fields *ngIf="routeCatalog" [catalog]="routeCatalog" [selection]="route"
+            [disabled]="busy() || routeLoading || routeSaving" [nativeMode]="routeNative()"
+            [toggles]="false" (fieldChange)="routeChange($event)" (refresh)="loadRoute()"></app-chat-route-fields>
+          <div class="cc-add-row" *ngIf="routeCatalog">
+            <label class="cc-grow">Also save as
+              <select class="cc-input" name="routeSaveScope" [(ngModel)]="route.saveScope" [disabled]="routeSaving">
+                <option value="session">This chat only</option><option value="project">Project defaults</option>
+                <option value="global">Global defaults</option></select></label>
+            <button mat-flat-button type="button" class="cc-add-btn" data-testid="session-route-apply"
+              [disabled]="!canApplyRoute()" (click)="applyRoute()">{{ routeSaving ? 'Applying…' : 'Apply' }}</button>
           </div>
-          <p class="cc-empty" *ngIf="!models().length && !busy() && !vendorsLoading">
-            No models listed yet.
-            <button mat-button type="button" class="cc-link" (click)="refreshModels()">Load catalog</button>
-          </p>
-          <label class="cc-hint" *ngIf="modelMenu?.nativeModelSelection">Native model id or alias
-            <input class="cc-input" data-testid="native-model-editor" [(ngModel)]="manualModel"
-              [disabled]="busy() || vendorsLoading" (keyup.enter)="selectModel(manualModel)">
-            <button mat-button type="button" [disabled]="busy() || vendorsLoading || !manualModel.trim()"
-              (click)="selectModel(manualModel)">Select model</button>
-          </label>
+          <p class="cc-hint" role="status" *ngIf="routeStatus" data-testid="session-route-status">{{ routeStatus }}</p>
         </section>
-        <section class="cc-section" *ngIf="thinkingMenu?.supported" data-testid="session-thinking-config">
-          <header class="cc-section-header"><span class="cc-title">Thinking / effort</span></header>
-          <div class="cc-options" role="listbox" aria-label="Thinking effort">
-            <button type="button" role="option" class="cc-option" *ngFor="let option of thinkingMenu?.thinkingOptions"
-              [class.current]="option.value === (thinkingMenu?.currentThinking || '')"
-              [attr.aria-selected]="option.value === (thinkingMenu?.currentThinking || '')"
-              [disabled]="busy() || vendorsLoading || browsingOtherVendor()" (click)="selectThinking(option.value)">
-              {{ option.label }}
-            </button>
-          </div>
-          <p class="cc-hint" *ngIf="thinkingMenu?.note">{{ thinkingMenu?.note }}</p>
-        </section>
-        <p class="cc-hint" *ngIf="modelMenu?.nativeModelSelection">Framework: {{ modelMenu?.provider }}.
-          Start a new chat to switch framework.</p>
 
         <ng-container *ngIf="!modelMenu?.nativeModelSelection">
         <!-- Role -->
@@ -497,6 +486,10 @@ export interface CommandConfigDialogData {
       border: 2px solid var(--border-color, #ccc); border-top-color: var(--text-secondary, #555);
       animation: cc-spin 0.8s linear infinite; }
     @keyframes cc-spin { to { transform: rotate(360deg); } }
+    .cc-loading-inline { padding: 4px 2px 10px; font-size: 0.9em; color: var(--text-secondary, #555); }
+    /* Hidden, not removed, when idle so the content never jumps as loads start and finish. */
+    .cc-progress { flex: none; }
+    .cc-progress-idle { visibility: hidden; }
     .cc-error { margin: 0; color: var(--status-error-text, #c62828); font-size: 0.9em; }
 
     .cc-hint { margin: 0; color: var(--text-tertiary, #888); font-size: 0.85em; }
@@ -566,10 +559,13 @@ export interface CommandConfigDialogData {
 })
 export class CommandConfigDialogComponent implements OnInit, OnDestroy {
   modelMenu: CommandEventData | null;
-  thinkingMenu: CommandEventData | null = null;
-  manualModel = '';
-  selectedVendor?: string;
-  vendorsLoading = false;
+  /** The CLI wizard catalog for this chat and the route being edited (seeded from the chat's own configuration). */
+  routeCatalog?: ChatSetupCatalog;
+  route: ChatSetupSelection = {};
+  routeLoading = false;
+  routeSaving = false;
+  routeError: string | null = null;
+  routeStatus: string | null = null;
   roleMenu: CommandEventData | null;
   fastMenu: CommandEventData | null;
   ultracodeMenu: CommandEventData | null;
@@ -586,6 +582,8 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
   newQueued = '';
   /** True until the quiet snapshot resolves (or fails); the dialog shows only "Loading…". */
   loading = true;
+  /** A later snapshot reload (after Apply) is in flight; the sections stay shown meanwhile. */
+  refreshing = false;
   /** Human-readable error when the quiet snapshot could not be fetched. */
   loadError: string | null = null;
   private readonly destroyed = new Subject<void>();
@@ -596,7 +594,6 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     private agentChat: LocalAgentChatService
   ) {
     this.modelMenu = data.modelMenu;
-    this.thinkingMenu = data.thinkingMenu ?? null;
     this.roleMenu = data.roleMenu;
     this.fastMenu = data.fastMenu;
     this.ultracodeMenu = data.ultracodeMenu ?? null;
@@ -618,17 +615,23 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     // Quiet fetch: one background HTTP call resolves every section from the
     // CLI headlessly. No chat messages, no transcript entries. Live command
     // outcomes (from explicit user actions elsewhere) still update panels.
+    this.loadSnapshot();
+    this.loadRoute();
+  }
+
+  private loadSnapshot(): void {
+    this.refreshing = !this.loading;
     this.agentChat.getSessionConfig(this.data.sessionId, this.data.workingDirectory)
       .pipe(takeUntil(this.destroyed))
       .subscribe({
         next: (snapshot: SessionConfigSnapshot) => {
           this.loading = false;
+          this.refreshing = false;
           if (snapshot?.available === false) {
             this.loadError = snapshot.status || 'Session configuration is unavailable.';
             return;
           }
           this.modelMenu = snapshot?.model ?? this.modelMenu;
-          this.thinkingMenu = snapshot?.thinking ?? this.thinkingMenu;
           this.roleMenu = snapshot?.role ?? this.roleMenu;
           this.fastMenu = snapshot?.fast ?? this.fastMenu;
           this.ultracodeMenu = snapshot?.ultracode ?? this.ultracodeMenu;
@@ -642,6 +645,7 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
         },
         error: (error: unknown) => {
           this.loading = false;
+          this.refreshing = false;
           this.loadError = (error as { message?: string })?.message
             || 'Could not load session configuration.';
         }
@@ -657,52 +661,89 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     return this.data.busy();
   }
 
+  /** Anything the dialog is waiting on: the snapshot, route discovery, an Apply, or a dispatched command. */
+  working(): boolean {
+    return this.loading || this.refreshing || this.routeLoading || this.routeSaving || this.busy();
+  }
+
+  /** What the route section is waiting on, in words. */
+  routeActivity(): string {
+    if (this.routeSaving) return 'Applying the new route…';
+    return this.routeCatalog ? 'Updating vendors, accounts and models for your selection…'
+      : 'Discovering vendors, accounts and models from the CLI…';
+  }
+
   liveSession(): boolean {
     return this.data.liveSession();
   }
 
-  models(): CommandModelEntry[] { return this.modelMenu?.models ?? []; }
-  vendors(): { vendor: string; display?: string; current?: boolean }[] { return this.modelMenu?.vendors ?? []; }
-  modelLabel(model: CommandModelEntry): string { return model.display || model.id; }
-  browsingOtherVendor(): boolean {
-    return !!this.selectedVendor && !this.vendors().some(v => v.current && v.vendor === this.selectedVendor);
+  routeNative(): boolean {
+    const mode = this.route.mode;
+    return mode === 'passthrough' || (mode === 'workflow' && this.route.leadMode === 'passthrough');
   }
-  pickVendor(vendor: string): void {
-    if (this.busy() || this.vendorsLoading || vendor === this.selectedVendor) return;
-    this.loadModels(vendor);
+  /** The CLI wizard's modes; a workflow team is chosen when a chat is created. */
+  routeModes(): Choice[] {
+    return (this.routeCatalog?.modes || []).filter(m => m.id !== 'workflow');
   }
-  refreshModels(): void {
-    if (!this.busy() && !this.vendorsLoading) this.loadModels();
+  /** Keeps the selected mode's option across rediscoveries, which answer with a new list. */
+  modeId(_index: number, mode: Choice): string { return mode.id; }
+  canApplyRoute(): boolean {
+    return !this.busy() && !this.routeLoading && !this.routeSaving && !!this.routeCatalog
+      && (this.routeNative() ? !!this.route.passthroughAgent : !!this.route.model?.trim());
   }
-  private loadModels(vendor?: string): void {
-    this.vendorsLoading = true;
-    this.loadError = null;
-    this.agentChat.getSessionConfig(this.data.sessionId, this.data.workingDirectory, vendor)
+  routeChange(field: string): void {
+    clearRouteDependents(this.route, field);
+    this.loadRoute();
+  }
+  /** The chat's route fields only: the CLI keeps its workflow team and the dialog's own fast/ultracode toggles. */
+  private routeSelection(): ChatSetupSelection {
+    const { apiKey, workflow, leadMode, profile, saveProfile, replaceProfile, judges, fastMode, ultracode, ...selection }
+      = this.route;
+    return selection;
+  }
+  /** Discovery never receives a typed API key; only Apply sends it. */
+  loadRoute(): void {
+    if (!this.data.sessionId || this.routeSaving) return;
+    const apiKey = this.route.apiKey;
+    const requested = this.routeSelection();
+    this.routeLoading = true;
+    this.routeError = null;
+    this.agentChat.setupSession<ChatSetupCatalog>(this.data.sessionId, this.data.workingDirectory, 'catalog', requested)
       .pipe(takeUntil(this.destroyed)).subscribe({
-        next: snapshot => {
-          this.vendorsLoading = false;
-          if (snapshot.available === false || !snapshot.model) {
-            this.loadError = snapshot.status || 'Could not load the model catalog.';
-            return;
-          }
-          this.selectedVendor = vendor;
-          this.modelMenu = snapshot.model;
-          this.thinkingMenu = snapshot.thinking ?? null;
+        next: catalog => {
+          this.routeLoading = false;
+          if (!catalog?.available) { this.routeError = catalog?.status || 'The CLI setup wizard is unavailable.'; return; }
+          this.routeCatalog = catalog;
+          this.route = mergeRouteCatalog(catalog, requested, { apiKey });
         },
-        error: () => { this.vendorsLoading = false; this.loadError = 'Could not load the model catalog.'; }
+        error: (error: { error?: { message?: string } }) => {
+          this.routeLoading = false;
+          this.routeError = error?.error?.message || 'Could not discover setup options for this chat.';
+        }
       });
   }
-  selectModel(modelId: string): void {
-    if (this.busy() || this.vendorsLoading || !modelId.trim()) return;
-    const value = this.browsingOtherVendor() ? this.selectedVendor + ':' + modelId.trim() : modelId.trim();
-    if (this.data.selectModel) this.data.selectModel(value);
-    else this.data.dispatch('/model ' + value);
-  }
-  selectThinking(value: string): void {
-    if (this.busy() || this.vendorsLoading || this.browsingOtherVendor()
-      || !this.thinkingMenu?.thinkingOptions?.some(option => option.value === value)) return;
-    if (this.data.selectThinking) this.data.selectThinking(value);
-    else this.data.dispatch('/thinking ' + (value || 'default'));
+  applyRoute(): void {
+    if (!this.canApplyRoute() || !this.data.sessionId) return;
+    this.routeSaving = true;
+    this.routeError = null;
+    this.routeStatus = null;
+    const selection = { ...this.routeSelection(), ...(this.route.apiKey ? { apiKey: this.route.apiKey } : {}) };
+    this.agentChat.setupSession<RouteUpdate>(this.data.sessionId, this.data.workingDirectory, 'update', selection)
+      .pipe(takeUntil(this.destroyed)).subscribe({
+        next: result => {
+          this.routeSaving = false;
+          delete this.route.apiKey;
+          if (!result?.ok) { this.routeError = result?.status || 'The chat route was not changed.'; return; }
+          this.routeStatus = `Applied: ${[result.framework, result.model].filter(Boolean).join(' · ')}. Takes effect on the next turn.`;
+          this.loadRoute();
+          this.loadSnapshot();
+          this.data.routeUpdated?.();
+        },
+        error: (error: { error?: { message?: string } }) => {
+          this.routeSaving = false;
+          this.routeError = error?.error?.message || 'The chat route was not changed.';
+        }
+      });
   }
 
   roles(): CommandRoleEntry[] {
@@ -824,8 +865,8 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     const data = outcome?.data;
     if (!data?.menu) return;
     if (data.menu === 'model') this.modelMenu = data;
-    if (data.menu === 'thinking') this.thinkingMenu = data;
-    if (outcome.ok && data.state?.model) this.loadModels();
+    // A /model or /thinking from the selector above the chat re-pinned the route; reseed the wizard from it.
+    if (outcome.ok && (data.state?.model || data.state?.thinking !== undefined)) this.loadRoute();
     if (data.menu === 'role') this.roleMenu = data;
     if (data.menu === 'fast') this.fastMenu = data;
     if (data.menu === 'ultracode') this.ultracodeMenu = data;

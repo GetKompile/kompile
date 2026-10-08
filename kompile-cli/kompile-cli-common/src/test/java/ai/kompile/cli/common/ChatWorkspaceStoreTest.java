@@ -74,6 +74,54 @@ class ChatWorkspaceStoreTest {
         assertEquals(3, store().read().projects().get(0).chats().size());
     }
 
+    /** A switch changes where the chat runs now; its launch selection and native source stay as created. */
+    @Test void recordedRouteIsShownWithoutRewritingTheLaunchSelection() throws Exception {
+        var project = store().register(temp);
+        var chat = store().createChat(project.id(), "Chat", "opencode", "zai/glm-5");
+        var imported = store().referenceNativeChat(temp, "codex", "native-id", "codex", "Imported");
+        Path index = temp.resolve(".kompile/chat-workspace.json");
+        assertNull(store().findChat(temp, chat.id()).route());
+        // Indexes written before routes existed still read.
+        Files.writeString(index, Files.readString(index).replaceAll(",\\s*\"route\"\\s*:\\s*null", ""));
+        assertFalse(Files.readString(index).contains("route"));
+        assertEquals(chat, store().findChat(temp, chat.id()));
+
+        assertTrue(store().recordRoute(temp, chat.id(), "anthropic / claude-opus-5-5"));
+        assertTrue(store().recordRoute(temp, imported.id(), "claude / opus"));
+        var switched = store().findChat(temp, chat.id());
+        assertEquals("anthropic / claude-opus-5-5", switched.route());
+        assertEquals("opencode", switched.framework());
+        assertEquals("zai/glm-5", switched.model());
+        var resumed = store().findChat(temp, imported.id());
+        assertEquals("claude / opus", resumed.route());
+        assertEquals("codex", resumed.framework());
+        assertEquals("native-id", resumed.nativeSessionId());
+
+        // An unchanged label is not rewritten; an unknown chat or one in another folder is untouched.
+        long modified = Files.getLastModifiedTime(index).toMillis();
+        Thread.sleep(20);
+        assertTrue(store().recordRoute(temp, chat.id(), "anthropic / claude-opus-5-5"));
+        assertEquals(modified, Files.getLastModifiedTime(index).toMillis());
+        assertFalse(store().recordRoute(temp, "unknown", "codex / gpt-5"));
+        assertFalse(store().recordRoute(Files.createDirectory(temp.resolve("other")), chat.id(), "codex / gpt-5"));
+        // A label that cannot be displayed is dropped rather than stored.
+        assertTrue(store().recordRoute(temp, chat.id(), "bad\nlabel"));
+        assertNull(store().findChat(temp, chat.id()).route());
+    }
+
+    /** The CLI and server are redeployed separately: a field a newer writer added must not make the index unreadable. */
+    @Test void indexWrittenByANewerVersionStillReads() throws Exception {
+        var project = store().register(temp);
+        var chat = store().createChat(project.id(), "Chat", "claude", "sonnet");
+        Path index = temp.resolve(".kompile/chat-workspace.json");
+        Files.writeString(index, Files.readString(index)
+                .replaceFirst("\"id\"\\s*:\\s*\"" + chat.id() + "\"", "\"id\":\"" + chat.id() + "\",\"futureField\":{\"x\":1}")
+                .replaceFirst("\\{", "{\"futureTopLevel\":true,"));
+        assertTrue(Files.readString(index).contains("futureField"));
+        assertEquals(chat, store().findChat(temp, chat.id()));
+        assertEquals(1, store().read().projects().get(0).chats().size());
+    }
+
     @Test void newProjectCreatesOnlyItsFolderAndPersistsCanonicalIdentity() throws Exception {
         Path parent = Files.createDirectory(temp.resolve("projects"));
         Path alias = Files.createSymbolicLink(temp.resolve("alias"), parent);

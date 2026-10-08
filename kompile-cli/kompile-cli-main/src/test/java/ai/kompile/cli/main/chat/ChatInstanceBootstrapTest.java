@@ -230,13 +230,26 @@ class ChatInstanceBootstrapTest {
     }
 
     @Test
-    void webBindingDefaultsToLoopbackButOrdinaryLaunchKeepsLegacyArguments(@TempDir Path tempDir)
-            throws Exception {
-        assertEquals(List.of("--server.address=127.0.0.1"), ChatInstanceBootstrap.webApplicationArguments(Map.of()));
+    void webBindingKeepsServiceDefaultWhenNoAddressIsSelected() {
+        assertEquals(List.of(), ChatInstanceBootstrap.webApplicationArguments(Map.of()));
+        assertEquals(List.of(), ChatInstanceBootstrap.webApplicationArguments(
+                Map.of("KOMPILE_CHAT_ADDRESS", " \t", "SERVER_ADDRESS", " ")));
+    }
+
+    @Test
+    void webBindingHonorsExplicitAddressesAndKompilePrecedence() {
         assertEquals(List.of("--server.address=0.0.0.0"), ChatInstanceBootstrap.webApplicationArguments(
                 Map.of("KOMPILE_CHAT_ADDRESS", "0.0.0.0", "SERVER_ADDRESS", "127.0.0.2")));
+        assertEquals(List.of("--server.address=127.0.0.1"), ChatInstanceBootstrap.webApplicationArguments(
+                Map.of("KOMPILE_CHAT_ADDRESS", " 127.0.0.1 ")));
         assertEquals(List.of("--server.address=127.0.0.2"), ChatInstanceBootstrap.webApplicationArguments(
                 Map.of("SERVER_ADDRESS", "127.0.0.2")));
+        assertEquals(List.of("--server.address=192.168.1.10"), ChatInstanceBootstrap.webApplicationArguments(
+                Map.of("KOMPILE_CHAT_ADDRESS", " ", "SERVER_ADDRESS", " 192.168.1.10 ")));
+    }
+
+    @Test
+    void ordinaryLaunchKeepsLegacyArguments(@TempDir Path tempDir) throws Exception {
         Path lib = Files.createDirectories(tempDir.resolve("lib"));
         Files.writeString(lib.resolve("kompile-chat.jar"), "test");
         ComponentRegistry registry = new ComponentRegistry();

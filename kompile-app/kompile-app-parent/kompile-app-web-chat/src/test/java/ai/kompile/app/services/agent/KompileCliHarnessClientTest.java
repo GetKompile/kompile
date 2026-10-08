@@ -90,6 +90,21 @@ class KompileCliHarnessClientTest {
         assertEquals("private-key", new ObjectMapper().readTree(fake.stdin.toByteArray()).path("selection").path("apiKey").asText());
     }
     @Test
+    void sessionSetupTargetsTheHarnessSessionOfTheBrowserChat() throws Exception {
+        var fake = new FakeProcess("{\"ok\":true,\"model\":\"gpt-5.6\"}", "", 0);
+        client = clientWith(fake);
+        var selection = new ObjectMapper().createObjectNode().put("model", "gpt-5.6").put("apiKey", "private-key");
+        assertTrue(client.setupSession("browser-42", tempDir.toString(), "update", selection).path("ok").asBoolean());
+        var sent = new ObjectMapper().readTree(fake.stdin.toByteArray());
+        assertEquals("update", sent.path("action").asText());
+        assertEquals(KompileCliHarnessClient.harnessSessionId(tempDir.toRealPath(), "browser-42"), sent.path("sessionId").asText());
+        assertEquals("gpt-5.6", sent.path("selection").path("model").asText());
+        assertFalse(capturedCommand.get().toString().contains("private-key"));
+        // Creating chats and saving profiles stay with the new-chat endpoints.
+        assertThrows(IllegalArgumentException.class, () -> client.setupSession("browser-42", tempDir.toString(), "create", selection));
+        assertThrows(IllegalArgumentException.class, () -> client.setupSession(" ", tempDir.toString(), "catalog", selection));
+    }
+    @Test
     void unsupportedSetupDoesNotExposeAnOldLauncherEcho() {
         client = clientWith(new FakeProcess("echoed private-key", "parser private-key", 2));
         var result = client.setupChat(tempDir.toString(), new ObjectMapper().createObjectNode().put("action", "catalog"));

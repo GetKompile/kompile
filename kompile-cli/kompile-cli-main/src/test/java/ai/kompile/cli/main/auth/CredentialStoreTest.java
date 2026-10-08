@@ -60,6 +60,36 @@ class CredentialStoreTest {
         assertEquals("global", new CredentialStore(auth).defaultCredentialName("provider"));
     }
 
+    /** Every turn and setup check resolves OAuth; an unchanged store must not be rewritten (and fsynced) each time. */
+    @Test
+    void resolvingAnUnchangedOAuthCredentialDoesNotRewriteTheStore() throws Exception {
+        Path auth = tempDir.resolve("resolve-no-write.json");
+        CredentialStore store = new CredentialStore(auth);
+        store.putOAuth("provider", "live", "live-access", "live-refresh", Long.MAX_VALUE, true);
+        store.putOAuth("provider", "renewable", "old-access", "old-refresh", 1L, false);
+        CredentialStore.OAuthRefresher unused = current -> { throw new AssertionError("A live token must not refresh"); };
+
+        // Selecting a different account than the last one used is a change, and is saved.
+        store.recordUsed("provider", "renewable");
+        assertEquals("live", store.resolveOAuthSelection("provider", "live", 0L, unused).name());
+        assertEquals("live", new CredentialStore(auth).defaultCredentialName("provider"));
+
+        long written = Files.getLastModifiedTime(auth).toMillis();
+        String contents = Files.readString(auth);
+        Thread.sleep(20);
+        for (int i = 0; i < 3; i++) {
+            assertEquals("live-access", store.resolveOAuthSelection("provider", "live", 0L, unused).credential().getAccess());
+        }
+        assertEquals(written, Files.getLastModifiedTime(auth).toMillis());
+        assertEquals(contents, Files.readString(auth));
+
+        // A refresh is a change, and is saved.
+        assertEquals("new-access", store.resolveOAuthSelection("provider", "renewable", 0L,
+                current -> ManagedCredential.oauth("new-access", "new-refresh", Long.MAX_VALUE)).credential().getAccess());
+        assertEquals("new-access", new CredentialStore(auth).read("provider", "renewable").getAccess());
+        assertEquals("renewable", new CredentialStore(auth).defaultCredentialName("provider"));
+    }
+
     @Test
     void failedRefreshCleanupCannotDeleteAReplacementCredential() throws Exception {
         CredentialStore store = new CredentialStore(tempDir.resolve("replacement.json"));

@@ -97,6 +97,28 @@ class AgentChatControllerHarnessTest {
     }
 
     @Test
+    void sessionSetupIsTheCliWizardAndARefusedUpdateIsAClientError() {
+        var mapper = new ObjectMapper();
+        var selection = mapper.createObjectNode().put("model", "gpt-5.6");
+        var catalog = mapper.createObjectNode().put("available", true).put("session", true);
+        when(harness.setupSession("browser-1", "/project", "catalog", selection)).thenReturn(catalog);
+        assertSame(catalog, controller.sessionSetup(
+                new AgentChatController.SessionSetupRequest("browser-1", "/project", null, selection)).getBody());
+
+        when(harness.setupSession("browser-1", "/project", "update", selection))
+                .thenReturn(mapper.createObjectNode().put("ok", false).put("status", "not in the live model list"));
+        var refused = assertThrows(ResponseStatusException.class, () -> controller.sessionSetup(
+                new AgentChatController.SessionSetupRequest("browser-1", "/project", "update", selection)));
+        assertEquals(HttpStatus.BAD_REQUEST, refused.getStatusCode());
+        assertEquals("not in the live model list", refused.getReason());
+
+        when(harness.setupSession("browser-1", "/project", "create", selection))
+                .thenThrow(new IllegalArgumentException("Unknown session setup action"));
+        assertEquals(HttpStatus.BAD_REQUEST, assertThrows(ResponseStatusException.class, () -> controller.sessionSetup(
+                new AgentChatController.SessionSetupRequest("browser-1", "/project", "create", selection))).getStatusCode());
+    }
+
+    @Test
     void provisionedAgentStillRequiresIntegrationCredentials() {
         var request = new AgentChatRequest();
         request.setProvisionedAgentId("managed-agent");

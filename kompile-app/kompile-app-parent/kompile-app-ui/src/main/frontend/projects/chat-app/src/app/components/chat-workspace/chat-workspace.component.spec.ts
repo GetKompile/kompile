@@ -1,4 +1,4 @@
-import { Component, Input, Output, EventEmitter } from '@angular/core';
+import { Component, Input, Output, EventEmitter, forwardRef } from '@angular/core';
 import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { CommonModule } from '@angular/common';
@@ -12,18 +12,26 @@ import { MatDialog } from '@angular/material/dialog';
 import { Subject } from 'rxjs';
 import { NewChatDialogComponent, NewChatDialogResult } from '../new-chat-dialog/new-chat-dialog.component';
 import { ChatWorkspaceComponent, WorkspaceChatPaneComponent, WorkspaceProject } from './chat-workspace.component';
+import { UnifiedChatComponent } from '../unified-chat/unified-chat.component';
 import { LocalAgentChatService } from '@shared/services/local-agent-chat.service';
 import { AgentService } from '@shared/services/agent.service';
 import { ChatActivityIndicatorComponent, ChatActivity, IDLE_CHAT_ACTIVITY } from '../chat-activity-indicator/chat-activity-indicator.component';
 
-@Component({ selector: 'app-unified-chat', standalone: false, template: '' })
+@Component({ selector: 'app-unified-chat', standalone: false, template: '',
+  // The pane finds its chat view by the real class.
+  providers: [{ provide: UnifiedChatComponent, useExisting: forwardRef(() => StubChat) }] })
 class StubChat {
   @Input() workingDirectory?: string;
   @Input() workspaceChat?: { id: string; name: string };
   @Input() viewActive = true;
   @Output() workspaceNewChat = new EventEmitter<void>();
+  /** Like a new workspace chat, which starts loading its transcript while it is first checked. */
+  static busyOnInit = false;
   lifecycleBusy = false;
   activityIndicator: ChatActivity = IDLE_CHAT_ACTIVITY;
+  ngOnInit(): void {
+    if (StubChat.busyOnInit) { this.lifecycleBusy = true; this.activityIndicator = { active: true, label: 'Loading', tone: 'work' }; }
+  }
   refreshWorkspaceTranscript(): void { }
 }
 
@@ -164,8 +172,12 @@ describe('Chat workspace', () => {
         expect(layout.view.getComputedStyle(toolbar).display).toBe(width <= 768 ? 'flex' : 'none');
         expect(main.getBoundingClientRect().width).toBeGreaterThan(width <= 768 ? width - 2 : width - 320);
         expect(layout.root.scrollWidth).toBeLessThanOrEqual(width);
+        // One row of one-line tabs at every width: a long chat name is clipped, never wrapped into the chat's height.
+        expect(nav.getBoundingClientRect().height).toBeLessThan(width <= 768 ? 80 : 60);
+        const longName = nav.querySelector('.tab-name') as HTMLElement;
+        expect(longName.getBoundingClientRect().width).toBeLessThanOrEqual(width <= 768 ? width * 0.6 + 1 : 360);
+        expect(longName.scrollWidth).toBeGreaterThan(longName.clientWidth);
         if (width <= 768) {
-          expect(nav.getBoundingClientRect().height).toBeLessThan(80);
           aside.classList.add('mobile-open');
           expect(aside.getBoundingClientRect().width).toBeLessThanOrEqual(width);
           expect(layout.view.getComputedStyle(aside).display).toBe('block');
@@ -414,11 +426,15 @@ describe('Chat workspace', () => {
     const pending = http.expectOne(r => r.url.endsWith('/agents/chat/workspace'));
     tick(10_000);
     http.expectNone(r => r.url.endsWith('/agents/chat/workspace'));
-    pending.flush({ enabled: true, projects: [{ ...projects[0], chats: [{ id: 'c1', name: 'Real resume title' }] }] });
+    pending.flush({ enabled: true, projects: [{ ...projects[0], chats: [{ id: 'c1', name: 'Real resume title',
+      framework: 'opencode', model: 'zai/glm-5', route: 'anthropic / claude-opus-5-5' }] }] });
     extra.detectChanges();
     expect(extra.componentInstance.panes.first).toBe(pane);
     expect(extra.componentInstance.opened[0].chat.name).toBe('Real resume title');
     expect(extra.nativeElement.querySelector('aside').textContent).toContain('Real resume title');
+    // The list shows where the chat runs now, after a vendor switch, not its launch selection.
+    const route = extra.nativeElement.querySelector('aside [data-testid="chat-route"]');
+    expect(route.textContent).toBe('anthropic / claude-opus-5-5');
     extra.destroy(); tick(20_000);
     http.expectNone(r => r.url.endsWith('/agents/chat/workspace'));
   }));
@@ -548,9 +564,30 @@ describe('Chat workspace', () => {
     extra.destroy();
   });
 
-  it('does not close a busy pane and closing an idle pane keeps its registry chat', () => {
+  it('shows a chat that starts busy as busy from the next check, not within the check that mounted it', async () => {
+    StubChat.busyOnInit = true;
+    try {
+      const workspace = fixture.componentInstance;
+      workspace.open(projects[0], projects[0].chats[0]);
+      // TestBed re-checks every binding after the pass (NG0100) — this used to throw for the tab's close button.
+      expect(() => fixture.detectChanges()).not.toThrow();
+      await Promise.resolve(); // the pane publishes its state on the next microtask
+      fixture.detectChanges();
+      const close = fixture.nativeElement.querySelector('nav .close-chat') as HTMLButtonElement;
+      expect(close.title).toBe('Stop the running chat before closing it');
+      expect(workspace.busy('c1')).toBeTrue();
+      expect((fixture.nativeElement.querySelector('nav app-chat-activity-indicator') as HTMLElement).textContent!.trim()).toBe('Loading');
+      workspace.close('c1');
+      expect(workspace.opened.length).toBe(1);
+    } finally {
+      StubChat.busyOnInit = false;
+    }
+  });
+
+  it('does not close a busy pane and closing an idle pane keeps its registry chat', async () => {
     const workspace = fixture.componentInstance;
     workspace.open(projects[0], projects[0].chats[0]); fixture.detectChanges();
+    await Promise.resolve();
     workspace.panes.first.view = { lifecycleBusy: true } as any;
     workspace.close('c1'); expect(workspace.opened.length).toBe(1);
     workspace.panes.first.view = { lifecycleBusy: false } as any;

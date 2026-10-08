@@ -232,6 +232,11 @@ class ChatWorkspaceControllerTest {
         assertEquals("opencode", renamed.framework()); assertEquals("zai/glm-5", renamed.model());
         var listed = controller.workspace().projects().get(0).chats().get(0);
         assertEquals("GLM chat", listed.name()); assertEquals("opencode", listed.framework()); assertEquals("zai/glm-5", listed.model());
+        // A vendor switch the CLI recorded is listed and survives renaming; the launch selection is kept.
+        new ChatWorkspaceStore(temp.resolve(".kompile/chat-workspace.json")).recordRoute(temp, chat.id(), "anthropic / claude-opus-5-5");
+        assertEquals("anthropic / claude-opus-5-5", controller.workspace().projects().get(0).chats().get(0).route());
+        var switched = controller.renameChat(project.id(), chat.id(), new ChatWorkspaceController.ChatRequest("Switched"));
+        assertEquals("anthropic / claude-opus-5-5", switched.route()); assertEquals("opencode", switched.framework());
         assertThrows(ResponseStatusException.class, () -> controller.createChat(project.id(),
                 new ChatWorkspaceController.ChatRequest("invalid", "../../claude", "model")));
     }

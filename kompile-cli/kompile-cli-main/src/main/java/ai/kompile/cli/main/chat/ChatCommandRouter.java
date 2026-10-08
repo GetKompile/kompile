@@ -25,6 +25,7 @@ import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.ClaudeMcpServer;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.ModelCatalogSelection;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
@@ -2074,7 +2075,8 @@ public class ChatCommandRouter {
             ChatCompleter.printAbove("Thinking/effort is only configurable in local standard chat.");
             return;
         }
-        List<SetupWizard.ThinkingOption> options = SetupWizard.thinkingOptions(config.getProvider(), config.getModel());
+        List<SetupWizard.ThinkingOption> options = SetupWizard.thinkingOptions(
+                config.getProvider(), config.getModel(), null, config, liveDiscovery(config));
         if (rest.isBlank() || "status".equalsIgnoreCase(rest)) {
             ChatCompleter.printAbove("Thinking/effort: " + (config.getThinking() == null
                     ? "provider/model default" : config.getThinking()));
@@ -2210,7 +2212,7 @@ public class ChatCommandRouter {
         if (model == null || model.isBlank()) {
             return "Choose a model with /model first; ultracode needs one that offers " + requires + " effort.";
         }
-        ModelDiscovery.Result discovery = SetupWizard.modelDiscovery(config.getProvider(), null, config);
+        ModelDiscovery.Result discovery = liveDiscovery(config);
         if (!SetupWizard.ultracodeOptions(config.getProvider(), model, discovery).isEmpty()) {
             return null;
         }
@@ -2219,6 +2221,13 @@ public class ChatCommandRouter {
                         ? discovery.status().name().toLowerCase(java.util.Locale.ROOT) : discovery.message()) + ".";
         return "Ultracode needs a model that offers " + requires + " effort, and live discovery does not list it for "
                 + model + "." + detail + " Use /model to pick one that does.";
+    }
+
+    /** The session provider's live catalog, retried once on a transient failure like the /model picker. */
+    private static ModelDiscovery.Result liveDiscovery(ChatConfig config) {
+        ModelDiscovery.Result discovery = SetupWizard.modelDiscovery(config.getProvider(), null, config);
+        return ModelCatalogSelection.transientFailure(discovery)
+                ? SetupWizard.refreshModelDiscovery(config.getProvider(), null, config) : discovery;
     }
 
     private void handleModelCommand(String rest) {

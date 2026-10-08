@@ -94,6 +94,18 @@
   box-shadow: var(--shadow-md);
 }
 
+/* A workspace pane already frames the chat; its margin would only take height from the conversation. */
+:host-context(app-workspace-chat-pane) .unified-chat-wrapper {
+  margin: 0 auto;
+}
+
+/* Same viewports as the fixed-height layout; short or narrow ones keep the page-scrolling height:auto below. */
+@media (min-width: 769px) and (min-height: 561px) {
+  :host-context(app-workspace-chat-pane) .unified-chat-wrapper {
+    height: 100%;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
    CHAT HISTORY SIDEBAR (LEFT)
    ═══════════════════════════════════════════════════════════════════════════════ */
@@ -1263,7 +1275,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 20px;
+  padding: 8px 16px;
   background-color: var(--bg-surface);
   border-bottom: 1px solid var(--border-color);
 }
@@ -2972,7 +2984,7 @@
    ═══════════════════════════════════════════════════════════════════════════════ */
 
 .input-area {
-  padding: 16px 20px;
+  padding: 10px 16px;
   background-color: var(--bg-surface);
   border-top: 1px solid var(--border-color);
 }
@@ -3963,5 +3975,31 @@ details[open] > .tool-use-summary::before {
     align-items: stretch;
     flex-direction: column;
     gap: 6px;
+  }
+}
+
+/* Narrow or short viewports scroll the whole page (see the app shell): the chat stops filling
+   a fixed height, so its header, controls and composer are reached by scrolling the page, and
+   only the conversation keeps its own scroll box, sized to leave room for the composer. Last
+   in the file so it wins over the fixed heights above. */
+@media (max-width: 768px), (max-height: 560px) {
+  :host,
+  .unified-chat-wrapper {
+    height: auto;
+  }
+
+  .conversation-area {
+    box-sizing: border-box;
+    flex: none;
+    height: 60vh;
+    height: 60dvh;
+    min-height: 240px;
+  }
+
+  /* Drawers span the now page-tall chat; cap them at the viewport so their lists scroll. */
+  .history-sidebar,
+  .settings-sidebar {
+    max-height: 100vh;
+    max-height: 100dvh;
   }
 }

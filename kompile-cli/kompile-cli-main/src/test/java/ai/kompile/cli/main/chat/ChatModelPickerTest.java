@@ -479,19 +479,23 @@ class ChatModelPickerTest {
     }
 
     @Test
-    void thinkingCommandValidatesAndPersistsWithoutRediscoveringModels() throws Exception {
+    void thinkingCommandIsDecidedByTheProvidersLiveModelMetadata() throws Exception {
         ChatConfig config = config("openai", "key", "api-key", null);
-        config.setModel("gpt-5.5");
-        try (Picker picker = new Picker(config, models("gpt-5.5"))) {
-            picker.choose("/thinking HIGH");
-            assertEquals("high", picker.repl.getChatConfig().getThinking());
-            assertEquals("high", ChatConfig.loadSession("model-picker-test").getThinking());
+        config.setModel("reasoning-model");
+        ModelDiscovery.Result discovery = ModelDiscovery.Result.success(List.of(
+                new LiveModelDiscovery.Model("reasoning-model", List.of("high", "xhigh"))), List.of());
+        try (Picker picker = new Picker(config, discovery)) {
+            picker.choose("/thinking XHIGH");
+            assertEquals("xhigh", picker.repl.getChatConfig().getThinking());
+            assertEquals("xhigh", ChatConfig.loadSession("model-picker-test").getThinking());
+            assertEquals(1, picker.calls.size(), "/thinking asks the session's provider, like /model");
+            assertEquals("key", picker.calls.get(0).auth().token());
             picker.choose("/thinking invalid");
-            assertEquals("high", picker.repl.getChatConfig().getThinking());
+            assertEquals("xhigh", picker.repl.getChatConfig().getThinking());
             picker.choose("/thinking default");
             assertNull(picker.repl.getChatConfig().getThinking());
             assertNull(ChatConfig.loadSession("model-picker-test").getThinking());
-            assertTrue(picker.calls.isEmpty());
+            assertEquals(3, picker.calls.size());
         }
     }
 

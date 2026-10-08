@@ -83,6 +83,9 @@ public final class CliModelCatalog {
     private static volatile Map<String, List<String>> byProvider = Map.of();
     private static volatile long lastLoadedFingerprint = Long.MIN_VALUE;
     private static volatile long lastCheckMs = 0L;
+    // The catalog files the loaded maps came from; a different set (home or override changed)
+    // is a different catalog and is never served from the refresh-interval cache.
+    private static volatile List<Path> lastLoadedPaths = List.of();
 
     private CliModelCatalog() {}
 
@@ -159,6 +162,7 @@ public final class CliModelCatalog {
             byId = Map.of();
             byScopedId = Map.of();
             byProvider = Map.of();
+            lastLoadedPaths = List.of();
         }
     }
 
@@ -192,29 +196,33 @@ public final class CliModelCatalog {
     }
 
     private static void ensureFresh() {
+        List<Path> paths = catalogPaths();
         long now = System.currentTimeMillis();
-        if (now - lastCheckMs < REFRESH_INTERVAL_MS && lastLoadedFingerprint != Long.MIN_VALUE) {
+        if (now - lastCheckMs < REFRESH_INTERVAL_MS && lastLoadedFingerprint != Long.MIN_VALUE
+                && paths.equals(lastLoadedPaths)) {
             return;
         }
         synchronized (CliModelCatalog.class) {
             now = System.currentTimeMillis();
-            if (now - lastCheckMs < REFRESH_INTERVAL_MS && lastLoadedFingerprint != Long.MIN_VALUE) {
+            boolean sameSources = paths.equals(lastLoadedPaths);
+            if (now - lastCheckMs < REFRESH_INTERVAL_MS && lastLoadedFingerprint != Long.MIN_VALUE && sameSources) {
                 return;
             }
             lastCheckMs = now;
-            long fp = fingerprint();
-            if (fp == lastLoadedFingerprint) {
+            long fp = fingerprint(paths);
+            if (fp == lastLoadedFingerprint && sameSources) {
                 return; // catalogs unchanged
             }
-            reload();
+            reload(paths);
             lastLoadedFingerprint = fp;
+            lastLoadedPaths = paths;
         }
     }
 
     /** Combined size+mtime fingerprint of all catalog files, so any change triggers a reload. */
-    private static long fingerprint() {
+    private static long fingerprint(List<Path> paths) {
         long fp = 1L;
-        for (Path p : catalogPaths()) {
+        for (Path p : paths) {
             try {
                 if (Files.exists(p)) {
                     fp = 31 * fp + Files.getLastModifiedTime(p).toMillis();
@@ -227,11 +235,11 @@ public final class CliModelCatalog {
         return fp;
     }
 
-    private static void reload() {
+    private static void reload(List<Path> paths) {
         Map<String, ModelSpec> ids = new ConcurrentHashMap<>();
         Map<ScopedModelId, ModelSpec> scopedIds = new LinkedHashMap<>();
         Map<String, List<String>> providers = new LinkedHashMap<>();
-        for (Path p : catalogPaths()) {
+        for (Path p : paths) {
             try {
                 if (!Files.exists(p)) continue;
                 JsonNode root = MAPPER.readTree(p.toFile());

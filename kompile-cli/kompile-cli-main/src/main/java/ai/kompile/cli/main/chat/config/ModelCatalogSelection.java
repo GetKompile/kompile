@@ -200,6 +200,11 @@ public final class ModelCatalogSelection {
         };
     }
 
+    /** Transport-grade discovery failure: worth one automatic retry, then the last known good catalog. */
+    public static boolean transientFailure(ModelDiscovery.Result discovery) {
+        return discovery != null && fallbackEligible(discovery.status());
+    }
+
     static boolean fallbackEligible(ModelDiscovery.Status status) {
         return status == ModelDiscovery.Status.TIMEOUT
                 || status == ModelDiscovery.Status.UNAVAILABLE

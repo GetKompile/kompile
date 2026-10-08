@@ -16,9 +16,15 @@ describe('NewChatDialogComponent', () => {
   const catalog = (): ChatSetupCatalog => ({available: true,
     defaults: {mode: 'standard', runtime: 'direct', vendor: 'openai', authMethod: 'api-key', authenticationScope: 'session', model: 'model-new', saveScope: 'session'},
     profiles: [{name: 'native', label: 'Native profile', mode: 'passthrough'}],
-    runtimes: [{id: 'direct', label: 'Direct'}, {id: 'external-local', label: 'External local'}],
-    frameworks: [{id: 'opencode', label: 'OpenCode', available: true}],
-    vendors: [{id: 'openai', label: 'OpenAI', authMethods: [{id: 'api-key', label: 'API key'}]}],
+    modes: [{id: 'standard', label: 'Standard Chat — from the CLI'}, {id: 'passthrough', label: 'Passthrough — from the CLI'},
+      {id: 'workflow', label: 'Workflow'}, {id: 'resume', label: 'Resume'}, {id: 'resume-all', label: 'Resume All'}],
+    runtimes: [{id: 'direct', label: 'Direct model provider — cloud API'}, {id: 'external-local', label: 'External local'}],
+    webSupported: true,
+    leadModes: [{id: 'standard', label: 'A model in Kompile chat — from the CLI'}, {id: 'passthrough', label: 'A CLI agent — from the CLI'}],
+    passthroughStyles: [{managed: true, label: 'Kompile managed — from the CLI'}, {managed: false, label: 'Direct — from the CLI'}],
+    frameworks: [{id: 'opencode', label: 'OpenCode', available: true, webSupported: true}, {id: 'dsh', label: 'DeepSeek Harness', available: true, webSupported: false}],
+    vendors: [{id: 'openai', label: 'OpenAI', authMethods: [{id: 'api-key', label: 'API key', acceptsKey: true}]},
+      {id: 'custom', label: 'OpenAI-compatible endpoint', endpointRequired: true, authMethods: [{id: 'none', label: 'No authentication'}]}],
     credentials: [{name: 'work', label: 'Work account'}], models: [{id: 'model-new', label: 'Discovered live model'}],
     thinkingOptions: [{value: 'high', label: 'high'}], workflows: [{name: 'review-team', label: 'Review team'}],
     judgeProfiles: [{name: 'strict', label: 'Strict judge', provider: 'openai', model: 'judge-model'}],
@@ -75,6 +81,43 @@ describe('NewChatDialogComponent', () => {
     expect(c.fullWizard).toBeTrue(); expect(fixture.nativeElement.textContent).toContain('Hugging Face');
     const terminal = fixture.debugElement.children; expect(terminal).toBeTruthy();
     http.expectNone('/workspace/projects/p1/chat-setup/create'); c.close(); expect(dialog.close).toHaveBeenCalledWith({refresh: true});
+  });
+  it('renders the CLI-provided mode and runtime menus instead of a browser copy', () => {
+    const text = fixture.nativeElement.textContent;
+    for (const label of ['Standard Chat — from the CLI', 'Passthrough — from the CLI', 'Direct model provider — cloud API', 'Model (1 discovered live)']) expect(text).toContain(label);
+  });
+  it('offers models only from the live list, never a free-text model or endpoint field the vendor does not need', () => {
+    const c = fixture.componentInstance; const element: HTMLElement = fixture.nativeElement;
+    expect(element.querySelector('input[name="model"]')).toBeNull();
+    expect(element.querySelector('input[name="baseUrl"]')).toBeNull();
+    expect(element.querySelector('input[name="apiKey"]')).not.toBeNull();
+    const options = Array.from(element.querySelectorAll('select[name="modelChoice"] option')).map(o => o.textContent!.trim());
+    expect(options).toEqual(['Choose a discovered model', 'Discovered live model']);
+    c.selection.vendor = 'custom'; c.change('vendor');
+    http.expectOne('/workspace/projects/p1/chat-setup/options').flush({...catalog(),
+      defaults: {...catalog().defaults, vendor: 'custom', authMethod: 'none', model: 'saved-model'}, models: []});
+    fixture.detectChanges();
+    expect(element.querySelector('input[name="baseUrl"]')).not.toBeNull();
+    expect(element.querySelector('input[name="apiKey"]')).toBeNull();
+    expect(element.textContent).toContain('saved-model (saved; not in the live list)');
+  });
+  it('renders the CLI wizard lead and passthrough-style menus', () => {
+    const c = fixture.componentInstance;
+    c.selection.mode = 'workflow'; c.selection.leadMode = 'passthrough'; c.change('mode');
+    http.expectOne('/workspace/projects/p1/chat-setup/options').flush({...catalog(), defaults: {mode: 'workflow', leadMode: 'passthrough', passthroughManaged: true}});
+    fixture.detectChanges();
+    const text = fixture.nativeElement.textContent;
+    for (const label of ['A model in Kompile chat — from the CLI', 'A CLI agent — from the CLI', 'Kompile managed — from the CLI', 'Direct — from the CLI']) expect(text).toContain(label);
+  });
+  it('routes to the complete wizard exactly when the CLI says the discovered route cannot run in a browser', () => {
+    const c = fixture.componentInstance;
+    expect(c.terminalRequired).toBeFalse();
+    c.selection.mode = 'passthrough'; c.change('mode');
+    http.expectOne('/workspace/projects/p1/chat-setup/options').flush({...catalog(), webSupported: false,
+      defaults: {mode: 'passthrough', passthroughManaged: true, passthroughAgent: 'dsh'}});
+    fixture.detectChanges();
+    expect(c.terminalRequired).toBeTrue(); expect(fixture.nativeElement.textContent).toContain('DeepSeek Harness (terminal only)');
+    c.create(); expect(c.fullWizard).toBeTrue(); http.expectNone('/workspace/projects/p1/chat-setup/create');
   });
   it('keeps native saved profiles on their native mode and discovers overrides', () => {
     const c = fixture.componentInstance; c.selection.profile = 'native'; c.change('profile');

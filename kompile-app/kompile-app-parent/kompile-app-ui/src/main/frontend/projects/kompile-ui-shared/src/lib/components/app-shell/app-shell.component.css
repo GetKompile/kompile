@@ -325,6 +325,15 @@ header {
 :host(.chat-shell) header, :host(.chat-shell) nav, :host(.chat-shell) app-index-status-banner { flex-shrink:0; }
 :host(.chat-shell) main { box-sizing:border-box; }
 
+/* Narrow or short viewports: pinned to the viewport, the wrapped header, tabs and chat controls
+   leave the conversation a sliver and nothing outside it can scroll. The whole page scrolls
+   instead (the conversation keeps its own bounded scroll box), and the tall wrapped header
+   scrolls away rather than sticking over the content. */
+@media (max-width: 768px), (max-height: 560px) {
+  :host(.chat-shell) { height:auto; min-height:100vh; min-height:100dvh; }
+  :host(.chat-shell) header { position:static; }
+}
+
 /* Keep the shared shell usable without removing or hiding navigation. */
 @media (max-width: 768px) {
   .content-with-explorer {

@@ -359,8 +359,10 @@ public final class HeadlessAgentRunner {
                 String persistedProvider = store.loadProvider(stateSessionId, opts.workingDirectory());
                 String persisted = store.loadModel(stateSessionId, opts.workingDirectory());
                 if (persisted != null) {
+                    boolean routeChanged = !persisted.equals(config.getModel());
                     if (persistedProvider != null
                             && !persistedProvider.equalsIgnoreCase(config.getProvider())) {
+                        routeChanged = true;
                         config.setProvider(persistedProvider);
                         config.setApiKey(null);
                         config.setBaseUrl(null);
@@ -368,15 +370,15 @@ public final class HeadlessAgentRunner {
                                 ChatConfig.authenticationMethodAfterProviderSwitch(persistedProvider));
                     }
                     config.setModel(persisted);
-                    config.setThinking(ai.kompile.cli.main.chat.config.SetupWizard.compatibleThinking(
+                    if (routeChanged) config.setThinking(ai.kompile.cli.main.chat.config.SetupWizard.compatibleThinking(
                             config.getProvider(), config.getModel(), config.getThinking(), null));
                 }
             }
             ChatSessionStateStore.SessionState sessionState = opts.sessionStateStoreOrDefault()
                     .load(stateSessionId, opts.workingDirectory());
             if (sessionState != null && sessionState.thinking() != null) {
-                config.setThinking(ai.kompile.cli.main.chat.config.SetupWizard.compatibleThinking(
-                        config.getProvider(), config.getModel(), sessionState.thinking(), null));
+                // Validated against the live model metadata when /thinking saved it; /model clears it.
+                config.setThinking(sessionState.thinking().isBlank() ? null : sessionState.thinking());
             }
             // A durable explicit web /role selection behaves like --role for this turn.
             if (opts.roleName() == null || opts.roleName().isBlank()) {

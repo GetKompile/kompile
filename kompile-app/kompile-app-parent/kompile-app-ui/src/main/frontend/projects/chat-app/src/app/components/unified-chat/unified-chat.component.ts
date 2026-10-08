@@ -2060,6 +2060,21 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     return title.length > 0 ? title : this.fallbackSessionTitle();
   }
 
+  /** The current chat's full title; the heading renders it capped, with the full text on hover. */
+  activeChatTitle(): string {
+    return this.workspaceChat?.name || this.currentSession?.name || 'New Chat';
+  }
+
+  /** Caps the heading so a long title cannot crowd out the conversation; the stored name is untouched. */
+  activeChatTitleShown(): string {
+    const title = this.activeChatTitle();
+    return title.length > UnifiedChatComponent.TITLE_SHOWN_CHARS
+      ? title.slice(0, UnifiedChatComponent.TITLE_SHOWN_CHARS).trimEnd() + '…'
+      : title;
+  }
+
+  private static readonly TITLE_SHOWN_CHARS = 80;
+
   private fallbackSessionTitle(): string {
     const d = new Date();
     return `Chat — ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
@@ -3686,13 +3701,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         this.userInput = commandLine;
         this.sendMessage();
       },
-      selectModel: (modelId: string) => this.selectModel(modelId),
-      thinkingMenu: this.latestMenu('thinking'),
-      selectThinking: (value: string) => this.selectThinking(value),
       selectRole: (roleName: string) => this.selectRole(roleName),
       toggleFastMode: (enabled: boolean) => this.toggleFastMode(enabled),
       toggleUltracode: (enabled: boolean) => this.toggleUltracode(enabled),
-      clearConversation: () => this.performConversationClear()
+      clearConversation: () => this.performConversationClear(),
+      routeUpdated: () => this.modelSelector?.refreshModels()
     };
     this.dialog.open(CommandConfigDialogComponent, {
       width: '560px',

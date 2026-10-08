@@ -84,6 +84,8 @@ class KompileLocalModelsTest {
             Files.createDirectories(fakeHome.resolve(".kompile").resolve("models"));
             Files.writeString(fakeHome.resolve(".kompile").resolve("models")
                     .resolve("installed.gguf"), "weights");
+            Files.writeString(fakeHome.resolve(".kompile").resolve("models")
+                    .resolve("tokenizer.json"), "{}");
 
             List<LiveModelDiscovery.Model> models =
                     KompileLocalModels.discover(manager).stream()

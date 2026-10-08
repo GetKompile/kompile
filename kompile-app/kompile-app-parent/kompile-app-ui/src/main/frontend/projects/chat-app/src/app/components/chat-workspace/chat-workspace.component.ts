@@ -1,4 +1,4 @@
-import { ChangeDetectorRef, Component, ElementRef, Input, Output, EventEmitter, OnDestroy, OnInit, QueryList, ViewChild, ViewChildren } from '@angular/core';
+import { AfterViewInit, ChangeDetectorRef, Component, ElementRef, Input, Output, EventEmitter, OnDestroy, OnInit, QueryList, ViewChild, ViewChildren } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { BaseService } from '@shared/services/base.service';
 import { LocalAgentChatService } from '@shared/services/local-agent-chat.service';
@@ -11,7 +11,8 @@ import { Subscription } from 'rxjs';
 import { MatDialog } from '@angular/material/dialog';
 import { NewChatDialogComponent, NewChatDialogResult } from '../new-chat-dialog/new-chat-dialog.component';
 
-export interface WorkspaceChat { id: string; name: string; framework?: string | null; model?: string | null; nativeSource?: string | null; }
+/** framework/model are the launch selection; route is where the chat runs now, after any vendor switch. */
+export interface WorkspaceChat { id: string; name: string; framework?: string | null; model?: string | null; nativeSource?: string | null; route?: string | null; }
 interface NativeChat { sessionId: string; title: string; workingDirectory?: string | null; }
 interface NativeSource { source: string; name: string; }
 interface NativeFolder extends NativeSource { chats: NativeChat[]; error?: string | null; loading: boolean; }
@@ -29,14 +30,21 @@ interface OpenChat { project: WorkspaceProject; chat: WorkspaceChat; }
   styles: [':host { display:block; height:100%; min-height:0; }',
     '@media(max-width:768px), (max-height:560px) { :host { height:auto; } }']
 })
-export class WorkspaceChatPaneComponent {
+export class WorkspaceChatPaneComponent implements AfterViewInit {
   @Input() project!: WorkspaceProject;
   @Input() chat!: WorkspaceChat;
   @Input() active = true;
   @Output() newChatRequested = new EventEmitter<void>();
   @ViewChild(UnifiedChatComponent) view?: UnifiedChatComponent;
-  get busy(): boolean { return !!this.view?.lifecycleBusy; }
-  get activity(): ChatActivity { return this.view?.activityIndicator || IDLE_CHAT_ACTIVITY; }
+  /**
+   * A new chat view starts loading while the workspace is mid-check, after its tabs already read this pane.
+   * Its state is published from the next pass, so the tabs never see a value change within one check (NG0100).
+   */
+  private rendered = false;
+  constructor(private cdr: ChangeDetectorRef) {}
+  ngAfterViewInit(): void { Promise.resolve().then(() => { this.rendered = true; this.cdr.markForCheck(); }); }
+  get busy(): boolean { return this.rendered && !!this.view?.lifecycleBusy; }
+  get activity(): ChatActivity { return (this.rendered && this.view?.activityIndicator) || IDLE_CHAT_ACTIVITY; }
 }
 
 @Component({
@@ -103,7 +111,7 @@ export class WorkspaceChatPaneComponent {
           <div class="chat-row">
             <button mat-button type="button" class="chat" (click)="open(project, chat)"
               [class.selected]="activeId === chat.id" [attr.aria-pressed]="activeId === chat.id"
-              [title]="chat.name"><span class="chat-title">{{ chat.name }}</span> <small *ngIf="chat.framework">{{ chat.framework }}{{ chat.model ? ' / ' + chat.model : '' }}</small> <app-chat-activity-indicator [activity]="activity(chat.id)"></app-chat-activity-indicator></button>
+              [title]="chat.name"><span class="chat-title">{{ chat.name }}</span> <small *ngIf="routeLabel(chat) as route" data-testid="chat-route">{{ route }}</small> <app-chat-activity-indicator [activity]="activity(chat.id)"></app-chat-activity-indicator></button>
             <button mat-icon-button type="button" (click)="startRename(chat)" [disabled]="saving"
               aria-label="Rename chat" title="Rename chat"><mat-icon>edit</mat-icon></button>
             <form class="rename-chat" *ngIf="editingId === chat.id" (ngSubmit)="rename(project, chat)">
@@ -137,8 +145,8 @@ export class WorkspaceChatPaneComponent {
         <nav aria-label="Open chats">
           <span *ngFor="let item of opened">
             <button mat-stroked-button type="button" (click)="open(item.project, item.chat)" [class.selected]="activeId === item.chat.id"
-              [title]="item.project.workingDirectory">
-              {{ item.project.name }} / {{ item.chat.name }}
+              [title]="item.project.name + ' / ' + item.chat.name + ' (' + item.project.workingDirectory + ')'">
+              <span class="tab-name">{{ item.project.name }} / {{ item.chat.name }}</span>
               <app-chat-activity-indicator [activity]="activity(item.chat.id)"></app-chat-activity-indicator>
             </button>
             <!-- disabledInteractive keeps the reason visible on a running chat; close() re-checks busy(). -->
@@ -179,9 +187,13 @@ export class WorkspaceChatPaneComponent {
     aside a { color: var(--color-primary, #1976d2); }
     main { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
     app-workspace-chat-pane { flex:1; min-height:0; }
-    nav { display:flex; flex-shrink:0; flex-wrap:wrap; gap:8px; padding:8px; border-bottom:1px solid var(--border-color, #dee2e6); }
-    nav span { display:inline-flex; align-items:center; gap:2px; min-width:0; max-width:100%; }
-    nav button.mat-mdc-outlined-button { height:auto; min-height:32px; padding:8px; white-space:normal; overflow-wrap:anywhere; min-width:0; }
+    /* One row of one-line tabs: a long chat name is cut short here (full name in the tooltip), never wrapped
+       into a block that takes the conversation's height. */
+    nav { display:flex; flex-shrink:0; flex-wrap:nowrap; overflow-x:auto; overscroll-behavior-inline:contain;
+      gap:8px; padding:6px 8px; border-bottom:1px solid var(--border-color, #dee2e6); }
+    nav > span { display:inline-flex; flex:0 0 auto; align-items:center; gap:2px; min-width:0; max-width:100%; }
+    nav button.mat-mdc-outlined-button { height:auto; min-height:32px; padding:4px 8px; white-space:nowrap; min-width:0; }
+    .tab-name { display:inline-block; max-width:min(360px, 40vw); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; margin-right:6px; }
     section { margin-top:20px; } h3 { margin-bottom:4px; }
     small { display:block; overflow-wrap:anywhere; margin-bottom:8px; color: var(--text-secondary, #6c757d); }
     .folder-actions { display:flex; flex-wrap:wrap; gap:8px; }
@@ -220,11 +232,10 @@ export class WorkspaceChatPaneComponent {
       .close-folders { display:block; float:right; }
       .folder-backdrop.visible { display:block; position:absolute; inset:52px 0 0; z-index:19;
         border:0; background:rgba(0, 0, 0, .35); }
-      nav { flex-wrap:nowrap; overflow-x:auto; overscroll-behavior-inline:contain; }
-      nav span { flex:0 0 auto; max-width:85%; }
-      nav button.mat-mdc-outlined-button { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      nav > span { max-width:85%; }
+      .tab-name { max-width:60vw; }
       .mat-mdc-button-base, .chat.mat-mdc-button, nav button.mat-mdc-outlined-button { min-height:44px; }
-      nav span > button.mat-mdc-outlined-button { flex:1; }
+      nav > span > button.mat-mdc-outlined-button { flex:1; }
       .close-chat.mat-mdc-icon-button.mat-mdc-button-base, .close-folders.mat-mdc-icon-button.mat-mdc-button-base {
         --mdc-icon-button-state-layer-size:44px; width:44px; height:44px; flex-shrink:0; padding:12px;
       }
@@ -318,6 +329,11 @@ export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDes
   ngOnDestroy(): void {
     this.subscriptions.unsubscribe(); clearInterval(this.statusTimer); clearInterval(this.titleTimer);
   }
+  /** Where the chat runs now; before its first recorded turn, the vendor and model it was created with. */
+  routeLabel(chat: WorkspaceChat): string {
+    if (chat.route) return chat.route;
+    return chat.framework ? chat.framework + (chat.model ? ' / ' + chat.model : '') : '';
+  }
   private refreshTitles(): void {
     if (!this.enabled || this.loading || this.saving || this.titleReadPending || document.visibilityState === 'hidden') return;
     this.titleReadPending = true;
@@ -333,7 +349,7 @@ export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDes
           project.name = incoming.name;
           project.chats = incoming.chats.map(chat => {
             const existing = project.chats.find(c => c.id === chat.id);
-            if (existing) { existing.name = chat.name; return existing; }
+            if (existing) { existing.name = chat.name; existing.route = chat.route; return existing; }
             return chat;
           });
           return project;

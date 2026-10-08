@@ -226,11 +226,11 @@ final class ChatInstanceBootstrap {
         return new StartupResult(requestedChatUrl, true);
     }
 
-    /** Web launches are local by default; an operator may deliberately select another bind. */
+    /** Keep the chat service's all-interface default unless an operator explicitly selects a bind. */
     static List<String> webApplicationArguments(Map<String, String> environment) {
         String address = environment.get("KOMPILE_CHAT_ADDRESS");
         if (address == null || address.isBlank()) address = environment.get("SERVER_ADDRESS");
-        if (address == null || address.isBlank()) address = "127.0.0.1";
+        if (address == null || address.isBlank()) return List.of();
         return List.of("--server.address=" + address.strip());
     }
 

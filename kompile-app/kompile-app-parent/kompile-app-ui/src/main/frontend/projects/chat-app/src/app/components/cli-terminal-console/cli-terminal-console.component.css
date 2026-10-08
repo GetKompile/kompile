@@ -13,4 +13,9 @@ app-cli-terminal-console { display: block; flex-shrink: 0; min-width: 0; }
 .cli-console [role=alert] { color: #fca5a5; }
 .cli-console-screen { flex: 1; min-height: 80px; min-width: 0; padding: 4px 8px; overflow: hidden; }
 .cli-console-screen .xterm { height: 100%; }
+.cli-console .cli-view-hidden { display: none; }
+.cli-console-transcript { flex: 1; min-height: 80px; overflow-y: auto; overscroll-behavior: contain; padding: 8px; }
+.cli-console-transcript article { border-bottom: 1px solid #374151; padding: 8px 0; }
+.cli-console-transcript pre { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.cli-console-transcript:focus-visible { outline: 2px solid #93c5fd; outline-offset: -2px; }
 @media(max-width:768px) { .cli-console { height: 55vh; } .cli-console button, .cli-console select { min-height: 36px; } }

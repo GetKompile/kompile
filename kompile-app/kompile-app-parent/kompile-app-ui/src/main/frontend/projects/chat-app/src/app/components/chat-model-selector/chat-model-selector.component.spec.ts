@@ -1,3 +1,4 @@
+import { ChangeDetectionStrategy, Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, Subject } from 'rxjs';
 import { CommandEventData } from '@shared/models/api-models';
@@ -49,7 +50,9 @@ describe('Chat model/vendor dropdowns', () => {
   it('quietly loads the existing catalog into two accessible dropdowns', () => {
     expect(service.getSessionConfig).toHaveBeenCalledWith('chat-1', '/project', undefined);
     expect(selected).not.toHaveBeenCalled();
-    expect(fixture.nativeElement.querySelectorAll('select').length).toBe(2);
+    // Vendor, model and effort: the effort control shows even before the route reports any levels.
+    expect(fixture.nativeElement.querySelectorAll('select').length).toBe(3);
+    expect(fixture.nativeElement.querySelector('[aria-label="Thinking effort"]').disabled).toBeTrue();
     expect(fixture.nativeElement.querySelector('[aria-label="Model vendor"]').value).toBe('openai');
     expect(fixture.nativeElement.querySelector('[aria-label="Chat model"]').value).toBe('m1');
     expect(fixture.nativeElement.textContent).toContain('Model One');
@@ -222,25 +225,169 @@ describe('Chat model/vendor dropdowns', () => {
     fixture.detectChanges();
     expect(component.thinkingMenu).toBeNull();
     expect(component.thinkingChoice).toBe('');
-    expect(fixture.nativeElement.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+    const effort = fixture.nativeElement.querySelector('[aria-label="Thinking effort"]') as HTMLSelectElement;
+    expect(effort.disabled).toBeTrue();
+    expect(effort.textContent).toContain('Not offered');
   });
 
-  it('preserves native framework IDs through the custom option and pins its vendor', async () => {
-    service.getSessionConfig.and.returnValue(of(snapshot({ menu: 'model', provider: 'opencode',
-      currentModel: 'zai/glm-5', nativeModelSelection: true })));
+  it('shows a native framework\'s effort levels and says why a model has none', async () => {
+    service.getSessionConfig.and.returnValue(of({ ...snapshot({ menu: 'model', provider: 'opencode',
+      currentModel: 'zai/glm-5', nativeModelSelection: true, models: [{ id: 'zai/glm-5', current: true }] }), thinking: {
+      menu: 'thinking', supported: true, currentThinking: 'max', provider: 'opencode',
+      thinkingOptions: [{ value: '', label: 'framework default' }, { value: 'max', label: 'max' }] } }));
     component.refreshModels();
     fixture.detectChanges();
     await fixture.whenStable();
-    expect(fixture.nativeElement.querySelector('[aria-label="Model vendor"]').disabled).toBeTrue();
-    expect(fixture.nativeElement.querySelector('[aria-label="Chat model"]').value).toBe('zai/glm-5');
-    change('Chat model', '__custom__');
-    const input = fixture.nativeElement.querySelector('[aria-label="Native model ID"]') as HTMLInputElement;
-    input.value = 'zai/glm-4';
-    input.dispatchEvent(new Event('input'));
     fixture.detectChanges();
-    const button = Array.from(fixture.nativeElement.querySelectorAll('button'))
-      .find((b: any) => b.textContent.includes('Apply model')) as HTMLButtonElement;
-    button.click();
+    const effort = fixture.nativeElement.querySelector('[aria-label="Thinking effort"]') as HTMLSelectElement;
+    expect(effort.disabled).toBeFalse();
+    expect(effort.value).toBe('max');
+    const thinkingSelected = jasmine.createSpy('thinkingSelected');
+    component.thinkingSelected.subscribe(thinkingSelected);
+    change('Thinking effort', '');
+    expect(thinkingSelected).toHaveBeenCalledWith('');
+
+    service.getSessionConfig.and.returnValue(of({ ...snapshot({ menu: 'model', provider: 'opencode',
+      currentModel: 'zai/glm-4', nativeModelSelection: true, models: [{ id: 'zai/glm-4', current: true }] }), thinking: {
+      menu: 'thinking', supported: false, thinkingOptions: [], note: 'opencode lists no effort levels for zai/glm-4.' } }));
+    component.refreshModels();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(effort.disabled).toBeTrue();
+    expect(fixture.nativeElement.textContent).toContain('opencode lists no effort levels for zai/glm-4.');
+  });
+
+  it('selects native framework models only from the live list', async () => {
+    service.getSessionConfig.and.returnValue(of(snapshot({ menu: 'model', provider: 'opencode',
+      currentModel: 'zai/glm-5', nativeModelSelection: true, models: [{ id: 'zai/glm-4' }] })));
+    component.refreshModels();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('[aria-label="Chat model"]').value).toBe('zai/glm-5');
+    expect(fixture.nativeElement.querySelector('input')).toBeNull();
+    const options = Array.from(fixture.nativeElement.querySelectorAll('[aria-label="Chat model"] option'))
+      .map((option: any) => option.value);
+    expect(options).toEqual(['zai/glm-5', 'zai/glm-4']);
+    component.selectModel('typed/unlisted');
+    expect(selected).not.toHaveBeenCalled();
+    change('Chat model', 'zai/glm-4');
     expect(selected).toHaveBeenCalledWith('zai/glm-4');
+  });
+
+  it('switches a native chat to another framework like any vendor', async () => {
+    const vendors = [{ vendor: 'opencode', display: 'OpenCode', current: true }, { vendor: 'codex', display: 'Codex' }];
+    service.getSessionConfig.and.returnValue(of(snapshot({ menu: 'model', provider: 'opencode',
+      currentModel: 'zai/glm-5', nativeModelSelection: true, vendors, models: [{ id: 'zai/glm-5', current: true }] })));
+    component.refreshModels();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('[aria-label="Model vendor"]').disabled).toBeFalse();
+    expect(fixture.nativeElement.querySelector('[aria-label="Model vendor"]').value).toBe('opencode');
+    service.getSessionConfig.and.returnValue(of(snapshot({ menu: 'model', provider: 'opencode', vendor: 'codex',
+      currentModel: 'zai/glm-5', nativeModelSelection: true, vendors, models: [{ id: 'gpt-5-codex' }] })));
+    change('Model vendor', 'codex');
+    await fixture.whenStable();
+    expect(service.getSessionConfig.calls.mostRecent().args).toEqual(['chat-1', '/project', 'codex']);
+    change('Chat model', 'gpt-5-codex');
+    expect(selected).toHaveBeenCalledWith('codex:gpt-5-codex');
+  });
+
+  it('polls the chat\'s route so an effort set elsewhere stays shown', async () => {
+    const thinking = (current: string): SessionConfigSnapshot => ({ ...snapshot(menu), thinking: { menu: 'thinking', supported: true,
+      currentThinking: current, thinkingOptions: [{ value: '', label: 'Default' }, { value: 'max', label: 'Max' }] } });
+    service.getSessionConfig.and.returnValue(of(thinking('max')));
+    component.refreshModels();
+    fixture.detectChanges();
+    expect(component.thinkingChoice).toBe('max');
+    // Another tab or a typed /thinking default changes the route; the next poll shows it.
+    service.getSessionConfig.and.returnValue(of(thinking('')));
+    component.poll();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(component.thinkingChoice).toBe('');
+    expect(component.loading).toBeFalse();
+    expect(service.getSessionConfig.calls.mostRecent().args).toEqual(['chat-1', '/project']);
+    // A finished turn polls too.
+    service.getSessionConfig.and.returnValue(of(thinking('max')));
+    fixture.componentRef.setInput('busy', true);
+    fixture.detectChanges();
+    fixture.componentRef.setInput('busy', false);
+    fixture.detectChanges();
+    expect(component.thinkingChoice).toBe('max');
+  });
+
+  it('does not poll over a vendor being browsed or while a turn runs', () => {
+    component.selectedVendor = 'anthropic';
+    const calls = service.getSessionConfig.calls.count();
+    component.poll();
+    component.selectedVendor = 'openai';
+    component.busy = true;
+    component.poll();
+    expect(service.getSessionConfig.calls.count()).toBe(calls);
+  });
+
+  it('polls on an interval and stops when destroyed', () => {
+    jasmine.clock().install();
+    try {
+      const polled = TestBed.createComponent(ChatModelSelectorComponent);
+      polled.componentRef.setInput('sessionId', 'chat-9');
+      polled.componentRef.setInput('workingDirectory', '/project');
+      polled.detectChanges();
+      const poll = spyOn(polled.componentInstance, 'poll');
+      jasmine.clock().tick(ChatModelSelectorComponent.POLL_MS);
+      expect(poll).toHaveBeenCalledTimes(1);
+      polled.destroy();
+      jasmine.clock().tick(ChatModelSelectorComponent.POLL_MS * 2);
+      expect(poll).toHaveBeenCalledTimes(1);
+    } finally {
+      jasmine.clock().uninstall();
+    }
+  });
+
+  it('says when the provider was unreachable and the list is its last known good catalog', async () => {
+    expect(fixture.nativeElement.querySelector('[data-testid="model-catalog-note"]')).toBeNull();
+    service.getSessionConfig.and.returnValue(of(snapshot({ ...menu, liveListingAvailable: false,
+      note: 'Live discovery failed (timeout). Showing the last known good OpenAI catalog from 2h ago.' })));
+    component.refreshModels();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('[data-testid="model-catalog-note"]').textContent)
+      .toContain('last known good');
+    expect(fixture.nativeElement.querySelectorAll('[aria-label="Chat model"] option').length).toBe(2);
+  });
+});
+
+/** The chat view is OnPush, like the real one: nothing else re-checks it when the catalog lands. */
+@Component({
+  standalone: true,
+  imports: [ChatModelSelectorComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: '<app-chat-model-selector sessionId="chat-1" workingDirectory="/project"></app-chat-model-selector>'
+})
+class OnPushChatHost {}
+
+describe('Chat model/vendor dropdowns inside an OnPush chat view', () => {
+  it('renders a catalog that arrives after the first check', async () => {
+    const reply = new Subject<SessionConfigSnapshot>();
+    const service = jasmine.createSpyObj<LocalAgentChatService>('LocalAgentChatService', ['getSessionConfig']);
+    service.getSessionConfig.and.returnValue(reply);
+    await TestBed.configureTestingModule({
+      imports: [OnPushChatHost],
+      providers: [{ provide: LocalAgentChatService, useValue: service }]
+    }).compileComponents();
+    const host = TestBed.createComponent(OnPushChatHost);
+    host.detectChanges();
+    expect(host.nativeElement.textContent).toContain('Loading models…');
+
+    reply.next(snapshot(menu));
+    reply.complete();
+    host.detectChanges();
+    await host.whenStable();
+
+    expect(host.nativeElement.textContent).not.toContain('Loading models…');
+    expect(host.nativeElement.querySelector('[aria-label="Model vendor"]').value).toBe('openai');
+    expect(host.nativeElement.querySelector('[aria-label="Chat model"]').value).toBe('m1');
+    host.destroy();
   });
 });

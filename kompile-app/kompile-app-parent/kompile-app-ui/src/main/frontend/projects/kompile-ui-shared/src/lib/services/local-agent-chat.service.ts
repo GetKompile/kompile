@@ -1886,6 +1886,18 @@ export class LocalAgentChatService extends BaseService {
   }
 
   /**
+   * The CLI setup wizard for an existing chat: 'catalog' discovers the route options seeded
+   * from the chat's own configuration, 'update' re-pins its vendor, authentication, model and
+   * effort. The caller shows its own errors, so failures skip the global error snackbar.
+   */
+  setupSession<T>(sessionId: string, workingDirectory: string | undefined, action: 'catalog' | 'update',
+                  selection: object): Observable<T> {
+    return this.http.post<T>(`${this.backendUrl}/agents/chat/session-setup`,
+      { sessionId, workingDirectory, action, selection },
+      { context: new HttpContext().set(SKIP_ERROR_SNACKBAR, true) });
+  }
+
+  /**
    * The session's insight rows, read headlessly through the CLI like getSessionConfig: no chat
    * messages, no transcript entries. The insights drawer polls this and shows its own
    * unavailable state, so failures skip the global error snackbar.

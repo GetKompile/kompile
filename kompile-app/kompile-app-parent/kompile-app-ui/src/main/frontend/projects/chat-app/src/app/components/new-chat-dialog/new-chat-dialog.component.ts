@@ -6,29 +6,18 @@ import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/materia
 import { MatButtonModule } from '@angular/material/button';
 import { Subscription } from 'rxjs';
 import { CliTerminalConsoleComponent } from '../cli-terminal-console/cli-terminal-console.component';
+import {
+  ChatRouteFieldsComponent, ChatSetupCatalog, ChatSetupSelection, Profile, clearRouteDependents, mergeRouteCatalog
+} from '../chat-route-fields/chat-route-fields.component';
 
-interface Choice { id: string; label: string; available?: boolean; authMethods?: Choice[]; }
-interface Profile { name: string; label: string; mode?: string; provider?: string; vendor?: string; model?: string; }
-export interface ChatSetupSelection {
-  [key: string]: string | boolean | undefined;
-  mode?: string; runtime?: string; leadMode?: string; profile?: string; vendor?: string; authMethod?: string;
-  authenticationScope?: string; credentialName?: string; apiKey?: string; baseUrl?: string; model?: string;
-  thinking?: string; fastMode?: boolean; ultracode?: boolean; passthroughAgent?: string; passthroughManaged?: boolean;
-  workflow?: string; saveProfile?: string; replaceProfile?: boolean; saveScope?: string;
-}
-export interface ChatSetupCatalog {
-  available: boolean; defaults: ChatSetupSelection; profiles: Profile[]; runtimes: Choice[];
-  frameworks: Choice[]; vendors: Choice[]; credentials: Profile[]; models: Choice[];
-  thinkingOptions: {value: string; label: string}[]; workflows: Profile[]; judgeProfiles: Profile[];
-  fastModeSupported: boolean; ultracodeSupported: boolean; errors?: string[]; status?: string;
-}
+export type { ChatSetupCatalog, ChatSetupSelection } from '../chat-route-fields/chat-route-fields.component';
 export interface NewChatDialogData { url: string; workingDirectory: string; name: string; }
 export interface NewChatDialogResult { chat?: { id: string; name: string; framework?: string; model?: string }; refresh?: boolean; }
 
 /** Setup discovery/validation is owned by the CLI; no vendor or model catalog is duplicated here. */
 @Component({
   selector: 'app-new-chat-dialog', standalone: true,
-  imports: [CommonModule, FormsModule, MatDialogModule, MatButtonModule, CliTerminalConsoleComponent],
+  imports: [CommonModule, FormsModule, MatDialogModule, MatButtonModule, CliTerminalConsoleComponent, ChatRouteFieldsComponent],
   template: `
     <h2 mat-dialog-title>New chat</h2>
     <mat-dialog-content>
@@ -54,8 +43,7 @@ export interface NewChatDialogResult { chat?: { id: string; name: string; framew
         <fieldset [disabled]="loading || saving || !catalog">
           <legend>1 · Chat mode and saved configuration</legend>
           <label>Mode<select name="mode" [(ngModel)]="selection.mode" (ngModelChange)="change('mode')">
-            <option value="standard">Standard Kompile chat</option><option value="passthrough">Native CLI framework</option>
-            <option value="workflow">Workflow team</option><option value="resume">Resume previous chat</option><option value="resume-all">Resume recent chats</option>
+            <option *ngFor="let m of catalog?.modes" [value]="m.id">{{m.label}}</option>
           </select></label>
           <p *ngIf="resumeMode">Open an existing chat from the workspace folders, or use the complete wizard for the CLI resume picker and bulk resume time windows.</p>
           <button *ngIf="resumeMode" mat-button type="button" (click)="openWizard()">Open resume wizard</button>
@@ -63,53 +51,11 @@ export interface NewChatDialogResult { chat?: { id: string; name: string; framew
             <option value="">Fresh setup / folder defaults</option><option *ngFor="let p of catalog?.profiles" [value]="p.name">{{p.label}} · {{p.mode}}</option>
           </select></label>
           <label *ngIf="selection.mode === 'workflow'">Lead mode<select name="leadMode" [(ngModel)]="selection.leadMode" (ngModelChange)="change('leadMode')">
-            <option value="standard">Standard Kompile lead</option><option value="passthrough">Native framework lead (complete wizard)</option>
+            <option *ngFor="let l of catalog?.leadModes" [value]="l.id">{{l.label}}</option>
           </select></label>
         </fieldset>
-        <fieldset *ngIf="!resumeMode" [disabled]="loading || saving || !catalog">
-          <legend>2 · Runtime and authentication</legend>
-          <ng-container *ngIf="nativeMode; else standardRuntime">
-            <label>Native framework<select name="agent" [(ngModel)]="selection.passthroughAgent" (ngModelChange)="change('passthroughAgent')">
-              <option value="">Choose a framework</option><option *ngFor="let f of catalog?.frameworks" [value]="f.id" [disabled]="!f.available">{{f.label}}{{f.available ? '' : ' (not installed)'}}</option>
-            </select></label>
-            <label>Management<select name="managed" [(ngModel)]="selection.passthroughManaged" (ngModelChange)="change('passthroughManaged')">
-              <option [ngValue]="true">Kompile-managed</option><option [ngValue]="false">Direct native CLI (complete wizard)</option>
-            </select></label>
-            <p>Native frameworks use their own login. New login is available in the complete wizard.</p>
-          </ng-container>
-          <ng-template #standardRuntime>
-            <label>Runtime<select name="runtime" [(ngModel)]="selection.runtime" (ngModelChange)="change('runtime')">
-              <option *ngFor="let r of catalog?.runtimes" [value]="r.id">{{runtimeLabel(r)}}</option>
-            </select></label>
-            <label>Vendor / provider<select name="vendor" [(ngModel)]="selection.vendor" (ngModelChange)="change('vendor')">
-              <option *ngFor="let v of catalog?.vendors" [value]="v.id">{{v.label}}</option>
-            </select></label>
-            <label>Authentication<select name="auth" [(ngModel)]="selection.authMethod" (ngModelChange)="change('authMethod')">
-              <option *ngFor="let a of authMethods" [value]="a.id">{{a.label}}</option>
-            </select></label>
-            <label>Authentication scope<select name="authScope" [(ngModel)]="selection.authenticationScope"><option value="session">Session</option><option value="global">Global</option></select></label>
-            <label>Existing account<select name="credential" [(ngModel)]="selection.credentialName" (ngModelChange)="change('credentialName')">
-              <option value="">Default account</option><option *ngFor="let c of catalog?.credentials" [value]="c.name">{{c.label}}</option>
-            </select></label>
-            <label *ngIf="keyAuth">API key (optional, session input)<input name="apiKey" type="password" autocomplete="new-password" [(ngModel)]="selection.apiKey"></label>
-            <p *ngIf="selection.authMethod === 'oauth' || selection.authMethod === 'native'">Select an existing login, or use the complete wizard to sign in. Secret keys are never returned by discovery.</p>
-            <label>Endpoint URL<input name="baseUrl" type="url" [(ngModel)]="selection.baseUrl" (change)="reload()" placeholder="Provider default or custom HTTP(S) endpoint"></label>
-          </ng-template>
-        </fieldset>
-        <fieldset *ngIf="!resumeMode" [disabled]="loading || saving || !catalog">
-          <legend>3 · Model and generation options</legend>
-          <label>Discovered model<select name="modelChoice" [ngModel]="selection.model" (ngModelChange)="selection.model = $event; change('model')">
-            <option value="">Provider default / choose a model</option><option *ngFor="let m of catalog?.models" [value]="m.id">{{m.label}}</option>
-          </select></label>
-          <label>Model ID / native alias<input name="model" [(ngModel)]="selection.model" (change)="change('model')" maxlength="256"></label>
-          <button mat-button type="button" (click)="reload()">Refresh live models and options</button>
-          <p *ngFor="let warning of catalog?.errors" role="status">{{warning}}</p>
-          <label>Thinking / effort<select name="thinking" [(ngModel)]="selection.thinking"><option value="">Provider default</option>
-            <ng-container *ngFor="let t of catalog?.thinkingOptions"><option *ngIf="t.value" [value]="t.value">{{t.label}}</option></ng-container></select></label>
-          <label><input name="fast" type="checkbox" [(ngModel)]="selection.fastMode" [disabled]="!catalog?.fastModeSupported"> Fast mode (higher cost; eligible routes only)</label>
-          <label><input name="ultracode" type="checkbox" [(ngModel)]="selection.ultracode" [disabled]="!catalog?.ultracodeSupported"> Ultracode (eligible Claude routes; replaces thinking)</label>
-          <button *ngIf="selection.runtime === 'kompile-local'" mat-button type="button" (click)="openWizard()">Install / download a local model</button>
-        </fieldset>
+        <app-chat-route-fields *ngIf="!resumeMode" [catalog]="catalog" [selection]="selection" [disabled]="loading || saving"
+          [nativeMode]="nativeMode" [firstStep]="2" (fieldChange)="change($event)" (refresh)="reload()" (wizard)="openWizard()"></app-chat-route-fields>
         <fieldset *ngIf="selection.mode === 'workflow'" [disabled]="loading || saving || !catalog">
           <legend>4 · Workflow</legend>
           <label>Saved team<select name="workflow" [(ngModel)]="selection.workflow"><option value="">Choose a team</option>
@@ -160,31 +106,20 @@ export class NewChatDialogComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void { this.catalogRequest?.unsubscribe(); this.createRequest?.unsubscribe(); delete this.selection.apiKey; }
   get nativeMode(): boolean { return this.selection.mode === 'passthrough' || (this.selection.mode === 'workflow' && this.selection.leadMode === 'passthrough'); }
   get resumeMode(): boolean { return this.selection.mode === 'resume' || this.selection.mode === 'resume-all'; }
-  get keyAuth(): boolean { return this.selection.authMethod === 'api-key' || this.selection.authMethod === 'api-key-credits'; }
-  get terminalRequired(): boolean { return this.resumeMode || this.destination === 'terminal' || (!this.nativeMode && this.selection.runtime === 'kompile') || (this.nativeMode && (this.selection.passthroughManaged === false || this.selection.mode === 'workflow')); }
-  get authMethods(): Choice[] { return this.catalog?.vendors.find(v => v.id === this.selection.vendor)?.authMethods || []; }
+  /** The CLI decides whether the discovered route can run in a browser; the dialog never guesses. */
+  get terminalRequired(): boolean { return this.resumeMode || this.destination === 'terminal' || (!!this.catalog && !this.catalog.webSupported); }
   get judgeVendors(): string[] { return [...new Set((this.catalog?.judgeProfiles || []).map(j => j.provider!).filter(Boolean))]; }
   judgeProfiles(provider: string): Profile[] { return this.catalog?.judgeProfiles.filter(j => j.provider === provider) || []; }
   get canCreate(): boolean { return !!this.name.trim() && (this.nativeMode ? !!this.selection.passthroughAgent : !!this.selection.model?.trim()) && (this.selection.mode !== 'workflow' || !!this.selection.workflow); }
-  runtimeLabel(r: Choice): string { return ({direct: 'Direct vendor API', 'kompile-local': 'Kompile local serving', 'external-local': 'External local provider', kompile: 'Kompile instance'} as Record<string, string>)[r.id] || r.label; }
   openWizard(): void { if (this.saving) return; this.fullWizard = true; this.wizardMounted = true; delete this.selection.apiKey; }
   close(): void { this.dialog.close(this.wizardMounted ? {refresh: true} : undefined); }
   change(field: string): void {
     if (field === 'mode' && this.resumeMode) { this.catalogRequest?.unsubscribe(); this.loading = false; return; }
-    const clear: Record<string, string[]> = {
-      mode: ['profile', 'vendor', 'authMethod', 'model', 'thinking', 'passthroughAgent', 'workflow', 'credentialName', 'apiKey', 'baseUrl'],
-      profile: ['vendor', 'runtime', 'authMethod', 'model', 'thinking', 'credentialName', 'apiKey', 'baseUrl', 'passthroughAgent'],
-      runtime: ['profile', 'vendor', 'authMethod', 'model', 'thinking', 'credentialName', 'apiKey', 'baseUrl'],
-      vendor: ['profile', 'authMethod', 'model', 'thinking', 'credentialName', 'apiKey', 'baseUrl'],
-      authMethod: ['profile', 'credentialName', 'apiKey', 'baseUrl', 'model', 'thinking'],
-      passthroughAgent: ['profile', 'model', 'thinking'], leadMode: ['profile', 'model', 'thinking'], model: ['thinking']
-    };
-    for (const key of clear[field] || []) delete this.selection[key];
+    clearRouteDependents(this.selection, field);
     if (field === 'profile' && this.selection.profile) {
       const profile = this.catalog?.profiles.find(p => p.name === this.selection.profile);
       if (profile && this.selection.mode !== 'workflow') this.selection.mode = profile.mode;
     }
-    this.selection.fastMode = false; this.selection.ultracode = false;
     this.reload();
   }
   reload(): void {
@@ -197,10 +132,7 @@ export class NewChatDialogComponent implements OnInit, OnDestroy {
         this.loading = false;
         if (!catalog.available) { this.error = catalog.status || 'CLI setup is unavailable. Check the local CLI installation.'; return; }
         this.catalog = catalog;
-        this.selection = {...catalog.defaults, ...selection, ...(apiKey ? {apiKey} : {}), ...(saveProfile ? {saveProfile} : {}), ...(replaceProfile !== undefined ? {replaceProfile} : {})};
-        if (!catalog.fastModeSupported) this.selection.fastMode = false;
-        if (!catalog.ultracodeSupported) this.selection.ultracode = false;
-        if (this.selection.thinking && !catalog.thinkingOptions.some(t => t.value === this.selection.thinking)) delete this.selection.thinking;
+        this.selection = mergeRouteCatalog(catalog, selection, {apiKey: apiKey || undefined, saveProfile: saveProfile || undefined, replaceProfile});
       }, error: err => { this.loading = false; this.error = err?.error?.message || 'Cannot discover setup options'; }
     });
   }

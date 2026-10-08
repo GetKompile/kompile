@@ -1043,9 +1043,18 @@ public class ChatCommand implements Callable<Integer> {
             if (liveControls != null) return headlessError(
                     "--web-controls lifecycle is unsupported for native passthrough. Use one-turn web-json; cancellation kills the native process tree.", 2);
             if (isResume && "passthrough".equalsIgnoreCase(mode) && blankToNull(agentName) != null
-                    && !agentName.equalsIgnoreCase(config.getPassthroughAgent()))
-                return headlessError("Native framework is pinned on resume; create a new chat to switch framework.", 2);
-            if (!isResume && "passthrough".equalsIgnoreCase(mode) && blankToNull(agentName) != null) config.setPassthroughAgent(agentName);
+                    && !agentName.equalsIgnoreCase(config.getPassthroughAgent())) {
+                // Switching a resumed chat's framework, like a vendor: the old framework's model and effort
+                // do not carry over, and the new framework starts (or resumes) its own native session.
+                try {
+                    HeadlessPassthroughRunner.startFreshNativeSession(sessionId, effectiveWorkingDirectory(), agentName);
+                } catch (IOException e) {
+                    return headlessError("Could not switch this chat to " + agentName + ": " + e.getMessage(), 2);
+                }
+                config.setModel(null);
+                config.setThinking(null);
+            }
+            if ("passthrough".equalsIgnoreCase(mode) && blankToNull(agentName) != null) config.setPassthroughAgent(agentName);
             return runHeadlessTurn(config, null, isResume, resolvedRole, prompt, outputMode);
         }
 
@@ -1134,9 +1143,13 @@ public class ChatCommand implements Callable<Integer> {
                 resolvedRole,
                 dangerouslySkipPermissions,
                 attachments, webInput);
-        return "passthrough".equalsIgnoreCase(config.getChatMode())
+        int exit = "passthrough".equalsIgnoreCase(config.getChatMode())
                 ? new HeadlessPassthroughRunner().run(options).exitCode()
                 : new HeadlessAgentRunner(liveControls).run(options).exitCode();
+        // A web turn may have switched the chat's vendor or model; the chat list shows where it runs now.
+        if (webInput != null && !webInput.configQuery())
+            WebCommandResolver.publishRoute(sessionId, effectiveWorkingDirectory());
+        return exit;
     }
 
     private int headlessError(String message, int exitCode) {

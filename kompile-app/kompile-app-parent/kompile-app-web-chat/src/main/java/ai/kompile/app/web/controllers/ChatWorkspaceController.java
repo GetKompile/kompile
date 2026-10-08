@@ -162,7 +162,8 @@ public class ChatWorkspaceController {
                 // Resolve old workspace aliases only when their original transcript exists.
                 String id = transcripts.resolveSessionId(root, chat.id());
                 String title = transcripts.readTitle(id);
-                chats.put(id, new ChatWorkspaceStore.Chat(id, "(untitled)".equals(title) ? chat.name() : title, chat.framework(), chat.model()));
+                chats.put(id, new ChatWorkspaceStore.Chat(id, "(untitled)".equals(title) ? chat.name() : title,
+                        chat.framework(), chat.model(), null, null, chat.route()));
             }
             for (var session : sessions) {
                 if (session.sessionId().startsWith("subagent-") || session.workingDirectory() == null
@@ -177,7 +178,8 @@ public class ChatWorkspaceController {
                     var existing = chats.get(session.sessionId());
                     if (existing != null && existing.nativeSource() != null) continue;
                     chats.put(session.sessionId(), new ChatWorkspaceStore.Chat(session.sessionId(), session.title(),
-                            existing == null ? null : existing.framework(), existing == null ? null : existing.model()));
+                            existing == null ? null : existing.framework(), existing == null ? null : existing.model(),
+                            null, null, existing == null ? null : existing.route()));
                 }
             }
             projects.add(new ChatWorkspaceStore.Project(project.id(), project.name(), project.workingDirectory(), List.copyOf(chats.values())));
@@ -278,7 +280,7 @@ public class ChatWorkspaceController {
             if (chat.nativeSource() != null) throw new IllegalArgumentException("Native transcripts are kept as-is; rename in the vendor framework");
             String title = transcripts.rename(store.resolveRegisteredDirectory(project.workingDirectory()), chat.id(),
                     request == null ? null : request.name());
-            return new ChatWorkspaceStore.Chat(chat.id(), title, chat.framework(), chat.model());
+            return new ChatWorkspaceStore.Chat(chat.id(), title, chat.framework(), chat.model(), null, null, chat.route());
         } catch (IOException | IllegalArgumentException invalid) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid);
         }

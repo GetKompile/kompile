@@ -416,7 +416,9 @@ public final class CredentialStore {
         if (refresher == null) {
             throw new IllegalArgumentException("refresher must not be null");
         }
-        return withMutation(store -> {
+        // Write back only what changed: an fsync'd rewrite per resolve stalls every turn and setup check
+        // whenever the filesystem is slow to commit.
+        return withLock(store -> {
             ProviderCredentials provider = store.providers.get(normalized);
             String targetName = selectedName != null ? selectedName : provider == null ? null : provider.activeName;
             ManagedCredential current = provider == null ? null : provider.credentials.get(targetName);
@@ -433,8 +435,12 @@ public final class CredentialStore {
                 removeAliases(normalized, provider, targetName, current);
                 removeAliases(normalized, provider, targetName, resolved);
                 provider.credentials.put(targetName, resolved);
+                store.normalized = true;
             }
-            provider.lastUsedName = targetName;
+            if (!targetName.equals(provider.lastUsedName)) {
+                provider.lastUsedName = targetName;
+                store.normalized = true;
+            }
             return new SelectedCredential(targetName, resolved);
         });
     }

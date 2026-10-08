@@ -381,6 +381,24 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     }
 
     @Override
+    public JsonNode setupSession(String browserSessionId, String workingDirectory, String action,
+                                 JsonNode selection) {
+        if (!List.of("catalog", "update").contains(action))
+            throw new IllegalArgumentException("Unknown session setup action");
+        if (browserSessionId == null || browserSessionId.isBlank())
+            throw new IllegalArgumentException("Choose a chat to configure");
+        String harnessId;
+        try {
+            harnessId = harnessSessionId(resolveWorkingDirectory(workingDirectory), browserSessionId);
+        } catch (IOException invalid) {
+            throw new IllegalArgumentException(invalid.getMessage(), invalid);
+        }
+        ObjectNode payload = mapper.createObjectNode().put("action", action).put("sessionId", harnessId);
+        if (selection != null && selection.isObject()) payload.set("selection", selection);
+        return setupChat(workingDirectory, payload);
+    }
+
+    @Override
     public Map<String, Object> contextBudget(String agentName, String workingDirectory) {
         JsonNode capability = capabilities(workingDirectory, false);
         Map<String, Object> result = new LinkedHashMap<>();

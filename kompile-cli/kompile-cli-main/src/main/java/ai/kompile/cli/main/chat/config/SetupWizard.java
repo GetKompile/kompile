@@ -218,6 +218,18 @@ public class SetupWizard {
     private static final List<String> CHAT_MODE_VALUES = List.of(
             "standard", "passthrough", "workflow", "resume", "resume-all");
 
+    /** Workflow lead menu; values are {@link #WORKFLOW_LEAD_VALUES} in the same order. */
+    private static final List<String> WORKFLOW_LEAD_OPTIONS = List.of(
+            "A model in Kompile chat (standard)",
+            "A CLI agent — Claude Code, Codex, Gemini… (Kompile managed)");
+
+    private static final List<String> WORKFLOW_LEAD_VALUES = List.of("standard", "passthrough");
+
+    /** Passthrough style menu: index 0 is Kompile managed, index 1 is direct. */
+    private static final List<String> PASSTHROUGH_STYLE_OPTIONS = List.of(
+            "Kompile managed — kompile REPL with tools, memory, skills (recommended)",
+            "Direct — agent owns the terminal (raw native experience, no kompile features)");
+
 
     /**
      * Run the interactive setup wizard.
@@ -447,11 +459,9 @@ public class SetupWizard {
                         return new SetupResult(lead, Destination.TERMINAL, workflow.snapshot());
                     }
                 }
-                int leadKind = selectNumbered(reader, "Who leads the team?", List.of(
-                        "A model in Kompile chat (standard)",
-                        "A CLI agent — Claude Code, Codex, Gemini… (Kompile managed)"));
+                int leadKind = selectNumbered(reader, "Who leads the team?", WORKFLOW_LEAD_OPTIONS);
                 if (leadKind < 0) return null;
-                chatMode = leadKind == 0 ? "standard" : "passthrough";
+                chatMode = WORKFLOW_LEAD_VALUES.get(leadKind);
             }
 
             ProfileSelection profile = selectProjectProfile(reader, projectRoot, chatMode);
@@ -493,11 +503,7 @@ public class SetupWizard {
                 // Ask managed vs direct first. A workflow lead is always managed: a
                 // direct agent has no Kompile REPL to manage the team or approve gates.
                 if (!workflowRequested && !webHandoff) {
-                    List<String> styles = List.of(
-                        "Kompile managed — kompile REPL with tools, memory, skills (recommended)",
-                        "Direct — agent owns the terminal (raw native experience, no kompile features)"
-                    );
-                    int styleIdx = selectNumbered(reader, "Select Passthrough Style:", styles);
+                    int styleIdx = selectNumbered(reader, "Select Passthrough Style:", PASSTHROUGH_STYLE_OPTIONS);
                     if (styleIdx < 0) return null;
                     passthroughManaged = (styleIdx == 0);
                 }
@@ -545,7 +551,7 @@ public class SetupWizard {
                     // re-running setup for the same provider should retain its custom URL.
                     baseUrl = existingConfig.getBaseUrl();
                 }
-                if ("custom".equalsIgnoreCase(provider)
+                if (requiresBaseUrl(provider)
                         && (baseUrl == null || baseUrl.isBlank())) {
                     System.err.println("  Custom OpenAI-compatible endpoints require a base URL.");
                     return null;
@@ -1114,6 +1120,18 @@ public class SetupWizard {
 
     static List<String> chatModeValues() {
         return CHAT_MODE_VALUES;
+    }
+
+    static List<String> workflowLeadOptions() {
+        return WORKFLOW_LEAD_OPTIONS;
+    }
+
+    static List<String> workflowLeadValues() {
+        return WORKFLOW_LEAD_VALUES;
+    }
+
+    static List<String> passthroughStyleOptions() {
+        return PASSTHROUGH_STYLE_OPTIONS;
     }
 
     static String resumeAllArguments() {
@@ -2237,6 +2255,11 @@ public class SetupWizard {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /** Providers with no endpoint of their own: the user supplies the OpenAI-compatible URL. */
+    static boolean requiresBaseUrl(String provider) {
+        return "custom".equalsIgnoreCase(provider);
     }
 
     public static String promptBaseUrl(LineReader reader, String provider) {

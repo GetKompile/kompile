@@ -413,10 +413,10 @@
       <!-- Session Configuration (CLI role / fast mode and session controls) -->
       <div class="settings-section">
         <h4>Session Configuration</h4>
-        <p class="setting-hint">Pick this session's role and toggle fast mode. Model and vendor dropdowns are above the conversation. The CLI resolves and persists selections.</p>
+        <p class="setting-hint">Configure this session's model, vendor, thinking, role and session controls. The CLI resolves and persists selections.</p>
         <button mat-stroked-button type="button" class="text-btn" data-testid="command-config-open"
           [disabled]="!selectedAgent || isStreaming || isLoading"
-          title="Switch role and toggle fast mode, as /role and /fast do in the terminal"
+          title="Configure the current session, as the CLI commands do in the terminal"
           (click)="openCommandConfig()">
           Open Session Configuration…
         </button>
@@ -1006,7 +1006,7 @@
     </header>
 
     <section class="active-chat-title" aria-label="Current chat">
-      <h2 data-testid="active-chat-title">{{ workspaceChat?.name || currentSession?.name || 'New Chat' }}</h2>
+      <h2 data-testid="active-chat-title" [title]="activeChatTitle()">{{ activeChatTitleShown() }}</h2>
       <app-chat-activity-indicator [activity]="activityIndicator"></app-chat-activity-indicator>
       <button *ngIf="!workspaceChat && currentSession && !transcriptReadOnly" mat-icon-button type="button"
         (click)="startEditSessionName(currentSession)" aria-label="Rename current chat"><mat-icon>edit</mat-icon></button>
@@ -1022,7 +1022,7 @@
       [sessionId]="currentSession?.id" [workingDirectory]="workingDirectory"
       [outcome]="modelSelectorOutcome"
       [busy]="!selectedAgent || isStreaming || isLoading || lifecycleBusy || transcriptReadOnly || isCompacting"
-      (modelSelected)="selectModel($event)">
+      (modelSelected)="selectModel($event)" (thinkingSelected)="selectThinking($event)">
     </app-chat-model-selector>
 
     <!-- Conversation Area -->

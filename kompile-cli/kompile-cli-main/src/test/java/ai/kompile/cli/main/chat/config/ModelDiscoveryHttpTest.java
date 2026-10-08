@@ -102,12 +102,12 @@ class ModelDiscoveryHttpTest {
         assertTrue(result.models().isEmpty());
 
         // Claude Code's own reason is shown, never a bare empty list, and the
-        // user is told a typed id or alias still works.
+        // user is told the chat falls back to Claude Code's default model.
         ModelDiscovery.Result explained = ModelDiscoveryHttp.claudeCliResult(List.of(),
                 "Claude Code did not answer the model catalog request: error: unknown option");
         assertEquals("Claude Code model list is unavailable: Claude Code did not answer the model "
-                        + "catalog request: error: unknown option. Enter a model id or alias that "
-                        + "`claude --model` accepts.",
+                        + "catalog request: error: unknown option. The chat runs on Claude Code's "
+                        + "default model until the list is refreshed.",
                 explained.message());
         assertEquals(List.of(ModelDiscoveryHttp.CLAUDE_CODE_ENDPOINT), explained.attemptedEndpoints());
     }

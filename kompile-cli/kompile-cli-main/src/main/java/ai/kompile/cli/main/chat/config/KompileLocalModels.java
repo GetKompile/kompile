@@ -5,13 +5,12 @@
  */
 package ai.kompile.cli.main.chat.config;
 
-import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.KompileLocalServingBootstrap;
 import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
 import ai.kompile.modelmanager.KompileModelManager;
 import ai.kompile.project.KompileProjectStore;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -60,7 +59,7 @@ public final class KompileLocalModels {
                 models.add(new LiveModelDiscovery.Model(id, List.of()));
             }
         }
-        for (String id : installedModelIds()) {
+        for (String id : installedModelIds(manager.getBaseCachePath().resolve("pipelines"))) {
             if (seen.add(id.toLowerCase(Locale.ROOT))) {
                 models.add(new LiveModelDiscovery.Model(id, List.of()));
             }
@@ -124,43 +123,16 @@ public final class KompileLocalModels {
     }
 
     /**
-     * Runnable model file names under the same roots
-     * {@link KompileLocalServingBootstrap} searches at startup: the install
-     * distribution, {@code ~/.kompile/models}, and the legacy DL4J LLM cache.
+     * Installed models exactly as {@link KompileLocalServingBootstrap} resolves
+     * them — one id per servable model, never per component or precision file.
+     * The HuggingFace cache is listed by repo id instead.
      */
-    static List<String> installedModelIds() {
-        List<Path> roots = new ArrayList<>();
+    static List<String> installedModelIds(Path huggingFaceCache) {
         try {
-            roots.add(KompileHome.installDirectory().toPath()
-                    .resolve("models").resolve("chat"));
-            roots.add(KompileHome.installDirectory().toPath()
-                    .resolve("sdx-sdk").resolve("models"));
-        } catch (RuntimeException ignored) {
-            // No installed distribution; the user cache still applies.
+            return KompileLocalServingBootstrap.installedModelIds(huggingFaceCache);
+        } catch (RuntimeException unavailable) {
+            return List.of();
         }
-        roots.add(KompileHome.homeDirectory().toPath().resolve("models"));
-        roots.add(Path.of(System.getProperty("user.home", "."))
-                .resolve(".cache").resolve("dl4j-llm-models"));
-
-        Set<String> ids = new LinkedHashSet<>();
-        for (Path root : roots) {
-            if (!Files.isDirectory(root)) continue;
-            try (var files = Files.walk(root, 3)) {
-                files.filter(Files::isRegularFile)
-                        .filter(KompileLocalModels::isSupportedModelFile)
-                        .map(path -> stripModelExtension(path.getFileName().toString()))
-                        .forEach(ids::add);
-            } catch (IOException ignored) {
-                // A missing or unreadable root contributes nothing.
-            }
-        }
-        return List.copyOf(ids);
-    }
-
-    /** The serving subprocess consumes GGUF/GGML and staged SameDiff archives. */
-    private static boolean isSupportedModelFile(Path path) {
-        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
-        return name.endsWith(".gguf") || name.endsWith(".sdz");
     }
 
     /** Chat-model ids registered in the current project's model registry. */
@@ -237,16 +209,6 @@ public final class KompileLocalModels {
         } catch (RuntimeException e) {
             return null;
         }
-    }
-
-    private static String stripModelExtension(String fileName) {
-        String lower = fileName.toLowerCase(Locale.ROOT);
-        for (String extension : List.of(".gguf", ".sdz", ".safetensors", ".onnx")) {
-            if (lower.endsWith(extension)) {
-                return fileName.substring(0, fileName.length() - extension.length());
-            }
-        }
-        return fileName;
     }
 
     private static String string(Object value) {

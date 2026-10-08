@@ -10,7 +10,8 @@ import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.CustomAgentLoader;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
-import ai.kompile.cli.main.chat.config.ModelCatalogFallback;
+import ai.kompile.cli.main.chat.config.ModelCatalogSelection;
+import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.mcp.SessionInsightsPanel;
 import ai.kompile.cli.main.chat.permission.PermissionService;
@@ -335,13 +336,21 @@ public final class WebCommandResolver {
         config = sessionConfig(config, store, sessionId, directory);
         if (rest.isEmpty()) {
             String persisted = sessionId == null ? null : store.loadModel(sessionId, directory);
-            return modelMenu(command, config, persisted, modelCatalogStorePath);
+            return modelMenu(command, config, persisted, WebModelCatalog.discover(config),
+                    modelCatalogStorePath);
         }
         // "vendor:model" switches provider AND model (the web form of the
         // interactive picker's vendor page). A bare argument is a vendor name
         // when it matches a switchable vendor (its model menu is returned);
         // otherwise it is validated against the CURRENT provider as before.
         int vendorSeparator = rest.indexOf(':');
+        // Native frameworks are vendors too: switching to one moves the chat onto that framework.
+        String vendorPart = vendorSeparator > 0 ? rest.substring(0, vendorSeparator).trim() : rest;
+        if (WebModelCatalog.frameworkVendor(config, vendorPart)) {
+            return HeadlessPassthroughRunner.frameworkModel(command, config == null ? new ChatConfig() : config,
+                    sessionId, directory == null ? Path.of(".") : directory, vendorPart,
+                    vendorSeparator > 0 ? rest.substring(vendorSeparator + 1).strip() : "", WebModelCatalog::discover, store);
+        }
         if (vendorSeparator > 0) {
             return applyVendorModelSelection(rest, command, config, store, sessionId, directory);
         }
@@ -353,8 +362,8 @@ public final class WebCommandResolver {
     }
 
     private static Resolution modelMenu(String command, ChatConfig config, String persistedModel,
-                                        Path modelCatalogStorePath) {
-        WebModelCatalog.Listing listing = WebModelCatalog.listing(config, modelCatalogStorePath);
+                                        ModelDiscovery.Result discovery, Path modelCatalogStorePath) {
+        WebModelCatalog.Listing listing = WebModelCatalog.listing(config, discovery, modelCatalogStorePath);
         // A persisted explicit selection is the effective current model for this
         // session; otherwise the configured model is.
         String current = persistedModel != null ? persistedModel
@@ -367,21 +376,9 @@ public final class WebCommandResolver {
             data.put("persistedForSession", true);
         }
         data.put("liveListingAvailable", listing.liveListingAvailable());
-        // Switchable vendors — the web mirror of the interactive picker's
-        // vendor page. Selection uses /model <vendor>:<model>.
-        com.fasterxml.jackson.databind.node.ArrayNode vendorEntries = data.putArray("vendors");
-        String configuredProvider = config == null ? null : config.getProvider();
-        for (WebModelCatalog.VendorEntry vendor : WebModelCatalog.vendors(config)) {
-            ObjectNode vendorEntry = vendorEntries.addObject();
-            vendorEntry.put("vendor", vendor.vendor());
-            if (vendor.display() != null && !vendor.display().equals(vendor.vendor())) {
-                vendorEntry.put("display", vendor.display());
-            }
-            if (configuredProvider != null
-                    && configuredProvider.equalsIgnoreCase(vendor.currentProvider())) {
-                vendorEntry.put("current", true);
-            }
-        }
+        // Switchable vendors and native frameworks — the web mirror of the interactive
+        // picker's vendor page. Selection uses /model <vendor>:<model>.
+        WebModelCatalog.putVendors(data, config);
         if (listing.note() != null && !listing.note().isBlank()) {
             data.put("note", listing.note());
         }
@@ -404,7 +401,9 @@ public final class WebCommandResolver {
                         ? "(unconfigured)" : listing.provider())
                 .append("':");
         if (listing.entries().isEmpty()) {
-            text.append("\n  (no locally known models; live listing unavailable)");
+            text.append("\n  (no models listed")
+                    .append(listing.note() == null || listing.note().isBlank() ? "" : ": " + listing.note())
+                    .append(")");
         } else {
             for (WebModelCatalog.Entry entry : listing.entries()) {
                 text.append("\n  ")
@@ -417,23 +416,21 @@ public final class WebCommandResolver {
         }
         text.append("\nSelect with: /model <id>; /model <vendor>:<model> switches provider; "
                 + "/model <vendor> lists that vendor's models.");
-        if (!listing.liveListingAvailable()) {
-            text.append(" Live provider listing was not fetched; the menu reflects locally known models only.");
-        }
         return new Resolution(Status.INTERACTION_REQUIRED, command, text.toString(), null, data);
     }
 
     private static Resolution applyModelSelection(
             String requested, String command, ChatConfig config, ChatSessionStateStore store,
             String sessionId, Path directory, Path modelCatalogStorePath) {
+        ModelDiscovery.Result discovery = WebModelCatalog.discover(config);
         WebModelCatalog.Selection selection =
-                WebModelCatalog.validate(config, requested, modelCatalogStorePath);
+                WebModelCatalog.validate(config, requested, discovery, modelCatalogStorePath);
         if (selection == WebModelCatalog.Selection.UNKNOWN) {
             return new Resolution(Status.INVALID, command,
-                    "Unknown model: '" + requested + "' is not in the provider's known catalog. "
-                            + "Use /model to list locally known models; no state was changed.", null);
+                    "Unknown model: '" + requested + "' is not in the provider's live model list or the last "
+                            + "known good catalog. Use /model to list models; no state was changed.", null);
         }
-        String canonical = WebModelCatalog.canonicalId(config, requested, modelCatalogStorePath);
+        String canonical = WebModelCatalog.canonicalId(config, requested, discovery, modelCatalogStorePath);
         ChatSessionStateStore.SaveResult saved =
                 store.updateModel(sessionId, directory, canonical);
         if (!saved.applied()) {
@@ -479,42 +476,11 @@ public final class WebCommandResolver {
         if (modelPart.isEmpty()) {
             return vendorModelMenu(command, config, vendor);
         }
-        String wireProvider = WebModelCatalog.providerForVendor(config, vendor);
-        if (wireProvider == null) {
-            return new Resolution(Status.INVALID, command,
-                    "Vendor '" + vendor + "' has no configured provider route. "
-                            + "Run /setup in the interactive CLI; no state was changed.", null);
-        }
-        // Build the candidate exactly like the interactive picker: carry LLM
-        // settings, drop cross-provider secrets and base URL.
-        ChatConfig candidate = new ChatConfig();
-        candidate.applyLlmSettingsFrom(config);
-        candidate.setProvider(wireProvider);
-        candidate.setModel(modelPart);
-        candidate.setThinking(null);
-        candidate.setFastMode(wireProvider.equalsIgnoreCase(config.getProvider())
-                && config.isFastMode() && candidate.supportsFastMode());
-        if (!wireProvider.equalsIgnoreCase(config.getProvider())) {
-            candidate.setApiKey(null);
-            candidate.setBaseUrl(null);
-            candidate.setAuthenticationMethod(
-                    ChatConfig.authenticationMethodAfterProviderSwitch(wireProvider));
-        }
-        if (candidate.isClaudeCliNative()) {
-            LiveModelDiscovery.ClaudeCodeLogin login = LiveModelDiscovery.claudeCodeLogin();
-            if (!login.loggedIn()) {
-                return new Resolution(Status.INVALID, command,
-                        login.describe() + " To use an Anthropic API key instead, configure Anthropic's "
-                                + "API-key route with /setup in the interactive CLI; "
-                                + "the current provider/model is still active.", null);
-            }
-        }
-        if (!candidate.isValid()) {
-            return new Resolution(Status.INVALID, command,
-                    "No usable credential for vendor '" + vendor + "' (provider " + wireProvider
-                            + "). Configure it with /setup in the interactive CLI; "
-                            + "the current provider/model is still active.", null);
-        }
+        VendorSwitch target = vendorSwitch(command, config, vendor, modelPart);
+        if (target.refusal() != null) return target.refusal();
+        String wireProvider = target.wireProvider();
+        ChatConfig candidate = target.candidate();
+        ModelDiscovery.Result discovery = target.discovery();
         ChatSessionStateStore.SaveResult saved =
                 store.updateModel(sessionId, directory, wireProvider, modelPart);
         if (!saved.applied()) {
@@ -523,7 +489,7 @@ public final class WebCommandResolver {
                             + "state directory); no durable change was made.", null);
         }
         // Answer with the NEW vendor's menu so the dialog reflects the switch.
-        ObjectNode data = (ObjectNode) modelMenu(command, candidate, modelPart, null).data();
+        ObjectNode data = (ObjectNode) modelMenu(command, candidate, modelPart, discovery, null).data();
         ObjectNode state = data.putObject("state");
         state.put("sessionId", sessionId);
         state.put("workingDirectory", directory == null
@@ -534,6 +500,104 @@ public final class WebCommandResolver {
                 "Provider and model saved for this session: " + vendor + " / " + modelPart
                         + (candidate.isClaudeCliNative() ? " (Claude Code login)" : ""),
                 null, data);
+    }
+
+    /** The validated route a switch onto a vendor's model lands on, or why it was refused. */
+    private record VendorSwitch(ChatConfig candidate, String wireProvider, ModelDiscovery.Result discovery,
+                                Resolution refusal) {
+        static VendorSwitch refused(Resolution refusal) { return new VendorSwitch(null, null, null, refusal); }
+    }
+
+    private static VendorSwitch vendorSwitch(String command, ChatConfig config, String vendor, String modelPart) {
+        String wireProvider = WebModelCatalog.providerForVendor(config, vendor);
+        if (wireProvider == null) {
+            return VendorSwitch.refused(new Resolution(Status.INVALID, command,
+                    "Vendor '" + vendor + "' has no configured provider route. "
+                            + "Run /setup in the interactive CLI; no state was changed.", null));
+        }
+        // Build the candidate exactly like the interactive picker: carry LLM
+        // settings, drop cross-provider secrets and base URL.
+        ChatConfig candidate = WebModelCatalog.vendorCandidate(config, wireProvider, modelPart);
+        if (candidate.isClaudeCliNative()) {
+            LiveModelDiscovery.ClaudeCodeLogin login = LiveModelDiscovery.claudeCodeLogin();
+            if (!login.loggedIn()) {
+                return VendorSwitch.refused(new Resolution(Status.INVALID, command,
+                        login.describe() + " To use an Anthropic API key instead, configure Anthropic's "
+                                + "API-key route with /setup in the interactive CLI; "
+                                + "the current provider/model is still active.", null));
+            }
+        }
+        if (!candidate.isValid()) {
+            return VendorSwitch.refused(new Resolution(Status.INVALID, command,
+                    "No usable credential for vendor '" + vendor + "' (provider " + wireProvider
+                            + "). Configure it with /setup in the interactive CLI; "
+                            + "the current provider/model is still active.", null));
+        }
+        // The vendor's live catalog decides, as the interactive picker's model page does.
+        ModelDiscovery.Result discovery = WebModelCatalog.discover(candidate);
+        if (ModelCatalogSelection.authenticationBlocked(discovery)) {
+            return VendorSwitch.refused(new Resolution(Status.INVALID, command,
+                    ModelCatalogSelection.authenticationNotice(discovery, wireProvider)
+                            + " The current provider/model is still active.", null));
+        }
+        if (ModelCatalogSelection.decisionFor(discovery, wireProvider, modelPart)
+                == ModelCatalogSelection.SelectionDecision.UNKNOWN) {
+            return VendorSwitch.refused(new Resolution(Status.INVALID, command,
+                    "Unknown model: '" + modelPart + "' is not in " + vendor + "'s live model list or the "
+                            + "last known good catalog; the current provider/model is still active.", null));
+        }
+        return new VendorSwitch(candidate, wireProvider, discovery, null);
+    }
+
+    /**
+     * A standard vendor's models, browsed from a chat that may run elsewhere (a native framework);
+     * null when {@code vendor} is not a standard vendor with a provider route.
+     */
+    public static ObjectNode standardVendorModels(ChatConfig base, String requestedVendor) {
+        String vendor = WebModelCatalog.canonicalVendor(base, requestedVendor);
+        String wireProvider = vendor == null ? null : WebModelCatalog.providerForVendor(base, vendor);
+        return wireProvider == null ? null : vendorModelsData(base, vendor, wireProvider);
+    }
+
+    /**
+     * A native chat switching to a standard vendor, like a vendor switch: validated exactly as
+     * {@code /model vendor:model}, then pinned as the chat's route, so the next turn runs Kompile's own
+     * harness on that vendor with the chat's transcript. {@code base} carries the folder's standard
+     * settings and credentials.
+     */
+    public static Resolution switchToStandardVendor(String command, ChatConfig base, String requestedVendor,
+                                                    String model, String sessionId, Path directory) {
+        String vendor = WebModelCatalog.canonicalVendor(base, requestedVendor);
+        if (vendor == null) {
+            return new Resolution(Status.INVALID, command, "Unknown vendor: '" + requestedVendor
+                    + "' is not switchable here. Use /model to list vendors; no state was changed.", null);
+        }
+        if (sessionId == null || sessionId.isBlank()) {
+            return new Resolution(Status.INVALID, command, "Choose a chat to switch; no state was changed.", null);
+        }
+        VendorSwitch target = vendorSwitch(command, base, vendor, model);
+        if (target.refusal() != null) return target.refusal();
+        ChatConfig candidate = target.candidate();
+        candidate.setChatMode("standard");
+        try {
+            candidate.bindSession(sessionId);
+        } catch (IOException | RuntimeException e) {
+            return new Resolution(Status.INVALID, command, "Could not switch this chat to " + vendor + ": "
+                    + e.getMessage() + "; no state was changed.", null);
+        }
+        // An earlier web model override belonged to the previous route.
+        if (!new ChatSessionStateStore().clearRoute(sessionId, directory).applied()) {
+            return new Resolution(Status.INVALID, command, "Switched to " + vendor + ", but an earlier web model "
+                    + "override could not be cleared while the session state is locked; switch again.", null);
+        }
+        ObjectNode data = (ObjectNode) modelMenu(command, candidate, model, target.discovery(), null).data();
+        ObjectNode state = data.putObject("state");
+        state.put("sessionId", sessionId);
+        state.put("workingDirectory", directory == null ? "" : directory.toAbsolutePath().normalize().toString());
+        state.put("model", model);
+        state.put("provider", target.wireProvider());
+        return new Resolution(Status.INTERACTION_REQUIRED, command,
+                "Switched this chat to " + vendor + " / " + model, null, data);
     }
 
     /** Local model listing for one vendor's wire provider (read-only). */
@@ -547,8 +611,8 @@ public final class WebCommandResolver {
         ObjectNode data = vendorModelsData(config, vendor, wireProvider);
         ArrayNode models = (ArrayNode) data.get("models");
         String text = models.isEmpty()
-                ? "No locally known models for vendor '" + vendor
-                        + "'. Select explicitly with /model " + vendor + ":<model>."
+                ? "No models listed for vendor '" + vendor + "'"
+                        + (data.hasNonNull("note") ? ": " + data.get("note").asText() : ".")
                 : "Models for vendor '" + vendor + "': select with /model " + vendor + ":<id>.";
         return new Resolution(Status.INTERACTION_REQUIRED, command, text, null, data);
     }
@@ -559,15 +623,22 @@ public final class WebCommandResolver {
      * models. Both shapes always carry the switchable vendor chips.
      */
     private static ObjectNode modelSection(ChatConfig config, String persistedModel,
-                                           String vendor) {
+                                           String vendor, ModelDiscovery.Result discovery) {
         if (vendor == null || vendor.isBlank()) {
-            return (ObjectNode) modelMenu("/config", config, persistedModel, null).data();
+            return (ObjectNode) modelMenu("/config", config, persistedModel, discovery, null).data();
+        }
+        // Browsing a native framework from a standard chat lists that framework's own live models.
+        if (WebModelCatalog.frameworkVendor(config, vendor)) {
+            JsonNode framework = HeadlessPassthroughRunner.frameworkModel("/config",
+                    config == null ? new ChatConfig() : config.copy(), null, Path.of("."), vendor, "",
+                    WebModelCatalog::discover).data();
+            if (framework instanceof ObjectNode menu) return menu;
         }
         String wireProvider = WebModelCatalog.providerForVendor(config, vendor);
         if (wireProvider == null) {
             // Unknown vendor: fall back to the default menu; the dialog shows
             // the chips so the user can pick a valid one.
-            return (ObjectNode) modelMenu("/config", config, persistedModel, null).data();
+            return (ObjectNode) modelMenu("/config", config, persistedModel, discovery, null).data();
         }
         ObjectNode data = vendorModelsData(config, vendor, wireProvider);
         data.put("currentVendor", vendor);
@@ -582,32 +653,20 @@ public final class WebCommandResolver {
         data.put("provider", wireProvider);
         data.put("vendor", vendor);
         data.put("currentModel", config == null ? null : config.getModel());
-        data.put("liveListingAvailable", false);
-        ArrayNode models = data.putArray("models");
-        // The vendor's catalog for the route its selection runs on: the active
+        // The vendor's live catalog for the route its selection runs on: the active
         // route when current, else the one a switch lands on (Anthropic: Claude Code).
-        boolean current = config != null && wireProvider.equalsIgnoreCase(config.getProvider());
-        String catalogKey = ModelCatalogFallback.catalogKey(wireProvider, ChatConfig.isClaudeCliNative(
-                wireProvider, current ? config.getAuthenticationMethod()
-                        : ChatConfig.authenticationMethodAfterProviderSwitch(wireProvider)));
-        for (String id : ModelCatalogFallback.lookup(catalogKey).map(r -> r.models()).orElse(List.of())) {
+        WebModelCatalog.Listing listing = WebModelCatalog.listing(
+                WebModelCatalog.vendorCandidate(config, wireProvider, null), null);
+        data.put("liveListingAvailable", listing.liveListingAvailable());
+        if (listing.note() != null && !listing.note().isBlank()) data.put("note", listing.note());
+        ArrayNode models = data.putArray("models");
+        for (WebModelCatalog.Entry entry : listing.entries()) {
             ObjectNode model = models.addObject();
-            model.put("id", id);
+            model.put("id", entry.id());
+            if (entry.contextLimit() != null && entry.contextLimit() > 0) model.put("contextLimit", entry.contextLimit());
         }
         // Vendor chips ride along so the dialog can switch scope in place.
-        ArrayNode vendorEntries = data.putArray("vendors");
-        String configuredProvider = config == null ? null : config.getProvider();
-        for (WebModelCatalog.VendorEntry entry : WebModelCatalog.vendors(config)) {
-            ObjectNode vendorEntry = vendorEntries.addObject();
-            vendorEntry.put("vendor", entry.vendor());
-            if (entry.display() != null && !entry.display().equals(entry.vendor())) {
-                vendorEntry.put("display", entry.display());
-            }
-            if (configuredProvider != null
-                    && configuredProvider.equalsIgnoreCase(entry.currentProvider())) {
-                vendorEntry.put("current", true);
-            }
-        }
+        WebModelCatalog.putVendors(data, config);
         return data;
     }
 
@@ -884,15 +943,18 @@ public final class WebCommandResolver {
         // always included so the dialog can switch scope without a dispatch.
         String modelVendor = input.modelVendor() == null || input.modelVendor().isBlank()
                 ? null : input.modelVendor();
+        // One live discovery for the session's route feeds both the model and
+        // thinking sections, as the terminal picker's model page does.
+        ModelDiscovery.Result discovery = WebModelCatalog.discover(config);
         data.set("model", modelSection(config, sessionId == null ? null
-                : store.loadModel(sessionId, workDir), modelVendor));
+                : store.loadModel(sessionId, workDir), modelVendor, discovery));
         ObjectNode modelSectionData = (ObjectNode) data.get("model");
         if (modelVendor != null) modelSectionData.put("vendor", modelVendor);
         RoleManager roleManager = new RoleManager(workDir);
         data.set("role", roleMenu("/config", store, sessionId, workDir, roleManager).data());
         data.set("fast", fastSnapshot(config));
         data.set("ultracode", ultracodeSnapshot(config));
-        data.set("thinking", thinkingSnapshot(config));
+        data.set("thinking", thinkingSnapshot(config, discovery));
         ReminderManager sessionReminders = new ReminderManager(JsonUtils.standardMapper(),
                 sessionId == null ? "unknown-session" : sessionId, workDir);
         data.set("reminders", reminderSnapshot(ReminderManager.Scope.SESSION, sessionReminders));
@@ -1078,6 +1140,37 @@ public final class WebCommandResolver {
                 null, data);
     }
 
+    /**
+     * Records where a web chat runs now in the chat list ("claude / opus", "anthropic / claude-sonnet-4-5").
+     * Best effort: a chat list that cannot be updated never fails the turn that changed the route.
+     */
+    public static void publishRoute(String sessionId, Path directory) {
+        if (sessionId == null || sessionId.isBlank() || directory == null) return;
+        try {
+            String label = routeLabel(effectiveSessionConfig(sessionId, directory));
+            if (label != null) new ai.kompile.cli.common.ChatWorkspaceStore().recordRoute(directory, sessionId, label);
+        } catch (IOException | RuntimeException e) {
+            System.err.println("Could not update this chat's route in the chat list: " + e.getMessage());
+        }
+    }
+
+    static String routeLabel(ChatConfig config) {
+        if (config == null) return null;
+        String vendor = switch (config.getChatMode() == null ? "standard" : config.getChatMode()) {
+            case "passthrough" -> config.getPassthroughAgent();
+            case "workflow" -> "workflow";
+            default -> SetupWizard.vendorForProvider(config.getProvider());
+        };
+        if (vendor == null || vendor.isBlank()) return null;
+        String model = config.getModel();
+        return model == null || model.isBlank() || "workflow".equals(vendor) ? vendor : vendor + " / " + model;
+    }
+
+    /** The route the session's next turn runs: its pinned config (else the folder's) plus the web overrides. */
+    public static ChatConfig effectiveSessionConfig(String sessionId, Path directory) {
+        return sessionConfig(ChatConfig.loadOrFromEnv(directory), new ChatSessionStateStore(), sessionId, directory);
+    }
+
     /** Effective non-secret settings after the durable web model/effort overrides. */
     private static ChatConfig sessionConfig(ChatConfig configured, ChatSessionStateStore store,
                                             String sessionId, Path directory) {
@@ -1095,25 +1188,29 @@ public final class WebCommandResolver {
                 config.setAuthenticationMethod(ChatConfig.authenticationMethodAfterProviderSwitch(state.provider()));
             }
             if (state.model() != null && !state.model().isBlank()) config.setModel(state.model());
-            if (state.thinking() != null) config.setThinking(state.thinking());
-        }
-        if (state != null && (state.thinking() != null
-                || !java.util.Objects.equals(config.getProvider(), configured.getProvider())
-                || !java.util.Objects.equals(config.getModel(), configured.getModel()))) {
-            config.setThinking(SetupWizard.compatibleThinking(
-                    config.getProvider(), config.getModel(), config.getThinking(), null));
+            if (state.thinking() != null) {
+                // Already validated against the route's live models when /thinking saved it, and
+                // /model clears it on a model change. Re-checking here without that live list would
+                // drop every effort level only the live metadata offers.
+                config.setThinking(state.thinking().isBlank() ? null : state.thinking());
+            } else if (!java.util.Objects.equals(config.getProvider(), configured.getProvider())
+                    || !java.util.Objects.equals(config.getModel(), configured.getModel())) {
+                config.setThinking(SetupWizard.compatibleThinking(
+                        config.getProvider(), config.getModel(), config.getThinking(), null));
+            }
         }
         return config;
     }
 
-    private static ObjectNode thinkingSnapshot(ChatConfig config) {
+    /** Thinking choices from the live model metadata, like the terminal's /thinking picker. */
+    private static ObjectNode thinkingSnapshot(ChatConfig config, ModelDiscovery.Result discovery) {
         ObjectNode data = JsonUtils.standardMapper().createObjectNode();
         data.put("menu", "thinking");
         data.put("currentThinking", config == null || config.getThinking() == null ? "" : config.getThinking());
         data.put("provider", config == null ? "" : config.getProvider());
         data.put("model", config == null ? "" : config.getModel());
         List<SetupWizard.ThinkingOption> options = config == null ? List.of()
-                : SetupWizard.thinkingOptions(config.getProvider(), config.getModel());
+                : SetupWizard.thinkingOptions(config.getProvider(), config.getModel(), null, config, discovery);
         data.put("supported", options.size() > 1);
         ArrayNode entries = data.putArray("thinkingOptions");
         for (SetupWizard.ThinkingOption option : options) {
@@ -1132,7 +1229,8 @@ public final class WebCommandResolver {
         Path workDir = directory == null ? Path.of(".") : directory;
         ChatConfig config = sessionConfig(configOverride != null ? configOverride.get()
                 : ChatConfig.loadOrFromEnv(workDir), store, input.sessionId(), workDir);
-        ObjectNode data = thinkingSnapshot(config);
+        ModelDiscovery.Result discovery = WebModelCatalog.discover(config);
+        ObjectNode data = thinkingSnapshot(config, discovery);
         String requested = argumentRegion == null ? "" : argumentRegion.strip();
         if (requested.isEmpty() || "status".equalsIgnoreCase(requested)) {
             return new Resolution(Status.INTERACTION_REQUIRED, command,
@@ -1156,7 +1254,7 @@ public final class WebCommandResolver {
                     "Thinking/effort could not be persisted; no durable change was made.", null);
         }
         config.setThinking(canonical);
-        data = thinkingSnapshot(config);
+        data = thinkingSnapshot(config, discovery);
         data.putObject("state").put("thinking", canonical);
         return new Resolution(Status.INTERACTION_REQUIRED, command,
                 "Thinking/effort saved for this session: " + (canonical.isEmpty() ? "provider/model default" : canonical),

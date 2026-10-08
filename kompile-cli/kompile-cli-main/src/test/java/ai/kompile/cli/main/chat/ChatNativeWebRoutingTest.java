@@ -1,7 +1,12 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
+import ai.kompile.cli.main.chat.config.ModelDiscovery;
+import ai.kompile.cli.main.chat.exec.WebModelCatalog;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
@@ -20,6 +25,15 @@ import static org.junit.jupiter.api.Assertions.*;
 @TemporaryUserHome
 class ChatNativeWebRoutingTest {
     @TempDir Path directory;
+
+    /** The framework's live list, without spawning the real {@code opencode models}. */
+    @BeforeEach void stubFrameworkModelList() {
+        WebModelCatalog.useDiscovery(config -> ModelDiscovery.Result.success(List.of(
+                new LiveModelDiscovery.Model("zai/glm-5", List.of()), new LiveModelDiscovery.Model("zai/glm-4", List.of())),
+                List.of("native:" + config.getPassthroughAgent())));
+    }
+
+    @AfterEach void restoreLiveDiscovery() { WebModelCatalog.useDiscovery(null); }
 
     private String execute(String input, String... args) {
         var oldIn = System.in;

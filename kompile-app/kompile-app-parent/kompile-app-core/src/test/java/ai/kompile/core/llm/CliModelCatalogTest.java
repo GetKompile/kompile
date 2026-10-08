@@ -360,6 +360,22 @@ class CliModelCatalogTest {
     }
 
     @Test
+    void switchingCatalogSourcesTakesEffectWithoutWaitingForTheRefreshInterval(@TempDir Path dir) throws Exception {
+        Path f = writeCatalog(dir);
+        System.setProperty(PROP, f.toString());
+        CliModelCatalog.invalidateCacheForTest();
+        assertTrue(CliModelCatalog.size() > 0);
+
+        // A moved home or override is a different catalog: never served from the previous one's cache.
+        System.setProperty(PROP, dir.resolve("does-not-exist.json").toString());
+        assertEquals(0, CliModelCatalog.size());
+        assertTrue(CliModelCatalog.lookup("deepseek-v4-flash").isEmpty());
+
+        System.setProperty(PROP, f.toString());
+        assertEquals(999999, CliModelCatalog.contextWindow("deepseek-v4-flash").orElseThrow());
+    }
+
+    @Test
     void fallsBackToStaticTableWhenNoCatalogPresent(@TempDir Path dir) {
         // Point at a non-existent catalog file → catalog empty → static fallback used.
         System.setProperty(PROP, dir.resolve("does-not-exist.json").toString());

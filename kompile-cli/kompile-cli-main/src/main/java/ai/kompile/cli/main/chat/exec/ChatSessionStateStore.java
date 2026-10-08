@@ -240,6 +240,43 @@ public final class ChatSessionStateStore {
         return updateSelection(sessionId, workingDirectory, thinking, true);
     }
 
+    /**
+     * Drop the web {@code /model}/{@code /thinking} overrides (provider, model, effort) so a
+     * route rewritten by the session wizard is authoritative; the role selection is kept.
+     */
+    public SaveResult clearRoute(String sessionId, Path workingDirectory) {
+        Objects.requireNonNull(workingDirectory, "workingDirectory");
+        Path file = stateFile(sessionId);
+        if (file == null) {
+            return new SaveResult(false, null);
+        }
+        if (!Files.isRegularFile(file)) {
+            return new SaveResult(true, null);
+        }
+        Path lockFile = stateDirectory.resolve(sessionId + ".lock");
+        try (FileChannel lockChannel = FileChannel.open(lockFile,
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE)) {
+            FileLock lock = tryLockWithRetry(lockChannel);
+            if (lock == null) {
+                return new SaveResult(false, load(sessionId, workingDirectory));
+            }
+            try {
+                SessionState current = load(sessionId, workingDirectory);
+                if (current == null) {
+                    return new SaveResult(true, null);
+                }
+                SessionState next = new SessionState(SCHEMA_VERSION, sessionId, current.workingDirectory(),
+                        null, current.role(), java.time.Instant.now().toString(), null, null);
+                writeAtomically(file, next);
+                return new SaveResult(true, next);
+            } finally {
+                lock.release();
+            }
+        } catch (Exception ignored) {
+            return new SaveResult(false, load(sessionId, workingDirectory));
+        }
+    }
+
     private SaveResult updateSelection(String sessionId, Path workingDirectory, String value, boolean thinking) {
         Objects.requireNonNull(workingDirectory, "workingDirectory");
         Path file = stateFile(sessionId);

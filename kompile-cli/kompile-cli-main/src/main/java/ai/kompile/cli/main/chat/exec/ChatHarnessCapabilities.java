@@ -246,8 +246,10 @@ public final class ChatHarnessCapabilities {
                         + "directory; a stored model or role applies to later MODEL_INPUT turns "
                         + "and /fast and /ultracode write the chat configuration toggle.");
         if (passthrough) {
-            webInput.putArray("durableSessionCommandNames").add("model");
-            webInput.put("durableSessionCommandsNote", "Native /model accepts the framework's own model ID and persists it for this chat only. Create a new chat to switch framework.");
+            webInput.putArray("durableSessionCommandNames").add("model").add("thinking");
+            webInput.put("durableSessionCommandsNote", "Native /model accepts the framework's own model ID, or <framework>:<model> "
+                    + "to switch this chat to another native framework; /thinking takes the model's own effort levels. "
+                    + "Both persist for this chat only.");
         }
         ArrayNode commands = root.putArray("commands");
         for (var entry : ChatCommandCatalog.entries()) {

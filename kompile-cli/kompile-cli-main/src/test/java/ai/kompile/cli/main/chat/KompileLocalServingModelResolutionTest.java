@@ -6,7 +6,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -88,6 +90,71 @@ class KompileLocalServingModelResolutionTest {
 
         assertEquals(directory.resolve("model.safetensors").toAbsolutePath(),
                 resolved.modelPath());
+    }
+
+    @Test
+    void installedInventoryListsEachServableModelOnceAndEveryIdResolvesBackToIt()
+            throws Exception {
+        Path home = Files.createDirectories(tempDir.resolve("user-home"));
+        Path kompileHome = home.resolve(".kompile");
+        Path models = kompileHome.resolve("models");
+        Path vlm = Files.createDirectories(models.resolve("vlm").resolve("smoldocling-256m"));
+        for (String part : List.of("vision_encoder", "decoder_model_merged", "embed_tokens")) {
+            Files.writeString(vlm.resolve(part + ".sdz"), "weights");
+            Files.writeString(vlm.resolve(part + ".opt.sdz"), "weights");
+        }
+        Files.writeString(vlm.resolve("tokenizer.json"), "{}");
+        Path llm = Files.createDirectories(models.resolve("llm-ggmls").resolve("supra-50m-instruct"));
+        Files.writeString(llm.resolve("Supra-50M-f16.gguf"), "weights");
+        Files.writeString(llm.resolve("model.sdz"), "weights");
+        Files.writeString(llm.resolve("tokenizer.json"), "{}");
+        Files.createDirectories(llm.resolve(".cache"));
+        Files.writeString(llm.resolve(".cache").resolve("shard.sdz"), "weights");
+        Path encoder = Files.createDirectories(models.resolve("encoders").resolve("bge-base-en-v1.5"));
+        Files.writeString(encoder.resolve("model.sdz"), "weights");
+        Files.writeString(encoder.resolve("vocab.txt"), "[CLS]");
+        Path staging = Files.createDirectories(models.resolve(".staging").resolve("partial"));
+        Files.writeString(staging.resolve("model.gguf"), "weights");
+        Files.writeString(staging.resolve("tokenizer.json"), "{}");
+        Path chat = Files.createDirectories(models.resolve("chat"));
+        Files.writeString(chat.resolve("qwen2.5-0.5b-instruct-q4_k_m.gguf"), "weights");
+        Files.writeString(chat.resolve("qwen2.5-0.5b-instruct-q4_k_m.sdz"), "weights");
+        Files.writeString(chat.resolve("qwen2.5-0.5b-instruct-fp16.gguf"), "weights");
+        Files.writeString(chat.resolve("qwen2.5-1.5b-instruct-fp16.gguf"), "weights");
+        Path tokenizers = Files.createDirectories(models.resolve("tokenizers").resolve("qwen2.5-0.5b"));
+        Files.writeString(tokenizers.resolve("tokenizer.json"), "{}");
+        Path huggingFace = Files.createDirectories(models.resolve("pipelines").resolve("Owner_model"));
+        Files.writeString(huggingFace.resolve("model.gguf"), "weights");
+        Files.writeString(huggingFace.resolve("tokenizer.json"), "{}");
+
+        String previousHome = System.getProperty("user.home");
+        try {
+            System.setProperty("user.home", home.toString());
+            List<String> ids = KompileLocalServingBootstrap.installedModelIds(
+                    null, kompileHome, models.resolve("pipelines"), Map.of());
+
+            // Components, precision variants, encoders without a chat tokenizer, hidden
+            // scratch, and the repo-id-listed HuggingFace cache are not models of their own.
+            assertEquals(Set.of("qwen2.5-0.5b-instruct-fp16", "qwen2.5-0.5b-instruct-q4_k_m",
+                            "smoldocling-256m", "supra-50m-instruct"),
+                    Set.copyOf(ids), ids.toString());
+            assertEquals(ids.size(), Set.copyOf(ids).size(), ids.toString());
+
+            assertEquals(vlm, resolve("smoldocling-256m", kompileHome).modelPath());
+            assertEquals(llm.resolve("Supra-50M-f16.gguf"),
+                    resolve("supra-50m-instruct", kompileHome).modelPath());
+            assertEquals(chat.resolve("qwen2.5-0.5b-instruct-fp16.gguf"),
+                    resolve("qwen2.5-0.5b-instruct-fp16", kompileHome).modelPath());
+            assertEquals(chat.resolve("qwen2.5-0.5b-instruct-q4_k_m.gguf"),
+                    resolve("qwen2.5-0.5b-instruct-q4_k_m", kompileHome).modelPath());
+        } finally {
+            System.setProperty("user.home", previousHome);
+        }
+    }
+
+    private static KompileLocalServingBootstrap.ResolvedModel resolve(String id, Path kompileHome)
+            throws Exception {
+        return KompileLocalServingBootstrap.resolveModel(id, null, kompileHome, Map.of());
     }
 
     @Test

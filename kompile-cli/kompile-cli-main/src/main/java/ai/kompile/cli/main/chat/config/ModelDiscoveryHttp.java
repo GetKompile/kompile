@@ -8,6 +8,7 @@ package ai.kompile.cli.main.chat.config;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.CredentialFailure;
+import ai.kompile.cli.main.project.NativeChatModels;
 import java.util.concurrent.ExecutionException;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
@@ -83,6 +84,31 @@ public final class ModelDiscoveryHttp {
         return claudeCliResult(models, reason.toString());
     }
 
+    /**
+     * Models a passthrough CLI agent accepts: the agent's own model-list command first (as the
+     * terminal wizard), then the catalog its provider route itself serves (Claude Code's picker,
+     * Codex's subscription catalog). Never an API substitute for an agent with neither.
+     */
+    public static ModelDiscovery.Result discoverPassthroughAgent(String agent) {
+        if (agent == null || agent.isBlank()) {
+            return ModelDiscovery.Result.failure(ModelDiscovery.Status.UNSUPPORTED,
+                    "No CLI agent selected.", List.of());
+        }
+        List<LiveModelDiscovery.Model> models = LiveModelDiscovery.discoverNative(agent);
+        if (!models.isEmpty()) {
+            return ModelDiscovery.Result.success(models, List.of("native:" + agent));
+        }
+        String provider = NativeChatModels.normalizeProvider(agent);
+        if (provider != null && ChatProviderRegistry.find(provider) != null) {
+            return ChatConfig.isClaudeCliNativeProvider(provider)
+                    ? discoverClaudeCliResult()
+                    : refreshResultWithAuth(provider, null, null);
+        }
+        return ModelDiscovery.Result.failure(ModelDiscovery.Status.UNSUPPORTED,
+                "This CLI agent publishes no model list; the chat runs on its default model.",
+                List.of());
+    }
+
     static ModelDiscovery.Result claudeCliResult(List<LiveModelDiscovery.Model> models) {
         return claudeCliResult(models, null);
     }
@@ -104,7 +130,7 @@ public final class ModelDiscoveryHttp {
             return ModelDiscovery.Result.failure(
                     ModelDiscovery.Status.UNAVAILABLE,
                     "Claude Code model list is unavailable" + (reason.isEmpty() ? "." : ": " + reason)
-                            + " Enter a model id or alias that `claude --model` accepts.",
+                            + " The chat runs on Claude Code's default model until the list is refreshed.",
                     List.of(CLAUDE_CODE_ENDPOINT));
         }
         return ModelDiscovery.Result.success(models, List.of(CLAUDE_CODE_ENDPOINT));

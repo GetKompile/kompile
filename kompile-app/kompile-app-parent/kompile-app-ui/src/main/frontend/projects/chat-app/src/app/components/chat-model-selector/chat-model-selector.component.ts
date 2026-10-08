@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Input, OnChanges, OnDestroy, Output, SimpleChanges, ViewChild, ElementRef } from '@angular/core';
+import { ChangeDetectorRef, Component, EventEmitter, Input, NgZone, OnChanges, OnDestroy, OnInit, Output, SimpleChanges, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Subscription } from 'rxjs';
@@ -15,9 +15,9 @@ import { LocalAgentChatService } from '@shared/services/local-agent-chat.service
       <label>Vendor
         <select aria-label="Model vendor" data-testid="model-vendor-select"
           [ngModel]="selectedVendor" (ngModelChange)="pickVendor($event)"
-          [disabled]="busy || loading || !!modelMenu?.nativeModelSelection || !vendors().length">
+          [disabled]="busy || loading || !vendors().length">
           <option *ngIf="!vendors().length" [value]="selectedVendor">{{ modelMenu?.provider || 'No vendor available' }}</option>
-          <option *ngFor="let vendor of vendors()" [value]="vendor.vendor">{{ vendor.display || vendor.vendor }}</option>
+          <option *ngFor="let vendor of vendors(); trackBy: byVendor" [value]="vendor.vendor">{{ vendor.display || vendor.vendor }}</option>
         </select>
       </label>
       <label>Model
@@ -25,33 +25,29 @@ import { LocalAgentChatService } from '@shared/services/local-agent-chat.service
           [ngModel]="modelChoice" (ngModelChange)="selectModel($event)"
           [disabled]="busy || loading || !modelMenu">
           <option *ngIf="!currentListed()" [value]="currentModel()">{{ currentModel() || 'Select model…' }}</option>
-          <option *ngFor="let model of models()" [value]="model.id">{{ model.display || model.id }}</option>
-          <option *ngIf="modelMenu?.nativeModelSelection" value="__custom__">Custom model…</option>
+          <option *ngFor="let model of models(); trackBy: byId" [value]="model.id">{{ model.display || model.id }}</option>
         </select>
       </label>
-      <label *ngIf="thinkingMenu?.supported">Thinking / effort
+      <!-- Always shown: a route without effort levels says so (and why, in the note) instead of hiding the control. -->
+      <label>Thinking / effort
         <select aria-label="Thinking effort" data-testid="chat-thinking-select"
           [ngModel]="thinkingChoice" (ngModelChange)="selectThinking($event)"
-          [disabled]="busy || loading || selectedVendor !== currentVendor()">
-          <option *ngFor="let option of thinkingMenu?.thinkingOptions" [value]="option.value">{{ option.label }}</option>
+          [disabled]="busy || loading || !thinkingMenu?.supported || selectedVendor !== currentVendor()">
+          <option *ngIf="!thinkingMenu?.thinkingOptions?.length" value="">{{ loading ? 'Loading…' : 'Not offered' }}</option>
+          <option *ngFor="let option of thinkingMenu?.thinkingOptions; trackBy: byValue" [value]="option.value">{{ option.label }}</option>
         </select>
       </label>
       <span *ngIf="thinkingMenu?.note">{{ thinkingMenu?.note }}</span>
+      <span *ngIf="modelMenu?.note && !loading" role="status" data-testid="model-catalog-note">{{ modelMenu?.note }}</span>
       <button type="button" (click)="refreshModels()" [disabled]="busy || loading" aria-label="Refresh model catalog">↻</button>
       <span *ngIf="loading" role="status">Loading models…</span>
       <span *ngIf="loadError" role="alert">{{ loadError }}</span>
-      <div *ngIf="modelChoice === '__custom__' && modelMenu?.nativeModelSelection" class="native-model-editor">
-        <input [(ngModel)]="nativeModelId" maxlength="256" aria-label="Native model ID"
-          placeholder="Framework model ID, e.g. zai/glm-5" [disabled]="busy || loading">
-        <button type="button" [disabled]="busy || loading || !nativeModelId.trim()"
-          (click)="selectModel(nativeModelId.trim())">Apply model</button>
-      </div>
     </div>
   `,
   styles: [`
     :host { display: block; flex-shrink: 0; }
     .model-selectors { display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
-      padding: 10px 20px; background: var(--bg-surface); border-bottom: 1px solid var(--border-color);
+      padding: 6px 16px; background: var(--bg-surface); border-bottom: 1px solid var(--border-color);
       color: var(--text-secondary); font-size: .85em; }
     label { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
     select, input, button { background: var(--bg-body); color: var(--text-primary);
@@ -60,7 +56,6 @@ import { LocalAgentChatService } from '@shared/services/local-agent-chat.service
     select:focus-visible, input:focus-visible, button:focus-visible { outline: 2px solid var(--color-primary, #1976d2); }
     button { cursor: pointer; }
     :disabled { opacity: .6; cursor: default; }
-    .native-model-editor { display: flex; flex-wrap: wrap; gap: 8px; }
     [role=alert] { color: var(--status-error-text, #c62828); }
     @media (max-width: 600px) {
       .model-selectors { padding: 8px 12px; gap: 8px; }
@@ -68,7 +63,9 @@ import { LocalAgentChatService } from '@shared/services/local-agent-chat.service
     }
   `]
 })
-export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
+export class ChatModelSelectorComponent implements OnInit, OnChanges, OnDestroy {
+  /** How often the selector re-reads the chat's route, so changes made elsewhere show up. */
+  static readonly POLL_MS = 15000;
   @Input() sessionId?: string;
   @Input() workingDirectory?: string;
   @Input() busy = false;
@@ -83,21 +80,34 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
   modelMenu: CommandEventData | null = null;
   selectedVendor = '';
   modelChoice = '';
-  nativeModelId = '';
   loading = false;
   loadError: string | null = null;
   private request?: Subscription;
+  private pollRequest?: Subscription;
+  private pollTimer?: ReturnType<typeof setInterval>;
 
-  constructor(private readonly agentChat: LocalAgentChatService) {}
+  /** The chat view hosting this selector is OnPush, so a catalog that arrives later must mark it for check. */
+  constructor(private readonly agentChat: LocalAgentChatService, private readonly zone: NgZone,
+              private readonly cdr: ChangeDetectorRef) {}
+
+  ngOnInit(): void {
+    // The timer lives outside Angular so a standing interval never keeps the app from settling;
+    // each tick re-enters the zone to poll and render.
+    this.zone.runOutsideAngular(() => {
+      this.pollTimer = setInterval(() => this.zone.run(() => this.poll()), ChatModelSelectorComponent.POLL_MS);
+    });
+  }
 
   ngOnChanges(changes: SimpleChanges): void {
+    // A finished turn may have changed the route (a /model or /thinking typed in the chat).
+    if (changes['busy'] && changes['busy'].previousValue && !this.busy
+      && !changes['sessionId'] && !changes['workingDirectory'] && !changes['outcome']) this.poll();
     if (changes['sessionId'] || changes['workingDirectory']) {
       this.modelMenu = null;
       this.thinkingMenu = null;
       this.thinkingChoice = '';
       this.selectedVendor = '';
       this.modelChoice = '';
-      this.nativeModelId = '';
       this.refreshModels();
     } else if (changes['outcome'] && this.outcome) {
       // Applied outcomes carry state without a catalog. Failed selections also
@@ -111,7 +121,36 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
     }
   }
 
-  ngOnDestroy(): void { this.request?.unsubscribe(); }
+  ngOnDestroy(): void {
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.request?.unsubscribe();
+    this.pollRequest?.unsubscribe();
+  }
+
+  byVendor(_: number, vendor: { vendor: string }): string { return vendor.vendor; }
+  byId(_: number, model: CommandModelEntry): string { return model.id; }
+  byValue(_: number, option: { value: string }): string { return option.value; }
+
+  /**
+   * Quiet re-read of the chat's route: no loading state, so the controls never flicker or close. Skipped while
+   * a turn or an explicit load runs, while the page is hidden, and while another vendor is being browsed.
+   */
+  poll(): void {
+    if (!this.sessionId || this.busy || this.loading || !this.modelMenu || document.visibilityState === 'hidden'
+      || this.selectedVendor !== this.currentVendor()) return;
+    this.pollRequest?.unsubscribe();
+    this.pollRequest = this.agentChat.getSessionConfig(this.sessionId, this.workingDirectory).subscribe({
+      next: snapshot => {
+        if (this.loading || this.busy || snapshot.available === false || !snapshot.model) return;
+        this.applyMenu(snapshot.model);
+        this.thinkingMenu = snapshot.thinking ?? null;
+        this.thinkingChoice = snapshot.thinking?.currentThinking ?? '';
+        this.cdr.markForCheck();
+      },
+      // A failed background read keeps the last good state; the refresh button reports errors.
+      error: () => undefined
+    });
+  }
 
   focus(): void { this.modelSelect?.nativeElement.focus(); }
 
@@ -125,22 +164,18 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
 
   /** Browsing vendors uses the existing quiet HTTP snapshot, not a chat turn. */
   pickVendor(vendor: string): void {
-    if (this.busy || this.loading || this.modelMenu?.nativeModelSelection || vendor === this.selectedVendor) return;
+    if (this.busy || this.loading || vendor === this.selectedVendor) return;
     this.selectedVendor = vendor;
     this.fetchModels(vendor);
   }
 
   refreshModels(): void { this.fetchModels(); }
 
-  /** Reuse the same vendor-scoped /model argument as the former dialog. */
+  /** Reuse the same vendor-scoped /model argument as the former dialog; ids come only from the live catalog. */
   selectModel(modelId: string): void {
-    if (!modelId || this.busy || this.loading) return;
-    if (modelId === '__custom__') {
-      this.modelChoice = modelId;
-      return;
-    }
-    const browsingOtherVendor = !this.modelMenu?.nativeModelSelection
-      && this.selectedVendor && this.selectedVendor !== this.currentVendor();
+    if (!modelId || this.busy || this.loading || !this.models().some(model => model.id === modelId)) return;
+    // Native frameworks are vendors too: "<framework>:<model>" switches the chat's framework.
+    const browsingOtherVendor = this.selectedVendor && this.selectedVendor !== this.currentVendor();
     this.modelChoice = modelId;
     this.modelSelected.emit(browsingOtherVendor ? this.selectedVendor + ':' + modelId : modelId);
   }
@@ -171,8 +206,9 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
   }
 
   private fetchModels(vendor?: string): void {
-    // Cancel the previous context's request when switching conversations.
+    // Cancel the previous context's request when switching conversations; an explicit load supersedes a poll.
     this.request?.unsubscribe();
+    this.pollRequest?.unsubscribe();
     this.loading = true;
     this.loadError = null;
     this.request = this.agentChat.getSessionConfig(this.sessionId, this.workingDirectory, vendor).subscribe({
@@ -181,16 +217,18 @@ export class ChatModelSelectorComponent implements OnChanges, OnDestroy {
         if (snapshot.available === false || !snapshot.model) {
           this.loadError = snapshot.status || 'Model configuration is unavailable.';
           this.restoreVendor();
-          return;
+        } else {
+          this.applyMenu(snapshot.model, vendor);
+          this.thinkingMenu = snapshot.thinking ?? null;
+          this.thinkingChoice = snapshot.thinking?.currentThinking ?? '';
         }
-        this.applyMenu(snapshot.model, vendor);
-        this.thinkingMenu = snapshot.thinking ?? null;
-        this.thinkingChoice = snapshot.thinking?.currentThinking ?? '';
+        this.cdr.markForCheck();
       },
       error: () => {
         this.loading = false;
         this.loadError = 'Could not load model catalog. Retry with refresh.';
         this.restoreVendor();
+        this.cdr.markForCheck();
       }
     });
   }

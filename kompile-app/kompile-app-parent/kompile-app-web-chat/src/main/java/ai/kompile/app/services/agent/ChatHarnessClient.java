@@ -87,6 +87,16 @@ public interface ChatHarnessClient {
         throw new IllegalStateException("Chat setup unavailable");
     }
 
+    /**
+     * The CLI wizard for an existing chat: {@code catalog} lists its choices seeded from the
+     * chat's current route, {@code update} rewrites that route. The browser session id is mapped
+     * to the harness session id the chat's turns use.
+     */
+    default JsonNode setupSession(String browserSessionId, String workingDirectory, String action,
+                                  JsonNode selection) {
+        throw new IllegalStateException("Session setup unavailable");
+    }
+
     /** Model context budget projected from {@link #capabilities}. */
     Map<String, Object> contextBudget(String agentName, String workingDirectory);
 }

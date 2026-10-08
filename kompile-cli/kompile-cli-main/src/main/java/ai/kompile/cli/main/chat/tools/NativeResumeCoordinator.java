@@ -109,44 +109,9 @@ public final class NativeResumeCoordinator {
                         + " session without a saved Kompile transcript");
             }
 
-            // Codex owns its native thread index. Recreate through App Server so a corrupt
-            // or missing state_N.sqlite never requires Kompile to guess private SQL schema.
-            if ("codex".equals(normalizedAgent)) {
-                Optional<String> recreated = new CodexAdapter().recreateThread(
-                        toNativeTurns(turns), cwd);
-                if (recreated.isPresent() && isPresent("codex", recreated.get(), cwd)) {
-                    String recreatedId = recreated.get();
-                    ConversationExporter.ExportResult nativeResult =
-                            new ConversationExporter.ExportResult(
-                                    recreatedId, "codex", null,
-                                    "codex resume " + recreatedId, cwd);
-                    if (kompileSessionId != null && !kompileSessionId.isBlank()) {
-                        ChatHistory.recordNativeSessionId(kompileSessionId, recreatedId);
-                    }
-                    return result(normalizedAgent, requestedId, recreatedId, cwd,
-                            Outcome.RECREATED, nativeResult);
-                }
-            }
-
-            // A missing Codex thread must never be recreated under its stale id. Codex keeps
-            // durable per-thread queue state separately, so reusing the id can make a seemingly
-            // fresh resume inherit old queued submissions and reject the first new message.
-            String exportSessionId = "codex".equals(normalizedAgent) ? null : candidateId;
             ConversationExporter.ExportResult exported =
-                    ConversationExporter.exportToAgent(
-                            turns,
-                            normalizedAgent,
-                            exportSessionId,
-                            clean(sourceAgent) == null ? normalizedAgent : sourceAgent,
-                            cwd);
-
+                    recreate(normalizedAgent, turns, candidateId, sourceAgent, cwd);
             String recreatedId = exported.getSessionId();
-            if (recreatedId == null || recreatedId.isBlank()
-                    || !isPresent(normalizedAgent, recreatedId, cwd)) {
-                throw new IOException("Recreated " + normalizedAgent
-                        + " session could not be verified: " + recreatedId);
-            }
-
             if (kompileSessionId != null && !kompileSessionId.isBlank()
                     && !Objects.equals(candidateId, recreatedId)) {
                 ChatHistory.recordNativeSessionId(kompileSessionId, recreatedId);
@@ -154,6 +119,61 @@ public final class NativeResumeCoordinator {
 
             return result(normalizedAgent, requestedId, recreatedId, cwd, Outcome.RECREATED, exported);
         }
+    }
+
+    /**
+     * Starts a new native session for {@code agent} that already holds {@code turns}: the transcript
+     * hand-off when a chat switches to that framework. Never reuses an id, so a session another
+     * framework recorded for this chat is never touched. Returns the verified native session id.
+     */
+    public static String seed(String agent, List<ChatHistory.Turn> turns, Path workingDirectory)
+            throws IOException {
+        String normalizedAgent = normalizeAgent(agent);
+        if (!FIRST_PARTY_AGENTS.contains(normalizedAgent)) {
+            throw new IOException("Native reconstruction is unsupported for agent: " + agent);
+        }
+        if (turns == null || turns.isEmpty()) {
+            throw new IOException("No Kompile transcript to hand to " + normalizedAgent);
+        }
+        return recreate(normalizedAgent, turns, null, null, normalizeWorkingDirectory(workingDirectory))
+                .getSessionId();
+    }
+
+    /** Writes {@code turns} as a native session and verifies the agent can see it. */
+    private static ConversationExporter.ExportResult recreate(String normalizedAgent, List<ChatHistory.Turn> turns,
+                                                              String candidateId, String sourceAgent, Path cwd)
+            throws IOException {
+        // Codex owns its native thread index. Recreate through App Server so a corrupt
+        // or missing state_N.sqlite never requires Kompile to guess private SQL schema.
+        if ("codex".equals(normalizedAgent)) {
+            Optional<String> recreated = new CodexAdapter().recreateThread(
+                    toNativeTurns(turns), cwd);
+            if (recreated.isPresent() && isPresent("codex", recreated.get(), cwd)) {
+                String recreatedId = recreated.get();
+                return new ConversationExporter.ExportResult(
+                        recreatedId, "codex", null, "codex resume " + recreatedId, cwd);
+            }
+        }
+
+        // A missing Codex thread must never be recreated under its stale id. Codex keeps
+        // durable per-thread queue state separately, so reusing the id can make a seemingly
+        // fresh resume inherit old queued submissions and reject the first new message.
+        String exportSessionId = "codex".equals(normalizedAgent) ? null : candidateId;
+        ConversationExporter.ExportResult exported =
+                ConversationExporter.exportToAgent(
+                        turns,
+                        normalizedAgent,
+                        exportSessionId,
+                        clean(sourceAgent) == null ? normalizedAgent : sourceAgent,
+                        cwd);
+
+        String recreatedId = exported.getSessionId();
+        if (recreatedId == null || recreatedId.isBlank()
+                || !isPresent(normalizedAgent, recreatedId, cwd)) {
+            throw new IOException("Recreated " + normalizedAgent
+                    + " session could not be verified: " + recreatedId);
+        }
+        return exported;
     }
 
     public static String normalizeAgent(String agent) {

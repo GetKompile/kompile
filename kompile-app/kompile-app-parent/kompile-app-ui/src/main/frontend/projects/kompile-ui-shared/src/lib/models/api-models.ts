@@ -2979,7 +2979,10 @@ export interface CommandEventData {
   menu?: 'model' | 'thinking' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'clear' | 'continue' | 'judge';
   provider?: string;
   currentModel?: string;
-  /** Native framework owns the vendor catalog; accept its exact model identifier. */
+  /**
+   * The chat runs on a native framework (its route, whichever vendor is being browsed). On every route
+   * `vendors` lists the standard vendors and the installed frameworks (`framework: true`) the chat can switch to.
+   */
   nativeModelSelection?: boolean;
   liveListingAvailable?: boolean;
   persistedForSession?: boolean;

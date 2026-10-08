@@ -316,6 +316,36 @@ public class AgentChatController {
     }
 
     /**
+     * The CLI wizard for an existing chat: {@code catalog} returns its runtime, vendor,
+     * authentication, account, endpoint, live model and effort choices seeded from the chat's
+     * current route; {@code update} rewrites the route, validated as a new chat's is. A typed API
+     * key travels only in this body and the CLI's stdin.
+     */
+    @PostMapping("/session-setup")
+    public ResponseEntity<JsonNode> sessionSetup(@RequestBody SessionSetupRequest request) {
+        if (harnessClient == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Kompile CLI harness is unavailable");
+        }
+        if (request == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose a chat to configure");
+        String action = request.action() == null || request.action().isBlank() ? "catalog" : request.action();
+        try {
+            JsonNode result = harnessClient.setupSession(request.sessionId(), request.workingDirectory(),
+                    action, request.selection());
+            if ("update".equals(action) && !result.path("ok").asBoolean(false)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        result.path("status").asText("Session setup failed; the chat was not changed"));
+            }
+            return ResponseEntity.ok(result);
+        } catch (IllegalArgumentException invalid) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid);
+        }
+    }
+
+    public record SessionSetupRequest(String sessionId, String workingDirectory, String action, JsonNode selection) {
+    }
+
+    /**
      * The session's insights for the chat drawer: the rows the terminal's dashboard area shows
      * (judge flags, tool calls, the last test milestone, crawl progress), read through the CLI
      * by one short-lived process. Read-only: no chat message, no model work, no transcript

@@ -4186,10 +4186,7 @@ public class ChatRepl implements AutoCloseable {
 
     /** Transport-grade discovery statuses worth one automatic retry. */
     private static boolean isTransientDiscoveryFailure(ModelDiscovery.Result discovery) {
-        return discovery != null && (
-                discovery.status() == ModelDiscovery.Status.TIMEOUT
-                        || discovery.status() == ModelDiscovery.Status.UNAVAILABLE
-                        || discovery.status() == ModelDiscovery.Status.RATE_LIMITED);
+        return ModelCatalogSelection.transientFailure(discovery);
     }
 
     void handleAuthenticationCommand(String arguments) {

@@ -1,5 +1,6 @@
 package ai.kompile.cli.common;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
@@ -12,17 +13,33 @@ import java.util.UUID;
 /** Non-secret desktop workspace index. Chat state/tools still belong to each CLI project/session. */
 public final class ChatWorkspaceStore {
     private static final Object MONITOR = new Object();
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    /**
+     * The CLI and a running chat server share this file but are redeployed separately, so a field a
+     * newer side writes must not make the whole workspace unreadable to an older one.
+     */
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     private final Path file;
 
-    /** Non-secret immutable launch selection. Null framework means this folder's saved default. */
+    /**
+     * Non-secret immutable launch selection. Null framework means this folder's saved default.
+     * {@code route} is display only: the vendor/framework and model the chat runs on now, which a
+     * switch changes while the launch selection (and an imported chat's source) stays as created.
+     */
     public record Chat(String id, String name, String framework, String model,
-                       String nativeSource, String nativeSessionId) {
+                       String nativeSource, String nativeSessionId, String route) {
         public Chat(String id, String name) { this(id, name, null, null); }
         public Chat(String id, String name, String framework, String model) {
             this(id, name, framework, model, null, null);
         }
+        public Chat(String id, String name, String framework, String model,
+                    String nativeSource, String nativeSessionId) {
+            this(id, name, framework, model, nativeSource, nativeSessionId, null);
+        }
         public Chat {
+            // A label that cannot be shown is dropped rather than making the whole index unreadable.
+            route = route == null || route.isBlank() || route.strip().length() > 300
+                    || route.chars().anyMatch(Character::isISOControl) ? null : route.strip();
             if ((nativeSource == null) != (nativeSessionId == null)
                     || (nativeSource != null && (!nativeSource.matches("[a-z][a-z0-9_-]{0,63}")
                     || nativeSessionId.isBlank() || nativeSessionId.length() > 4096
@@ -157,6 +174,37 @@ public final class ChatWorkspaceStore {
         String root = directory.toRealPath().toString();
         return read().projects().stream().filter(p -> p.workingDirectory().equals(root))
                 .flatMap(p -> p.chats().stream()).filter(c -> c.id().equals(sessionId)).findFirst().orElse(null);
+    }
+
+    /**
+     * Records the route a chat runs on now, for the chat list. Leaves the launch selection as created;
+     * writes only when the label changed. False when the chat is not in this folder's index.
+     */
+    public boolean recordRoute(Path directory, String chatId, String route) throws IOException {
+        String root = directory.toRealPath().toString();
+        String label = new Chat("", "", null, null, null, null, route).route();
+        Chat current = findChat(directory, chatId);
+        if (current == null) return false;
+        if (java.util.Objects.equals(current.route(), label)) return true;
+        boolean[] found = {false};
+        locked(true, workspace -> {
+            List<Project> projects = new ArrayList<>();
+            for (Project project : workspace.projects()) {
+                if (!project.workingDirectory().equals(root)) { projects.add(project); continue; }
+                List<Chat> chats = new ArrayList<>();
+                for (Chat chat : project.chats()) {
+                    if (chat.id().equals(chatId)) {
+                        found[0] = true;
+                        chat = new Chat(chat.id(), chat.name(), chat.framework(), chat.model(),
+                                chat.nativeSource(), chat.nativeSessionId(), label);
+                    }
+                    chats.add(chat);
+                }
+                projects.add(new Project(project.id(), project.name(), project.workingDirectory(), List.copyOf(chats)));
+            }
+            return new Workspace(1, List.copyOf(projects));
+        });
+        return found[0];
     }
 
     /** Exact canonical roots only; subdirectories and symlink escapes must be registered separately. */

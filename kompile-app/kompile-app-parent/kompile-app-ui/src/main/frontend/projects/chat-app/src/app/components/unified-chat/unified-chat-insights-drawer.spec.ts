@@ -194,18 +194,18 @@ describe('UnifiedChat session insights drawer', () => {
     expect(badge.querySelector('.spinner')).toBeNull();
   });
 
-  it('shows the complete workspace title above the conversation and follows renames', () => {
+  it('caps a long workspace title above the conversation, keeps the full one on hover and follows renames', () => {
     const title = 'Long workspace title '.repeat(20) + 'TITLE_END';
     fixture.componentRef.setInput('workspaceChat', { id: 'workspace-chat', name: title });
     fixture.detectChanges();
     const heading: HTMLElement = fixture.nativeElement.querySelector('[data-testid="active-chat-title"]');
-    expect(text(heading)).toBe(title);
-    expect(getComputedStyle(heading).whiteSpace).not.toBe('nowrap');
-    expect(getComputedStyle(heading).textOverflow).not.toBe('ellipsis');
+    expect(text(heading)).toBe(title.slice(0, 80).trimEnd() + '…');
+    expect(heading.title).toBe(title);
 
     fixture.componentRef.setInput('workspaceChat', { id: 'workspace-chat', name: 'Renamed in sidebar' });
     fixture.detectChanges();
     expect(text(heading)).toBe('Renamed in sidebar');
+    expect(heading.title).toBe('Renamed in sidebar');
   });
 
   it('updates the active heading when a browser-local chat is renamed', () => {
@@ -215,8 +215,10 @@ describe('UnifiedChat session insights drawer', () => {
     component.editingSessionName = 'Full browser title '.repeat(20) + 'TITLE_END';
     component.saveSessionName(component.currentSession!);
     fixture.detectChanges();
-    expect(text(fixture.nativeElement.querySelector('[data-testid="active-chat-title"]')))
-      .toBe(component.currentSession!.name);
+    const heading: HTMLElement = fixture.nativeElement.querySelector('[data-testid="active-chat-title"]');
+    expect(text(heading)).toBe(component.currentSession!.name.slice(0, 80).trimEnd() + '…');
+    expect(heading.title).toBe(component.currentSession!.name);
+    // Only the heading is capped; the stored name keeps the full title.
     expect(component.currentSession!.name.endsWith('TITLE_END')).toBeTrue();
   });
 
