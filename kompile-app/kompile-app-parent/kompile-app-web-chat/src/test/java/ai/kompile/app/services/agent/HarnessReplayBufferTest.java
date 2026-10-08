@@ -46,14 +46,32 @@ class HarnessReplayBufferTest {
         var caughtUp = new Connection(); buffer.attach(2, caughtUp);
         assertTrue(caughtUp.events.isEmpty()); assertTrue(caughtUp.completed);
     }
-    @Test void byteAndCountBoundsRejectExpiredCursorsInsteadOfPartialReplay() throws Exception {
+    @Test void cursorOlderThanTheWindowResyncsAndKeepsFollowingTheRun() throws Exception {
         var buffer = new HarnessReplayBuffer(new ObjectMapper(), 1024, 2);
         for (int i = 0; i < 3; i++) buffer.send("chunk", "text");
-        assertThrows(IllegalStateException.class, () -> buffer.attach(0, new Connection()));
         assertThrows(IllegalArgumentException.class, () -> buffer.attach(4, new Connection()));
         assertThrows(IllegalArgumentException.class, () -> buffer.attach(-1, new Connection()));
-        var valid = new Connection(); buffer.attach(1, valid); assertEquals(2, valid.events.size());
+        var asleep = new Connection(); buffer.attach(0, asleep);
+        assertEquals(List.of("resync", "chunk", "chunk"), asleep.events.stream().map(HarnessReplayBuffer.Event::name).toList());
+        assertEquals(HarnessReplayBuffer.RESYNC_ID, asleep.events.get(0).id());
+        assertEquals(1, asleep.events.get(0).data().path("after").asLong());
+        buffer.send("chunk", "live");
+        assertEquals(4L, asleep.events.get(3).id());
+        var valid = new Connection(); buffer.attach(2, valid);
+        assertEquals(List.of(3L, 4L), valid.events.stream().map(HarnessReplayBuffer.Event::id).toList());
+        // An event larger than the whole window empties it: the resync names the newest id.
         buffer.send("chunk", "x".repeat(2000));
-        assertThrows(IllegalStateException.class, () -> buffer.attach(3, new Connection()));
+        var behind = new Connection(); buffer.attach(3, behind);
+        assertEquals(1, behind.events.size());
+        assertEquals(5, behind.events.get(0).data().path("after").asLong());
+    }
+    @Test void finishedRunPastTheWindowResyncsThenDeliversItsEnding() throws Exception {
+        var buffer = new HarnessReplayBuffer(new ObjectMapper(), 1024, 2);
+        for (int i = 0; i < 3; i++) buffer.send("chunk", "text");
+        buffer.send("complete", Map.of("content", "done"));
+        buffer.complete();
+        var woke = new Connection(); buffer.attach(0, woke);
+        assertEquals(List.of("resync", "chunk", "complete"), woke.events.stream().map(HarnessReplayBuffer.Event::name).toList());
+        assertTrue(woke.completed);
     }
 }

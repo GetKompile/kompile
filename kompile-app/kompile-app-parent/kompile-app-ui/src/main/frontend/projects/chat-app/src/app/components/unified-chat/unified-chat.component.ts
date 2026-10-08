@@ -607,6 +607,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       })
     );
 
+    // A resumed, resynced or expired run ended: the CLI transcript holds what the live view missed.
+    const reloads = this.agentChatService.getTranscriptReloads?.();
+    if (reloads) this.subscriptions.push(reloads.subscribe(sessionId => this.reloadAfterRun(sessionId)));
+
     // Server-side auto-compaction (the backend compacted the history it was sent):
     // surface it as the same in-flow divider banner as a client-initiated compact.
     this.subscriptions.push(
@@ -877,6 +881,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         this.saveSessions();
         this.shouldScrollToBottom = true;
         this.cdr.markForCheck();
+        this.resumeSavedRun();
       },
       error: () => {
         if (revision !== this.lifecycleRevision || this.harnessViewDestroyed) return;
@@ -1433,6 +1438,24 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     if (!saved || this.lifecycleBusy) return;
     this.selectedAgent = this.agents.find(agent => agent.name === saved.agent.name) || saved.agent;
     void this.sendAgentMessage('', undefined, true);
+  }
+  /** A run saved by a page that slept or reloaded reconnects by itself; reconnecting never restarts work. */
+  @HostListener('document:visibilitychange')
+  resumeSavedRun(): void {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (this.harnessViewDestroyed || this.isStreaming || this.lifecycleBusy || this.transcriptReadOnly) return;
+    if (this.reconnectBookmark) this.reconnectCurrentRun();
+  }
+  private reloadAfterRun(sessionId: string): void {
+    // After the terminal handlers have released the streaming state.
+    setTimeout(() => {
+      if (this.harnessViewDestroyed || this.currentSession?.id !== sessionId || this.lifecycleBusy) return;
+      if (this.workspaceChat?.id === sessionId) { this.refreshWorkspaceTranscript(); return; }
+      this.messages.push({ id: this.generateId(), role: 'system', kind: 'notice', timestamp: new Date(),
+        content: 'Some live output was missed while this page was away; the full reply is in the CLI transcript.' });
+      this.updateCurrentSession();
+      this.cdr.markForCheck();
+    });
   }
   async stopSavedRun(): Promise<void> {
     if (!this.currentSession || this.lifecycleBusy) return;

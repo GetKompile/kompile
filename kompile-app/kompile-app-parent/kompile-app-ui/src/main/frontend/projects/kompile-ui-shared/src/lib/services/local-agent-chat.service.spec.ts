@@ -121,6 +121,72 @@ describe('LocalAgentChatService harness transport', () => {
     expect(service.getReconnectBookmark('reload-browser')).toBeNull();
   });
 
+  describe('a run the page slept through', () => {
+    const event = (id: number, name: string, data: unknown) => `id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+    const body = (text: string) => new Response(new TextEncoder().encode(text), { status: 200 });
+    const prefix = event(1, 'queued', { processId: 'harness-asleep', reconnectable: true })
+      + event(2, 'turn_started', { turnId: 1, source: 'initial', text: '' }) + event(3, 'chunk', 'partial');
+
+    /** Leaves a reconnect bookmark behind, as a page that went to sleep mid-turn does. */
+    async function sleepMidTurn(fetchSpy: jasmine.Spy, browserSessionId: string): Promise<void> {
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      fetchSpy.and.resolveTo(new Response(new ReadableStream<Uint8Array>({ start(value) { controller = value; } }), { status: 200 }));
+      const run = service.sendMessage(service.createSession('asleep'), 'original',
+        { name: 'coder', displayName: 'Coder' } as AgentProvider, { sessionId: browserSessionId });
+      controller.enqueue(new TextEncoder().encode(prefix));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      service.detachStreaming(); controller.close(); await run;
+      expect(service.getReconnectBookmark(browserSessionId)).not.toBeNull();
+      fetchSpy.calls.reset();
+    }
+
+    it('ends quietly and reloads the transcript when the server no longer holds the run', async () => {
+      const fetchSpy = spyOn(window, 'fetch');
+      await sleepMidTurn(fetchSpy, 'gone-browser');
+      fetchSpy.and.resolveTo(new Response('expired', { status: 410 }));
+      const errors: string[] = []; const reloads: string[] = []; const completions: unknown[] = [];
+      service.getStreamingError().subscribe(value => errors.push(value));
+      service.getTranscriptReloads().subscribe(value => reloads.push(value));
+      service.getStreamingComplete().subscribe(value => completions.push(value));
+      await service.resumeRun('gone-browser');
+      expect(errors).toEqual([]);
+      expect(completions.length).toBe(1);
+      expect(reloads).toEqual(['gone-browser']);
+      expect(service.getReconnectBookmark('gone-browser')).toBeNull();
+    });
+
+    it('follows a run past a resync and reloads the transcript when it ends', async () => {
+      const fetchSpy = spyOn(window, 'fetch');
+      await sleepMidTurn(fetchSpy, 'resync-browser');
+      fetchSpy.and.resolveTo(body('event: resync\ndata: {"after":40}\n\n'
+        + event(41, 'turn_complete', { turnId: 1, text: 'whole answer' }) + event(42, 'complete', { content: 'whole answer' })));
+      const errors: string[] = []; const reloads: string[] = [];
+      service.getStreamingError().subscribe(value => errors.push(value));
+      service.getTranscriptReloads().subscribe(value => reloads.push(value));
+      await service.resumeRun('resync-browser');
+      expect(errors).toEqual([]);
+      expect(reloads).toEqual(['resync-browser']);
+      expect(service.getReconnectBookmark('resync-browser')).toBeNull();
+    });
+
+    it('retries a reconnect that fails while the network is still waking', async () => {
+      const fetchSpy = spyOn(window, 'fetch');
+      await sleepMidTurn(fetchSpy, 'waking-browser');
+      // The server replays from the saved cursor, so the replay repeats everything after it.
+      const cursor = service.getReconnectBookmark('waking-browser')!.cursor!;
+      const replay = [event(3, 'chunk', 'partial'), event(4, 'turn_complete', { turnId: 1, text: 'done' }),
+        event(5, 'complete', { content: 'done' })].slice(Math.max(0, cursor - 2)).join('');
+      fetchSpy.and.returnValues(Promise.reject(new TypeError('Failed to fetch')),
+        Promise.resolve(new Response('proxy', { status: 502 })), Promise.resolve(body(replay)));
+      const errors: string[] = [];
+      service.getStreamingError().subscribe(value => errors.push(value));
+      await service.resumeRun('waking-browser');
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      expect(errors).toEqual([]);
+      expect(service.getReconnectBookmark('waking-browser')).toBeNull();
+    });
+  });
+
   it('keeps live activity nonterminal and waits for correlated execution acknowledgements', async () => {
     let stream!: ReadableStreamDefaultController<Uint8Array>;
     const body = new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } });

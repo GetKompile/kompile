@@ -156,6 +156,13 @@ public class KompileAdapter implements ChatSourceAdapter {
         return parseTranscript(file);
     }
 
+    /** True once this transcript holds the turns of the given vendor session. */
+    public boolean carriesOver(String sessionId, String source, String nativeSessionId) throws IOException {
+        String safe = ChatAdapterSupport.safeSessionId(sessionId)
+                .orElseThrow(() -> new IOException("Invalid session id: " + sessionId));
+        return KompileTranscriptFormat.carriesOver(conversationsDir().resolve(safe + ".txt"), source, nativeSessionId);
+    }
+
     @Override
     public Optional<Path> resolveWorkingDirectory(String sessionId) throws IOException {
         String safe = ChatAdapterSupport.safeSessionId(sessionId)

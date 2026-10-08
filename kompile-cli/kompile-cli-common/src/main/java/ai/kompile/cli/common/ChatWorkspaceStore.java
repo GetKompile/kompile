@@ -21,6 +21,16 @@ public final class ChatWorkspaceStore {
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     private final Path file;
 
+    /** Vendor transcript source → the passthrough framework that resumes its sessions. */
+    public static final java.util.Map<String, String> NATIVE_FRAMEWORKS = java.util.Map.of(
+            "claude-code", "claude", "codex", "codex", "gemini", "gemini",
+            "qwen", "qwen", "opencode", "opencode", "pi", "pi");
+
+    /** The framework that resumes {@code source}'s sessions, or null for a non-vendor source. */
+    public static String nativeFramework(String source) {
+        return source == null ? null : NATIVE_FRAMEWORKS.get(source);
+    }
+
     /**
      * Non-secret immutable launch selection. Null framework means this folder's saved default.
      * {@code route} is display only: the vendor/framework and model the chat runs on now, which a

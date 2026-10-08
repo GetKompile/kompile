@@ -265,7 +265,8 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     private static void attachReplay(HarnessReplayBuffer replay, long after, SseEmitter emitter) {
         HarnessReplayBuffer.Connection connection = new HarnessReplayBuffer.Connection() {
             public void send(HarnessReplayBuffer.Event event) throws IOException {
-                emitter.send(SseEmitter.event().id(Long.toString(event.id())).name(event.name()).data(event.data()));
+                var frame = SseEmitter.event().name(event.name()).data(event.data());
+                emitter.send(event.id() == HarnessReplayBuffer.RESYNC_ID ? frame : frame.id(Long.toString(event.id())));
             }
             public void complete() { try { emitter.complete(); } catch (RuntimeException ignored) { } }
             public void superseded() {
@@ -280,14 +281,22 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         replay.attach(after, connection);
     }
 
+    /**
+     * A finished run stays replayable as long as the browser keeps its reconnect bookmark (33 min), so a
+     * phone that slept through the end of a turn still gets the ending. Older or overflowing runs fall
+     * back to the transcript the browser reloads on 410.
+     */
+    static final long FINISHED_REPLAY_RETENTION_MINUTES = 35;
+    static final int MAX_FINISHED_REPLAYS = 32;
+
     private void expireReplay(ActiveRun run) {
         HarnessReplayBuffer replay = replays.get(run.runId);
         if (replay == null) return;
-        try { scheduler.schedule(() -> replays.remove(run.runId, replay), 2, TimeUnit.MINUTES); }
+        try { scheduler.schedule(() -> replays.remove(run.runId, replay), FINISHED_REPLAY_RETENTION_MINUTES, TimeUnit.MINUTES); }
         catch (RejectedExecutionException closing) { replays.remove(run.runId, replay); }
         var completed = replays.entrySet().stream().filter(entry -> entry.getValue().isTerminal())
                 .sorted(java.util.Comparator.comparingLong(entry -> entry.getValue().createdAt)).toList();
-        completed.stream().limit(Math.max(0, completed.size() - 16))
+        completed.stream().limit(Math.max(0, completed.size() - MAX_FINISHED_REPLAYS))
                 .forEach(entry -> replays.remove(entry.getKey(), entry.getValue()));
     }
 

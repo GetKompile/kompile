@@ -7,6 +7,8 @@ import java.util.ArrayDeque;
 
 /** Bounded, process-local event replay. A socket is a subscriber, not the owner of the run. */
 final class HarnessReplayBuffer implements KompileCliHarnessClient.HarnessEventSink {
+    /** Id of the out-of-band marker that says events were skipped; it never advances a client cursor. */
+    static final long RESYNC_ID = 0;
     record Event(long id, String name, JsonNode data, int bytes) { }
     interface Connection {
         void send(Event event) throws IOException;
@@ -40,14 +42,22 @@ final class HarnessReplayBuffer implements KompileCliHarnessClient.HarnessEventS
         try { connection.send(event); }
         catch (IOException | RuntimeException disconnected) { detach(connection); }
     }
-    /** Cursor validation and replay share the publish lock: no gap between replay and live delivery. */
+    /**
+     * Cursor validation and replay share the publish lock: no gap between replay and live delivery.
+     * A cursor older than the window (a phone asleep through a long turn) still follows the run: it
+     * first gets a resync marker naming the new cursor, so the client knows to reload the transcript.
+     */
     synchronized void attach(long after, Connection next) {
         long oldest = events.isEmpty() ? sequence + 1 : events.getFirst().id();
         if (after < 0 || after > sequence) throw new IllegalArgumentException("Invalid replay cursor");
-        if (after < oldest - 1) throw new IllegalStateException("Replay window expired; reload the CLI transcript. Work was not restarted.");
         Connection previous = connection;
         connection = next;
         if (previous != null && previous != next) previous.superseded();
+        if (after < oldest - 1) {
+            after = oldest - 1;
+            JsonNode data = mapper.valueToTree(java.util.Map.of("after", after));
+            deliver(new Event(RESYNC_ID, "resync", data, 0));
+        }
         for (Event event : events) if (event.id() > after) deliver(event);
         if (terminal && connection != null) {
             Connection done = connection; connection = null; done.complete();

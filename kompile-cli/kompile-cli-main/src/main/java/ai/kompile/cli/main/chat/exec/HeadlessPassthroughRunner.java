@@ -11,7 +11,11 @@ import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.tools.NativeResumeCoordinator;
+import ai.kompile.cli.common.ChatWorkspaceStore;
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
+import ai.kompile.cli.common.chat.sources.ChatTurn;
+import ai.kompile.cli.common.chat.sources.KompileTranscriptFormat;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
@@ -47,6 +51,7 @@ public final class HeadlessPassthroughRunner {
     private final ai.kompile.cli.common.ChatWorkspaceStore workspace;
     private final Function<ChatConfig, ModelDiscovery.Result> modelDiscovery;
     private final NativeSeeder seeder;
+    private final ChatSourceRegistry sources;
 
     public HeadlessPassthroughRunner() {
         this(defaultNativeSessions(),
@@ -72,11 +77,19 @@ public final class HeadlessPassthroughRunner {
     HeadlessPassthroughRunner(Path nativeSessions, RunnerFactory factory,
                               ai.kompile.cli.common.ChatWorkspaceStore workspace,
                               Function<ChatConfig, ModelDiscovery.Result> modelDiscovery, NativeSeeder seeder) {
+        this(nativeSessions, factory, workspace, modelDiscovery, seeder, ChatSourceRegistry.getInstance());
+    }
+
+    HeadlessPassthroughRunner(Path nativeSessions, RunnerFactory factory,
+                              ai.kompile.cli.common.ChatWorkspaceStore workspace,
+                              Function<ChatConfig, ModelDiscovery.Result> modelDiscovery, NativeSeeder seeder,
+                              ChatSourceRegistry sources) {
         this.nativeSessions = nativeSessions;
         this.factory = factory;
         this.workspace = workspace;
         this.modelDiscovery = modelDiscovery;
         this.seeder = seeder;
+        this.sources = sources;
     }
 
     public HeadlessAgentRunner.Result run(HeadlessAgentRunner.Options opts) {
@@ -113,12 +126,16 @@ public final class HeadlessPassthroughRunner {
             }
             // Model turns pin the route; read-only menus never create a transcript or pin.
             config.bindSession(opts.sessionId());
+            // A vendor chat opened in Kompile chat and switched here before its first turn still gets
+            // its vendor history into the chat's transcript, so a later Kompile turn has it too.
+            carryOverNativeTranscript(nativeSessions, workspace, sources, opts.sessionId(), cwd);
             var reference = workspace.findChat(cwd, opts.sessionId());
             String nativeId;
             List<ChatHistory.Turn> missed = List.of();
-            // An imported native chat resumes its source session; after a switch to another framework
-            // that framework's own recorded session applies.
-            if (reference != null && reference.nativeSource() != null && framework.equals(reference.framework())) {
+            // An imported native chat resumes its source session when run on that source's framework,
+            // whichever framework it was opened in; any other framework's own recorded session applies.
+            if (reference != null && reference.nativeSource() != null
+                    && framework.equals(ChatWorkspaceStore.nativeFramework(reference.nativeSource()))) {
                 nativeId = reference.nativeSessionId();
                 // The source session holds history only it has, so it is resumed rather than re-seeded;
                 // the turns other vendors ran since it last answered are handed to it with this prompt.
@@ -223,6 +240,57 @@ public final class HeadlessPassthroughRunner {
         }
         saveNativeId(session, cwd, framework, id, turns.size());
         return id;
+    }
+
+    /**
+     * A vendor chat opened in Kompile chat: before its first turn, the vendor session's turns are copied into
+     * the chat's transcript under a marker, and that vendor framework's record is set to the original session
+     * having seen them, so a switch back to the vendor resumes it and hands it only the turns since. False when
+     * there is nothing to copy: not such a chat, copied already, or the chat has turns of its own. Fails
+     * rather than letting the chat continue without its history.
+     */
+    public static boolean carryOverNativeTranscript(String session, Path cwd) throws IOException {
+        return carryOverNativeTranscript(defaultNativeSessions(), new ChatWorkspaceStore(),
+                ChatSourceRegistry.getInstance(), session, cwd);
+    }
+
+    static boolean carryOverNativeTranscript(Path nativeSessions, ChatWorkspaceStore workspace,
+                                             ChatSourceRegistry sources, String session, Path cwd) throws IOException {
+        // Workspace chats belong to registered, existing folders only.
+        if (session == null || cwd == null || !Files.isDirectory(cwd)) return false;
+        Path folder = cwd.toRealPath();
+        var reference = workspace.findChat(folder, session);
+        if (reference == null || reference.nativeSource() == null || !"standard".equals(reference.framework()))
+            return false;
+        String source = reference.nativeSource();
+        String nativeId = reference.nativeSessionId();
+        String framework = ChatWorkspaceStore.nativeFramework(source);
+        if (framework == null) return false;
+        ChatHistory history = new ChatHistory(session);
+        Path transcript = history.getTranscriptFile();
+        if (KompileTranscriptFormat.carriesOver(transcript, source, nativeId) || !history.readTurns().isEmpty())
+            return false;
+        String failure = "Could not carry over this chat's " + source + " history: ";
+        var adapter = sources.find(source).orElseThrow(() -> new IOException(failure + "no reader for " + source + " chats"));
+        Path nativeFolder = adapter.resolveWorkingDirectory(nativeId)
+                .orElseThrow(() -> new IOException(failure + "the " + source + " session is no longer available"))
+                .toRealPath();
+        if (!nativeFolder.equals(folder)) throw new IOException(failure + "the " + source + " session belongs to another folder");
+        List<ChatTurn> turns = adapter.readTurns(nativeId);
+        try {
+            history.open(null, null, false, folder);
+            history.logSystem(KompileTranscriptFormat.carriedOverEvent(source, nativeId));
+            for (ChatTurn turn : turns) {
+                if ("user".equalsIgnoreCase(turn.role())) history.logUserMessage(turn.content());
+                else if ("assistant".equalsIgnoreCase(turn.role())) history.logAssistantMessage(turn.content(), 0, 0);
+            }
+        } finally {
+            history.close();
+        }
+        if (!KompileTranscriptFormat.carriesOver(transcript, source, nativeId))
+            throw new IOException(failure + "the transcript " + transcript + " could not be written");
+        pin(nativeSessions, session, folder, framework, nativeId, history.readTurns().size());
+        return true;
     }
 
     /**
@@ -609,12 +677,17 @@ public final class HeadlessPassthroughRunner {
 
     /** {@code turnsSeen} negative keeps what the record already counted. */
     private void saveNativeId(String session, Path cwd, String framework, String id, int turnsSeen) throws IOException {
+        pin(nativeSessions, session, cwd, framework, id, turnsSeen);
+    }
+
+    private static void pin(Path directory, String session, Path cwd, String framework, String id,
+                            int turnsSeen) throws IOException {
         if (id == null || id.isBlank()) throw new IOException("Native session id is empty");
-        var existing = record(nativeSessions, session, cwd, framework);
+        var existing = record(directory, session, cwd, framework);
         String pinned = existing == null ? "" : existing.path("nativeSessionId").asText();
         if (!pinned.isBlank() && !pinned.equals(id))
             throw new IOException("Refusing to replace the pinned native session id");
-        write(nativeSessions, session, cwd, framework, id, turnsSeen >= 0 ? turnsSeen : turnsSeen(existing));
+        write(directory, session, cwd, framework, id, turnsSeen >= 0 ? turnsSeen : turnsSeen(existing));
     }
 
     private static final class NativeFailure extends RuntimeException {

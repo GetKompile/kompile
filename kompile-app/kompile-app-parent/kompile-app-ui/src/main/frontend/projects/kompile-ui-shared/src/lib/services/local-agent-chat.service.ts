@@ -376,6 +376,18 @@ export interface CompactChatResponse {
   error?: string;
 }
 
+/** The server can no longer replay the run (finished long ago, or restarted): its transcript is the record. */
+class ReplayGoneError extends Error {
+  constructor(readonly status: number) { super(`Run replay unavailable (${status})`); this.name = 'ReplayGoneError'; }
+}
+
+class ReplayHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Cannot replay run (${status}). Stop the saved run or inspect its transcript; no work was restarted.`);
+    this.name = 'ReplayHttpError';
+  }
+}
+
 /**
  * Service for local agent chat with streaming support.
  *
@@ -436,6 +448,16 @@ export class LocalAgentChatService extends BaseService {
   private browserSessionId = '';
   private reconnectSeed: LocalAgentSession | null = null;
   private lastCheckpointAt = 0;
+  /** Set when the live view may be missing events; the turn's end then reloads the CLI transcript. */
+  private transcriptStale = false;
+  private readonly transcriptReload$ = new Subject<string>();
+  /** Reconnect attempts while the page is visible and online; time asleep or offline costs none. */
+  private static readonly MAX_RECONNECT_ATTEMPTS = 8;
+  /** Hidden at least this long, a stream is assumed dead (a phone slept) and replayed from its cursor. */
+  private static readonly WAKE_RECONNECT_MS = 5000;
+
+  /** Browser session ids whose CLI transcript now holds more than the live view showed. */
+  getTranscriptReloads(): Observable<string> { return this.transcriptReload$.asObservable(); }
 
   getReconnectBookmark(browserSessionId: string): HarnessReconnectBookmark | null {
     try {
@@ -530,10 +552,11 @@ export class LocalAgentChatService extends BaseService {
     this.accumulateContent(this.currentStreamingMessage?.content || '');
     this.streamingContent$.next(this.getCurrentContent());
     this.currentAbortController = new AbortController(); this.isStreaming$.next(true);
+    // The page was reloaded or away: this tab's seed is a snapshot, the transcript is the record.
+    this.transcriptStale = true;
     try {
-      const response = await this.fetchReplay(saved.runId);
       this.publishLiveMessages(session);
-      await this.consumeWithReconnect(session, response);
+      await this.consumeWithReconnect(session, null);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError'))
         this.handleStreamError(session, error instanceof Error ? error.message : 'Reconnect failed');
@@ -544,26 +567,86 @@ export class LocalAgentChatService extends BaseService {
     const response = await fetch(`${this.backendUrl}/agents/chat/events/${encodeURIComponent(runId)}?after=${this.lastEventId}`, {
       headers: { Accept: 'text/event-stream' }, signal: this.currentAbortController?.signal
     });
-    if (!response.ok) throw new Error(`Cannot replay run (${response.status}). Stop the saved run or inspect its transcript; no work was restarted.`);
+    // 410: replay expired or the server restarted. 400/404: this bookmark names nothing replayable.
+    if (response.status === 410 || response.status === 404 || response.status === 400) throw new ReplayGoneError(response.status);
+    if (!response.ok) throw new ReplayHttpError(response.status);
     return response;
   }
 
-  private async consumeWithReconnect(session: LocalAgentSession, initial: Response): Promise<void> {
+  /** Transport failures worth another attempt: a dropped socket, or a proxy answering for a waking server. */
+  private static isNetworkFailure(error: unknown): boolean {
+    return error instanceof TypeError || (error instanceof DOMException && error.name === 'NetworkError')
+      || (error instanceof ReplayHttpError && (error.status === 502 || error.status === 503 || error.status === 504));
+  }
+
+  /** Resolves once the page is visible and online, or the run was abandoned: retries never burn while asleep. */
+  private waitUntilReachable(owner: AbortController | null): Promise<void> {
+    const reachable = () => typeof document === 'undefined'
+      || (document.visibilityState !== 'hidden' && navigator.onLine !== false);
+    if (reachable() || owner?.signal.aborted) return Promise.resolve();
+    return new Promise(resolve => {
+      const check = () => {
+        if (!reachable() && !owner?.signal.aborted) return;
+        document.removeEventListener('visibilitychange', check);
+        window.removeEventListener('online', check);
+        owner?.signal.removeEventListener('abort', check);
+        resolve();
+      };
+      document.addEventListener('visibilitychange', check);
+      window.addEventListener('online', check);
+      owner?.signal.addEventListener('abort', check);
+    });
+  }
+
+  /** A null response connects from the saved cursor first (a resumed run). */
+  private async consumeWithReconnect(session: LocalAgentSession, initial: Response | null): Promise<void> {
     let response = initial;
     const owner = this.currentAbortController;
-    for (let attempt = 0; ; attempt++) {
-      try { if (await this.readSseStream(session, response)) return; }
-      catch (error) {
-        if (owner?.signal.aborted || this.currentAbortController !== owner) return;
-        if (!this.reconnectable || !(error instanceof TypeError || (error instanceof DOMException && error.name === 'NetworkError'))) throw error;
+    const owned = () => !owner?.signal.aborted && this.currentAbortController === owner;
+    for (let attempt = 0; ; ) {
+      if (response) {
+        const cursor = this.lastEventId;
+        try {
+          if (await this.readSseStream(session, response)) { this.reloadTranscriptIfStale(); return; }
+          if (this.lastEventId > cursor) attempt = 0; // a stream that made progress earns a fresh budget
+        } catch (error) {
+          if (!owned()) return;
+          if (!this.reconnectable || !LocalAgentChatService.isNetworkFailure(error)) throw error;
+        }
       }
-      if (owner?.signal.aborted || this.currentAbortController !== owner) return;
-      if (!this.reconnectable || !this.currentProcessId || attempt >= 3 || owner?.signal.aborted
-          || this.currentAbortController !== owner) throw new Error('Connection lost. Reconnect the saved run; it was not restarted.');
-      await new Promise(resolve => setTimeout(resolve, 200 * (attempt + 1)));
-      if (owner?.signal.aborted || this.currentAbortController !== owner) return;
-      response = await this.fetchReplay(this.currentProcessId);
+      if (!owned()) return;
+      if (!this.reconnectable || !this.currentProcessId || attempt >= LocalAgentChatService.MAX_RECONNECT_ATTEMPTS)
+        throw new Error('Connection lost. Reconnect the saved run; it was not restarted.');
+      await this.waitUntilReachable(owner);
+      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, Math.min(500 * 2 ** (attempt - 1), 8000)));
+      if (!owned()) return;
+      attempt++;
+      try { response = await this.fetchReplay(this.currentProcessId); }
+      catch (error) {
+        if (!owned()) return;
+        if (error instanceof ReplayGoneError) { this.finishFromTranscript(session); return; }
+        if (!LocalAgentChatService.isNetworkFailure(error)) throw error;
+        response = null;
+      }
     }
+  }
+
+  /** The run's events are gone: end the live view without an error and let the transcript fill it in. */
+  private finishFromTranscript(session: LocalAgentSession): void {
+    this.forgetReconnectBookmark();
+    this.transcriptStale = true;
+    if (this.currentStreamingMessage || this.lastLiveMessage) this.handleStreamComplete(session, {});
+    else {
+      this.finalizeStreaming();
+      this.streamingError$.next('This run ended while the page was away; its saved transcript is reloading.');
+    }
+    this.reloadTranscriptIfStale();
+  }
+
+  private reloadTranscriptIfStale(): void {
+    if (!this.transcriptStale) return;
+    this.transcriptStale = false;
+    this.transcriptReload$.next(this.browserSessionId);
   }
   private liveMessageStart = 0;
   private liveAgent: AgentProvider | null = null;
@@ -905,6 +988,7 @@ export class LocalAgentChatService extends BaseService {
       this.currentProcessId = null;
       this.lastEventId = 0;
       this.reconnectable = false;
+      this.transcriptStale = false;
       this.browserSessionId = request.sessionId || session.id;
       this.reconnectSeed = JSON.parse(JSON.stringify(session));
       this.closeHarnessControls();
@@ -964,6 +1048,20 @@ export class LocalAgentChatService extends BaseService {
       let eventId = 0;
       let sawTerminalEvent = false;
 
+      // A phone that slept can hold a socket that is silently dead: after a long absence, drop it
+      // and replay from the cursor instead of waiting for a TCP timeout.
+      let hiddenAt = typeof document !== 'undefined' && document.visibilityState === 'hidden' ? Date.now() : 0;
+      let woke = false;
+      const onVisibility = () => {
+        if (document.visibilityState === 'hidden') { hiddenAt = hiddenAt || Date.now(); return; }
+        if (hiddenAt && Date.now() - hiddenAt >= LocalAgentChatService.WAKE_RECONNECT_MS && this.reconnectable) {
+          woke = true;
+          reader.cancel().catch(() => undefined);
+        }
+        hiddenAt = 0;
+      };
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility);
+
       const emitContentUpdate = () => {
         const fullContent = this.getCurrentContent();
         // The view shows the turn's reasoning above its answer, as the CLI does. The stored
@@ -1018,6 +1116,12 @@ export class LocalAgentChatService extends BaseService {
                     && parsed.session_id === session.metadata?.['harnessSessionId']) {
                   this.sessionTitle$.next({ sessionId: this.browserSessionId, title: parsed.title.trim() });
                 }
+                break;
+
+              case 'resync':
+                // The server skipped events this page slept through; the transcript fills them in at the end.
+                if (Number.isSafeInteger(parsed.after) && parsed.after > this.lastEventId) this.lastEventId = parsed.after;
+                this.transcriptStale = true;
                 break;
 
               case 'queued':
@@ -1240,8 +1344,10 @@ export class LocalAgentChatService extends BaseService {
         }
       };
 
-      while (true) {
+      try { while (true) {
         const { done, value } = await reader.read();
+        // Only whole events advanced the cursor, so a partial line in the buffer is replayed intact.
+        if (woke) return false;
 
         if (value) {
           const rawChunk = decoder.decode(value, { stream: !done });
@@ -1267,6 +1373,8 @@ export class LocalAgentChatService extends BaseService {
           }
           break;
         }
+      } } finally {
+        if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
       }
 
       reader.releaseLock();

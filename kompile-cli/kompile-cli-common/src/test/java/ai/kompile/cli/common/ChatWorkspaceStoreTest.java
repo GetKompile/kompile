@@ -40,6 +40,13 @@ class ChatWorkspaceStoreTest {
         assertTrue(store().read().projects().isEmpty());
     }
 
+    @Test void vendorSourcesMapToTheFrameworkThatResumesThem() {
+        assertEquals("claude", ChatWorkspaceStore.nativeFramework("claude-code"));
+        assertEquals("codex", ChatWorkspaceStore.nativeFramework("codex"));
+        assertNull(ChatWorkspaceStore.nativeFramework("kompile"));
+        assertNull(ChatWorkspaceStore.nativeFramework(null));
+    }
+
     @Test void projectsAndIndependentChatsSurviveReopening() throws Exception {
         Path first = Files.createDirectory(temp.resolve("first"));
         Path second = Files.createDirectory(temp.resolve("second"));

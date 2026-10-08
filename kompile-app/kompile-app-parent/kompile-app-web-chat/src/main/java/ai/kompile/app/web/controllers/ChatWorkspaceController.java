@@ -26,9 +26,7 @@ public class ChatWorkspaceController {
     private final ChatSourceRegistry sources;
     @Autowired private ai.kompile.app.services.agent.ChatHarnessClient harness;
     public record SetupRequest(String name, com.fasterxml.jackson.databind.JsonNode selection) { }
-    private static final java.util.Map<String, String> NATIVE_FRAMEWORKS = java.util.Map.of(
-            "claude-code", "claude", "codex", "codex", "gemini", "gemini",
-            "qwen", "qwen", "opencode", "opencode", "pi", "pi");
+    private static final java.util.Map<String, String> NATIVE_FRAMEWORKS = ChatWorkspaceStore.NATIVE_FRAMEWORKS;
     public record NativeFolder(String source, String name, List<ChatSessionSummary> chats, String error) { }
     public record NativeRequest(String source, String sessionId) { }
     public record NativeSelection(ChatWorkspaceStore.Project project, ChatWorkspaceStore.Chat chat) { }
@@ -127,8 +125,10 @@ public class ChatWorkspaceController {
                     .orElseThrow(() -> new IllegalArgumentException("Unknown native chat session"));
             Path directory = adapter.resolveWorkingDirectory(session.sessionId())
                     .orElseThrow(() -> new IllegalArgumentException("Native session has no working directory")).toRealPath();
+            // Opens in Kompile chat, which carries the vendor's turns over on its first turn; choosing the
+            // vendor's framework in the model menu resumes the original vendor session instead.
             var chat = store.referenceNativeChat(directory, adapter.id(), session.sessionId(),
-                    NATIVE_FRAMEWORKS.get(adapter.id()), session.title());
+                    "standard", session.title());
             var project = store.read().projects().stream()
                     .filter(p -> p.workingDirectory().equals(directory.toString())).findFirst().orElseThrow();
             return new NativeSelection(project, chat);
@@ -294,6 +294,9 @@ public class ChatWorkspaceController {
             Path directory = store.resolveRegisteredDirectory(workingDirectory);
             var reference = store.findChat(directory, sessionId);
             if (reference != null && reference.nativeSource() != null) {
+                // Once its turns were carried over, the chat's own transcript holds them and every turn since.
+                if (transcripts.carriesOver(reference.id(), reference.nativeSource(), reference.nativeSessionId()))
+                    return new Transcript(reference.id(), transcripts.readTurns(reference.id()));
                 var adapter = nativeAdapter(reference.nativeSource());
                 Path nativeDirectory = adapter.resolveWorkingDirectory(reference.nativeSessionId())
                         .orElseThrow(() -> new IllegalArgumentException("Native session is no longer available")).toRealPath();

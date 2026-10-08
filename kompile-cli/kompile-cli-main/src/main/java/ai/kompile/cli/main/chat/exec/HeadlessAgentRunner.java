@@ -568,8 +568,19 @@ public final class HeadlessAgentRunner {
         AtomicBoolean cancel = new AtomicBoolean(false);
         loop.setCancelSignal(cancel);
 
+        // ── A vendor chat opened in Kompile chat starts with its vendor history ─
+        boolean carriedOver;
+        try {
+            carriedOver = HeadlessPassthroughRunner.carryOverNativeTranscript(
+                    opts.sessionId(), opts.workingDirectory());
+        } catch (java.io.IOException e) {
+            events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), e.getMessage(), 1));
+            if (opts.outputMode() != OutputMode.JSON) realErr.println(e.getMessage());
+            return new Result(1, "", opts.sessionId());
+        }
+
         // ── Restore prior session (for --continue / --resume) ───────────────
-        if (opts.resume() && ChatHistory.exists(opts.sessionId())) {
+        if ((opts.resume() || carriedOver) && ChatHistory.exists(opts.sessionId())) {
             try {
                 List<ChatHistory.Turn> turns = new ChatHistory(opts.sessionId()).readTurns();
                 if (turns != null && !turns.isEmpty()) {

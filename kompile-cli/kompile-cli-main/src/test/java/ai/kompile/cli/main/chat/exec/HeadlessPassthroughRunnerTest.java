@@ -1,5 +1,13 @@
 package ai.kompile.cli.main.chat.exec;
 
+import ai.kompile.cli.common.ChatWorkspaceStore;
+import ai.kompile.cli.common.chat.sources.ChatSessionSummary;
+import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
+import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
+import ai.kompile.cli.common.chat.sources.ChatTurn;
+import ai.kompile.cli.common.chat.sources.KompileTranscriptFormat;
+import ai.kompile.cli.common.chat.sources.SourceInfo;
+import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.PassthroughStreamParser;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
@@ -11,6 +19,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -435,6 +444,100 @@ class HeadlessPassthroughRunnerTest {
             WebModelCatalog.useDiscovery(null);
             LiveModelDiscovery.useClaudeCodeLoginProbe(null);
         }
+    }
+
+    /** A codex store holding one session, "native-id", run in {@code cwd}. */
+    private static ChatSourceRegistry codexStore(Path cwd) {
+        return ChatSourceRegistry.of(List.of(new ChatSourceAdapter() {
+            public String id() { return "codex"; }
+            public String displayName() { return "Codex"; }
+            public SourceInfo discover() { throw new AssertionError("Carry-over reads one session, never the store"); }
+            public List<ChatSessionSummary> list() { throw new AssertionError("Carry-over reads one session, never the store"); }
+            public Optional<Path> resolveWorkingDirectory(String id) {
+                return "native-id".equals(id) ? Optional.of(cwd) : Optional.empty();
+            }
+            public List<ChatTurn> readTurns(String id) {
+                assertEquals("native-id", id);
+                return List.of(new ChatTurn("user", "question"), new ChatTurn("assistant", "reply"));
+            }
+        }));
+    }
+
+    private static List<String> contents(String session) throws java.io.IOException {
+        return new ChatHistory(session).readTurns().stream().map(ChatHistory.Turn::content).toList();
+    }
+
+    /**
+     * A vendor chat opened in Kompile chat gets the vendor's turns in its own transcript once, and choosing
+     * the vendor's framework afterwards resumes the original session, handed only the Kompile turns.
+     */
+    @Test void vendorChatOpenedInKompileChatCarriesItsTurnsOverOnceAndTheVendorStillResumesIt() throws Exception {
+        Path nativeSessions = directory.resolve("native");
+        var workspace = new ChatWorkspaceStore(directory.resolve("workspace.json"));
+        var chat = workspace.referenceNativeChat(directory, "codex", "native-id", "standard", "Original");
+        var sources = codexStore(directory);
+        assertTrue(HeadlessPassthroughRunner.carryOverNativeTranscript(nativeSessions, workspace, sources, chat.id(), directory));
+        assertEquals(List.of("question", "reply"), contents(chat.id()));
+        assertTrue(KompileTranscriptFormat.carriesOver(new ChatHistory(chat.id()).getTranscriptFile(), "codex", "native-id"));
+        assertFalse(HeadlessPassthroughRunner.carryOverNativeTranscript(nativeSessions, workspace, sources, chat.id(), directory));
+        assertEquals(List.of("question", "reply"), contents(chat.id()), "carried over once");
+
+        ChatHistory kompile = new ChatHistory(chat.id());
+        kompile.open("(local)", "coder", false, directory);
+        kompile.logUserMessage("on kompile");
+        kompile.logAssistantMessage("kompile answer", 0, 0);
+        kompile.close();
+
+        // Choosing codex in the model menu.
+        HeadlessPassthroughRunner.startFreshNativeSession(nativeSessions, chat.id(), directory, "codex");
+        var stubs = new ArrayList<Stub>();
+        var runner = new HeadlessPassthroughRunner(nativeSessions, (framework, cwd, config, skip) -> {
+            Stub stub = new Stub(framework, cwd); stubs.add(stub); return stub;
+        }, workspace, routed -> null, (framework, turns, cwd) -> { throw new AssertionError("The original session is resumed, not re-seeded"); },
+                sources);
+        assertEquals(0, runner.run(options("hello", chat.id(), true, config("codex"), new ArrayList<>())).exitCode());
+        Stub codex = stubs.get(0);
+        assertEquals("native-id", codex.restored);
+        assertTrue(codex.prompt.contains("on kompile") && codex.prompt.contains("kompile answer"), codex.prompt);
+        assertFalse(codex.prompt.contains("question"), "turns codex already has are not repeated");
+        assertTrue(codex.prompt.endsWith("hello"), codex.prompt);
+        assertEquals(List.of("question", "reply", "on kompile", "kompile answer", "hello", "answer"), contents(chat.id()));
+    }
+
+    /** Switched to the vendor before any Kompile turn, the chat's transcript still gets the vendor's turns first. */
+    @Test void switchingToTheVendorBeforeAKompileTurnStillCarriesTheHistoryOver() throws Exception {
+        Path nativeSessions = directory.resolve("native");
+        var workspace = new ChatWorkspaceStore(directory.resolve("workspace.json"));
+        var chat = workspace.referenceNativeChat(directory, "codex", "native-id", "standard", "Original");
+        HeadlessPassthroughRunner.startFreshNativeSession(nativeSessions, chat.id(), directory, "codex");
+        var stubs = new ArrayList<Stub>();
+        var runner = new HeadlessPassthroughRunner(nativeSessions, (framework, cwd, config, skip) -> {
+            Stub stub = new Stub(framework, cwd); stubs.add(stub); return stub;
+        }, workspace, routed -> null, (framework, turns, cwd) -> { throw new AssertionError("Must not re-seed"); },
+                codexStore(directory));
+        assertEquals(0, runner.run(options("hello", chat.id(), false, config("codex"), new ArrayList<>())).exitCode());
+        assertEquals("native-id", stubs.get(0).restored);
+        assertEquals("hello", stubs.get(0).prompt, "codex already holds its own turns");
+        assertEquals(List.of("question", "reply", "hello", "answer"), contents(chat.id()));
+    }
+
+    @Test void chatsOpenedOnTheVendorFrameworkAreNotCarriedOver() throws Exception {
+        var workspace = new ChatWorkspaceStore(directory.resolve("workspace.json"));
+        var chat = workspace.referenceNativeChat(directory, "codex", "native-id", "codex", "Original");
+        assertFalse(HeadlessPassthroughRunner.carryOverNativeTranscript(directory.resolve("native"), workspace,
+                codexStore(directory), chat.id(), directory));
+        assertFalse(ChatHistory.exists(chat.id()));
+        assertFalse(HeadlessPassthroughRunner.carryOverNativeTranscript(directory.resolve("native"), workspace,
+                codexStore(directory), UUID.randomUUID().toString(), directory), "not a workspace chat");
+    }
+
+    @Test void aVendorSessionFromAnotherFolderFailsInsteadOfStartingWithoutItsHistory() throws Exception {
+        Path other = java.nio.file.Files.createDirectory(directory.resolve("other"));
+        var workspace = new ChatWorkspaceStore(directory.resolve("workspace.json"));
+        var chat = workspace.referenceNativeChat(directory, "codex", "native-id", "standard", "Original");
+        assertThrows(java.io.IOException.class, () -> HeadlessPassthroughRunner.carryOverNativeTranscript(
+                directory.resolve("native"), workspace, codexStore(other), chat.id(), directory));
+        assertFalse(ChatHistory.exists(chat.id()));
     }
 
     private static WebChatInput command(String session, String raw) {

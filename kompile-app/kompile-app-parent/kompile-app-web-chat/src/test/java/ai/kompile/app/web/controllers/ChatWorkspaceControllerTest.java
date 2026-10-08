@@ -183,7 +183,9 @@ class ChatWorkspaceControllerTest {
         var request = new ChatWorkspaceController.NativeRequest("claude-code", "original-id");
         var selected = controller.openNative(request);
         assertEquals(selected.chat(), controller.openNative(request).chat());
-        assertEquals("claude", selected.chat().framework());
+        // Opens in Kompile chat; the vendor's framework stays one model-menu choice away.
+        assertEquals("standard", selected.chat().framework());
+        assertEquals("claude-code", selected.chat().nativeSource());
         assertEquals("original-id", selected.chat().nativeSessionId());
         assertEquals(selected.chat(), controller.workspace().projects().get(0).chats().get(0));
         var original = controller.transcript(temp.toString(), selected.chat().id());
@@ -195,6 +197,31 @@ class ChatWorkspaceControllerTest {
                 new ChatWorkspaceController.ChatRequest("changed")));
         assertFalse(Files.exists(temp.resolve("conversations")));
         assertEquals("updated in vendor", Files.readString(transcript));
+
+        // Once the first Kompile turn carried the vendor's turns over, the chat's own transcript is shown.
+        Path conversations = Files.createDirectories(temp.resolve("conversations"));
+        Files.writeString(conversations.resolve(selected.chat().id() + ".txt"), String.join("\n",
+                "CWD:     " + temp.toRealPath(), "",
+                "[system] " + ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.carriedOverEvent("claude-code", "original-id"), "",
+                "< updated in vendor", "", "> on kompile", "", "< kompile answer", ""));
+        var carried = controller.transcript(temp.toString(), selected.chat().id());
+        assertEquals(selected.chat().id(), carried.sessionId());
+        assertEquals(java.util.List.of("updated in vendor", "on kompile", "kompile answer"),
+                carried.turns().stream().map(ai.kompile.cli.common.chat.sources.ChatTurn::content).toList());
+    }
+
+    @Test void aTranscriptCarriedOverFromAnotherVendorSessionDoesNotReplaceTheVendorView() throws Exception {
+        Path transcript = temp.resolve("vendor.jsonl"); Files.writeString(transcript, "original");
+        var store = new ChatWorkspaceStore(temp.resolve("workspace.json"));
+        controller = new ChatWorkspaceController(store, new KompileAdapter(temp.resolve("conversations")),
+                ai.kompile.cli.common.chat.sources.ChatSourceRegistry.of(java.util.List.of(nativeReader("codex", transcript, temp))));
+        var chat = controller.openNative(new ChatWorkspaceController.NativeRequest("codex", "original-id")).chat();
+        Path conversations = Files.createDirectories(temp.resolve("conversations"));
+        Files.writeString(conversations.resolve(chat.id() + ".txt"), String.join("\n",
+                "CWD:     " + temp.toRealPath(), "",
+                "[system] " + ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.carriedOverEvent("codex", "other-id"), "",
+                "< not this session", ""));
+        assertEquals("original", controller.transcript(temp.toString(), chat.id()).turns().get(0).content());
     }
 
     @Test void unknownNativeIdsAndSourcesAreRejectedAndUnavailableVendorsAreIsolated() throws Exception {

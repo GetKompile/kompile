@@ -72,7 +72,7 @@ class HeadlessWebRoleTest {
             assertEquals("marker-reviewer", events.get(0).metadata().get("agent"));
             assertEquals("marker-reviewer", events.get(0).metadata().get("role"));
             assertFalse(requests.isEmpty(), "the provider was never called");
-            String instructions = instructions(requests.get(0));
+            String instructions = instructions(turnRequest(requests));
             assertTrue(instructions.contains(MARKER), instructions);
         } finally {
             server.stop(0);
@@ -113,9 +113,20 @@ class HeadlessWebRoleTest {
             HeadlessAgentRunner.Result result = new HeadlessAgentRunner().run(options);
             assertEquals(0, result.exitCode(), result.text());
             assertFalse(requests.isEmpty());
-            if ("default".equals(thinking)) assertFalse(requests.get(0).has("reasoning_effort"));
-            else assertEquals(thinking, requests.get(0).path("reasoning_effort").asText());
+            JsonNode turn = turnRequest(requests);
+            if ("default".equals(thinking)) assertFalse(turn.has("reasoning_effort"));
+            else assertEquals(thinking, turn.path("reasoning_effort").asText());
         } finally { server.stop(0); }
+    }
+
+    /**
+     * The turn's own request. A new web chat's title request runs on its own thread beside the turn, so
+     * either can reach the provider first.
+     */
+    private static JsonNode turnRequest(List<JsonNode> requests) {
+        return requests.stream()
+                .filter(request -> !instructions(request).contains("Generate a concise, specific chat title"))
+                .findFirst().orElseThrow(() -> new AssertionError("only the title request reached the provider"));
     }
 
     /** Every instruction-bearing part of an OpenAI-compatible request. */

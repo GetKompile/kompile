@@ -115,6 +115,24 @@ public final class KompileTranscriptFormat {
         return readTurns(file).size();
     }
 
+    /** The {@code [system]} event recording that a vendor session's turns were copied into a transcript. */
+    public static String carriedOverEvent(String source, String nativeSessionId) {
+        return "Carried over from " + source + " session " + nativeSessionId;
+    }
+
+    /** True when {@code file} already holds the turns of that vendor session. */
+    public static boolean carriesOver(Path file, String source, String nativeSessionId) throws IOException {
+        if (file == null || !Files.isRegularFile(file)) return false;
+        String marker = "[system] " + carriedOverEvent(source, nativeSessionId);
+        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.equals(marker)) return true;
+            }
+        }
+        return false;
+    }
+
     /** Explicit renames live beside the transcript so a running writer is never rewritten. */
     public static String readTitleOverride(Path file) throws IOException {
         if (file == null) return null;

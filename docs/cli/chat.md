@@ -7,6 +7,13 @@ Kompile supports first-party local model chat, external/direct model chat, an in
 Run `kompile chat --web` (add `--open-browser` to open it locally). This launches
 the web console directly: no setup wizard or saved provider configuration is required.
 Configure sessions in the browser; use `--setup --web` only to configure before launching.
+For a stable URL, run `kompile chat --web --web-port 9181` (prints
+`http://127.0.0.1:9181/#/chat`). The terminal setup wizard also asks for a web UI port
+when you choose Browser, including with `--setup --web`. Enter a port from 1 to 65535,
+or leave it blank / enter 0 for automatic selection (the existing default).
+`--web-port` overrides the wizard choice and skips that prompt; it is launch-only, not
+saved in model profiles. A busy port fails without reusing another server or switching
+ports. The existing `--port` remains the terminal server connection option.
 The installed CHAT service listens on all interfaces by default, including for published distributions.
 The CLI prints the selected port and a local URL; from another machine use
 `http://<server-hostname-or-LAN-IP>:<port>/`. Both `/` and `/chat` open the UI;
@@ -35,10 +42,29 @@ stopping runs in the other panes; stop a running chat before closing its tab.
 - Each chat uses its own folder's CLI configuration (or global defaults); no
   credentials are copied from the launch folder into new projects. Configure missing
   provider defaults through Session Configuration or `kompile chat --setup` in that folder.
-- Native framework selection is pinned per chat. Resume uses its recorded native
-  session ID and folder, never the vendor's latest conversation. Use another **New chat**
-  to change frameworks. **Session Configuration → Model** accepts the framework's
-  own model ID; `/model <native-model-id>` does the same and changes only this chat.
+- Native frameworks and standard vendors are one list of vendors, and a chat can move
+  between any of them at any time: the selector above the chat, **Session Configuration**
+  (chat mode, framework, model, effort) and `/model <vendor>:<model-id>` all switch it,
+  from the folder default onto a framework, from one framework to another, or from a
+  framework back to a standard vendor. `/model <vendor>` (or picking a vendor chip) only
+  browses that vendor's live model list. `/model <model-id>` changes only the current
+  vendor's model. Where a key names both a framework and a standard vendor (OpenCode), it
+  means the kind the chat runs now.
+- A switch carries the transcript, as Kompile's own harness does across vendors. A
+  framework switched to starts a new native session on the next turn, seeded with the
+  chat's whole transcript, including turns other vendors ran; switching back to a
+  framework the chat used before seeds it again rather than resuming its older session,
+  which would miss the turns in between. If the transcript cannot be handed over, the
+  turn fails with the reason instead of starting the framework empty. A switch to a
+  standard vendor resumes the chat in Kompile's harness from the same transcript. Native
+  sessions are always resumed by their recorded ID and folder, never the vendor's latest
+  conversation. An original vendor chat opened from a vendor folder keeps resuming its
+  source session on its own framework; history from before it was opened lives only in
+  that vendor's store, so another vendor it switches to receives the turns Kompile recorded.
+  When the chat comes back to its source framework, the next turn hands that session every
+  turn other vendors ran since it last answered, once.
+- The chat list shows where each chat runs now (for example `codex / gpt-5-codex` after
+  a switch); its launch selection is kept.
 
 The setup wizard offers **Browser** for supported **managed passthrough** as well as
 standard chat. Native web passthrough streams text, thinking, tools and usage through
