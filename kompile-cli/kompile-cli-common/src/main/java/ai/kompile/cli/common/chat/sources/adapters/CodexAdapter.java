@@ -910,31 +910,38 @@ public class CodexAdapter implements ChatSourceAdapter {
             Map<String, Object> params = new LinkedHashMap<>();
             params.put("threadId", sessionId);
             params.put("includeTurns", true);
-            JsonNode thread = session.request("thread/read", params).path("thread");
-            List<ChatTurn> turns = new ArrayList<>();
-            for (JsonNode turn : thread.path("turns")) {
-                for (JsonNode item : turn.path("items")) {
-                    String type = item.path("type").asText("");
-                    if ("userMessage".equals(type)) {
-                        StringBuilder text = new StringBuilder();
-                        for (JsonNode input : item.path("content")) {
-                            if ("text".equals(input.path("type").asText())
-                                    && !input.path("text").asText("").isBlank()) {
-                                if (!text.isEmpty()) text.append(' ');
-                                text.append(input.path("text").asText());
-                            }
-                        }
-                        if (!text.isEmpty()) turns.add(new ChatTurn("user", text.toString()));
-                    } else if ("agentMessage".equals(type)) {
-                        String text = item.path("text").asText("");
-                        if (!text.isBlank()) turns.add(new ChatTurn("assistant", text));
-                    }
-                }
-            }
-            return Optional.of(turns);
+            return appServerTurns(session.request("thread/read", params).path("thread"));
         } catch (Exception ignore) {
             return Optional.empty();
         }
+    }
+
+    /**
+     * The turns in a {@code thread/read} answer, or empty when it holds none: newer Codex pages history out of
+     * that answer ({@code "historyMode":"paginated"}, {@code "turns":[]}), and the rollout still has it.
+     */
+    static Optional<List<ChatTurn>> appServerTurns(JsonNode thread) {
+        List<ChatTurn> turns = new ArrayList<>();
+        for (JsonNode turn : thread.path("turns")) {
+            for (JsonNode item : turn.path("items")) {
+                String type = item.path("type").asText("");
+                if ("userMessage".equals(type)) {
+                    StringBuilder text = new StringBuilder();
+                    for (JsonNode input : item.path("content")) {
+                        if ("text".equals(input.path("type").asText())
+                                && !input.path("text").asText("").isBlank()) {
+                            if (!text.isEmpty()) text.append(' ');
+                            text.append(input.path("text").asText());
+                        }
+                    }
+                    if (!text.isEmpty()) turns.add(new ChatTurn("user", text.toString()));
+                } else if ("agentMessage".equals(type)) {
+                    String text = item.path("text").asText("");
+                    if (!text.isBlank()) turns.add(new ChatTurn("assistant", text));
+                }
+            }
+        }
+        return turns.isEmpty() ? Optional.empty() : Optional.of(turns);
     }
 
     static Map<String, Object> threadListParams(

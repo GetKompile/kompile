@@ -221,7 +221,44 @@ class ChatWorkspaceControllerTest {
                 "CWD:     " + temp.toRealPath(), "",
                 "[system] " + ai.kompile.cli.common.chat.sources.KompileTranscriptFormat.carriedOverEvent("codex", "other-id"), "",
                 "< not this session", ""));
-        assertEquals("original", controller.transcript(temp.toString(), chat.id()).turns().get(0).content());
+        assertEquals(java.util.List.of("original"), controller.transcript(temp.toString(), chat.id()).turns().stream()
+                .map(ai.kompile.cli.common.chat.sources.ChatTurn::content).toList());
+    }
+
+    @Test void kompileTurnsOfAChatOpenedBeforeCarryOverAreShownAfterTheVendorTurns() throws Exception {
+        Path transcript = temp.resolve("vendor.jsonl"); Files.writeString(transcript, "original");
+        var store = new ChatWorkspaceStore(temp.resolve("workspace.json"));
+        controller = new ChatWorkspaceController(store, new KompileAdapter(temp.resolve("conversations")),
+                ai.kompile.cli.common.chat.sources.ChatSourceRegistry.of(java.util.List.of(nativeReader("codex", transcript, temp))));
+        // Opened as the vendor framework, then answered in Kompile: no carry-over marker.
+        var chat = store.referenceNativeChat(temp, "codex", "original-id", "codex", "Original");
+        Path conversations = Files.createDirectories(temp.resolve("conversations"));
+        Files.writeString(conversations.resolve(chat.id() + ".txt"), String.join("\n",
+                "CWD:     " + temp.toRealPath(), "", "> asked in kompile", "", "< answered in kompile", ""));
+        var shown = controller.transcript(temp.toString(), chat.id());
+        assertEquals(java.util.List.of("original", "Turns taken in Kompile chat:", "asked in kompile", "answered in kompile"),
+                shown.turns().stream().map(ai.kompile.cli.common.chat.sources.ChatTurn::content).toList());
+        assertEquals("system", shown.turns().get(1).role());
+    }
+
+    @Test void aVendorChatRecordedBeforeKompileChatWasTheDefaultStartsThereUntilItTakesATurn() throws Exception {
+        Path transcript = temp.resolve("vendor.jsonl"); Files.writeString(transcript, "original");
+        var store = new ChatWorkspaceStore(temp.resolve("workspace.json"));
+        controller = new ChatWorkspaceController(store, new KompileAdapter(temp.resolve("conversations")),
+                ai.kompile.cli.common.chat.sources.ChatSourceRegistry.of(java.util.List.of(nativeReader("codex", transcript, temp))));
+        var unstarted = store.referenceNativeChat(temp, "codex", "original-id", "codex", "Original");
+        var started = store.referenceNativeChat(temp, "codex", "started-id", "codex", "Started");
+        Path conversations = Files.createDirectories(temp.resolve("conversations"));
+        Files.writeString(conversations.resolve(started.id() + ".txt"), String.join("\n",
+                "CWD:     " + temp.toRealPath(), "", "> asked", "", "< answered", ""));
+        var listed = controller.workspace().projects().get(0).chats();
+        assertEquals("standard", listed.get(0).framework());
+        assertEquals("codex", listed.get(0).nativeSource());
+        assertEquals("standard", store.findChat(temp, unstarted.id()).framework());
+        // One that already ran keeps the settings its own session recorded.
+        assertEquals("codex", listed.get(1).framework());
+        assertEquals("standard",
+                controller.openNative(new ChatWorkspaceController.NativeRequest("codex", "original-id")).chat().framework());
     }
 
     @Test void unknownNativeIdsAndSourcesAreRejectedAndUnavailableVendorsAreIsolated() throws Exception {

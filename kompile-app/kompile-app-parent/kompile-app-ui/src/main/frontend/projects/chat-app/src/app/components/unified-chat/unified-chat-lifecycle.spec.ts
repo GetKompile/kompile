@@ -43,6 +43,7 @@ describe('Browser conversation lifecycle', () => {
     http.verify();
     localStorage.removeItem(workspaceKey);
     localStorage.removeItem(workspaceKey + ':active');
+    localStorage.removeItem('unified_chat_draft:' + workspaceId);
     if (saved === null) localStorage.removeItem('unified_chat_sessions');
     else localStorage.setItem('unified_chat_sessions', saved);
   });
@@ -106,6 +107,18 @@ describe('Browser conversation lifecycle', () => {
       sessionId: workspaceId, workingDirectory: '/test/project with spaces', includeHistory: false
     }));
     expect(history.getSessionMessages).not.toHaveBeenCalled();
+  });
+  it('keeps unsent workspace text across a reload and forgets it once sent', () => {
+    openWorkspace().flush({ sessionId: workspaceId, turns: [] });
+    component.onUserInputChange('half written');
+    expect(localStorage.getItem('unified_chat_draft:' + workspaceId)).toBe('half written');
+    (component as any).composerText = '';
+    openWorkspace().flush({ sessionId: workspaceId, turns: [] });
+    expect(component.userInput).toBe('half written');
+    spyOn(service, 'sendMessage').and.resolveTo();
+    component.sendMessage();
+    expect(component.userInput).toBe('');
+    expect(localStorage.getItem('unified_chat_draft:' + workspaceId)).toBeNull();
   });
   it('always refreshes persisted turns on open and accepts an empty new transcript', () => {
     openWorkspace().flush({ sessionId: workspaceId, turns: [{ role: 'user', content: 'before' }] });

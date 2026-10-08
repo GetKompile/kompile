@@ -196,6 +196,23 @@ public final class ChatWorkspaceStore {
         Chat current = findChat(directory, chatId);
         if (current == null) return false;
         if (java.util.Objects.equals(current.route(), label)) return true;
+        return replaceChat(root, chatId, chat -> new Chat(chat.id(), chat.name(), chat.framework(), chat.model(),
+                chat.nativeSource(), chat.nativeSessionId(), label));
+    }
+
+    /**
+     * A vendor chat referenced before Kompile chat was the default kept its vendor as the launch
+     * framework. Until it takes a turn, it starts in Kompile chat like one opened now. True when changed.
+     */
+    public boolean startInKompileChat(Path directory, String chatId) throws IOException {
+        Chat current = findChat(directory, chatId);
+        if (current == null || current.nativeSource() == null
+                || !java.util.Objects.equals(current.framework(), nativeFramework(current.nativeSource()))) return false;
+        return replaceChat(directory.toRealPath().toString(), chatId, chat -> new Chat(chat.id(), chat.name(),
+                "standard", chat.model(), chat.nativeSource(), chat.nativeSessionId(), chat.route()));
+    }
+
+    private boolean replaceChat(String root, String chatId, java.util.function.UnaryOperator<Chat> change) throws IOException {
         boolean[] found = {false};
         locked(true, workspace -> {
             List<Project> projects = new ArrayList<>();
@@ -205,8 +222,7 @@ public final class ChatWorkspaceStore {
                 for (Chat chat : project.chats()) {
                     if (chat.id().equals(chatId)) {
                         found[0] = true;
-                        chat = new Chat(chat.id(), chat.name(), chat.framework(), chat.model(),
-                                chat.nativeSource(), chat.nativeSessionId(), label);
+                        chat = change.apply(chat);
                     }
                     chats.add(chat);
                 }

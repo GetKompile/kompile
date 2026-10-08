@@ -127,14 +127,24 @@ public class ChatWorkspaceController {
                     .orElseThrow(() -> new IllegalArgumentException("Native session has no working directory")).toRealPath();
             // Opens in Kompile chat, which carries the vendor's turns over on its first turn; choosing the
             // vendor's framework in the model menu resumes the original vendor session instead.
-            var chat = store.referenceNativeChat(directory, adapter.id(), session.sessionId(),
-                    "standard", session.title());
+            var chat = inKompileChat(directory, store.referenceNativeChat(directory, adapter.id(), session.sessionId(),
+                    "standard", session.title()));
             var project = store.read().projects().stream()
                     .filter(p -> p.workingDirectory().equals(directory.toString())).findFirst().orElseThrow();
             return new NativeSelection(project, chat);
         } catch (IOException | IllegalArgumentException invalid) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid);
         }
+    }
+
+    /** A vendor chat recorded before Kompile chat was the default starts there too, until it takes a turn. */
+    private ChatWorkspaceStore.Chat inKompileChat(Path directory, ChatWorkspaceStore.Chat chat) throws IOException {
+        if (chat.nativeSource() == null
+                || !java.util.Objects.equals(chat.framework(), ChatWorkspaceStore.nativeFramework(chat.nativeSource()))
+                || !transcripts.readTurns(chat.id()).isEmpty()
+                || !store.startInKompileChat(directory, chat.id())) return chat;
+        var updated = store.findChat(directory, chat.id());
+        return updated == null ? chat : updated;
     }
 
     private ChatSourceAdapter nativeAdapter(String source) {
@@ -158,7 +168,7 @@ public class ChatWorkspaceController {
             }
             var chats = new LinkedHashMap<String, ChatWorkspaceStore.Chat>();
             for (var chat : project.chats()) {
-                if (chat.nativeSource() != null) { chats.put(chat.id(), chat); continue; }
+                if (chat.nativeSource() != null) { chats.put(chat.id(), inKompileChat(root, chat)); continue; }
                 // Resolve old workspace aliases only when their original transcript exists.
                 String id = transcripts.resolveSessionId(root, chat.id());
                 String title = transcripts.readTitle(id);
@@ -301,7 +311,14 @@ public class ChatWorkspaceController {
                 Path nativeDirectory = adapter.resolveWorkingDirectory(reference.nativeSessionId())
                         .orElseThrow(() -> new IllegalArgumentException("Native session is no longer available")).toRealPath();
                 if (!nativeDirectory.equals(directory)) throw new IllegalArgumentException("Native session belongs to another folder");
-                return new Transcript(reference.id(), adapter.readTurns(reference.nativeSessionId()));
+                List<ChatTurn> turns = adapter.readTurns(reference.nativeSessionId());
+                // A chat that took turns in Kompile before carry-over existed holds them only in its own transcript.
+                List<ChatTurn> own = transcripts.carriesOverAny(reference.id()) ? List.of() : transcripts.readTurns(reference.id());
+                if (own.isEmpty()) return new Transcript(reference.id(), turns);
+                List<ChatTurn> merged = new ArrayList<>(turns);
+                merged.add(new ChatTurn("system", "Turns taken in Kompile chat:"));
+                merged.addAll(own);
+                return new Transcript(reference.id(), merged);
             }
             String id = transcripts.resolveSessionId(directory, sessionId);
             if (id.startsWith("subagent-")) throw new IllegalArgumentException("Select a top-level chat session");

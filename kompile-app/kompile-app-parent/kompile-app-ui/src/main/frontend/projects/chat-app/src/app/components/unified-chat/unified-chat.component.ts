@@ -257,8 +257,18 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   sessions: ChatSession[] = [];
   currentSession: ChatSession | null = null;
 
-  // Input
-  userInput: string = '';
+  // Input. A workspace chat keeps its unsent text across a reload; sending clears it.
+  private composerText = '';
+  get userInput(): string { return this.composerText; }
+  set userInput(value: string) {
+    this.composerText = value;
+    if (!this.workspaceChat) return;
+    try {
+      if (value) localStorage.setItem(this.draftKey, value);
+      else localStorage.removeItem(this.draftKey);
+    } catch { /* Storage full or blocked: the composer still works, the draft just is not kept. */ }
+  }
+  private get draftKey(): string { return 'unified_chat_draft:' + this.workspaceChat?.id; }
   isLoading: boolean = false;
   isStreaming: boolean = false;
 
@@ -816,6 +826,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
 
     if (this.workspaceChat) {
       this.showHistorySidebar = false;
+      try {
+        if (!this.composerText) this.composerText = localStorage.getItem(this.draftKey) || '';
+      } catch { /* Storage blocked: start with an empty composer. */ }
       this.refreshWorkspaceTranscript();
       return;
     }

@@ -48,8 +48,12 @@ describe('Chat workspace', () => {
   let projects: WorkspaceProject[];
   let closed: Subject<NewChatDialogResult | undefined>;
   let dialogs: jasmine.SpyObj<MatDialog>;
-  beforeEach(async () => {
+  function clearSavedTabs(): void {
     sessionStorage.clear();
+    for (const key of Object.keys(localStorage)) if (key.startsWith('kompile-workspace-open:')) localStorage.removeItem(key);
+  }
+  beforeEach(async () => {
+    clearSavedTabs();
     closed = new Subject();
     dialogs = jasmine.createSpyObj('MatDialog', ['open']);
     dialogs.open.and.returnValue({afterClosed: () => closed.asObservable()} as any);
@@ -82,7 +86,7 @@ describe('Chat workspace', () => {
         .flush({ source, name: source, chats });
     }
   }
-  afterEach(() => { fixture.destroy(); http.verify(); sessionStorage.clear(); });
+  afterEach(() => { fixture.destroy(); http.verify(); clearSavedTabs(); });
 
   it('keeps the inline terminal mounted while hidden and follows the selected folder for new launches', () => {
     const workspace = fixture.componentInstance;
@@ -468,7 +472,34 @@ describe('Chat workspace', () => {
     fixture.detectChanges();
     expect(workspace.activeId).toBe('c3');
     expect(workspace.opened[0].project.workingDirectory).toBe('/projects/two');
-    expect(sessionStorage.getItem(`kompile-workspace-open:${workspace.backendUrl}`)).toBe('["c3"]');
+    expect(JSON.parse(localStorage.getItem(`kompile-workspace-open:${workspace.backendUrl}`)!)).toEqual({open: ['c3'], active: 'c3'});
+  });
+
+  it('reopens the saved tabs with the chat that was in front after a reload', () => {
+    const workspace = fixture.componentInstance;
+    workspace.open(projects[0], projects[0].chats[0]);
+    workspace.open(projects[1], projects[1].chats[0]);
+    workspace.open(projects[0], projects[0].chats[0]);
+    const reloaded = TestBed.createComponent(ChatWorkspaceComponent);
+    reloaded.detectChanges();
+    http.expectOne(r => r.url.endsWith('/agents/chat/workspace')).flush({ enabled: true, workingDirectory: '/projects/two', projects });
+    http.expectOne(r => r.url.endsWith('/workspace/native-sources')).flush([]);
+    expect(reloaded.componentInstance.opened.map(item => item.chat.id)).toEqual(['c1', 'c2']);
+    expect(reloaded.componentInstance.activeId).toBe('c1');
+    reloaded.destroy();
+  });
+
+  it('reopens tabs saved by the older per-page list', () => {
+    const key = `kompile-workspace-open:${fixture.componentInstance.backendUrl}`;
+    localStorage.removeItem(key);
+    sessionStorage.setItem(key, '["c2"]');
+    const reloaded = TestBed.createComponent(ChatWorkspaceComponent);
+    reloaded.detectChanges();
+    http.expectOne(r => r.url.endsWith('/agents/chat/workspace')).flush({ enabled: true, workingDirectory: '/projects/one', projects });
+    http.expectOne(r => r.url.endsWith('/workspace/native-sources')).flush([]);
+    expect(reloaded.componentInstance.opened.map(item => item.chat.id)).toEqual(['c2']);
+    expect(reloaded.componentInstance.activeId).toBe('c2');
+    reloaded.destroy();
   });
 
   it('registers an in-pane New request with the same folder and keeps its old pane', () => {

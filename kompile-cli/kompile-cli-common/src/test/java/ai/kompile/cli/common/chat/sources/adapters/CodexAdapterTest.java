@@ -59,6 +59,20 @@ class CodexAdapterTest {
     }
 
     @Test
+    void aPaginatedThreadReadDefersToTheRollout() throws Exception {
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        // Codex 0.159: thread/read keeps history out of the answer.
+        assertTrue(CodexAdapter.appServerTurns(mapper.readTree(
+                "{\"historyMode\":\"paginated\",\"status\":{\"type\":\"notLoaded\"},\"turns\":[]}")).isEmpty());
+        assertTrue(CodexAdapter.appServerTurns(mapper.readTree("{}")).isEmpty());
+        assertEquals(List.of(new ChatTurn("user", "hello there"), new ChatTurn("assistant", "hi")),
+                CodexAdapter.appServerTurns(mapper.readTree("{\"turns\":[{\"items\":["
+                        + "{\"type\":\"userMessage\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"},{\"type\":\"text\",\"text\":\"there\"}]},"
+                        + "{\"type\":\"reasoning\",\"text\":\"skip\"},"
+                        + "{\"type\":\"agentMessage\",\"text\":\"hi\"}]}]}")).orElseThrow());
+    }
+
+    @Test
     void discoverDeduplicatesSessionsAcrossRolloutsAndHistory() throws Exception {
         Path sessions = tempDir.resolve("sessions").resolve("2026").resolve("05").resolve("31");
         Files.createDirectories(sessions);

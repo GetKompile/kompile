@@ -307,15 +307,7 @@ export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDes
         this.parentDirectory = view.workingDirectory || '';
         this.loading = false;
         if (this.enabled) this.loadNativeSources();
-        try {
-          const ids: unknown = JSON.parse(sessionStorage.getItem(this.openKey) || '[]');
-          if (Array.isArray(ids)) for (const id of ids) {
-            for (const project of this.projects) {
-              const chat = project.chats.find(c => c.id === id);
-              if (chat) this.open(project, chat);
-            }
-          }
-        } catch { sessionStorage.removeItem(this.openKey); }
+        this.restoreOpen();
         if (this.enabled && !this.opened.length) {
           const project = this.projects.find(p => p.workingDirectory === view.workingDirectory);
           if (project) {
@@ -545,6 +537,34 @@ export class ChatWorkspaceComponent extends BaseService implements OnInit, OnDes
   busy(id: string): boolean { return !!this.panes?.find(p => p.chat.id === id)?.busy; }
   activity(id: string): ChatActivity { return this.panes?.find(p => p.chat.id === id)?.activity || IDLE_CHAT_ACTIVITY; }
   trackChat(_: number, item: OpenChat): string { return item.chat.id; }
-  private saveOpen(): void { sessionStorage.setItem(this.openKey, JSON.stringify(this.opened.map(item => item.chat.id))); }
+  /** Open tabs and the one in front survive a reload, a closed tab and a restarted phone browser. */
+  private saveOpen(): void {
+    try {
+      localStorage.setItem(this.openKey, JSON.stringify({ open: this.opened.map(item => item.chat.id), active: this.activeId }));
+    } catch { /* Storage full or blocked: the tabs still work, they just start over next load. */ }
+  }
+  private restoreOpen(): void {
+    let ids: unknown[] = [];
+    let activeId: unknown = null;
+    try {
+      // Before tabs were kept per browser, they were kept per page as a bare id list.
+      const saved: any = JSON.parse(localStorage.getItem(this.openKey) || sessionStorage.getItem(this.openKey) || 'null');
+      if (Array.isArray(saved)) ids = saved;
+      else if (saved && Array.isArray(saved.open)) { ids = saved.open; activeId = saved.active; }
+    } catch { try { localStorage.removeItem(this.openKey); } catch { /* Storage blocked: nothing to restore. */ } }
+    const find = (id: unknown) => {
+      for (const project of this.projects) {
+        const chat = project.chats.find(c => c.id === id);
+        if (chat) return { project, chat };
+      }
+      return null;
+    };
+    for (const id of ids) {
+      const found = find(id);
+      if (found) this.open(found.project, found.chat);
+    }
+    const active = find(activeId);
+    if (active && this.opened.some(item => item.chat.id === active.chat.id)) this.open(active.project, active.chat);
+  }
   private fail(err: any): void { this.error = err?.error?.message || err?.message || 'Workspace request failed'; }
 }

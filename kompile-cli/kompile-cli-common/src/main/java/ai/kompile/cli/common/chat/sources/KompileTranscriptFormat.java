@@ -122,12 +122,21 @@ public final class KompileTranscriptFormat {
 
     /** True when {@code file} already holds the turns of that vendor session. */
     public static boolean carriesOver(Path file, String source, String nativeSessionId) throws IOException {
-        if (file == null || !Files.isRegularFile(file)) return false;
         String marker = "[system] " + carriedOverEvent(source, nativeSessionId);
+        return hasLine(file, line -> line.equals(marker));
+    }
+
+    /** True when {@code file} holds the turns of any vendor session. */
+    public static boolean carriesOverAny(Path file) throws IOException {
+        return hasLine(file, line -> line.startsWith("[system] Carried over from "));
+    }
+
+    private static boolean hasLine(Path file, java.util.function.Predicate<String> match) throws IOException {
+        if (file == null || !Files.isRegularFile(file)) return false;
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
-                if (line.equals(marker)) return true;
+                if (match.test(line)) return true;
             }
         }
         return false;
