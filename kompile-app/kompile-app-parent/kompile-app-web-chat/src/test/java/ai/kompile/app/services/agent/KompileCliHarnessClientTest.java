@@ -850,6 +850,55 @@ class KompileCliHarnessClientTest {
     }
 
     @Test
+    void unfinishedWorkContinuesAfterTheBrowserLeavesAndItsResultIsReplayable() throws Exception {
+        CountDownLatch working = new CountDownLatch(1);
+        CountDownLatch finish = new CountDownLatch(1);
+        var output = new ByteArrayInputStream(("{\"seq\":1,\"type\":\"text\",\"text\":\"finished while away\"}\n"
+                + "{\"seq\":2,\"type\":\"result\",\"text\":\"finished while away\",\"exit\":0}\n")
+                .getBytes(StandardCharsets.UTF_8));
+        var blocked = new InputStream() {
+            @Override public int read() throws java.io.IOException {
+                working.countDown();
+                try {
+                    if (!finish.await(3, TimeUnit.SECONDS)) throw new java.io.IOException("Test worker was not released");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt(); throw new java.io.IOException(e);
+                }
+                return output.read();
+            }
+        };
+        var fake = new FakeProcess(blocked, "", 0);
+        var starts = new AtomicInteger();
+        client = new KompileCliHarnessClient(new ObjectMapper(), () -> List.of("fake"),
+                (command, directory) -> { starts.incrementAndGet(); return fake; }, executor, scheduler);
+        var gone = new org.springframework.web.servlet.mvc.method.annotation.SseEmitter() {
+            @Override public void send(SseEventBuilder builder) throws java.io.IOException {
+                throw new java.io.IOException("browser navigated away");
+            }
+        };
+        try {
+            String runId = client.executeChat(request("continue working"), gone);
+            assertTrue(working.await(2, TimeUnit.SECONDS));
+            assertTrue(fake.isAlive());
+            assertFalse(fake.destroyed);
+            finish.countDown(); // the work finishes without any browser attached
+            executor.submit(() -> {}).get(3, TimeUnit.SECONDS);
+            var events = new ArrayList<String>();
+            var reopened = new org.springframework.web.servlet.mvc.method.annotation.SseEmitter() {
+                @Override public void send(SseEventBuilder builder) {
+                    builder.build().forEach(data -> events.add(String.valueOf(data.getData())));
+                }
+            };
+            client.reconnect(runId, 0, reopened);
+            assertEquals(1, starts.get());
+            assertFalse(fake.destroyed);
+            assertTrue(events.stream().anyMatch(value -> value.contains("finished while away")), events.toString());
+            assertTrue(events.stream().anyMatch(value -> value.contains("event:complete")), events.toString());
+            assertFalse(events.stream().anyMatch(value -> value.contains("event:cancelled")), events.toString());
+        } finally { finish.countDown(); }
+    }
+
+    @Test
     void childControlFramesRequireTargetAndNeverAcceptSlashCommands() throws Exception {
         var mapper = new ObjectMapper();
         var frame = mapper.createObjectNode().put("version", 1).put("requestId", "r")
@@ -1371,14 +1420,19 @@ class KompileCliHarnessClientTest {
     }
 
     private static final class FakeProcess extends Process {
-        private final ByteArrayInputStream stdout;
+        private final InputStream stdout;
         private final ByteArrayInputStream stderr;
         private final ByteArrayOutputStream stdin = new ByteArrayOutputStream();
         private final int exit;
         private volatile boolean alive = true;
+        private volatile boolean destroyed;
 
         private FakeProcess(String stdout, String stderr, int exit) {
-            this.stdout = new ByteArrayInputStream(stdout.getBytes(StandardCharsets.UTF_8));
+            this(new ByteArrayInputStream(stdout.getBytes(StandardCharsets.UTF_8)), stderr, exit);
+        }
+
+        private FakeProcess(InputStream stdout, String stderr, int exit) {
+            this.stdout = stdout;
             this.stderr = new ByteArrayInputStream(stderr.getBytes(StandardCharsets.UTF_8));
             this.exit = exit;
         }
@@ -1392,8 +1446,8 @@ class KompileCliHarnessClientTest {
             if (alive) throw new IllegalThreadStateException("still running");
             return exit;
         }
-        @Override public void destroy() { alive = false; }
-        @Override public Process destroyForcibly() { alive = false; return this; }
+        @Override public void destroy() { destroyed = true; alive = false; }
+        @Override public Process destroyForcibly() { destroyed = true; alive = false; return this; }
         @Override public boolean isAlive() { return alive; }
     }
 }

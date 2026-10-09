@@ -640,11 +640,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   ngOnDestroy(): void {
     this.harnessViewDestroyed = true;
     this.unregisterSessionConfigOpener();
-    this.unsubscribeStreamingSubs();
-    if (this.isStreaming) {
-      if (this.agentChatService.detachStreaming) this.agentChatService.detachStreaming();
-      else this.agentChatService.cancelStreaming();
-    }
+    this.detachRunView();
     this.subscriptions.forEach(sub => sub.unsubscribe());
     if (this.streamingSubscription) {
       this.streamingSubscription.unsubscribe();
@@ -1452,7 +1448,26 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.selectedAgent = this.agents.find(agent => agent.name === saved.agent.name) || saved.agent;
     void this.sendAgentMessage('', undefined, true);
   }
+  /** Navigation detaches this view, never the server's work, including browser back/forward cache. */
+  @HostListener('window:pagehide')
+  detachRunView(): void {
+    if (this.isStreaming || this.isLoading || this.agentChatService.isCurrentlyStreaming?.()) this.invalidateLifecycle();
+    this.unsubscribeStreamingSubs();
+    this.agentChatService.detachStreaming?.();
+    this.isStreaming = false;
+    this.isLoading = false;
+    if (this.streamingUpdateInterval) {
+      clearInterval(this.streamingUpdateInterval);
+      this.streamingUpdateInterval = null;
+    }
+    if (this.isDetached) {
+      this.cdr.reattach();
+      this.isDetached = false;
+    }
+  }
+
   /** A run saved by a page that slept or reloaded reconnects by itself; reconnecting never restarts work. */
+  @HostListener('window:pageshow')
   @HostListener('document:visibilitychange')
   resumeSavedRun(): void {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;

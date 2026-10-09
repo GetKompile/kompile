@@ -469,15 +469,20 @@ export class LocalAgentChatService extends BaseService {
   getTranscriptReloads(): Observable<string> { return this.transcriptReload$.asObservable(); }
 
   getReconnectBookmark(browserSessionId: string): HarnessReconnectBookmark | null {
-    try {
-      const value = JSON.parse(sessionStorage.getItem('kompile-live-run:' + browserSessionId) || 'null');
-      return value && value.backendUrl === this.backendUrl && value.expiresAt > Date.now()
-        && typeof value.runId === 'string' && value.runId.startsWith('harness-')
-        && Array.isArray(value.seed?.messages) && value.agent && Number.isInteger(value.messageStart)
-        && value.messageStart >= 0 && value.messageStart + 2 <= value.seed.messages.length
-        && (value.cursor === undefined || (Number.isSafeInteger(value.cursor) && value.cursor >= 0))
-        ? value as HarnessReconnectBookmark : null;
-    } catch { return null; }
+    const key = 'kompile-live-run:' + browserSessionId;
+    // A closed tab loses sessionStorage, not the server's run. Keep old tab checkpoints readable.
+    for (const kind of ['localStorage', 'sessionStorage'] as const) {
+      try {
+        const value = JSON.parse(window[kind].getItem(key) || 'null');
+        if (value && value.backendUrl === this.backendUrl && value.expiresAt > Date.now()
+          && typeof value.runId === 'string' && value.runId.startsWith('harness-')
+          && Array.isArray(value.seed?.messages) && value.agent && Number.isInteger(value.messageStart)
+          && value.messageStart >= 0 && value.messageStart + 2 <= value.seed.messages.length
+          && (value.cursor === undefined || (Number.isSafeInteger(value.cursor) && value.cursor >= 0)))
+          return value as HarnessReconnectBookmark;
+      } catch { /* Try the other store if storage is unavailable or an old value is malformed. */ }
+    }
+    return null;
   }
 
   private saveReconnectBookmark(session = this.reconnectSeed): void {
@@ -491,12 +496,18 @@ export class LocalAgentChatService extends BaseService {
       const json = JSON.stringify(value, (key, field) => key === 'agent' && field
         ? { name: field.name, displayName: field.displayName, agentType: field.agentType }
         : key === 'environment' ? undefined : field);
-      if (json.length <= 1_048_576) sessionStorage.setItem('kompile-live-run:' + this.browserSessionId, json);
+      if (json.length > 1_048_576) return;
+      const key = 'kompile-live-run:' + this.browserSessionId;
+      try { localStorage.setItem(key, json); }
+      catch { sessionStorage.setItem(key, json); return; }
+      try { sessionStorage.removeItem(key); } catch { }
     } catch { /* storage is optional; in-page replay still works */ }
   }
 
-  private forgetReconnectBookmark(): void {
-    try { sessionStorage.removeItem('kompile-live-run:' + this.browserSessionId); } catch { }
+  private forgetReconnectBookmark(browserSessionId = this.browserSessionId): void {
+    const key = 'kompile-live-run:' + browserSessionId;
+    try { localStorage.removeItem(key); } catch { }
+    try { sessionStorage.removeItem(key); } catch { }
   }
 
   private workflowTeams = new Map<string, WorkflowTeam | null>();
@@ -538,7 +549,7 @@ export class LocalAgentChatService extends BaseService {
     if (!saved) return;
     const response = await fetch(`${this.backendUrl}/agents/chat/cancel/${encodeURIComponent(saved.runId)}`, { method: 'POST' });
     if (!response.ok) throw new Error('Could not stop the saved run');
-    try { sessionStorage.removeItem('kompile-live-run:' + browserSessionId); } catch { }
+    this.forgetReconnectBookmark(browserSessionId);
   }
 
   async resumeRun(browserSessionId: string): Promise<void> {
@@ -547,7 +558,7 @@ export class LocalAgentChatService extends BaseService {
     if (!saved) throw new Error('No reconnectable run saved in this tab');
     const session = saved.seed;
     this.browserSessionId = browserSessionId;
-    this.reconnectSeed = JSON.parse(JSON.stringify(saved.seed));
+    this.reconnectSeed = session;
     this.liveAgent = saved.agent;
     this.liveMessageStart = saved.messageStart;
     this.liveTurnId = saved.turnId || 0; this.liveTurnTexts = [];
@@ -561,12 +572,14 @@ export class LocalAgentChatService extends BaseService {
     this.accumulateContent(this.currentStreamingMessage?.content || '');
     this.streamingContent$.next(this.getCurrentContent());
     this.currentAbortController = new AbortController(); this.isStreaming$.next(true);
-    // The page was reloaded or away: this tab's seed is a snapshot, the transcript is the record.
+    const owner = this.currentAbortController;
+    // The page was reloaded or away: the saved seed is a snapshot, the transcript is the record.
     this.transcriptStale = true;
     try {
       this.publishLiveMessages(session);
       await this.consumeWithReconnect(session, null);
     } catch (error) {
+      if (owner.signal.aborted || this.currentAbortController !== owner) return;
       if (!(error instanceof DOMException && error.name === 'AbortError'))
         this.handleStreamError(session, error instanceof Error ? error.message : 'Reconnect failed');
     }
@@ -774,20 +787,22 @@ export class LocalAgentChatService extends BaseService {
     return outcome;
   }
 
-  private closeHarnessControls(): void {
+  private closeHarnessControls(detached = false): void {
     this.liveControlsReady = false;
+    const unknownState = detached ? 'UNKNOWN (view detached; work continues)' : 'UNKNOWN (run ended)';
     if (this.harnessActivity) {
       const terminalView = (entry: HarnessActivityEntry): HarnessActivityEntry =>
-        ['RUNNING', 'BACKGROUNDED'].includes(entry.state) ? { ...entry, state: 'UNKNOWN (run ended)' } : entry;
+        ['RUNNING', 'BACKGROUNDED'].includes(entry.state) ? { ...entry, state: unknownState } : entry;
       this.harnessActivity = { ...this.harnessActivity, backgroundable: false, turnActive: false,
         processes: this.harnessActivity.processes.map(terminalView), tasks: this.harnessActivity.tasks.map(terminalView),
         subagents: this.harnessActivity.subagents?.map(child => ({ ...child,
-          state: child.running ? 'UNKNOWN (run ended)' : child.state, running: false, canSend: false, canCancel: false })) };
+          state: child.running ? unknownState : child.state, running: false, canSend: false, canCancel: false })) };
     }
     for (const pending of this.pendingControls.values()) {
       clearTimeout(pending.timer);
-      // The harness answers every control it takes before its end event, so this one never ran.
-      pending.reject(new HarnessRunClosedError('Run ended before it took this control'));
+      // Detachment loses the acknowledgement, not the run: its outcome is unknown, never retry it.
+      pending.reject(detached ? new Error('View detached; control outcome unknown. Work continues on the server.')
+        : new HarnessRunClosedError('Run ended before it took this control'));
     }
     this.pendingControls.clear();
   }
@@ -992,17 +1007,16 @@ export class LocalAgentChatService extends BaseService {
    * Stream response using fetch API (SSE).
    */
   private async streamWithFetch(session: LocalAgentSession, request: LocalAgentChatRequest): Promise<void> {
+    const owner = new AbortController();
+    this.currentAbortController = owner;
     try {
       console.debug('[LocalAgentChat] Starting stream request');
-
-      // Create AbortController for cancellation support
-      this.currentAbortController = new AbortController();
       this.currentProcessId = null;
       this.lastEventId = 0;
       this.reconnectable = false;
       this.transcriptStale = false;
       this.browserSessionId = request.sessionId || session.id;
-      this.reconnectSeed = JSON.parse(JSON.stringify(session));
+      this.reconnectSeed = session;
       this.closeHarnessControls();
       this.harnessActivity = null;
       this.liveTurnTexts = [];
@@ -1016,8 +1030,9 @@ export class LocalAgentChatService extends BaseService {
           'Accept': 'text/event-stream'
         },
         body: JSON.stringify(request),
-        signal: this.currentAbortController.signal
+        signal: owner.signal
       });
+      if (owner.signal.aborted || this.currentAbortController !== owner) return;
 
       console.debug('[LocalAgentChat] Response status:', response.status);
 
@@ -1029,10 +1044,10 @@ export class LocalAgentChatService extends BaseService {
       await this.consumeWithReconnect(session, response);
 
     } catch (error: any) {
-      // Handle AbortError gracefully (user cancelled)
+      // Navigation and Stop both detach the transport; a late failure must not end a newer view/run.
+      if (owner.signal.aborted || this.currentAbortController !== owner) return;
       if (error.name === 'AbortError') {
-        // The cancelStreaming method already handled the UI update
-        console.debug('[LocalAgentChat] Request aborted by user');
+        console.debug('[LocalAgentChat] Stream transport detached');
       } else {
         console.error('[LocalAgentChat] Streaming error:', error);
         const message = error.message || 'Unknown error';
@@ -1389,9 +1404,11 @@ export class LocalAgentChatService extends BaseService {
         }
       } } finally {
         if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
+        reader.releaseLock();
       }
 
-      reader.releaseLock();
+      if (!sawTerminalEvent && (ownedAbortController?.signal.aborted
+          || this.currentAbortController !== ownedAbortController)) return false;
       if (!sawTerminalEvent) {
         if (this.reconnectable) return false;
         throw new Error('Kompile harness stream ended without a terminal event');
@@ -1514,24 +1531,23 @@ export class LocalAgentChatService extends BaseService {
   }
 
   /** Clear request-scoped transport state after a terminal event or handled failure. */
-  private finalizeStreaming(): void {
-    this.closeHarnessControls();
+  private finalizeStreaming(detached = false): void {
+    this.closeHarnessControls(detached);
     this.isStreaming$.next(false);
     this.currentStreamingMessage = null;
     this.currentProcessId = null;
     this.currentAbortController = null;
   }
 
-  /**
-   * Cancel current streaming.
-   * Aborts the fetch request and sends cancel signal to backend.
-   */
   /** Leave the socket without cancelling owned work; the existing timeout still applies. */
   detachStreaming(): void {
+    // Flush the latest message and cursor, including deltas still inside the 250 ms checkpoint throttle.
+    if (this.reconnectable) this.saveReconnectBookmark();
     this.currentAbortController?.abort();
-    this.finalizeStreaming();
+    this.finalizeStreaming(true);
   }
 
+  /** Explicit Stop: abort the browser stream AND cancel the server-owned work. */
   cancelStreaming(): void {
     this.forgetReconnectBookmark();
     this.closeHarnessControls();

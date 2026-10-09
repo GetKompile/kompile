@@ -23,6 +23,11 @@ describe('LocalAgentChatService harness transport', () => {
     });
     service = TestBed.inject(LocalAgentChatService);
   });
+  afterEach(() => {
+    for (const store of [localStorage, sessionStorage]) {
+      for (const key of Object.keys(store)) if (key.startsWith('kompile-live-run:')) store.removeItem(key);
+    }
+  });
 
   it('routes title metadata to its browser session without adding messages', async () => {
     const sse = (type: string, data: unknown) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -119,6 +124,102 @@ describe('LocalAgentChatService harness transport', () => {
     expect(messages.map(message => message.content)).toEqual(['original', 'first', 'Process completed', 'reviewed']);
     expect(messages[2].role).toBe('SYSTEM');
     expect(service.getReconnectBookmark('reload-browser')).toBeNull();
+  });
+
+  describe('leaving the page while the server works', () => {
+    const event = (id: number, name: string, data: unknown) => `id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+    let controller: ReadableStreamDefaultController<Uint8Array>;
+    let fetchSpy: jasmine.Spy;
+    let run: Promise<void>;
+    const sessionId = 'leave-browser';
+    const key = 'kompile-live-run:' + sessionId;
+    beforeEach(async () => {
+      fetchSpy = spyOn(window, 'fetch').and.resolveTo(new Response(new ReadableStream<Uint8Array>({
+        start(value) { controller = value; }
+      }), { status: 200 }));
+      run = service.sendMessage(service.createSession('leave'), 'original', { name: 'coder' } as AgentProvider, { sessionId });
+      controller.enqueue(new TextEncoder().encode(event(1, 'queued', { processId: 'harness-leave', reconnectable: true })
+        + event(2, 'turn_started', { turnId: 1, source: 'initial', text: '' }) + event(3, 'chunk', 'latest partial')));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    it('flushes the latest checkpoint, survives tab storage loss, and resumes without another POST', async () => {
+      const errors: string[] = [];
+      service.getStreamingError().subscribe(error => errors.push(error));
+      const signal = fetchSpy.calls.first().args[1].signal as AbortSignal;
+      service.detachStreaming(); controller.close(); await run;
+      expect(signal.aborted).toBeTrue();
+      expect(fetchSpy).toHaveBeenCalledTimes(1); // no cancel request
+      const checkpoint = service.getReconnectBookmark(sessionId)!;
+      expect(checkpoint.cursor).toBe(3);
+      expect(checkpoint.seed.messages[1].content).toBe('latest partial');
+      expect(localStorage.getItem(key)).not.toBeNull();
+      sessionStorage.removeItem(key); // closing the original tab
+      expect(service.getReconnectBookmark(sessionId)?.runId).toBe('harness-leave');
+      fetchSpy.calls.reset();
+      fetchSpy.and.resolveTo(new Response(new TextEncoder().encode(
+        event(4, 'turn_complete', { turnId: 1, text: 'finished while away' })
+        + event(5, 'complete', { content: 'finished while away' })), { status: 200 }));
+      await service.resumeRun(sessionId);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.calls.first().args[1].method).toBeUndefined();
+      expect(String(fetchSpy.calls.first().args[0])).toContain('/events/harness-leave?after=3');
+      expect(errors).toEqual([]);
+      expect(service.getReconnectBookmark(sessionId)).toBeNull();
+    });
+
+    it('does not report a late socket failure as interruption after detaching', async () => {
+      const errors: string[] = [];
+      service.getStreamingError().subscribe(error => errors.push(error));
+      service.detachStreaming();
+      controller.error(new TypeError('socket closed by navigation'));
+      await run;
+      expect(errors).toEqual([]);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(service.getReconnectBookmark(sessionId)?.cursor).toBe(3);
+    });
+
+    it('keeps legacy tab checkpoints readable', async () => {
+      service.detachStreaming(); controller.close(); await run;
+      sessionStorage.setItem(key, localStorage.getItem(key)!);
+      localStorage.removeItem(key);
+      expect(service.getReconnectBookmark(sessionId)?.runId).toBe('harness-leave');
+    });
+
+    it('still cancels work and clears all checkpoints when Stop is explicitly requested', async () => {
+      service.detachStreaming(); controller.close(); await run;
+      sessionStorage.setItem(key, localStorage.getItem(key)!);
+      fetchSpy.and.resolveTo(new Response('{}', { status: 200 }));
+      await service.stopReconnectRun(sessionId);
+      expect(String(fetchSpy.calls.mostRecent().args[0])).toContain('/cancel/harness-leave');
+      expect(fetchSpy.calls.mostRecent().args[1].method).toBe('POST');
+      expect(localStorage.getItem(key)).toBeNull();
+      expect(sessionStorage.getItem(key)).toBeNull();
+    });
+
+    it('never declares an unacknowledged control refused just because its view detached', async () => {
+      (service as any).liveControlsReady = true;
+      fetchSpy.and.resolveTo(new Response('{"accepted":true}', { status: 202 }));
+      const reply = service.sendHarnessControl('input', undefined, 'follow up').catch(error => error);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      service.detachStreaming(); controller.close(); await run;
+      const error = await reply;
+      expect(error).not.toBeInstanceOf(HarnessRunClosedError);
+      expect(error.message).toContain('outcome unknown');
+    });
+  });
+
+  it('ignores an initial fetch failure arriving after the view left', async () => {
+    let reject!: (error: Error) => void;
+    const fetchSpy = spyOn(window, 'fetch').and.returnValue(new Promise<Response>((_, fail) => reject = fail));
+    const errors: string[] = [];
+    service.getStreamingError().subscribe(error => errors.push(error));
+    const run = service.sendMessage(service.createSession('pending'), 'original', { name: 'coder' } as AgentProvider);
+    service.detachStreaming();
+    reject(new TypeError('navigation closed the socket'));
+    await run;
+    expect(errors).toEqual([]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   describe('a run the page slept through', () => {
