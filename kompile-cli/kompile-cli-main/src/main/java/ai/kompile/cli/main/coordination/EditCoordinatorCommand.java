@@ -134,14 +134,17 @@ public class EditCoordinatorCommand implements Callable<Integer> {
                 } else if (edits.isEmpty()) {
                     System.out.println("No active file edits.");
                 } else {
-                    System.out.printf("%-50s %-15s %-6s %s%n", "FILE", "AGENT", "TYPE", "AGE");
-                    System.out.println("-".repeat(90));
+                    // Full lock id so `release --lock-id` can be used directly.
+                    System.out.printf("%-50s %-20s %-6s %-8s %s%n",
+                            "FILE", "AGENT", "TYPE", "AGE", "LOCK_ID");
+                    System.out.println("-".repeat(120));
                     for (EditLockEntry e : edits) {
-                        System.out.printf("%-50s %-15s %-6s %s%n",
+                        System.out.printf("%-50s %-20s %-6s %-8s %s%n",
                                 StringUtils.truncate(e.getFilePath(), 50),
                                 e.getAgentName(),
                                 e.getEditType(),
-                                formatAge(e.getAcquiredAt()));
+                                formatAge(e.getAcquiredAt()),
+                                e.getLockId());
                     }
                     System.out.println("\n" + edits.size() + " active edit(s)");
                 }

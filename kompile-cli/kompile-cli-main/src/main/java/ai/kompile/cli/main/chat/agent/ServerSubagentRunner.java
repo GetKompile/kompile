@@ -22,6 +22,7 @@ import ai.kompile.cli.main.chat.config.ProviderConnectivityPolicy;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.tools.CliTool;
+import ai.kompile.cli.main.chat.tools.EditCoordinatorTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -330,6 +331,9 @@ public class ServerSubagentRunner implements SubagentRunner {
             }
             session.ownerThread = null;
             if (session.cancelled.get()) Thread.interrupted();
+            // The run is over (completed, failed or cancelled): free every edit lock it took
+            // under its coordination identity now, before anyone is told it ended.
+            EditCoordinatorTool.releaseAgentLocks(toolRegistry, subagentId);
             sessions.remove(subagentId, session);
             if (lifecycleListener != null) {
                 lifecycleListener.onSubagentEnd(subagentId);
@@ -430,6 +434,9 @@ public class ServerSubagentRunner implements SubagentRunner {
                     toolRegistry
             );
             subContext.bindWorkflow(session.workflow);
+            // Sibling subagents share the parent's coordination session; their own id
+            // scopes edit-lock ownership so they arbitrate against each other.
+            subContext.setCoordinationAgent(subagentId);
             subContext.linkAbortCheck(
                     () -> session.cancelled.get() || parentContext.isAborted());
             subContext.setOutputConsumer(parentContext.getOutputConsumer());

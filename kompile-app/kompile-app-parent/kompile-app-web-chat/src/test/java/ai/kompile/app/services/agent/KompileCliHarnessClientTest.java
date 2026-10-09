@@ -788,6 +788,27 @@ class KompileCliHarnessClientTest {
     }
 
     @Test
+    void aFinishingRunRefusesControlsInsteadOfWritingThemToAClosedReader() throws Exception {
+        FakeProcess fake = new FakeProcess("{\"seq\":1,\"type\":\"activity\",\"data\":{\"turnActive\":true,\"controlsOpen\":true}}\n"
+                + "{\"seq\":2,\"type\":\"turn_complete\",\"data\":{\"turnId\":1,\"text\":\"answer\"}}\n"
+                + "{\"seq\":3,\"type\":\"activity\",\"data\":{\"turnActive\":false,\"controlsOpen\":false}}\n"
+                + "{\"seq\":4,\"type\":\"result\",\"text\":\"answer\",\"exit\":0}\n", "", 0);
+        client = clientWith(fake);
+        var frame = new ObjectMapper().readTree("{\"version\":1,\"requestId\":\"r1\",\"action\":\"input\",\"text\":\"next\"}");
+        var replies = new ArrayList<Map<String, Object>>();
+        client.runTurn("harness-closing", request("initial"), new KompileCliHarnessClient.HarnessEventSink() {
+            public void send(String name, Object data) {
+                if (name.equals("activity")) replies.add(client.control("harness-closing", frame));
+            }
+            public void complete() { }
+        });
+        assertEquals(List.of(true, false), replies.stream().map(reply -> reply.get("accepted")).toList());
+        // The initial input and the one control the open run took. The refused one was not written: the
+        // harness stopped reading, so it would never have been answered.
+        assertEquals(2, fake.stdin.toString(StandardCharsets.UTF_8).split("\n").length);
+    }
+
+    @Test
     void malformedControlsCannotReachOwnedProcess() throws Exception {
         var mapper = new ObjectMapper();
         for (String frame : List.of("{}", "[]", "{\"version\":1,\"requestId\":\"r\",\"action\":\"launch\"}",

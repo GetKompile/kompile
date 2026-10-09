@@ -253,9 +253,18 @@ export interface HarnessSubagent extends HarnessActivityEntry {
 export interface HarnessActivity {
   backgroundable: boolean;
   turnActive: boolean;
+  /** False once the run takes no more live input: it is finishing and only its end is still to come. */
+  controlsOpen?: boolean;
   processes: HarnessActivityEntry[];
   tasks: HarnessActivityEntry[];
   subagents?: HarnessSubagent[];
+}
+/** The run stopped taking live input before it took this control; nothing of it ran. */
+export class HarnessRunClosedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HarnessRunClosedError';
+  }
 }
 export type HarnessControlAction = 'background' | 'process_list' | 'process_output' | 'process_kill' | 'input' | 'command' | 'subagent_input' | 'subagent_cancel' | 'workflow_approve';
 export interface HarnessReconnectBookmark {
@@ -715,6 +724,8 @@ export class LocalAgentChatService extends BaseService {
       body: JSON.stringify({ version: 1, requestId, action, ...(targetId ? { targetId } : {}), ...(text !== undefined ? { text } : {}) })
     }).then(async response => {
       const result = await response.json();
+      // 409: the run is finishing or gone, so it never saw the control.
+      if (response.status === 409) throw new HarnessRunClosedError(result.message || 'Run is no longer taking input');
       if (!response.ok || !result.accepted) throw new Error(result.message || 'Control was not accepted');
     }).catch(error => {
       const pending = this.pendingControls.get(requestId);
@@ -775,7 +786,8 @@ export class LocalAgentChatService extends BaseService {
     }
     for (const pending of this.pendingControls.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new Error('Run ended before control acknowledgement; check retained activity'));
+      // The harness answers every control it takes before its end event, so this one never ran.
+      pending.reject(new HarnessRunClosedError('Run ended before it took this control'));
     }
     this.pendingControls.clear();
   }
@@ -1141,7 +1153,8 @@ export class LocalAgentChatService extends BaseService {
               case 'activity':
                 if (Array.isArray(parsed.processes) && Array.isArray(parsed.tasks)) {
                   this.harnessActivity = parsed as HarnessActivity;
-                  this.liveControlsReady = true;
+                  // A finishing run still streams its end; input typed meanwhile waits for the next run.
+                  this.liveControlsReady = parsed.controlsOpen !== false;
                 }
                 break;
 
@@ -1150,7 +1163,8 @@ export class LocalAgentChatService extends BaseService {
                 if (pending) {
                   clearTimeout(pending.timer);
                   this.pendingControls.delete(parsed.requestId);
-                  pending.resolve(parsed as HarnessControlReply);
+                  if (parsed.closed === true) pending.reject(new HarnessRunClosedError(parsed.message || 'Run closed'));
+                  else pending.resolve(parsed as HarnessControlReply);
                 }
                 break;
               }

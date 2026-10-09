@@ -113,6 +113,24 @@ class McpToolInjectionTest {
                     if (process.isAlive()) process.destroyForcibly();
                 }
             }
+            for (String tool : List.of("Write", "Edit", "Read", "mcp__kompile__memory")) {
+                var event = new ObjectMapper().createObjectNode().put("tool_name", tool)
+                        .put("cwd", tempDir.toString());
+                event.putObject("tool_input").put("file_path", ".claude/projects/-repo/memory/MEMORY.md")
+                        .put("action", "save").put("content", "Remember this");
+                Process process = new ProcessBuilder("/bin/sh", "-c", gates.get(0)).start();
+                try {
+                    process.getOutputStream().write(event.toString().getBytes(StandardCharsets.UTF_8));
+                    process.getOutputStream().close();
+                    assertTrue(process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS));
+                    String error = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+                    boolean mutation = tool.equals("Write") || tool.equals("Edit");
+                    assertEquals(mutation ? 2 : 0, process.exitValue(), error);
+                    if (mutation) assertTrue(error.contains("mcp__kompile__memory"), error);
+                } finally {
+                    if (process.isAlive()) process.destroyForcibly();
+                }
+            }
             Files.writeString(binary, "#!/bin/sh\nexit 1\n");
             Process brokenGate = new ProcessBuilder("/bin/sh", "-c", gates.get(0)).start();
             try {

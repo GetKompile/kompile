@@ -41,7 +41,13 @@ Code navigation: for definitions, symbols, callers/implementors and change impac
    read/edit calls.
 3. In multi-agent scenarios, ALWAYS use `edit_coordinator` to lock files before editing
    and release locks when done (`register_edits`/`release_edits` lock a whole file set
-   in one call).
+   in one call). Subagents sharing one MCP connection share its session: each MUST pass
+   its own `agent_name` to register and release, or their locks cannot conflict. Pass
+   the same `agent_name` to `edit`/`write`/`edit_batch`/`edit_patch`: each such call
+   renews your locks' lease and re-checks the file's lock before writing. A lock idle for
+   a full lease can be taken by another agent; an edit to a file another agent holds is
+   refused with CONFLICT naming the holder, and nothing is written. "Coordinator busy"
+   also means nothing was written — retry the call.
 4. For multi-step tasks, ALWAYS use `todowrite` to create and maintain a task list.
 5. For spawning subagents, ALWAYS use `task`, `multi_task`, or `quorum_task` — never raw subprocess commands.
 6. Before starting a multi-step task, EVALUATE whether parts can be delegated in parallel:

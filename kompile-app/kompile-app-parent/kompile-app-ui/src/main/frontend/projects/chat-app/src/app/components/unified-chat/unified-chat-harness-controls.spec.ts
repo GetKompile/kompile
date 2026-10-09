@@ -1,4 +1,4 @@
-import { HarnessControlReply, WorkflowApprovalOutcome, WorkflowTeam } from '@shared/services/local-agent-chat.service';
+import { HarnessControlReply, HarnessRunClosedError, WorkflowApprovalOutcome, WorkflowTeam } from '@shared/services/local-agent-chat.service';
 import { UnifiedChatComponent } from './unified-chat.component';
 
 // Exercise actual component handlers without booting unrelated graph/config services.
@@ -155,6 +155,29 @@ describe('Unified chat live /commands', () => {
     expect(harness).toHaveBeenCalledOnceWith('input', undefined, 'Also run the tests');
     expect(component.userInput).toBe('');
     expect(component.liveCommandOutput).toBeNull();
+  });
+
+  it('holds text a finishing run could not take for the next run instead of reporting a failure', async () => {
+    await submit('Also run the tests', new HarnessRunClosedError('Run closed'));
+    expect(component.queuedMessages).toEqual(['Also run the tests']);
+    expect(component.userInput).toBe('');
+    expect(component.harnessControlMessage).toBe('Message queued; it sends when the current run finishes.');
+  });
+
+  it('sends the text as the next run when the run had already ended', async () => {
+    let refuse!: (error: Error) => void;
+    harness.and.returnValue(new Promise<HarnessControlReply>((_, reject) => refuse = reject));
+    component.userInput = 'Also run the tests';
+    component.sendMessage();
+    const pending = control.calls.mostRecent().returnValue;
+    component.isStreaming = false; // the run's end arrived before the refusal
+    const next = spyOn(component, 'sendMessage');
+    refuse(new HarnessRunClosedError('Run ended before it took this control'));
+    await pending;
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(component.userInput).toBe('Also run the tests'); // what the next run sends
+    expect(component.queuedMessages).toEqual([]);
+    expect(component.harnessControlMessage).toBe('');
   });
 });
 

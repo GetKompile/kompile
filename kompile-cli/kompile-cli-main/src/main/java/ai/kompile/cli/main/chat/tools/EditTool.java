@@ -37,8 +37,10 @@ public class EditTool implements CliTool {
 
     /**
      * Optional coordination manager for multi-agent edit tracking. May be null.
-     * When present, edits to files locked by ANOTHER session carry a conflict
-     * warning in the result (locks are advisory — the edit still applies).
+     * When present, an edit under an agent identity is guarded before the write (lease
+     * renewed, lock re-verified; refused with CONFLICT on a file another live owner holds);
+     * an edit without identity to a file locked by ANOTHER session carries a conflict
+     * warning in the result (advisory — the edit still applies).
      */
     private final CoordinationStateManager coordinationManager;
 
@@ -92,6 +94,8 @@ public class EditTool implements CliTool {
         replaceAll.put("type", "boolean");
         replaceAll.put("description", "Replace all occurrences (default: false)");
 
+        EditCoordinatorTool.addEditAgentNameProperty(props);
+
         schema.putArray("required").add("file_path").add("old_string").add("new_string");
         return schema;
     }
@@ -105,6 +109,8 @@ public class EditTool implements CliTool {
         String oldString = params.path("old_string").asText("");
         String newString = params.path("new_string").asText("");
         boolean replaceAll = params.path("replace_all").asBoolean(false);
+        // Agent identity (native subagent, or the optional agent_name); null = session semantics.
+        String agent = EditCoordinatorTool.lockOwner(params, context);
 
         if (filePath.isEmpty()) {
             return ToolResult.error("file_path is required");
@@ -137,6 +143,13 @@ public class EditTool implements CliTool {
                 return ToolResult.error(e.getMessage());
             }
 
+            // Under an agent identity: renew the lease and re-verify the lock in one
+            // coordinator critical section, then write — or refuse without writing.
+            String refused = EditCoordinatorTool.guardEditError(coordinationManager, agent, path);
+            if (refused != null) {
+                return ToolResult.error(refused);
+            }
+
             Files.writeString(path, applied.newContent());
             context.recordFileRead(path);
             ai.kompile.cli.main.codeindex.BackgroundIndexService.getInstance()
@@ -156,7 +169,7 @@ public class EditTool implements CliTool {
             if (applied.replacements() > 1) {
                 message += " (" + applied.replacements() + " replacements)";
             }
-            String conflictWarning = conflictWarning(path);
+            String conflictWarning = conflictWarning(path, agent);
             if (conflictWarning != null) {
                 message += "\n" + conflictWarning;
             }
@@ -170,11 +183,15 @@ public class EditTool implements CliTool {
         }
     }
 
-    /** Advisory multi-agent warning when another session holds an edit lock on this file. */
-    private String conflictWarning(Path path) {
-        if (coordinationManager == null) return null;
+    /**
+     * Advisory multi-agent warning for a caller WITHOUT agent identity when another session
+     * holds an edit lock on this file (session semantics). A call with an agent identity was
+     * already guarded before the write and never needs the warning.
+     */
+    private String conflictWarning(Path path, String agent) {
+        if (coordinationManager == null || agent != null) return null;
         EditLockEntry conflict = coordinationManager.findConflictingLock(
-                path.toAbsolutePath().toString());
+                path.toAbsolutePath().toString(), agent);
         if (conflict == null) return null;
         return "WARNING: this file is locked by " + conflict.getAgentName()
                 + " (session " + conflict.getSessionId() + ") via edit_coordinator — "

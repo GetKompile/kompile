@@ -1021,7 +1021,8 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             case "backend" -> { run.sink.send("backend", event); yield false; }
             case "control", "activity", "turn_started", "turn_complete" -> {
                 if (!event.path("data").isObject()) throw new IOException("Missing live control event data");
-                if (type.equals("activity")) run.controlReady = true;
+                // A finishing run reads no more controls: refuse them here rather than write them to a closed reader.
+                if (type.equals("activity")) run.controlReady = event.path("data").path("controlsOpen").asBoolean(true);
                 run.sink.send(type, event.get("data"));
                 yield false;
             }

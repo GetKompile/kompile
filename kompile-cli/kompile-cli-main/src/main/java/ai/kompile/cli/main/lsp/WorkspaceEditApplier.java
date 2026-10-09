@@ -19,6 +19,7 @@ package ai.kompile.cli.main.lsp;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.EditLockEntry;
 import ai.kompile.cli.main.coordination.EditLockResult;
 import org.eclipse.lsp4j.CreateFile;
 import org.eclipse.lsp4j.DeleteFile;
@@ -219,12 +220,29 @@ public class WorkspaceEditApplier {
         }
     }
 
-    private void acquireLock(Path file, List<String> lockIds) {
+    private void acquireLock(Path file, List<String> lockIds) throws ToolExecutionException {
         if (coordinator == null) {
             return;
         }
-        EditLockResult result = coordinator.tryAcquireEditLock(file.toString(), "edit", "lsp");
-        if (result.isAcquired() && result.getLockId() != null) {
+        // Own the lock as the calling agent when known (native subagent), else at session
+        // level; "lsp" is only the display label. A lock the caller already held (e.g. one
+        // it registered explicitly before renaming) is reused and must NOT be released here.
+        String owner = context == null ? null : context.getCoordinationAgent();
+        EditLockResult result = coordinator.tryAcquireEditLock(file.toString(), "edit", owner, "lsp");
+        if (owner != null && !result.isAcquired()) {
+            // Under an agent identity the acquire is the pre-write guard (lease renewed and
+            // ownership verified in one coordinator critical section): a file another live
+            // owner holds — including one that reclaimed this agent's expired lock — or a
+            // busy coordinator aborts the whole workspace edit before anything is written.
+            EditLockEntry holder = result.getConflictEntry();
+            throw new ToolExecutionException(holder == null
+                    ? "workspace edit not applied: " + result.getConflictMessage()
+                    : "workspace edit not applied: CONFLICT: " + file + " is locked by "
+                            + holder.getAgentName() + " (session " + holder.getSessionId()
+                            + ", lock_id " + holder.getLockId() + ") via edit_coordinator; "
+                            + "nothing was written.");
+        }
+        if (result.isAcquired() && result.getLockId() != null && !result.isAlreadyHeld()) {
             lockIds.add(result.getLockId());
         }
     }

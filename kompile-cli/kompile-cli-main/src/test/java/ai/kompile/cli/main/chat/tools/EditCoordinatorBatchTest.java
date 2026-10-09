@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.coordination.AgentEntry;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.coordination.EditLockResult;
@@ -41,6 +42,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Batch lock actions (register_edits / release_edits) plus the passive lock
  * conflict surfacing in edit/edit_batch.
  */
+@TemporaryUserHome
 class EditCoordinatorBatchTest {
 
     @TempDir

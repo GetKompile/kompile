@@ -58,6 +58,9 @@ public final class WebHarnessControls implements AutoCloseable {
     private volatile CommandResolver commandResolver;
     private volatile String initialDisplay = "";
     private volatile SharedProcessMirror sharedProcesses;
+    /** Where the reader answers a control that arrives after the run stopped taking any. */
+    private volatile Consumer<HeadlessRunEvent> lateEvents;
+    private volatile String lateSession;
     private Thread reader;
 
     public WebHarnessControls(InputStream input) { this.input = input; }
@@ -224,6 +227,8 @@ public final class WebHarnessControls implements AutoCloseable {
         Frame[] backgroundRequest = {null};
         boolean[] detached = {false};
         pendingInput.add(new Queued(initialPrompt, initialDisplay));
+        lateEvents = events;
+        lateSession = sessionId;
         startReader();
         try {
             while (!closed) {
@@ -378,7 +383,8 @@ public final class WebHarnessControls implements AutoCloseable {
                         // Admission and terminal decision share the same lock.
                         synchronized (this) {
                             if (frames.isEmpty()) {
-                                activity(events, sessionId, tasks, processes, processControl, children, false);
+                                // The browser sends what is typed from here on as the next run.
+                                activity(events, sessionId, tasks, processes, processControl, children, false, false);
                                 closed = true;
                                 break;
                             }
@@ -388,7 +394,7 @@ public final class WebHarnessControls implements AutoCloseable {
                 // Output callbacks can arrive per line: avoid rereading every log at 50 Hz.
                 if (dirty.get() && System.nanoTime() - lastActivityNanos >= TimeUnit.MILLISECONDS.toNanos(250)) {
                     dirty.set(false);
-                    activity(events, sessionId, tasks, processes, processControl, children, active != null);
+                    activity(events, sessionId, tasks, processes, processControl, children, active != null, true);
                     lastActivityNanos = System.nanoTime();
                 }
                 Thread.sleep(20);
@@ -410,7 +416,7 @@ public final class WebHarnessControls implements AutoCloseable {
             if (shared != null) shared.setMonitorListener(null);
             if (backgroundRequest[0] != null) reply(events, sessionId, backgroundRequest[0], false, "Run closed before detachment", null);
             Frame remaining;
-            while ((remaining = frames.poll()) != null) reply(events, sessionId, remaining, false, "Run closed", null);
+            while ((remaining = frames.poll()) != null) refuseClosed(events, sessionId, remaining);
             close();
         }
     }
@@ -431,12 +437,17 @@ public final class WebHarnessControls implements AutoCloseable {
                         } catch (Exception ignored) { }
                         frame = new Frame(id, action, "", "", invalid.getMessage());
                     }
+                    boolean admitted = false;
                     while (!closed) {
                         synchronized (this) {
-                            if (closed || frames.offer(frame)) break;
+                            if (closed) break;
+                            if (frames.offer(frame)) { admitted = true; break; }
                         }
                         Thread.sleep(20);
                     }
+                    // A read that was blocked when the run closed still delivers its line: answer it,
+                    // or the sender waits for an acknowledgement that never comes.
+                    if (!admitted && !frame.requestId().isEmpty()) refuseClosed(lateEvents, lateSession, frame);
                 }
                 // EOF closes admission, not already accepted work or completion wakeups.
             } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
@@ -499,6 +510,12 @@ public final class WebHarnessControls implements AutoCloseable {
     private static void reply(Consumer<HeadlessRunEvent> events, String session, Frame frame,
                               boolean ok, String message, String target) {
         emit(events, session, HeadlessRunEvent.Type.CONTROL, replyData(frame, ok, message, target));
+    }
+
+    /** A control the run never took: {@code closed} tells the sender nothing of it ran. */
+    private static void refuseClosed(Consumer<HeadlessRunEvent> events, String session, Frame frame) {
+        if (events == null) return;
+        emit(events, session, HeadlessRunEvent.Type.CONTROL, replyData(frame, false, "Run closed", null).put("closed", true));
     }
 
     private static ObjectNode replyData(Frame frame, boolean ok, String message, String target) {
@@ -694,9 +711,10 @@ public final class WebHarnessControls implements AutoCloseable {
     }
 
     private static void activity(Consumer<HeadlessRunEvent> events, String session, BackgroundTaskManager tasks,
-                                 BackgroundProcessManager processes, ProcessControl processControl, ChildActivity children, boolean active) {
+                                 BackgroundProcessManager processes, ProcessControl processControl, ChildActivity children,
+                                 boolean active, boolean controlsOpen) {
         ObjectNode data = JSON.createObjectNode().put("backgroundable", active && tasks.isCurrentTaskBackgroundable())
-                .put("turnActive", active);
+                .put("turnActive", active).put("controlsOpen", controlsOpen);
         var ps = data.putArray("processes");
         for (var p : processes.listAll()) {
             // This run's commands plus running watchers and other sessions' processes; MCP servers

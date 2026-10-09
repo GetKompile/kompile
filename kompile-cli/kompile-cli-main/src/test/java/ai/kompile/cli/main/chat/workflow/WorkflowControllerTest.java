@@ -274,6 +274,42 @@ class WorkflowControllerTest {
     }
 
     @Test
+    void refusedEditLockReleasesStayTracked() {
+        ToolRegistry tools = tools();
+        tools.register(tool("edit_coordinator", McpToolAnnotations.READ_ONLY));
+        WorkflowController controller = new WorkflowController(skills(), tools,
+                new WorkflowPolicy(WorkflowPolicy.Mode.ENFORCED, List.of(), false, 2));
+        ObjectNode register = mapper.createObjectNode().put("action", "register_edits");
+
+        controller.beginTurn("Implement safely", "refused-release-session");
+        controller.beginToolBatch();
+        controller.afterTool("edit_coordinator", register,
+                ToolResult.success("acquired", "two locks", Map.of(
+                        "status", "acquired", "acquired", 2, "conflicts", 0,
+                        "lockIds", Map.of("A.java", "lock-a", "B.java", "lock-b"))));
+
+        // A release refused because another agent owns the lock leaves it in place.
+        ObjectNode releaseOne = mapper.createObjectNode()
+                .put("action", "release_edit").put("lock_id", "lock-a");
+        controller.afterTool("edit_coordinator", releaseOne,
+                ToolResult.error("Lock lock-a is owned by agent 'probe-b'"));
+        assertTrue(controller.activeTurnStatus().activeEditLockIds().contains("lock-a"));
+
+        ObjectNode releaseBoth = mapper.createObjectNode().put("action", "release_edits");
+        releaseBoth.putArray("lock_ids").add("lock-a").add("lock-b");
+        controller.afterTool("edit_coordinator", releaseBoth,
+                ToolResult.success("partial", "1/2 locks released", Map.of(
+                        "released", 1L, "requested", 2,
+                        "retainedLockIds", List.of("lock-a"))));
+        assertEquals(List.of("lock-a"), controller.activeTurnStatus().activeEditLockIds());
+
+        controller.afterTool("edit_coordinator", releaseOne,
+                ToolResult.success("released", "Edit lock lock-a released"));
+        assertTrue(controller.activeTurnStatus().activeEditLockIds().isEmpty());
+        controller.completeTurn();
+    }
+
+    @Test
     void identicalFailedCallsAreBoundedUntilInputsChange() {
         WorkflowController controller = new WorkflowController(skills(), tools(),
                 new WorkflowPolicy(WorkflowPolicy.Mode.ENFORCED, List.of(), false, 2));

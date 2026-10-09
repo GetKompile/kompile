@@ -58,8 +58,26 @@ public class ToolContext {
     private ai.kompile.cli.main.chat.enforcer.JudgeControl judgeControl;
     private boolean judgeToolCallScoped;
     private volatile WorkflowTeamEnforcement workflow;
+    private volatile String coordinationAgent;
 
     public boolean isSupervisedChild() { return supervisedChild; }
+
+    /**
+     * Agent identity this context acts as for edit-lock ownership inside the shared
+     * coordination session, or {@code null} when none is known. Native subagent runners
+     * set it to the subagent's own id, so the edit coordinator and the edit/write tools
+     * arbitrate between sibling subagents that share one coordination session, and so that
+     * their tool calls renew that subagent's edit-lock lease. MCP tool calls carry no
+     * context identity: subagents behind one MCP connection pass {@code agent_name} to
+     * {@code edit_coordinator} and the edit tools instead. A known identity here wins over
+     * {@code agent_name}.
+     */
+    public String getCoordinationAgent() { return coordinationAgent; }
+
+    public void setCoordinationAgent(String coordinationAgent) {
+        this.coordinationAgent = coordinationAgent == null || coordinationAgent.isBlank()
+                ? null : coordinationAgent.trim();
+    }
     public ai.kompile.cli.main.chat.enforcer.JudgeControl getJudgeControl() { return judgeControl; }
     public boolean isJudgeToolCallScoped() { return judgeToolCallScoped; }
     public void bindJudgeControl(ai.kompile.cli.main.chat.enforcer.JudgeControl control, boolean toolCallScoped) {
@@ -201,6 +219,7 @@ public class ToolContext {
         child.supervisedChild = supervisedChild;
         child.bindJudgeControl(judgeControl, judgeToolCallScoped);
         child.workflow = workflow;
+        child.coordinationAgent = coordinationAgent;
         return child;
     }
 

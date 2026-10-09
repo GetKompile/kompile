@@ -2,7 +2,7 @@ import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 
 import {
-  InsightsSettingsView, InsightsTopicReport, LocalAgentChatService, SessionInsightsSnapshot
+  HarnessRunClosedError, InsightsSettingsView, InsightsTopicReport, LocalAgentChatService, SessionInsightsSnapshot
 } from './local-agent-chat.service';
 import { ChatStorageService } from './chat-storage.service';
 import { SKIP_ERROR_SNACKBAR } from './http-error.interceptor';
@@ -228,6 +228,46 @@ describe('LocalAgentChatService harness transport', () => {
     expect(session.messages[1].content).toBe('first answer\n\ncompletion answer');
     expect(service.liveControlsReady).toBeFalse();
     expect(service.getCurrentProcessId()).toBeNull();
+  });
+
+  it('stops sending live input once the run is finishing and reports input it never took', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } });
+    const emit = (name: string, data: unknown) => stream.enqueue(new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
+    const fetchSpy = spyOn(window, 'fetch').and.resolveTo(new Response(body, { status: 200 }));
+    const session = service.createSession('finishing');
+    const run = service.sendMessage(session, 'first', { name: 'coder', displayName: 'Coder' } as AgentProvider);
+    emit('start', { processId: 'harness-1' });
+    emit('activity', { backgroundable: false, turnActive: true, controlsOpen: true, processes: [], tasks: [] });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(service.liveControlsReady).toBeTrue();
+
+    // Sent just as the run closed: the harness answers that it never took it, well before any timeout.
+    fetchSpy.and.resolveTo(new Response(JSON.stringify({ accepted: true }), { status: 202 }));
+    const late = expectAsync(service.sendHarnessControl('input', undefined, 'next')).toBeRejectedWith(jasmine.any(HarnessRunClosedError));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const frame = JSON.parse(String((fetchSpy.calls.mostRecent().args[1] as RequestInit).body));
+    emit('turn_complete', { text: 'answer' });
+    emit('control', { requestId: frame.requestId, action: 'input', ok: false, message: 'Run closed', closed: true });
+    emit('activity', { backgroundable: false, turnActive: false, controlsOpen: false, processes: [], tasks: [] });
+    await late;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(service.liveControlsReady).toBeFalse();
+    expect(service.getCurrentProcessId()).toBe('harness-1'); // its end is still streaming
+    expect(service.liveInputHistory).toEqual([]);
+
+    emit('complete', { content: 'answer' });
+    stream.close();
+    await run;
+  });
+
+  it('reports a control the server refused for a finishing run as never taken', async () => {
+    (service as any).currentProcessId = 'harness-test';
+    service.liveControlsReady = true;
+    spyOn(window, 'fetch').and.resolveTo(new Response(
+      JSON.stringify({ accepted: false, message: 'Live controls are not ready' }), { status: 409 }));
+    await expectAsync(service.sendHarnessControl('input', undefined, 'next'))
+      .toBeRejectedWith(jasmine.any(HarnessRunClosedError));
   });
 
   it('marks unconfirmed process state unknown rather than claiming successful cancellation', () => {

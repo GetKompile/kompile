@@ -78,6 +78,54 @@ class ShellMandatePolicyTest {
     }
 
     @Nested
+    @DisplayName("Native memory mutations must use Kompile memory")
+    class NativeMemoryMutations {
+        @ParameterizedTest
+        @ValueSource(strings = {"Write", "Edit", "MultiEdit", "NotebookEdit", "mcp__kompile__write",
+                "mcp__kompile__edit", "mcp__kompile__edit_batch", "mcp__kompile__edit_patch", "patch"})
+        void fileMutationToolsRejectManagedMemory(String tool) {
+            EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs(tool,
+                    "{\"file_path\":\".claude/projects/-repo/memory/MEMORY.md\"}");
+            assertNotNull(decision);
+            assertFalse(decision.isAllowed());
+            assertTrue(decision.getCorrectionPrompt().contains("mcp__kompile__memory"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"edits", "patches"})
+        void batchMutationInspectsEveryTarget(String field) {
+            EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs(
+                    "mcp__kompile__edit_batch", "{\"" + field + "\":[{\"file_path\":\"ordinary.md\"},"
+                            + "{\"file_path\":\".claude/projects/-repo/memory/feedback.md\"}]}");
+            assertNotNull(decision);
+            assertFalse(decision.isAllowed());
+        }
+
+        @Test
+        void memoryToolIsNotConfusedWithFileMutation() {
+            assertNull(ShellMandatePolicy.evaluateFromSerializedArgs("mcp__kompile__memory",
+                    "{\"action\":\"write\",\"file\":\".claude/memory/MEMORY.md\",\"content\":\"note\"}"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"invalid", "null", "[]", "{\"file_path\":\"\\u0000\"}"})
+        void uninspectableNativeMutationFailsClosed(String args) {
+            EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs("Write", args);
+            assertNotNull(decision);
+            assertFalse(decision.isAllowed());
+        }
+
+        @Test
+        void disabledSessionJudgeCannotBypassMemoryGate(@TempDir Path sessionsDir) {
+            JudgeControl control = new JudgeControl("memory-hook", sessionsDir);
+            control.setEnabled(false);
+            EnforcerToolCallDecision decision = EnforcerToolCallGuard.evaluateSession(null, "Write",
+                    Map.of("file_path", ".claude/projects/-repo/memory/MEMORY.md"), control, new ObjectMapper());
+            assertFalse(decision.isAllowed());
+        }
+    }
+
+    @Nested
     @DisplayName("In-place rewrites are always blocked")
     class InPlaceRewrites {
         @ParameterizedTest
@@ -882,6 +930,13 @@ class ShellMandatePolicyTest {
                 assertTrue(guard.evaluate("mcp__kompile__process", Map.of(
                         "action", "monitor", "process_id", "build")).isAllowed());
                 assertTrue(guard.evaluate("bash", Map.of("command", "mvn test")).isAllowed());
+                EnforcerToolCallDecision memory = guard.evaluate("Write", Map.of(
+                        "file_path", ".claude/projects/-repo/memory/MEMORY.md", "content", "note"));
+                assertFalse(memory.isAllowed());
+                assertTrue(memory.getCorrectionPrompt().contains("mcp__kompile__memory"));
+                assertTrue(guard.evaluate("mcp__kompile__memory", Map.of(
+                        "action", "save", "content", "note")).isAllowed());
+                assertTrue(guard.describe().contains("lazy"));
             }
         }
 
@@ -893,6 +948,9 @@ class ShellMandatePolicyTest {
                     "{\"command\":\"grep -rn TODO src/\"}", policy).isAllowed());
             assertFalse(evaluator.evaluateToolCall("bash",
                     "{\"command\":\"ps aux | grep java\"}", policy).isAllowed());
+            assertFalse(evaluator.evaluateToolCall("Edit",
+                    "{\"file_path\":\".claude/projects/-repo/memory/feedback.md\",\"new_string\":\"note\"}",
+                    policy).isAllowed());
         }
     }
 }

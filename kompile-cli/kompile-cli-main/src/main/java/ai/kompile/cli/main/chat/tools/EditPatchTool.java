@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.CoordinationStateManager.AgentEditGuard;
 import ai.kompile.cli.main.coordination.EditLockEntry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,8 +46,10 @@ public class EditPatchTool implements CliTool {
 
     /**
      * Optional coordination manager for multi-agent edit tracking. May be null.
-     * When present, files locked by ANOTHER session fail fast with the holder
-     * identified.
+     * When present, files locked by ANOTHER owner fail fast with the holder identified:
+     * another session's lock for a caller without identity; under an agent identity, any
+     * other live owner's lock, verified (with the agent's lease renewed) in one coordinator
+     * critical section before the first write.
      */
     private final CoordinationStateManager coordinationManager;
 
@@ -108,6 +111,8 @@ public class EditPatchTool implements CliTool {
                 "Stop at the first failing FILE instead of continuing with the rest (default: false). "
                         + "Files already written stay written.");
 
+        EditCoordinatorTool.addEditAgentNameProperty(props);
+
         schema.putArray("required").add("patches");
         return schema;
     }
@@ -123,6 +128,8 @@ public class EditPatchTool implements CliTool {
             return ToolResult.error("patches (non-empty array) is required");
         }
         boolean stopOnError = params.path("stop_on_error").asBoolean(false);
+        // Agent identity (native subagent, or the optional agent_name); null = session semantics.
+        String agent = EditCoordinatorTool.lockOwner(params, context);
 
         // Parse + resolve everything up front so malformed input fails before any write.
         Map<Path, List<ApplyPatchFormat.Hunk>> perFile = new LinkedHashMap<>();
@@ -154,6 +161,14 @@ public class EditPatchTool implements CliTool {
         context.checkPermission(permissionKey(),
                 "Batch patch " + perFile.size() + " file(s)");
 
+        // Under an agent identity: renew the lease and re-verify every target's lock in one
+        // coordinator critical section before the first write. A busy coordinator fails the
+        // whole call (nothing written); files held by another live owner fail with CONFLICT.
+        AgentEditGuard guard = EditCoordinatorTool.guardEdit(coordinationManager, agent, perFile.keySet());
+        if (guard != null && guard.isBusy()) {
+            return ToolResult.error(guard.busyMessage());
+        }
+
         StringBuilder out = new StringBuilder();
         int filesPatched = 0;
         int filesFailed = 0;
@@ -164,7 +179,7 @@ public class EditPatchTool implements CliTool {
                 out.append("- ").append(display(context, entry.getKey())).append(": skipped (stop_on_error)\n");
                 continue;
             }
-            String error = patchFile(context, entry.getKey(), entry.getValue());
+            String error = patchFile(context, entry.getKey(), entry.getValue(), guard);
             if (error == null) {
                 filesPatched++;
                 out.append("+ ").append(display(context, entry.getKey()))
@@ -192,14 +207,20 @@ public class EditPatchTool implements CliTool {
     }
 
     /** Apply one file's hunks; returns null on success, else the failure reason. */
-    private String patchFile(ToolContext context, Path path, List<ApplyPatchFormat.Hunk> hunks) {
+    private String patchFile(ToolContext context, Path path, List<ApplyPatchFormat.Hunk> hunks,
+                             AgentEditGuard guard) {
         if (!Files.exists(path)) {
             return "file not found (edit_patch updates existing files; use write or patch to create)";
         }
         if (!context.hasFreshFileRead(path)) {
             return context.staleReadMessage(path, "patch");
         }
-        if (coordinationManager != null) {
+        if (guard != null) {
+            // Agent identity: the pre-write guard already renewed and verified this file.
+            String refused = guard.conflictMessage(path.toAbsolutePath().toString());
+            if (refused != null) return refused;
+        } else if (coordinationManager != null) {
+            // No identity: session semantics — another session's lock fails the file fast.
             EditLockEntry conflict = coordinationManager.findConflictingLock(
                     path.toAbsolutePath().toString());
             if (conflict != null) {

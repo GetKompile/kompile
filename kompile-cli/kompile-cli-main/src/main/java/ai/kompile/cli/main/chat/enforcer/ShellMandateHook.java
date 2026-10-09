@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.nio.file.Path;
 
 /** Pre-execution gate for provider-native tools, independent of optional judge rules. */
 public final class ShellMandateHook {
@@ -28,7 +29,9 @@ public final class ShellMandateHook {
                 error.println("[kompile] Shell mandate hook cannot read the shell command; refusing execution.");
                 return 2;
             }
-            EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs(toolName, args.toString());
+            Path cwd = Path.of(event.path("cwd").asText(System.getProperty("user.dir")));
+            EnforcerToolCallDecision decision = ShellMandatePolicy.evaluateFromSerializedArgs(
+                    toolName, args.toString(), cwd);
             if (decision != null) {
                 error.println("[kompile] " + decision.getCorrectionPrompt());
                 return 2;

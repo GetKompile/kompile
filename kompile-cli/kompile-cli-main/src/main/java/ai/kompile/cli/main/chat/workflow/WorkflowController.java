@@ -30,6 +30,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -945,12 +947,22 @@ public final class WorkflowController {
                     });
                 }
             }
-            case "release_edit" -> turn.editLockIds.remove(
-                    arguments.path("lock_id").asText(""));
+            // A refused release (lock owned by another agent/session, or coordinator
+            // failure) leaves the lock in place, so it must stay tracked.
+            case "release_edit" -> {
+                if (!result.isError()) turn.editLockIds.remove(arguments.path("lock_id").asText(""));
+            }
             case "release_edits" -> {
                 JsonNode lockIds = arguments.path("lock_ids");
-                if (lockIds.isArray()) lockIds.forEach(
-                        lockId -> turn.editLockIds.remove(lockId.asText("")));
+                Object retained = result.getMetadata().get("retainedLockIds");
+                Set<String> kept = new HashSet<>();
+                if (retained instanceof Collection<?> ids) {
+                    ids.forEach(id -> kept.add(String.valueOf(id)));
+                }
+                if (lockIds.isArray()) lockIds.forEach(lockId -> {
+                    String id = lockId.asText("");
+                    if (!kept.contains(id)) turn.editLockIds.remove(id);
+                });
             }
             default -> { }
         }

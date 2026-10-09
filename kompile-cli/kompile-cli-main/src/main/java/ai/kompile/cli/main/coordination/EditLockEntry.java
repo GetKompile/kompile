@@ -25,7 +25,21 @@ import java.time.Instant;
 
 /**
  * Represents an advisory edit lock on a file. Serialized as JSON to
- * {@code <workDir>/.kompile/coordination/edits/<sessionId>-<fileHash>.lock.json}.
+ * {@code <workDir>/.kompile/coordination/edits/<lockId>.lock.json}.
+ *
+ * <p>Ownership is the pair ({@link #sessionId}, {@link #ownerAgent}). A null
+ * {@code ownerAgent} is a session-level lock (the historical shape, and what
+ * pre-ownership records deserialize to): every caller in that session shares it.
+ * A non-null {@code ownerAgent} is the sanitized agent name that scopes the lock
+ * to one agent inside the session, so subagents sharing a single MCP connection
+ * conflict with each other. {@link #agentName} is only the display label.
+ *
+ * <p>Liveness has two parts. {@link #lastHeartbeat} + {@link #ttlSeconds} is SESSION
+ * liveness: the owning session's heartbeat refreshes it while the session runs. An
+ * agent-scoped lock also carries {@link #leaseExpiresAt}, its AGENT liveness: it is moved
+ * forward only by that agent's own activity (an edit_coordinator call, an edit-tool call or
+ * a register under its agent name), never by the session heartbeat. The lock is stale when
+ * either has run out, so a lock a sibling agent forgot does not live as long as its session.
  */
 @Data
 @NoArgsConstructor
@@ -40,6 +54,10 @@ public class EditLockEntry {
 
     @JsonProperty("agentName")
     private String agentName;
+
+    /** Sanitized owning agent within {@link #sessionId}; null for a session-level lock. */
+    @JsonProperty("ownerAgent")
+    private String ownerAgent;
 
     @JsonProperty("filePath")
     private String filePath;
@@ -59,6 +77,13 @@ public class EditLockEntry {
     @JsonProperty("ttlSeconds")
     private int ttlSeconds;
 
+    /**
+     * End of the owning agent's lease; null for a session-level lock (and for lock files
+     * written before leases existed), which then only ages out through the TTL.
+     */
+    @JsonProperty("leaseExpiresAt")
+    private Instant leaseExpiresAt;
+
     public EditLockEntry(String lockId, String sessionId, String agentName,
                          String filePath, String absolutePath, String editType,
                          Instant acquiredAt, int ttlSeconds) {
@@ -73,10 +98,33 @@ public class EditLockEntry {
         this.ttlSeconds = ttlSeconds;
     }
 
+    public EditLockEntry(String lockId, String sessionId, String ownerAgent, String agentName,
+                         String filePath, String absolutePath, String editType,
+                         Instant acquiredAt, int ttlSeconds) {
+        this(lockId, sessionId, agentName, filePath, absolutePath, editType, acquiredAt, ttlSeconds);
+        this.ownerAgent = ownerAgent;
+    }
+
     /**
-     * Returns true if this entry has exceeded its TTL based on the last heartbeat.
+     * Returns true if this entry has exceeded its TTL based on the last heartbeat, or its
+     * agent lease has expired.
      */
     public boolean isStale() {
-        return Instant.now().isAfter(lastHeartbeat.plusSeconds(ttlSeconds));
+        Instant now = Instant.now();
+        return isHeartbeatExpired(now) || isLeaseExpired(now);
+    }
+
+    /** Session liveness: the owning session's heartbeat TTL has run out at {@code now}. */
+    public boolean isHeartbeatExpired(Instant now) {
+        return lastHeartbeat == null || now.isAfter(lastHeartbeat.plusSeconds(ttlSeconds));
+    }
+
+    /**
+     * Agent liveness: the owning agent's lease has run out at {@code now}. Always false for a
+     * session-level lock. A lease is moved forward only by the agent's own activity, so a
+     * lock renewed within its lease never expires through the lease.
+     */
+    public boolean isLeaseExpired(Instant now) {
+        return leaseExpiresAt != null && now.isAfter(leaseExpiresAt);
     }
 }

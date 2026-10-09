@@ -29,7 +29,7 @@ import { ChatActivity, chatActivity, IDLE_CHAT_ACTIVITY } from '../chat-activity
 
 // Services
 import { ConversationalRagService } from '@shared/services/conversational-rag.service';
-import { LocalAgentChatService, ContextBudget, CompactChatResponse, HarnessControlAction, HarnessControlReply, WorkflowTeam } from '@shared/services/local-agent-chat.service';
+import { LocalAgentChatService, ContextBudget, CompactChatResponse, HarnessControlAction, HarnessControlReply, HarnessRunClosedError, WorkflowTeam } from '@shared/services/local-agent-chat.service';
 import { AgentService } from '@shared/services/agent.service';
 import { ChatStorageService } from '@shared/services/chat-storage.service';
 import { ChatHistoryService, ChatMessageDto } from '@shared/services/chat-history.service';
@@ -1609,7 +1609,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       if (action === 'subagent_input' && reply.ok && targetId && this.subagentInputs[targetId] === text)
         this.subagentInputs[targetId] = '';
     } catch (error) {
-      this.harnessControlMessage = error instanceof Error ? error.message : 'Control failed';
+      if (error instanceof HarnessRunClosedError && text !== undefined && (action === 'input' || action === 'command')) {
+        // The run finished before it took the message: send it as the next run, as if typed after it.
+        this.queueUntilRunEnds(text);
+      } else {
+        this.harnessControlMessage = error instanceof Error ? error.message : 'Control failed';
+      }
     } finally {
       this.harnessControlPending = false;
       if (!this.harnessViewDestroyed) this.cdr.detectChanges();
@@ -1688,6 +1693,16 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.cdr.detectChanges();
   }
 
+  /** Parks a message until the current run ends; a run that already ended sends it now. */
+  private queueUntilRunEnds(text: string): void {
+    const waiting = this.isStreaming || this.isLoading;
+    this.queuedMessages.push(text);
+    if (this.userInput === text) this.userInput = '';
+    this.harnessControlMessage = waiting ? 'Message queued; it sends when the current run finishes.' : '';
+    if (!this.harnessViewDestroyed) this.cdr.detectChanges();
+    if (!waiting) this.flushQueuedMessages();
+  }
+
   /** Send locally queued follow-ups in order after a run completes. */
   private flushQueuedMessages(): void {
     if (this.queuedMessages.length === 0 || this.isStreaming || this.isLoading) return;
@@ -1708,12 +1723,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
         const text = this.userInput;
         void this.sendHarnessControl(text.trimStart().startsWith('/') ? 'command' : 'input', undefined, text);
       } else {
-        // No live controls (queued run / reconnect pending): park the message
+        // No live controls (queued, reconnecting or finishing run): park the message
         // locally and send it when the stream completes. Typing stays possible.
-        this.queuedMessages.push(this.userInput);
-        this.userInput = '';
-        this.harnessControlMessage = 'Message queued; it sends when the current run finishes.';
-        this.cdr.detectChanges();
+        this.queueUntilRunEnds(this.userInput);
       }
       return;
     }

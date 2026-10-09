@@ -427,6 +427,9 @@ public class DirectSubagentRunner implements SubagentRunner {
                 );
                 subContext.markSupervisedChild();
                 subContext.bindWorkflow(session.workflow);
+                // Sibling subagents share the parent's coordination session; their own id
+                // scopes edit-lock ownership so they arbitrate against each other.
+                subContext.setCoordinationAgent(session.id);
                 subContext.linkAbortCheck(
                         () -> session.cancelled.get() || session.parentContext.isAborted());
                 subContext.setOutputConsumer(session.parentContext.getOutputConsumer());
@@ -555,6 +558,10 @@ public class DirectSubagentRunner implements SubagentRunner {
         session.lastTouched = System.currentTimeMillis();
         session.ownerThread = null;
         if (session.cancelled.get()) Thread.interrupted();
+        // The run is over (completed, failed or cancelled): free every edit lock it took
+        // under its coordination identity now, before anyone is told it ended. A later
+        // follow-up run re-registers what it needs.
+        EditCoordinatorTool.releaseAgentLocks(toolRegistry, session.id);
         if (lifecycleListener != null) lifecycleListener.onSubagentEnd(session.id);
         session.running.set(false);
         if (session.cancelled.get()) {

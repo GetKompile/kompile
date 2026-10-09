@@ -89,6 +89,17 @@ public class HarnessConfig {
     @JsonProperty private boolean thinkingAnalysisEnabled = true;
     @JsonProperty private List<String> toolRequiredTaskTypes = List.of("code-review", "exploration", "indexing");
 
+    // ── Multi-agent edit coordination ─────────────────────────────
+    /**
+     * Lease, in seconds, of an agent-owned edit lock (an {@code edit_coordinator} lock taken
+     * with an {@code agent_name}, or by an in-process subagent). Every edit_coordinator call,
+     * edit-tool call or register made under that agent name renews the lease of all of the
+     * agent's locks; a lock whose lease runs out with no such activity is stale and can be
+     * reclaimed by another agent, even while its session is alive. Session-level locks (no
+     * agent name) have no lease. Values below 60 are raised to 60.
+     */
+    @JsonProperty private int editLockLeaseSeconds = 600;
+
     /**
      * Load config from disk, or return defaults if file doesn't exist.
      */

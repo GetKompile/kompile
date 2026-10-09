@@ -21,6 +21,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -32,7 +36,7 @@ import java.util.regex.Pattern;
 
 /**
  * Deterministic harness mandate that stops shell-execution tools from bypassing the
- * dedicated kompile file/search/memory tools.
+ * dedicated kompile file/search/memory tools, and native file tools from writing managed memory.
  *
  * <p>The tool-mandate table in AGENTS.md bans using shell equivalents
  * ({@code sed -i}, {@code grep}, {@code cat}, {@code find}, {@code ls}, ...) for operations
@@ -93,6 +97,14 @@ public final class ShellMandatePolicy {
     /** Canonical (un-namespaced, lowercase) tools that execute shell commands. */
     private static final Set<String> SHELL_TOOLS =
             Set.of("bash", "sh", "shell", "zsh", "terminal", "exec", "process");
+
+    /** Claude-native mutations bypass ToolContext's managed-memory guard. */
+    private static final Set<String> FILE_MUTATION_TOOLS = Set.of(
+            "write", "edit", "multiedit", "notebookedit", "edit_batch", "edit_patch", "patch");
+    private static final List<String> MUTATION_PATH_FIELDS = List.of(
+            "file_path", "path", "file", "notebook_path");
+    private static final Set<String> PROVIDER_MEMORY_DIRS = Set.of(
+            ".claude", ".codex", ".gemini", ".qwen", ".opencode");
 
     /** Prefix words that do not change the executed command; skipped when finding the head. */
     private static final Set<String> COMMAND_PREFIXES =
@@ -232,16 +244,90 @@ public final class ShellMandatePolicy {
     }
 
     /**
-     * Evaluate serialized JSON tool arguments (the {@code evaluateToolCall} shape).
-     * Extracts the {@code command} field; a non-JSON payload is treated as the command text.
+     * Evaluate serialized tool arguments, including native file mutations of managed memory.
+     * Shell arguments extract the command field; a non-JSON shell payload remains command text.
      *
      * @return a BLOCK decision, or {@code null} when the call is compliant / out of scope.
      */
     public static EnforcerToolCallDecision evaluateFromSerializedArgs(String toolName, String toolInput) {
+        return evaluateFromSerializedArgs(toolName, toolInput, Path.of(System.getProperty("user.dir")));
+    }
+
+    /** Provider hooks supply their event cwd so relative paths and symlink aliases are checked correctly. */
+    public static EnforcerToolCallDecision evaluateFromSerializedArgs(
+            String toolName, String toolInput, Path workingDirectory) {
+        if (FILE_MUTATION_TOOLS.contains(JudgeToolPolicy.canonicalToolName(toolName))) {
+            try {
+                JsonNode args = JSON.readTree(toolInput == null ? "{}" : toolInput);
+                if (args == null || !args.isObject()) {
+                    return memoryMutationDecision("Cannot inspect file mutation arguments");
+                }
+                String target = managedMemoryTarget(args, workingDirectory);
+                if (target != null) {
+                    return memoryMutationDecision("Direct file mutation of managed memory is blocked: " + target);
+                }
+            } catch (JsonProcessingException | InvalidPathException e) {
+                return memoryMutationDecision("Cannot inspect file mutation arguments");
+            }
+        }
         if (!isShellTool(toolName)) {
             return null;
         }
         return evaluateCommand(toolName, extractCommandFromJson(toolInput));
+    }
+
+    private static EnforcerToolCallDecision memoryMutationDecision(String reason) {
+        String correction = reason + ". Save memories with Kompile's `memory` MCP tool"
+                + " (`mcp__kompile__memory`, action=save/write/append), not Write/Edit or direct .claude files.";
+        return new EnforcerToolCallDecision(EnforcerToolCallDecision.Action.BLOCK,
+                reason, List.of(reason), correction, null);
+    }
+
+    /** Inspect only target fields, never document contents or replacement strings. */
+    private static String managedMemoryTarget(JsonNode args, Path workingDirectory) {
+        for (String field : MUTATION_PATH_FIELDS) {
+            JsonNode value = args.get(field);
+            if (value == null || !value.isTextual() || value.asText().isBlank()) continue;
+            String target = value.asText();
+            String expanded = target.startsWith("~/")
+                    ? System.getProperty("user.home") + target.substring(1) : target;
+            Path path = workingDirectory.resolve(expanded).toAbsolutePath().normalize();
+            if (isManagedMemoryTarget(path) || isManagedMemoryTarget(realMutationTarget(path))) return target;
+        }
+        for (String field : List.of("edits", "patches")) {
+            JsonNode entries = args.path(field);
+            if (!entries.isArray()) continue;
+            for (JsonNode entry : entries) {
+                String target = managedMemoryTarget(entry, workingDirectory);
+                if (target != null) return target;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isManagedMemoryTarget(Path path) {
+        String previous = null;
+        boolean insideProvider = false;
+        for (Path part : path) {
+            String name = part.toString().toLowerCase(Locale.ROOT);
+            if (("memory".equals(name) && (".kompile".equals(previous) || insideProvider))
+                    || ("memory.md".equals(name) && insideProvider)) return true;
+            if (PROVIDER_MEMORY_DIRS.contains(name)) insideProvider = true;
+            previous = name;
+        }
+        return false;
+    }
+
+    /** Resolve the nearest existing ancestor, including when a new file is under a memory symlink. */
+    private static Path realMutationTarget(Path path) {
+        Path existing = path;
+        while (existing != null && !Files.exists(existing)) existing = existing.getParent();
+        if (existing == null) return path;
+        try {
+            return existing.toRealPath().resolve(existing.relativize(path)).normalize();
+        } catch (IOException e) {
+            return path;
+        }
     }
 
     /** Shared deterministic loop check for the mandate and enforced workflow gates. */

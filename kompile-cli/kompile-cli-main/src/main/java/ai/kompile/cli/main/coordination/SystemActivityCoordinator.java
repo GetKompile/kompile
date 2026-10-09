@@ -45,6 +45,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -374,8 +375,34 @@ public final class SystemActivityCoordinator implements AutoCloseable {
         return activitiesDir.resolve(safeComponent(activityId, "activityId") + ".activity.json");
     }
 
+    /**
+     * In-JVM gate in front of the user-wide lock file, shared by every coordinator of this
+     * JVM. Only the gate holder opens the lock file: POSIX drops ALL of a process's record
+     * locks on a file when ANY descriptor of it is closed, so a same-JVM thread that opened
+     * the file, found it busy and closed it again would release the holder's OS lock and let
+     * another process into the critical section.
+     */
+    private static final ConcurrentHashMap<Path, ReentrantLock> JVM_LOCK_GATES = new ConcurrentHashMap<>();
+
     private <T> T withLock(LockedAction<T> action) throws Exception {
         ensureStateDirectories();
+        ReentrantLock gate = JVM_LOCK_GATES.computeIfAbsent(
+                lockFile.toAbsolutePath().normalize(), key -> new ReentrantLock());
+        if (gate.isHeldByCurrentThread()) {
+            throw new IOException("system activity lock is busy (nested call)");
+        }
+        if (!gate.tryLock(LOCK_ATTEMPTS * LOCK_RETRY_MILLIS, TimeUnit.MILLISECONDS)) {
+            throw new IOException("system activity lock remained busy for "
+                    + (LOCK_ATTEMPTS * LOCK_RETRY_MILLIS) + " ms");
+        }
+        try {
+            return withFileLock(action);
+        } finally {
+            gate.unlock();
+        }
+    }
+
+    private <T> T withFileLock(LockedAction<T> action) throws Exception {
         try (FileChannel channel = FileChannel.open(lockFile,
                 StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
             harden(lockFile, OWNER_FILE_PERMISSIONS);
@@ -385,7 +412,7 @@ public final class SystemActivityCoordinator implements AutoCloseable {
                     lock = channel.tryLock();
                     if (lock != null) return action.run();
                 } catch (OverlappingFileLockException ignored) {
-                    // Another coordinator in this JVM owns the user-wide lane briefly.
+                    // A channel of this JVM outside the gate holds it (test harnesses only).
                 } finally {
                     if (lock != null && lock.isValid()) lock.release();
                 }

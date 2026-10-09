@@ -36,8 +36,10 @@ public class WriteTool implements CliTool {
 
     /**
      * Optional coordination manager for multi-agent edit tracking. May be null.
-     * When present, overwrites of files locked by ANOTHER session carry a
-     * conflict warning in the result (locks are advisory).
+     * When present, a write under an agent identity is guarded before it touches the file
+     * (lease renewed, lock re-verified; refused with CONFLICT on a file another live owner
+     * holds); a write without identity to a file locked by ANOTHER session carries a
+     * conflict warning in the result (advisory).
      */
     private final CoordinationStateManager coordinationManager;
 
@@ -83,6 +85,8 @@ public class WriteTool implements CliTool {
         content.put("type", "string");
         content.put("description", "The content to write to the file");
 
+        EditCoordinatorTool.addEditAgentNameProperty(props);
+
         schema.putArray("required").add("file_path").add("content");
         return schema;
     }
@@ -94,6 +98,8 @@ public class WriteTool implements CliTool {
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         String filePath = params.path("file_path").asText("");
         String content = params.path("content").asText("");
+        // Agent identity (native subagent, or the optional agent_name); null = session semantics.
+        String agent = EditCoordinatorTool.lockOwner(params, context);
 
         if (filePath.isEmpty()) {
             return ToolResult.error("file_path is required");
@@ -106,6 +112,13 @@ public class WriteTool implements CliTool {
                 (exists ? "Overwrite" : "Create") + " file: " + path);
         if (exists && !context.hasFreshFileRead(path)) {
             return ToolResult.error(context.staleReadMessage(path, "overwrite"));
+        }
+
+        // Under an agent identity: renew the lease and re-verify the lock in one coordinator
+        // critical section, then write — or refuse without touching the file system.
+        String refused = EditCoordinatorTool.guardEditError(coordinationManager, agent, path);
+        if (refused != null) {
+            return ToolResult.error(refused);
         }
 
         try {
@@ -128,7 +141,9 @@ public class WriteTool implements CliTool {
                 relativePath = path.toString();
             }
             String message = (exists ? "Overwrote" : "Created") + " file with " + lines + " lines";
-            if (coordinationManager != null) {
+            if (coordinationManager != null && agent == null) {
+                // Without identity (session semantics) another session's lock only warns; a
+                // call with identity was already guarded before the write.
                 EditLockEntry conflict = coordinationManager.findConflictingLock(
                         path.toAbsolutePath().toString());
                 if (conflict != null) {

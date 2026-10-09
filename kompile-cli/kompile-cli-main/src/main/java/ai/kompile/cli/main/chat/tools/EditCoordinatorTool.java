@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.coordination.*;
+import ai.kompile.cli.main.coordination.CoordinationStateManager.AgentEditGuard;
 import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.utils.StringUtils;
@@ -25,9 +26,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,6 +74,23 @@ public class EditCoordinatorTool implements CliTool {
                 + "Editing SEVERAL files (e.g. before edit_batch/edit_patch)? Use register_edits with "
                 + "file_paths to lock them all in ONE call (all-or-nothing unless allow_partial=true), "
                 + "then release_edits with lock_ids when done.\n\n"
+                + "Lock ownership is (session, agent_name). Subagents that share ONE MCP connection "
+                + "(e.g. Claude Code Task subagents) share its session, so each MUST pass its own "
+                + "agent_name to register_edit(s)/release_edit(s): a file held by a sibling agent then "
+                + "reports CONFLICT, the same agent_name re-acquires idempotently, and only the owning "
+                + "agent_name can release. Without agent_name a lock is session-level (shared by every "
+                + "caller of the session, no intra-session arbitration). Pass the same agent_name to "
+                + "edit/write/edit_batch/edit_patch: before writing they renew your lease and verify "
+                + "your locks, and REFUSE (CONFLICT, file untouched) a file held by another live agent "
+                + "or session; without agent_name they only warn about other sessions' locks. "
+                + "Arbitrate with register_edit(s) BEFORE editing.\n\n"
+                + "Agent locks have a LEASE (harness-config.json editLockLeaseSeconds, default 600s): every "
+                + "edit_coordinator call and edit/write/edit_batch/edit_patch call under your agent_name "
+                + "renews it synchronously; a lock whose agent shows no activity for a full lease becomes "
+                + "stale and another agent can take the file — your next edit of it then fails with "
+                + "CONFLICT naming the new holder. A call that finds the coordinator busy past its "
+                + "bounded wait fails with an error and changes nothing; retry it. In-process subagents' "
+                + "locks are released when they finish. Release your locks when done anyway.\n\n"
                 + "High-memory builds, tests, crawls, model work, and indexing are preflighted "
                 + "automatically by the harness; blocked launches install a one-shot resource watch. "
                 + "preflight_activity is dry; watch_activity explicitly watches peer work and RAM/GPU capacity. "
@@ -126,7 +146,8 @@ public class EditCoordinatorTool implements CliTool {
         ObjectNode lockIds = props.putObject("lock_ids");
         lockIds.put("type", "array");
         lockIds.putObject("items").put("type", "string");
-        lockIds.put("description", "Lock IDs for release_edits — releases them all in one call");
+        lockIds.put("description", "Full lock IDs for release_edits — releases them all in one call "
+                + "(only locks you own; pass the same agent_name you registered with)");
 
         ObjectNode allowPartial = props.putObject("allow_partial");
         allowPartial.put("type", "boolean");
@@ -140,7 +161,8 @@ public class EditCoordinatorTool implements CliTool {
 
         ObjectNode lockId = props.putObject("lock_id");
         lockId.put("type", "string");
-        lockId.put("description", "Lock ID returned by register_edit, used for release_edit");
+        lockId.put("description", "Full lock ID returned by register_edit (also listed by query_edits/awareness), "
+                + "used for release_edit; only the owner can release it");
 
         ObjectNode task = props.putObject("task");
         task.put("type", "string");
@@ -148,7 +170,13 @@ public class EditCoordinatorTool implements CliTool {
 
         ObjectNode agentName = props.putObject("agent_name");
         agentName.put("type", "string");
-        agentName.put("description", "Agent name (optional, for register_agent)");
+        agentName.put("description", "Agent name. register_agent: labels this session's presence. "
+                + "register_edit/register_edits/release_edit/release_edits: also SCOPES LOCK OWNERSHIP "
+                + "within the session — subagents sharing one MCP connection must each pass a distinct "
+                + "agent_name so their locks conflict; the same agent_name re-acquires and is required "
+                + "to release. Any call with your agent_name renews the lease of your locks (they go "
+                + "stale after a lease without activity, and another agent may then take the file). "
+                + "Omit for a session-level lock shared by every caller in the session (no lease).");
 
         ObjectNode toolSessionId = props.putObject("tool_session_id");
         toolSessionId.put("type", "string");
@@ -247,18 +275,30 @@ public class EditCoordinatorTool implements CliTool {
         if (action.isEmpty()) {
             return ToolResult.error("action is required");
         }
+        // Any edit_coordinator call made under an agent identity is that agent's activity: it
+        // renews the lease of every edit lock the agent holds in this session, synchronously,
+        // before the action runs. register_edit(s) renew inside their own acquire critical
+        // section; every other action renews here and is refused when the coordinator stays
+        // busy, so an agent is never told it is active while its leases were not moved.
+        String agent = lockOwner(params, context);
+        if (agent != null && !"register_edit".equals(action) && !"register_edits".equals(action)
+                && !coordinator.renewAgentLease(agent)) {
+            return ToolResult.error("Coordinator busy: could not renew the edit-lock lease of agent '"
+                    + agent + "' within the coordinator's bounded wait; " + action
+                    + " was not performed and nothing was changed — retry.");
+        }
 
         switch (action) {
             case "register_edit":
                 return executeRegisterEdit(params, context);
             case "release_edit":
-                return executeReleaseEdit(params);
+                return executeReleaseEdit(params, context);
             case "register_edits":
                 return executeRegisterEdits(params, context);
             case "release_edits":
-                return executeReleaseEdits(params);
+                return executeReleaseEdits(params, context);
             case "query_edits":
-                return executeQueryEdits(params);
+                return executeQueryEdits(params, context);
             case "query_processes":
                 return executeQueryProcesses();
             case "register_agent":
@@ -312,10 +352,14 @@ public class EditCoordinatorTool implements CliTool {
         // Resolve to absolute path
         String absolutePath = context.resolvePath(filePath).toAbsolutePath().toString();
         String editType = params.path("edit_type").asText("edit");
-        String agentName = params.path("agent_name").asText(null);
+        String owner = lockOwner(params, context);
 
-        EditLockResult result = coordinator.tryAcquireEditLock(absolutePath, editType, agentName);
+        EditLockResult result = coordinator.tryAcquireEditLock(
+                absolutePath, editType, owner, lockLabel(params, owner));
 
+        if (result.isBusy()) {
+            return ToolResult.error(result.getConflictMessage());
+        }
         if (result.hasConflict()) {
             EditLockEntry conflict = result.getConflictEntry();
             StringBuilder sb = new StringBuilder();
@@ -323,30 +367,37 @@ public class EditCoordinatorTool implements CliTool {
             sb.append("  Held by: ").append(conflict.getAgentName())
                     .append(" (session: ").append(conflict.getSessionId()).append(")\n");
             sb.append("  Edit type: ").append(conflict.getEditType()).append("\n");
-            sb.append("  Since: ").append(formatAge(conflict.getAcquiredAt()));
+            sb.append("  Since: ").append(formatAge(conflict.getAcquiredAt())).append("\n");
+            sb.append("  Lock id: ").append(conflict.getLockId());
 
             return ToolResult.success("conflict", sb.toString(),
                     Map.of("status", "conflict",
                             "conflictSession", conflict.getSessionId(),
-                            "conflictAgent", conflict.getAgentName()));
+                            "conflictAgent", conflict.getAgentName(),
+                            "conflictLockId", conflict.getLockId()));
         }
 
-        return ToolResult.success("acquired", "Edit lock acquired on " + absolutePath,
+        return ToolResult.success("acquired", "Edit lock acquired on " + absolutePath
+                        + " — lock_id " + result.getLockId() + ownerSuffix(owner),
                 Map.of("status", "acquired", "lockId", result.getLockId()));
     }
 
-    private ToolResult executeReleaseEdit(JsonNode params) {
+    private ToolResult executeReleaseEdit(JsonNode params, ToolContext context) {
         String lockId = params.path("lock_id").asText("");
         if (lockId.isEmpty()) {
             return ToolResult.error("lock_id is required for release_edit");
         }
 
-        boolean released = coordinator.releaseEditLock(lockId);
-        if (released) {
-            return ToolResult.success("released", "Edit lock " + lockId + " released");
-        } else {
-            return ToolResult.success("not_found", "Lock " + lockId + " not found (may have already expired)");
-        }
+        CoordinationStateManager.ReleaseResult result =
+                coordinator.releaseEditLock(lockId, lockOwner(params, context));
+        return switch (result.status()) {
+            case RELEASED -> ToolResult.success("released", result.message(),
+                    Map.of("status", "released", "lockId", lockId));
+            case NOT_FOUND -> ToolResult.success("not_found", result.message(),
+                    Map.of("status", "not_found", "lockId", lockId));
+            // Refusals are errors: the lock is still held and must not be treated as released.
+            case NOT_OWNER, FAILED -> ToolResult.error(result.message());
+        };
     }
 
     private ToolResult executeRegisterEdits(JsonNode params, ToolContext context) throws ToolExecutionException {
@@ -363,11 +414,14 @@ public class EditCoordinatorTool implements CliTool {
             absolutePaths.add(context.resolvePath(raw).toAbsolutePath().toString());
         }
         String editType = params.path("edit_type").asText("edit");
-        String agentName = params.path("agent_name").asText(null);
+        String owner = lockOwner(params, context);
         boolean allowPartial = params.path("allow_partial").asBoolean(false);
 
-        CoordinationStateManager.BatchAcquireResult batch =
-                coordinator.tryAcquireEditLocks(absolutePaths, editType, agentName, allowPartial);
+        CoordinationStateManager.BatchAcquireResult batch = coordinator.tryAcquireEditLocks(
+                absolutePaths, editType, owner, lockLabel(params, owner), allowPartial);
+        if (batch.busy()) {
+            return ToolResult.error(batch.results().values().iterator().next().getConflictMessage());
+        }
 
         StringBuilder sb = new StringBuilder();
         Map<String, Object> lockIds = new LinkedHashMap<>();
@@ -382,6 +436,7 @@ public class EditCoordinatorTool implements CliTool {
                         .append(" — held by ").append(c != null ? c.getAgentName() : "unknown")
                         .append(" (session ").append(c != null ? c.getSessionId() : "?").append(")")
                         .append(c != null ? ", since " + formatAge(c.getAcquiredAt()) : "")
+                        .append(c != null ? ", lock_id " + c.getLockId() : "")
                         .append('\n');
             } else {
                 sb.append("skipped   ").append(e.getKey()).append(" — ").append(r.getConflictMessage()).append('\n');
@@ -400,7 +455,7 @@ public class EditCoordinatorTool implements CliTool {
                         "lockIds", lockIds));
     }
 
-    private ToolResult executeReleaseEdits(JsonNode params) {
+    private ToolResult executeReleaseEdits(JsonNode params, ToolContext context) {
         JsonNode lockIds = params.path("lock_ids");
         if (!lockIds.isArray() || lockIds.isEmpty()) {
             return ToolResult.error("lock_ids (non-empty array) is required for release_edits");
@@ -409,24 +464,51 @@ public class EditCoordinatorTool implements CliTool {
         for (JsonNode id : lockIds) {
             if (!id.asText("").isEmpty()) ids.add(id.asText());
         }
-        Map<String, Boolean> released = coordinator.releaseEditLocks(ids);
-        long releasedCount = released.values().stream().filter(Boolean::booleanValue).count();
+        Map<String, CoordinationStateManager.ReleaseResult> released =
+                coordinator.releaseEditLocks(ids, lockOwner(params, context));
+        long releasedCount = 0;
+        List<String> retained = new ArrayList<>();
         StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, Boolean> e : released.entrySet()) {
-            sb.append(e.getValue() ? "released  " : "not_found ").append(e.getKey()).append('\n');
+        for (Map.Entry<String, CoordinationStateManager.ReleaseResult> e : released.entrySet()) {
+            CoordinationStateManager.ReleaseResult r = e.getValue();
+            switch (r.status()) {
+                case RELEASED -> {
+                    releasedCount++;
+                    sb.append("released  ").append(e.getKey());
+                }
+                case NOT_FOUND -> sb.append("not_found ").append(e.getKey());
+                case NOT_OWNER -> {
+                    retained.add(e.getKey());
+                    sb.append("NOT_OWNER ").append(e.getKey()).append(" — ").append(r.message());
+                }
+                case FAILED -> {
+                    retained.add(e.getKey());
+                    sb.append("FAILED    ").append(e.getKey()).append(" — ").append(r.message());
+                }
+            }
+            sb.append('\n');
         }
-        return ToolResult.success("released",
-                sb.toString().stripTrailing()
-                        + "\n" + releasedCount + "/" + released.size() + " locks released",
-                Map.of("released", releasedCount, "requested", released.size()));
+        String summary = sb.toString().stripTrailing()
+                + "\n" + releasedCount + "/" + released.size() + " locks released";
+        if (!retained.isEmpty()) {
+            summary += "; " + retained.size() + " left in place (not yours, or coordinator busy)";
+        }
+        return ToolResult.success(retained.isEmpty() ? "released" : "partial", summary,
+                Map.of("released", releasedCount, "requested", released.size(),
+                        "retainedLockIds", retained));
     }
 
-    private ToolResult executeQueryEdits(JsonNode params) {
+    private ToolResult executeQueryEdits(JsonNode params, ToolContext context)
+            throws ToolExecutionException {
         String filterFile = params.path("file_path").asText(null);
 
         List<EditLockEntry> edits;
         if (filterFile != null && !filterFile.isEmpty()) {
-            edits = coordinator.queryEditsForFile(filterFile);
+            // Locks are keyed by absolute path; resolve relative filters the same way
+            // register_edit does so query_edits file_path=X matches register_edit file_path=X.
+            String absolute = context == null ? filterFile
+                    : context.resolvePath(filterFile).toAbsolutePath().toString();
+            edits = coordinator.queryEditsForFile(absolute);
         } else {
             edits = coordinator.queryEdits();
         }
@@ -435,22 +517,111 @@ public class EditCoordinatorTool implements CliTool {
             return ToolResult.success("No active file edits");
         }
 
+        // The lock id is printed in FULL (never truncated): it is what release_edit needs,
+        // and it already embeds the owning session (and agent, for agent-scoped locks).
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format("%-50s %-15s %-10s %-6s %s\n",
-                "FILE", "AGENT", "SESSION", "TYPE", "AGE"));
-        sb.append("-".repeat(100)).append("\n");
+        sb.append(String.format("%-50s %-20s %-6s %-8s %s\n",
+                "FILE", "AGENT", "TYPE", "AGE", "LOCK_ID"));
+        sb.append("-".repeat(120)).append("\n");
 
+        List<Map<String, Object>> locks = new ArrayList<>();
         for (EditLockEntry e : edits) {
-            sb.append(String.format("%-50s %-15s %-10s %-6s %s\n",
+            sb.append(String.format("%-50s %-20s %-6s %-8s %s\n",
                     StringUtils.truncate(e.getFilePath(), 50),
                     e.getAgentName(),
-                    StringUtils.truncate(e.getSessionId(), 10),
                     e.getEditType(),
-                    formatAge(e.getAcquiredAt())));
+                    formatAge(e.getAcquiredAt()),
+                    e.getLockId()));
+            Map<String, Object> lock = new LinkedHashMap<>();
+            lock.put("lockId", e.getLockId());
+            lock.put("filePath", e.getAbsolutePath());
+            lock.put("agentName", e.getAgentName());
+            lock.put("ownerAgent", e.getOwnerAgent());
+            lock.put("sessionId", e.getSessionId());
+            lock.put("editType", e.getEditType());
+            locks.add(lock);
         }
 
         return ToolResult.success("edits", sb.toString(),
-                Map.of("count", edits.size()));
+                Map.of("count", edits.size(), "locks", locks));
+    }
+
+    /**
+     * Edit-lock owner for this call. A known native subagent identity on the context
+     * wins (so register/release and the edit tools' conflict probes always agree);
+     * otherwise the explicit {@code agent_name}; otherwise null = session-level.
+     * Shared with the edit tools, which accept the same optional {@code agent_name}.
+     */
+    static String lockOwner(JsonNode params, ToolContext context) {
+        String known = context == null ? null : context.getCoordinationAgent();
+        if (known != null && !known.isBlank()) return known;
+        String agentName = params == null ? "" : params.path("agent_name").asText("");
+        return agentName.isBlank() ? null : agentName.trim();
+    }
+
+    /**
+     * Pre-write guard of an edit-tool call (edit, write, edit_batch, edit_patch) under an
+     * agent identity: renews the agent's leases and re-verifies its locks on {@code paths}
+     * in one coordinator critical section (see
+     * {@link CoordinationStateManager#guardAgentEdit}). Must run after every validation,
+     * permission prompt and read check, immediately BEFORE the write.
+     *
+     * @return null for a caller without identity or without a coordinator (session
+     *         semantics: nothing to renew or verify); otherwise the guard outcome
+     */
+    static AgentEditGuard guardEdit(CoordinationStateManager coordinator, String agent,
+                                    Collection<Path> paths) {
+        if (coordinator == null || agent == null) return null;
+        List<String> absolute = new ArrayList<>();
+        for (Path path : paths) absolute.add(path.toAbsolutePath().toString());
+        return coordinator.guardAgentEdit(agent, absolute);
+    }
+
+    /**
+     * Single-file {@link #guardEdit}: the error that must be returned INSTEAD of writing
+     * {@code path} (busy coordinator, or the file is held by another live owner — including
+     * one that reclaimed this agent's expired lock), or null when the write may proceed.
+     */
+    static String guardEditError(CoordinationStateManager coordinator, String agent, Path path) {
+        AgentEditGuard guard = guardEdit(coordinator, agent, List.of(path));
+        if (guard == null) return null;
+        if (guard.isBusy()) return guard.busyMessage();
+        return guard.conflictMessage(path.toAbsolutePath().toString());
+    }
+
+    /** The optional {@code agent_name} property every edit tool's schema carries. */
+    static void addEditAgentNameProperty(ObjectNode props) {
+        props.putObject("agent_name").put("type", "string")
+                .put("description", "Optional: your edit_coordinator agent_name (subagents sharing one "
+                        + "MCP session). Renews your edit-lock lease and verifies your locks before "
+                        + "writing: a file held by another agent (including one that reclaimed your "
+                        + "expired lock) is refused with CONFLICT and left untouched.");
+    }
+
+    /**
+     * Release every edit lock an ended in-process subagent holds, through the coordinator
+     * behind {@code registry}'s edit_coordinator tool. Called by the subagent runners when a
+     * subagent's run ends (completion, failure or cancel).
+     *
+     * @return number of locks released; 0 when the registry has no coordinator
+     */
+    public static int releaseAgentLocks(ToolRegistry registry, String agentName) {
+        if (registry == null || agentName == null || agentName.isBlank()) return 0;
+        return registry.get("edit_coordinator") instanceof EditCoordinatorTool tool
+                && tool.coordinator != null ? tool.coordinator.releaseAgentLocks(agentName) : 0;
+    }
+
+    /** Display label: the explicit agent_name when given, else the owner identity. */
+    private static String lockLabel(JsonNode params, String owner) {
+        String agentName = params.path("agent_name").asText("");
+        return agentName.isBlank() ? owner : agentName.trim();
+    }
+
+    private static String ownerSuffix(String owner) {
+        String key = CoordinationStateManager.ownerAgentKey(owner);
+        return key == null
+                ? " (session-level: no agent_name, shared by every caller in this session)"
+                : " (owned by agent '" + key + "' in this session)";
     }
 
     private ToolResult executeQueryProcesses() {
@@ -806,11 +977,13 @@ public class EditCoordinatorTool implements CliTool {
             sb.append("  (none)\n");
         } else {
             for (EditLockEntry e : edits) {
+                // Full lock id, never truncated: it is the handle release_edit needs and
+                // already embeds the owning session (and agent, for agent-scoped locks).
                 sb.append("  - ").append(e.getEditType()).append(" ")
                         .append(e.getFilePath())
                         .append(" by ").append(e.getAgentName())
-                        .append(" [").append(StringUtils.truncate(e.getSessionId(), 18)).append("]")
                         .append(" for ").append(formatAge(e.getAcquiredAt()))
+                        .append(" lock_id=").append(e.getLockId())
                         .append("\n");
             }
         }
@@ -876,7 +1049,8 @@ public class EditCoordinatorTool implements CliTool {
 
         sb.append("\nCoordination guidance:\n");
         if (!edits.isEmpty()) {
-            sb.append("  - Re-read and avoid editing locked files unless you own the listed lock.\n");
+            sb.append("  - Re-read and avoid editing locked files unless you own the listed lock "
+                    + "(subagents sharing one session: lock with your own agent_name).\n");
         }
         if (runningProcesses > 0) {
             sb.append("  - Check running process output before launching duplicate builds/tests.\n");

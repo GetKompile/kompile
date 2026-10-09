@@ -660,6 +660,45 @@ class WebHarnessControlsTest {
         node.forEach(child -> assertNoEscape(child, where));
     }
 
+    /** A process's stdin: neither closing it nor interrupting the reader ends a read already blocked in it. */
+    private static final class ProcessStdin extends InputStream {
+        private final LinkedBlockingQueue<Integer> pending = new LinkedBlockingQueue<>();
+        void send(String line) { for (byte b : (line + "\n").getBytes(StandardCharsets.UTF_8)) pending.add(b & 0xff); }
+        @Override public int read() {
+            boolean interrupted = false;
+            try {
+                while (true) {
+                    try { return pending.take(); } catch (InterruptedException e) { interrupted = true; }
+                }
+            } finally { if (interrupted) Thread.currentThread().interrupt(); }
+        }
+    }
+
+    @Test void inputSentWhileTheRunFinishesIsAnsweredAsNeverTaken() throws Exception {
+        var stdin = new ProcessStdin();
+        var events = new CopyOnWriteArrayList<HeadlessRunEvent>();
+        var answered = new CountDownLatch(1);
+        try (var processes = new BackgroundProcessManager("late-input", directory);
+             var controls = new WebHarnessControls(stdin)) {
+            assertEquals("answer", controls.run(mock(AgenticChatLoop.class), processes, "s", "first", 4000,
+                    new AtomicBoolean(), prompt -> "answer", (a, id) -> ToolResult.error("unused"), event -> {
+                        events.add(event);
+                        if (event.type() == HeadlessRunEvent.Type.CONTROL) answered.countDown();
+                    }));
+            var activity = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.ACTIVITY).map(HeadlessRunEvent::data).toList();
+            assertTrue(activity.get(0).path("controlsOpen").asBoolean(), "a working run takes live input");
+            assertFalse(activity.get(activity.size() - 1).path("controlsOpen").asBoolean(true),
+                    "the run's last activity tells the browser to send what is typed next as a new run");
+            // Sent before the browser saw that: the reader, blocked on stdin when the run closed, still reads it.
+            stdin.send("{\"version\":1,\"requestId\":\"late\",\"action\":\"input\",\"text\":\"next\"}");
+            assertTrue(answered.await(2, TimeUnit.SECONDS), "the sender must not wait out its acknowledgement timeout");
+            var reply = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.CONTROL).findFirst().orElseThrow().data();
+            assertEquals("late", reply.path("requestId").asText());
+            assertFalse(reply.path("ok").asBoolean());
+            assertTrue(reply.path("closed").asBoolean(), "closed: the run never took it, so the browser sends it next");
+        }
+    }
+
     @Test void nonterminalWireEventsCarryDataWithoutResultVocabulary() throws Exception {
         var mapper = JsonUtils.standardMapper();
         for (var type : List.of(HeadlessRunEvent.Type.CONTROL, HeadlessRunEvent.Type.ACTIVITY, HeadlessRunEvent.Type.TURN_STARTED, HeadlessRunEvent.Type.TURN_COMPLETE)) {
