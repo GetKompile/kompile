@@ -114,6 +114,37 @@ class ShellMandateHookTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"list", "output", "status", "stream", "kill", "monitor", "unmonitor", "monitors"})
+    void processActionsThatRunNoCommandRemainAllowed(String action) {
+        var event = mapper.createObjectNode().put("tool_name", "mcp__kompile__process");
+        event.putObject("tool_input").put("action", action).put("process_id", "proc-1");
+        assertEquals(0, run(event.toString(), new ByteArrayOutputStream()));
+    }
+
+    @Test
+    void processLaunchIsStillCheckedAndFailsClosedWithoutACommand() {
+        var denied = mapper.createObjectNode().put("tool_name", "mcp__kompile__process");
+        denied.putObject("tool_input").put("action", "launch").put("command", "cat input.txt");
+        var error = new ByteArrayOutputStream();
+        assertEquals(2, run(denied.toString(), error));
+        assertTrue(error.toString(StandardCharsets.UTF_8).contains("kompile"));
+
+        var build = mapper.createObjectNode().put("tool_name", "mcp__kompile__process");
+        build.putObject("tool_input").put("action", "launch").put("command", "mvn test");
+        assertEquals(0, run(build.toString(), new ByteArrayOutputStream()));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{\"tool_name\":\"Bash\",\"tool_input\":{\"action\":\"output\"}}",
+            "{\"tool_name\":\"mcp__kompile__process\",\"tool_input\":{\"action\":\"launch\"}}",
+            "{\"tool_name\":\"mcp__kompile__process\",\"tool_input\":{\"process_id\":\"proc-1\"}}",
+            "{\"tool_name\":\"mcp__kompile__process\",\"tool_input\":{\"action\":\" \"}}",
+            "{\"tool_name\":\"mcp__kompile__process\",\"tool_input\":[]}"})
+    void commandlessShellCallsStillFailClosed(String event) {
+        assertEquals(2, run(event, new ByteArrayOutputStream()));
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"invalid", "null", "{}", "{\"tool_name\":\"Bash\",\"tool_input\":{}}",
             "{\"tool_name\":\"Write\",\"tool_input\":[]}"})
     void unreadableHookEventsFailClosed(String event) {

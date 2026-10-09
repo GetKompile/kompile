@@ -24,7 +24,7 @@ public final class ShellMandateHook {
             }
             String toolName = event.path("tool_name").asText();
             JsonNode args = event.get("tool_input");
-            if (ShellMandatePolicy.isShellTool(toolName)
+            if (ShellMandatePolicy.isShellTool(toolName) && !runsNoCommand(toolName, args)
                     && (!args.isObject() || ShellMandatePolicy.extractCommandFromJson(args.toString()) == null)) {
                 error.println("[kompile] Shell mandate hook cannot read the shell command; refusing execution.");
                 return 2;
@@ -41,5 +41,19 @@ public final class ShellMandateHook {
             error.println("[kompile] Shell mandate hook failed; refusing execution: " + e.getMessage());
             return 2;
         }
+    }
+
+    /**
+     * The process tool only executes a command on {@code launch}; list/output/status/stream/kill/monitor
+     * read or signal already-tracked processes and carry no command to check. Without an action the
+     * call stays unreadable and fails closed.
+     */
+    private static boolean runsNoCommand(String toolName, JsonNode args) {
+        if (!"process".equals(JudgeToolPolicy.canonicalToolName(toolName)) || !args.isObject()) {
+            return false;
+        }
+        JsonNode action = args.get("action");
+        return action != null && action.isTextual() && !action.asText().isBlank()
+                && !"launch".equalsIgnoreCase(action.asText().trim());
     }
 }
