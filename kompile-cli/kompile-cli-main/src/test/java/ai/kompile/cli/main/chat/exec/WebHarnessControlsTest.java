@@ -51,11 +51,12 @@ class WebHarnessControlsTest {
 
     @Test void strictProtocolRejectsUnknownTypesFieldsAndTrailingData() {
         assertEquals("background", WebHarnessControls.parse(frame("background")).action());
+        assertEquals("proc-1", WebHarnessControls.parse(frame("process_unmonitor").replace("}", ",\"targetId\":\"proc-1\"}")).targetId());
         for (String s : List.of("[]", "null", frame("launch"), frame("background") + " {}",
                 frame("background").replace("1,", "1.0,"), frame("background").replace("1,", "4294967297,"),
                 frame("background").replace("\"r1\"", "null"),
                 frame("background").replace("}", ",\"command\":\"sh\"}"),
-                frame("background").replace("}", ",\"version\":1}"), frame("process_kill"),
+                frame("background").replace("}", ",\"version\":1}"), frame("process_kill"), frame("process_unmonitor"),
                 frame("background").replace("}", ",\"text\":\"unexpected\"}"),
                 frame("input").replace("}", ",\"text\":\" /model secret\"}"),
                 frame("input").replace("}", ",\"text\":\"" + "x".repeat(32769) + "\"}"))) {
@@ -653,6 +654,128 @@ class WebHarnessControlsTest {
             assertTrue(last.path("subagents").get(0).path("output").asText().contains("child-evidence"), last.toString());
             events.forEach(e -> assertNoEscape(e.data(), e.type().name()));
         } finally { writer.close(); }
+    }
+
+    private ToolContext autoApproved() {
+        var permission = new PermissionService();
+        permission.setAutoApproveAll(true);
+        return new ToolContext("s", new AgentRegistry().getDefault(), permission, directory, new ToolRegistry(JsonUtils.standardMapper()));
+    }
+
+    private static JsonNode process(JsonNode activity, String id) {
+        for (JsonNode p : activity.path("processes")) if (p.path("id").asText().equals(id)) return p;
+        return null;
+    }
+
+    @Test void aWakeUpCancelledFromTheBrowserLetsTheProcessFinishWithoutATurn() throws Exception {
+        var stdin = new ProcessStdin();
+        var prompts = new CopyOnWriteArrayList<String>();
+        var events = new CopyOnWriteArrayList<HeadlessRunEvent>();
+        var replies = new ConcurrentHashMap<String, JsonNode>();
+        var launched = new AtomicReference<BackgroundProcessManager.ProcessEntry>();
+        var cancelSent = new AtomicBoolean();
+        try (var processes = new BackgroundProcessManager("web-controls-unmonitor", directory);
+             var controls = new WebHarnessControls(stdin)) {
+            var processControl = WebHarnessControls.processControl(new ProcessManagementTool(processes), autoApproved());
+            assertEquals("launched", controls.run(mock(AgenticChatLoop.class), processes, "s", "first", 8000, new AtomicBoolean(), prompt -> {
+                prompts.add(prompt);
+                launched.set(processes.launchMonitored("sleep 1; echo finished-quietly", "quiet build", directory, "check the build"));
+                return "launched";
+            }, processControl, event -> {
+                events.add(event);
+                var entry = launched.get();
+                // Cancelled once the browser could have seen the monitor, as a user clicking "Cancel wake-up".
+                if (entry != null && event.type() == HeadlessRunEvent.Type.ACTIVITY) {
+                    var item = process(event.data(), entry.getId());
+                    if (item != null && item.has("monitor") && cancelSent.compareAndSet(false, true)) {
+                        stdin.send(command("c1", "/process-monitors"));
+                        stdin.send("{\"version\":1,\"requestId\":\"u1\",\"action\":\"process_unmonitor\",\"targetId\":\"" + entry.getId() + "\"}");
+                        stdin.send(command("c2", "/process-monitors cancel " + entry.getId()));
+                    }
+                }
+                if (event.type() == HeadlessRunEvent.Type.CONTROL) replies.put(event.data().path("requestId").asText(), event.data());
+            }));
+
+            String id = launched.get().getId();
+            assertEquals(List.of("first"), prompts, "a cancelled wake-up starts no turn");
+            assertTrue(events.stream().noneMatch(e -> e.type() == HeadlessRunEvent.Type.TURN_STARTED
+                    && e.data().path("source").asText().equals("system")));
+            String monitors = replies.get("c1").path("message").asText();
+            assertTrue(replies.get("c1").path("ok").asBoolean() && monitors.contains(id) && monitors.contains("check the build"), monitors);
+            assertTrue(replies.get("u1").path("ok").asBoolean(), replies.get("u1").toString());
+            assertEquals(id, replies.get("u1").path("targetId").asText());
+            assertFalse(replies.get("c2").path("ok").asBoolean(), "the monitor is already gone: " + replies.get("c2"));
+
+            var activity = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.ACTIVITY).map(HeadlessRunEvent::data).toList();
+            var running = activity.stream().map(a -> process(a, id)).filter(p -> p != null && p.has("monitor")).findFirst().orElseThrow();
+            assertEquals("check the build", running.path("monitor").path("message").asText());
+            assertFalse(running.path("monitor").path("armedAt").asText().isBlank());
+            assertTrue(running.path("pid").asLong() > 0, running.toString());
+            assertFalse(running.path("startedAt").asText().isBlank(), running.toString());
+            assertTrue(running.has("durationMs"), running.toString());
+            assertTrue(Files.exists(Path.of(running.path("logFile").asText())), running.toString());
+            var last = process(activity.get(activity.size() - 1), id);
+            assertEquals("COMPLETED", last.path("state").asText(), last.toString());
+            assertEquals(0, last.path("exitCode").asInt(-1), last.toString());
+            assertFalse(last.path("endedAt").asText().isBlank(), last.toString());
+            assertFalse(last.has("monitor"), last.toString());
+            assertTrue(last.path("output").asText().contains("finished-quietly"), last.toString());
+        }
+    }
+
+    @Test void aWakeUpTheModelCancelsStaysSilent() throws Exception {
+        var prompts = new CopyOnWriteArrayList<String>();
+        var launched = new AtomicReference<BackgroundProcessManager.ProcessEntry>();
+        try (var processes = new BackgroundProcessManager("web-controls-model-unmonitor", directory);
+             var controls = new WebHarnessControls(new ProcessStdin())) {
+            controls.run(mock(AgenticChatLoop.class), processes, "s", "first", 8000, new AtomicBoolean(), prompt -> {
+                prompts.add(prompt);
+                launched.set(processes.launchMonitored("sleep 0.5", "unwatched", directory, ""));
+                // The process tool's unmonitor action, as the model calls it.
+                assertTrue(processes.removeMonitor(launched.get().getId()));
+                return "done";
+            }, (action, id) -> ToolResult.success(processes.readOutput(id, 50)), e -> { });
+            assertEquals(List.of("first"), prompts);
+            assertEquals(BackgroundProcessManager.ProcessState.COMPLETED, launched.get().getState());
+        }
+    }
+
+    @Test void anOpenedLogReadsPastTheActivityTail() throws Exception {
+        var stdin = new ProcessStdin();
+        var prompts = new CopyOnWriteArrayList<String>();
+        var replies = new ConcurrentHashMap<String, JsonNode>();
+        var answered = new CountDownLatch(1);
+        var events = new CopyOnWriteArrayList<HeadlessRunEvent>();
+        var firstRow = java.util.regex.Pattern.compile("(?m)^row-1$");
+        try (var processes = new BackgroundProcessManager("web-controls-log", directory);
+             var controls = new WebHarnessControls(stdin)) {
+            var rows = processes.launchMonitored("for i in $(seq 1 120); do echo row-$i; done", "rows", directory, "");
+            var processControl = WebHarnessControls.processControl(new ProcessManagementTool(processes), autoApproved());
+            controls.run(mock(AgenticChatLoop.class), processes, "s", "first", 8000, new AtomicBoolean(), prompt -> {
+                prompts.add(prompt);
+                if (!prompt.equals("first")) {
+                    // The wake-up turn starts once the process is terminal, so its log is complete.
+                    stdin.send(frame("process_output").replace("}", ",\"targetId\":\"" + rows.getId() + "\"}"));
+                    assertTrue(answered.await(3, TimeUnit.SECONDS));
+                }
+                return "reply";
+            }, processControl, event -> {
+                events.add(event);
+                if (event.type() == HeadlessRunEvent.Type.CONTROL) {
+                    replies.put(event.data().path("requestId").asText(), event.data());
+                    answered.countDown();
+                }
+            });
+
+            assertEquals(2, prompts.size());
+            String log = replies.get("r1").path("output").asText();
+            assertTrue(replies.get("r1").path("ok").asBoolean(), log);
+            assertTrue(firstRow.matcher(log).find() && log.contains("row-120"), "the opened log is the long one: " + log);
+            assertFalse(firstRow.matcher(prompts.get(1)).find(), "the wake-up keeps the 50-line tail");
+            var last = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.ACTIVITY).reduce((a, b) -> b).orElseThrow().data();
+            String tail = process(last, rows.getId()).path("output").asText();
+            assertTrue(tail.contains("row-120") && !firstRow.matcher(tail).find(), "snapshots keep the 50-line tail: " + tail);
+        }
     }
 
     private static void assertNoEscape(JsonNode node, String where) {

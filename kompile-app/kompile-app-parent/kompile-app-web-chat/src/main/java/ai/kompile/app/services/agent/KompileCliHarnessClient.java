@@ -227,10 +227,11 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             throw new IllegalArgumentException("Unknown control field");
         controlString(frame, "requestId", 128);
         String action = controlString(frame, "action", 32);
-        if (!java.util.Set.of("background", "process_list", "process_output", "process_kill", "input", "command",
-                "subagent_input", "subagent_cancel", "workflow_approve").contains(action))
+        if (!java.util.Set.of("background", "process_list", "process_output", "process_kill", "process_unmonitor",
+                "input", "command", "subagent_input", "subagent_cancel", "workflow_approve").contains(action))
             throw new IllegalArgumentException("Unsupported control action");
         boolean targeted = action.equals("process_output") || action.equals("process_kill")
+                || action.equals("process_unmonitor")
                 || action.equals("subagent_input") || action.equals("subagent_cancel");
         if (targeted) controlString(frame, "targetId", 128);
         else if (frame.has("targetId")) throw new IllegalArgumentException("Unexpected targetId");

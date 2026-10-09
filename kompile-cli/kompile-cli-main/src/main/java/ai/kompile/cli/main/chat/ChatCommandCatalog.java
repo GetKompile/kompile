@@ -23,7 +23,7 @@ public final class ChatCommandCatalog {
             "plan", "queue", "queues", "queue-send", "queue-send-all", "queue-remove", "queue-edit",
             "queue-move", "queue-clear", "queue-status", "loop", "loop-global", "jobs", "jobs-remove",
             "jobs-clear", "activity", "processes", "process-kill", "process-output", "process-status",
-            "statusbar", "auto-dequeue", "stats", "passthrough", "resume", "resume-all", "mode", "menu",
+            "process-monitors", "statusbar", "auto-dequeue", "stats", "passthrough", "resume", "resume-all", "mode", "menu",
             "skills", "roles", "role", "model", "thinking", "fast", "ultracode", "mcp", "enforce", "enforcer", "judge", "judge-global",
             "direction", "forward", "image", "file", "attach", "attachments");
     private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar");
@@ -32,14 +32,14 @@ public final class ChatCommandCatalog {
             + "memory permissions plan queue queues queue-send queue-send-all queue-remove queue-edit queue-move "
             + "queue-clear queue-status loop loop-global jobs jobs-remove jobs-clear auto-dequeue passthrough "
             + "resume resume-all mode enforce enforcer judge judge-global direction forward image file attach attachments "
-            + "activity processes process-kill process-output process-status")
+            + "activity processes process-kill process-output process-status process-monitors")
             .split(" ")).collect(Collectors.toUnmodifiableSet());
     /**
      * Answered by the running web harness itself; between runs, from the processes the session's
      * runs recorded and those other sessions share.
      */
     private static final Set<String> LIVE_RUN = Set.of("activity", "processes", "process-kill", "process-output",
-            "process-status", "jobs", "jobs-remove", "jobs-clear");
+            "process-status", "process-monitors", "jobs", "jobs-remove", "jobs-clear");
 
     public static Set<String> names() { return NAMES; }
     public static boolean isBuiltin(String name) {

@@ -813,11 +813,15 @@ class KompileCliHarnessClientTest {
         var mapper = new ObjectMapper();
         for (String frame : List.of("{}", "[]", "{\"version\":1,\"requestId\":\"r\",\"action\":\"launch\"}",
                 "{\"version\":1,\"requestId\":\"r\",\"action\":\"process_kill\"}",
+                "{\"version\":1,\"requestId\":\"r\",\"action\":\"process_unmonitor\"}",
+                "{\"version\":1,\"requestId\":\"r\",\"action\":\"process_unmonitor\",\"targetId\":\"p1\",\"text\":\"x\"}",
                 "{\"version\":1,\"requestId\":\"r\",\"action\":\"background\",\"targetId\":\"pid\"}",
                 "{\"version\":1,\"requestId\":\"r\",\"action\":\"input\",\"text\":\" /model x\"}")) {
             org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
                     () -> KompileCliHarnessClient.validateControl(mapper.readTree(frame)));
         }
+        KompileCliHarnessClient.validateControl(
+                mapper.readTree("{\"version\":1,\"requestId\":\"r\",\"action\":\"process_unmonitor\",\"targetId\":\"p1\"}"));
     }
 
     @Test

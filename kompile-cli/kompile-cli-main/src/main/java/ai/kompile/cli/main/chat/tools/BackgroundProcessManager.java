@@ -900,10 +900,12 @@ public class BackgroundProcessManager implements AutoCloseable {
                     id, command, process.pid(), Instant.now(), outputFile, description, process,
                     ProcessKind.COMMAND, Map.of());
             entry.osStart = process.info().startInstant().orElse(null);
-            processes.put(id, entry);
+            // Armed before the entry is listed: an observer never sees a monitored launch without
+            // its monitor, which the web harness reads as a cancelled wake-up.
             if (monitored) {
                 monitors.put(id, new ProcessMonitor(id, monitorMessage, Instant.now()));
             }
+            processes.put(id, entry);
 
             // Start daemon thread to capture output and watch for exit
             ioExecutor.submit(() -> captureOutputAndWait(entry));

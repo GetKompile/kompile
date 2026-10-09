@@ -541,6 +541,62 @@ describe('UnifiedChat session configuration modal', () => {
     expect(send).toHaveBeenCalledWith('process_kill', 'proc-1');
   });
 
+  it('lays processes out as the terminal /processes panel with details, wake-ups and opened logs', async () => {
+    fixture.detectChanges();
+    component.isStreaming = true;
+    const service = TestBed.inject(LocalAgentChatService) as any;
+    service.liveControlsReady = true;
+    service.harnessActivity = { backgroundable: false, turnActive: true, tasks: [], processes: [
+      { id: 'proc-2', description: 'tests', command: 'mvn test', state: 'FAILED', output: 'tail', exitCode: 1,
+        startedAt: '2026-10-10T10:00:00Z', endedAt: '2026-10-10T10:00:04.200Z', durationMs: 4200, logFile: '/tmp/proc-2.log' },
+      { id: 'proc-1', description: 'build', command: 'make', state: 'RUNNING', output: 'recent tail', pid: 4242,
+        startedAt: '2026-10-10T10:00:00Z', durationMs: 187000, logFile: '/tmp/proc-1.log', details: { cwd: '/repo' },
+        monitor: { message: 'check the build', armedAt: '2026-10-10T10:00:00Z' } },
+      { id: 'judge-1', description: 'judge', state: 'RUNNING', kind: 'judge' }
+    ] };
+    const send = jasmine.createSpy('sendHarnessControl').and.callFake(async (action: string, targetId?: string) =>
+      ({ ok: true, message: 'ok', ...(action === 'process_output' ? { output: `full log of ${targetId}` } : {}) }));
+    service.sendHarnessControl = send;
+    (component as any).cdr.markForCheck();
+    fixture.detectChanges();
+
+    const panel: HTMLElement = fixture.nativeElement.querySelector('[data-testid="harness-activity"]');
+    expect(panel.querySelector('[data-testid="process-summary"]')!.textContent).toContain('1 running · 1 watching · 1 finished');
+    expect(Array.from(panel.querySelectorAll('.process-group')).map(group => group.getAttribute('data-testid')))
+      .toEqual(['process-group-watchers', 'process-group-running', 'process-group-recent']);
+    const failed = panel.querySelector('[data-testid="process-group-recent"] summary')!.textContent!;
+    expect(failed).toContain('✗');
+    expect(failed).toContain('exit=1');
+    expect(failed).toContain('took 4.2s');
+    const running = panel.querySelector('[data-testid="process-group-running"] [data-testid="process-activity"]') as HTMLElement;
+    expect(running.querySelector('summary')!.textContent).toContain('wakes agent on exit');
+    const details = running.querySelector('[data-testid="process-details"]')!.textContent!;
+    for (const value of ['4242', '/tmp/proc-1.log', 'cwd', '/repo']) expect(details).toContain(value);
+    expect(running.querySelector('[data-testid="process-monitor"]')!.textContent).toContain('check the build');
+    expect(running.textContent).toContain('recent tail');
+
+    const button = (label: string) =>
+      Array.from(running.querySelectorAll('button')).find(b => b.textContent!.includes(label)) as HTMLButtonElement;
+    button('Cancel wake-up').click();
+    await fixture.whenStable();
+    expect(send).toHaveBeenCalledWith('process_unmonitor', 'proc-1', undefined);
+    button('Open log').click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(send).toHaveBeenCalledWith('process_output', 'proc-1', undefined);
+    expect(running.querySelector('[data-testid="process-log"]')!.textContent).toBe('full log of proc-1');
+    expect(button('Reload log')).toBeTruthy();
+    expect(component.processLogs['proc-2']).toBeUndefined();
+
+    running.querySelector('summary')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+    await fixture.whenStable();
+    expect(send).toHaveBeenCalledWith('process_kill', 'proc-1', undefined);
+    send.calls.reset();
+    const finished = panel.querySelector('[data-testid="process-group-recent"] summary')!;
+    finished.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('retains child input DOM across snapshots and sends only to the selected child', () => {
     fixture.detectChanges();
     component.isStreaming = true;
@@ -665,14 +721,14 @@ describe('UnifiedChat session configuration modal', () => {
     typeInput('/');
     expect(offered()).toEqual(all);
     typeInput('/pro');
-    expect(offered()).toEqual(['/processes', '/process-output', '/process-status', '/process-kill']);
+    expect(offered()).toEqual(['/processes', '/process-output', '/process-status', '/process-kill', '/process-monitors']);
     // Between runs the CLI answers them from the session's recorded and shared processes.
     component.isStreaming = false;
     TestBed.inject(LocalAgentChatService).liveControlsReady = false;
     typeInput('/');
     expect(offered()).toEqual(all);
     typeInput('/pro');
-    expect(offered()).toEqual(['/processes', '/process-output', '/process-status', '/process-kill']);
+    expect(offered()).toEqual(['/processes', '/process-output', '/process-status', '/process-kill', '/process-monitors']);
     typeInput('/jobs-');
     expect(offered()).toEqual(['/jobs-remove', '/jobs-clear']);
   });

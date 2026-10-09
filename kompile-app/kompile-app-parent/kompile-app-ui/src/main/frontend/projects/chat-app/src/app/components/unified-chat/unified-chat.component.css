@@ -2927,6 +2927,52 @@
   margin: 4px 6px 4px 0;
 }
 
+/* Process sections and rows, colored as the terminal panel colors its state marks */
+.process-group {
+  margin-top: 6px;
+}
+
+.process-group-title {
+  font-weight: 600;
+}
+
+.process-state-icon {
+  display: inline-block;
+  min-width: 1.2em;
+}
+
+.process-state-icon[data-state="RUNNING"] { color: var(--status-warning-text); }
+.process-state-icon[data-state="COMPLETED"] { color: var(--status-success-text); }
+.process-state-icon[data-state="FAILED"],
+.process-exit { color: var(--status-error-text); }
+
+.process-timing,
+.process-monitor-badge {
+  color: var(--text-secondary);
+}
+
+.process-details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 6px 0;
+  color: var(--text-secondary);
+}
+
+.process-details dt { font-weight: 600; }
+.process-details dd { margin: 0; overflow-wrap: anywhere; }
+
+.process-monitor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.process-log {
+  max-height: 32rem;
+}
+
 .harness-output {
   margin: 4px 0;
   padding: 6px 10px;

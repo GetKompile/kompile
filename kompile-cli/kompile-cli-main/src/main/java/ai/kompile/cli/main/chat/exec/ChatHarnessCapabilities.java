@@ -212,7 +212,7 @@ public final class ChatHarnessCapabilities {
         controls.put("maxRequests", 4096);
         controls.put("eofBehavior", "drain accepted input and background completions, then result");
         controls.putArray("actions").add("background").add("process_list").add("process_output")
-                .add("process_kill").add("input").add("command").add("subagent_input").add("subagent_cancel")
+                .add("process_kill").add("process_unmonitor").add("input").add("command").add("subagent_input").add("subagent_cancel")
                 .add("workflow_approve");
         if (passthrough) {
             controls.putArray("actions");

@@ -26,10 +26,11 @@ import { ConfirmDialogComponent, ConfirmDialogData } from '@shared/components/co
 import { CommandConfigDialogComponent, CommandConfigDialogData } from '../command-config-dialog/command-config-dialog.component';
 import { ChatModelSelectorComponent } from '../chat-model-selector/chat-model-selector.component';
 import { ChatActivity, chatActivity, IDLE_CHAT_ACTIVITY } from '../chat-activity-indicator/chat-activity-indicator.component';
+import { groupHarnessProcesses, HarnessProcessGroup, HarnessProcessView } from './harness-processes';
 
 // Services
 import { ConversationalRagService } from '@shared/services/conversational-rag.service';
-import { LocalAgentChatService, ContextBudget, CompactChatResponse, HarnessControlAction, HarnessControlReply, HarnessRunClosedError, WorkflowTeam } from '@shared/services/local-agent-chat.service';
+import { LocalAgentChatService, ContextBudget, CompactChatResponse, HarnessActivity, HarnessControlAction, HarnessControlReply, HarnessRunClosedError, WorkflowTeam } from '@shared/services/local-agent-chat.service';
 import { AgentService } from '@shared/services/agent.service';
 import { ChatStorageService } from '@shared/services/chat-storage.service';
 import { ChatHistoryService, ChatMessageDto } from '@shared/services/chat-history.service';
@@ -1504,7 +1505,35 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   get liveInputHistory(): string[] { return this.agentChatService.liveInputHistory || []; }
   harnessControlPending = false;
   harnessControlMessage = '';
-  harnessProcessOutput = '';
+  /** Each process log the user opened, by process id, as Enter opens a row of the CLI activity pane. */
+  processLogs: Partial<Record<string, string>> = Object.create(null);
+  private processGroupsFor: { activity: HarnessActivity | null; groups: HarnessProcessGroup[]; summary: string } =
+    { activity: null, groups: [], summary: '' };
+  /** The process list laid out as the CLI's /processes panel, rebuilt only when a new snapshot arrives. */
+  get processGroups(): HarnessProcessGroup[] { return this.processView().groups; }
+  /** Process counts for the panel heading, as the terminal status bar counts them. */
+  get processSummary(): string { return this.processView().summary; }
+  private processView(): { groups: HarnessProcessGroup[]; summary: string } {
+    const activity = this.harnessActivity ?? null;
+    if (this.processGroupsFor.activity !== activity) {
+      const groups = groupHarnessProcesses(activity?.processes ?? []);
+      const count = (key: HarnessProcessGroup['key']) => groups.find(group => group.key === key)?.entries.length ?? 0;
+      const parts = [count('running') && `${count('running')} running`, count('watchers') && `${count('watchers')} watching`,
+        count('recent') && `${count('recent')} finished`].filter(Boolean);
+      this.processGroupsFor = { activity, groups, summary: parts.join(' · ') };
+    }
+    return this.processGroupsFor;
+  }
+  trackProcessGroup(_index: number, group: HarnessProcessGroup): string { return group.key; }
+  trackProcessView(_index: number, view: HarnessProcessView): string { return view.id; }
+  /** The CLI activity pane's Delete on a process row: stop it, when this run may. */
+  handleProcessKey(event: KeyboardEvent, view: HarnessProcessView): void {
+    if (event.key !== 'Delete' || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    if (!this.liveControlsReady || view.process.state !== 'RUNNING' || view.process.killable === false) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void this.sendHarnessControl('process_kill', view.id);
+  }
   /** The last /command the live harness answered (/processes, /jobs, …), shown until dismissed. */
   liveCommandOutput: { command: string; text: string; ok: boolean } | null = null;
   /**
@@ -1538,7 +1567,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     this.agentChatService.harnessActivity = null;
     this.agentChatService.liveInputHistory = [];
     this.harnessControlMessage = '';
-    this.harnessProcessOutput = '';
+    this.processLogs = Object.create(null);
     this.liveCommandOutput = null;
     this.subagentInputs = Object.create(null);
     this.workflowApprovalMessage = '';
@@ -1618,7 +1647,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     try {
       const reply = await this.agentChatService.sendHarnessControl(action, targetId, text);
       this.harnessControlMessage = reply.message;
-      if (reply.output !== undefined) this.harnessProcessOutput = reply.output;
+      if (action === 'process_output' && targetId && reply.output !== undefined) this.processLogs[targetId] = reply.output;
       if (action === 'command' && text !== undefined) this.applyCommandReply(text, reply);
       if (action === 'input' && reply.ok && this.userInput === text) this.userInput = '';
       if (action === 'subagent_input' && reply.ok && targetId && this.subagentInputs[targetId] === text)
@@ -3822,6 +3851,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     { command: '/process-output', description: 'View process output' },
     { command: '/process-status', description: 'Show process or watcher status' },
     { command: '/process-kill', description: 'Kill a running process' },
+    { command: '/process-monitors', description: 'List or cancel process monitors' },
     { command: '/jobs', description: 'List background jobs' },
     { command: '/jobs-remove', description: 'Remove a background job' },
     { command: '/jobs-clear', description: 'Clear all jobs' }

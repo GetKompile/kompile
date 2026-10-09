@@ -494,6 +494,10 @@ public class ChatCommandRouter {
                 showProcessStatus(rest.trim());
                 return true;
 
+            case "/process-monitors":
+                processMonitors(rest.trim());
+                return true;
+
             case "/statusbar":
                 toggleStatusBar();
                 return true;
@@ -3552,6 +3556,37 @@ public class ChatCommandRouter {
         } else {
             System.out.println(renderer.red("Process not found or not running: ") + id);
         }
+    }
+
+    /** Lists armed completion monitors, or cancels one: the process keeps running without waking the agent. */
+    private void processMonitors(String args) {
+        String[] words = args.isBlank() ? new String[0] : args.split("\\s+");
+        if (words.length == 2 && words[0].equalsIgnoreCase("cancel")) {
+            if (processManager.removeMonitor(words[1])) {
+                System.out.println(renderer.green("Cancelled the completion monitor for [") + words[1] + renderer.green("]"));
+            } else {
+                System.out.println(renderer.red("No active monitor for process: ") + words[1]);
+            }
+            return;
+        }
+        if (words.length > 1 || (words.length == 1 && !words[0].equalsIgnoreCase("list"))) {
+            System.out.println("Usage: /process-monitors [list | cancel <id>]");
+            return;
+        }
+        List<BackgroundProcessManager.ProcessMonitor> monitors = processManager.listMonitors();
+        StringBuilder body = new StringBuilder();
+        for (BackgroundProcessManager.ProcessMonitor monitor : monitors) {
+            BackgroundProcessManager.ProcessEntry entry = processManager.get(monitor.processId());
+            body.append("[").append(monitor.processId()).append("]");
+            if (entry != null) body.append(" ").append(entry.getState()).append(" · ").append(entry.getDescription());
+            body.append(" · armed ").append(ProcessManagementTool.formatDuration(
+                    java.time.Duration.between(monitor.createdAt(), java.time.Instant.now()))).append(" ago\n");
+            if (!monitor.message().isBlank()) body.append("  -> ").append(monitor.message()).append("\n");
+        }
+        if (monitors.isEmpty()) body.append("No active process monitors\n");
+        System.out.println(ascii.panel("Process Monitors", body.toString(), AsciiRenderer.ROUNDED, "cyan"));
+        System.out.println(renderer.dim("  /process-monitors cancel <id>   Stop a monitor waking the agent; the process keeps running"));
+        System.out.println();
     }
 
     private void showProcessOutput(String id) {

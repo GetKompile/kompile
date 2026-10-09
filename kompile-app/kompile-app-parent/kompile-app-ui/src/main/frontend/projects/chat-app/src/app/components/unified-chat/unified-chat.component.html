@@ -155,7 +155,7 @@
                 </span>
               </span>
               <span class="chat-meta">
-                {{ session.messageCount ?? session.messages.length ?? 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
+                {{ session.messageCount ?? session.messages.length }} msgs · {{ formatSessionDate(session.updatedAt) }}
               </span>
               <span class="chat-preview" *ngIf="getSessionPreview(session)">{{ getSessionPreview(session) }}</span>
             </div>
@@ -1561,7 +1561,8 @@
           data-testid="workflow-approval-status">{{ workflowApprovalMessage }}</div>
       </details>
       <details *ngIf="harnessActivity" class="harness-activity" data-testid="harness-activity">
-        <summary>Harness activity — {{ harnessActivity.turnActive ? 'working' : 'waiting / finished' }}</summary>
+        <summary>Harness activity — {{ harnessActivity.turnActive ? 'working' : 'waiting / finished' }}<span
+          *ngIf="processSummary" data-testid="process-summary"> · {{ processSummary }}</span></summary>
         <button mat-stroked-button type="button" (click)="sendHarnessControl('background')"
           [disabled]="!liveControlsReady || !harnessActivity.backgroundable || harnessControlPending"
           title="Background the blocking subagent (Ctrl+B)" data-testid="background-task-btn">Background (Ctrl+B)</button>
@@ -1587,24 +1588,45 @@
             [disabled]="!liveControlsReady || !child.canCancel || harnessControlPending"
             title="Stop only this child (Delete)">Stop child</button>
         </details>
-        <details *ngFor="let process of harnessActivity.processes; trackBy: trackHarnessEntry">
-          <summary>{{ process.id }}: {{ process.description }} — {{ process.state }}<span
-            *ngIf="process.kind && process.kind !== 'command'"> [{{ process.kind }}]</span><span
-            *ngIf="process.owner"> · owner: {{ process.owner }}</span></summary>
-          <code>{{ process.command }}</code>
-          <button mat-button type="button" (click)="sendHarnessControl('process_output', process.id)"
-            [disabled]="!liveControlsReady || harnessControlPending"
-            title="View process output, as /process-output does in the terminal">Read output</button>
-          <!-- disabledInteractive keeps the "Shared by …" title visible while disabled; the
-               button still receives clicks then, so the handler re-checks the process state. -->
-          <button mat-stroked-button color="warn" type="button" disabledInteractive
-            (click)="process.state === 'RUNNING' && process.killable !== false && sendHarnessControl('process_kill', process.id)"
-            [disabled]="!liveControlsReady || harnessControlPending || process.state !== 'RUNNING' || process.killable === false"
-            [title]="process.killable === false ? 'Shared by ' + (process.owner || 'another session') + '; only its owner can stop it' : 'Stop this process, as /process-kill does in the terminal'">Stop process</button>
-          <pre class="harness-output">{{ process.output }}</pre>
-        </details>
+        <!-- Processes laid out as the terminal's /processes panel: watchers, running, then recent -->
+        <section *ngFor="let group of processGroups; trackBy: trackProcessGroup" class="process-group"
+          [attr.data-testid]="'process-group-' + group.key">
+          <div class="process-group-title">{{ group.title }}</div>
+          <details *ngFor="let view of group.entries; trackBy: trackProcessView" class="process-row" data-testid="process-activity">
+            <summary (keydown)="handleProcessKey($event, view)" title="Delete stops this process"><span
+              class="process-state-icon" [attr.data-state]="view.process.state" aria-hidden="true">{{ view.icon }}</span>
+              [{{ view.id }}] {{ view.process.description }} — {{ view.process.state }}<span
+              *ngIf="view.process.kind && view.process.kind !== 'command'"> [{{ view.process.kind }}]</span><span
+              *ngIf="view.process.owner"> · owner: {{ view.process.owner }}</span><span
+              *ngIf="view.timing" class="process-timing"> ({{ view.timing }})</span><span
+              *ngIf="view.process.exitCode !== undefined && view.process.exitCode !== null && view.process.exitCode !== 0"
+              class="process-exit"> exit={{ view.process.exitCode }}</span><span
+              *ngIf="view.process.monitor" class="process-monitor-badge"> · wakes agent on exit</span></summary>
+            <code>{{ view.process.command }}</code>
+            <dl *ngIf="view.details.length" class="process-details" data-testid="process-details">
+              <ng-container *ngFor="let row of view.details"><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></ng-container>
+            </dl>
+            <div *ngIf="view.process.monitor as monitor" class="process-monitor" data-testid="process-monitor">
+              <span>Wakes the agent when it exits<span *ngIf="monitor.message">: {{ monitor.message }}</span></span>
+              <button mat-stroked-button type="button" (click)="sendHarnessControl('process_unmonitor', view.id)"
+                [disabled]="!liveControlsReady || harnessControlPending"
+                title="Stop this process waking the agent; it keeps running, as /process-monitors cancel does in the terminal">Cancel wake-up</button>
+            </div>
+            <button mat-button type="button" (click)="sendHarnessControl('process_output', view.id)"
+              [disabled]="!liveControlsReady || harnessControlPending"
+              title="Open the process log, as Enter on a process row of the terminal activity pane does">{{ processLogs[view.id] !== undefined ? 'Reload log' : 'Open log' }}</button>
+            <!-- disabledInteractive keeps the "Shared by …" title visible while disabled; the
+                 button still receives clicks then, so the handler re-checks the process state. -->
+            <button mat-stroked-button color="warn" type="button" disabledInteractive
+              (click)="view.process.state === 'RUNNING' && view.process.killable !== false && sendHarnessControl('process_kill', view.id)"
+              [disabled]="!liveControlsReady || harnessControlPending || view.process.state !== 'RUNNING' || view.process.killable === false"
+              [title]="view.process.killable === false ? 'Shared by ' + (view.process.owner || 'another session') + '; only its owner can stop it' : 'Stop this process, as /process-kill does in the terminal'">Stop process</button>
+            <pre *ngIf="processLogs[view.id] !== undefined; else recentOutput" class="harness-output process-log"
+              data-testid="process-log">{{ processLogs[view.id] }}</pre>
+            <ng-template #recentOutput><pre class="harness-output">{{ view.process.output }}</pre></ng-template>
+          </details>
+        </section>
         <div *ngFor="let input of liveInputHistory">Queued follow-up: {{ input }}</div>
-        <pre *ngIf="harnessProcessOutput" class="harness-output">{{ harnessProcessOutput }}</pre>
       </details>
       <!-- This session's judge flags, tool counts, last test milestone and crawl progress, as the
            terminal's dashboard area shows them -->

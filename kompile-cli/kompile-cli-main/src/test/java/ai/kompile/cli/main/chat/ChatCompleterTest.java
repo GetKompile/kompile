@@ -197,7 +197,7 @@ class ChatCompleterTest {
                 "/queue-edit", "/queue-move", "/queue-clear", "/queue-status",
                 "/loop", "/loop-global", "/jobs", "/jobs-remove",
                 "/jobs-clear", "/activity", "/processes", "/process-kill", "/process-output",
-                "/process-status", "/statusbar", "/auto-dequeue", "/judge", "/judge-global", "/stats",
+                "/process-status", "/process-monitors", "/statusbar", "/auto-dequeue", "/judge", "/judge-global", "/stats",
                 "/passthrough", "/keys", "/render", "/resume", "/resume-all", "/mode", "/menu", "/skills",
                 "/roles", "/role", "/model", "/forward", "/archive", "/rollback", "/diff", "/purge",
                 "/rules", "/image", "/file", "/attach", "/attachments"

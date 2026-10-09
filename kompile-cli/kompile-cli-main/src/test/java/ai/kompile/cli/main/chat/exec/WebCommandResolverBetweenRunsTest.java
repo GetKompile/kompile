@@ -132,6 +132,20 @@ class WebCommandResolverBetweenRunsTest {
     }
 
     @Test
+    void noWakeUpOutlivesItsRun() throws Exception {
+        String id = launchAndFinish("echo monitored", "watched");
+        Resolution list = resolve("/process-monitors", CODER);
+        assertEquals(Status.COMPLETED, list.status(), list.text());
+        assertTrue(list.text().contains("No active process monitors"), list.text());
+
+        Resolution cancel = resolve("/process-monitors cancel " + id, CODER);
+        assertEquals(Status.INVALID, cancel.status(), cancel.text());
+        assertTrue(cancel.text().contains("No active monitor for process: " + id), cancel.text());
+        assertEquals("Process not found: proc-404", resolve("/process-monitors cancel proc-404", CODER).text());
+        assertEquals("Usage: /process-monitors [list | cancel <id>]", resolve("/process-monitors stop", CODER).text());
+    }
+
+    @Test
     void jobCommandsFindNoTasksBetweenRunsAndActivityOnlyLists() {
         Resolution jobs = resolve("/jobs", CODER);
         assertEquals(Status.COMPLETED, jobs.status(), jobs.text());

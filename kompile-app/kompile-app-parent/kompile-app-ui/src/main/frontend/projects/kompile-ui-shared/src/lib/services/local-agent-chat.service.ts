@@ -243,6 +243,19 @@ export interface HarnessActivityEntry {
   killable?: boolean;
   /** Owning session of a shared process. */
   owner?: string;
+  /** Process details, as the CLI's process panel and /process-status show them. */
+  pid?: number;
+  /** ISO-8601 instants; the duration is as of the snapshot. */
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  exitCode?: number;
+  /** The process log on the harness host. */
+  logFile?: string;
+  /** Further process metadata, e.g. a note on how a process from an earlier run ended. */
+  details?: Record<string, string>;
+  /** An armed completion monitor: the agent wakes when this process exits. */
+  monitor?: { message: string; armedAt: string };
 }
 export interface HarnessSubagent extends HarnessActivityEntry {
   type: string;
@@ -266,7 +279,7 @@ export class HarnessRunClosedError extends Error {
     this.name = 'HarnessRunClosedError';
   }
 }
-export type HarnessControlAction = 'background' | 'process_list' | 'process_output' | 'process_kill' | 'input' | 'command' | 'subagent_input' | 'subagent_cancel' | 'workflow_approve';
+export type HarnessControlAction = 'background' | 'process_list' | 'process_output' | 'process_kill' | 'process_unmonitor' | 'input' | 'command' | 'subagent_input' | 'subagent_cancel' | 'workflow_approve';
 export interface HarnessReconnectBookmark {
   runId: string;
   browserSessionId: string;

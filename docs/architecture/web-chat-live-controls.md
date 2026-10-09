@@ -18,10 +18,10 @@ Both the web application and CLI must be rebuilt together. Older CLIs reject the
 
 - **Ctrl+B / Background button** transfers an eligible blocking subagent invocation to the CLI's retained background-task lifecycle. Model thinking is not backgroundable.
 - **Child conversations** expose retained output and per-child follow-up/stop buttons during a live run. Enter in the child composer sends only to that child; Delete on its focused summary requests cancellation of only that child. Capability flags disable unsupported actions, and input focus survives snapshots.
-- **Activity** shows tasks, command processes, states and bounded output. Process output/stop requests target only a process owned by the active run, through the CLI permission boundary.
+- **Activity** shows tasks, subagents and processes, laid out as the terminal's `/processes` panel: active watchers, running commands, then the most recent eight finished ones, each with its state mark, timing, nonzero exit code, PID, log path and metadata. **Open log** reads up to 2,000 lines of that process's log (as Enter on a CLI activity row); the row otherwise shows the 50-line tail. A process whose exit will wake the agent shows its monitor instructions and **Cancel wake-up** (`/process-monitors cancel`): it keeps running and finishes without a follow-up turn. **Stop process** or Delete on a focused running row stops it. Process requests pass the CLI permission boundary, and another session's shared process can be read but not stopped.
 - **Enter while running** queues plain-text follow-up input for the next turn boundary. Accepted follow-ups remain visible in the activity panel. Every dispatched input and assistant response renders as its own browser message. Completion-triggered inputs are system notices, not user text. The final run event does not duplicate the last answer.
 - **Escape / Stop** ends the entire live run and its owned work. Ctrl+C remains browser copy, and composition/repeated keys/dialog shortcuts are not intercepted.
-- Slash commands must be sent after the live run finishes, through the existing command resolver; they are never passed to the model via the input control.
+- Slash commands typed during a run go through the `command` action, never the model's input. Process and job commands (`/processes`, `/process-output`, `/process-status`, `/process-kill`, `/process-monitors`, `/jobs`, …) are answered from the run's own state; state-changing builtins run when the live run finishes.
 
 ## Protocol
 
@@ -31,8 +31,8 @@ Both the web application and CLI must be rebuilt together. Older CLIs reject the
 {"version":1,"requestId":"web-1","action":"background"}
 ```
 
-Actions: `background`, `process_list`, `process_output`, `process_kill`, `input`, `subagent_input`, `subagent_cancel`.
-`process_output`/`process_kill`/`subagent_cancel` require `targetId`; `input` requires `text`; `subagent_input` requires both. Child controls accept only ids observed from the owning run's subagent runner.
+Actions: `background`, `process_list`, `process_output`, `process_kill`, `process_unmonitor`, `input`, `command`, `subagent_input`, `subagent_cancel`, `workflow_approve`.
+`process_output`/`process_kill`/`process_unmonitor`/`subagent_cancel` require `targetId`; `input` requires `text`; `subagent_input` requires both. Child controls accept only ids observed from the owning run's subagent runner.
 Unknown fields/actions and oversized frames are rejected. The CLI limits frames to 64 KiB, queued inputs to 64 and request ids to 4096 per run.
 
 HTTP 202 `{accepted:true}` means **written**, not **executed**. Only the correlated `control` SSE event acknowledges the operation's outcome. A lost acknowledgement is an unknown outcome, not grounds for automatic retry.
@@ -40,7 +40,9 @@ HTTP 202 `{accepted:true}` means **written**, not **executed**. Only the correla
 CLI nonterminal events carry a `data` object, unwrapped by the web adapter:
 
 - `control`: requestId, action, ok, message, optional targetId/output.
-- `activity`: backgroundable, turnActive, processes, tasks, subagents (id, type, description, state, output, running, canSend, canCancel).
+- `activity`: backgroundable, turnActive, controlsOpen, processes, tasks, subagents (id, type, description, state, output, running, canSend, canCancel). A process carries id, description, command, state, kind, killable, optional owner, and when known pid, startedAt, durationMs, endedAt, exitCode, logFile, details (metadata) and monitor (message, armedAt) while a completion wake-up is armed.
+
+A command whose monitor is cancelled while it runs, by the browser, `/process-monitors cancel` or the model's process tool, finishes without a wake-up turn, as in the CLI.
 - `turn_started`: turnId, source (`initial`, `user`, `system`), text. The initial decorated harness prompt is deliberately not exposed.
 - `turn_complete`: turnId, text; does not close SSE or release background resources.
 
