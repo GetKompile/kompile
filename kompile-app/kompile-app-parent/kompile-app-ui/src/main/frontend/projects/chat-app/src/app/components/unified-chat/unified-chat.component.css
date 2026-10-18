@@ -2876,6 +2876,20 @@
   font-size: 0.82em;
 }
 
+/* The visible vendor-account usage readout above the conversation */
+.vendor-usage-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.vendor-usage-actions .mat-mdc-icon-button {
+  --mdc-icon-button-state-layer-size: 30px;
+  width: 30px;
+  height: 30px;
+  color: var(--text-secondary);
+}
+
 /* A run that can be reattached after a reload */
 .reconnect-run {
   display: flex;

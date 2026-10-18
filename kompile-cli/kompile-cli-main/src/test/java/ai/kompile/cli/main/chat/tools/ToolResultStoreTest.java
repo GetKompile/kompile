@@ -75,6 +75,61 @@ class ToolResultStoreTest {
         assertTrue(summary.contains("complete index"));
     }
 
+    @Test
+    void verifiedArchiveRetiresUniqueResultsAndWorksAfterResume() throws Exception {
+        Path directory = tempDir.resolve("session/tool-results");
+        ToolResultStore store = new ToolResultStore("session", directory);
+        String original = "unique source evidence 😀\n".repeat(500);
+        Path saved = store.save("read", "call", "{}", original, false);
+        String receipt = store.projectHistoricalResult("call", "read", original);
+        assertTrue(receipt.startsWith("[Archived historical result:"));
+        assertTrue(receipt.contains("sha256:"));
+        assertTrue(receipt.contains(saved.toString()));
+        assertTrue(receipt.contains("Never re-execute a mutation"));
+        assertTrue(receipt.length() < original.length());
+        assertEquals(receipt, new ToolResultStore("session", directory)
+                .projectHistoricalResult("call", "read", original));
+        assertEquals(receipt, store.projectHistoricalResult("call", "read", original + "\n[saved to: " + saved + "]"));
+        assertTrue(Files.readString(saved).endsWith(original), "the original is not rewritten");
+        Files.writeString(saved, Files.readString(saved) + "changed");
+        org.junit.jupiter.api.Assertions.assertNull(store.projectHistoricalResult("call", "read", original));
+        Files.delete(saved);
+        org.junit.jupiter.api.Assertions.assertNull(store.projectHistoricalResult("call", "read", original));
+    }
+
+    @Test
+    void recoveryFailureErrorsSecurityAndMismatchesKeepFullEvidence() throws Exception {
+        ToolResultStore store = new ToolResultStore("session", tempDir.resolve("session/tool-results"));
+        String original = "large exact evidence\n".repeat(500);
+        store.save("read", "failed", "{}", original, true);
+        org.junit.jupiter.api.Assertions.assertNull(store.projectHistoricalResult("failed", "read", original));
+        store.save("read", "success", "{}", original, false);
+        org.junit.jupiter.api.Assertions.assertNull(store.projectHistoricalResult("success", "grep", original));
+        org.junit.jupiter.api.Assertions.assertNull(store.projectHistoricalResult("success", "read", original + "changed"));
+        org.junit.jupiter.api.Assertions.assertNull(store.projectHistoricalResult("unknown", "read", original));
+        String warning = original + "\nwarning: investigate this";
+        store.save("bash", "warning", "{}", warning, false);
+        org.junit.jupiter.api.Assertions.assertNull(store.projectHistoricalResult("warning", "bash", warning));
+        Path valid = store.getResultFile("success");
+        Files.delete(valid);
+        Path outside = tempDir.resolve("outside.txt");
+        Files.writeString(outside, original);
+        Files.createSymbolicLink(valid, outside);
+        org.junit.jupiter.api.Assertions.assertNull(store.projectHistoricalResult("success", "read", original));
+    }
+
+    @Test
+    void filteredLogsKeepAnExactRecoverableArchive() throws Exception {
+        ToolResultStore store = new ToolResultStore("session", tempDir.resolve("session/tool-results"));
+        String original = "identical long build progress detail without a new observation\n".repeat(300) + "done\n";
+        Path saved = store.save("bash", "build", "{}", original, false);
+        String receipt = store.projectHistoricalResult("build", "bash", original);
+        assertTrue(receipt.startsWith("[Filtered historical log:"));
+        assertTrue(receipt.contains("same line repeated 299 more times"));
+        assertTrue(receipt.contains("not a success judgment"));
+        assertTrue(Files.readString(saved).endsWith(original));
+    }
+
     private static String indexLine(int step, String toolName, String callId,
                                     boolean error, Path file) {
         return step + "\t" + toolName + "\t" + callId + "\t"

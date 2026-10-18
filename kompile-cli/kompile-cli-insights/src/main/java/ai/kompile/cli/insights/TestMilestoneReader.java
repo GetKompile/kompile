@@ -201,6 +201,19 @@ public final class TestMilestoneReader {
         return value == null ? null : value.intValue();
     }
 
+    /** Legacy boolean records remain valid; observed non-test outcomes never imply a regression. */
+    public static boolean isConclusive(Map<String, Object> milestone) {
+        Object outcome = milestone.get("outcome");
+        return outcome == null || "passed".equals(outcome) || "failed".equals(outcome);
+    }
+
+    public static String outcome(Map<String, Object> milestone) {
+        Object outcome = milestone.get("outcome");
+        if (outcome instanceof String text) return text;
+        return Boolean.TRUE.equals(milestone.get("passing")) || "true".equalsIgnoreCase(String.valueOf(milestone.get("passing")))
+                ? "passed" : "failed";
+    }
+
     /** The first seven characters of a commit hash; anything else (such as "uncommitted") unchanged. */
     public static String shortCommit(String commit) {
         if (commit == null) {

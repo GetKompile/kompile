@@ -10,7 +10,10 @@ import ai.kompile.cli.main.chat.config.FakeClaudeCode;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
@@ -91,7 +94,8 @@ class AgenticChatLoopClaudeCliTranscriptTest {
                     "prose on either side of a provider tool call stays on separate lines\n"
                             + diagnostics);
             String plain = plain(transcript);
-            assertTrue(plain.contains("context compacted by Claude Code (manual) · 100 tokens before"),
+            assertTrue(plain.contains("Context compacted")
+                            && plain.contains("Claude Code (manual) · provider context before: 100 tokens"),
                     "a mid-stream compact_boundary carrying a session_id must render as a "
                             + "compaction, not be eaten as a session start\n" + diagnostics);
             assertEquals(1, metrics.getCompactionEvents(), diagnostics);
@@ -115,6 +119,48 @@ class AgenticChatLoopClaudeCliTranscriptTest {
         } finally {
             ChatCompleter.setContentOutput(null);
             ChatCompleter.setTranscriptBlockOutput(null);
+            ChatCompleter.setActivity(null);
+            if (home == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", home);
+        }
+    }
+
+    @Test
+    void providerCallIdsReusedAcrossTurnsDoNotReplaceRetainedToolCards() throws Exception {
+        String home = System.getProperty("user.home");
+        System.setProperty("user.home", directory.toString());
+        Map<String, ChatDisplayBlock> blocks = Collections.synchronizedMap(new LinkedHashMap<>());
+        ChatCompleter.setDisplayBlockOutput(block -> { blocks.put(block.key(), block); return true; });
+        ChatCompleter.setContentOutput(ignored -> { });
+        var mapper = JsonUtils.standardMapper();
+        try (DirectLlmClient client = new DirectLlmClient(claudeConfig(), mapper, directory)) {
+            FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("edits"), """
+                    turn() {
+                      say_init
+                      emit '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-edit","role":"assistant","content":[]}}}'
+                      emit '{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"reused-edit","name":"mcp__kompile__edit","input":{"file_path":"App.java","old_string":"OLD_BODY","new_string":"NEW_BODY"}}}}'
+                      emit '{"type":"stream_event","event":{"type":"content_block_stop","index":1}}'
+                      emit '{"type":"stream_event","event":{"type":"message_stop"}}'
+                      emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"reused-edit","content":"Applied edit"}]}}'
+                      say_text 'Edited'
+                      say_result
+                    }
+                    """);
+            fake.install(client, directory, "retained-provider-tools");
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            String session = "retained-provider-tools";
+            loop.configureConversationSession(session);
+            for (int turn = 0; turn < 2; turn++) loop.chat("edit the file", session, "coder", "default", false);
+            List<ChatDisplayBlock> tools = blocks.values().stream().filter(block -> block.kind().equals("tool")).toList();
+            assertEquals(2, tools.size(), "A later invocation must not overwrite the previous completed result: " + tools);
+            assertTrue(tools.stream().noneMatch(ChatDisplayBlock::running));
+            assertTrue(tools.stream().allMatch(block -> block.sections().stream()
+                    .anyMatch(section -> section.kind().equals("diff")
+                            && section.content().contains("- OLD_BODY") && section.content().contains("+ NEW_BODY"))));
+        } finally {
+            ChatCompleter.setDisplayBlockOutput(null);
+            ChatCompleter.setContentOutput(null);
             ChatCompleter.setActivity(null);
             if (home == null) System.clearProperty("user.home");
             else System.setProperty("user.home", home);
@@ -188,6 +234,8 @@ class AgenticChatLoopClaudeCliTranscriptTest {
             List<ForegroundRequestProgress.Snapshot> toolDone =
                     Collections.synchronizedList(new ArrayList<>());
             List<String> topBarAtToolDone = Collections.synchronizedList(new ArrayList<>());
+            List<String> contextAtToolDone = Collections.synchronizedList(new ArrayList<>());
+            List<String> contextUpdates = Collections.synchronizedList(new ArrayList<>());
             // The loop updates both panes first, then hands each event on to this listener.
             client.setProviderActivityListener(new DirectLlmClient.ProviderActivityListener() {
                 @Override
@@ -206,11 +254,17 @@ class AgenticChatLoopClaudeCliTranscriptTest {
                                            int exitCode, boolean error) {
                     toolDone.add(progress.snapshot());
                     topBarAtToolDone.add(metrics.compactTokenSummary());
+                    contextAtToolDone.add(metrics.contextTokenSummary());
                 }
 
                 @Override
                 public void onTokenUsage(long input, long output, long cacheRead, long cacheCreation) {
                     usage.add(input + "/" + output + "/" + cacheRead + "/" + cacheCreation);
+                }
+
+                @Override
+                public void onContextUsage(long input) {
+                    contextUpdates.add(metrics.contextTokenSummary());
                 }
             });
             progress.begin();
@@ -237,6 +291,12 @@ class AgenticChatLoopClaudeCliTranscriptTest {
             assertFalse(toolDone.get(0).estimate(), diagnostics);
             // Top pane: the request that wrote the tool call counts while the tool runs.
             assertEquals(List.of("↑10 ↓42 Σ52"), topBarAtToolDone, diagnostics);
+            assertTrue(contextAtToolDone.get(0).startsWith("10/"), contextAtToolDone.toString());
+            assertEquals(List.of("10", "12"), contextUpdates.stream()
+                    .map(summary -> summary.substring(0, summary.indexOf('/'))).distinct().toList(),
+                    "repeated message aggregates must not accumulate request input: " + contextUpdates);
+            assertTrue(metrics.contextTokenSummary().startsWith("12/"),
+                    "context shows the last request, not the 22 input billed: " + metrics.contextTokenSummary());
             // The turn ends exact on both panes, every token counted once.
             ForegroundRequestProgress.Snapshot end = progress.snapshot();
             assertEquals(54, end.tokens(), diagnostics);
@@ -317,7 +377,7 @@ class AgenticChatLoopClaudeCliTranscriptTest {
             assertEquals(2, completions.size());
             assertTrue(completions.get(0).contains("NOTES.md"), "other concurrent tool stays visible: " + completions);
             assertEquals("Waiting for Claude response", completions.get(1));
-            assertTrue(activities.contains("Compacting Claude context"), activities.toString());
+            assertTrue(activities.contains("Compacting"), activities.toString());
             assertTrue(activities.contains("Responding"), activities.toString());
             String transcript = plain(String.join("\n", lines));
             assertFalse(transcript.contains("elapsed_time_seconds") || transcript.contains("thinking_tokens"), transcript);
@@ -327,6 +387,164 @@ class AgenticChatLoopClaudeCliTranscriptTest {
             assertEquals("Responding", ChatCompleter.getActivity());
         } finally {
             ChatCompleter.setActivityListener(null);
+            ChatCompleter.setContentOutput(null);
+            ChatCompleter.setActivity(null);
+            if (home == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", home);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void providerMessagesFlowBetweenAssistantBurstsInTypedAndAppendOnlyChat(boolean typed) throws Exception {
+        String home = System.getProperty("user.home");
+        System.setProperty("user.home", directory.toString());
+        List<String> lines = new ArrayList<>();
+        Map<String, ChatDisplayBlock> blocks = new LinkedHashMap<>();
+        List<String> alerts = new ArrayList<>();
+        ChatCompleter.setContentOutput(lines::add);
+        ChatCompleter.setAlertOutput(alerts::add);
+        ChatCompleter.setDisplayBlockOutput(typed ? block -> {
+            blocks.put(block.key(), block);
+            return true;
+        } : null);
+        var mapper = JsonUtils.standardMapper();
+        try (DirectLlmClient client = new DirectLlmClient(claudeConfig(), mapper, directory)) {
+            FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("messages"), """
+                    turn() {
+                      say_init
+                      say_text 'Before notification'
+                      emit '{"type":"system","subtype":"notification","text":"Fast mode is unavailable","session_id":"s"}'
+                      say_text 'Before compaction'
+                      emit '{"type":"system","subtype":"status","status":"compacting","session_id":"s"}'
+                      emit '{"type":"system","subtype":"status","status":"compacting","session_id":"s"}'
+                      say_text 'During compaction'
+                      emit '{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":123},"session_id":"s"}'
+                      say_text 'Before failure'
+                      emit '{"type":"system","subtype":"status","compact_result":"failed","compact_error":"summary request failed","session_id":"s"}'
+                      say_text 'After notices'
+                      say_result
+                    }
+                    """);
+            fake.install(client, directory, "claude-messages");
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            String session = "claude-message-flow";
+            loop.configureConversationSession(session);
+            ChatSessionMetrics metrics = new ChatSessionMetrics(session);
+            loop.setSessionMetrics(metrics);
+            String response = loop.chat("continue", session, "coder", "default", false);
+
+            // Managed progress is replaced in place, so the final notice stays at
+            // its start position; append-only output retains the start and end lines.
+            List<String> expected = typed
+                    ? List.of("Before notification", "[Claude] Fast mode is unavailable",
+                            "Before compaction", "Context compacted", "During compaction", "Before failure",
+                            "Context compaction failed: summary request failed", "After notices")
+                    : List.of("Before notification", "[Claude] Fast mode is unavailable",
+                            "Before compaction", "Compacting context", "During compaction", "Context compacted",
+                            "Before failure", "Context compaction failed: summary request failed", "After notices");
+            String transcript = plain(typed
+                    ? blocks.values().stream().map(ChatDisplayBlock::classic)
+                            .collect(java.util.stream.Collectors.joining("\n"))
+                    : String.join("\n", lines));
+            int previous = -1;
+            for (String text : expected) {
+                int position = transcript.indexOf(text);
+                assertTrue(position > previous, "Provider messages must follow the preceding partial prose: "
+                        + text + "\n" + transcript);
+                assertEquals(1, occurrences(transcript, text), transcript);
+                previous = position;
+            }
+            if (typed) {
+                List<ChatDisplayBlock> notices = blocks.values().stream()
+                        .filter(block -> block.kind().equals("notice")).toList();
+                assertEquals(3, notices.size());
+                assertTrue(notices.stream().noneMatch(ChatDisplayBlock::running),
+                        "Provider messages must not leave in-flight cards behind");
+                assertTrue(notices.get(2).error());
+                assertTrue(blocks.values().stream().noneMatch(ChatDisplayBlock::running));
+                assertTrue(lines.isEmpty(), "Typed messages must not also print raw transcript lines: " + lines);
+            }
+            assertTrue(alerts.isEmpty(), "Provider messages are transcript content, not pinned alerts");
+            assertEquals(1, metrics.getCompactionEvents());
+            assertTrue(transcript.contains("Claude Code (auto) · provider context before: 123 tokens"), transcript);
+            assertFalse(transcript.contains("[Claude] Compacting conversation"), transcript);
+            assertFalse(response.contains("[Claude]") || response.contains("Context compacted"),
+                    "Presentation messages must not become assistant/model history");
+        } finally {
+            ChatCompleter.setDisplayBlockOutput(null);
+            ChatCompleter.setContentOutput(null);
+            ChatCompleter.setAlertOutput(null);
+            ChatCompleter.setActivity(null);
+            if (home == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", home);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"auto", "manual", "failed", "aborted", "too_few_groups", "ended"})
+    void nativeCompactionLifecycleReplacesOneSharedProgressBlock(String outcome) throws Exception {
+        String home = System.getProperty("user.home");
+        System.setProperty("user.home", directory.toString());
+        Map<String, ChatDisplayBlock> blocks = new java.util.concurrent.ConcurrentHashMap<>();
+        List<String> lines = new ArrayList<>();
+        List<ChatDisplayBlock> starts = Collections.synchronizedList(new ArrayList<>());
+        ChatCompleter.setContentOutput(lines::add);
+        ChatCompleter.setDisplayBlockOutput(block -> {
+            blocks.put(block.key(), block);
+            if (block.running()) starts.add(block);
+            return true;
+        });
+        boolean success = outcome.equals("auto") || outcome.equals("manual");
+        String terminal = success
+                ? "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"trigger\":\""
+                        + outcome + "\",\"pre_tokens\":180000}}"
+                : "{\"type\":\"system\",\"subtype\":\"status\",\"compact_result\":\"failed\",\"compact_error\":\""
+                        + outcome + "\"}";
+        try (DirectLlmClient client = new DirectLlmClient(claudeConfig(), JsonUtils.standardMapper(), directory)) {
+            FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("compaction-" + outcome), """
+                    turn() {
+                      say_init
+                      emit '{"type":"system","subtype":"status","status":"compacting"}'
+                      emit '{"type":"system","subtype":"status","status":"compacting"}'
+                      %s
+                      say_text 'Continued'
+                      say_result
+                    }
+                    """.formatted(outcome.equals("ended") ? "" : "emit '" + terminal + "'"));
+            fake.install(client, directory, "claude-compaction-" + outcome);
+            var mapper = JsonUtils.standardMapper();
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            loop.configureConversationSession("compaction-" + outcome);
+            ChatSessionMetrics metrics = new ChatSessionMetrics("compaction-" + outcome);
+            loop.setSessionMetrics(metrics);
+            String response = loop.chat("continue", "compaction-" + outcome, "coder", "default", false);
+            List<ChatDisplayBlock> compactions = blocks.values().stream()
+                    .filter(block -> block.key().startsWith("compact:provider:")).toList();
+            assertEquals(1, compactions.size(), "repeated start must not create duplicate progress cards");
+            assertFalse(starts.isEmpty(), "native start must publish live shared progress");
+            assertTrue(starts.get(0).classic().contains("Compacting context"));
+            ChatDisplayBlock done = compactions.get(0);
+            assertFalse(done.running(), done.toString());
+            assertEquals(outcome.equals("failed") || outcome.equals("ended"), done.error(), done.toString());
+            if (success) {
+                assertTrue(done.classic().contains("Context compacted"), done.toString());
+                assertTrue(done.classic().contains("Claude Code (" + outcome + ")"), done.toString());
+            } else if (outcome.equals("ended")) {
+                assertTrue(done.classic().contains("ended before compaction reported a result"), done.toString());
+            } else if (!outcome.equals("failed")) {
+                assertTrue(done.classic().contains("Context compaction skipped"), done.toString());
+            }
+            assertEquals(success ? 1 : 0, metrics.getCompactionEvents());
+            assertEquals(outcome.equals("failed"), client.claudeCompactionFailed(),
+                    "harmless outcomes and missing completion must not trigger portable fallback");
+            assertTrue(lines.isEmpty(), lines.toString());
+            assertFalse(response.contains("Compacting") || response.contains("compaction"), response);
+            assertNotEquals("Compacting", ChatCompleter.getActivity());
+        } finally {
+            ChatCompleter.setDisplayBlockOutput(null);
             ChatCompleter.setContentOutput(null);
             ChatCompleter.setActivity(null);
             if (home == null) System.clearProperty("user.home");

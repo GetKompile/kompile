@@ -48,6 +48,10 @@ class AgenticChatLoopWorkflowTest {
         EnforcerConfig config = new EnforcerConfig();
         config.setWorkflowMode("enforced");
         config.setWorkflowRequiredSkills(List.of("workflow-check"));
+        config.setWorkflowRequiredMemories(List.of("release.md"));
+        java.nio.file.Files.createDirectories(workingDirectory.resolve(".kompile/memory"));
+        java.nio.file.Files.writeString(workingDirectory.resolve(".kompile/memory/release.md"),
+                "FULL_WORKFLOW_MEMORY_RULE");
         config.setWorkflowRequirePlanBeforeMutation(true);
         config.setWorkflowMaxCorrections(2);
         config.save(workingDirectory);
@@ -69,6 +73,19 @@ class AgenticChatLoopWorkflowTest {
         AgenticChatLoop loop = new AgenticChatLoop(
                 null, mapper, tools, new PermissionService(), new AgentRegistry(),
                 workingDirectory, client, null, skills);
+        List<String> judgeRequests = new ArrayList<>();
+        var judge = new ai.kompile.cli.main.chat.enforcer.EnforcerJudge(
+                new ai.kompile.cli.main.chat.harness.JudgeBackend() {
+                    @Override public boolean isAvailable() { return true; }
+                    @Override public String generate(String prompt, String system) {
+                        judgeRequests.add(prompt);
+                        return prompt.contains("[PROPOSED MCP TOOL CALL]")
+                                ? "{\"action\":\"ALLOW\",\"reason\":\"ok\"}"
+                                : "{\"compliant\":true,\"stop\":false}";
+                    }
+                }, mapper);
+        loop.setInlineEnforcer(judge, new ai.kompile.cli.main.chat.enforcer.EnforcerPolicy(
+                "Follow the selected workflow", 2, false), 2);
 
         String output = loop.chat("implement the requested change",
                 "workflow-" + UUID.randomUUID(), "coder", "default", false);
@@ -76,6 +93,12 @@ class AgenticChatLoopWorkflowTest {
         assertTrue(client.firstSystemPrompt.contains(
                 "Host-Applied Workflow Profile (ENFORCED)"));
         assertTrue(client.firstSystemPrompt.contains("FULL_WORKFLOW_SKILL_INSTRUCTIONS"));
+        assertTrue(client.firstSystemPrompt.contains("FULL_WORKFLOW_MEMORY_RULE"));
+        assertFalse(judgeRequests.isEmpty());
+        for (String request : judgeRequests) {
+            assertTrue(request.contains("[ACTIVE WORKFLOW MEMORY CONSTRAINTS]"));
+            assertTrue(request.contains("FULL_WORKFLOW_MEMORY_RULE"));
+        }
         assertEquals(1, mutations.get(), "only the post-plan mutation may execute");
         assertEquals(6, client.calls);
         assertTrue(client.toolResultsByCall.get(0).get(0).isError);
@@ -85,6 +108,21 @@ class AgenticChatLoopWorkflowTest {
         assertFalse(client.toolResultsByCall.get(3).get(0).isError);
         assertFalse(client.toolResultsByCall.get(4).get(0).isError);
         assertTrue(output.contains("workflow complete"));
+    }
+
+    @Test
+    void missingRequiredMemoryPreventsAnyModelRequest() throws Exception {
+        EnforcerConfig config = new EnforcerConfig();
+        config.setWorkflowMode("enforced");
+        config.setWorkflowRequiredMemories(List.of("missing.md"));
+        config.save(workingDirectory);
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        WorkflowClient client = new WorkflowClient(mapper);
+        AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                new PermissionService(), new AgentRegistry(), workingDirectory, client, null, new SkillRegistry());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> loop.chat("Implement", "missing-memory", "coder", "default", false));
+        assertEquals(0, client.calls);
     }
 
     @Test

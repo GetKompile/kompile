@@ -28,6 +28,8 @@ import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
 import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -71,6 +73,14 @@ public class DirectSubagentRunnerStdio {
     private volatile Map<String, String> baseEnvironment = Map.of();
     private volatile Map<String, String> extraEnvironment = Map.of();
     private volatile String lastTaskId;
+    private volatile BackgroundProcessManager processManager;
+    private volatile CoordinationStateManager coordinator;
+
+    /** Use the MCP session's existing log store and cross-JVM process publisher. */
+    public void setProcessTracking(BackgroundProcessManager processes, CoordinationStateManager coordinator) {
+        this.processManager = processes;
+        this.coordinator = coordinator;
+    }
 
     private final AtomicBoolean cancelSignal = new AtomicBoolean(false);
     private volatile SubprocessAgentRunner currentRunner;
@@ -117,6 +127,7 @@ public class DirectSubagentRunnerStdio {
         fork.setSystemPromptManager(systemPromptManager);
         fork.setBaseEnvironment(baseEnvironment);
         fork.setExtraEnvironment(extraEnvironment);
+        fork.setProcessTracking(processManager, coordinator);
         return fork;
     }
 
@@ -166,6 +177,11 @@ public class DirectSubagentRunnerStdio {
             System.err.println(DIM + "  Role: " + roleName + RESET);
         }
 
+        if (KompileNativeTaskRunner.supports(agentName)) {
+            // Reuse the native chat harness, never pass native selectors to a vendor CLI.
+            return executeNativeSubagent(agent.toBuilder().roleName(roleName).build(), prompt);
+        }
+
         AgentLaunchDefaults.Selection launchDefaults = AgentLaunchDefaults.resolve(
                 agentName,
                 workDir,
@@ -188,6 +204,20 @@ public class DirectSubagentRunnerStdio {
 
         return executeManagedSubagent(agentName, effectivePrompt, currentDepth, injectMcpTools,
                 launchDefaults.model(), launchDefaults.thinking(), agent.getWorkflowParticipant());
+    }
+
+    String executeNativeSubagent(AgentConfig agent, String prompt) throws Exception {
+        waitingThread = Thread.currentThread();
+        try {
+            return createNativeRunner().run(agent, prompt, cancelSignal);
+        } finally {
+            waitingThread = null;
+        }
+    }
+
+    KompileNativeTaskRunner createNativeRunner() {
+        return new KompileNativeTaskRunner(workDir, roleManager, processManager, coordinator,
+                new SilentTerminalRenderer());
     }
 
     String executeManagedSubagent(String agentName, String effectivePrompt,
@@ -253,79 +283,120 @@ public class DirectSubagentRunnerStdio {
         env.put("KOMPILE_AGENT_NAME", agentName);
         env.putAll(workflowEnvironment);
         runner.setExtraEnvironment(env);
+        BackgroundProcessManager processes = processManager;
+        CoordinationStateManager publisher = coordinator;
+        BackgroundProcessManager.ProcessEntry log = processes == null ? null : processes.registerVirtual(
+                BackgroundProcessManager.ProcessKind.COMMAND, agentName,
+                "Subagent: " + effectivePrompt.substring(0, Math.min(80, effectivePrompt.length())),
+                Map.of("source", "mcp-subagent", "kind", "subagent", "task_type", "agent", "sessionId", sessionId,
+                        "transcript", history.getTranscriptFile().toString()), this::cancel);
+        if (log != null) {
+            processes.appendVirtualOutput(log.getId(), "User:\n" + effectivePrompt + "\n");
+            if (publisher != null) {
+                publisher.publishProcess(log.getId(), log.getCommand(), log.getDescription(), -1L,
+                        "RUNNING", log.getOutputFile().toString(), agentName, null, "subagent",
+                        log.getStartTime(), null, null);
+            }
+        }
         runner.setOutputConsumer(line -> {
             synchronized (captured) {
                 captured.append(line == null ? "" : line).append('\n');
             }
+            if (log != null) processes.appendVirtualOutput(log.getId(), line);
         });
         runner.setInputProvider(prompt -> null);
 
-        currentRunner = runner;
+        boolean completed = false;
+        String failureDetail = null;
         try {
-            if (injectMcpTools) {
-                runner.injectMcpTools();
-            }
-            if (skillsInjection != null) {
-                runner.injectSkills();
-            }
+            currentRunner = runner;
+            try {
+                if (injectMcpTools) {
+                    runner.injectMcpTools();
+                }
+                if (skillsInjection != null) {
+                    runner.injectSkills();
+                }
 
-            String response = runner.runMessage(effectivePrompt, history, metrics);
-            String blockingNotice = runner.getBlockingNotice();
-            if (blockingNotice != null) {
-                throw new IllegalStateException("Subagent '" + agentName + "' stopped: "
-                        + blockingNotice + ". Select another agent or retry after the limit resets.");
-            }
-            if (response != null && !response.isBlank()) {
-                synchronized (captured) {
-                    if (captured.indexOf(response) < 0) {
-                        captured.append(response).append('\n');
+                String response = runner.runMessage(effectivePrompt, history, metrics);
+                String blockingNotice = runner.getBlockingNotice();
+                if (blockingNotice != null) {
+                    throw new IllegalStateException("Subagent '" + agentName + "' stopped: "
+                            + blockingNotice + ". Select another agent or retry after the limit resets.");
+                }
+                if (response != null && !response.isBlank()) {
+                    synchronized (captured) {
+                        if (captured.indexOf(response) < 0) {
+                            captured.append(response).append('\n');
+                            if (log != null) processes.appendVirtualOutput(log.getId(), response);
+                        }
                     }
                 }
+            } finally {
+                currentRunner = null;
+                waitingThread = null;
+                runner.cleanup();
             }
+
+            if (cancelSignal.get()) {
+                throw new InterruptedException("Subagent '" + agentName + "' was cancelled");
+            }
+
+            long elapsed = System.currentTimeMillis() - startTime;
+            String output;
+            synchronized (captured) {
+                output = captured.toString();
+            }
+            Files.writeString(captureFile, output, StandardCharsets.UTF_8);
+
+            if (isRateLimited(output)) {
+                throw new RateLimitException(agentName, output);
+            }
+
+            String header = String.format(
+                    "Subagent '%s' completed in %.1fs%n%nDispatch: model=%s, thinking=%s, policy=%s",
+                    agentName, elapsed / 1000.0,
+                    modelOverride == null || modelOverride.isBlank() ? "(native/default)" : modelOverride,
+                    thinkingOverride == null || thinkingOverride.isBlank() ? "(native/default)" : thinkingOverride,
+                    "FULL_ACCESS");
+            System.err.println(DIM + "  Full output (" + output.length() + " chars) written to: "
+                    + captureFile.toAbsolutePath() + RESET);
+            System.err.flush();
+
+            if (output.isBlank()) {
+                Files.deleteIfExists(captureFile);
+                completed = true;
+                return String.format("Subagent '%s' completed successfully in %.1fs (no output captured).",
+                        agentName, elapsed / 1000.0);
+            }
+
+            Path resultFile = renameResultFile(captureFile, agentName, header);
+            String summary = buildSummaryFromBuffers(output.trim(), output, output.length());
+            completed = true;
+            return header + "\n\n"
+                    + "## Summary\n" + summary + "\n\n"
+                    + "**Full output (" + output.length() + " chars) written to:** `"
+                    + resultFile.toAbsolutePath() + "`\n"
+                    + "Use the `read` tool to access the full result if needed.";
+        } catch (Exception failure) {
+            failureDetail = "Subagent stopped: " + failure.getClass().getSimpleName() + ": " + failure.getMessage();
+            throw failure;
         } finally {
-            currentRunner = null;
-            waitingThread = null;
-            runner.cleanup();
+            // Cancellation interrupts the worker; finish disk/coordination writes before restoring it.
+            boolean interrupted = Thread.interrupted();
+            try {
+                history.close();
+                if (log != null) {
+                    if (failureDetail != null) processes.appendVirtualOutput(log.getId(), failureDetail);
+                    if (completed) processes.complete(log.getId());
+                    else processes.fail(log.getId(), -1);
+                    if (publisher != null) publisher.updateProcessState(log.getId(), log.getState().name(),
+                            log.getEndTime(), log.getExitCode());
+                }
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt();
+            }
         }
-
-        if (cancelSignal.get()) {
-            throw new InterruptedException("Subagent '" + agentName + "' was cancelled");
-        }
-
-        long elapsed = System.currentTimeMillis() - startTime;
-        String output;
-        synchronized (captured) {
-            output = captured.toString();
-        }
-        Files.writeString(captureFile, output, StandardCharsets.UTF_8);
-
-        if (isRateLimited(output)) {
-            throw new RateLimitException(agentName, output);
-        }
-
-        String header = String.format(
-                "Subagent '%s' completed in %.1fs%n%nDispatch: model=%s, thinking=%s, policy=%s",
-                agentName, elapsed / 1000.0,
-                modelOverride == null || modelOverride.isBlank() ? "(native/default)" : modelOverride,
-                thinkingOverride == null || thinkingOverride.isBlank() ? "(native/default)" : thinkingOverride,
-                "FULL_ACCESS");
-        System.err.println(DIM + "  Full output (" + output.length() + " chars) written to: "
-                + captureFile.toAbsolutePath() + RESET);
-        System.err.flush();
-
-        if (output.isBlank()) {
-            Files.deleteIfExists(captureFile);
-            return String.format("Subagent '%s' completed successfully in %.1fs (no output captured).",
-                    agentName, elapsed / 1000.0);
-        }
-
-        Path resultFile = renameResultFile(captureFile, agentName, header);
-        String summary = buildSummaryFromBuffers(output.trim(), output, output.length());
-        return header + "\n\n"
-                + "## Summary\n" + summary + "\n\n"
-                + "**Full output (" + output.length() + " chars) written to:** `"
-                + resultFile.toAbsolutePath() + "`\n"
-                + "Use the `read` tool to access the full result if needed.";
     }
 
     SubprocessAgentRunner createManagedRunner(String agentName, boolean injectMcpTools) {

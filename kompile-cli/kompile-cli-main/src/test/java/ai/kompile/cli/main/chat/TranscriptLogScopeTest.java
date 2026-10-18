@@ -31,6 +31,194 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TranscriptLogScopeTest {
 
     @Test
+    void unboundHostDiagnosticsUseHostNoticeButIsolatedScopesKeepTheirOwners(@TempDir Path tempDir) throws Exception {
+        try (TestEnvironment env = new TestEnvironment(tempDir)) {
+            Runnable release = TranscriptLogScope.retainDispatcher();
+            java.util.List<String> host = new java.util.ArrayList<>();
+            java.util.List<String> session = new java.util.ArrayList<>();
+            Runnable hostCleanup = TranscriptLogScope.installTerminalNoticeSink(host::add);
+            try (TranscriptLogScope scope = TranscriptLogScope.openIsolated("host-session", tempDir, false)) {
+                Runnable sessionCleanup;
+                try (var ignored = scope.bind()) {
+                    sessionCleanup = TranscriptLogScope.installTerminalNoticeSink(session::add);
+                    System.err.println("session only");
+                }
+                try {
+                    System.err.println("unbound host diagnostic");
+                    assertEquals(java.util.List.of("session only"), session);
+                    assertEquals(java.util.List.of("unbound host diagnostic"), host);
+                    assertEquals("", env.output());
+                    hostCleanup.run();
+                    System.err.println("host cleanup fallback");
+                    assertTrue(env.output().contains("host cleanup fallback"));
+                } finally { sessionCleanup.run(); }
+            } finally { hostCleanup.run(); release.run(); }
+            assertSame(env.terminal, System.err);
+        }
+    }
+
+    @Test
+    void preinitializedConsoleLoggerFollowsTheCurrentDiagnosticRoute(@TempDir Path tempDir) throws Exception {
+        var context = new ch.qos.logback.classic.LoggerContext();
+        var encoder = new ch.qos.logback.classic.encoder.PatternLayoutEncoder();
+        encoder.setContext(context);
+        encoder.setPattern("%msg%n");
+        encoder.start();
+        var appender = new DiagnosticConsoleAppender();
+        appender.setContext(context);
+        appender.setEncoder(encoder);
+        appender.start();
+        var logger = context.getLogger("preinitialized-library");
+        logger.addAppender(appender);
+        try (TestEnvironment env = new TestEnvironment(tempDir);
+             TranscriptLogScope scope = TranscriptLogScope.open("logger-notice", tempDir, false)) {
+            java.util.List<String> notices = new java.util.ArrayList<>();
+            Runnable cleanup = TranscriptLogScope.installTerminalNoticeSink(notices::add);
+            try {
+                logger.warn("ordinary library warning");
+                assertEquals(java.util.List.of("ordinary library warning"), notices);
+                assertEquals("", env.output());
+                assertTrue(Files.readString(scope.logFile()).contains("ordinary library warning"));
+            } finally { cleanup.run(); }
+            logger.warn("after UI logger fallback");
+            assertTrue(env.output().contains("after UI logger fallback"));
+        } finally { appender.stop(); encoder.stop(); context.stop(); }
+    }
+
+    @Test
+    void rawDiagnosticsUseNoticesButKeepFullDiskLogAndHeadlessFallback(@TempDir Path tempDir) throws Exception {
+        try (TestEnvironment env = new TestEnvironment(tempDir);
+             TranscriptLogScope scope = TranscriptLogScope.open("raw-notices", tempDir, false)) {
+            System.err.println("before UI");
+            java.util.List<String> notices = new java.util.ArrayList<>();
+            PrintStream cachedErr = System.err;
+            Runnable cleanup = TranscriptLogScope.installTerminalNoticeSink(notices::add);
+            try {
+                cachedErr.println("third-party diagnostic without a special prefix");
+                cachedErr.printf("library detail: %s%n", "π");
+                cachedErr.write("split utf8: ".getBytes(StandardCharsets.UTF_8));
+                byte[] utf8 = "界".getBytes(StandardCharsets.UTF_8);
+                cachedErr.write(utf8, 0, 1);
+                cachedErr.flush();
+                cachedErr.write(utf8, 1, 2);
+                cachedErr.println();
+                String longLine = "x".repeat(20000);
+                cachedErr.println(longLine);
+                assertTrue(notices.contains("third-party diagnostic without a special prefix"));
+                assertTrue(notices.contains("library detail: π"));
+                assertTrue(String.join("", notices).contains("界"));
+                assertFalse(String.join("", notices).contains("�"));
+                assertTrue(notices.stream().allMatch(line -> line.length() <= 8192));
+                assertEquals("before UI" + System.lineSeparator(), env.output());
+                String log = Files.readString(scope.logFile());
+                assertTrue(log.contains("third-party diagnostic without a special prefix"));
+                assertTrue(log.contains("library detail: π"));
+                assertTrue(log.contains("split utf8: 界"));
+                assertTrue(log.contains(longLine), "the header cap must not truncate disk diagnostics");
+            } finally { cleanup.run(); cleanup.run(); }
+            System.err.println("after UI");
+            assertTrue(env.output().contains("after UI"));
+        }
+    }
+
+    @Test
+    void noticeRoutesFollowNestedScopesAndClearWithoutCrossingSessions(@TempDir Path tempDir) throws Exception {
+        try (TestEnvironment env = new TestEnvironment(tempDir);
+             TranscriptLogScope parent = TranscriptLogScope.open("parent-notice", tempDir, false)) {
+            java.util.List<String> first = new java.util.ArrayList<>();
+            java.util.List<String> second = new java.util.ArrayList<>();
+            Runnable cleanup = TranscriptLogScope.installTerminalNoticeSink(first::add);
+            try {
+                System.err.println("parent only");
+                try (TranscriptLogScope child = TranscriptLogScope.open("child-notice", tempDir, false)) {
+                    System.err.println("child before UI");
+                    Runnable childCleanup = TranscriptLogScope.installTerminalNoticeSink(second::add);
+                    try { System.err.println("child only"); }
+                    finally { childCleanup.run(); }
+                }
+                parent.switchTo("parent-cleared", tempDir, false);
+                System.err.println("after clear");
+                assertEquals(java.util.List.of("parent only", "after clear"), first);
+                assertEquals(java.util.List.of("child only"), second);
+                assertTrue(env.output().contains("child before UI"));
+                assertFalse(env.output().contains("child only"));
+                assertTrue(Files.readString(parent.logFile()).contains("after clear"));
+            } finally { cleanup.run(); }
+        }
+    }
+
+    @Test
+    void failingAndRemovedNoticeSinksNeverLeakIntoPhysicalInput(@TempDir Path tempDir) throws Exception {
+        try (TestEnvironment env = new TestEnvironment(tempDir);
+             TranscriptLogScope scope = TranscriptLogScope.open("notice-cleanup", tempDir, false)) {
+            java.util.List<String> notices = new java.util.ArrayList<>();
+            Runnable first = TranscriptLogScope.installTerminalNoticeSink(notices::add);
+            Runnable second = TranscriptLogScope.installTerminalNoticeSink(text -> {
+                throw new IllegalStateException("closing UI");
+            });
+            try {
+                System.err.println("failed sink diagnostic");
+                assertTrue(notices.isEmpty());
+                assertEquals("", env.output());
+                second.run();
+                System.err.println("restored first sink");
+                assertEquals(java.util.List.of("restored first sink"), notices);
+                Runnable third = TranscriptLogScope.installTerminalNoticeSink(notices::add);
+                first.run(); // Out-of-order cleanup must not remove the newest sink.
+                try { System.err.println("newest survives"); }
+                finally { third.run(); }
+                assertEquals(java.util.List.of("restored first sink", "newest survives"), notices);
+                assertTrue(Files.readString(scope.logFile()).contains("failed sink diagnostic"));
+            } finally { second.run(); first.run(); }
+        }
+    }
+
+    @Test
+    void isolatedNoticeOwnersDoNotStealUnboundDiagnostics(@TempDir Path tempDir) throws Exception {
+        try (TestEnvironment env = new TestEnvironment(tempDir);
+             TranscriptLogScope first = TranscriptLogScope.openIsolated("notice-a", tempDir, false);
+             TranscriptLogScope second = TranscriptLogScope.openIsolated("notice-b", tempDir, false)) {
+            java.util.List<String> a = new java.util.ArrayList<>();
+            java.util.List<String> b = new java.util.ArrayList<>();
+            Runnable cleanA;
+            Runnable cleanB;
+            try (var ignored = first.bind()) { cleanA = TranscriptLogScope.installTerminalNoticeSink(a::add); }
+            try (var ignored = second.bind()) { cleanB = TranscriptLogScope.installTerminalNoticeSink(b::add); }
+            try {
+                first.capture(() -> System.err.println("a only")).run();
+                second.capture(() -> System.err.println("b only")).run();
+                System.err.println("unbound only");
+                assertEquals(java.util.List.of("a only"), a);
+                assertEquals(java.util.List.of("b only"), b);
+                assertEquals("unbound only" + System.lineSeparator(), env.output());
+            } finally { cleanA.run(); cleanB.run(); }
+        }
+    }
+
+    @Test
+    void noticeCallbacksCanWaitForOtherStderrWritersAndLogRecursively(@TempDir Path tempDir) throws Exception {
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        try (TestEnvironment env = new TestEnvironment(tempDir);
+             TranscriptLogScope scope = TranscriptLogScope.open("notice-locks", tempDir, false)) {
+            java.util.List<String> notices = new java.util.ArrayList<>();
+            Runnable cleanup = TranscriptLogScope.installTerminalNoticeSink(text -> {
+                notices.add(text);
+                System.err.println("sink reentry disk only");
+                if (text.equals("trigger")) {
+                    try { worker.submit(() -> System.err.println("worker diagnostic")).get(3, TimeUnit.SECONDS); }
+                    catch (Exception failure) { throw new AssertionError("sink held a stderr/dispatch lock", failure); }
+                }
+            });
+            try {
+                System.err.println("trigger");
+                assertEquals(java.util.List.of("trigger", "worker diagnostic"), notices);
+                assertEquals("", env.output());
+                assertTrue(Files.readString(scope.logFile()).contains("sink reentry disk only"));
+            } finally { cleanup.run(); }
+        } finally { stop(worker); }
+    }
+
+    @Test
     void isolatedScopesDoNotClaimUnboundOrInheritedWork(@TempDir Path tempDir) throws Exception {
         try (TestEnvironment env = new TestEnvironment(tempDir);
              TranscriptLogScope first = TranscriptLogScope.openIsolated("first", tempDir, false);

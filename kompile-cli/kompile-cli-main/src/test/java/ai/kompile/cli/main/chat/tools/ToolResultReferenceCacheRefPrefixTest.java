@@ -31,7 +31,7 @@ class ToolResultReferenceCacheRefPrefixTest {
 
     @Test
     void getSliceResolvesBothPrefixedAndBareHandles() {
-        ToolResultReferenceCache cache = new ToolResultReferenceCache();
+        ToolResultReferenceCache cache = new ToolResultReferenceCache(16000, 900_000);
 
         String content = "line one\nline two\nline three";
         ToolResult stored = cache.storeAndSummarize(

@@ -114,14 +114,7 @@ public class ToolCallWriterService {
 
             String jsonLine = MAPPER.writeValueAsString(record) + "\n";
 
-            synchronized (this) {
-                // Append to per-session file
-                Path sessionFile = dir.resolve(sessionId + ".jsonl");
-                Files.writeString(sessionFile, jsonLine, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-
-                // Append to combined index
-                Files.writeString(getCombinedIndexFile(), jsonLine, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            }
+            ai.kompile.cli.common.metrics.ToolJournalFiles.appendCatalog(dir, sessionId, jsonLine);
 
             if (usage != null) {
                 journaled = usageJournalFor().record(usage, revisionFor(usage))

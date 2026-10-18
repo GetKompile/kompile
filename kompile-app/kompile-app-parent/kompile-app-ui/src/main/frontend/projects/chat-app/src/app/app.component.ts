@@ -14,8 +14,10 @@
  *  limitations under the License.
  */
 
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
+import { Router } from '@angular/router';
 import { ShellNavItem } from '@shared/components/app-shell/app-shell.component';
+import { ProductChatContextService } from './components/product-chat/product-chat-context.service';
 
 /**
  * Chat app root. All chrome lives in the shared AppShellComponent; this supplies the tab bar
@@ -29,7 +31,10 @@ import { ShellNavItem } from '@shared/components/app-shell/app-shell.component';
   standalone: false,
   selector: 'app-root',
   template: `
-    <app-shell
+    <p *ngIf="checkingProduct" role="status">Checking chat host…</p>
+    <p *ngIf="productError" role="alert">{{ productError }}</p>
+    <router-outlet *ngIf="!checkingProduct && productMode && !productError"></router-outlet>
+    <app-shell *ngIf="!checkingProduct && !productMode && !productError"
       persona="chat"
       [navItems]="navItems"
       [legacyKeyMap]="legacyKeyMap"
@@ -39,7 +44,20 @@ import { ShellNavItem } from '@shared/components/app-shell/app-shell.component';
     </app-shell>
   `
 })
-export class AppComponent {
+export class AppComponent implements OnInit {
+  checkingProduct = true;
+  productMode = false;
+  productError = '';
+  constructor(private readonly product: ProductChatContextService, private readonly router: Router) {}
+  async ngOnInit(): Promise<void> {
+    try {
+      this.productMode = !!(await this.product.load());
+      if (this.productMode) await this.router.navigateByUrl('/play', { replaceUrl: true });
+    } catch {
+      this.productError = 'Cannot establish the managed chat profile. No generic workspace was opened.';
+    } finally { this.checkingProduct = false; }
+  }
+
   readonly navItems: ShellNavItem[] = [
     { label: 'Chat',        route: '/chat',        exact: true },
     { label: 'Project',     route: '/project' },

@@ -5,6 +5,7 @@
  */
 package ai.kompile.cli.main.chat.mcp;
 
+import ai.kompile.cli.common.WebChatContext;
 import ai.kompile.cli.common.logs.LogPaths;
 import ai.kompile.cli.main.chat.TranscriptLogScope;
 import ai.kompile.cli.mcp.stdio.McpStderrLogger;
@@ -29,6 +30,7 @@ import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Minimal JSON-lines MCP client for bundle-declared stdio servers. */
@@ -48,6 +50,15 @@ final class McpStdioClient implements AutoCloseable {
     private final BufferedReader input;
     private final BufferedWriter output;
     private final long responseTimeoutMillis;
+    private final boolean retainChildOnTimeout;
+    private final AtomicBoolean closed = new AtomicBoolean();
+    private volatile boolean cleanupConfirmed;
+    // Guarded by this, like the serialized request/notification writes. Never cleared.
+    private IOException poisonFailure;
+    private JsonNode serverCapabilities;
+    private static final int MAX_CATALOG_PAGES = 128;
+    private static final int MAX_CATALOG_ITEMS = 10_000;
+    private static final int MAX_CATALOG_CHARS = 16 * 1024 * 1024;
     // Bound unsolicited notifications and apply stdout backpressure instead of
     // allowing an idle MCP child to grow this process without limit.
     private final BlockingQueue<ReaderEvent> readerEvents =
@@ -70,7 +81,22 @@ final class McpStdioClient implements AutoCloseable {
                    Map<String, String> environment, Path workingDirectory,
                    long responseTimeoutSeconds, String serverId, String transcriptId)
             throws IOException {
+        this(mapper, command, args, environment, workingDirectory,
+                responseTimeoutSeconds, serverId, transcriptId, false);
+    }
+
+    /**
+     * Explicit ownership opt-in: after transport uncertainty, refuse all further RPCs
+     * but retain the child, streams and bounded reader until the owner calls close().
+     * A late response never clears the poison or proves the remote outcome here.
+     */
+    McpStdioClient(ObjectMapper mapper, String command, List<String> args,
+                   Map<String, String> environment, Path workingDirectory,
+                   long responseTimeoutSeconds, String serverId, String transcriptId,
+                   boolean retainChildOnTimeout)
+            throws IOException {
         if (command == null || command.isBlank()) throw new IOException("MCP stdio command is empty");
+        this.retainChildOnTimeout = retainChildOnTimeout;
         List<String> commandLine = new ArrayList<>();
         commandLine.add(command);
         if (args != null) commandLine.addAll(args);
@@ -124,6 +150,8 @@ final class McpStdioClient implements AutoCloseable {
      */
     static void configureEnvironment(Map<String, String> processEnvironment,
                                      Map<String, String> configuredEnvironment) {
+        // A tool server is not another browser host. Do not implicitly inherit its owner/profile.
+        WebChatContext.clearEnvironment(processEnvironment);
         Set<String> explicit = configuredEnvironment == null
                 ? Set.of() : Set.copyOf(configuredEnvironment.keySet());
         processEnvironment.keySet().removeIf(name ->
@@ -142,33 +170,136 @@ final class McpStdioClient implements AutoCloseable {
         ObjectNode params = mapper.createObjectNode().put("protocolVersion", "2024-11-05");
         params.putObject("capabilities");
         params.putObject("clientInfo").put("name", "kompile-agent").put("version", "0.1");
-        request("initialize", params);
+        JsonNode initialized = request("initialize", params);
+        serverCapabilities = initialized.path("capabilities").deepCopy();
         notify("notifications/initialized", mapper.createObjectNode());
     }
 
     List<McpBundleToolLoader.RemoteTool> listTools() throws IOException {
         List<McpBundleToolLoader.RemoteTool> tools = new ArrayList<>();
-        java.util.Set<String> seenCursors = new java.util.HashSet<>();
+        // Keep tools/list for legacy servers that omitted capabilities.tools.
+        for (JsonNode tool : listCatalog("tools/list", "tools", "name")) {
+            tools.add(new McpBundleToolLoader.RemoteTool(
+                    tool.path("name").asText(), tool.path("description").asText(""),
+                    tool.path("inputSchema").isObject()
+                            ? tool.path("inputSchema") : mapper.createObjectNode()));
+        }
+        return tools;
+    }
+
+    boolean advertises(String capability) {
+        return serverCapabilities != null && serverCapabilities.path(capability).isObject();
+    }
+
+    List<JsonNode> listPrompts() throws IOException {
+        requireCapability("prompts");
+        return listCatalog("prompts/list", "prompts", "name");
+    }
+
+    List<JsonNode> listResources() throws IOException {
+        requireCapability("resources");
+        return listCatalog("resources/list", "resources", "uri");
+    }
+
+    List<JsonNode> listResourceTemplates() throws IOException {
+        requireCapability("resources");
+        return listCatalog("resources/templates/list", "resourceTemplates", "uriTemplate");
+    }
+
+    /**
+     * SDK 0.10.0 lists template-backed SyncResourceSpecifications in both catalogs.
+     * Collapse a legacy Resource.uri alias only when templates/list independently
+     * advertises the identical descriptor. The gateway still validates the template
+     * and its variables; a brace in an arbitrary resource URI is not permission to
+     * invent a template or a read route.
+     */
+    List<JsonNode> listResourceCatalog() throws IOException {
+        List<JsonNode> resources = listResources();
+        List<JsonNode> templates = listResourceTemplates();
+        Map<String, JsonNode> advertisedTemplates = new java.util.LinkedHashMap<>();
+        for (JsonNode template : templates)
+            advertisedTemplates.put(template.path("uriTemplate").asText(), template);
+        List<JsonNode> entries = new ArrayList<>();
+        for (JsonNode resource : resources) {
+            String uri = resource.path("uri").asText();
+            if (uri.contains("{") || uri.contains("}")) {
+                JsonNode advertised = advertisedTemplates.get(uri);
+                if (advertised == null || resource.has("uriTemplate"))
+                    throw new CatalogException("UNADVERTISED_TEMPLATE", "resources/list");
+                ObjectNode promoted = ((ObjectNode) resource).deepCopy();
+                promoted.remove("uri");
+                promoted.put("uriTemplate", uri);
+                if (!promoted.equals(advertised))
+                    throw new CatalogException("CONFLICTING_TEMPLATE", "resources/list");
+                // Use only the authoritative templates/list row, once.
+            } else entries.add(resource);
+        }
+        entries.addAll(templates);
+        return List.copyOf(entries);
+    }
+
+    private void requireCapability(String capability) throws IOException {
+        // Even an unsupported operation must respect sticky transport quarantine.
+        synchronized (this) { requireUsable(); }
+        if (!advertises(capability)) throw new CatalogException("NOT_ADVERTISED", capability);
+    }
+
+    /** Atomic inventory: never return a partial list as a complete catalog. */
+    private List<JsonNode> listCatalog(String method, String field, String identity) throws IOException {
+        List<JsonNode> entries = new ArrayList<>();
+        Set<String> cursors = new java.util.HashSet<>();
+        Set<String> identities = new java.util.HashSet<>();
         String cursor = null;
-        for (int page = 0; page < 100; page++) {
+        long chars = 0;
+        for (int page = 0; page < MAX_CATALOG_PAGES; page++) {
             ObjectNode params = mapper.createObjectNode();
             if (cursor != null) params.put("cursor", cursor);
-            JsonNode result = request("tools/list", params);
-            for (JsonNode tool : result.path("tools")) {
-                tools.add(new McpBundleToolLoader.RemoteTool(
-                        tool.path("name").asText(),
-                        tool.path("description").asText(""),
-                        tool.path("inputSchema").isObject()
-                                ? tool.path("inputSchema") : mapper.createObjectNode()));
+            // Preserve the original transport exception/cause, especially sticky quarantine.
+            JsonNode result = request(method, params);
+            if (!result.isObject() || !result.path(field).isArray())
+                throw new CatalogException("INVALID_CATALOG", method);
+            for (JsonNode entry : result.path(field)) {
+                JsonNode key = entry.path(identity);
+                if (!entry.isObject() || !key.isTextual() || key.asText().isBlank()
+                        || key.asText().length() > 2048)
+                    throw new CatalogException("INVALID_IDENTITY", method);
+                if (!identities.add(key.asText()))
+                    throw new CatalogException("DUPLICATE_IDENTITY", method);
+                chars += entry.toString().length();
+                if (entries.size() >= MAX_CATALOG_ITEMS || chars > MAX_CATALOG_CHARS)
+                    throw new CatalogException("CATALOG_LIMIT", method);
+                entries.add(entry.deepCopy());
             }
-            String nextCursor = result.path("nextCursor").asText("").trim();
-            if (nextCursor.isBlank()) return tools;
-            if (!seenCursors.add(nextCursor)) {
-                throw new IOException("MCP tools/list repeated cursor: " + nextCursor);
-            }
-            cursor = nextCursor;
+            JsonNode next = result.get("nextCursor");
+            if (next == null || next.isNull() || (next.isTextual() && next.asText().isEmpty()))
+                return List.copyOf(entries);
+            if (!next.isTextual() || next.asText().length() > 2048 || next.asText().isBlank())
+                throw new CatalogException("INVALID_CURSOR", method);
+            cursor = next.asText(); // Cursors are opaque: do not trim or otherwise rewrite.
+            if (!cursors.add(cursor)) throw new CatalogException("REPEATED_CURSOR", method);
         }
-        throw new IOException("MCP tools/list exceeded 100 pages");
+        throw new CatalogException("PAGE_LIMIT", method);
+    }
+
+    /** Bounded diagnostics: do not echo untrusted catalog bodies or cursor values. */
+    static final class CatalogException extends IOException {
+        final String code;
+        CatalogException(String code, String operation) {
+            super("MCP catalog " + code + " (" + operation + ")");
+            this.code = code;
+        }
+    }
+
+    JsonNode getPrompt(String name, JsonNode arguments) throws IOException {
+        requireCapability("prompts");
+        ObjectNode params = mapper.createObjectNode().put("name", name);
+        params.set("arguments", arguments == null ? mapper.createObjectNode() : arguments);
+        return request("prompts/get", params);
+    }
+
+    JsonNode readResource(String uri) throws IOException {
+        requireCapability("resources");
+        return request("resources/read", mapper.createObjectNode().put("uri", uri));
     }
 
     JsonNode callTool(String name, JsonNode arguments) throws IOException {
@@ -185,13 +316,19 @@ final class McpStdioClient implements AutoCloseable {
                 .put("method", method);
         request.set("params", params == null ? mapper.createObjectNode() : params);
         synchronized (this) {
+            requireUsable();
             if (TRACE_PROTOCOL_IDS) {
                 appendStdoutDiagnostic("request-id=" + id + " method=" + method);
             }
-            output.write(mapper.writeValueAsString(request));
-            output.write('\n');
-            output.flush();
-            return readResponse(id);
+            try {
+                output.write(mapper.writeValueAsString(request));
+                output.write('\n');
+                output.flush();
+                return readResponse(id);
+            } catch (IOException failure) {
+                poisonIfRetainingChild(failure);
+                throw failure;
+            }
         }
     }
 
@@ -199,10 +336,28 @@ final class McpStdioClient implements AutoCloseable {
         ObjectNode notification = mapper.createObjectNode().put("jsonrpc", "2.0").put("method", method);
         notification.set("params", params == null ? mapper.createObjectNode() : params);
         synchronized (this) {
-            output.write(mapper.writeValueAsString(notification));
-            output.write('\n');
-            output.flush();
+            requireUsable();
+            try {
+                output.write(mapper.writeValueAsString(notification));
+                output.write('\n');
+                output.flush();
+            } catch (IOException failure) {
+                poisonIfRetainingChild(failure);
+                throw failure;
+            }
         }
+    }
+
+    private void requireUsable() throws IOException {
+        if (closed.get()) throw new IOException("MCP stdio client is closed");
+        if (poisonFailure != null) {
+            throw new IOException("MCP stdio client is poisoned after transport uncertainty; "
+                    + "remote outcome remains unknown; explicit close required", poisonFailure);
+        }
+    }
+
+    private void poisonIfRetainingChild(IOException failure) {
+        if (retainChildOnTimeout && poisonFailure == null) poisonFailure = failure;
     }
 
     private JsonNode readResponse(long id) throws IOException {
@@ -211,7 +366,7 @@ final class McpStdioClient implements AutoCloseable {
         while (true) {
             long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0) {
-                terminateTimedOutProcess();
+                if (!retainChildOnTimeout) terminateTimedOutProcess();
                 throw new IOException("Timed out after " + responseTimeoutMillis
                         + "ms waiting for MCP response id=" + id);
             }
@@ -228,6 +383,22 @@ final class McpStdioClient implements AutoCloseable {
             String line = event.line();
             if (line == null || line.isBlank()) continue;
             JsonNode response = mapper.readTree(line);
+            if (retainChildOnTimeout) {
+                if (response == null || !response.isObject()
+                        || !"2.0".equals(response.path("jsonrpc").asText())) {
+                    throw new IOException("Invalid MCP JSON-RPC response for id=" + id);
+                }
+                // Notifications are not replies and may precede the matching result.
+                if (response.path("method").isTextual() && !response.has("id")
+                        && !response.has("result") && !response.has("error")) continue;
+                if (!response.path("id").isIntegralNumber()
+                        || !response.path("id").canConvertToLong()
+                        || response.path("id").asLong() != id
+                        || response.has("result") == response.has("error")
+                        || response.has("method")) {
+                    throw new IOException("Invalid MCP JSON-RPC response for id=" + id);
+                }
+            }
             if (TRACE_PROTOCOL_IDS) {
                 appendStdoutDiagnostic("response-id=" + response.path("id").asText("")
                         + " request-id=" + id + " has-result=" + response.has("result")
@@ -311,9 +482,30 @@ final class McpStdioClient implements AutoCloseable {
 
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) return;
         try { output.close(); } catch (IOException ignored) { }
-        terminateProcessTree(process, 500L);
-        try { input.close(); } catch (IOException ignored) { }
+        if (retainChildOnTimeout) {
+            // Product ownership cannot hide a nested forced/orphan boundary from
+            // the web owner. EOF first, then actual exit; escalation stays unconfirmed.
+            boolean escalated = false;
+            List<ProcessHandle> descendants = process.descendants().toList();
+            try {
+                if (!process.waitFor(8, TimeUnit.SECONDS)) {
+                    escalated = true;
+                    terminateProcessTree(process, 500L);
+                    process.waitFor(2, TimeUnit.SECONDS);
+                }
+                cleanupConfirmed = !escalated && !process.isAlive() && process.exitValue() == 0
+                        && descendants.stream().noneMatch(ProcessHandle::isAlive);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                terminateProcessTree(process, 0L);
+            } catch (RuntimeException unavailable) {
+                terminateProcessTree(process, 0L);
+            }
+        } else terminateProcessTree(process, 500L);
+        // A reader blocked on a still-live native pipe must never block cleanup reporting.
+        if (!process.isAlive()) try { input.close(); } catch (IOException ignored) { }
         responseReader.interrupt();
         if (stderrReader != null) {
             try {
@@ -329,6 +521,8 @@ final class McpStdioClient implements AutoCloseable {
         if (childStderrLogger != null) childStderrLogger.getPrintStream().close();
         if (stdoutDiagnosticLogger != null) stdoutDiagnosticLogger.getPrintStream().close();
     }
+
+    boolean cleanupConfirmed() { return closed.get() && cleanupConfirmed; }
 
     private void appendLifecycle(String message) {
         if (childStderrLogger == null) return;

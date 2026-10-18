@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -10,7 +11,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
@@ -171,6 +174,62 @@ class TodoReadToolTest {
         assertTrue(schema.has("properties"));
         assertEquals(1, schema.path("properties").size());
         assertTrue(schema.path("properties").has("session_id"));
+    }
+
+    @Test
+    void allActionsCarryTargetSessionSnapshotsAndRetainedResultsDoNotChange() throws Exception {
+        String target = "other-session";
+        // A real historical transcript can receive its first tasks without a todo snapshot.
+        Path transcript = new ChatHistory(target).getTranscriptFile();
+        Files.createDirectories(transcript.getParent());
+        Files.writeString(transcript, "Existing historical conversation");
+        assertFalse(Files.exists(TodoWriteTool.sessionTodoPath(target)));
+        var renderer = new ai.kompile.cli.main.chat.render.TerminalRenderer(false);
+        ObjectNode params = om.createObjectNode();
+        params.put("session_id", target);
+        params.put("action", "set");
+        params.putArray("todos").addObject().put("id", "1").put("subject", "Target task");
+        ToolResult set = writeTool.execute(params, context);
+        assertEquals(target, set.getMetadata().get("sessionId"));
+        assertTrue(renderer.renderToolResultDetail("todowrite", params.toString(), set).contains("○ #1 Target task"));
+
+        params.remove("todos");
+        params.put("action", "update");
+        params.put("task_id", "1");
+        params.put("status", "in_progress");
+        ToolResult update = writeTool.execute(params, context);
+        assertTrue(renderer.renderToolResultDetail("todowrite", params.toString(), update)
+                .contains("▶ #1 Target task [current]"));
+        assertTrue(renderer.renderToolResultDetail("todowrite", "{}", set).contains("○ #1 Target task"),
+                "Later updates must not mutate an earlier result snapshot");
+
+        params.put("action", "add");
+        params.remove("task_id");
+        params.put("subject", "Another task");
+        params.put("status", "cancelled");
+        ToolResult add = writeTool.execute(params, context);
+        assertTrue(renderer.renderToolResultDetail("todowrite", "{}", add).contains("✗ #2 Another task"));
+        ObjectNode lookup = om.createObjectNode().put("session_id", target);
+        ToolResult read = readTool.execute(lookup, context);
+        assertEquals(renderer.renderToolResultDetail("todowrite", "{}", add),
+                renderer.renderToolResultDetail("todoread", "{}", read));
+        assertEquals("  No tasks", renderer.renderToolResultDetail("todoread", "{}",
+                readTool.execute(om.createObjectNode(), context)), "Current session must stay separate");
+
+        params.put("action", "delete");
+        params.remove(List.of("subject", "status"));
+        params.put("task_id", "1");
+        ToolResult delete = writeTool.execute(params, context);
+        String afterDelete = renderer.renderToolResultDetail("todowrite", "{}", delete);
+        assertFalse(afterDelete.contains("Target task"));
+        assertTrue(afterDelete.contains("Another task"));
+        params.put("task_id", "2");
+        ToolResult cleared = writeTool.execute(params, context);
+        assertEquals("  No tasks", renderer.renderToolResultDetail("todowrite", "{}", cleared));
+        assertEquals("  No tasks", renderer.renderToolResultDetail("todoread", "{}", readTool.execute(lookup, context)));
+        ToolResult failed = writeTool.execute(params, context);
+        assertTrue(failed.isError());
+        assertFalse(failed.getMetadata().containsKey("todos"));
     }
 
     private void addTask(String subject) throws Exception {

@@ -103,7 +103,8 @@ public class SyncPeerCommand implements Callable<Integer> {
             for (String name : peers) {
                 var peer = store.loadPeer(name);
                 String detail = peer
-                        .map(p -> p.path("ssh").asText("?") + (p.hasNonNull("port") ? ":" + p.get("port").asInt() : ""))
+                        .map(p -> p.hasNonNull("address") ? p.path("address").asText()
+                                : p.path("ssh").asText("?") + (p.hasNonNull("port") ? ":" + p.get("port").asInt() : ""))
                         .orElse("(unreadable)");
                 System.out.println("  " + name + " → " + detail);
             }

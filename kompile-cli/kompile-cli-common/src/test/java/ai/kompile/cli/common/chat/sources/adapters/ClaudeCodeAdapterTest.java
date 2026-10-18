@@ -38,6 +38,32 @@ class ClaudeCodeAdapterTest {
     Path tempDir;
 
     @Test
+    void honorsClaudeConfigDirectoryWithoutChangingTheDefault() {
+        Path home = tempDir.resolve("home");
+        assertEquals(home.resolve(".claude"), ClaudeCodeAdapter.configDirectory(java.util.Map.of(), home));
+        assertEquals(home.resolve(".claude"),
+                ClaudeCodeAdapter.configDirectory(java.util.Map.of("CLAUDE_CONFIG_DIR", " "), home));
+        Path custom = tempDir.resolve("claude-account");
+        assertEquals(custom, ClaudeCodeAdapter.configDirectory(
+                java.util.Map.of("CLAUDE_CONFIG_DIR", custom.toString()), home));
+    }
+
+    @Test
+    void nativeLookupDoesNotParseTranscriptsOrChooseAnAmbiguousCopy() throws Exception {
+        Path projects = tempDir.resolve("projects");
+        Path nativeFile = Files.createDirectories(projects.resolve("long-hashed-project"))
+                .resolve("native-id.jsonl");
+        Files.writeString(nativeFile, "not JSON: live file may have an unfinished record");
+        ClaudeCodeAdapter adapter = new TestClaudeCodeAdapter(projects);
+        assertEquals(nativeFile, adapter.nativeTranscriptFile("native-id").orElseThrow());
+        assertTrue(adapter.nativeTranscriptFile("missing").isEmpty());
+        assertTrue(adapter.nativeTranscriptFile("../native-id").isEmpty());
+        Path duplicate = Files.createDirectories(projects.resolve("other-project"));
+        Files.copy(nativeFile, duplicate.resolve(nativeFile.getFileName()));
+        assertTrue(adapter.nativeTranscriptFile("native-id").isEmpty());
+    }
+
+    @Test
     void resolvesHumanReadableSlugToCanonicalSessionId() throws Exception {
         Path projects = tempDir.resolve("projects");
         Path project = projects.resolve("-tmp-project");

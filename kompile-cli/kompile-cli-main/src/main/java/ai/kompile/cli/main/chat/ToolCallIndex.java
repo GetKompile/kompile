@@ -22,22 +22,20 @@ import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.*;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Persistent JSONL-based index of all tool calls from passthrough and emulated
  * passthrough sessions. Stores one JSONL file per session under
  * {@code ~/.kompile/conversations/tool-calls/} plus a combined index for
- * cross-session search.
+ * cross-session compatibility. Queries use a rebuildable SQLite projection;
+ * the JSONL files remain the authoritative interchange/history sources.
  * <p>
  * Thread-safe: multiple threads can record tool calls concurrently.
  */
@@ -182,14 +180,8 @@ public class ToolCallIndex {
                     .validateSessionKey(record.getSessionId());
             String jsonLine = MAPPER.writeValueAsString(record) + "\n";
 
-            // Append to per-session file
-            Path sessionFile = toolCallsDir.resolve(record.getSessionId() + ".jsonl");
-            Files.writeString(sessionFile, jsonLine,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-
-            // Append to combined index
-            Files.writeString(combinedIndexFile, jsonLine,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            ai.kompile.cli.common.metrics.ToolJournalFiles.appendCatalog(
+                    toolCallsDir, record.getSessionId(), jsonLine);
 
         } catch (IllegalArgumentException unsafeSessionKey) {
             System.err.println("Warning: rejected unsafe session key for tool call index: "
@@ -217,22 +209,12 @@ public class ToolCallIndex {
                                        String projectDirectory,
                                        SortField sortField, SortDirection sortDir,
                                        int limit) {
-        String lowerQuery = query != null ? query.toLowerCase() : null;
-
-        Stream<ToolCallRecord> stream = loadRecords(sessionId).stream()
-                .filter(r -> toolName == null || r.getToolName().equalsIgnoreCase(toolName))
-                .filter(r -> category == null || r.getCategory().equalsIgnoreCase(category))
-                .filter(r -> agentName == null || r.getAgentName().equalsIgnoreCase(agentName))
-                .filter(r -> projectDirectory == null || matchesProject(r, projectDirectory))
-                .filter(r -> lowerQuery == null || matchesQuery(r, lowerQuery));
-
-        Comparator<ToolCallRecord> cmp = buildComparator(
-                sortField != null ? sortField : SortField.TIMESTAMP,
-                sortDir != null ? sortDir : SortDirection.DESC);
-        stream = stream.sorted(cmp);
-
-        return stream.limit(limit > 0 ? limit : 100)
-                .collect(Collectors.toList());
+        try {
+            return searchIndex().catalogSearch(query, toolName, sessionId, category, agentName,
+                    projectDirectory, sortField, sortDir, limit);
+        } catch (IOException | java.sql.SQLException e) {
+            throw new IllegalStateException("Cannot query rebuildable tool-call search index", e);
+        }
     }
 
     /** Backwards-compatible search (timestamp descending, no project filter). */
@@ -257,8 +239,13 @@ public class ToolCallIndex {
                                                               String projectDirectory,
                                                               SortField sortField, SortDirection sortDir,
                                                               int limitPerGroup) {
-        List<ToolCallRecord> all = search(query, toolName, sessionId, null, agentName,
-                projectDirectory, sortField, sortDir, Integer.MAX_VALUE);
+        List<ToolCallRecord> all;
+        try {
+            all = searchIndex().catalogGrouped(query, toolName, sessionId, null, agentName,
+                    projectDirectory, sortField, sortDir, limitPerGroup, false);
+        } catch (IOException | java.sql.SQLException e) {
+            throw new IllegalStateException("Cannot query grouped tool-call search index", e);
+        }
 
         Map<String, List<ToolCallRecord>> grouped = all.stream()
                 .collect(Collectors.groupingBy(
@@ -282,8 +269,13 @@ public class ToolCallIndex {
                                                              String agentName,
                                                              SortField sortField, SortDirection sortDir,
                                                              int limitPerGroup) {
-        List<ToolCallRecord> all = search(query, toolName, sessionId, category, agentName,
-                null, sortField, sortDir, Integer.MAX_VALUE);
+        List<ToolCallRecord> all;
+        try {
+            all = searchIndex().catalogGrouped(query, toolName, sessionId, category, agentName,
+                    null, sortField, sortDir, limitPerGroup, true);
+        } catch (IOException | java.sql.SQLException e) {
+            throw new IllegalStateException("Cannot query grouped tool-call search index", e);
+        }
 
         Map<String, List<ToolCallRecord>> grouped = all.stream()
                 .collect(Collectors.groupingBy(
@@ -302,179 +294,51 @@ public class ToolCallIndex {
      * Get aggregate statistics across all indexed tool calls.
      */
     public Map<String, Object> getStats() {
-        List<ToolCallRecord> all = loadAllRecords();
-
-        Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("totalToolCalls", all.size());
-
-        // Count by tool name
-        Map<String, Long> byTool = all.stream()
-                .collect(Collectors.groupingBy(ToolCallRecord::getToolName, Collectors.counting()));
-        stats.put("byTool", sortByValueDesc(byTool));
-
-        // Count by category
-        Map<String, Long> byCategory = all.stream()
-                .collect(Collectors.groupingBy(ToolCallRecord::getCategory, Collectors.counting()));
-        stats.put("byCategory", sortByValueDesc(byCategory));
-
-        // Count by agent
-        Map<String, Long> byAgent = all.stream()
-                .filter(r -> r.getAgentName() != null)
-                .collect(Collectors.groupingBy(ToolCallRecord::getAgentName, Collectors.counting()));
-        stats.put("byAgent", sortByValueDesc(byAgent));
-
-        // Count by source
-        Map<String, Long> bySource = all.stream()
-                .filter(r -> r.getSource() != null)
-                .collect(Collectors.groupingBy(ToolCallRecord::getSource, Collectors.counting()));
-        stats.put("bySource", sortByValueDesc(bySource));
-
-        // Count by project directory
-        Map<String, Long> byProject = all.stream()
-                .filter(r -> r.getProjectDirectory() != null)
-                .collect(Collectors.groupingBy(ToolCallRecord::getProjectDirectory, Collectors.counting()));
-        stats.put("byProject", sortByValueDesc(byProject));
-
-        // Count by session
-        Map<String, Long> bySess = all.stream()
-                .collect(Collectors.groupingBy(ToolCallRecord::getSessionId, Collectors.counting()));
-        stats.put("sessionCount", bySess.size());
-
-        // Error count
-        long errors = all.stream().filter(ToolCallRecord::isError).count();
-        stats.put("totalErrors", errors);
-
-        // Top 10 tools
-        Map<String, Long> top10 = byTool.entrySet().stream()
-                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
-                .limit(10)
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
-                        (a, b) -> a, LinkedHashMap::new));
-        stats.put("topTools", top10);
-
-        return stats;
+        try {
+            return searchIndex().catalogStats();
+        } catch (IOException | java.sql.SQLException e) {
+            throw new IllegalStateException("Cannot query rebuildable tool-call search index", e);
+        }
     }
 
     /**
      * Get distinct tool names from the index.
      */
     public List<String> getDistinctToolNames() {
-        return loadAllRecords().stream()
-                .map(ToolCallRecord::getToolName)
-                .distinct()
-                .sorted()
-                .collect(Collectors.toList());
+        return distinct("tool");
     }
 
     /**
      * Get distinct categories from the index.
      */
     public List<String> getDistinctCategories() {
-        return loadAllRecords().stream()
-                .map(ToolCallRecord::getCategory)
-                .distinct()
-                .sorted()
-                .collect(Collectors.toList());
+        return distinct("category");
     }
 
     /**
      * Get distinct session IDs from the index.
      */
     public List<String> getDistinctSessionIds() {
-        return loadAllRecords().stream()
-                .map(ToolCallRecord::getSessionId)
-                .distinct()
-                .collect(Collectors.toList());
+        return distinct("session");
     }
 
     /**
      * Get distinct project directories from the index.
      */
     public List<String> getDistinctProjects() {
-        return loadAllRecords().stream()
-                .map(ToolCallRecord::getProjectDirectory)
-                .filter(Objects::nonNull)
-                .distinct()
-                .sorted()
-                .collect(Collectors.toList());
+        return distinct("project");
     }
 
-    private List<ToolCallRecord> loadRecords(String sessionId) {
-        if (sessionId != null) {
-            Path sessionFile = toolCallsDir.resolve(sessionId + ".jsonl");
-            return loadJsonlFile(sessionFile);
+    private ConversationSearchIndex searchIndex() {
+        return new ConversationSearchIndex(toolCallsDir.getParent());
+    }
+
+    private List<String> distinct(String column) {
+        try {
+            return searchIndex().catalogDistinct(column);
+        } catch (IOException | java.sql.SQLException e) {
+            throw new IllegalStateException("Cannot query rebuildable tool-call search index", e);
         }
-        return loadAllRecords();
-    }
-
-    private List<ToolCallRecord> loadAllRecords() {
-        return loadJsonlFile(combinedIndexFile);
-    }
-
-    private List<ToolCallRecord> loadJsonlFile(Path file) {
-        if (!Files.exists(file)) {
-            return Collections.emptyList();
-        }
-
-        List<ToolCallRecord> records = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(new FileInputStream(file.toFile()), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty()) continue;
-                try {
-                    records.add(MAPPER.readValue(line, ToolCallRecord.class));
-                } catch (Exception e) {
-                    // Skip malformed lines
-                }
-            }
-        } catch (IOException e) {
-            System.err.println("Warning: Failed to read tool call index: " + e.getMessage());
-        }
-        return records;
-    }
-
-    private boolean matchesQuery(ToolCallRecord record, String lowerQuery) {
-        if (record.getToolName() != null && record.getToolName().toLowerCase().contains(lowerQuery)) return true;
-        if (record.getToolInputSummary() != null && record.getToolInputSummary().toLowerCase().contains(lowerQuery)) return true;
-        if (record.getCategory() != null && record.getCategory().toLowerCase().contains(lowerQuery)) return true;
-        if (record.getAgentName() != null && record.getAgentName().toLowerCase().contains(lowerQuery)) return true;
-        if (record.getSessionId() != null && record.getSessionId().toLowerCase().contains(lowerQuery)) return true;
-        if (record.getToolInput() != null && record.getToolInput().toLowerCase().contains(lowerQuery)) return true;
-        if (record.getProjectDirectory() != null && record.getProjectDirectory().toLowerCase().contains(lowerQuery)) return true;
-        return false;
-    }
-
-    /**
-     * Check if a record matches a project directory filter.
-     * Supports exact match or substring/suffix match for flexibility.
-     */
-    private boolean matchesProject(ToolCallRecord record, String projectDirectory) {
-        String proj = record.getProjectDirectory();
-        if (proj == null) return false;
-        // Exact match
-        if (proj.equals(projectDirectory)) return true;
-        // Normalize and try suffix match (e.g. "kompile" matches "/home/user/Documents/GitHub/kompile")
-        String normFilter = projectDirectory.replace("\\", "/");
-        String normProj = proj.replace("\\", "/");
-        return normProj.endsWith("/" + normFilter) || normProj.equals(normFilter);
-    }
-
-    private Comparator<ToolCallRecord> buildComparator(SortField field, SortDirection dir) {
-        Comparator<ToolCallRecord> cmp = switch (field) {
-            case TIMESTAMP -> Comparator.comparing(
-                    r -> r.getTimestamp() != null ? r.getTimestamp() : "", Comparator.naturalOrder());
-            case TOOL_NAME -> Comparator.comparing(
-                    r -> r.getToolName() != null ? r.getToolName() : "", String.CASE_INSENSITIVE_ORDER);
-            case CATEGORY -> Comparator.comparing(
-                    r -> r.getCategory() != null ? r.getCategory() : "", String.CASE_INSENSITIVE_ORDER);
-            case AGENT -> Comparator.comparing(
-                    r -> r.getAgentName() != null ? r.getAgentName() : "", String.CASE_INSENSITIVE_ORDER);
-            case PROJECT -> Comparator.comparing(
-                    r -> r.getProjectDirectory() != null ? r.getProjectDirectory() : "", String.CASE_INSENSITIVE_ORDER);
-        };
-        return dir == SortDirection.DESC ? cmp.reversed() : cmp;
     }
 
     /**
@@ -527,10 +391,4 @@ public class ToolCallIndex {
         return StringUtils.truncate(s, max);
     }
 
-    private static <K> Map<K, Long> sortByValueDesc(Map<K, Long> map) {
-        return map.entrySet().stream()
-                .sorted(Map.Entry.<K, Long>comparingByValue().reversed())
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
-                        (a, b) -> a, LinkedHashMap::new));
-    }
 }

@@ -126,6 +126,11 @@ public class IndexFileWatcher {
      * Stop watching and clean up resources.
      */
     public void stop() {
+        stop(true);
+    }
+
+    /** Idle retirement skips derived-index work; reactivation performs a fresh pass. */
+    void stop(boolean flushPendingChanges) {
         if (!running.getAndSet(false)) return;
 
         if (watchThread != null) watchThread.interrupt();
@@ -134,10 +139,12 @@ public class IndexFileWatcher {
             if (watchService != null) watchService.close();
         } catch (IOException ignored) {}
 
-        // Flush any pending changes
-        if (!changedFiles.isEmpty()) {
+        if (flushPendingChanges && !changedFiles.isEmpty()) {
             triggerIncrementalIndex();
+        } else if (!flushPendingChanges) {
+            changedFiles.clear();
         }
+        keyPathMap.clear();
 
         out.println("Stopped watching: " + rootDir);
     }

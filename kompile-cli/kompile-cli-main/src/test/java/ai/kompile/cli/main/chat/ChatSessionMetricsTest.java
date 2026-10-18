@@ -47,6 +47,54 @@ class ChatSessionMetricsTest {
         metrics = new ChatSessionMetrics("test-session-001");
     }
 
+    @Test
+    void contextIsLatestInputNotAccumulatedBillingAndCompactionInvalidatesIt() {
+        metrics.recordContextWindow("claude", 200_000);
+        assertEquals("?/200,000 last input", metrics.contextTokenSummary());
+        metrics.recordTokenUsage(10, 50, 100_000, 20_000);
+        metrics.recordContextInputTokens(120_010);
+        assertEquals("120,010/200,000 60% last input", metrics.contextTokenSummary());
+        metrics.recordTokenUsage(10, 50, 110_000, 0);
+        metrics.recordContextInputTokens(110_010);
+        assertEquals("110,010/200,000 55% last input", metrics.contextTokenSummary());
+        assertEquals(230_120, metrics.getTotalTokens());
+        metrics.recordProviderCompaction();
+        assertEquals("?/200,000 last input", metrics.contextTokenSummary());
+        assertEquals(230_120, metrics.getTotalTokens(), "compaction never resets billed usage");
+        metrics.recordContextInputTokens(8_000);
+        assertEquals("8,000/200,000 4% last input", metrics.contextTokenSummary());
+        metrics.recordCompaction(8_000, 2_000);
+        assertEquals("?/200,000 last input", metrics.contextTokenSummary());
+    }
+
+    @Test
+    void nativeWindowIsMarkedProvisionalUntilTheCliReportsItsActualLimit() {
+        metrics.recordContextWindow("claude", 1_000_000, true);
+        metrics.recordContextInputTokens(150_000);
+        assertEquals("150,000/~1,000,000 15% last input", metrics.contextTokenSummary());
+        metrics.recordContextWindow("claude", 200_000);
+        assertEquals("150,000/200,000 75% last input", metrics.contextTokenSummary());
+    }
+
+    @Test
+    void modelChangesInvalidateInputAndContextUpdatesNotifyTheUi() {
+        var updates = new java.util.concurrent.atomic.AtomicInteger();
+        metrics.addChangeListener(updates::incrementAndGet);
+        assertEquals("", metrics.contextTokenSummary());
+        metrics.recordContextWindow("first", 200_000);
+        metrics.recordContextInputTokens(150_000);
+        metrics.recordContextWindow("first", 1_000_000);
+        assertEquals("150,000/1,000,000 15% last input", metrics.contextTokenSummary());
+        metrics.recordContextWindow("second", 128_000);
+        assertEquals("?/128,000 last input", metrics.contextTokenSummary());
+        assertEquals(4, updates.get());
+        metrics.recordContextWindow("second", 128_000);
+        assertEquals(4, updates.get(), "unchanged limits need no redraw");
+        metrics.recordContextInputTokens(0);
+        assertEquals("?/128,000 last input", metrics.contextTokenSummary());
+        assertEquals(0, metrics.getTotalTokens());
+    }
+
     // ===================================================================
     // Session identity
     // ===================================================================

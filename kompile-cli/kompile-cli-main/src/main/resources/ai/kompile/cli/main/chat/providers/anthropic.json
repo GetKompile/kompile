@@ -13,9 +13,10 @@
     "source": {
       "url": "https://platform.claude.com/docs/en/build-with-claude/fast-mode",
       "verifiedAt": "2026-09-26",
-      "notice": "Higher per-token cost; requires fast-mode access/usage credits and organization approval. Supported Opus models only; availability and capacity are provider-owned."
+      "notice": "Higher per-token cost; requires fast-mode access/usage credits and organization approval. The provider validates model support, availability and capacity; no client model restrictions."
     },
-    "modelPatterns": ["^claude-opus-(?:5-5|5|4-8)(?:-[0-9]{8})?$"]
+    "onRequest": {"speed": "fast"},
+    "offRequest": {}
   },
   "ultracode": {
     "metadataSource": "DOCUMENTED_FALLBACK",

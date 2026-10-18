@@ -1,0 +1,12 @@
+<section class="inline-board-card" aria-label="Live read-only tactical board" data-testid="inline-board-card" [attr.data-presentation-id]="presentationId">
+  <header>
+    <strong>Live / read-only board</strong>
+    <button type="button" (click)="refresh()" [disabled]="!runIdle || reading || !observedRevision">Refresh live board</button>
+  </header>
+  <p *ngIf="observedRevision">Observed revision: <code>{{ observedRevision }}</code>. This is live state, not a historical snapshot.</p>
+  <p role="status">{{ status }}</p>
+  <ng-container *ngIf="available">
+    <iframe *ngFor="let ticket of frameTickets" #board [src]="frameUrl" (load)="frameLoaded()" title="Live read-only Elthoria tactical board"
+      sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" loading="eager"></iframe>
+  </ng-container>
+</section>

@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.utils.FormatUtils;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
 import org.jline.reader.Candidate;
 import org.jline.reader.Buffer;
 import org.jline.reader.Completer;
@@ -74,11 +75,12 @@ public class ChatCompleter implements Completer {
 
         // Context & memory
         COMMANDS.put("/history", "Show conversation history");
+        COMMANDS.put("/diffs", "Recent session diffs, newest first; /diffs [count] (default 20; 1–100)");
         COMMANDS.put("/clear", "Start a new conversation in this process");
         COMMANDS.put("/reset", "Restart this session in a new process");
         COMMANDS.put("/reset-all", "Restart every active CLI chat session");
         COMMANDS.put("/restart", "Alias for /reset");
-        COMMANDS.put("/compact", "Summarize conversation to free context");
+        COMMANDS.put("/compact", "Summarize context; /compact reviewed prepares explicit scope retirement");
         COMMANDS.put("/auto-compact", "Configure automatic model-aware compaction");
         COMMANDS.put("/memory", "Show memory entries");
         COMMANDS.put("/recall", "Recall from memory");
@@ -87,7 +89,13 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/conversations", "List conversations");
         COMMANDS.put("/sessions", "List sessions");
         COMMANDS.put("/title", "Show or change the session title");
-        COMMANDS.put("/dashboard", "Refresh, show, hide, or inspect the project dashboard");
+        COMMANDS.put("/timeline", "Session activity timeline; next/inspect:EVENT_ID/follow/stop (alias: /dashboard-timeline)");
+        COMMANDS.put("/dashboard", "Session summary and report discovery; refresh/show/hide/status controls");
+        for (String topic : DashboardCommands.TOPICS) {
+            COMMANDS.put("/dashboard-" + topic, topic.equals("timeline")
+                    ? "Session activity timeline; next/inspect:EVENT_ID/follow/stop"
+                    : "On-demand " + topic + " report; session:ID and supported topic filters");
+        }
         COMMANDS.put("/reminder", "List or add session reminders");
         COMMANDS.put("/reminder-global", "List or add project-global reminders");
         COMMANDS.put("/continue", "Auto-reply to agent questions (keywords configurable)");
@@ -101,7 +109,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/config", "Show or edit configuration");
         COMMANDS.put("/permissions", "Manage permissions");
         COMMANDS.put("/model", "Choose a model for the current vendor (/auth switches vendors)");
-        COMMANDS.put("/fast", "Toggle premium fast mode (supported models only)");
+        COMMANDS.put("/fast", "Toggle provider fast/priority mode");
         COMMANDS.put("/ultracode", "Toggle Claude Code ultracode workflows (Claude Code route only)");
         COMMANDS.put("/mcp", "Show or reconnect this session's MCP servers (Claude Code route only)");
         COMMANDS.put("/mode", "Switch interaction mode");
@@ -120,7 +128,11 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/jobs-remove", "Remove a background job");
         COMMANDS.put("/jobs-clear", "Clear all jobs");
         COMMANDS.put("/activity", "Show local work or the live project-agent dashboard");
+        COMMANDS.put("/ui", "Display wizard: layout, sidebar and inline content");
+        COMMANDS.put("/redraw", "Repaint the entire TUI without clearing the conversation");
+        COMMANDS.put("/usage", "Show vendor account credits, usage windows and reset times");
         COMMANDS.put("/resources", "Configure tool-argument resource rules or preview a call");
+        COMMANDS.put("/resource-monitor", "Live per-chat CPU/RSS/GPU and managed subprocess controls");
         COMMANDS.put("/processes", "Show processes & subagents");
         COMMANDS.put("/process-monitors", "List or cancel process monitors");
         COMMANDS.put("/process-kill", "Kill a running process");
@@ -169,6 +181,13 @@ public class ChatCompleter implements Completer {
 
     private static final Map<String, List<String[]>> SUB_ARGS = new LinkedHashMap<>();
     static {
+        SUB_ARGS.put("/resource-monitor", List.of(
+                new String[]{"show", "Open live resource page"},
+                new String[]{"status", "Read a single resource snapshot"},
+                new String[]{"stop", "Stop updates and return to chat (children keep running)"},
+                new String[]{"kill", "Stop a registered child: <id|watchdog:id> confirm"},
+                new String[]{"embeddings", "Release idle folder embeddings: stop confirm"},
+                new String[]{"help", "Show monitor controls and metric coverage"}));
         List<String[]> judgeArgs = List.of(
                 new String[]{"status", "Show unified judge status"},
                 new String[]{"on", "Enable the judge for this session"},
@@ -217,6 +236,22 @@ public class ChatCompleter implements Completer {
                 new String[]{"--set-terminal-args", "Persist terminal arguments"},
                 new String[]{"--prune", "Remove old tracked sessions"}
         ));
+        SUB_ARGS.put("/ui", List.of(
+                new String[]{"preset focused", "Chat/thinking inline; tools in sidebar"},
+                new String[]{"preset classic", "Existing inline presentation"},
+                new String[]{"preset verbose", "Inline detail plus result navigation"},
+                new String[]{"layout auto", "Responsive split or results drawer"},
+                new String[]{"sidebar toggle", "Toggle sidebar or open narrow-screen drawer"},
+                new String[]{"sidebar focus", "Navigate results without changing input target"},
+                new String[]{"results", "Open full-width result list"},
+                new String[]{"inspect", "Open selected result"},
+                new String[]{"set", "Change a display setting"},
+                new String[]{"save project", "Save explicit project overrides"},
+                new String[]{"save global", "Save explicit global preferences"},
+                new String[]{"save session", "Persist overrides for this conversation"},
+                new String[]{"close", "Return to chat"},
+                new String[]{"status", "Show effective display preferences"}
+        ));
         SUB_ARGS.put("/rag", List.of(
                 new String[]{"on", "Enable RAG"},
                 new String[]{"off", "Disable RAG"}
@@ -231,6 +266,28 @@ public class ChatCompleter implements Completer {
                 new String[]{"hide", "Hide the project dashboard"},
                 new String[]{"status", "Show dashboard configuration and snapshot status"}
         ));
+        for (String topic : DashboardCommands.TOPICS) {
+            if (List.of("summary", "tools", "tokens", "judge", "timeline", "tasks").contains(topic)) {
+                SUB_ARGS.put("/dashboard-" + topic, topic.equals("tasks")
+                        ? java.util.Collections.singletonList(new String[]{"session:", "Exact transcript session ID"})
+                        : List.of(new String[]{"session:", "Exact session ID (case preserved)"},
+                                new String[]{"last 2 hours", "Bound the report window"}));
+            }
+        }
+        List<String[]> tokenFilters = List.of(new String[]{"tokens", "Tool payload/model token coverage"},
+                new String[]{"tool:", "Exact tool name"}, new String[]{"call:", "Exact call ID"},
+                new String[]{"session:", "Exact session ID"}, new String[]{"offset:", "Tool-token row offset only"},
+                new String[]{"last 2 hours", "Bound the report window"});
+        SUB_ARGS.put("/dashboard-tools", tokenFilters);
+        SUB_ARGS.put("/dashboard-tokens", tokenFilters);
+        SUB_ARGS.put("/dashboard-timeline", List.of(
+                new String[]{"session:", "Exact conversation ID"}, new String[]{"run:", "Exact run ID"},
+                new String[]{"kind:", "Activity event type"}, new String[]{"outcome:", "Activity outcome"},
+                new String[]{"from:", "Start ISO instant"}, new String[]{"to:", "End ISO instant"},
+                new String[]{"limit:", "Rows, 1..100"}, new String[]{"next", "Older journal page"},
+                new String[]{"inspect:", "Exact displayed event ID"}, new String[]{"follow", "Opt-in metadata follow"},
+                new String[]{"stop", "Stop timeline follow"}));
+        SUB_ARGS.put("/timeline", SUB_ARGS.get("/dashboard-timeline"));
         List<String[]> loopArgs = List.of(
                 new String[]{"add", "Add a recurring prompt"},
                 new String[]{"list", "List scheduled loops"},
@@ -242,6 +299,8 @@ public class ChatCompleter implements Completer {
         );
         SUB_ARGS.put("/loop", loopArgs);
         SUB_ARGS.put("/loop-global", loopArgs);
+        SUB_ARGS.put("/compact", List.<String[]>of(
+                new String[]{"reviewed", "Prepare an exact older-scope review; apply the returned JSON explicitly"}));
         SUB_ARGS.put("/auto-compact", List.of(
                 new String[]{"status", "Show active model limits and trigger"},
                 new String[]{"on", "Enable automatic compaction"},
@@ -648,6 +707,33 @@ public class ChatCompleter implements Completer {
     }
 
 
+    /** Typed presentation sink; true means the host consumed this snapshot. */
+    @FunctionalInterface
+    public interface DisplayBlockOutput {
+        boolean upsert(ChatDisplayBlock block);
+    }
+
+    /** Install on the bound session, never on whichever session last had focus. */
+    public static void setDisplayBlockOutput(DisplayBlockOutput output) {
+        ChatUiSession session = ChatUiSession.current();
+        synchronized (session) {
+            if (!session.isClosed()) session.displayBlockOutput = output;
+        }
+    }
+
+    /** Typed-first callers must only emit their legacy rendering when this returns false. */
+    public static boolean upsertDisplayBlock(ChatDisplayBlock block) {
+        ChatUiSession session = ChatUiSession.current();
+        if (session.isClosed() || block == null || block.key().isBlank()) return false;
+        DisplayBlockOutput output = session.displayBlockOutput;
+        if (output == null) return false;
+        try {
+            return output.upsert(block);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
     /** One slash-completion row rendered by the managed standard-chat panel. */
     public record CompletionItem(String value, String description) {}
 
@@ -810,6 +896,7 @@ public class ChatCompleter implements Completer {
                 ChatUiSession.current().contentOutput = null;
                 ChatUiSession.current().alertOutput = null;
                 ChatUiSession.current().transcriptBlockOutput = null;
+                ChatUiSession.current().displayBlockOutput = null;
                 ChatUiSession.current().completionDisplay = null;
                 ChatUiSession.current().queueSupplier = null;
                 ChatUiSession.current().activityLabel = null;

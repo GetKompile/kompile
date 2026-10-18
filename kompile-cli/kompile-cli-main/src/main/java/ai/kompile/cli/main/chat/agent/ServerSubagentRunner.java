@@ -147,7 +147,15 @@ public class ServerSubagentRunner implements SubagentRunner {
         }
 
         notifyStatus(subagentId, "connecting");
-        try {
+        int reconnectAttempts = 0;
+        // A tool_call was executed locally during ANY attempt: reconnecting would
+        // duplicate those side effects (and the run must fail so its locks release),
+        // so this gates both the reconnect and the fail-fast paths.
+        boolean sawToolSideEffects = false;
+        // Set while a reconnect iteration is starting so the iteration finally skips
+        // the terminal teardown (locks, session registration, end notification).
+        boolean reconnecting = false;
+        while (true) try {
         // Build the system prompt with available tools and the parent's project context.
         String agentPrompt = agent.getSystemPrompt() == null ? "" : agent.getSystemPrompt();
         String systemPrompt = agentPrompt + "\n\n" +
@@ -269,6 +277,7 @@ public class ServerSubagentRunner implements SubagentRunner {
                         case "tool_call":
                             String toolResult = handleToolCall(
                                     data, subagentId, agent, parentContext, session);
+                            sawToolSideEffects = true;
                             break;
 
                         case "error":
@@ -294,7 +303,17 @@ public class ServerSubagentRunner implements SubagentRunner {
                 }
             }
             if (!session.cancelled.get() && !parentContext.isAborted() && !terminalEvent) {
-                throw new IOException("Subagent connection closed before a terminal event");
+                if (sawToolSideEffects) {
+                    // Tools already ran: replaying would duplicate them and a swallowed
+                    // failure would leak the locks they registered, so fail the run.
+                    throw new IOException("Subagent connection closed before a terminal event");
+                }
+                if (fullResponse.length() > 0) {
+                    // Text already streamed to the live view: keep it rather than resending.
+                    fullResponse.append("\n[Subagent connection closed before it finished; "
+                            + "kept the partial response]");
+                }
+                // Otherwise nothing happened: the catch below reconnects.
             }
         }
 
@@ -320,23 +339,48 @@ public class ServerSubagentRunner implements SubagentRunner {
                         renderer.renderSubagentError(label, "Aborted"), parentContext);
                 return "[Subagent aborted]";
             }
+            // Nothing streamed and no tool ran: reconnect with the remaining bounded
+            // budget before giving up. Any prior side effect forces the failure through.
+            if (connectivityPolicy.isRetryableFailure(e)
+                    && !sawToolSideEffects
+                    && reconnectAttempts < connectivityPolicy.maxAttempts() - 1) {
+                reconnectAttempts++;
+                reconnecting = true;
+                notifyStatus(subagentId, "reconnecting " + (reconnectAttempts + 1) + "/"
+                        + connectivityPolicy.maxAttempts());
+                try {
+                    waitForRetry(subagentId, reconnectAttempts,
+                            e.getMessage() == null
+                                    ? e.getClass().getSimpleName() : e.getMessage(),
+                            parentContext);
+                } catch (InterruptedException interrupted) {
+                    notifyStatus(subagentId, "aborted");
+                    return "[Subagent aborted]";
+                }
+            }
             notifyStatus(subagentId, "failed · " + e.getClass().getSimpleName());
             emitActivity(subagentId, "failed · " + e.getClass().getSimpleName(),
                     renderer.renderSubagentError(label, e.getMessage()), parentContext);
             throw e;
         } finally {
-            java.io.InputStream bodyStream = session.responseBody.getAndSet(null);
-            if (bodyStream != null) {
-                try { bodyStream.close(); } catch (Exception ignored) { }
-            }
-            session.ownerThread = null;
-            if (session.cancelled.get()) Thread.interrupted();
-            // The run is over (completed, failed or cancelled): free every edit lock it took
-            // under its coordination identity now, before anyone is told it ended.
-            EditCoordinatorTool.releaseAgentLocks(toolRegistry, subagentId);
-            sessions.remove(subagentId, session);
-            if (lifecycleListener != null) {
-                lifecycleListener.onSubagentEnd(subagentId);
+            if (reconnecting) {
+                // A reconnect attempt follows: keep the session, locks and registration
+                // and let the while(true) loop iterate.
+                reconnecting = false;
+            } else {
+                java.io.InputStream bodyStream = session.responseBody.getAndSet(null);
+                if (bodyStream != null) {
+                    try { bodyStream.close(); } catch (Exception ignored) { }
+                }
+                session.ownerThread = null;
+                if (session.cancelled.get()) Thread.interrupted();
+                // The run is over (completed, failed or cancelled): free every edit lock it took
+                // under its coordination identity now, before anyone is told it ended.
+                EditCoordinatorTool.releaseAgentLocks(toolRegistry, subagentId);
+                sessions.remove(subagentId, session);
+                if (lifecycleListener != null) {
+                    lifecycleListener.onSubagentEnd(subagentId);
+                }
             }
         }
     }

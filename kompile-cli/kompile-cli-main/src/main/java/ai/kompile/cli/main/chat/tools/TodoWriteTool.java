@@ -19,6 +19,8 @@ package ai.kompile.cli.main.chat.tools;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.TranscriptLogScope;
+import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ChatRepl.TimelineLifecycle;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -43,6 +45,8 @@ import java.util.*;
 public class TodoWriteTool implements CliTool {
 
     private static final ObjectMapper OM = JsonUtils.standardMapper();
+    /** Immutable task snapshot for CLI/provider result rendering, including empty lists. */
+    public static final String TASKS_METADATA = "todos";
     private static final String LEGACY_PROJECT_TODO_MEMORY_FILE = "project-todos.json.md";
     private static final String SESSION_TODO_SUFFIX = ".todos.json";
     private static final String DEFAULT_SESSION_ID = "default";
@@ -79,17 +83,23 @@ public class TodoWriteTool implements CliTool {
     @Override
     public String description() {
         return "Create or update tasks in the current transcript session's persisted todo list for tracking progress. " +
-                "Actions: 'set' to replace the list, 'add' to create a new task, 'update' to change status/priority, " +
+                "Actions: 'set' to initialize or synchronize the full list without dropping existing IDs, " +
+                "'add' to append a new task, 'update' to change an existing task, " +
                 "or 'delete' to remove. Each transcript session is persisted separately alongside its conversation " +
                 "under ~/.kompile/conversations/. " +
                 "Status values: pending, in_progress, completed, cancelled. " +
+                "Mark the current task in_progress to highlight it in CLI chat; update it when work moves on. " +
                 "Priority values: high, medium, low (default: medium). " +
-                "Use this to track multi-step work.";
+                "Read todoread for real IDs; never invent task or session IDs. " +
+                "For set, retain every existing task with its exact ID; omit IDs on new tasks. " +
+                "Use add to append, update for individual changes, and delete with a real task_id to remove. " +
+                "Invalid calls leave the list unchanged.";
     }
 
     @Override
     public String compactHint() {
-        return "Manage tasks for the current transcript session: set, add, update, or delete.";
+        return "Manage tasks for the current transcript session. Prefer add/update with IDs from todoread. " +
+                "set must retain all existing IDs; use delete for explicit removal. Invalid calls change nothing.";
     }
 
     @Override
@@ -101,15 +111,30 @@ public class TodoWriteTool implements CliTool {
 
         ObjectNode action = props.putObject("action");
         action.put("type", "string");
-        action.put("description", "Action: 'set', 'add', 'update', or 'delete'");
+        action.put("description", "Action: 'set', 'add', 'update', or 'delete'. Prefer add/update over rewriting the list.");
+        action.putArray("enum").add("set").add("add").add("update").add("delete");
 
         ObjectNode todos = props.putObject("todos");
         todos.put("type", "array");
-        todos.put("description", "Full task list for action='set'. Items accept id, subject/content, description/task_description, status, priority.");
+        todos.put("description", "Full task list for set. Must retain every existing ID from todoread. " +
+                "Omit IDs on new tasks; set cannot delete tasks. Items accept subject/content, " +
+                "description/task_description, status, priority, or a plain task title.");
+        ObjectNode alternatives = todos.putObject("items");
+        ArrayNode itemTypes = alternatives.putArray("anyOf");
+        itemTypes.addObject().put("type", "string").put("minLength", 1);
+        ObjectNode item = itemTypes.addObject().put("type", "object");
+        item.put("additionalProperties", false);
+        ObjectNode itemProps = item.putObject("properties");
+        for (String field : List.of("id", "subject", "content", "description", "task_description", "status", "priority")) {
+            itemProps.putObject(field).put("type", "string");
+        }
+        itemProps.withObject("/status").putArray("enum")
+                .add("pending").add("in_progress").add("completed").add("cancelled");
+        itemProps.withObject("/priority").putArray("enum").add("high").add("medium").add("low");
 
         ObjectNode taskId = props.putObject("task_id");
         taskId.put("type", "string");
-        taskId.put("description", "Task ID (required for update/delete)");
+        taskId.put("description", "Exact existing task ID from todoread (required for update/delete); never invent an ID.");
 
         ObjectNode subject = props.putObject("subject");
         subject.put("type", "string");
@@ -121,12 +146,19 @@ public class TodoWriteTool implements CliTool {
 
         ObjectNode status = props.putObject("status");
         status.put("type", "string");
-        status.put("description", "Task status: pending, in_progress, completed, cancelled");
+        status.put("description", "Task status: pending, in_progress, completed, cancelled. " +
+                "Use in_progress for the current task to highlight it in CLI chat.");
 
         ObjectNode priority = props.putObject("priority");
         priority.put("type", "string");
         priority.put("description", "Task priority: high, medium, low (default: medium)");
 
+        ObjectNode session = props.putObject("session_id");
+        session.put("type", "string");
+        session.put("description", "Optional existing target transcript session; omit to use the current session. Unknown targets are rejected.");
+        status.putArray("enum").add("pending").add("in_progress").add("completed").add("cancelled");
+        priority.putArray("enum").add("high").add("medium").add("low");
+        schema.put("additionalProperties", false);
         schema.putArray("required").add("action");
         return schema;
     }
@@ -138,8 +170,13 @@ public class TodoWriteTool implements CliTool {
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Manage todo list");
 
-        String action = params.path("action").asText("");
-        String sessionId = resolveSessionId(context, null);
+        try {
+            validateRequest(params);
+        } catch (IllegalArgumentException e) {
+            return rejected(e.getMessage());
+        }
+        String action = params.path("action").asText();
+        String sessionId = resolveSessionId(context, params.path("session_id").asText(null));
         TodoSessionKey sessionKey = sessionKey(context.getWorkingDirectory(), sessionId);
         Path todoFile = sessionTodoPath(sessionId);
         try {
@@ -149,8 +186,29 @@ public class TodoWriteTool implements CliTool {
                 try (FileChannel channel = FileChannel.open(lockFile,
                         StandardOpenOption.CREATE, StandardOpenOption.WRITE);
                      FileLock ignored = channel.lock()) {
-                    List<TodoItem> todos = loadTodos(sessionKey);
-                    return executeAction(action, params, context, sessionId, todos);
+                    List<TodoItem> todos;
+                    try {
+                        todos = loadTodosForWrite(sessionKey);
+                    } catch (IOException | IllegalArgumentException e) {
+                        return rejected("Cannot safely read persisted todos: " + e.getMessage());
+                    }
+                    if (params.has("session_id") && !sessionId.equals(resolveSessionId(context, null))
+                            && !Files.isRegularFile(todoFile) && todos.isEmpty() && !transcriptExists(sessionId)) {
+                        return rejected("Unknown target session_id: " + sessionId);
+                    }
+                    Map<String, String> before = todoStates(todos);
+                    ToolResult result;
+                    try {
+                        result = executeAction(action, params, context, sessionId, todos);
+                    } catch (IllegalArgumentException e) {
+                        return rejected(e.getMessage());
+                    }
+                    // executeAction returns success only after the atomic snapshot save.
+                    if (!result.isError()) {
+                        recordTransitions(context, sessionId, action, before, todoStates(todos));
+                        return withTodoSnapshot(result, sessionId, todos);
+                    }
+                    return result;
                 }
             }
         } catch (IOException e) {
@@ -164,9 +222,7 @@ public class TodoWriteTool implements CliTool {
             String sessionId, List<TodoItem> todos) throws IOException {
         switch (action) {
                 case "set": {
-                    JsonNode todosNode = params.path("todos");
-                    if (!todosNode.isArray()) return ToolResult.error("todos array is required for set");
-                    List<TodoItem> replacement = parseTodos(todosNode);
+                    List<TodoItem> replacement = validatedReplacement(params.path("todos"), todos);
                     todos.clear();
                     todos.addAll(replacement);
                     persistTodos(context, sessionId, todos);
@@ -174,12 +230,9 @@ public class TodoWriteTool implements CliTool {
                 }
                 case "add": {
                     String subject = params.path("subject").asText("");
-                    if (subject.isEmpty()) return ToolResult.error("subject is required for add");
                     String taskDesc = params.path("task_description").asText("");
                     String priority = params.path("priority").asText("medium");
-                    if (!isValidPriority(priority)) priority = "medium";
                     String status = params.path("status").asText("pending");
-                    if (!isValidStatus(status)) status = "pending";
                     String id = nextTodoId(todos);
                     todos.add(new TodoItem(id, subject, taskDesc, status, priority));
                     persistTodos(context, sessionId, todos);
@@ -198,13 +251,13 @@ public class TodoWriteTool implements CliTool {
                             String priority = params.path("priority").asText("");
                             if (!priority.isEmpty() && isValidPriority(priority)) item.priority = priority;
                             String desc = params.path("task_description").asText("");
-                            if (!desc.isEmpty()) item.description = desc;
+                            if (params.has("task_description")) item.description = desc;
                             persistTodos(context, sessionId, todos);
                             return ToolResult.success("Updated task #" + taskId +
                                     (!status.isEmpty() ? " (" + oldStatus + " → " + item.status + ")" : ""));
                         }
                     }
-                    return ToolResult.error("Task not found: " + taskId);
+                    return rejected("Task not found: " + taskId);
                 }
                 case "delete": {
                     String taskId = params.path("task_id").asText("");
@@ -214,10 +267,171 @@ public class TodoWriteTool implements CliTool {
                         persistTodos(context, sessionId, todos);
                     }
                     return removed ? ToolResult.success("Deleted task #" + taskId)
-                            : ToolResult.error("Task not found: " + taskId);
+                            : rejected("Task not found: " + taskId);
                 }
                 default:
                     return ToolResult.error("Unknown action: " + action + ". Use set, add, update, or delete.");
+        }
+    }
+
+    private static boolean transcriptExists(String sessionId) {
+        // Transcript filenames use raw IDs, unlike the encoded todo filenames.
+        if (sessionId.contains("/") || sessionId.contains("\\") || sessionId.indexOf('\0') >= 0) return false;
+        return Files.isRegularFile(new ChatHistory(sessionId).getTranscriptFile());
+    }
+
+    private static ToolResult rejected(String reason) {
+        return ToolResult.error(reason + ". No tasks were changed. Read todoread for the current list and exact IDs; " +
+                "use add to append, update with a real task_id, or delete for explicit removal.");
+    }
+
+    private static void require(boolean condition, String message) {
+        if (!condition) throw new IllegalArgumentException(message);
+    }
+
+    private static void validateFields(JsonNode node, Set<String> allowed) {
+        require(node != null && node.isObject(), "Expected a todo object");
+        node.fieldNames().forEachRemaining(field -> {
+            require(allowed.contains(field), "Unexpected field: " + field);
+            if (!"todos".equals(field)) {
+                require(node.get(field).isTextual(), field + " must be a string");
+                if (!"description".equals(field) && !"task_description".equals(field)) {
+                    require(!node.get(field).asText().isBlank(), field + " must not be blank");
+                }
+            }
+        });
+        if (node.has("status")) require(isValidStatus(node.get("status").asText()),
+                "Invalid status; use pending, in_progress, completed, or cancelled");
+        if (node.has("priority")) require(isValidPriority(node.get("priority").asText()),
+                "Invalid priority; use high, medium, or low");
+        if (node.has("subject") && node.has("content")) require(node.get("subject").equals(node.get("content")),
+                "Conflicting subject and content");
+        if (node.has("description") && node.has("task_description")) {
+            require(node.get("description").equals(node.get("task_description")), "Conflicting description aliases");
+        }
+    }
+
+    private static void validateRequest(JsonNode params) {
+        require(params != null && params.isObject(), "Expected a todowrite object");
+        String action = params.path("action").asText("");
+        Set<String> allowed = switch (action) {
+            case "set" -> Set.of("action", "session_id", "todos");
+            case "add" -> Set.of("action", "session_id", "subject", "task_description", "status", "priority");
+            case "update" -> Set.of("action", "session_id", "task_id", "subject", "task_description", "status", "priority");
+            case "delete" -> Set.of("action", "session_id", "task_id");
+            default -> throw new IllegalArgumentException("Unknown action: " + action + ". Use set, add, update, or delete");
+        };
+        validateFields(params, allowed);
+        switch (action) {
+            case "set" -> require(params.path("todos").isArray(), "todos array is required for set");
+            case "add" -> require(params.has("subject"), "subject is required for add");
+            case "update", "delete" -> require(params.has("task_id"), "task_id is required for " + action);
+        }
+        if ("update".equals(action)) require(params.has("subject") || params.has("task_description")
+                || params.has("status") || params.has("priority"), "update requires at least one task field");
+    }
+
+    /** Validate every item before allowing even one mutation; never silently drop input. */
+    private static List<TodoItem> validatedReplacement(JsonNode nodes, List<TodoItem> existing) {
+        validateTodoArray(nodes);
+        Map<String, TodoItem> previous = new LinkedHashMap<>();
+        existing.forEach(item -> previous.put(item.id, item));
+        Set<String> explicitIds = new LinkedHashSet<>();
+        for (JsonNode node : nodes) {
+            if (node.has("id")) {
+                String id = node.get("id").asText();
+                require(explicitIds.add(id), "Duplicate task ID: " + id);
+                require(existing.isEmpty() || previous.containsKey(id),
+                        "Unknown task ID in set: " + id + "; omit IDs on new tasks");
+            }
+        }
+        Set<String> missing = new LinkedHashSet<>(previous.keySet());
+        missing.removeAll(explicitIds);
+        require(missing.isEmpty(), "set would remove existing task IDs: " + missing + "; retain them or use delete");
+
+        List<TodoItem> replacement = new ArrayList<>();
+        // Reserve explicit IDs first, so generated IDs cannot collide with later items.
+        List<TodoItem> allocated = new ArrayList<>(existing);
+        explicitIds.forEach(id -> allocated.add(new TodoItem(id, "", "", "pending", "medium")));
+        for (JsonNode node : nodes) {
+            String id = node.has("id") ? node.get("id").asText() : nextTodoId(allocated);
+            TodoItem old = previous.get(id);
+            TodoItem item = new TodoItem(id,
+                    node.isTextual() ? node.asText().trim() : firstText(node, "subject", "content", ""),
+                    firstText(node, "description", "task_description", old == null ? "" : old.description),
+                    text(node, "status", old == null ? "pending" : old.status),
+                    text(node, "priority", old == null ? "medium" : old.priority));
+            // An explicit empty description is a valid edit, not an omitted field.
+            if (node.has("description")) item.description = node.get("description").asText();
+            else if (node.has("task_description")) item.description = node.get("task_description").asText();
+            replacement.add(item);
+            allocated.add(item);
+        }
+        return replacement;
+    }
+
+    private static void validateTodoArray(JsonNode nodes) {
+        require(nodes != null && nodes.isArray(), "todos must be an array");
+        Set<String> ids = new LinkedHashSet<>();
+        for (JsonNode node : nodes) {
+            if (node.isTextual()) {
+                require(!node.asText().isBlank(), "Todo title must not be blank");
+            } else {
+                validateFields(node, Set.of("id", "subject", "content", "description", "task_description", "status", "priority"));
+                require(node.has("subject") || node.has("content"), "Todo subject/content is required");
+                if (node.has("id")) require(ids.add(node.get("id").asText()), "Duplicate task ID: " + node.get("id").asText());
+            }
+        }
+    }
+
+    /** Writes must not treat unreadable or malformed state as an empty list. */
+    private static List<TodoItem> loadTodosForWrite(TodoSessionKey key) throws IOException {
+        Path file = sessionTodoPath(key.sessionId());
+        if (!Files.exists(file)) {
+            file = legacyTodoMemoryPath(key.projectRoot());
+            if (!Files.exists(file)) return new ArrayList<>();
+            JsonNode legacy = OM.readTree(file.toFile());
+            require(legacy != null, "Empty legacy todo file");
+            if (!LEGACY_SESSION_ID.equals(key.sessionId())
+                    && !key.sessionId().equals(legacy.path("sessionId").asText())) return new ArrayList<>();
+        }
+        JsonNode root = OM.readTree(file.toFile());
+        require(root != null, "Empty todo file");
+        JsonNode nodes = root.has("todos") ? root.get("todos") : root;
+        validateTodoArray(nodes);
+        List<TodoItem> todos = parseTodos(nodes);
+        require(todos.stream().map(item -> item.id).distinct().count() == todos.size(), "Duplicate persisted task IDs");
+        return todos;
+    }
+
+    static ToolResult withTodoSnapshot(ToolResult result, String sessionId, List<TodoItem> todos) {
+        Map<String, Object> metadata = new LinkedHashMap<>(result.getMetadata());
+        metadata.put("sessionId", sessionId);
+        // Copy while holding the write lock; later updates must not alter retained results.
+        metadata.put(TASKS_METADATA, OM.valueToTree(todos));
+        return new ToolResult(result.getTitle(), result.getOutput(), metadata, result.isError());
+    }
+
+    private static Map<String, String> todoStates(List<TodoItem> todos) {
+        Map<String, String> states = new LinkedHashMap<>();
+        todos.forEach(todo -> states.put(todo.id, todo.status == null ? "" : todo.status));
+        return states;
+    }
+
+    private static void recordTransitions(ToolContext context, String targetSession, String action,
+                                          Map<String, String> before, Map<String, String> after) {
+        TimelineLifecycle.ProducerContext producer = TimelineLifecycle.producer(targetSession,
+                resolveSessionId(context, null), context.getWorkingDirectory());
+        Set<String> ids = new LinkedHashSet<>(before.keySet());
+        ids.addAll(after.keySet());
+        Path snapshot = sessionTodoPath(targetSession);
+        for (String id : ids) {
+            String oldState = before.get(id);
+            String newState = after.get(id);
+            if (!Objects.equals(oldState, newState)) producer.recordSaved("todo.changed", id,
+                    snapshot, snapshot.getParent(), Map.of("action", action,
+                            "before", oldState == null ? "absent" : oldState,
+                            "after", newState == null ? "absent" : newState, "basis", "snapshot-saved"));
         }
     }
 
@@ -252,15 +466,15 @@ public class TodoWriteTool implements CliTool {
     }
 
     private static String nextTodoId(List<TodoItem> todos) {
-        int max = 0;
+        java.math.BigInteger max = java.math.BigInteger.ZERO;
         for (TodoItem item : todos) {
             try {
-                max = Math.max(max, Integer.parseInt(item.id));
+                max = max.max(new java.math.BigInteger(item.id));
             } catch (NumberFormatException ignored) {
                 // Non-numeric IDs are allowed for imported lists; new local IDs remain numeric.
             }
         }
-        return String.valueOf(max + 1);
+        return max.add(java.math.BigInteger.ONE).toString();
     }
 
     private static boolean isValidStatus(String status) {

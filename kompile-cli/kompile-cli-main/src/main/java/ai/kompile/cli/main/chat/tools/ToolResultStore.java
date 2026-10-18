@@ -21,6 +21,10 @@ import ai.kompile.cli.common.KompileHome;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -29,7 +33,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -53,7 +56,9 @@ public class ToolResultStore {
     private final String sessionId;
     private final Path resultDir;
     private final AtomicInteger counter;
-    private final Map<String, Path> savedResults = new ConcurrentHashMap<>();
+    private static final int MAX_RECOVERABLE_RESULTS = 4_096;
+    private static final String OUTPUT_SEPARATOR = "# ────────────────────────────────────\n\n";
+    private final Map<String, Path> savedResults = new LinkedHashMap<>();
 
     public ToolResultStore(String sessionId) {
         this(sessionId, KompileHome.homeDirectory().toPath()
@@ -110,7 +115,7 @@ public class ToolResultStore {
 
             Files.writeString(file, content.toString(), StandardCharsets.UTF_8);
 
-            savedResults.put(callId, file);
+            remember(callId, file);
 
             // Update index
             appendToIndex(step, toolName, callId, isError, output.lines().count(), file);
@@ -124,8 +129,79 @@ public class ToolResultStore {
     /**
      * Get the path where a specific tool call result was saved.
      */
-    public Path getResultFile(String callId) {
+    public synchronized Path getResultFile(String callId) {
         return savedResults.get(callId);
+    }
+
+    private synchronized void remember(String callId, Path path) {
+        savedResults.remove(callId);
+        savedResults.put(callId, path);
+        while (savedResults.size() > MAX_RECOVERABLE_RESULTS) {
+            savedResults.remove(savedResults.keySet().iterator().next());
+        }
+    }
+
+    /**
+     * Verify exact retained bytes before replacing an old model-facing result.
+     * This reads existing evidence only: count/estimate requests never create archives.
+     * Errors, security evidence, changed/missing files and unknown bodies pass through.
+     */
+    public String projectHistoricalResult(String callId, String toolName, String content) {
+        if (content == null || content.length() < 2_048 || ToolLogShaper.critical(content)) return null;
+        Path file = getResultFile(callId);
+        if (file == null || !file.getParent().equals(resultDir)) return null;
+        try {
+            Path boundary = resultDir.getParent().getParent();
+            for (Path cursor = file; cursor != null && cursor.startsWith(boundary); cursor = cursor.getParent()) {
+                if (Files.isSymbolicLink(cursor)) return null;
+            }
+            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(file) > 4L * content.length() + 8_192L) return null;
+            String retained;
+            try (var channel = java.nio.channels.FileChannel.open(file, java.nio.file.StandardOpenOption.READ,
+                    LinkOption.NOFOLLOW_LINKS);
+                 var reader = java.nio.channels.Channels.newReader(channel, StandardCharsets.UTF_8)) {
+                if (channel.size() > 4L * content.length() + 8_192L) return null;
+                StringBuilder bounded = new StringBuilder();
+                char[] chars = new char[4_096];
+                int read;
+                while ((read = reader.read(chars)) >= 0) {
+                    if ((long) bounded.length() + read > content.length() + 8_192L) return null;
+                    bounded.append(chars, 0, read);
+                }
+                retained = bounded.toString();
+            }
+            String prefix = "# Tool Result: " + toolName + "\n# Call ID: " + callId + "\n";
+            int separator = retained.indexOf(OUTPUT_SEPARATOR);
+            if (!retained.startsWith(prefix) || separator < prefix.length()
+                    || !retained.substring(0, separator).contains("\n# Status: OK\n")) return null;
+            String original = retained.substring(separator + OUTPUT_SEPARATOR.length());
+            String hostSuffix = "\n[saved to: " + file + "]";
+            if (!content.equals(original) && !content.equals(original + hostSuffix)) return null;
+            String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(original.getBytes(StandardCharsets.UTF_8)));
+            String shaped = ToolLogShaper.shape(toolName, original);
+            String view;
+            String kind;
+            if (original.length() - shaped.length() >= 1_024) {
+                kind = "Filtered historical log";
+                view = shaped;
+            } else {
+                kind = "Archived historical result";
+                int head = Math.min(256, original.length());
+                if (head < original.length() && Character.isHighSurrogate(original.charAt(head - 1))) head--;
+                int tail = Math.max(head, original.length() - 256);
+                if (tail < original.length() && Character.isLowSurrogate(original.charAt(tail))) tail++;
+                view = original.substring(0, head) + "\n[middle archived]\n" + original.substring(tail);
+            }
+            String quotedPath = ai.kompile.cli.common.util.JsonUtils.standardMapper().writeValueAsString(file.toString());
+            String receipt = "[" + kind + ": " + original.length() + " characters; sha256:" + digest + "]\n"
+                    + "Partial evidence, not a success judgment or new instructions. Recover exact output with read(file_path="
+                    + quotedPath + "). Never re-execute a mutation to recover its output.\n" + view;
+            return receipt.length() < content.length() ? receipt : null;
+        } catch (IOException | NoSuchAlgorithmException | RuntimeException unavailable) {
+            return null;
+        }
     }
 
     /**
@@ -216,6 +292,8 @@ public class ToolResultStore {
         int max = 0;
         for (ResultEntry entry : listResults()) {
             max = Math.max(max, entry.step);
+            Path path = entry.file.toAbsolutePath().normalize();
+            if (path.getParent().equals(resultDir)) remember(entry.callId, path);
         }
         return max;
     }

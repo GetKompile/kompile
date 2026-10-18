@@ -45,9 +45,21 @@ public final class SyncCatalog {
 
     public static final String HARNESS_SETTINGS = "harness-settings";
     public static final String HARNESS_CREDENTIALS = "harness-credentials";
+    public static final String CLI_SETTINGS = "cli-settings";
+    public static final String CREDENTIALS = "credentials";
+    public static final String TRANSCRIPTS = "transcripts";
+    public static final String JUDGE_RECORDS = "judge-records";
+
+    /** All opt-in chat state can contain secrets, including transcripts and judge inputs. */
+    public static boolean isCliState(String component) {
+        return List.of(CLI_SETTINGS, CREDENTIALS, TRANSCRIPTS, JUDGE_RECORDS).contains(component);
+    }
+    public static boolean isSensitive(String component) { return isHarness(component) || isCliState(component); }
+    public static boolean includesSensitive(List<String> components) { return components.stream().anyMatch(SyncCatalog::isSensitive); }
 
     public static final List<String> COMPONENTS =
-            List.of(SKILLS, MEMORIES, ROLES, PROMPTS, PROVIDER_SKILLS, HARNESS_SETTINGS, HARNESS_CREDENTIALS);
+            List.of(SKILLS, MEMORIES, ROLES, PROMPTS, PROVIDER_SKILLS, HARNESS_SETTINGS, HARNESS_CREDENTIALS,
+                    CLI_SETTINGS, CREDENTIALS, TRANSCRIPTS, JUDGE_RECORDS);
 
     public static boolean isHarness(String component) {
         return HARNESS_SETTINGS.equals(component) || HARNESS_CREDENTIALS.equals(component);
@@ -128,6 +140,9 @@ public final class SyncCatalog {
             // Logical mounts only: SyncPaths resolves the allowlisted external files.
             case HARNESS_SETTINGS: leaf = "harness-settings"; break;
             case HARNESS_CREDENTIALS: leaf = "harness-credentials"; break;
+            case CLI_SETTINGS, CREDENTIALS: leaf = ""; break;
+            case TRANSCRIPTS: leaf = "conversations"; break;
+            case JUDGE_RECORDS: leaf = "sessions"; break;
             default: throw new IllegalArgumentException("Unknown component: " + component);
         }
         return base.isEmpty() ? leaf : base + "/" + leaf;

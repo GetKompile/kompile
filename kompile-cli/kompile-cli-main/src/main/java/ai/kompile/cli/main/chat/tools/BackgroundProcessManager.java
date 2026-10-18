@@ -17,6 +17,10 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.activity.ActivityIdentity;
+import ai.kompile.cli.main.chat.activity.ActivityRecorder;
+import ai.kompile.cli.main.chat.activity.ConversationActivityService;
+import ai.kompile.cli.main.chat.activity.ProcessTimelineRecorder;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,6 +58,27 @@ public class BackgroundProcessManager implements AutoCloseable {
     @FunctionalInterface
     public interface ExitCallback {
         void onProcessExit(ProcessEntry entry);
+    }
+
+    /** Bounded metadata only: never commands, descriptions, environment, or output. */
+    public record LifecycleEvent(LifecycleTransition transition, String id, ProcessKind kind,
+                                 ProcessState state, Instant startTime, Instant endTime,
+                                 Integer exitCode, Path logReference, boolean restored,
+                                 Instant observedAt) {
+        public LifecycleEvent {
+            id = id == null ? "" : id.replaceAll("[\\p{Cntrl}]", " ").strip();
+            if (id.length() > 240) id = id.substring(0, 240);
+            if (logReference != null && logReference.toString().length() > 1_024) logReference = null;
+        }
+    }
+
+    public enum LifecycleTransition {
+        STARTED, RETAINED, TERMINAL, OUTCOME_UNKNOWN, CANCEL_REQUESTED, CANCEL_REFUSED
+    }
+
+    @FunctionalInterface
+    public interface LifecycleListener {
+        void onLifecycleEvent(LifecycleEvent event);
     }
 
     /** One-shot configuration that wakes the chat agent when a process exits. */
@@ -124,7 +149,15 @@ public class BackgroundProcessManager implements AutoCloseable {
         /** Last observed size of a shared mirror's owner log; drives live refresh. */
         private volatile long sharedOutputSize = -1L;
         private final AtomicBoolean exitNotified = new AtomicBoolean(false);
+        /** Only the owning real command observes tests; virtual/shared mirrors never recapture them. */
+        private TestMilestoneCapture testCapture;
         private final AtomicBoolean killRequested = new AtomicBoolean(false);
+        private final AtomicBoolean timelineTerminalNotified = new AtomicBoolean(false);
+        private final AtomicBoolean timelineUnknownNotified = new AtomicBoolean(false);
+        /** Actual waitFor result, distinct from the legacy KILLED sentinel (-1). */
+        private volatile Integer observedExitCode;
+        private volatile Instant observedExitTime;
+        private final AtomicBoolean timelineExitWatchArmed = new AtomicBoolean(false);
         /** Stops the work a virtual entry stands for; null when its owner cannot stop it. */
         private volatile Runnable stopHandler;
         /** Restored from the session's process history: an earlier run of the session launched it. */
@@ -238,6 +271,105 @@ public class BackgroundProcessManager implements AutoCloseable {
     private boolean stopping;
     private final Object launchLock = new Object();
     private final Object historyLock = new Object();
+    private final Object timelineLock = new Object();
+    private LifecycleListener timelineListener;
+    private ActivityIdentity timelineIdentity;
+
+    /** Bind once per manager/run, before launches; retain until its last process exits.
+     * Late binding records at most HISTORY_LIMIT retained snapshots, never fresh starts.
+     * Closing the returned binding only detaches observation; it never stops work.
+     */
+    public AutoCloseable bindTimeline(ActivityIdentity identity, ActivityRecorder recorder) {
+        return bindTimeline(identity, new ProcessTimelineRecorder(identity, recorder, outputDir));
+    }
+
+    public AutoCloseable bindTimeline(ActivityIdentity identity, ConversationActivityService service) {
+        return bindTimeline(identity, new ProcessTimelineRecorder(identity, service, outputDir));
+    }
+
+    private AutoCloseable bindTimeline(ActivityIdentity identity, LifecycleListener listener) {
+        Objects.requireNonNull(identity, "identity");
+        if (!sessionId.equals(identity.conversationId()) || identity.runId().isBlank()) {
+            throw new IllegalArgumentException("Timeline requires this manager's stable session and explicit runId");
+        }
+        synchronized (timelineLock) {
+            if (timelineListener != null) throw new IllegalStateException("Timeline already bound");
+            if (timelineIdentity != null && !timelineIdentity.equals(identity)) {
+                throw new IllegalStateException("A manager's process timeline cannot change run identity");
+            }
+            timelineIdentity = identity;
+            timelineListener = listener;
+            processes.values().stream().sorted(Comparator.comparing(ProcessEntry::getStartTime)
+                    .reversed()).limit(HISTORY_LIMIT)
+                    .forEach(entry -> fireLifecycle(entry, LifecycleTransition.RETAINED));
+        }
+        return () -> {
+            synchronized (timelineLock) {
+                if (timelineListener == listener) timelineListener = null;
+            }
+        };
+    }
+
+    private boolean retainEntry(ProcessEntry entry) {
+        synchronized (timelineLock) {
+            if (processes.putIfAbsent(entry.id, entry) != null) return false;
+            fireLifecycle(entry, LifecycleTransition.RETAINED);
+            return true;
+        }
+    }
+
+    private void fireLifecycle(ProcessEntry entry, LifecycleTransition transition) {
+        synchronized (timelineLock) {
+            if (timelineListener == null) return;
+            Integer code = entry.process != null ? entry.observedExitCode : entry.exitCode;
+            if (code != null && code == -1 && entry.process == null) code = null;
+            ProcessState state = entry.state;
+            Instant end = entry.endTime;
+            if (transition == LifecycleTransition.TERMINAL && entry.process != null && code != null) {
+                state = entry.killRequested.get() ? ProcessState.KILLED
+                        : code == 0 ? ProcessState.COMPLETED : ProcessState.FAILED;
+                if (entry.observedExitTime != null) end = entry.observedExitTime;
+            }
+            LifecycleEvent event = new LifecycleEvent(transition, entry.id, entry.kind, state,
+                    entry.startTime, end, code, entry.outputFile, entry.fromHistory, Instant.now());
+            try {
+                timelineListener.onLifecycleEvent(event);
+            } catch (RuntimeException ignored) {
+                // Observation cannot alter process control or completion delivery.
+            }
+        }
+    }
+
+    private void fireTimelineTerminal(ProcessEntry entry) {
+        synchronized (timelineLock) {
+            if (timelineIdentity == null) return;
+            observeTimelineTerminal(entry);
+        }
+    }
+
+    private void observeTimelineTerminal(ProcessEntry entry) {
+        // Shutdown may publish the legacy exit callback before the capture owner drains.
+        // A dead owned process still has an actual exitValue; a live/interrupted one does not.
+        if (entry.process != null && entry.observedExitCode == null) {
+            try {
+                entry.observedExitCode = entry.process.exitValue();
+                if (entry.observedExitTime == null) entry.observedExitTime = Instant.now();
+            } catch (IllegalThreadStateException ignored) {
+                // Cancellation intent is not proof that the OS process has exited.
+            }
+        }
+        boolean known = entry.process != null ? entry.observedExitCode != null
+                : !entry.fromHistory && entry.kind != ProcessKind.SHARED;
+        AtomicBoolean notified = known ? entry.timelineTerminalNotified : entry.timelineUnknownNotified;
+        if (notified.compareAndSet(false, true)) {
+            fireLifecycle(entry, known ? LifecycleTransition.TERMINAL : LifecycleTransition.OUTCOME_UNKNOWN);
+        }
+        // An interrupted/failed log capture must not fabricate an OS exit or lose its
+        // eventual outcome. One metadata-only exit observation; no polling/output scans.
+        if (!known && entry.process != null && entry.timelineExitWatchArmed.compareAndSet(false, true)) {
+            entry.process.onExit().thenRun(() -> fireTimelineTerminal(entry));
+        }
+    }
     private final SystemPressureMonitor pressureMonitor;
     /** The history last read or written, so an unchanged list is not rewritten. */
     private String lastHistory;
@@ -394,7 +526,7 @@ public class BackgroundProcessManager implements AutoCloseable {
         int highest = 0;
         for (JsonNode record : records) {
             ProcessEntry entry = fromHistoryRecord(record);
-            if (entry != null && processes.putIfAbsent(entry.id, entry) == null) {
+            if (entry != null && retainEntry(entry)) {
                 Matcher matcher = HISTORY_ID.matcher(entry.id);
                 if (matcher.matches()) {
                     highest = Math.max(highest, Integer.parseInt(matcher.group(1)));
@@ -676,6 +808,15 @@ public class BackgroundProcessManager implements AutoCloseable {
      *         entry, or the log cannot be written
      */
     public boolean appendVirtualOutput(String processId, String line) {
+        return appendVirtualOutput(processId, line, true);
+    }
+
+    /** Append streamed text without inserting a newline between model deltas. */
+    public boolean appendVirtualOutputChunk(String processId, String chunk) {
+        return appendVirtualOutput(processId, chunk, false);
+    }
+
+    private boolean appendVirtualOutput(String processId, String line, boolean newline) {
         ProcessEntry entry = processId != null ? processes.get(processId) : null;
         if (closed || entry == null || !entry.isVirtual() || !entry.isRunning() || line == null) {
             return false;
@@ -694,7 +835,7 @@ public class BackgroundProcessManager implements AutoCloseable {
                 if (parent != null) {
                     Files.createDirectories(parent);
                 }
-                Files.writeString(file, line + System.lineSeparator(),
+                Files.writeString(file, newline ? line + System.lineSeparator() : line,
                         StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             } catch (IOException e) {
                 return false;
@@ -737,7 +878,10 @@ public class BackgroundProcessManager implements AutoCloseable {
                 entry.exitCode = exitCode;
                 entry.endTime = endTime != null ? endTime : Instant.now();
             }
-            processes.put(localId, entry);
+            synchronized (timelineLock) {
+                processes.put(localId, entry);
+                fireLifecycle(entry, LifecycleTransition.RETAINED);
+            }
             changed = true;
         } else {
             changed = false;
@@ -885,9 +1029,13 @@ public class BackgroundProcessManager implements AutoCloseable {
             String id = reserveId(ProcessKind.COMMAND);
             Path outputFile = outputDir.resolve(id + ".log");
             Process process;
+            TestMilestoneCapture capture = TestMilestoneCapture.start(command,
+                    workDir != null ? workDir : Path.of(System.getProperty("user.dir")),
+                    sessionId, sessionId + ":" + id, null);
             try {
                 process = pb.start();
             } catch (IOException | RuntimeException e) {
+                if (capture != null) capture.finish(-1, false, false, outputFile);
                 // Nothing will write the reserved log: free its name.
                 try {
                     Files.deleteIfExists(outputFile);
@@ -899,13 +1047,17 @@ public class BackgroundProcessManager implements AutoCloseable {
             entry = new ProcessEntry(
                     id, command, process.pid(), Instant.now(), outputFile, description, process,
                     ProcessKind.COMMAND, Map.of());
+            entry.testCapture = capture;
             entry.osStart = process.info().startInstant().orElse(null);
             // Armed before the entry is listed: an observer never sees a monitored launch without
             // its monitor, which the web harness reads as a cancelled wake-up.
             if (monitored) {
                 monitors.put(id, new ProcessMonitor(id, monitorMessage, Instant.now()));
             }
-            processes.put(id, entry);
+            synchronized (timelineLock) {
+                processes.put(id, entry);
+                fireLifecycle(entry, LifecycleTransition.STARTED);
+            }
 
             // Start daemon thread to capture output and watch for exit
             ioExecutor.submit(() -> captureOutputAndWait(entry));
@@ -980,7 +1132,10 @@ public class BackgroundProcessManager implements AutoCloseable {
                 metadata);
         entry.stopHandler = stop;
         entry.unwrittenReservation = reserved;
-        processes.put(id, entry);
+        synchronized (timelineLock) {
+            processes.put(id, entry);
+            fireLifecycle(entry, LifecycleTransition.STARTED);
+        }
         // close() may have swept the unwritten logs before this entry was listed.
         if (closed && discardUnwrittenReservation(entry)) {
             removeOutputDirIfEmpty();
@@ -1005,6 +1160,7 @@ public class BackgroundProcessManager implements AutoCloseable {
                 writer.flush();
                 // Notify after the durable log is updated so an activity view can
                 // immediately re-read the complete line without racing the writer.
+                if (entry.testCapture != null) entry.testCapture.accept(line);
                 fireOutput(entry, line);
             }
 
@@ -1012,6 +1168,8 @@ public class BackgroundProcessManager implements AutoCloseable {
             int exitCode = entry.process.waitFor();
             synchronized (entry) {
                 entry.endTime = Instant.now();
+                entry.observedExitCode = exitCode;
+                entry.observedExitTime = entry.endTime;
                 if (entry.killRequested.get()) {
                     entry.exitCode = -1;
                     entry.state = ProcessState.KILLED;
@@ -1038,12 +1196,21 @@ public class BackgroundProcessManager implements AutoCloseable {
             }
         }
 
+        if (entry.testCapture != null) {
+            entry.testCapture.finish(entry.observedExitCode != null ? entry.observedExitCode : entry.exitCode,
+                    false, entry.state == ProcessState.KILLED, entry.outputFile);
+        }
+
+        // Independent of the legacy exit callback CAS: shutdown can have delivered it
+        // while the outcome was still unknown, and the waiter now supplies the real exit.
+        fireTimelineTerminal(entry);
         fireExit(entry);
         fireChange();
     }
 
     private void fireExit(ProcessEntry entry) {
         if (entry == null || !entry.exitNotified.compareAndSet(false, true)) return;
+        fireTimelineTerminal(entry);
         ProcessMonitor monitor = monitors.remove(entry.getId());
         ExitCallback cb = exitCallback;
         if (cb != null) {
@@ -1109,6 +1276,8 @@ public class BackgroundProcessManager implements AutoCloseable {
         ProcessEntry entry = processes.get(processId);
         if (entry == null) return false;
         if (entry.getKind() == ProcessKind.SHARED) {
+            fireLifecycle(entry, LifecycleTransition.CANCEL_REQUESTED);
+            fireLifecycle(entry, LifecycleTransition.CANCEL_REFUSED);
             // Another session owns this OS process; a local refusal keeps the
             // mirror following the owner's true state instead of faking one.
             return false;
@@ -1124,17 +1293,20 @@ public class BackgroundProcessManager implements AutoCloseable {
     public boolean killByPid(long pid) {
         for (ProcessEntry entry : processes.values()) {
             if (entry.pid == pid && entry.isRunning()) {
-                if (entry.getKind() == ProcessKind.SHARED) {
-                    // A PID match alone does not confer ownership.
-                    return false;
-                }
-                return killProcess(entry);
+                return kill(entry.id);
             }
         }
         return false;
     }
 
     private boolean killProcess(ProcessEntry entry) {
+        fireLifecycle(entry, LifecycleTransition.CANCEL_REQUESTED);
+        boolean accepted = performKillProcess(entry);
+        if (!accepted) fireLifecycle(entry, LifecycleTransition.CANCEL_REFUSED);
+        return accepted;
+    }
+
+    private boolean performKillProcess(ProcessEntry entry) {
         if (entry.fromHistory) {
             return killRecorded(entry);
         }
@@ -1332,6 +1504,7 @@ public class BackgroundProcessManager implements AutoCloseable {
             entry.exitCode = 0;
             entry.state = ProcessState.COMPLETED;
         }
+        if (entry.process == null) fireTimelineTerminal(entry);
         fireChange();
         return true;
     }
@@ -1348,6 +1521,7 @@ public class BackgroundProcessManager implements AutoCloseable {
             entry.exitCode = exitCode;
             entry.state = ProcessState.FAILED;
         }
+        if (entry.process == null) fireTimelineTerminal(entry);
         fireChange();
         return true;
     }

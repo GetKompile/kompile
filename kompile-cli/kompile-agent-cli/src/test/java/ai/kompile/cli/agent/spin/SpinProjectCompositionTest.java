@@ -78,6 +78,12 @@ class SpinProjectCompositionTest {
 
     @Test void packagesVerifiesAndInstallsV2WithExternalRuntimeDirectory() throws Exception {
         Path source = source();
+        Path manifest = source.resolve("project/kompile.project.json");
+        ObjectNode project = (ObjectNode) JSON.readTree(manifest.toFile());
+        ((ObjectNode) project.path("distribution")).putArray("software").addObject()
+                .put("id", "chat-runtime").put("component", "kompile-app-chat")
+                .put("version", "1.0.0").put("path", "runtime/bin/kompile-chat");
+        Files.writeString(manifest, JSON.writeValueAsString(project));
         Path runtime = source.resolve("runtime");
         Path supplied = temp.resolve("supplied-runtime");
         Files.move(runtime, supplied);

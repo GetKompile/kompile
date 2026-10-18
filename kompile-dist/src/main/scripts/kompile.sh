@@ -39,6 +39,16 @@ fi
 # retain the bundled runtime only as the final fallback for self-contained installs.
 export KOMPILE_JAVA="${KOMPILE_JAVA:-${JAVA_BIN}}"
 
+# CLI sessions are frequently left idle in parallel. Avoid the machine-sized
+# initial heap and let G1 return temporary graph/tool allocations when idle.
+# Keep the maximum ergonomic unless the user explicitly supplies a workload cap.
+# The same defaults apply to direct JVM CLI children in CliProcessLauncher.
+JAVA_MEMORY_ARGS=("-Xms${KOMPILE_CLI_INITIAL_HEAP:-64m}"
+    "-XX:G1PeriodicGCInterval=${KOMPILE_CLI_IDLE_GC_MS:-60000}")
+if [ -n "${KOMPILE_CLI_MAX_HEAP:-}" ]; then
+    JAVA_MEMORY_ARGS+=("-Xmx${KOMPILE_CLI_MAX_HEAP}")
+fi
+
 # A transcript-scoped MCP child must leave its HotSpot fatal-error report beside the
 # rest of that transcript's diagnostics. Resolve the ID from the explicit MCP argument
 # first (the normal injected-chat path), with the environment as a compatibility fallback.
@@ -92,6 +102,7 @@ if [ -n "${TRANSCRIPT_ID}" ]; then
     # stderr sink (for example NoClassDefFoundError while loading the command itself).
     exec "${JAVA_BIN}" \
         "${JAVA_ERROR_ARGS[@]}" \
+        "${JAVA_MEMORY_ARGS[@]}" \
         -Dfile.encoding=UTF-8 \
         -Dkompile.dist.home="${DIST_HOME}" \
         -jar "${CLI_JAR}" \
@@ -101,6 +112,7 @@ fi
 
 exec "${JAVA_BIN}" \
     "${JAVA_ERROR_ARGS[@]}" \
+    "${JAVA_MEMORY_ARGS[@]}" \
     -Dfile.encoding=UTF-8 \
     -Dkompile.dist.home="${DIST_HOME}" \
     -jar "${CLI_JAR}" \

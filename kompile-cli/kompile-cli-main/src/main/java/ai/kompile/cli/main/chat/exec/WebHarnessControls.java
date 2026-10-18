@@ -580,6 +580,7 @@ public final class WebHarnessControls implements AutoCloseable {
               /jobs                   View LLM background tasks & queue
               /jobs-remove <id>       Remove a completed task
               /jobs-clear             Clear all completed tasks
+              /usage                  Read vendor account credits, allowances and resets
               /skills                 List reusable prompts; a skill queues for the next turn
             Other commands wait until the live run finishes, then run as usual.""";
 
@@ -598,7 +599,7 @@ public final class WebHarnessControls implements AutoCloseable {
         String arg = raw.substring(end).strip();
         Answer answer = answer(name, arg, tasks, processes, processControl, panel, pendingInput, silenced);
         CommandResolver resolver = commandResolver;
-        boolean waits = !name.equals("skills") && ChatCommandCatalog.isBuiltin(name)
+        boolean waits = !name.equals("skills") && !name.equals("usage") && ChatCommandCatalog.isBuiltin(name)
                 && (ChatCommandCatalog.webSupport(name) == ChatCommandCatalog.WebSupport.SUPPORTED || name.startsWith("queue"));
         if (answer == null && (waits || resolver == null)) {
             // State-changing builtins would race the running turn; the browser sends them after it.

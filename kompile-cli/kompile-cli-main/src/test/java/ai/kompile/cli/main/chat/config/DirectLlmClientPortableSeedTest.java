@@ -243,6 +243,34 @@ class DirectLlmClientPortableSeedTest {
         assertTrue(retried.contains(RESTORED_HEADER + "[user]\nwhat is in NOTES.md?"), retried);
     }
 
+    @Test
+    void acceptedFailedTurnDoesNotRestoreTheSameHistoryAgain() throws Exception {
+        try (DirectLlmClient client = client()) {
+            client.addToHistory("user", "EARLIER_QUESTION");
+            client.addToHistory("assistant", "EARLIER_ANSWER");
+            installFakeClaude(client, """
+                    turn() {
+                      say_init
+                      if [ "$1" = 1 ]; then
+                        say_text partial
+                        emit '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"errors":["temporary failure"]}'
+                      else
+                        say_text done
+                        say_result
+                      fi
+                    }
+                    """);
+            DirectLlmClient.StreamResult first = client.streamChat("first", "system rules", null, null);
+            assertTrue(first.failed, "the accepted turn must report its failure");
+            assertNotNull(first.claudeNativeSession, "the failed turn still created a resumable session");
+            assertTurn(client.streamChat("second", "system rules", null, null));
+        }
+        assertTrue(prompt(1).contains(RESTORED_HEADER + "[user]\nEARLIER_QUESTION"), prompt(1));
+        assertFalse(prompt(2).contains(RESTORED_HEADER), prompt(2));
+        assertFalse(prompt(2).contains("EARLIER_ANSWER"), prompt(2));
+        assertEquals(1, fake.argv().size(), "the accepted session is reused");
+    }
+
     private DirectLlmClient client() {
         ChatConfig config = new ChatConfig("anthropic", null, "claude-opus-5-5", null);
         config.setAuthenticationMethod("oauth");

@@ -29,9 +29,12 @@ import java.util.Map;
 public record WorkflowPolicy(
         Mode mode,
         List<String> requiredSkills,
+        List<String> requiredMemories,
         boolean requirePlanBeforeMutation,
         int maxCorrections) {
 
+    /** Required memory is never silently truncated, including on the judge path. */
+    public static final int MAX_MEMORY_CONTEXT_CHARS = 32_000;
     public static final int DEFAULT_MAX_CORRECTIONS = 2;
     public static final int HARD_MAX_CORRECTIONS = 8;
 
@@ -53,9 +56,16 @@ public record WorkflowPolicy(
         }
     }
 
+    /** Compatibility constructor for profiles without required memories. */
+    public WorkflowPolicy(Mode mode, List<String> requiredSkills,
+                          boolean requirePlanBeforeMutation, int maxCorrections) {
+        this(mode, requiredSkills, List.of(), requirePlanBeforeMutation, maxCorrections);
+    }
+
     public WorkflowPolicy {
         mode = mode == null ? Mode.OFF : mode;
         requiredSkills = normalizeSkills(requiredSkills);
+        requiredMemories = normalizeMemories(requiredMemories);
         maxCorrections = Math.max(0, Math.min(HARD_MAX_CORRECTIONS, maxCorrections));
     }
 
@@ -68,13 +78,14 @@ public record WorkflowPolicy(
         return new WorkflowPolicy(
                 Mode.parse(config.getWorkflowMode()),
                 config.getWorkflowRequiredSkills(),
+                config.getWorkflowRequiredMemories(),
                 config.isWorkflowRequirePlanBeforeMutation(),
                 config.getWorkflowMaxCorrections());
     }
 
     public WorkflowPolicy withSessionMode(Mode sessionMode, List<String> sessionSkills) {
         List<String> skills = sessionSkills == null ? requiredSkills : sessionSkills;
-        return new WorkflowPolicy(sessionMode, skills,
+        return new WorkflowPolicy(sessionMode, skills, requiredMemories,
                 requirePlanBeforeMutation, maxCorrections);
     }
 
@@ -84,6 +95,22 @@ public record WorkflowPolicy(
 
     public boolean enforced() {
         return mode == Mode.ENFORCED;
+    }
+
+    private static List<String> normalizeMemories(List<String> memories) {
+        if (memories == null || memories.isEmpty()) return List.of();
+        Map<String, String> unique = new LinkedHashMap<>();
+        for (String memory : memories) {
+            if (memory == null || memory.isBlank()) continue;
+            String normalized = memory.trim();
+            if (!normalized.contains(":")) normalized = "project:" + normalized;
+            if (!normalized.matches("(project|global):[A-Za-z0-9][A-Za-z0-9_.-]*\\.md")) {
+                throw new IllegalArgumentException("Invalid required workflow memory: " + memory
+                        + ". Use project:file.md or global:file.md; paths are not allowed.");
+            }
+            unique.putIfAbsent(normalized, normalized);
+        }
+        return List.copyOf(unique.values());
     }
 
     private static List<String> normalizeSkills(List<String> skills) {

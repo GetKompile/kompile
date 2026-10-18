@@ -257,10 +257,12 @@ public class ChatMessageHandler {
                 turnActive.set(true);
                 synchronousTurnOwner.set(owner);
             }
+            String timelineTurnId = repl.getTimelineLifecycle().turnStarted("synchronous-owner");
             try {
                 repl.syncPendingSessionTitle();
                 handleAcceptedChatMessage(message);
             } finally {
+                repl.getTimelineLifecycle().turnFinished(timelineTurnId);
                 synchronized (turnDispatchLock) {
                     turnActive.set(false);
                     synchronousTurnOwner.compareAndSet(owner, null);
@@ -581,6 +583,7 @@ public class ChatMessageHandler {
             UsageLimitAutoContinue.Turn quotaOwner = usageLimitAutoContinue.beginTurn();
             Thread dispatchThread = new Thread(sessionContext.wrap(() -> {
                 quotaTurn.set(quotaOwner);
+                String timelineTurnId = repl.getTimelineLifecycle().turnStarted("dispatch-owner");
                 try {
                     repl.syncPendingSessionTitle();
                     action.run();
@@ -597,6 +600,7 @@ public class ChatMessageHandler {
                             + uncaughtTurnFailure.getClass().getName() + ": "
                             + uncaughtTurnFailure.getMessage());
                 } finally {
+                    repl.getTimelineLifecycle().turnFinished(timelineTurnId);
                     quotaTurn.remove();
                     releaseTurnOwnershipAndHandOff();
                 }
@@ -1182,10 +1186,14 @@ public class ChatMessageHandler {
 
     /** Show the user the reminder block attached to an outbound prompt, if any. */
     private void emitReminderSection(String outboundMessage) {
-        String section = renderer.renderReminderSection(
-                ReminderManager.reminderBlockContent(outboundMessage));
-        if (!section.isEmpty()) {
-            emitLine(section);
+        String content = ReminderManager.reminderBlockContent(outboundMessage);
+        var block = renderer.renderReminderBlock(content);
+        if (block == null) return;
+        BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
+        boolean backgrounded = task != null && task.getStatus()
+                == BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.BACKGROUNDED;
+        if (backgrounded || !ChatCompleter.upsertDisplayBlock(block)) {
+            emitLine(renderer.renderReminderSection(content));
         }
     }
 

@@ -129,6 +129,9 @@ public record ProviderConnectivityPolicy(
         return statusCode == 408 || statusCode == 409 || statusCode == 425
                 || statusCode == 429 || statusCode == 500 || statusCode == 502
                 || statusCode == 503 || statusCode == 504
+                // Codex's upstream proxy reports exhausted request-retry buffering
+                // as 507. Replay with the existing budget, not model compaction.
+                || statusCode == 507
                 // 529 is Anthropic's overloaded_error: the provider (or its edge) is
                 // temporarily at capacity, not permanently broken.
                 || statusCode == 529;
@@ -169,6 +172,11 @@ public record ProviderConnectivityPolicy(
                     || message.contains("turn timed out") || message.contains("provider timed out")
                     || message.contains("connection reset") || message.contains("connection refused")
                     || message.contains("upstream connect error") || message.contains("disconnect/reset")
+                    // The same Codex proxy failure may arrive in an SSE envelope
+                    // or a native CLI exception without an HTTP status.
+                    || (message.contains("exceed")
+                    && (message.contains("request retry buffer")
+                    || message.contains("request retry context buffer")))
                     // In-band provider failure text: mid-stream "Overloaded" events and
                     // rate-limit envelopes delivered inside a 200 SSE stream.
                     || message.contains("overloaded")

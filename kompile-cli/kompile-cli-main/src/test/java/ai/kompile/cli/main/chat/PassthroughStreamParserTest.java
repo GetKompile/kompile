@@ -50,6 +50,41 @@ class PassthroughStreamParserTest {
     class ClaudeParser {
 
         @Test
+        void toolResultsBecomeObservableOutputWithoutEnteringAssistantText() {
+            parser.parseClaudeLineMulti("""
+                    {"type":"assistant","message":{"content":[
+                      {"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":"a.txt"}},
+                      {"type":"tool_use","id":"bash-2","name":"Bash","input":{"command":"false"}}]}}
+                    """);
+            var results = parser.parseClaudeLineMulti("""
+                    {"type":"user","message":{"content":[
+                      {"type":"text","text":"not assistant text"},
+                      {"type":"tool_result","tool_use_id":"bash-2","is_error":true,"content":"command failed"},
+                      {"type":"tool_result","tool_use_id":"read-1","content":[{"type":"text","text":"file contents"}]}]}}
+                    """);
+            assertEquals(2, results.size());
+            var failed = assertInstanceOf(ToolComplete.class, results.get(0));
+            assertEquals("Bash", failed.name());
+            assertEquals("command failed", failed.output());
+            assertTrue(failed.error());
+            var read = assertInstanceOf(ToolComplete.class, results.get(1));
+            assertEquals("Read", read.name());
+            assertEquals("file contents", read.output());
+            assertFalse(read.error());
+        }
+
+        @Test
+        void resumedToolResultStillShowsOutputWithoutOriginalCall() {
+            var results = parser.parseClaudeLineMulti("""
+                    {"type":"user","message":{"content":[
+                      {"type":"tool_result","tool_use_id":"prior-turn","content":"retained result"}]}}
+                    """);
+            var result = assertInstanceOf(ToolComplete.class, results.get(0));
+            assertEquals("retained result", result.output());
+            assertFalse(result.error());
+        }
+
+        @Test
         void nullLine_returnsEmpty() {
             List<PassthroughEvent> events = parser.parseClaudeLineMulti(null);
             assertTrue(events.isEmpty());

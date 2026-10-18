@@ -192,7 +192,9 @@ public class ToolRegistryFactory {
         registry.register(new ProjectConfigTool());
         registry.register(new EnforcerConfigTool());
         registry.register(new JudgeControlTool());
+        registry.register(new PeerTool(coordinationManager));
         registry.register(new TestMilestoneTool());
+        registry.register(new IncidentTool());
 
         // Process management tools
         if (processManager != null) {
@@ -244,6 +246,18 @@ public class ToolRegistryFactory {
                 new CrawlControlTool(crawlBaseUrl, objectMapper));
         registerGuarded(registry, highMemoryGuard,
                 new CrawlResultTool(crawlBaseUrl, objectMapper));
+        // Selected only at freeze when the installed manifest opts into native content authority.
+        // Ordinary/legacy registries retain their original instances, routes and resource guards.
+        if (registry.hasProductConstructionGuards()) {
+            registerContentGuarded(registry, highMemoryGuard, new PipelineTool(objectMapper));
+            registerContentGuarded(registry, highMemoryGuard, new ModelRuntimeTool(objectMapper));
+            registry.registerProductContentDelegate(new CrawlDiscoveryTool((String) null, objectMapper));
+            registerContentGuarded(registry, highMemoryGuard, new CrawlDocumentsTool((String) null, objectMapper));
+            registerContentGuarded(registry, highMemoryGuard, new CrawlControlTool((String) null, objectMapper));
+            registerContentGuarded(registry, highMemoryGuard, new CrawlResultTool((String) null, objectMapper));
+            registry.registerProductContentDelegate(new KnowledgeGraphTool(null, objectMapper));
+            registerProductContentReaders(registry, objectMapper);
+        }
         registry.register(new SubprocessWatchdogTool(objectMapper));
         registry.register(new ProcessMiningCliTool(baseUrl, objectMapper));
         registry.register(new AskGraphClaimTool(baseUrl, objectMapper));
@@ -287,10 +301,25 @@ public class ToolRegistryFactory {
         return registry;
     }
 
+    /** Explicit null URLs select only the native local backends, never inherited app/graph routes. */
+    static void registerProductContentReaders(ToolRegistry registry, ObjectMapper mapper) {
+        registry.registerProductContentDelegate(new KnowledgeStatusCliTool(null, mapper));
+        registry.registerProductContentDelegate(new KnowledgeSearchCliTool(null, mapper));
+        registry.registerProductContentDelegate(new RagSearchTool(null, mapper));
+        registry.registerProductContentDelegate(new GraphRagSearchTool(null, mapper));
+        registry.registerProductContentDelegate(new GraphReasoningQueryTool((String) null, mapper));
+    }
+
     private static void registerGuarded(ToolRegistry registry,
                                         HighMemoryToolCallGuard guard,
                                         CliTool tool) {
         registry.register(guard == null ? tool : guard.wrap(tool));
+    }
+
+    private static void registerContentGuarded(ToolRegistry registry,
+                                               HighMemoryToolCallGuard guard,
+                                               CliTool tool) {
+        registry.registerProductContentDelegate(guard == null ? tool : guard.wrap(tool));
     }
 
     /**

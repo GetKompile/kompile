@@ -79,6 +79,12 @@ public final class WebChatContext {
             if (!validWorkflow(workflow)) throw new IllegalArgumentException("Invalid workflow team name for web chat");
             arguments.add("-D" + WORKFLOW + "=" + workflow.strip());
         }
+        if (ProductChatPolicy.configuredPath().isPresent()) {
+            if (global || (workflow != null && !workflow.isBlank()))
+                throw new IllegalArgumentException("Product chat requires project scope without workflow overrides");
+            arguments.add("-D" + ProductChatPolicy.PROPERTY + "="
+                    + ProductChatPolicy.configuredPath().orElseThrow().toRealPath());
+        }
         return List.copyOf(arguments);
     }
 
@@ -107,6 +113,7 @@ public final class WebChatContext {
                 case CONFIG_SCOPE -> ENV_CONFIG_SCOPE;
                 case WORKFLOW -> ENV_WORKFLOW;
                 case MODE -> ENV_MODE;
+                case ProductChatPolicy.PROPERTY -> ProductChatPolicy.ENVIRONMENT;
                 default -> throw new IllegalStateException("Unknown web chat context property: " + key);
             };
             values.put(environmentKey, property.substring(separator + 1));
@@ -114,12 +121,13 @@ public final class WebChatContext {
         // Explicit defaults prevent optional values leaking from an enclosing web launch.
         values.putIfAbsent(ENV_WORKFLOW, "");
         values.putIfAbsent(ENV_MODE, "single");
+        values.putIfAbsent(ProductChatPolicy.ENVIRONMENT, "");
         return Map.copyOf(values);
     }
 
     /** A managed child must not inherit another server's workspace or harness context. */
     public static void clearEnvironment(Map<String, String> environment) {
-        for (String key : List.of(ENV_WORKING_DIRECTORY, ENV_CONFIG_SCOPE, ENV_WORKFLOW, ENV_MODE)) {
+        for (String key : List.of(ENV_WORKING_DIRECTORY, ENV_CONFIG_SCOPE, ENV_WORKFLOW, ENV_MODE, ProductChatPolicy.ENVIRONMENT)) {
             environment.remove(key);
         }
     }

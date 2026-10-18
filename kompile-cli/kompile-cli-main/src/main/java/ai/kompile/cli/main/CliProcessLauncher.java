@@ -24,6 +24,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Resolves a distributable CLI process ABI for request-scoped children and the
@@ -105,17 +106,32 @@ public final class CliProcessLauncher {
                 System.getProperty("kompile.cli.jar"),
                 System.getenv("KOMPILE_CLI_JAR"));
         if (isRegularJar(jarOverride)) {
-            return new Launcher(JavaRuntimeLocator.javaExecutable(),
-                    List.of("-jar", Path.of(jarOverride).toAbsolutePath().normalize().toString()));
+            return jvmLauncher(Path.of(jarOverride).toAbsolutePath().normalize());
         }
 
         Path codeSource = resolveCodeSource();
         if (codeSource != null && Files.isRegularFile(codeSource)
                 && codeSource.getFileName().toString().endsWith(".jar")) {
-            return new Launcher(JavaRuntimeLocator.javaExecutable(),
-                    List.of("-jar", codeSource.toString()));
+            return jvmLauncher(codeSource);
         }
         return null;
+    }
+
+    private static Launcher jvmLauncher(Path jar) {
+        List<String> args = new ArrayList<>(jvmMemoryArguments(System.getenv()));
+        args.add("-jar");
+        args.add(jar.toString());
+        return new Launcher(JavaRuntimeLocator.javaExecutable(), args);
+    }
+
+    /** Keep in sync with kompile-dist/src/main/scripts/kompile.sh; native children are untouched. */
+    static List<String> jvmMemoryArguments(Map<String, String> environment) {
+        List<String> args = new ArrayList<>();
+        args.add("-Xms" + firstNonBlank(environment.get("KOMPILE_CLI_INITIAL_HEAP"), "64m"));
+        args.add("-XX:G1PeriodicGCInterval=" + firstNonBlank(environment.get("KOMPILE_CLI_IDLE_GC_MS"), "60000"));
+        String maxHeap = firstNonBlank(environment.get("KOMPILE_CLI_MAX_HEAP"));
+        if (maxHeap != null) args.add("-Xmx" + maxHeap);
+        return List.copyOf(args);
     }
 
     /** Build a complete child command or fail with an actionable artifact requirement. */

@@ -23,6 +23,187 @@ import static org.junit.jupiter.api.Assertions.*;
 class StandardChatActivityPanelTest {
 
     @Test
+    void mirroredMcpSubagentLogsOpenInBrowserWithoutLeakingIntoParentCards(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("parent-chat", workspace)) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            var log = workspace.resolve("child.log");
+            java.nio.file.Files.writeString(log, "child transcript and tool output\n");
+            processes.upsertShared("child", "codex", "Subagent: inspect files", -1L,
+                    java.time.Instant.now(), BackgroundProcessManager.ProcessState.RUNNING,
+                    null, null, log, Map.of("parentSessionId", "parent-chat", "kind", "subagent"));
+            panel.refresh();
+            var cards = panel.resultDisplayBlocks();
+            assertEquals(1, cards.size());
+            assertTrue(cards.get(0).sections().isEmpty());
+            assertFalse(cards.toString().contains("child transcript and tool output"));
+            assertTrue(panel.selectNext());
+            var view = panel.openSelectedView();
+            assertTrue(view.content().contains("child transcript and tool output"));
+        }
+    }
+
+    @Test
+    void automaticProcessCardsExcludeOtherSessionsButKeepLocalAndParentedMcpOutput(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("codex-chat", workspace)) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            var local = processes.registerVirtual(ProcessKind.COMMAND, "build", "Local build", Map.of());
+            processes.appendVirtualOutput(local.getId(), "local-output");
+            for (String parent : List.of("codex-chat", "claude-chat", "")) {
+                var log = workspace.resolve("mcp-" + parent + ".log");
+                java.nio.file.Files.writeString(log, "output-for-" + parent + "\n");
+                processes.upsertShared("shared-" + parent, "build", "MCP build " + parent, 0L,
+                        java.time.Instant.now(), BackgroundProcessManager.ProcessState.RUNNING,
+                        null, null, log, parent.isEmpty()
+                                ? Map.of("ownerSessionId", "unregistered-mcp", "ownerAgent", "claude")
+                                : Map.of("ownerSessionId", "mcp-" + parent, "ownerAgent", "claude",
+                                        "parentSessionId", parent));
+            }
+            panel.refresh();
+
+            assertEquals(4, panel.activityItems().stream()
+                    .filter(item -> item.kind() == StandardChatActivityPanel.ActivityKind.PROCESS).count(),
+                    "shared process inspection must remain available");
+            var cards = panel.resultDisplayBlocks();
+            assertEquals(java.util.Set.of("process:" + local.getId(), "process:shared-codex-chat"),
+                    cards.stream().map(ai.kompile.cli.main.chat.render.ChatDisplayBlock::key)
+                            .collect(java.util.stream.Collectors.toSet()),
+                    "only this chat's work may automatically enter its transcript");
+            assertTrue(cards.toString().contains("local-output"));
+            assertTrue(cards.toString().contains("output-for-codex-chat"));
+            assertFalse(cards.toString().contains("output-for-claude-chat"));
+
+            java.nio.file.Files.writeString(workspace.resolve("mcp-claude-chat.log"), "foreign-live-update\n");
+            panel.refresh();
+            assertEquals(2, panel.resultDisplayBlocks().size());
+            assertFalse(panel.resultDisplayBlocks().toString().contains("foreign-live-update"),
+                    "foreign output growth must not leak on redraw either");
+        }
+    }
+
+    @Test
+    void mcpAndClaudeDiagnosticsStayBrowsableWithoutAutomaticTranscriptCards(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        java.nio.file.Files.createDirectories(workspace.resolve(".kompile"));
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("claude-logs", workspace)) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            var bridge = processes.registerVirtual(ProcessKind.MCP, "mcp", "MCP tool bridge log", Map.of());
+            var claude = processes.registerVirtual(ProcessKind.MCP, "claude", "Claude Code log", Map.of());
+            var command = processes.registerVirtual(ProcessKind.COMMAND, "build", "Local build", Map.of());
+            processes.appendVirtualOutput(bridge.getId(), "[MCP] Wrote kompile MCP tools for a Claude Code launch");
+            processes.appendVirtualOutput(claude.getId(), "Claude Code diagnostic");
+            processes.appendVirtualOutput(command.getId(), "build output");
+            panel.refresh();
+
+            assertEquals(List.of("process:" + command.getId()), panel.resultDisplayBlocks().stream()
+                    .map(ai.kompile.cli.main.chat.render.ChatDisplayBlock::key).toList(),
+                    "diagnostic log rows are not background work to copy into the transcript");
+            processes.appendVirtualOutput(bridge.getId(), "[MCP] Pre-configured Claude Code hooks");
+            processes.appendVirtualOutput(claude.getId(), "Warning: MCP connection failed");
+            panel.refresh();
+            assertEquals(List.of("process:" + command.getId()), panel.resultDisplayBlocks().stream()
+                    .map(ai.kompile.cli.main.chat.render.ChatDisplayBlock::key).toList(),
+                    "live diagnostic updates must not reintroduce transcript cards");
+
+            var views = new java.util.HashMap<String, String>();
+            for (int i = 1; i < panel.activityItems().size(); i++) {
+                assertTrue(panel.selectNext());
+                var view = panel.openSelectedView();
+                assertNotNull(view);
+                views.put(view.key(), view.content());
+            }
+            assertTrue(views.get("process:" + bridge.getId()).contains("[MCP] Pre-configured Claude Code hooks"));
+            assertTrue(views.get("process:" + claude.getId()).contains("Warning: MCP connection failed"),
+                    "real diagnostics must remain inspectable in the process browser");
+            assertTrue(panel.resultDisplayBlocks().get(0).sections().get(0).content().contains("build output"));
+        }
+    }
+
+    @Test
+    void claudeChildViewerReadsTheLiveConversationNotOnlyToolSummaries(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        java.nio.file.Files.createDirectories(workspace.resolve(".kompile"));
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("claude-child-view", workspace)) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            var child = processes.registerVirtual(ProcessKind.COMMAND, "claude local_agent", "Claude: inspect",
+                    Map.of("source", "claude-code", "task_id", "child", "task_type", "local_agent"));
+            var launch = panel.resultDisplayBlocks().get(0);
+            assertTrue(launch.classic().contains("Launched subagent [" + child.getId() + "]"));
+            assertTrue(launch.sections().isEmpty());
+            processes.appendVirtualOutput(child.getId(), "User:\nInspect the parser\nThinking:\nFind the dropped frames\nAssistant:");
+            processes.appendVirtualOutputChunk(child.getId(), "I will inspect ");
+            processes.appendVirtualOutputChunk(child.getId(), "the parser");
+            panel.refresh();
+            assertEquals(launch, panel.resultDisplayBlocks().get(0),
+                    "Claude child streaming must not copy its conversation into automatic process cards");
+            assertTrue(panel.selectNext());
+            var view = panel.openSelectedView();
+            assertNotNull(view);
+            assertTrue(view.content().contains("User:\nInspect the parser"), view.content());
+            assertTrue(view.content().contains("Thinking:\nFind the dropped frames"), view.content());
+            assertTrue(view.content().contains("Assistant:\nI will inspect the parser"), view.content());
+            processes.appendVirtualOutputChunk(child.getId(), "\nResult [read]:\nfile contents\nAssistant:\nFixed it\n");
+            assertTrue(panel.currentView().content().contains("Fixed it"));
+            processes.complete(child.getId());
+            assertTrue(panel.currentView().content().contains("file contents"), "completion retains the open transcript");
+        }
+    }
+
+    @Test
+    void nativeAgentsGetLaunchNoticesButShellProcessesKeepTheirOutputCards() {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("native-agent-launches")) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            for (String type : List.of("agent", "local_agent", "background_agent", "local_bash")) {
+                var entry = processes.registerVirtual(ProcessKind.COMMAND, "claude " + type, "Task " + type,
+                        Map.of("source", "claude-code", "task_id", type, "task_type", type));
+                processes.appendVirtualOutput(entry.getId(), "private output for " + type);
+            }
+            var cards = panel.resultDisplayBlocks();
+            assertEquals(4, cards.size());
+            for (var card : cards) {
+                if (card.kind().equals("subagent")) {
+                    assertTrue(card.classic().contains("Launched subagent"));
+                    assertTrue(card.sections().isEmpty());
+                    assertFalse(card.toString().contains("private output"));
+                    processes.fail(card.key().substring("process:".length()), 1);
+                } else {
+                    assertEquals("process", card.kind());
+                    assertTrue(card.sections().get(0).content().contains("private output for local_bash"),
+                            "native shell process output is outside the subagent-display change");
+                }
+            }
+            assertEquals(3, cards.stream().filter(card -> card.kind().equals("subagent")).count());
+            assertTrue(panel.resultDisplayBlocks().stream().filter(card -> card.kind().equals("subagent"))
+                    .allMatch(card -> card.error() && !card.running() && card.sections().isEmpty()));
+        }
+    }
+
+    @Test
+    void subagentLaunchLabelCannotExpandIntoMultilinePromptOrOutput() {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("bounded-agent-launch")) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 4);
+            bar.registerSubagent("long-1", "general", "First line\n\n" + "long description ".repeat(100));
+            String launch = panel.inlineSubagentTranscript("long-1");
+            assertEquals(2, launch.lines().count());
+            assertTrue(launch.contains("general — First line long description"));
+            assertTrue(launch.length() < 320, "a large task description must stay a small launch notice");
+        }
+    }
+
+    @Test
     void completedRowsExpireOnIdleCallbackWithoutRemovingHistoryOrRunningWork() {        BackgroundTaskManager tasks = new BackgroundTaskManager();
         try (BackgroundProcessManager processes = new BackgroundProcessManager("activity-expiry")) {
             StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
@@ -125,6 +306,37 @@ class StandardChatActivityPanelTest {
                 assertFalse(view.content().contains(ToolResult.OUTPUT_STREAMED_METADATA), view.content());
                 assertTrue(result.isOutputStreamed(), "opening details must not mutate the result");
             }
+        }
+    }
+
+    @Test
+    void tinyAllocationsUseAvailableRowsForProcessesAndCompletions() {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("tiny-activity-budget")) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+            AtomicInteger rows = new AtomicInteger(1);
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, rows::get);
+            for (int i = 0; i < 12; i++) panel.recordToolStart("tool-" + i, "process", "{}");
+            panel.refresh();
+            assertEquals(1, panel.currentMenuItems().size());
+            assertTrue(panel.currentMenuItems().get(0).id().startsWith("tool:"));
+            assertTrue(panel.currentMenuItems().get(0).status().contains("more"));
+            rows.set(0);
+            panel.refresh();
+            assertTrue(panel.currentMenuItems().isEmpty());
+            rows.set(3);
+            panel.refresh();
+            assertEquals(2, panel.currentMenuItems().size());
+            rows.set(1);
+            panel.refresh();
+            assertEquals(1, panel.currentMenuItems().size());
+            panel.updateCompletions(List.of(new ChatCompleter.CompletionItem("/help", "Help"),
+                    new ChatCompleter.CompletionItem("/status", "Status")));
+            assertEquals(1, panel.currentMenuItems().size());
+            assertEquals("/help", panel.currentMenuItems().get(0).label());
+            rows.set(0);
+            panel.refresh();
+            assertTrue(panel.currentMenuItems().isEmpty());
         }
     }
 
@@ -539,7 +751,7 @@ class StandardChatActivityPanelTest {
     }
 
     @Test
-    void mirrorsLiveSubagentActivityInlineAndExplainsBackgroundInspection() {
+    void showsSubagentLaunchOnlyAndExplainsBackgroundInspection() {
         BackgroundTaskManager tasks = new BackgroundTaskManager();
         AtomicBoolean blockingSubagentInvocation = new AtomicBoolean(false);
         tasks.setBackgroundableCheck(blockingSubagentInvocation::get);
@@ -582,9 +794,10 @@ class StandardChatActivityPanelTest {
             assertTrue(tasks.isCurrentTaskBackgroundable());
 
             String foreground = panel.inlineSubagentTranscript("research-1");
-            assertTrue(foreground.contains("Subagent [research-1] researcher"));
-            assertTrue(foreground.contains("Searching docs"),
-                    "one-line steps stay in the collapsed block");
+            assertTrue(foreground.contains("subagent [research-1] researcher"));
+            assertTrue(foreground.contains("Launched subagent"));
+            assertFalse(foreground.contains("Searching docs"),
+                    "even step summaries belong in the process browser, not the launch notice");
             assertFalse(foreground.contains("searched provider docs"),
                     "raw tool detail must stay out of the main-window block");
             assertFalse(foreground.contains("live answer chunk"),
@@ -652,59 +865,61 @@ class StandardChatActivityPanelTest {
     }
 
     @Test
-    void inlineSubagentBlockCollapsesToAFewOneLineStepsWithRunningIndicator() {
+    void subagentLaunchStaysCompactInEveryPresetWhileBrowserRetainsLiveDetails() {
         BackgroundTaskManager tasks = new BackgroundTaskManager();
-        BackgroundProcessManager processes =
-                new BackgroundProcessManager("standard-activity-inline-collapse-test");
-        try {
-            StatusBar bar = new StatusBar(
-                    tasks, processes, null, new TerminalRenderer(true));
-            StandardChatActivityPanel panel = new StandardChatActivityPanel(
-                    tasks, processes, bar, () -> 4);
-
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("subagent-launch-only")) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 4);
             bar.registerSubagent("busy-1", "general", "Run the long task");
+            String launch = panel.inlineSubagentTranscript("busy-1");
+            assertTrue(launch.contains("Launched subagent [busy-1] general — Run the long task"));
+            assertTrue(launch.contains("process browser below"));
+            assertTrue(launch.contains("Enter to inspect"));
+            assertEquals(2, launch.lines().count());
+
             for (int i = 0; i < 9; i++) {
-                bar.appendSubagentActivity("busy-1", "Grep pattern #" + i + " …", null);
-                bar.appendSubagentActivity("busy-1", "Grep pattern #" + i + " ✓ 12 matches", null);
+                bar.appendSubagentActivity("busy-1", "Grep pattern #" + i + " ✓ 12 matches", "raw tool detail " + i);
             }
-            bar.appendSubagentActivity("busy-1", "Bash mvn test …", null);
+            bar.updateSubagentStatus("busy-1", "Bash mvn test …");
+            bar.appendSubagentOutput("busy-1", "live answer chunk");
+            assertEquals(launch, panel.inlineSubagentTranscript("busy-1"),
+                    "activity and streamed output must not rewrite the launch notice");
+            var block = panel.subagentDisplayBlock("busy-1");
+            assertEquals("subagent:busy-1", block.key());
+            assertTrue(block.running());
+            assertTrue(block.sections().isEmpty(), "no child transcript can leak through output-section overrides");
+            var sidebar = new ai.kompile.cli.main.chat.tui.ChatSidebar(new TerminalRenderer(false));
+            for (String preset : List.of("classic", "focused", "verbose")) {
+                var config = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+                config.applyPreset(preset);
+                config.set("content.subagent.inline", "full");
+                config.set("content.output.inline", "full");
+                String inline = sidebar.inline(block, config);
+                assertTrue(inline.contains("Launched subagent"), preset);
+                assertFalse(inline.contains("Grep pattern"), preset);
+                assertFalse(inline.contains("Bash mvn"), preset);
+                assertFalse(inline.contains("raw tool detail"), preset);
+                assertFalse(inline.contains("live answer chunk"), preset);
+                assertEquals(2, inline.lines().count(), preset);
+            }
 
-            String block = panel.inlineSubagentTranscript("busy-1");
-            List<String> lines = block.lines().toList();
-            assertTrue(lines.size() <= 7,
-                    "the collapsed block stays within about five rows, got " + lines.size());
-            assertTrue(block.contains("10 steps"),
-                    "the hidden-step count must be preserved: " + block);
-            assertTrue(block.contains("… +7 earlier steps"),
-                    "earlier steps collapse into a count: " + block);
-            assertTrue(block.contains("⟳ Bash mvn test …"),
-                    "the in-flight command gets the running indicator: " + block);
-            assertTrue(block.contains("⎿ Grep pattern #8 ✓ 12 matches"),
-                    "the last finished step keeps its outcome: " + block);
-            assertFalse(block.contains("Grep pattern #5"),
-                    "older steps must collapse out: " + block);
-            assertFalse(block.contains("[older activity omitted]"),
-                    "the raw transcript marker must never appear inline: " + block);
-
-            bar.appendSubagentActivity("busy-1", "Bash mvn test ✓ 64/64 green", null);
-            String settled = panel.inlineSubagentTranscript("busy-1");
-            assertTrue(settled.contains("⎿ Bash mvn test ✓ 64/64 green"),
-                    "a finished call replaces its in-flight row: " + settled);
-            assertFalse(settled.contains("Bash mvn test …"),
-                    "the provisional in-flight row must not stack beside its result: " + settled);
-
-            bar.registerSubagent("fresh-1", "explore", "Just spawned");
-            String fresh = panel.inlineSubagentTranscript("fresh-1");
-            assertTrue(fresh.contains("⟳ running"),
-                    "before any step the live status becomes the running row: " + fresh);
-            assertFalse(fresh.lines().count() > 4, "a fresh child stays minimal: " + fresh);
-
+            panel.refresh();
+            assertTrue(panel.selectNext());
+            var view = panel.openSelectedView();
+            assertTrue(view.content().contains("raw tool detail 8"));
+            assertTrue(view.content().contains("live answer chunk"));
+            bar.appendSubagentOutput("busy-1", " and more live output");
+            assertTrue(panel.currentView().content().contains("and more live output"));
+            bar.updateSubagentStatus("busy-1", "failed");
             bar.unregisterSubagent("busy-1");
-            String recent = panel.inlineSubagentTranscript("busy-1");
-            assertTrue(recent.contains("completed") || recent.contains("⎿ Bash mvn test ✓ 64/64 green"),
-                    "a retained child still shows its collapsed steps: " + recent);
-        } finally {
-            processes.close();
+            var completed = panel.subagentDisplayBlock("busy-1");
+            assertFalse(completed.running());
+            assertTrue(completed.error(), "failure status must remain visible without its transcript");
+            assertEquals(launch, completed.classic());
+            assertTrue(panel.currentView().content().contains("raw tool detail 8"));
+            panel.returnToMain();
+            assertTrue(panel.currentView().main());
+            assertNull(panel.subagentDisplayBlock("unknown"));
         }
     }
 

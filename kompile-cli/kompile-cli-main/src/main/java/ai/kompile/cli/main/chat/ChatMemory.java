@@ -20,6 +20,7 @@ import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.MemoryTool;
+import ai.kompile.cli.main.chat.incidents.IncidentStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -165,6 +166,12 @@ public class ChatMemory {
         }
 
         StringBuilder context = new StringBuilder();
+
+        // Reserve a bounded leading block so long MEMORY.md content cannot hide relevant incidents.
+        // Uses the existing memory controls; never launches a model or executes linked checks.
+        if (persistentMemoryEnabled) {
+            context.append(new IncidentStore(workDir).context(query, null, 1800));
+        }
 
         // 1. Stable project/global memory
         if (persistentMemoryEnabled && persistentMemoryContent != null

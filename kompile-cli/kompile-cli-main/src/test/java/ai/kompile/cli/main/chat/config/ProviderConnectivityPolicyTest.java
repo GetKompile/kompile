@@ -111,6 +111,27 @@ class ProviderConnectivityPolicyTest {
     }
 
     @Test
+    void codexUpstreamRetryBufferFailuresAreTransientNotModelContextOverflow() {
+        ProviderConnectivityPolicy policy = ProviderConnectivityPolicy.forProvider("openai-codex");
+
+        assertTrue(policy.isRetryableStatus(507));
+        for (String message : List.of(
+                "exceeded request retry buffer limit upstream",
+                "507 Insufficient Storage: exceeded request retry context buffer limit upstream",
+                "EXCEEDED REQUEST RETRY BUFFER LIMIT")) {
+            assertTrue(policy.isRetryableFailure(new IOException(message)), message);
+            assertTrue(policy.isRetryableFailure(new IllegalStateException(
+                    "Codex request failed", new IOException(message))), message);
+            assertFalse(DirectLlmClient.isContextOverflowFailure(507, message),
+                    "an upstream retry buffer is not the model's context window");
+        }
+        assertFalse(policy.isRetryableStatus(413));
+        assertFalse(policy.isRetryableFailure(new IOException("Maximum context length exceeded")));
+        assertFalse(policy.isRetryableFailure(new IOException("Insufficient Storage")),
+                "without a status code or retry-buffer signal, storage failures stay terminal");
+    }
+
+    @Test
     void retryAfterSecondsAndDatesAreHonoredAndCapped() {
         ProviderConnectivityPolicy policy = new ProviderConnectivityPolicy(
                 Duration.ofSeconds(1), Duration.ofSeconds(5), Duration.ofSeconds(2),

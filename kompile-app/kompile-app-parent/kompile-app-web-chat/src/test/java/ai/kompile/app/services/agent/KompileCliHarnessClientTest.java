@@ -825,6 +825,26 @@ class KompileCliHarnessClientTest {
     }
 
     @Test
+    void stopBeforeStreamRegistrationPreventsWorkAndKeepsAnExactReplayableIdentity() throws Exception {
+        var starts = new AtomicInteger();
+        client = new KompileCliHarnessClient(new ObjectMapper(), () -> List.of("fake"),
+                (command, directory) -> { starts.incrementAndGet(); return new FakeProcess("", "", 0); }, executor, scheduler);
+        var request = request("continue");
+        String id = "harness-0123456789abcdef0123456789abcdef";
+        request.setRunId(id); request.setMessageStartIndex(6);
+        assertTrue(client.cancel(id)); // The browser knows this id before POST /stream is acknowledged.
+        assertEquals(id, client.executeChat(request, new org.springframework.web.servlet.mvc.method.annotation.SseEmitter()));
+        executor.submit(() -> {}).get(3, TimeUnit.SECONDS);
+        assertEquals(0, starts.get());
+        var recovered = client.activeRun(request.getSessionId(), request.getWorkingDirectory());
+        assertEquals(id, recovered.get("runId"));
+        assertEquals(6, recovered.get("messageStartIndex"));
+        assertEquals(true, recovered.get("finished"));
+        client.executeChat(request, new org.springframework.web.servlet.mvc.method.annotation.SseEmitter());
+        assertEquals(0, starts.get()); // Reusing an identity is rejected, never a second model turn.
+    }
+
+    @Test
     void browserDisconnectDoesNotCancelAndReconnectDoesNotStartAnotherProcess() throws Exception {
         var starts = new AtomicInteger();
         var fake = new FakeProcess("{\"seq\":1,\"type\":\"text\",\"text\":\"ok\"}\n"
@@ -881,8 +901,17 @@ class KompileCliHarnessClientTest {
             }
         };
         try {
-            String runId = client.executeChat(request("continue working"), gone);
+            var request = request("continue working");
+            String runId = client.executeChat(request, gone);
             assertTrue(working.await(2, TimeUnit.SECONDS));
+            var discovered = client.activeRun(request.getSessionId(), request.getWorkingDirectory());
+            assertEquals(runId, discovered.get("runId"));
+            assertEquals("continue working", discovered.get("message"));
+            assertTrue(client.activeRun("another-chat", request.getWorkingDirectory()).isEmpty());
+            assertTrue(client.activeRun(request.getSessionId(),
+                    Files.createDirectories(tempDir.resolve("other-project")).toString()).isEmpty());
+            assertThrows(IllegalArgumentException.class, () -> client.activeRun("", request.getWorkingDirectory()));
+            assertEquals(1, starts.get()); // discovering is a read, never a resubmission
             assertTrue(fake.isAlive());
             assertFalse(fake.destroyed);
             finish.countDown(); // the work finishes without any browser attached
@@ -894,6 +923,9 @@ class KompileCliHarnessClientTest {
                 }
             };
             client.reconnect(runId, 0, reopened);
+            var finished = client.activeRun(request.getSessionId(), request.getWorkingDirectory());
+            assertEquals(runId, finished.get("runId"));
+            assertEquals(true, finished.get("finished"));
             assertEquals(1, starts.get());
             assertFalse(fake.destroyed);
             assertTrue(events.stream().anyMatch(value -> value.contains("finished while away")), events.toString());

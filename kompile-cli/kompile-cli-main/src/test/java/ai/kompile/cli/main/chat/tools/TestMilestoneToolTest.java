@@ -175,6 +175,31 @@ class TestMilestoneToolTest {
         assertFalse(recorded.getOutput().contains("Target check"), recorded.getOutput());
     }
 
+    @Test
+    void captureConfigurationCanBeUpdatedWithoutManualInitialization() throws Exception {
+        assertTrue(run("{\"action\":\"config\"}").getOutput().contains("enabled by default"));
+        ToolResult result = run("{\"action\":\"config\",\"auto_capture\":{\"enabled\":false,\"fallbackEnabled\":false}}");
+        assertFalse(result.isError(), result.getOutput());
+        JsonNode saved = mapper.readTree(TestMilestoneTool.storeDir(project).resolve("config.json").toFile());
+        assertFalse(saved.path("autoCapture").path("enabled").asBoolean(true));
+        assertFalse(saved.path("autoCapture").path("fallbackEnabled").asBoolean(true));
+        assertTrue(run("{\"action\":\"config\",\"auto_capture\":{\"enabled\":\"yes\"}}").isError());
+        assertTrue(run("{\"action\":\"config\",\"auto_capture\":{\"includeCommands\":[\"(\"]}}").isError());
+    }
+
+    @Test
+    void neutralAutomaticResultsAreNotFailuresOrRegressions() throws Exception {
+        Path dir = Files.createDirectories(TestMilestoneTool.storeDir(project).resolve("milestones"));
+        Files.writeString(dir.resolve("abcdef12.json"), "{\"id\":\"abcdef12\",\"source\":\"harness\",\"outcome\":\"timed_out\",\"timestamp\":\"2026-10-15T00:00:00Z\"}");
+        ToolResult working = run("{\"action\":\"record\",\"commit\":\"" + COMMIT + "\",\"passed\":1,\"total_tests\":1}");
+        String from = working.getMetadata().get("id").toString();
+        ToolResult summary = run("{\"action\":\"summary\"}");
+        assertTrue(summary.getOutput().contains("Failing: 0"), summary.getOutput());
+        assertTrue(summary.getOutput().contains("Neutral: 1"), summary.getOutput());
+        assertTrue(run("{\"action\":\"list\"}").getOutput().contains("TIMED_OUT"));
+        assertFalse(run("{\"action\":\"compare\",\"from_id\":\"" + from + "\",\"to_id\":\"abcdef12\"}").getOutput().contains("REGRESSION"));
+    }
+
     private ToolResult run(String json) throws Exception {
         ToolContext context = new ToolContext("milestone-session", null, null, project, null);
         context.setAutoApproveAll(true);

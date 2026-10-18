@@ -72,6 +72,13 @@ public final class ThinkingStreamRenderer {
         }
     }
 
+    /** Preview the uncommitted tail for a replaceable UI snapshot, without emitting it. */
+    public String pendingLinePreview() {
+        String tail = lineBuffer.toString().stripTrailing();
+        if (tail.isBlank()) return "";
+        return (headerShown ? "" : renderHeader() + "\n") + renderBody(tail);
+    }
+
     /**
      * End the current reasoning burst: emit any buffered partial line and
      * close the burst so the next {@link #accept(String)} opens a fresh
@@ -100,14 +107,19 @@ public final class ThinkingStreamRenderer {
         }
         if (!headerShown) {
             headerShown = true;
-            lineSink.accept(term != null
-                    ? term.dim(INDENT + HEADER_GLYPH + " thinking")
-                    : INDENT + HEADER_GLYPH + " thinking");
+            lineSink.accept(renderHeader());
             lastEmittedWasBlank = false;
         }
-        lineSink.accept(term != null
-                ? term.dim(term.italic(INDENT + line))
-                : INDENT + line);
+        lineSink.accept(renderBody(line));
         lastEmittedWasBlank = false;
+    }
+
+    private String renderHeader() {
+        String header = INDENT + HEADER_GLYPH + " thinking";
+        return term == null ? header : term.dim(header);
+    }
+
+    private String renderBody(String line) {
+        return term == null ? INDENT + line : term.dim(term.italic(INDENT + line));
     }
 }

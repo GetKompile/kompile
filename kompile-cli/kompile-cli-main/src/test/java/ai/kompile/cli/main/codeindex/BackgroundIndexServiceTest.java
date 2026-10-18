@@ -973,6 +973,216 @@ class BackgroundIndexServiceTest {
         }
     }
 
+    @Test
+    @Order(24)
+    void idleWatcherRetiresAndForegroundReadFindsMissedEdits() throws Exception {
+        BackgroundIndexService.resetForTests();
+        System.setProperty("KOMPILE_CODE_INDEX_WATCH", "true");
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        String projectId = PROJECT_ID + "-idle-retirement";
+        Path root = Files.createTempDirectory("background-index-idle");
+        AtomicReference<IndexFileWatcher> watcher = new AtomicReference<>();
+        AtomicInteger projections = new AtomicInteger();
+        service.setWatcherStarterForTests(created -> { watcher.set(created); created.start(); });
+        service.setProjectionPublisherForTests((r, id, includes, excludes) -> {
+            projections.incrementAndGet();
+            return null;
+        });
+        try {
+            Files.writeString(root.resolve("Original.java"), "class Original {}\n");
+            BackgroundIndexService.IndexJob job = service.submitIndexJob(root, projectId, null, null, false);
+            assertTrue(service.awaitJob(job, 30_000));
+            awaitTrue(() -> service.isWatching(projectId) && projections.get() == 1
+                    && !service.statusLine(projectId).contains("projection"), 15_000, "initial maintenance");
+            IndexFileWatcher retired = watcher.get();
+            var listenerField = IndexFileWatcher.class.getDeclaredField("listener");
+            listenerField.setAccessible(true);
+            IndexFileWatcher.WatchListener oldListener =
+                    (IndexFileWatcher.WatchListener) listenerField.get(retired);
+
+            service.backstopSweep(System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2));
+            assertFalse(retired.isRunning());
+            assertFalse(service.isWatching(projectId));
+            oldListener.onFilesChanged(java.util.Set.of("Late.java"));
+            oldListener.onIndexUpdated(job.result());
+            assertEquals(1, projections.get(), "late watcher callbacks must not resurrect publication");
+
+            Files.writeString(root.resolve("Missed.java"), "class Missed {}\n");
+            LocalCodeIndexer indexer = new LocalCodeIndexer();
+            service.prepareForRead(indexer, projectId);
+            awaitTrue(() -> service.isWatching(projectId), 15_000, "watcher reactivation");
+            awaitTrue(() -> {
+                try { return !indexer.search(projectId, "Missed", null, 10).isEmpty(); }
+                catch (IOException e) { return false; }
+            }, 15_000, "fresh pass for edits made while idle");
+            awaitTrue(() -> !service.statusLine(projectId).contains("projection"), 15_000, "resumed publication");
+            int afterResume = projections.get();
+            oldListener.onFilesChanged(java.util.Set.of("Late.java"));
+            oldListener.onIndexUpdated(job.result());
+            assertEquals(afterResume, projections.get(), "retired callbacks stay fenced after reactivation");
+            assertFalse(retired.isRunning());
+        } finally {
+            BackgroundIndexService.resetForTests();
+            System.setProperty("KOMPILE_CODE_INDEX_WATCH", "false");
+            deleteRecursively(LocalCodeIndexer.getIndexDir(projectId));
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    @Order(25)
+    void idleSweepDoesNotAbandonAnExplicitProjection() throws Exception {
+        BackgroundIndexService.resetForTests();
+        System.setProperty("KOMPILE_CODE_INDEX_WATCH", "true");
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        String projectId = PROJECT_ID + "-idle-explicit";
+        Path root = Files.createTempDirectory("background-index-idle-explicit");
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        service.setProjectionPublisherForTests((r, id, includes, excludes) -> {
+            started.countDown();
+            if (!release.await(30, TimeUnit.SECONDS)) throw new IOException("projection not released");
+            return null;
+        });
+        try {
+            Files.writeString(root.resolve("Explicit.java"), "class Explicit {}\n");
+            BackgroundIndexService.IndexJob job = service.submitIndexJob(root, projectId, null, null, false);
+            assertTrue(service.awaitJob(job, 30_000));
+            assertTrue(started.await(15, TimeUnit.SECONDS));
+            awaitTrue(() -> service.isWatching(projectId), 15_000, "explicit-job watcher");
+            service.backstopSweep(System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2));
+            assertTrue(service.isWatching(projectId), "explicit work must not be retired mid-publication");
+            release.countDown();
+            awaitTrue(() -> !service.statusLine(projectId).contains("projection"), 15_000, "explicit projection completion");
+            service.backstopSweep(System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2));
+            assertFalse(service.isWatching(projectId), "completed explicit work can now retire");
+        } finally {
+            release.countDown();
+            BackgroundIndexService.resetForTests();
+            System.setProperty("KOMPILE_CODE_INDEX_WATCH", "false");
+            deleteRecursively(LocalCodeIndexer.getIndexDir(projectId));
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    @Order(26)
+    void idleRetirementInterruptsAnAlreadyRunningPassiveProjection() throws Exception {
+        BackgroundIndexService.resetForTests();
+        System.setProperty("KOMPILE_CODE_INDEX_WATCH", "true");
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        String projectId = PROJECT_ID + "-cancel-passive";
+        Path root = Files.createTempDirectory("background-index-cancel-passive");
+        AtomicReference<IndexFileWatcher> watcher = new AtomicReference<>();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
+        service.setWatcherStarterForTests(created -> { watcher.set(created); created.start(); });
+        service.setProjectionPublisherForTests((r, id, includes, excludes) -> null);
+        try {
+            Files.writeString(root.resolve("Passive.java"), "class Passive {}\n");
+            BackgroundIndexService.IndexJob job = service.submitIndexJob(root, projectId, null, null, false);
+            assertTrue(service.awaitJob(job, 30_000));
+            awaitTrue(() -> service.isWatching(projectId)
+                    && !service.statusLine(projectId).contains("projection"), 15_000, "initial explicit pass");
+            service.setProjectionPublisherForTests((r, id, includes, excludes) -> {
+                started.countDown();
+                try { new CountDownLatch(1).await(); }
+                catch (InterruptedException cancellation) { interrupted.countDown(); throw cancellation; }
+                return null;
+            });
+            var listener = IndexFileWatcher.class.getDeclaredField("listener");
+            listener.setAccessible(true);
+            ((IndexFileWatcher.WatchListener) listener.get(watcher.get())).onIndexUpdated(job.result());
+            assertTrue(started.await(10, TimeUnit.SECONDS));
+            service.backstopSweep(System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2));
+            assertTrue(interrupted.await(5, TimeUnit.SECONDS), "idle publication must release its in-flight snapshot");
+            assertFalse(service.isWatching(projectId));
+            awaitTrue(() -> !service.statusLine(projectId).contains("projection running"), 5_000, "cancelled pass unwind");
+        } finally {
+            BackgroundIndexService.resetForTests();
+            System.setProperty("KOMPILE_CODE_INDEX_WATCH", "false");
+            deleteRecursively(LocalCodeIndexer.getIndexDir(projectId));
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    @Order(27)
+    void reactivationUpgradesAnAlreadyQueuedThrottledRefresh() throws Exception {
+        BackgroundIndexService.resetForTests();
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        String projectId = PROJECT_ID + "-queued-force";
+        Path root = Files.createTempDirectory("background-index-queued-force");
+        service.setProjectionPublisherForTests((r, id, includes, excludes) -> null);
+        try {
+            Files.writeString(root.resolve("Before.java"), "class Before {}\n");
+            LocalCodeIndexer indexer = new LocalCodeIndexer();
+            indexer.index(root, projectId, null, null, silentStream());
+            service.refreshOnSessionStart(projectId);
+            awaitTrue(() -> service.statusLine(projectId).contains("last background pass"), 15_000, "initial throttle marker");
+            var projectsField = BackgroundIndexService.class.getDeclaredField("projects");
+            projectsField.setAccessible(true);
+            Object state = ((Map<?, ?>) projectsField.get(service)).get(projectId);
+            var queued = state.getClass().getDeclaredField("refreshQueued");
+            queued.setAccessible(true);
+            queued.setBoolean(state, true); // The queued task has not reached an index worker yet.
+            service.backstopSweep(System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2));
+            Files.writeString(root.resolve("After.java"), "class After {}\n");
+            service.prepareForRead(indexer, projectId);
+            var run = BackgroundIndexService.class.getDeclaredMethod("runRefresh", state.getClass(), long.class);
+            run.setAccessible(true);
+            run.invoke(service, state, 30_000L); // Execute the original, nonzero-throttle task.
+            assertFalse(indexer.search(projectId, "After", null, 10).isEmpty(),
+                    "the coalesced foreground request must override the old shared throttle");
+        } finally {
+            BackgroundIndexService.resetForTests();
+            deleteRecursively(LocalCodeIndexer.getIndexDir(projectId));
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    @Order(28)
+    void retirementDoesNotWaitForBusyIndexWorkers() throws Exception {
+        BackgroundIndexService.resetForTests();
+        System.setProperty("KOMPILE_CODE_INDEX_IDLE_SECONDS", "1");
+        System.setProperty("KOMPILE_CODE_INDEX_WATCH", "true");
+        BackgroundIndexService service = BackgroundIndexService.getInstance();
+        Path root = Files.createTempDirectory("background-index-busy-retirement");
+        CountDownLatch busy = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean block = new java.util.concurrent.atomic.AtomicBoolean();
+        service.setProjectionPublisherForTests((r, id, includes, excludes) -> null);
+        service.setWatcherStarterForTests(watcher -> {
+            watcher.start();
+            if (block.get()) { busy.countDown(); release.await(15, TimeUnit.SECONDS); }
+        });
+        try {
+            Path idleRoot = Files.createDirectory(root.resolve("idle"));
+            Files.writeString(idleRoot.resolve("Idle.java"), "class Idle {}\n");
+            String idleProject = PROJECT_ID + "-busy-idle";
+            service.submitIndexJob(idleRoot, idleProject, null, null, false);
+            awaitTrue(() -> service.isWatching(idleProject), 15_000, "idle fixture watcher");
+            block.set(true);
+            for (int i = 0; i < 2; i++) {
+                Path busyRoot = Files.createDirectory(root.resolve("busy" + i));
+                Files.writeString(busyRoot.resolve("Busy.java"), "class Busy {}\n");
+                service.submitIndexJob(busyRoot, PROJECT_ID + "-busy-worker-" + i, null, null, false);
+            }
+            assertTrue(busy.await(10, TimeUnit.SECONDS), "both index workers must be occupied");
+            awaitTrue(() -> !service.isWatching(idleProject), 6_000,
+                    "independent retirement timer while both index workers are blocked");
+        } finally {
+            release.countDown();
+            BackgroundIndexService.resetForTests();
+            System.clearProperty("KOMPILE_CODE_INDEX_IDLE_SECONDS");
+            System.setProperty("KOMPILE_CODE_INDEX_WATCH", "false");
+            deleteRecursively(LocalCodeIndexer.getIndexDir(PROJECT_ID + "-busy-idle"));
+            for (int i = 0; i < 2; i++) deleteRecursively(LocalCodeIndexer.getIndexDir(PROJECT_ID + "-busy-worker-" + i));
+            deleteRecursively(root);
+        }
+    }
+
     private static PrintStream silentStream() {
         return new PrintStream(OutputStream.nullOutputStream());
     }

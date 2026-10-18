@@ -8,5 +8,15 @@
     "verifiedAt": "2026-08-20",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
   },
+  "fastMode": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://ai.google.dev/gemini-api/docs/openai#flex_and_priority_inference",
+      "verifiedAt": "2026-10-14",
+      "notice": "Requests Gemini Priority inference through its OpenAI-compatible endpoint at a premium price. Model support, rate limits and possible downgrade to standard processing are provider-owned."
+    },
+    "onRequest": {"service_tier": "priority"},
+    "offRequest": {"service_tier": "standard"}
+  },
   "profiles": []
 }

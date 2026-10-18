@@ -64,6 +64,7 @@ class ChatCompleterTest {
         assertTrue(values.contains("/activity"), "missing /activity");
         assertTrue(values.contains("/render"), "missing /render");
         assertTrue(values.contains("/title"), "missing /title");
+        assertTrue(values.contains("/diffs"), "missing /diffs");
         assertTrue(values.contains("/dashboard"), "missing /dashboard");
         assertTrue(values.contains("/image"), "missing /image");
         assertTrue(values.contains("/reset"), "missing /reset");
@@ -101,6 +102,21 @@ class ChatCompleterTest {
     void dashboardCompletesDeterministicControls() {
         Set<String> values = candidateValues(complete("/dashboard "));
         assertEquals(Set.of("refresh", "show", "hide", "status"), values);
+    }
+
+    @Test
+    void dashboardReportNamesAndActualTopicSelectorsAreCompletable() {
+        Set<String> names = candidateValues(complete("/dashboard-"));
+        for (String topic : DashboardCommands.TOPICS) assertTrue(names.contains("/dashboard-" + topic));
+        Set<String> tools = candidateValues(complete("/dashboard-tools "));
+        assertTrue(tools.containsAll(Set.of("session:", "tool:", "call:", "offset:", "last 2 hours")));
+        Set<String> timeline = candidateValues(complete("/dashboard-timeline "));
+        assertTrue(timeline.containsAll(Set.of("session:", "run:", "next", "inspect:", "follow", "stop")));
+        assertFalse(timeline.contains("offset:"), "timeline uses its own cursor, never tool-row offsets");
+        assertEquals(timeline, candidateValues(complete("/timeline ")));
+        assertTrue(candidateValues(complete("/ti")).contains("/timeline"));
+        assertTrue(ChatCommandCatalog.isBuiltin("timeline"));
+        assertTrue(ChatCommandCatalog.isBuiltin("dashboard-timeline"));
     }
 
     // ========================================================================

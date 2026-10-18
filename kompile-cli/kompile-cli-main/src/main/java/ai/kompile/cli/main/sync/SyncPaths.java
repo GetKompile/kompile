@@ -78,8 +78,8 @@ final class SyncPaths {
     }
 
     void validateComponents(List<String> components) {
-        if (SyncScope.PROJECT.equals(scope) && SyncCatalog.includesHarness(components)) {
-            throw new IllegalArgumentException("Harness settings and credentials require --scope global; they are never copied into projects.");
+        if (SyncScope.PROJECT.equals(scope) && SyncCatalog.includesSensitive(components)) {
+            throw new IllegalArgumentException("Harness and CLI state require --scope global; they are never copied into projects.");
         }
     }
 
@@ -111,7 +111,19 @@ final class SyncPaths {
         return paths;
     }
 
+    static boolean allowedCliPath(String component, String path) {
+        return switch (component) {
+            case SyncCatalog.CLI_SETTINGS -> List.of("chat-config.json", "harness-config.json", "judge-defaults.json").contains(path);
+            case SyncCatalog.CREDENTIALS -> "auth.json".equals(path);
+            case SyncCatalog.TRANSCRIPTS -> path.matches("[A-Za-z0-9][A-Za-z0-9._-]*\\.txt");
+            case SyncCatalog.JUDGE_RECORDS -> path.matches("[A-Za-z0-9][A-Za-z0-9._-]*/judgements\\.jsonl");
+            default -> true;
+        };
+    }
+
     Path resolve(SyncEntry entry) throws IOException {
+        validateComponents(List.of(entry.component()));
+        if (!allowedCliPath(entry.component(), entry.relativePath())) throw new IOException("CLI path is not allowlisted: " + entry.packagePath());
         Path target;
         if (SyncCatalog.isHarness(entry.component())) {
             target = harnessFiles(entry.component()).get(entry.relativePath());
@@ -137,12 +149,20 @@ final class SyncPaths {
 
     byte[] read(SyncEntry entry) throws IOException {
         Path target = resolve(entry);
-        if (!SyncCatalog.isHarness(entry.component())) return Files.readAllBytes(target);
+        if (!SyncCatalog.isSensitive(entry.component())) {
+            try (var in = Files.newInputStream(target, LinkOption.NOFOLLOW_LINKS)) { return boundedBytes(in); }
+        }
         try (var parent = secureParent(target);
              var channel = parent.newByteChannel(target.getFileName(),
                      java.util.Set.of(java.nio.file.StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
-            return java.nio.channels.Channels.newInputStream(channel).readAllBytes();
+            return boundedBytes(java.nio.channels.Channels.newInputStream(channel));
         }
+    }
+
+    private static byte[] boundedBytes(java.io.InputStream in) throws IOException {
+        byte[] bytes = in.readNBytes(16 * 1024 * 1024 + 1);
+        if (bytes.length > 16 * 1024 * 1024) throw new IOException("Sync file exceeds the 16MiB transfer limit; archive or split it first.");
+        return bytes;
     }
 
     /** Traverse from the filesystem root using anchored, no-follow directory handles. */
@@ -171,7 +191,7 @@ final class SyncPaths {
     void checkUnchanged(SyncEntry entry, String expected) throws IOException {
         Path path = resolve(entry);
         String actual;
-        if (SyncCatalog.isHarness(entry.component())) {
+        if (SyncCatalog.isSensitive(entry.component())) {
             try { actual = SyncSession.sha256(read(entry)); }
             catch (java.nio.file.NoSuchFileException missing) { actual = null; }
         } else {
@@ -184,7 +204,7 @@ final class SyncPaths {
 
     void write(SyncEntry entry, byte[] bytes) throws IOException {
         Path target = resolve(entry);
-        boolean sensitive = SyncCatalog.isHarness(entry.component());
+        boolean sensitive = SyncCatalog.isSensitive(entry.component());
         createParents(target.getParent(), sensitive);
         rejectLinks(target);
         if (sensitive) {
@@ -244,7 +264,7 @@ final class SyncPaths {
 
     void delete(SyncEntry entry) throws IOException {
         Path target = resolve(entry);
-        if (!SyncCatalog.isHarness(entry.component())) {
+        if (!SyncCatalog.isSensitive(entry.component())) {
             Files.deleteIfExists(target);
             return;
         }

@@ -19,6 +19,8 @@ package ai.kompile.app.web.controllers;
 import ai.kompile.app.services.agent.AgentChatService;
 import ai.kompile.app.services.agent.AgentRegistryService;
 import ai.kompile.app.services.agent.ChatHarnessClient;
+import ai.kompile.app.services.agent.ProductChatSessionService;
+import ai.kompile.app.web.security.ProductChatHttpFilter;
 import ai.kompile.app.services.agent.ChatContextBudgetService;
 import ai.kompile.app.services.agent.ChatHistoryCompactor;
 import ai.kompile.app.services.agent.ProvisionedAgentRuntime;
@@ -69,6 +71,15 @@ public class AgentChatController {
     private final AgentRegistryService agentRegistryService;
     private final IntegrationControlCredentials integrationCredentials;
     private final ChatHarnessClient harnessClient;
+    private ProductChatSessionService productService;
+
+    /** Optional only for compatibility with explicit non-Spring controller construction. */
+    @Autowired
+    public void setProductChatSessionService(ProductChatSessionService productService) {
+        this.productService = productService;
+    }
+
+    private boolean productMode() { return productService != null && productService.enabled(); }
 
     public AgentChatController(AgentChatService chatService, AgentRegistryService agentRegistryService) {
         this(chatService, agentRegistryService, null, null);
@@ -109,6 +120,14 @@ public class AgentChatController {
     public SseEmitter streamChat(
             @RequestBody AgentChatRequest request,
             HttpServletRequest servletRequest) {
+        if (productMode()) {
+            // The legacy DTO defaults skipPermissions=true. The product filter already refused
+            // explicit bypass knobs; normalize that absent DTO default only after strict raw validation.
+            if (servletRequest != null && Boolean.TRUE.equals(
+                    servletRequest.getAttribute(ProductChatHttpFilter.VALIDATED_TURN_ATTRIBUTE)))
+                request.setSkipPermissions(false);
+            return productService.stream(request);
+        }
         requireProvisionedAccess(request, servletRequest);
         log.info("Received chat request for agent: {}, RAG enabled: {}, timeout: {}s, message length: {}",
                 sanitizeForLog(request.getAgentName()),
@@ -222,6 +241,7 @@ public class AgentChatController {
     public ResponseEntity<Map<String, Object>> cancelChat(
             @PathVariable String processId,
             HttpServletRequest servletRequest) {
+        if (productMode()) return ResponseEntity.ok(productService.cancel(processId));
         log.info("Cancelling chat process: {}", sanitizeForLog(processId));
 
         boolean harnessProcess = harnessClient != null && processId.startsWith("harness-");
@@ -234,9 +254,19 @@ public class AgentChatController {
         ));
     }
 
+    @GetMapping("/active-run")
+    public Map<String, Object> activeRun(@RequestParam String sessionId,
+                                          @RequestParam(required = false) String workingDirectory) {
+        if (productMode()) return productService.activeRun(sessionId, workingDirectory);
+        if (harnessClient == null) return Map.of();
+        try { return harnessClient.activeRun(sessionId, workingDirectory); }
+        catch (IllegalArgumentException invalid) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage()); }
+    }
+
     @GetMapping(value = "/events/{processId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter reconnectChat(@PathVariable String processId,
                                    @RequestParam(defaultValue = "0") long after) {
+        if (productMode()) return productService.reconnect(processId, after);
         if (harnessClient == null || !processId.startsWith("harness-"))
             throw new ResponseStatusException(HttpStatus.GONE, "Run replay unavailable");
         SseEmitter emitter = new SseEmitter(MAX_HARNESS_SSE_TIMEOUT);
@@ -250,6 +280,11 @@ public class AgentChatController {
     @PostMapping("/control/{processId}")
     public ResponseEntity<Map<String, Object>> controlChat(
             @PathVariable String processId, @RequestBody JsonNode frame) {
+        if (productMode()) {
+            Map<String, Object> result = productService.control(processId, frame);
+            return ResponseEntity.status(Boolean.TRUE.equals(result.get("accepted"))
+                    ? HttpStatus.ACCEPTED : HttpStatus.CONFLICT).body(result);
+        }
         if (harnessClient == null || !processId.startsWith("harness-"))
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("accepted", false, "message", "Unknown harness run"));
         try {
@@ -266,6 +301,7 @@ public class AgentChatController {
      */
     @GetMapping("/health")
     public ResponseEntity<Map<String, Object>> health() {
+        if (productMode()) return ResponseEntity.ok(Map.of("status", "ok", "service", "product-chat", "engine", "kompile-cli-main"));
         return ResponseEntity.ok(Map.of(
                 "status", "ok",
                 "service", "agent-chat",

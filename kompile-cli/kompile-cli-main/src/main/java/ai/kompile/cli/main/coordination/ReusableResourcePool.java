@@ -134,6 +134,15 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
         this.reaper.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
 
+    /** Read-only inventory: does not acquire a lease or extend an idle deadline. */
+    public List<R> resourcesSnapshot() {
+        synchronized (lock) {
+            return entries.values().stream()
+                    .filter(entry -> !entry.starting && !entry.closing && !entry.removed && entry.resource != null)
+                    .map(entry -> entry.resource).toList();
+        }
+    }
+
     /**
      * Acquire a compatible resource.
      *

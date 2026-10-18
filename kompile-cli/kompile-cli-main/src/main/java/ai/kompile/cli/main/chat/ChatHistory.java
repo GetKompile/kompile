@@ -89,6 +89,7 @@ public class ChatHistory {
     private Path pendingWorkingDirectory;
     private boolean writeFailureReported;
     private final List<String> harvestedSourceIds = new ArrayList<>();
+    private ClaudeTranscriptLink claudeTranscriptLink;
 
     public ChatHistory(String sessionId) {
         this.sessionId = sessionId;
@@ -211,6 +212,26 @@ public class ChatHistory {
         }
     }
 
+    /** Display metadata shares the existing assistant record and writer lock, never model history. */
+    public synchronized void logProductAgentResponse(String agentName, String fullResponse, long durationMs,
+            String productTurnId, List<ai.kompile.cli.common.chat.sources.ProductDisplayTurn.ToolPresentation> presentations) {
+        ensureWriter();
+        if (writer == null) return;
+        // Validate before writing any metadata. A display failure cannot fail or resubmit a tool action.
+        com.fasterxml.jackson.databind.node.ObjectNode display = null;
+        try {
+            display = ai.kompile.cli.common.chat.sources.ProductDisplayTurn.metadata(sessionId, productTurnId, presentations);
+        } catch (RuntimeException ignored) { /* Text transcript remains available. */ }
+        writer.println("[agent:" + agentName + "]");
+        if (display != null) writer.println(KompileTranscriptFormat.PRODUCT_DISPLAY_PREFIX + display);
+        KompileTranscriptFormat.writeTurn(writer, "assistant", fullResponse);
+        if (durationMs > 0) writer.printf("  [completed in %dms]%n%n", durationMs);
+        if (writer.checkError() && !writeFailureReported) {
+            System.err.println("Warning: Product display transcript unavailable; do not resubmit completed actions.");
+            writeFailureReported = true;
+        }
+    }
+
     /**
      * Logs a system event (slash commands, config changes, etc.).
      */
@@ -305,11 +326,18 @@ public class ChatHistory {
      */
     public synchronized void logHarvestedSource(String externalSessionId) {
         if (externalSessionId == null || externalSessionId.isEmpty()) return;
-        if (harvestedSourceIds.contains(externalSessionId)) return;
+        if (harvestedSourceIds.contains(externalSessionId)) {
+            if (claudeTranscriptLink != null) claudeTranscriptLink.publish(externalSessionId);
+            return;
+        }
         harvestedSourceIds.add(externalSessionId);
         ensureWriter();
         if (writer != null) {
             writer.println("[harvested:" + externalSessionId + "]");
+        }
+        if (pendingAgentName != null && pendingAgentName.toLowerCase(Locale.ROOT).contains("claude")) {
+            if (claudeTranscriptLink == null) claudeTranscriptLink = new ClaudeTranscriptLink(sessionId);
+            claudeTranscriptLink.publish(externalSessionId);
         }
     }
 
@@ -519,13 +547,38 @@ public class ChatHistory {
             return;
         }
         String marker = "[harvested:" + nativeSessionId + "]";
-        String existing = Files.readString(file, StandardCharsets.UTF_8);
-        if (existing.lines().anyMatch(marker::equals)) {
-            return;
+        // Deduplicate only the latest association: A -> B -> A must append A again.
+        // Stream the scan so a large transcript need not be materialized in memory.
+        String latestMarker = null;
+        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("[harvested:") && line.endsWith("]")) latestMarker = line;
+            }
         }
-        String prefix = existing.endsWith("\n") ? "" : "\n";
-        Files.writeString(file, prefix + marker + "\n", StandardCharsets.UTF_8,
+        if (marker.equals(latestMarker)) return;
+        Files.writeString(file, "\n" + marker + "\n", StandardCharsets.UTF_8,
                 StandardOpenOption.APPEND);
+    }
+
+    /**
+     * Appends harness metadata to an existing transcript without opening/resuming a
+     * chat or creating an orphan transcript. Safe for command completion in an MCP
+     * process that does not own the chat's ChatHistory instance. Like logSystem,
+     * this is transcript metadata, not a user/assistant turn or model input.
+     */
+    public static synchronized void recordSystemEvent(String sessionId, String event) throws IOException {
+        if (sessionId == null || sessionId.isBlank() || event == null || event.isBlank()) return;
+        if (!sessionId.matches("[A-Za-z0-9_-][A-Za-z0-9._-]*")) {
+            throw new IOException("Invalid transcript session id");
+        }
+        Path root = KompileHome.homeDirectory().toPath().resolve("conversations").toAbsolutePath().normalize();
+        Path file = ai.kompile.cli.main.chat.activity.ActivitySourceRef.resolve(
+                root.resolve(sessionId + ".txt").toString(), root);
+        if (!Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+        String line = event.replaceAll("\\R|\\p{Cntrl}", " ");
+        Files.writeString(file, "\n[system] " + line + "\n\n", StandardCharsets.UTF_8,
+                StandardOpenOption.APPEND, java.nio.file.LinkOption.NOFOLLOW_LINKS);
     }
 
     /**

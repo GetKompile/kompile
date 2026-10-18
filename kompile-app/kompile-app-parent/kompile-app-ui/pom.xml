@@ -50,6 +50,8 @@
         <maven.install.skip>false</maven.install.skip>
         <frontend.dir>${project.basedir}/src/main/frontend</frontend.dir>
         <spa.stage.dir>${project.build.directory}/spa</spa.stage.dir>
+        <!-- Explicitly preserve freshly prebuilt bundles when npm is skipped. -->
+        <ui.reuse.bundles>false</ui.reuse.bundles>
         <!--
             Given a value so ${skipTests} resolves to something in the karma execution's <skip>.
             Left undefined it would interpolate to the literal string, which is never "true", so the
@@ -164,15 +166,41 @@
                                 <phase>initialize</phase>
                                 <goals><goal>run</goal></goals>
                                 <configuration>
+                                    <skip>${ui.reuse.bundles}</skip>
                                     <target>
                                         <delete dir="${frontend.dir}/.angular/cache" quiet="true"/>
                                         <delete dir="${frontend.dir}/dist" quiet="true"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>reset-spa-stage</id>
+                                <phase>initialize</phase>
+                                <goals><goal>run</goal></goals>
+                                <configuration>
+                                    <target>
                                         <!--
                                             Bundle names are content-hashed and copy-resources only adds
                                             files, so a surviving stage dir packs every earlier build's
                                             main-*.js into the SPA jars alongside the live one.
                                         -->
                                         <delete dir="${spa.stage.dir}" quiet="true"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>require-spa-bundles</id>
+                                <phase>prepare-package</phase>
+                                <goals><goal>run</goal></goals>
+                                <configuration>
+                                    <target>
+                                        <fail message="Browser bundle missing for an attached Chat/Crawl/Admin classifier. Build all first; use -Dui.reuse.bundles=true only to preserve prebuilt bundles when npm is skipped.">
+                                            <condition><not><and>
+                                                <available file="${frontend.dir}/dist/chat-app/browser/index.html"/>
+                                                <available file="${frontend.dir}/dist/crawl-app/browser/index.html"/>
+                                                <available file="${frontend.dir}/dist/admin-app/browser/index.html"/>
+                                            </and></not></condition>
+                                        </fail>
                                     </target>
                                 </configuration>
                             </execution>

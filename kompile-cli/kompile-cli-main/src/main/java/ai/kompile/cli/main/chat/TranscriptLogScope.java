@@ -7,10 +7,15 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.logs.LogPaths;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.CodingErrorAction;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.util.function.Consumer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
@@ -64,6 +69,73 @@ public final class TranscriptLogScope implements AutoCloseable {
     private static PrintStream dispatchErr;
     private static int activeStates;
     private static String legacyProperty;
+    private static final Deque<Runnable> NOTICE_DELIVERIES = new ArrayDeque<>();
+    private static final ThreadLocal<Boolean> DELIVERING_NOTICE = new ThreadLocal<>();
+    private static boolean drainingNotices; // guarded by LOCK
+
+    /**
+     * Redirect only the terminal echo of this chat's stderr to a transient notice.
+     * Full bytes still reach cli.log. No prefix classification and no process-wide
+     * stream replacement: captured stderr handles, nested chats and /clear keep
+     * their existing transcript ownership. A multi-session host can register its
+     * unbound echo while retaining the dispatcher. Without a registration,
+     * headless stderr retains its ordinary terminal behavior.
+     */
+    public static Runnable installTerminalNoticeSink(Consumer<String> sink) {
+        if (sink == null) return () -> { };
+        synchronized (LOCK) {
+            Binding bound = BOUND.get();
+            State owner = bound != null && bound.owner != null
+                    ? (bound.owner.closed ? null : bound.owner.state) : STACK.peek();
+            // A multi-session host retains the dispatcher before opening its
+            // isolated scopes. Its registration owns only unbound diagnostics;
+            // bound (including closed) owners must never borrow this host route.
+            NoticeEcho echo = owner != null ? owner.noticeEcho
+                    : bound == null && dispatcher != null ? dispatcher.noticeEcho : null;
+            if (echo == null) return () -> { };
+            NoticeRegistration registration = new NoticeRegistration(sink);
+            echo.registrations.addLast(registration);
+            return () -> {
+                synchronized (LOCK) {
+                    registration.active = false;
+                    echo.registrations.remove(registration);
+                    echo.discardPartial(registration);
+                }
+            };
+        }
+    }
+
+    // Drain outside the file/dispatch lock. A notice callback may redraw, log,
+    // close its scope, or wait for a different thread to write a diagnostic.
+    private static void drainDiagnostics() {
+        SessionOutputRouter.drainPending();
+        if (Thread.holdsLock(LOCK) || Boolean.TRUE.equals(DELIVERING_NOTICE.get())) return;
+        synchronized (LOCK) {
+            if (drainingNotices) return;
+            drainingNotices = true;
+        }
+        try {
+            while (true) {
+                Runnable delivery;
+                synchronized (LOCK) {
+                    delivery = NOTICE_DELIVERIES.pollFirst();
+                    if (delivery == null) {
+                        drainingNotices = false;
+                        return;
+                    }
+                }
+                DELIVERING_NOTICE.set(true);
+                try { delivery.run(); }
+                catch (RuntimeException ignored) {
+                    // The diagnostic is already on disk. A closing UI must not
+                    // leak it into the input area or break its emitting worker.
+                } finally { DELIVERING_NOTICE.remove(); }
+            }
+        } catch (Error failure) {
+            synchronized (LOCK) { drainingNotices = false; }
+            throw failure;
+        }
+    }
 
     private final State state;
     private boolean closed;
@@ -276,7 +348,7 @@ public final class TranscriptLogScope implements AutoCloseable {
                 }
             }
         } finally {
-            SessionOutputRouter.drainPending();
+            drainDiagnostics();
         }
     }
 
@@ -323,7 +395,7 @@ public final class TranscriptLogScope implements AutoCloseable {
                 releaseDispatcher(false);
             }
         } finally {
-            SessionOutputRouter.drainPending();
+            drainDiagnostics();
         }
     }
 
@@ -342,6 +414,7 @@ public final class TranscriptLogScope implements AutoCloseable {
         private final PrintStream rootErr;
         private final boolean isolated;
         private final boolean explicitEcho;
+        private final NoticeEcho noticeEcho;
         private PrintStream scopedErr;
         private PrintStream displacedErr;
         private Path logFile;
@@ -351,6 +424,7 @@ public final class TranscriptLogScope implements AutoCloseable {
 
         private State(PrintStream rootErr, boolean isolated, boolean explicitEcho) {
             this.rootErr = rootErr;
+            this.noticeEcho = new NoticeEcho(rootErr);
             this.isolated = isolated;
             this.explicitEcho = explicitEcho;
         }
@@ -366,7 +440,7 @@ public final class TranscriptLogScope implements AutoCloseable {
                 OutputStream nextFile = Files.newOutputStream(nextLog,
                         StandardOpenOption.CREATE, StandardOpenOption.APPEND);
                 nextErr = new PrintStream(
-                        new TeeOutputStream(rootErr, nextFile), true, StandardCharsets.UTF_8);
+                        new TeeOutputStream(noticeEcho, nextFile), true, StandardCharsets.UTF_8);
             } catch (IOException | RuntimeException failure) {
                 nextLease.release();
                 throw failure;
@@ -392,6 +466,9 @@ public final class TranscriptLogScope implements AutoCloseable {
             PrintStream currentErr = scopedErr;
             scopedErr = null;
             closeSink(currentLog, currentId, currentErr, event);
+            noticeEcho.registrations.forEach(registration -> registration.active = false);
+            noticeEcho.registrations.clear();
+            noticeEcho.pending.reset();
             if (writerLease != null) {
                 writerLease.release();
                 writerLease = null;
@@ -482,18 +559,67 @@ public final class TranscriptLogScope implements AutoCloseable {
      */
     private static final class DispatchPrintStream extends PrintStream {
         private final PrintStream terminal;
+        private final DispatchOutputStream route;
 
         private DispatchPrintStream(DispatchOutputStream output, PrintStream terminal) {
-            super(output, true, StandardCharsets.UTF_8);
+            super(OutputStream.nullOutputStream(), false, StandardCharsets.UTF_8);
+            this.route = output;
             this.terminal = terminal;
+        }
+
+        // PrintStream's monitor must not span UI callbacks. The dispatch LOCK
+        // already orders writes; a sink may wait for a different stderr writer.
+        @Override public void write(int value) { route.write(value); }
+        @Override public void write(byte[] bytes, int offset, int length) { route.write(bytes, offset, length); }
+        @Override public void write(byte[] bytes) { write(bytes, 0, bytes.length); }
+        @Override public void writeBytes(byte[] bytes) { write(bytes); }
+        @Override public void flush() { route.flush(); }
+        @Override public void close() { flush(); }
+        @Override public void print(String value) { write(String.valueOf(value).getBytes(StandardCharsets.UTF_8)); }
+        @Override public void print(boolean value) { print(String.valueOf(value)); }
+        @Override public void print(char value) { print(String.valueOf(value)); }
+        @Override public void print(int value) { print(String.valueOf(value)); }
+        @Override public void print(long value) { print(String.valueOf(value)); }
+        @Override public void print(float value) { print(String.valueOf(value)); }
+        @Override public void print(double value) { print(String.valueOf(value)); }
+        @Override public void print(char[] value) { print(new String(value)); }
+        @Override public void print(Object value) { print(String.valueOf(value)); }
+        @Override public void println() { print(System.lineSeparator()); }
+        @Override public void println(String value) { print(String.valueOf(value) + System.lineSeparator()); }
+        @Override public void println(boolean value) { println(String.valueOf(value)); }
+        @Override public void println(char value) { println(String.valueOf(value)); }
+        @Override public void println(int value) { println(String.valueOf(value)); }
+        @Override public void println(long value) { println(String.valueOf(value)); }
+        @Override public void println(float value) { println(String.valueOf(value)); }
+        @Override public void println(double value) { println(String.valueOf(value)); }
+        @Override public void println(char[] value) { println(new String(value)); }
+        @Override public void println(Object value) { println(String.valueOf(value)); }
+        @Override public PrintStream append(CharSequence value) { print(String.valueOf(value)); return this; }
+        @Override public PrintStream append(CharSequence value, int start, int end) {
+            print((value == null ? "null" : value).subSequence(start, end).toString()); return this;
+        }
+        @Override public PrintStream append(char value) { print(value); return this; }
+        @Override public PrintStream format(String format, Object... args) {
+            print(String.format(format, args)); return this;
+        }
+        @Override public PrintStream format(java.util.Locale locale, String format, Object... args) {
+            print(String.format(locale, format, args)); return this;
+        }
+        @Override public PrintStream printf(String format, Object... args) { return format(format, args); }
+        @Override public PrintStream printf(java.util.Locale locale, String format, Object... args) {
+            return format(locale, format, args);
         }
     }
 
     private static final class DispatchOutputStream extends OutputStream {
         private final PrintStream terminal;
+        private final NoticeEcho noticeEcho;
+        private final PrintStream unboundEcho;
 
         private DispatchOutputStream(PrintStream terminal) {
             this.terminal = terminal;
+            this.noticeEcho = new NoticeEcho(terminal);
+            this.unboundEcho = new PrintStream(noticeEcho, true, StandardCharsets.UTF_8);
         }
 
         private PrintStream target() {
@@ -508,28 +634,106 @@ public final class TranscriptLogScope implements AutoCloseable {
                 return bound.owner.closed ? terminal : bound.owner.state.scopedErr;
             }
             State top = STACK.peek();
-            return top == null ? terminal : top.scopedErr;
+            return top == null ? unboundEcho : top.scopedErr;
         }
 
         @Override
         public void write(int value) {
             try {
                 synchronized (LOCK) { target().write(value); }
-            } finally { SessionOutputRouter.drainPending(); }
+            } finally { drainDiagnostics(); }
         }
 
         @Override
         public void write(byte[] bytes, int offset, int length) {
             try {
                 synchronized (LOCK) { target().write(bytes, offset, length); }
-            } finally { SessionOutputRouter.drainPending(); }
+            } finally { drainDiagnostics(); }
         }
 
         @Override
         public void flush() {
             try {
                 synchronized (LOCK) { target().flush(); }
-            } finally { SessionOutputRouter.drainPending(); }
+            } finally { drainDiagnostics(); }
+        }
+    }
+
+    private static final class NoticeRegistration {
+        private final Consumer<String> sink;
+        private volatile boolean active = true;
+        private NoticeRegistration(Consumer<String> sink) { this.sink = sink; }
+    }
+
+    /** Buffered terminal copy only; all access is under the transcript LOCK. */
+    private static final class NoticeEcho extends OutputStream {
+        private static final int MAX_FRAGMENT_BYTES = 8192;
+        private final PrintStream fallback;
+        private final Deque<NoticeRegistration> registrations = new ArrayDeque<>();
+        private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
+        private NoticeRegistration partialOwner;
+
+        private NoticeEcho(PrintStream fallback) { this.fallback = fallback; }
+
+        @Override public void write(int value) {
+            write(new byte[]{(byte) value}, 0, 1);
+        }
+
+        @Override public void write(byte[] bytes, int offset, int length) {
+            NoticeRegistration target = registrations.peekLast();
+            if (target == null) {
+                fallback.write(bytes, offset, length);
+                return;
+            }
+            // Logging from inside a UI sink still reaches the file, not this
+            // echo: otherwise a failing/redrawing sink could notify itself forever.
+            if (Boolean.TRUE.equals(DELIVERING_NOTICE.get())) return;
+            if (partialOwner != target) {
+                pending.reset();
+                partialOwner = target;
+            }
+            for (int i = offset; i < offset + length; i++) {
+                if (bytes[i] == '\n') emit(true);
+                else {
+                    pending.write(bytes[i]);
+                    if (pending.size() >= MAX_FRAGMENT_BYTES) emit(false);
+                }
+            }
+        }
+
+        @Override public void flush() {
+            if (registrations.isEmpty()) fallback.flush();
+            else emit(false);
+        }
+
+        private void discardPartial(NoticeRegistration registration) {
+            if (partialOwner == registration) {
+                pending.reset();
+                partialOwner = null;
+            }
+        }
+
+        private void emit(boolean endOfLine) {
+            if (pending.size() == 0 || partialOwner == null) return;
+            byte[] raw = pending.toByteArray();
+            ByteBuffer input = ByteBuffer.wrap(raw);
+            CharBuffer chars = CharBuffer.allocate(raw.length);
+            var decoder = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPLACE)
+                    .onUnmappableCharacter(CodingErrorAction.REPLACE);
+            decoder.decode(input, chars, endOfLine);
+            pending.reset();
+            pending.write(raw, input.position(), input.remaining());
+            chars.flip();
+            String text = chars.toString().strip();
+            if (text.isEmpty()) return;
+            NoticeRegistration destination = partialOwner;
+            // The header only retains the newest notice. Bound the transient
+            // delivery queue under a diagnostic storm; the file loses no bytes.
+            if (NOTICE_DELIVERIES.size() >= 128) NOTICE_DELIVERIES.removeFirst();
+            NOTICE_DELIVERIES.addLast(() -> {
+                if (destination.active) destination.sink.accept(text);
+            });
         }
     }
 

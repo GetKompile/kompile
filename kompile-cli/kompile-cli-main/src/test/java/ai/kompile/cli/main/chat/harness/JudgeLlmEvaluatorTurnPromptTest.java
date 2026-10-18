@@ -37,6 +37,9 @@ class JudgeLlmEvaluatorTurnPromptTest {
 
         assertFalse(verdict.isError(), verdict.getErrorDetail());
         String text = prompt.get();
+        assertTrue(text.contains("[DEFAULT TASK BOOKKEEPING]"), text);
+        assertTrue(text.contains("Keep task statuses current as work progresses"), text);
+        assertTrue(text.contains("[CURRENT SESSION TASK STATE]"), text);
         assertTrue(text.contains("Steps taken: 3\n"), text);
         assertTrue(text.contains("Tool calls: 1 (0 errors)\n"), text);
         assertTrue(text.contains("Tools used: Agent 1\n"), text);
@@ -56,6 +59,8 @@ class JudgeLlmEvaluatorTurnPromptTest {
 
         assertFalse(verdict.isError(), verdict.getErrorDetail());
         String text = prompt.get();
+        assertTrue(text.contains("Do not require a task list for simple questions or atomic actions"), text);
+        assertTrue(text.contains("Unknown/missing state or a tool-call count alone does not prove a violation"), text);
         assertTrue(text.contains("Steps taken: 1\n"), text);
         assertTrue(text.contains("Tool calls: 0 (0 errors)\n"), text);
         assertFalse(text.contains("Tools used:"), text);

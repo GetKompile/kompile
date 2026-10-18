@@ -64,6 +64,13 @@ final class ClaudeCliUsageLedger {
         return added;
     }
 
+    /** Input occupancy of this request after merging partial snapshots, not a usage delta. */
+    synchronized long requestInputTokens(RequestUsage usage) {
+        if (!usage.mainThread() || usage.sequence() <= settledThrough) return 0;
+        TokenCounts counts = requests.getOrDefault(usage.requestId(), TokenCounts.ZERO);
+        return counts.input() + counts.cacheRead() + counts.cacheCreation();
+    }
+
     /** The tokens a result adds to what the requests before it reported. */
     synchronized TokenCounts result(TurnComplete complete) {
         if (complete.sequence() <= settledThrough) return TokenCounts.ZERO;

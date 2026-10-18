@@ -39,6 +39,8 @@ public final class KompileTranscriptFormat {
 
     private static final String USER_PREFIX = "> ";
     private static final String ASSISTANT_PREFIX = "< ";
+    // Existing readers already skip [tool:...] metadata. It is not a message or a ledger.
+    public static final String PRODUCT_DISPLAY_PREFIX = "[tool:product-display] ";
 
     private KompileTranscriptFormat() {
     }
@@ -60,15 +62,27 @@ public final class KompileTranscriptFormat {
     }
 
     public static List<ChatTurn> readTurns(Path file) throws IOException {
+        // Display metadata is never restored into model content or rawContentBlocks.
+        return readProductDisplayTurns(file, null).stream()
+                .filter(turn -> turn.content() != null && !turn.content().isBlank())
+                .map(turn -> new ChatTurn(turn.role(), turn.content())).toList();
+    }
+
+    /** Uses the canonical parser; metadata is scoped to the very same assistant record. */
+    public static List<ProductDisplayTurn> readProductDisplayTurns(Path file, String sessionId) throws IOException {
         if (file == null || !Files.isRegularFile(file)) {
             return List.of();
         }
 
-        List<ChatTurn> turns = new ArrayList<>();
-        ParserState state = new ParserState();
+        List<ProductDisplayTurn> turns = new ArrayList<>();
+        ParserState state = new ParserState(sessionId);
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
+                if (line.startsWith(PRODUCT_DISPLAY_PREFIX)) {
+                    if (sessionId != null) state.displayMetadata(line.substring(PRODUCT_DISPLAY_PREFIX.length()), turns);
+                    continue;
+                }
                 if (isNonMessageLine(line)) {
                     if (line.startsWith("[agent:")) {
                         state.startRole("assistant", turns);
@@ -298,8 +312,24 @@ public final class KompileTranscriptFormat {
         private final StringBuilder content = new StringBuilder();
         private int lineCount;
         private int pendingBlankLines;
+        private final String sessionId;
+        private com.fasterxml.jackson.databind.JsonNode display;
+        private boolean displaySeen;
 
-        private void startRole(String nextRole, List<ChatTurn> turns) {
+        private ParserState(String sessionId) { this.sessionId = sessionId; }
+
+        private void displayMetadata(String json, List<ProductDisplayTurn> turns) {
+            if (!"assistant".equals(role)) return;
+            if (lineCount > 0 && pendingBlankLines > 0) {
+                flush(turns);
+                role = "assistant";
+            }
+            if (lineCount != 0 || displaySeen) { display = null; return; }
+            displaySeen = true;
+            display = ai.kompile.cli.common.chat.ToolPresentationV1.parse(json, ProductDisplayTurn.MAX_METADATA_BYTES);
+        }
+
+        private void startRole(String nextRole, List<ProductDisplayTurn> turns) {
             if (role != null && !role.equals(nextRole)) {
                 flush(turns);
             }
@@ -323,14 +353,16 @@ public final class KompileTranscriptFormat {
             lineCount++;
         }
 
-        private void flush(List<ChatTurn> turns) {
-            if (role != null && lineCount > 0 && !content.toString().isBlank()) {
-                turns.add(new ChatTurn(role, content.toString()));
+        private void flush(List<ProductDisplayTurn> turns) {
+            if (role != null && (lineCount > 0 && !content.toString().isBlank() || display != null)) {
+                turns.add(ProductDisplayTurn.project(sessionId, role, content.toString(), display));
             }
             role = null;
             content.setLength(0);
             lineCount = 0;
             pendingBlankLines = 0;
+            display = null;
+            displaySeen = false;
         }
     }
 }

@@ -23,11 +23,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Stream;
 
 public class StdioTaskTool {
 
     static final String DEFAULT_AGENT = "codex";
-    static final List<String> SUPPORTED_AGENTS = AgentLaunchDefaults.SUPPORTED_AGENTS;
+    // MCP can delegate to Kompile itself as well as explicitly selected vendor CLIs.
+    // Do not add these native identities to AgentLaunchDefaults' CLI allowlist.
+    static final List<String> SUPPORTED_AGENTS = Stream.concat(
+            AgentLaunchDefaults.SUPPORTED_AGENTS.stream(), Stream.of("kompile", "general")).toList();
 
     private final AgentRegistry agentRegistry;
     private final DirectSubagentRunnerStdio subagentRunner;
@@ -73,9 +77,10 @@ public class StdioTaskTool {
         return "Delegate one task; use multi_task for 2+ independent subtasks in one parallel batch. " +
             "Do not call task repeatedly and wait for each result when the work can run concurrently. " +
             "Use sequential task calls only when later work needs an earlier result, or shared files/resources require serialization.\n\n" +
-            "The subagent runs through the same managed terminal launcher used by interactive passthrough " +
-            "with its own context window, then returns a summary.\n\n" +
-            "Available agents: codex (default), claude, opencode, gemini, qwen, pi. Roles customize the prompt and " +
+            "Use agent=kompile (general is a native alias) to run Kompile's own agent on the project's configured " +
+            "chat provider and stored credentials, with its own context and tools. Pass model and thinking as request-scoped overrides. " +
+            "This does not use Codex CLI login. Example: {\"agent\":\"kompile\",\"model\":\"gpt-6.1-sol\",\"thinking\":\"xhigh\"}.\n\n" +
+            "External CLI agents: codex (default), claude, opencode, gemini, qwen, pi; selecting one uses that CLI's authentication, not Kompile chat credentials. Roles customize the prompt and " +
             "model defaults without disabling tools, edits, execution, or delegation.\n" +
             "In a workflow team, pass purpose (or a team role) and no agent or model: the team picks the " +
             "participant, whose CLI agent, model, and thinking the task runs on.\n" +
@@ -86,7 +91,7 @@ public class StdioTaskTool {
 
     /** Keep parallel-tool discovery visible in compact MCP tools/list responses. */
     public String compactHint() {
-        return "Delegate one task. For 2+ independent subtasks use multi_task in one parallel batch, not serial task calls. Sequence only for dependencies or shared files/resources.";
+        return "Delegate one task; 2+ independent subtasks: multi_task parallel batch, not serial task calls. agent=kompile/general: Kompile chat/auth; codex/claude/etc: CLI auth. model/thinking override.";
     }
 
     public JsonNode parameterSchema() {
@@ -102,7 +107,7 @@ public class StdioTaskTool {
         var agent = props.putObject("agent");
         agent.put("type", "string");
         agent.put("default", DEFAULT_AGENT);
-        agent.put("description", "Which agent to spawn. Available: codex (default), claude, opencode, gemini, qwen, pi.");
+        agent.put("description", "kompile (alias general): Kompile's configured chat provider/auth, not a vendor CLI. codex (default), claude, opencode, gemini, qwen, pi: external CLI/auth.");
         ArrayNode enumValues = agent.putArray("enum");
         SUPPORTED_AGENTS.forEach(enumValues::add);
         var model = props.putObject("model");
@@ -189,7 +194,7 @@ public class StdioTaskTool {
         String displayName = requestedAgent.substring(0, 1).toUpperCase(Locale.ROOT) + requestedAgent.substring(1);
         AgentConfig agentConfig = AgentConfig.builder(requestedAgent)
             .displayName(displayName)
-            .description("External " + displayName + " agent")
+            .description((KompileNativeTaskRunner.supports(requestedAgent) ? "Native " : "External ") + displayName + " agent")
             .systemPrompt(prompt).isSubagent(true).canSpawnSubagents(true)
             .roleName(roleName)
             .modelOverride(model)
@@ -212,15 +217,20 @@ public class StdioTaskTool {
                 effectiveRoleName = roleManager.getAgentRole(requestedAgent);
                 effectiveRole = effectiveRoleName == null ? null : roleManager.getRole(effectiveRoleName);
             }
-            AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(
-                    requestedAgent, workDir != null ? workDir : Path.of("."), model, thinking,
-                    effectiveRole != null ? effectiveRole.getAgentDefaultsFor(requestedAgent) : null);
-            String effectiveModel = selection.model();
-            String effectiveThinking = selection.thinking();
+            boolean nativeAgent = KompileNativeTaskRunner.supports(requestedAgent);
+            String effectiveModel = model;
+            String effectiveThinking = thinking;
+            if (!nativeAgent) {
+                AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(
+                        requestedAgent, workDir != null ? workDir : Path.of("."), model, thinking,
+                        effectiveRole != null ? effectiveRole.getAgentDefaultsFor(requestedAgent) : null);
+                effectiveModel = selection.model();
+                effectiveThinking = selection.thinking();
+            }
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("agent", requestedAgent);
             metadata.put("description", desc);
-            metadata.put("mode", "managed-terminal");
+            metadata.put("mode", nativeAgent ? "kompile-native" : "managed-terminal");
             metadata.put("role", effectiveRoleName == null ? "" : effectiveRoleName);
             metadata.put("model", effectiveModel == null ? "" : effectiveModel);
             metadata.put("thinking", effectiveThinking == null ? "" : effectiveThinking);

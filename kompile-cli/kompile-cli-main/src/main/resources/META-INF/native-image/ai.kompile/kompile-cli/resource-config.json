@@ -12,6 +12,7 @@
       {"pattern": "multilang/lanterna-ui.*\\.properties"},
       {"pattern": "ai/kompile/modelmanager/.*"},
       {"pattern": "ai/kompile/cli/main/chat/model-catalogs\\.json"},
+      {"pattern": "ai/kompile/cli/main/chat/context-metadata\\.json"},
       {"pattern": "ai/kompile/cli/main/chat/providers/.*\\.json"},
       {"pattern": "io/anserini/encoder/.*"},
       {"pattern": "org/jline/.*"},

@@ -162,7 +162,9 @@ public final class ExecJsonEvents {
                 putLong(n, "cache_read_tokens", event.metadata().get("cache_read_tokens"));
                 putLong(n, "cache_creation_tokens", event.metadata().get("cache_creation_tokens"));
             }
-            case CONTROL, ACTIVITY, TURN_STARTED, TURN_COMPLETE -> {
+            case CONTROL, ACTIVITY, TURN_STARTED, TURN_COMPLETE,
+                    SESSION_READY, SESSION_IDLE, SESSION_CLOSED, SESSION_CLEANUP, PROTOCOL_ERROR,
+                    CAPABILITY_RESULT, CONTENT_APPROVALS, CONTENT_APPROVAL, TURN_COMPLETED -> {
                 n.put("type", event.type().name().toLowerCase(java.util.Locale.ROOT));
                 n.put("session_id", event.sessionId());
                 n.set("data", event.data());

@@ -40,6 +40,7 @@ import ai.kompile.cli.main.chat.enforcer.JudgeToolPolicy;
 import ai.kompile.cli.main.chat.harness.PerformanceHarness;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
 import ai.kompile.cli.main.chat.render.CompactionProgress;
 import ai.kompile.cli.main.chat.render.CompactionProgressIndicator;
 import ai.kompile.cli.main.chat.render.CompactionService;
@@ -207,6 +208,7 @@ public class AgenticChatLoop {
     private final String agentsMdContent; // loaded AGENTS.md content
     private final ai.kompile.cli.main.chat.tools.BackgroundProcessManager processManager; // background process tracking
     private ToolResultStore toolResultStore; // persists tool outputs to disk
+    private ai.kompile.cli.main.chat.context.ReviewedContextRetirement.Plan reviewedRetirementPlan;
     private ai.kompile.cli.main.chat.ChatSessionMetrics sessionMetrics; // session metrics
     private volatile PerformanceHarness performanceHarness; // optional multi-signal agent evaluation
     private volatile ToolCallInterceptor judgeToolCallInterceptor;
@@ -242,6 +244,13 @@ public class AgenticChatLoop {
     // Heuristic history size at the moment the provider usage was reported. Growth
     // after that call (assistant/tool output and the next user turn) is projected on top.
     private volatile long lastReportedHistoryTokens = 0L;
+    // Identity of the checkpoint measured by that usage; a replacement invalidates it.
+    private volatile ConversationLedger.CompactionCheckpoint lastReportedCheckpoint;
+
+    // Size-only observations at assembly time. /status must not rebuild prompts/tools,
+    // re-project memory, count via a provider, or retain another copy of prompt contents.
+    private volatile Long diagnosticSystemChars;
+    private volatile LocalContextInventory.SchemaSize diagnosticToolSchemas;
 
     // Cancel signal - set by ChatRepl when user presses Escape
     private volatile AtomicBoolean cancelSignal;
@@ -414,6 +423,23 @@ public class AgenticChatLoop {
      */
     public void setSessionMetrics(ai.kompile.cli.main.chat.ChatSessionMetrics metrics) {
         this.sessionMetrics = metrics;
+        if (metrics != null && directLlmClient != null) {
+            refreshContextDisplayWindow(resolvedContextWindowTokens());
+        }
+    }
+
+    private String contextDisplayModelKey() {
+        return directLlmClient.getConfiguredProvider() + "/" + activeModel();
+    }
+
+    private void refreshContextDisplayWindow(int window) {
+        if (sessionMetrics == null) return;
+        ChatConfig config = directLlmClient.getChatConfig();
+        if (config == null) return; // A transport-only client need not expose local model metadata.
+        boolean provisional = config.getContextWindowTokens() <= 0
+                && directLlmClient.claudeReportedLimits(activeModelOverride()) == null
+                && contextResolver.isContextWindowProvisional(config, activeModelOverride());
+        sessionMetrics.recordContextWindow(contextDisplayModelKey(), window, provisional);
     }
 
     /**
@@ -532,6 +558,17 @@ public class AgenticChatLoop {
             return;
         }
         ChatCompleter.printAbove(line);
+    }
+
+    /** Provider messages share the transcript's identity/lifecycle, never the alert lane. */
+    private void emitProviderMessage(String classic, boolean error) {
+        String text = TerminalRenderer.printableToolOutput(classic);
+        ChatDisplayBlock block = new ChatDisplayBlock(
+                "notice:" + conversationSessionId + ":" + transcriptBlockSequence.incrementAndGet(),
+                "notice", "", text, classic,
+                List.of(new ChatDisplayBlock.Section("body", "notice", "", text, classic)),
+                error, false);
+        if (!publishForegroundBlock(block)) emitLine(classic);
     }
 
     private void setForegroundActivity(String activity) {
@@ -873,6 +910,12 @@ public class AgenticChatLoop {
         if (evaluator instanceof EnforcerJudge judge) {
             ReminderManager reminders = reminderManager;
             judge.setReminderSupplier(reminders == null ? null : reminders::enforcementConstraints);
+            judge.setWorkflowMemorySupplier(workflowController::activeMemoryConstraints);
+            judge.setTaskStateSupplier(() -> {
+                String transcript = ai.kompile.cli.main.chat.TranscriptLogScope.currentTranscriptId();
+                return ai.kompile.cli.main.chat.enforcer.JudgeBookkeeping.taskState(
+                        transcript != null ? transcript : conversationSessionId, workingDirectory);
+            });
         }
     }
 
@@ -973,7 +1016,8 @@ public class AgenticChatLoop {
             sb.append(base.strip());
         }
 
-        String projectPrompt = projectChatContext.renderSystemPrompt();
+        String projectPrompt = projectChatContext.renderSystemPrompt(
+                directLlmClient != null && directLlmClient.getChatConfig().isClaudeCliNative());
         if (!projectPrompt.isBlank()) {
             sb.append("\n\n").append(projectPrompt);
         }
@@ -1004,6 +1048,7 @@ public class AgenticChatLoop {
                     .append(" for the complete index.\n");
         }
 
+        diagnosticSystemChars = (long) sb.length();
         return sb.toString();
     }
 
@@ -1021,14 +1066,25 @@ public class AgenticChatLoop {
     }
 
     private ArrayNode toolDefinitions(AgentConfig agent, boolean progressive) {
+        ArrayNode definitions;
         if (isDirectMode()) {
-            return progressive
+            definitions = progressive
                     ? toolRegistry.buildProgressiveDirectToolDefinitions(agent)
                     : toolRegistry.buildDirectToolDefinitions(agent);
+        } else {
+            definitions = progressive
+                    ? toolRegistry.buildProgressiveToolDefinitions(agent)
+                    : toolRegistry.buildToolDefinitions(agent);
         }
-        return progressive
-                ? toolRegistry.buildProgressiveToolDefinitions(agent)
-                : toolRegistry.buildToolDefinitions(agent);
+        if (directLlmClient != null) {
+            boolean canRecover = false;
+            for (com.fasterxml.jackson.databind.JsonNode definition : definitions) {
+                if ("read".equals(definition.path("name").asText())) canRecover = true;
+            }
+            directLlmClient.setToolResultArchive(canRecover ? toolResultStore : null);
+        }
+        diagnosticToolSchemas = LocalContextInventory.schemaSize(definitions);
+        return definitions;
     }
 
     /**
@@ -1080,6 +1136,7 @@ public class AgenticChatLoop {
         if (sessionId == null || sessionId.isBlank()) return;
         if (directLlmClient != null) {
             directLlmClient.setPromptCacheSessionId(sessionId);
+            directLlmClient.setTranscriptSessionId(sessionId);
         }
         if (sessionId.equals(conversationSessionId)) return;
         conversationLedger.configureSession(sessionId);
@@ -1117,23 +1174,39 @@ public class AgenticChatLoop {
 
         ConversationLedger.Snapshot snapshot = conversationLedger.snapshot();
         ConversationLedger.CompactionCheckpoint checkpoint = snapshot.checkpoint();
-        String modelOverride = activeModelOverride();
-        String effectiveModel = modelOverride != null
-                ? modelOverride : directLlmClient.getConfiguredModel();
-        boolean restoredNative = checkpoint != null
-                && checkpoint.nativePayload() != null
-                && checkpoint.provider() != null
-                && checkpoint.provider().equalsIgnoreCase(
-                        directLlmClient.getConfiguredProvider())
-                && Objects.equals(checkpoint.model(), effectiveModel);
+        boolean restoredNative = canReplayNativeCheckpoint(checkpoint);
+        // Interruption repairs tool envelopes, not the native checkpoint's occupancy.
+        // Keep its measured baseline (and subsequent ledger growth), but never carry
+        // pre-compaction usage into a replacement checkpoint or another model.
+        boolean keepUsage = restoredNative && checkpoint == lastReportedCheckpoint;
+        long reportedInput = lastReportedInputTokens;
+        long reportedHistory = lastReportedHistoryTokens;
         if (keepClaudeProcess) {
             directLlmClient.clearHistoryForProviderSwitch();
         }
         if (restoredNative) {
             directLlmClient.replaceHistoryWithNativeCheckpoint(checkpoint.nativePayload());
         }
-        return rebuildDirectHistory(snapshot.activeEntries(),
+        int replayed = rebuildDirectHistory(snapshot.activeEntries(),
                 !restoredNative && !keepClaudeProcess, restoredNative);
+        if (keepUsage) {
+            lastReportedInputTokens = reportedInput;
+            lastReportedHistoryTokens = reportedHistory;
+            lastReportedCheckpoint = checkpoint;
+        }
+        return replayed;
+    }
+
+    private boolean canReplayNativeCheckpoint(ConversationLedger.CompactionCheckpoint checkpoint) {
+        if (directLlmClient == null || checkpoint == null) return false;
+        String modelOverride = activeModelOverride();
+        String effectiveModel = modelOverride != null
+                ? modelOverride : directLlmClient.getConfiguredModel();
+        return checkpoint.nativePayload() != null
+                && checkpoint.provider() != null
+                && checkpoint.provider().equalsIgnoreCase(directLlmClient.getConfiguredProvider())
+                && Objects.equals(checkpoint.model(), effectiveModel)
+                && directLlmClient.canReplayNativeCheckpoint(checkpoint.nativePayload(), modelOverride);
     }
 
     /**
@@ -1156,6 +1229,7 @@ public class AgenticChatLoop {
         DirectLlmClient.ResolvedRoute previousRoute =
                 directLlmClient.resolveRoute(activeModelOverride());
         applySettings.run();
+        if (sessionMetrics != null) refreshContextDisplayWindow(resolvedContextWindowTokens());
         DirectLlmClient.ResolvedRoute route = directLlmClient.resolveRoute(activeModelOverride());
         boolean keepSession = route.equals(previousRoute)
                 && route.capabilities().historyOwnership()
@@ -1269,7 +1343,7 @@ public class AgenticChatLoop {
                             || toolResult.type != CompactionService.EntryType.TOOL_RESULT) break;
                     results.add(new DirectLlmClient.ToolCallResultInput(
                             toolResult.toolCallId, toolResult.toolName,
-                            toolResult.content, false));
+                            toolResult.content, toolResult.outcome != null && toolResult.outcome.error()));
                     if (toolResult.toolCallId != null) {
                         pendingToolCalls.remove(toolResult.toolCallId);
                     }
@@ -1413,6 +1487,12 @@ public class AgenticChatLoop {
         return conversationLedger.snapshot().activeEntries().size();
     }
 
+    /** Read-only local text inventory; never a per-request or billed-token attribution. */
+    public Map<String, String> contextInventory() {
+        return LocalContextInventory.describe(conversationLedger.snapshot().activeEntries(),
+                diagnosticSystemChars, diagnosticToolSchemas, claudeCodeCompactsSession());
+    }
+
     /**
      * Whether LLM-driven compaction is available. Requires a DirectLlmClient
      * (local mode); in server mode the CLI does not hold LLM credentials.
@@ -1484,7 +1564,16 @@ public class AgenticChatLoop {
         String modelOverride = activeModelOverride();
         progressRef.phase("Checking provider compaction support");
         DirectLlmClient.NativeCompactionResult nativeResult =
-                directLlmClient.tryNativeCompact(modelOverride);
+                directLlmClient.tryNativeCompact(modelOverride, buildSystemPrompt(activeAgentConfig()),
+                        toolDefinitions(activeAgentConfig(), usesProgressiveToolLoading()),
+                        focusInstruction);
+        if (sessionMetrics != null && nativeResult.usage() != null) {
+            DirectLlmClient.StreamResult usage = nativeResult.usage();
+            sessionMetrics.recordTokenUsage(usage.inputTokens + usage.compactionInputTokens,
+                    usage.outputTokens + usage.compactionOutputTokens,
+                    usage.cacheReadTokens + usage.compactionCacheReadTokens,
+                    usage.cacheCreationTokens + usage.compactionCacheCreationTokens);
+        }
         String strategy = "generic";
         ConversationSummarizer.SummaryResult summary;
         if (nativeResult.applied()) {
@@ -1569,6 +1658,82 @@ public class AgenticChatLoop {
 
         return ForceCompactResult.ok(tokensBefore, tokensAfter, toPreserve.size(),
                 summary.getSummary());
+    }
+
+    /** Explicit user maintenance only: prepare, then apply a bound semantic review. */
+    public String reviewedCompact(String arguments) throws java.io.IOException {
+        if (directLlmClient == null || conversationSessionId == null) {
+            throw new IllegalArgumentException("Reviewed retirement requires a bound direct session.");
+        }
+        Path root = ai.kompile.cli.common.KompileHome.homeDirectory().toPath().resolve("conversations");
+        return ai.kompile.cli.common.metrics.ToolJournalFiles.sharedRetention(root,
+                () -> reviewedCompactUnderLease(arguments));
+    }
+
+    private String reviewedCompactUnderLease(String arguments) throws java.io.IOException {
+        if (directLlmClient == null || conversationSessionId == null
+                || !directLlmClient.supportsPortableToolReplay(activeModelOverride())
+                || directLlmClient.compactionCapabilities(activeModelOverride()).historyOwnership()
+                    != ai.kompile.cli.main.chat.config.ProviderCompactionCapabilities.HistoryOwnership.CLIENT) {
+            throw new IllegalArgumentException("Reviewed retirement requires client-owned structured tool replay.");
+        }
+        if (!detachedInvocations.isEmpty() || (processManager != null && processManager.listRunning().stream().anyMatch(p ->
+                p.getKind() != ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessKind.SHARED))) {
+            throw new IllegalArgumentException("Finish owned background work before retiring scopes.");
+        }
+        if (directLlmClient.hasOpaqueHistory()) {
+            throw new IllegalArgumentException("Opaque provider history cannot be replaced by portable reviewed retirement.");
+        }
+        ArrayNode definitions = toolDefinitions(activeAgentConfig(), usesProgressiveToolLoading());
+        boolean recoveryAvailable = false;
+        for (com.fasterxml.jackson.databind.JsonNode definition : definitions) {
+            if ("fetch_result".equals(definition.path("name").asText())) recoveryAvailable = true;
+        }
+        if (!recoveryAvailable) throw new IllegalArgumentException("Expose fetch_result before retiring exact context.");
+        String model = activeModel();
+        String binding = conversationSessionId + ":" + ai.kompile.cli.main.chat.context.ReviewedContextRetirement.sha256(
+                directLlmClient.getConfiguredProvider() + "\0" + model + "\0" + directLlmClient.getResolvedBaseUrl()
+                        + "\0" + definitions);
+        var snapshot = conversationLedger.snapshot();
+        var archive = exactToolArchive();
+        var current = ai.kompile.cli.main.chat.context.ReviewedContextRetirement.prepare(snapshot, binding, archive, objectMapper);
+        String request = arguments == null ? "" : arguments.strip();
+        if (request.isEmpty() || request.equals("prepare")) {
+            if (isCancelled()) throw new IllegalStateException("Retirement preparation cancelled; context unchanged.");
+            String handle = ai.kompile.cli.main.chat.context.ReviewedContextRetirement.archiveCandidate(
+                    current, archive, conversationSessionId, objectMapper);
+            reviewedRetirementPlan = current;
+            return ai.kompile.cli.main.chat.context.ReviewedContextRetirement.template(current, objectMapper)
+                    + "\nInspect the exact candidate, including full requested/effective programs: fetch_result(result_id=\"" + handle + "\").";
+        }
+        if (request.length() > 32_768 || reviewedRetirementPlan == null
+                || !current.digest().equals(reviewedRetirementPlan.digest())) {
+            throw new IllegalArgumentException("No current reviewed plan; prepare again after any context/settings change.");
+        }
+        com.fasterxml.jackson.databind.JsonNode review = objectMapper.reader()
+                .with(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(request);
+        ai.kompile.cli.main.chat.context.ReviewedContextRetirement.validateReview(current, review);
+        if (isCancelled()) throw new IllegalStateException("Retirement cancelled; context unchanged.");
+        String handle = ai.kompile.cli.main.chat.context.ReviewedContextRetirement.archivePacket(
+                current, review, archive, conversationSessionId, objectMapper);
+        String receipt = ai.kompile.cli.main.chat.context.ReviewedContextRetirement.receipt(current, review, handle);
+        int before = compactionService.estimateTokens(snapshot.activeEntries());
+        java.util.List<CompactionService.ConversationEntry> candidate = new java.util.ArrayList<>();
+        candidate.add(CompactionService.ConversationEntry.system(ConversationLedger.SUMMARY_MARKER + receipt));
+        candidate.addAll(snapshot.activeEntries().subList(current.prefixEntries(), snapshot.activeEntries().size()));
+        int after = compactionService.estimateTokens(candidate);
+        if (after >= before) throw new IllegalArgumentException("Reviewed retirement would not reduce context; unchanged.");
+        if (isCancelled()) throw new IllegalStateException("Retirement cancelled; context unchanged.");
+        if (!conversationLedger.commitCompaction(current.version(), current.coveredThrough(), receipt,
+                "reviewed-prefix-v1", directLlmClient.getConfiguredProvider(), model, before, after)) {
+            throw new IllegalStateException("Context changed or checkpoint publication failed; retirement not applied.");
+        }
+        reviewedRetirementPlan = null;
+        rebuildDirectHistoryForProviderSwitch();
+        if (sessionMetrics != null) sessionMetrics.recordCompaction(before, after);
+        resetReportedContextUsage();
+        return "Reviewed scope retired; newest exchange preserved. Exact archive: " + handle;
     }
 
     /**
@@ -1778,6 +1943,7 @@ public class AgenticChatLoop {
                     limits.maxOutputTokens(),
                     chatConfig.getCompactionReserveTokens());
             directLlmClient.setContextWindowTokens(limits.contextWindow());
+            refreshContextDisplayWindow(limits.contextWindow());
             directLlmClient.setWireMaxOutputTokens(compactionService.wireMaxOutputTokens());
             refreshNativeCompactionTrigger();
         } catch (Exception e) {
@@ -1788,9 +1954,10 @@ public class AgenticChatLoop {
     private boolean hasAutoCompactableHistory() {
         if (!compactionService.isAutoCompactEnabled()) return false;
         var entries = conversationLedger.snapshot().activeEntries();
-        return compactionService.estimateTokens(entries) > compactionService.preserveRecentTokens()
-                && ConversationBoundaryPlanner.preserveFrom(
-                        entries, compactionService, compactionService.preserveRecentTokens()) > 0;
+        if (compactionService.estimateTokens(entries) <= compactionService.preserveRecentTokens()) return false;
+        return ConversationBoundaryPlanner.preserveFrom(
+                entries, compactionService, compactionService.preserveRecentTokens()) > 0
+                || (directLlmClient != null && directLlmClient.supportsAnthropicOnDemandCompaction(activeModelOverride()));
     }
 
     private void refreshNativeCompactionTrigger() {
@@ -1866,9 +2033,7 @@ public class AgenticChatLoop {
             // Anchor growth to the raw user entry the caller appends next. The count
             // already includes its reminder-decorated wire form, system prompt and tools.
             projectedInputTokens = exact.inputTokens();
-            lastReportedInputTokens = exact.inputTokens();
-            lastReportedHistoryTokens = saturatingAdd(
-                    compactionService.estimateTokens(conversationLedger.snapshot().activeEntries()),
+            recordReportedContextUsage(exact.inputTokens(),
                     compactionService.estimateTextTokens(pendingMessage));
         }
         // On the Claude Code route the reported failure is the trigger: Claude Code
@@ -1881,8 +2046,44 @@ public class AgenticChatLoop {
         // returns a portable compaction block that is committed below with the
         // response. Do not preempt it with generic summarization.
         if (nativeCompaction == ProviderCompactionCapabilities.NativeCompaction.ANTHROPIC_MESSAGES
-                && compactionService.triggerTokens() >= 50_000) {
+                && compactionService.triggerTokens() >= 50_000
+                && !directLlmClient.supportsAnthropicOnDemandCompaction(modelOverride)
+                && directLlmClient.anthropicThresholdCompactionAvailable(modelOverride)) {
             return;
+        }
+
+        // Generic client-owned, measurable wire histories get the cheap tier first.
+        // Do not rewrite native checkpoints or provider-owned sessions: their opaque
+        // state cannot be reconstructed or measured from the portable ledger.
+        if (nativeCompaction == ProviderCompactionCapabilities.NativeCompaction.NONE
+                && directLlmClient.estimateInputTokens(pendingRequestMessage, systemPrompt,
+                        toolDefs, null, modelOverride, pendingAttachments).supported()) {
+            ConversationLedger.Snapshot pruningSnapshot = conversationLedger.snapshot();
+            int keepFrom = ConversationBoundaryPlanner.preserveFrom(
+                    pruningSnapshot.activeEntries(), compactionService,
+                    compactionService.preserveRecentTokens());
+            CompactionService.CompactionResult pruned = compactionService.pruneToolResults(
+                    pruningSnapshot.activeEntries(), keepFrom);
+            if (pruned.isCompacted() && !isCancelled()) {
+                rebuildDirectHistory(pruned.getEntries());
+                DirectLlmClient.TokenCountResult measured = pendingAttachments == null
+                        || pendingAttachments.isEmpty()
+                        ? directLlmClient.countInputTokens(pendingRequestMessage, systemPrompt,
+                                toolDefs, null, modelOverride)
+                        : DirectLlmClient.TokenCountResult.unsupported();
+                if (!measured.exact()) {
+                    measured = directLlmClient.estimateInputTokens(pendingRequestMessage, systemPrompt,
+                            toolDefs, null, modelOverride, pendingAttachments);
+                }
+                if (measured.supported()) {
+                    projectedInputTokens = measured.inputTokens();
+                    // Anchor projected occupancy to the unchanged raw ledger. Otherwise
+                    // its archived tool bodies would falsely refill the next request.
+                    recordReportedContextUsage(projectedInputTokens,
+                            compactionService.estimateTextTokens(pendingMessage));
+                    if (!compactionService.needsCompaction(projectedInputTokens)) return;
+                }
+            }
         }
 
         ConversationLedger.Snapshot snapshot = conversationLedger.snapshot();
@@ -1893,7 +2094,7 @@ public class AgenticChatLoop {
         // Fixed system instructions and tool definitions are not reducible. If
         // every prior conversation entry belongs to the newest exchange, an LLM
         // summary cannot create headroom and may actually grow a tiny history.
-        if (preserveIndex <= 0) {
+        if (preserveIndex <= 0 && !directLlmClient.supportsAnthropicOnDemandCompaction(modelOverride)) {
             return;
         }
         int tokensBefore = compactionService.estimateTokens(conversationHistory);
@@ -1978,15 +2179,25 @@ public class AgenticChatLoop {
     }
 
     private long projectedInputTokens(String pendingMessage) {
-        long estimatedHistory = compactionService.estimateTokens(
-                conversationLedger.snapshot().activeEntries());
+        ConversationLedger.Snapshot snapshot = conversationLedger.snapshot();
+        List<CompactionService.ConversationEntry> entries = snapshot.activeEntries();
         long pendingTokens = compactionService.estimateTextTokens(pendingMessage);
         if (lastReportedInputTokens <= 0L) {
+            if (canReplayNativeCheckpoint(snapshot.checkpoint()) && !entries.isEmpty()
+                    && entries.get(0).type == CompactionService.EntryType.SYSTEM
+                    && entries.get(0).content.startsWith(ConversationLedger.SUMMARY_MARKER)) {
+                // This portable digest is omitted from the native wire projection.
+                // Opaque occupancy remains unknown until a count/usage arrives; only
+                // visible growth is estimable, with overflow recovery still available.
+                entries = entries.subList(1, entries.size());
+            }
             long systemTokens = compactionService.estimateTextTokens(
                     buildSystemPrompt(activeAgentConfig()));
-            return saturatingAdd(saturatingAdd(estimatedHistory, pendingTokens), systemTokens);
+            return saturatingAdd(saturatingAdd(
+                    compactionService.estimateTokens(entries), pendingTokens), systemTokens);
         }
-        long historyGrowth = Math.max(0L, estimatedHistory - lastReportedHistoryTokens);
+        long historyGrowth = Math.max(0L,
+                compactionService.estimateTokens(entries) - lastReportedHistoryTokens);
         return saturatingAdd(saturatingAdd(lastReportedInputTokens, historyGrowth), pendingTokens);
     }
 
@@ -1995,9 +2206,10 @@ public class AgenticChatLoop {
             List<DirectLlmClient.ToolCallResultInput> toolResults, String modelOverride,
             List<DirectLlmClient.AttachmentInput> attachments) {
         if (lastReportedInputTokens > 0L || directLlmClient == null) return fallback;
-        // Cancellation repairs provider history from the ledger and invalidates
-        // its usage anchor. Both compaction decisions must then measure the wire
-        // projection, not repeated memory snapshots retained in that ledger.
+        // Without a valid usage anchor (initial restore or textual history repair),
+        // both compaction decisions must measure the wire projection, not repeated
+        // memory snapshots in the ledger. Opaque checkpoints use the visible-growth
+        // fallback above, never their portable-only digest.
         DirectLlmClient.TokenCountResult estimate = directLlmClient.estimateInputTokens(
                 message, systemPrompt, toolDefs, toolResults, modelOverride, attachments);
         return estimate.supported() ? estimate.inputTokens() : fallback;
@@ -2009,9 +2221,18 @@ public class AgenticChatLoop {
         return Long.MAX_VALUE - left < right ? Long.MAX_VALUE : left + right;
     }
 
+    private void recordReportedContextUsage(long inputTokens, long pendingHistoryTokens) {
+        ConversationLedger.Snapshot snapshot = conversationLedger.snapshot();
+        lastReportedInputTokens = inputTokens;
+        lastReportedHistoryTokens = saturatingAdd(
+                compactionService.estimateTokens(snapshot.activeEntries()), pendingHistoryTokens);
+        lastReportedCheckpoint = snapshot.checkpoint();
+    }
+
     private void resetReportedContextUsage() {
         lastReportedInputTokens = 0L;
         lastReportedHistoryTokens = 0L;
+        lastReportedCheckpoint = null;
     }
 
     /** The model-aware context budget currently in effect, in tokens. */
@@ -2548,9 +2769,17 @@ public class AgenticChatLoop {
                         + result.text.length() + " chars");
                 EnforcerDecision decision = null;
                 try {
-                    decision = inlineEnforcer.evaluate(
-                            guidance, result.text, inlineEnforcerPolicy,
-                            inlineEnforcerCorrections + 1);
+                    if (inlineEnforcer instanceof EnforcerJudge judge) {
+                        decision = judge.evaluate(guidance, result.text, inlineEnforcerPolicy,
+                                inlineEnforcerCorrections + 1, pendingToolContext(result.toolCalls));
+                    } else if (inlineEnforcer instanceof EnforcerJudge.CapturedEvaluator captured) {
+                        decision = captured.evaluate(guidance, result.text, inlineEnforcerPolicy,
+                                inlineEnforcerCorrections + 1, pendingToolContext(result.toolCalls));
+                    } else {
+                        decision = inlineEnforcer.evaluate(
+                                guidance, result.text, inlineEnforcerPolicy,
+                                inlineEnforcerCorrections + 1);
+                    }
                 } catch (Exception failure) {
                     String feedback = "Enforcer evaluation failed: " + failure.getMessage();
                     emitInlineEnforcerActivity("[turn decision] FAIL-OPEN · " + feedback);
@@ -2686,8 +2915,18 @@ public class AgenticChatLoop {
             }
 
             String queuedMessage = null;
+            boolean awaitingProductApproval = false;
             for (int toolIndex = 0; toolIndex < result.toolCalls.size(); toolIndex++) {
                 ToolCallRequest call = result.toolCalls.get(toolIndex);
+                if (awaitingProductApproval) {
+                    String rejected = "Not executed: waiting for human content approval";
+                    notifyToolDenied(call, call.arguments == null ? "" : call.arguments.toString(), rejected);
+                    publishToolDenied(call, call.arguments == null ? "" : call.arguments.toString(), rejected);
+                    toolResults.add(new ToolCallResult(call.id, call.name, rejected, true));
+                    conversationLedger.append(CompactionService.ConversationEntry.toolResult(call.name, call.id, rejected));
+                    if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
+                    continue;
+                }
                 // Check cancellation before each tool
                 if (isCancelled()) {
                     String label = stopLabel;
@@ -2726,6 +2965,7 @@ public class AgenticChatLoop {
                 if (isCancelled()) {
                     String cancelled = "Cancelled during supervisory tool review";
                     notifyToolDenied(call, rawToolInput, cancelled);
+                    publishToolDenied(call, rawToolInput, cancelled);
                     toolResults.add(new ToolCallResult(
                             call.id, call.name, cancelled, true));
                     conversationLedger.append(CompactionService.ConversationEntry.toolResult(
@@ -2748,7 +2988,7 @@ public class AgenticChatLoop {
                             + ": " + supervision.reason();
                     fireFirstOutput();
                     notifyToolDenied(call, rawToolInput, denied);
-                    emitLine(renderer.renderToolCallDenied(call.name, denied));
+                    emitToolDenied(call, rawToolInput, denied);
                     toolResults.add(new ToolCallResult(call.id, call.name, denied, true));
                     conversationLedger.append(CompactionService.ConversationEntry.toolResult(
                             call.name, call.id, denied));
@@ -2766,7 +3006,7 @@ public class AgenticChatLoop {
                         String denied = "Tool call held: " + decision.reason();
                         fireFirstOutput();
                         notifyToolDenied(call, rawToolInput, decision.reason());
-                        emitLine(renderer.renderToolCallDenied(call.name, decision.reason()));
+                        emitToolDenied(call, rawToolInput, decision.reason());
                         toolResults.add(new ToolCallResult(call.id, call.name, denied, true));
                         conversationLedger.append(CompactionService.ConversationEntry.toolResult(
                                 call.name, call.id, denied));
@@ -2847,27 +3087,28 @@ public class AgenticChatLoop {
 
                     // Keep the full result readable in insights even when the model receives a shortened payload.
                     ToolResult rawToolResult = toolResult;
+                    awaitingProductApproval |= Boolean.TRUE.equals(rawToolResult.getMetadata().get("productApprovalRequired"));
                     // Truncate large outputs
-                    OutputTruncator.TruncationResult truncResult =
-                            truncator.truncate(toolResult.getOutput(), call.name);
-                    if (truncResult.isTruncated()) {
+                    OutputTruncator.TruncationResult truncResult = toolRegistry != null && toolRegistry.isProductMode()
+                            ? truncator.truncateProduct(toolResult.getOutput(), call.name, objectMapper)
+                            : truncator.truncate(toolResult.getOutput(), call.name);
+                    if (!Objects.equals(truncResult.getOutput(), toolResult.getOutput())) {
                         toolResult = new ToolResult(toolResult.getTitle(),
                                 truncResult.getOutput(), toolResult.getMetadata(), toolResult.isError());
+                    }
+
+                    // Truncation rebuilds a plain ToolResult, which would drop the private typed MCP
+                    // presentation carrier. Re-attach it from the complete raw result so a bounded
+                    // output change cannot silently remove display provenance. Truncation note remains.
+                    if (toolResult != rawToolResult) {
+                        ObjectNode presentation = ai.kompile.cli.main.chat.mcp.McpBundleToolLoader.presentation(rawToolResult);
+                        if (presentation != null) toolResult = ai.kompile.cli.main.chat.mcp.McpBundleToolLoader.reattach(toolResult, presentation);
                     }
 
                     if (spinner != null) spinner.stop();
 
                     notifyToolComplete(call, rawToolInput, toolResult);
                     transcriptBlock.complete(toolResult);
-
-                    // Render inline todo updates after todowrite calls
-                    if ("todowrite".equals(call.name) && !toolResult.isError()) {
-                        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(
-                                toolContext.getSessionId(), toolContext.getWorkingDirectory());
-                        if (!todos.isEmpty()) {
-                            emitLine(renderer.renderTodoList(todos));
-                        }
-                    }
 
                     if ("side_panel".equals(normalizedToolName) && !toolResult.isError()) {
                         renderSidePanelUpdate(true);
@@ -2908,15 +3149,14 @@ public class AgenticChatLoop {
 
                     // Track in conversation history (include file path for compaction)
                     conversationLedger.append(CompactionService.ConversationEntry.toolResult(
-                            call.name, call.id, outputWithPath));
+                            call.name, call.id, outputWithPath, captureToolOutcome(call, rawToolResult)));
 
                 } catch (ToolExecutionException e) {
                     if (spinner != null) spinner.stop();
 
                     if (e.isPermissionDenied()) {
                         notifyToolDenied(call, rawToolInput, e.getMessage());
-                        transcriptBlock.completeRendered(
-                                renderer.renderToolCallDenied(call.name, e.getMessage()));
+                        transcriptBlock.completeDenied(e.getMessage());
                     } else {
                         ToolResult failed = ToolResult.error(e.getMessage());
                         notifyToolComplete(call, rawToolInput, failed);
@@ -2955,6 +3195,15 @@ public class AgenticChatLoop {
                             call.name, call.id, errMsg));
                     if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
                 }
+            }
+
+            if (awaitingProductApproval) {
+                String waiting = "[Waiting for human content approval]";
+                emitLine(renderer.yellow(waiting));
+                notifyAssistantDelta("\n" + waiting);
+                fullResponse.append("\n").append(waiting);
+                if (runController != null) runController.afterStep();
+                break; // Only a subsequent genuine user turn may retry the approved intent.
             }
 
             // Stop before claiming queued input: exit_plan_mode ends this owner,
@@ -3089,6 +3338,33 @@ public class AgenticChatLoop {
                         ? "\n\nThe user's last request, which these tasks served:\n"
                                 + StringUtils.truncateWithSize(lastRequest, 4_000)
                         : "");
+    }
+
+    static EnforcerConversationContext pendingToolContext(List<ToolCallRequest> calls) {
+        if (calls.isEmpty()) {
+            return EnforcerConversationContext.of(List.of(new EnforcerConversationContext.Message(
+                    "pending_tools", "No pending tool calls; final response.")));
+        }
+        List<ToolCallRequest> updates = calls.stream()
+                .filter(call -> JudgeToolPolicy.isRoutineSessionTool(call.name)
+                        && call.name.trim().toLowerCase(java.util.Locale.ROOT).endsWith("todowrite"))
+                .toList();
+        // Keep the whole context under the judge's 8K budget. Project repairs separately:
+        // a late todowrite must remain visible even when the ordinary sample is full.
+        java.util.function.Function<ToolCallRequest, String> summary = call ->
+                StringUtils.truncate(call.name, 80) + " "
+                        + StringUtils.truncateWithSize(String.valueOf(call.arguments), 250);
+        return EnforcerConversationContext.of(List.of(
+                new EnforcerConversationContext.Message("pending_tools",
+                        "Proposed calls, not yet executed: (first 10 of " + calls.size() + ")\n"
+                                + calls.stream().limit(10).map(summary)
+                                .collect(java.util.stream.Collectors.joining("\n"))),
+                new EnforcerConversationContext.Message("pending_task_updates",
+                        "Pending todowrite updates in full batch: " + updates.size()
+                                + ". Not persisted yet; allow pending repairs to execute.\n"
+                                + updates.stream().limit(10).map(summary)
+                                .collect(java.util.stream.Collectors.joining("\n"))
+                                + (updates.size() > 10 ? "\nAdditional task updates omitted from sample; do not assume no repair." : ""))));
     }
 
     private void addSupersededToolResults(
@@ -3552,6 +3828,9 @@ public class AgenticChatLoop {
             CliTool tool, JsonNode arguments, ToolContext context, String toolName,
             java.util.function.Function<ToolResult, Path> saveCompletion)
             throws ToolExecutionException {
+        if (toolRegistry != null && toolRegistry.isProductMode()) {
+            return executeProductToolAwaitingCompletion(tool, arguments, context, toolName);
+        }
         ToolContext executionContext = context.forkForToolExecution();
         // Children may retain this signal/supplier and consumer before Ctrl+B.
         // Switch their routing through stable indirections, not by replacing a
@@ -3645,6 +3924,81 @@ public class AgenticChatLoop {
     }
 
     /**
+     * Product cancellation stops model generation/admission, not an admitted tool.
+     * In particular, interrupting an MCP wait says nothing about server mutations.
+     * Never cancel this Future: join the actual worker even if the turn owner is
+     * interrupted. Transport uncertainty is separately sticky in ToolRegistry.
+     */
+    private ToolResult executeProductToolAwaitingCompletion(
+            CliTool tool, JsonNode arguments, ToolContext context, String toolName)
+            throws ToolExecutionException {
+        if (isCancelled() || context.isAborted() || Thread.currentThread().isInterrupted()) {
+            toolRegistry.stopProductAdmission();
+            throw new ToolExecutionException("Cancelled by user");
+        }
+        ToolContext executionContext = context.forkForToolExecution();
+        // Do not let a running delegate convert turn cancellation into transport
+        // interruption via an inherited cooperative abort hook either.
+        executionContext.linkAbortSignal(new AtomicBoolean(false));
+        executionContext.linkAbortCheck(() -> false);
+        executionContext.linkSelfBackgroundRequest(null);
+        AtomicReference<Consumer<String>> output = new AtomicReference<>(context.getOutputConsumer());
+        executionContext.setOutputConsumer(sessionContext.wrapConsumer(line -> {
+            Consumer<String> sink = output.get();
+            if (sink != null) sink.accept(line);
+        }));
+        FutureTask<ToolResult> execution = new FutureTask<>(
+                sessionContext.wrapCallable(() -> tool.execute(arguments, executionContext)));
+        Thread worker = new Thread(execution, "chat-product-tool-" + (toolName == null ? "unknown"
+                : toolName.replaceAll("[^A-Za-z0-9_.-]", "_")));
+        worker.setDaemon(true);
+        worker.start();
+        boolean interrupted = false;
+        boolean cancelled = false;
+        try {
+            for (;;) {
+                if (isCancelled() || context.isAborted() || interrupted) {
+                    cancelled = true;
+                    toolRegistry.stopProductAdmission();
+                    output.set(ignored -> { });
+                }
+                try {
+                    ToolResult result = execution.get(100, TimeUnit.MILLISECONDS);
+                    if (cancelled || isCancelled() || context.isAborted())
+                        throw new ToolExecutionException("Cancelled by user");
+                    return result;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                    toolRegistry.stopProductAdmission();
+                    cancelActiveTurn(); // model stream only; never the tool worker
+                } catch (TimeoutException ignored) {
+                    // Keep ownership until the real callable has settled.
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause();
+                    if (cause instanceof ToolExecutionException toolFailure) throw toolFailure;
+                    throw new ToolExecutionException(
+                            cause == null ? "Tool execution failed" : cause.getMessage(), cause);
+                }
+            }
+        } finally {
+            // Future state alone is not our lifetime proof. The thread must exit.
+            while (worker.isAlive()) {
+                try { worker.join(); }
+                catch (InterruptedException e) {
+                    interrupted = true;
+                    toolRegistry.stopProductAdmission();
+                    cancelActiveTurn();
+                }
+            }
+            // Once the delegate has exited, revoke any execution context it retained.
+            // This must not happen earlier: running tools must not turn it into an
+            // interrupt/cancellation of their remote transport.
+            executionContext.abort();
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
      * Human-readable, single-line description of any tool failure. Internal errors
      * (NoClassDefFoundError / LinkageError / NoSuchMethodError) carry raw slashed
      * class names like "ai/kompile/cli/main/chat/tools/GrepTool$LineEntry", which
@@ -3668,6 +4022,119 @@ public class AgenticChatLoop {
                 ? t.getClass().getName() : t.getMessage();
     }
 
+    /** Capture identity/raw content before formatting; renderer callbacks supply classic lines. */
+    private StreamingMarkdownRenderer presentationMarkdownRenderer() {
+        return new PresentationMarkdownRenderer(new TextTranscriptBurst("assistant"));
+    }
+
+    private final class PresentationMarkdownRenderer extends StreamingMarkdownRenderer {
+        private final TextTranscriptBurst block;
+
+        private PresentationMarkdownRenderer(TextTranscriptBurst block) {
+            super(AgenticChatLoop.this.asciiRenderer, block::rendered);
+            this.block = block;
+        }
+
+        @Override
+        public void accept(String chunk) {
+            block.appendRaw(chunk);
+            super.accept(chunk);
+            block.publish(true, pendingLinePreview());
+        }
+
+        @Override
+        public void flush() {
+            super.flush();
+            block.finish();
+        }
+
+        private void boundary() {
+            // Existing append-only/headless flush timing remains unchanged.
+            if (block.managed) flush();
+        }
+    }
+
+    /** One bounded card per burst, superseded in place rather than one card per token. */
+    private final class TextTranscriptBurst {
+        private final String kind;
+        private String key;
+        private final StringBuilder raw = new StringBuilder();
+        private final StringBuilder classic = new StringBuilder();
+        private long omittedRawChars;
+        private boolean classicTruncated;
+        private boolean managed;
+        private int renderedLines;
+
+        private TextTranscriptBurst(String kind) { this.kind = kind; }
+
+        private void appendRaw(String chunk) {
+            if (chunk == null || chunk.isEmpty()) return;
+            if (key == null) key = kind + ":" + conversationSessionId + ":"
+                    + transcriptBlockSequence.incrementAndGet();
+            String safe = TerminalRenderer.printableToolOutput(chunk);
+            int count = Math.min(safe.length(), ChatDisplayBlock.MAX_SECTION_CHARS - raw.length());
+            if (count > 0 && count < safe.length()
+                    && Character.isHighSurrogate(safe.charAt(count - 1))) count--;
+            raw.append(safe, 0, count);
+            omittedRawChars += safe.length() - count;
+        }
+
+        private void rendered(String line) {
+            if (key == null) {
+                // Renderer-only synthetic lines keep their existing append-only route.
+                emitLine(line);
+                return;
+            }
+            if (!classicTruncated) {
+                String next = (renderedLines++ == 0 ? "" : "\n") + line;
+                if (classic.length() + next.length() <= ChatDisplayBlock.MAX_SECTION_CHARS) {
+                    classic.append(next);
+                } else {
+                    // Cutting styled output inside an escape would leave the viewer styled.
+                    String safe = ChatDisplayBlock.boundedPlainText(classic + next,
+                            ChatDisplayBlock.MAX_SECTION_CHARS);
+                    classic.setLength(0);
+                    classic.append(safe);
+                    classicTruncated = true;
+                }
+            }
+            if (!publish(true)) emitLine(line);
+        }
+
+        private boolean publish(boolean running) {
+            return publish(running, "");
+        }
+
+        private boolean publish(boolean running, String pendingLine) {
+            if (key == null) return false;
+            String content = raw.toString();
+            if (omittedRawChars > 0) {
+                content = ChatDisplayBlock.boundedPlainText(content,
+                        ChatDisplayBlock.MAX_SECTION_CHARS - 100)
+                        + "\n… (" + omittedRawChars + " streamed chars omitted)";
+            }
+            // Preview is not committed to classic: the newline/flush callback will
+            // render that line once, replacing this snapshot rather than appending it.
+            String display = classic.toString();
+            if (!pendingLine.isEmpty()) display = ChatDisplayBlock.boundedStyledText(
+                    display + (renderedLines == 0 ? "" : "\n") + pendingLine, ChatDisplayBlock.MAX_SECTION_CHARS);
+            managed = publishForegroundBlock(new ChatDisplayBlock(key, kind, "", "", display,
+                    List.of(new ChatDisplayBlock.Section("body", kind, "", content, display.isEmpty() ? content : display)), false, running));
+            return managed;
+        }
+
+        private void finish() {
+            publish(false);
+            key = null;
+            raw.setLength(0);
+            classic.setLength(0);
+            omittedRawChars = 0;
+            classicTruncated = false;
+            managed = false;
+            renderedLines = 0;
+        }
+    }
+
     /** One replaceable provider-style block for a running tool and its live output. */
     private final class ToolTranscriptBlock {
         private final String key;
@@ -3683,6 +4150,9 @@ public class AgenticChatLoop {
         private boolean startPending;
         private ToolResult result;
         private String terminalHeader;
+        private String deniedReason;
+        private final StringBuilder retainedOutput = new StringBuilder();
+        private long omittedOutputChars;
 
         private ToolTranscriptBlock(String key, String toolName, String rawInput) {
             this(key, toolName, rawInput, false);
@@ -3703,7 +4173,7 @@ public class AgenticChatLoop {
                 this.backgroundMarkerPublished = true;
                 this.managed = false;
             } else {
-                this.managed = ChatCompleter.upsertTranscriptBlock(key, start);
+                this.managed = publishBlock(start);
             }
             if (!managed) {
                 if (awaitInput) startPending = true;
@@ -3712,12 +4182,12 @@ public class AgenticChatLoop {
         }
 
         private synchronized void appendOutput(String output) {
-            releasePendingStart();
-            if (routeToBackground(output)) return;
-            if (!managed) {
-                emitLine(output);
+            if (backgroundOutputConsumer.get() != null) {
+                releasePendingStart();
+                routeToBackground(output);
                 return;
             }
+            retainOutput(output);
             String rendered = renderer.renderToolOutput(output);
             for (String rawLine : rendered.split("\\R", -1)) {
                 String line = rawLine.length() <= MAX_LIVE_TOOL_LINE_CHARS
@@ -3732,7 +4202,16 @@ public class AgenticChatLoop {
                 liveOutputChars -= omitted.length();
                 omittedOutputLines++;
             }
-            scheduleManagedUpdate();
+            if (!managed) {
+                managed = publishTypedBlock(renderBlock(), true);
+                if (managed) startPending = false;
+                else {
+                    releasePendingStart();
+                    emitLine(output);
+                }
+            } else {
+                scheduleManagedUpdate();
+            }
         }
 
         private synchronized void updateInput(String input) {
@@ -3745,6 +4224,9 @@ public class AgenticChatLoop {
             // the raw arguments: the completion row carries them.
             if (managed && backgroundOutputConsumer.get() == null) {
                 scheduleManagedUpdate();
+            } else if (backgroundOutputConsumer.get() == null && publishTypedBlock(start, true)) {
+                managed = true;
+                startPending = false;
             } else {
                 releasePendingStart();
             }
@@ -3763,16 +4245,16 @@ public class AgenticChatLoop {
             if (!routeToBackground(completedBlock)) publishCompletion(completedBlock);
         }
 
-        private synchronized void completeRendered(String rendered) {
-            this.terminalHeader = rendered;
-            if (!routeToBackground(rendered)) publishCompletion(rendered);
+        private synchronized void completeDenied(String reason) {
+            this.deniedReason = reason == null ? "Tool denied" : reason;
+            this.terminalHeader = renderer.renderToolCallDenied(toolName, reason);
+            if (!routeToBackground(terminalHeader)) publishCompletion(terminalHeader);
         }
 
         private boolean routeToBackground(String output) {
             if (backgroundOutputConsumer.get() == null) return false;
             if (managed && !backgroundMarkerPublished) {
-                ChatCompleter.upsertTranscriptBlock(key,
-                        start + "\n" + renderer.dim("  ↳ continued in background"));
+                publishBlock(start + "\n" + renderer.dim("  ↳ continued in background"), false);
                 backgroundMarkerPublished = true;
                 managed = false;
             }
@@ -3790,16 +4272,61 @@ public class AgenticChatLoop {
 
         private synchronized void publishManagedUpdate() {
             updateScheduled = false;
-            if (managed) {
-                managed = ChatCompleter.upsertTranscriptBlock(key, renderBlock());
+            if (managed && backgroundOutputConsumer.get() == null) {
+                managed = publishBlock(renderBlock());
             }
         }
 
         private void publishCompletion(String appendOnlyRendering) {
             if (managed) {
-                managed = ChatCompleter.upsertTranscriptBlock(key, renderBlock());
+                managed = publishBlock(renderBlock());
+            } else {
+                managed = publishTypedBlock(renderBlock(), false);
             }
             if (!managed) emitLine(appendOnlyRendering);
+        }
+
+        private void retainOutput(String output) {
+            String plain = TerminalRenderer.printableToolOutput(output);
+            int remaining = ChatDisplayBlock.MAX_SECTION_CHARS - retainedOutput.length();
+            // Tool callbacks are transcript lines, not model token deltas.
+            if (!retainedOutput.isEmpty() && remaining > 0) {
+                retainedOutput.append('\n');
+                remaining--;
+            }
+            int count = Math.min(remaining, plain.length());
+            if (count > 0 && count < plain.length()
+                    && Character.isHighSurrogate(plain.charAt(count - 1))) count--;
+            retainedOutput.append(plain, 0, count);
+            omittedOutputChars += plain.length() - count;
+        }
+
+        private boolean publishBlock(String classic) {
+            return publishBlock(classic, result == null && terminalHeader == null);
+        }
+
+        private boolean publishBlock(String classic, boolean running) {
+            return publishTypedBlock(classic, running)
+                    || ChatCompleter.upsertTranscriptBlock(key, classic);
+        }
+
+        private boolean publishTypedBlock(String classic, boolean running) {
+            ToolResult displayResult = deniedReason == null ? result : ToolResult.error(deniedReason);
+            String live = retainedOutput.toString();
+            if (omittedOutputChars > 0) {
+                live = ChatDisplayBlock.boundedPlainText(live,
+                        ChatDisplayBlock.MAX_SECTION_CHARS - 100)
+                        + "\n… (" + omittedOutputChars + " live output chars omitted)";
+            }
+            String summary = result != null
+                    ? renderer.renderToolCallSummary(toolName, rawInput, result)
+                    : terminalHeader != null ? terminalHeader : start;
+            String kind = TerminalRenderer.isTodoTool(toolName) ? "todos" : "tool";
+            ChatDisplayBlock block = new ChatDisplayBlock(key, kind, toolName, summary, classic,
+                    renderer.renderToolDisplaySections(toolName, rawInput, displayResult, live,
+                            ChatDisplayBlock.MAX_SECTION_CHARS),
+                    displayResult != null && displayResult.isError(), running);
+            return ChatCompleter.upsertDisplayBlock(block);
         }
 
         private String renderBlock() {
@@ -3853,6 +4380,43 @@ public class AgenticChatLoop {
         }
     }
 
+    private ai.kompile.cli.main.chat.tools.DurableToolResultStore exactToolArchive() {
+        return new ai.kompile.cli.main.chat.tools.DurableToolResultStore(
+                ai.kompile.cli.common.KompileHome.homeDirectory().toPath().resolve("conversations"));
+    }
+
+    private CompactionService.ToolOutcome captureToolOutcome(ToolCallRequest call, ToolResult rawResult) {
+        String name = TerminalRenderer.stripMcpPrefix(call.name);
+        String executed = call.arguments == null ? "{}" : call.arguments.toString();
+        boolean terminal = java.util.Set.of("read", "write", "edit", "edit_batch", "edit_patch", "patch",
+                "list", "glob", "grep", "grep_batch", "webfetch", "websearch", "fetch_result",
+                "fetch_result_batch", "file_context").contains(name);
+        if ("bash".equals(name)) terminal = rawResult.getMetadata() != null
+                && rawResult.getMetadata().get("exitCode") instanceof Number code && code.intValue() >= 0;
+        if (rawResult.getMetadata() != null && (Boolean.TRUE.equals(rawResult.getMetadata().get("timedOut"))
+                || Boolean.TRUE.equals(rawResult.getMetadata().get("aborted"))
+                || Boolean.TRUE.equals(rawResult.getMetadata().get("background"))
+                || Boolean.TRUE.equals(rawResult.getMetadata().get("detached")))) terminal = false;
+        if (call.arguments != null && call.arguments.path("background").asBoolean(false)) terminal = false;
+        if (!terminal) return new CompactionService.ToolOutcome(rawResult.isError(), false, executed, null, null, 0);
+        String raw = rawResult.getOutput() == null ? "" : rawResult.getOutput();
+        String digest = ai.kompile.cli.main.chat.context.ReviewedContextRetirement.sha256(raw);
+        try {
+            var archive = exactToolArchive();
+            String handle = archive.store(conversationSessionId, call.name, raw,
+                    java.util.Map.of("callId", call.id, "error", rawResult.isError()));
+            if (archive.verify(handle, digest, raw.length())) {
+                Integer exitCode = rawResult.getMetadata() != null
+                        && rawResult.getMetadata().get("exitCode") instanceof Number code ? code.intValue() : null;
+                boolean truncated = rawResult.getMetadata() != null
+                        && Boolean.TRUE.equals(rawResult.getMetadata().get("truncated"));
+                return new CompactionService.ToolOutcome(rawResult.isError(), true, executed, handle, digest,
+                        raw.length(), exitCode, truncated);
+            }
+        } catch (Exception unavailable) { /* Missing archival proof blocks retirement, never normal tool delivery. */ }
+        return new CompactionService.ToolOutcome(rawResult.isError(), false, executed, null, null, 0);
+    }
+
     private void recordToolDetails(ToolContext toolContext, ToolCallRequest call, ToolResult result, ToolResult rawResult, long durationMs) {
         try {
             ToolCallIndex.getInstance().recordWithDetails(toolContext.getSessionId(), call.name,
@@ -3886,6 +4450,27 @@ public class AgenticChatLoop {
         }
     }
 
+    private void emitToolDenied(ToolCallRequest call, String rawInput, String reason) {
+        if (!publishToolDenied(call, rawInput, reason)) {
+            emitLine(renderer.renderToolCallDenied(call.name, reason));
+        }
+    }
+
+    private boolean publishToolDenied(ToolCallRequest call, String rawInput, String reason) {
+        String classic = renderer.renderToolCallDenied(call.name, reason);
+        String key = "tool:" + conversationSessionId + ":"
+                + transcriptBlockSequence.incrementAndGet() + ":" + call.id;
+        ChatDisplayBlock block = new ChatDisplayBlock(key, "tool", call.name, classic, classic,
+                renderer.renderToolDisplaySections(call.name, rawInput, ToolResult.error(reason), "",
+                        ChatDisplayBlock.MAX_SECTION_CHARS), true, false);
+        return publishForegroundBlock(block);
+    }
+
+    /** Detaching a tool does not transfer its output back to the foreground UI. */
+    private boolean publishForegroundBlock(ChatDisplayBlock block) {
+        return backgroundOutputConsumer.get() == null && ChatCompleter.upsertDisplayBlock(block);
+    }
+
     private void renderSidePanelUpdate(boolean force) {
         if (sidePanelManager == null) {
             return;
@@ -3896,15 +4481,23 @@ public class AgenticChatLoop {
         }
         lastRenderedSidePanelVersion = snapshot.version();
 
+        String key = "custom:side-panel:" + conversationSessionId;
         if (!snapshot.visible()) {
-            emitLine(renderer.dim("  Side panel hidden"));
+            // Empty custom snapshot is the host's remove/hide-card contract.
+            if (!publishForegroundBlock(new ChatDisplayBlock(key, "custom", "", "", "",
+                    List.of(), false, false))) emitLine(renderer.dim("  Side panel hidden"));
             return;
         }
 
         String title = snapshot.title() != null && !snapshot.title().isBlank()
                 ? snapshot.title() : "Side Panel";
         String content = boundedSidePanelContent(snapshot.content());
-        emitLine(asciiRenderer.panel(title, content));
+        String classic = asciiRenderer.panel(title, content);
+        ChatDisplayBlock block = new ChatDisplayBlock(key, "custom", "", title, classic,
+                List.of(new ChatDisplayBlock.Section("body", "custom", title, snapshot.content(),
+                        asciiRenderer.renderMarkdown(ChatDisplayBlock.boundedPlainText(snapshot.content(), ChatDisplayBlock.MAX_SECTION_CHARS)))),
+                false, false);
+        if (!publishForegroundBlock(block)) emitLine(classic);
     }
 
     private String boundedSidePanelContent(String content) {
@@ -3960,7 +4553,7 @@ public class AgenticChatLoop {
         }
 
         StreamingMarkdownRenderer markdownRenderer =
-                new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
+                presentationMarkdownRenderer();
         java.util.function.Consumer<String> previousConsumer = directLlmClient.getOutputConsumer();
         java.util.function.Consumer<String> previousThinkingConsumer = directLlmClient.getThinkingConsumer();
         java.util.function.Consumer<DirectLlmClient.ConnectivityEvent> previousConnectivityConsumer =
@@ -3970,10 +4563,12 @@ public class AgenticChatLoop {
         boolean claudeCliRoute = directLlmClient.getChatConfig().isClaudeCliNative();
         DirectLlmClient.StreamResult directResult;
         AtomicBoolean reconnecting = new AtomicBoolean();
+        AtomicReference<CompactionProgressIndicator> providerCompaction = new AtomicReference<>();
         // Line-buffered reasoning rendering: word-sized deltas coalesce into
         // complete transcript lines instead of one fragmented line per delta.
+        TextTranscriptBurst thinkingBlock = new TextTranscriptBurst("thinking");
         ThinkingStreamRenderer thinkingRenderer =
-                new ThinkingStreamRenderer(this::emitLine, asciiRenderer.getTerminalRenderer());
+                new ThinkingStreamRenderer(thinkingBlock::rendered, asciiRenderer.getTerminalRenderer());
         Map<String, ToolTranscriptBlock> providerToolBlocks = new HashMap<>();
         Map<String, String> providerToolInputs = new HashMap<>();
         Map<String, String> providerToolNames = new LinkedHashMap<>();
@@ -3995,13 +4590,17 @@ public class AgenticChatLoop {
             setForegroundActivity("Responding");
             if (requestProgress != null) requestProgress.recordTextDelta(progressSequence, chunk);
             thinkingRenderer.flush();
+            thinkingBlock.finish();
             markdownRenderer.accept(chunk);
         }));
         directLlmClient.setThinkingConsumer(sessionContext.wrapConsumer(chunk -> {
             if (chunk == null || chunk.isEmpty()) return;
             setForegroundActivity("Thinking");
             if (requestProgress != null) requestProgress.recordTextDelta(progressSequence, chunk);
+            ((PresentationMarkdownRenderer) markdownRenderer).boundary();
+            thinkingBlock.appendRaw(chunk);
             thinkingRenderer.accept(chunk);
+            thinkingBlock.publish(true, thinkingRenderer.pendingLinePreview());
         }));
         directLlmClient.setConnectivityEventConsumer(sessionContext.wrapConsumer(event -> {
             markdownRenderer.flush();
@@ -4048,11 +4647,15 @@ public class AgenticChatLoop {
                         sessionContext.wrap(() -> {
                             if (reconnecting.getAndSet(false)) setForegroundActivity("Thinking");
                             if (claudeCliRoute) {
+                                ((PresentationMarkdownRenderer) markdownRenderer).boundary();
                                 thinkingRenderer.flush();
+                                thinkingBlock.finish();
                                 fireFirstOutput();
                                 setForegroundActivity((isEmptyToolInput(input) ? "Preparing tool: " : "Running: ")
                                         + TerminalRenderer.summarizeToolCall(name, input, 96));
-                                String key = "provider-tool:" + conversationSessionId + ":" + callId;
+                                ToolTranscriptBlock existing = providerToolBlocks.get(callId);
+                                String key = existing != null ? existing.key : "provider-tool:" + conversationSessionId + ":"
+                                        + transcriptBlockSequence.incrementAndGet() + ":" + callId;
                                 providerToolBlocks.put(callId, new ToolTranscriptBlock(
                                         key, name, input, isEmptyToolInput(input)));
                                 providerToolInputs.put(callId, input == null ? "" : input);
@@ -4118,7 +4721,9 @@ public class AgenticChatLoop {
                             String rawInput = "";
                             String toolName = name;
                             if (claudeCliRoute) {
+                                ((PresentationMarkdownRenderer) markdownRenderer).boundary();
                                 thinkingRenderer.flush();
+                                thinkingBlock.finish();
                                 rawInput = providerToolInputs.remove(callId);
                                 if (rawInput == null) rawInput = "";
                                 toolName = providerToolNames.remove(callId);
@@ -4139,7 +4744,8 @@ public class AgenticChatLoop {
                             if (claudeCliRoute) {
                                 if (block == null) {
                                     block = new ToolTranscriptBlock(
-                                            "provider-tool:" + conversationSessionId + ":" + callId,
+                                            "provider-tool:" + conversationSessionId + ":"
+                                                    + transcriptBlockSequence.incrementAndGet() + ":" + callId,
                                             toolName, rawInput);
                                 } else {
                                     block.updateInput(rawInput);
@@ -4160,6 +4766,26 @@ public class AgenticChatLoop {
                             if (listener != null) {
                                 listener.onToolComplete(
                                         callId, toolName, rawInput, providerResult);
+                            }
+                        }).run();
+                    }
+
+                    @Override
+                    public void onContextUsage(long inputTokens) {
+                        sessionContext.wrap(() -> {
+                            if (sessionMetrics != null) sessionMetrics.recordContextInputTokens(inputTokens);
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onContextUsage(inputTokens);
+                            }
+                        }).run();
+                    }
+
+                    @Override
+                    public void onModelLimits(int window, int maxOutputTokens) {
+                        sessionContext.wrap(() -> {
+                            if (sessionMetrics != null) sessionMetrics.recordContextWindow(contextDisplayModelKey(), window);
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onModelLimits(window, maxOutputTokens);
                             }
                         }).run();
                     }
@@ -4193,10 +4819,14 @@ public class AgenticChatLoop {
                     @Override
                     public void onNotice(String notice) {
                         sessionContext.wrap(() -> {
+                            // Close partial prose before the provider message in every
+                            // output mode, not just when a typed sink is installed.
+                            markdownRenderer.flush();
                             thinkingRenderer.flush();
+                            thinkingBlock.finish();
                             if (notice != null && !notice.isBlank()) {
                                 fireFirstOutput();
-                                emitLine(renderer.dim("[Claude] " + notice));
+                                emitProviderMessage(renderer.dim("[Claude] " + notice), false);
                             }
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onNotice(notice);
@@ -4205,17 +4835,54 @@ public class AgenticChatLoop {
                     }
 
                     @Override
+                    public void onCompactionStarted() {
+                        sessionContext.wrap(() -> {
+                            if (providerCompaction.get() == null && backgroundOutputConsumer.get() == null) {
+                                markdownRenderer.flush();
+                                thinkingRenderer.flush();
+                                thinkingBlock.finish();
+                                fireFirstOutput();
+                                providerCompaction.set(CompactionProgressIndicator.startProvider(
+                                        "compact:provider:" + conversationSessionId + ":"
+                                                + transcriptBlockSequence.incrementAndGet(),
+                                        renderer, "Claude Code", AgenticChatLoop.this::emitLine,
+                                        AgenticChatLoop.this::setForegroundActivity));
+                            }
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onCompactionStarted();
+                            }
+                        }).run();
+                    }
+
+                    @Override
+                    public void onCompactionSkipped(String detail) {
+                        sessionContext.wrap(() -> {
+                            CompactionProgressIndicator progress = providerCompaction.getAndSet(null);
+                            if (progress != null) progress.noop("Context compaction skipped"
+                                    + (detail == null || detail.isBlank() ? "" : ": " + detail));
+                            if (claudeCliRoute) setForegroundActivity("Waiting for Claude response");
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onCompactionSkipped(detail);
+                            }
+                        }).run();
+                    }
+
+                    @Override
                     public void onCompacted(String trigger, long tokensBefore) {
                         sessionContext.wrap(() -> {
-                            if (claudeCliRoute) setForegroundActivity("Waiting for Claude response");
+                            markdownRenderer.flush();
                             thinkingRenderer.flush();
+                            thinkingBlock.finish();
                             fireFirstOutput();
                             // Earlier usage measured the context the provider just
                             // compacted.
                             resetReportedContextUsage();
                             if (sessionMetrics != null) sessionMetrics.recordProviderCompaction();
-                            emitLine(renderer.renderProviderCompactionNotice(
-                                    "Claude Code", trigger, tokensBefore));
+                            CompactionProgressIndicator progress = providerCompaction.getAndSet(null);
+                            if (progress != null) progress.completeProvider(trigger, tokensBefore);
+                            else emitProviderMessage(renderer.renderProviderCompactionNotice(
+                                    "Claude Code", trigger, tokensBefore), false);
+                            if (claudeCliRoute) setForegroundActivity("Waiting for Claude response");
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onCompacted(trigger, tokensBefore);
                             }
@@ -4225,12 +4892,16 @@ public class AgenticChatLoop {
                     @Override
                     public void onCompactionFailed(String detail) {
                         sessionContext.wrap(() -> {
-                            if (claudeCliRoute) setForegroundActivity("Waiting for Claude response");
+                            markdownRenderer.flush();
                             thinkingRenderer.flush();
+                            thinkingBlock.finish();
                             fireFirstOutput();
-                            emitLine(renderer.dim(detail == null || detail.isBlank()
-                                    ? "[Claude] Conversation compaction failed"
-                                    : "[Claude] Conversation compaction failed: " + detail));
+                            String failure = "Context compaction failed"
+                                    + (detail == null || detail.isBlank() ? "" : ": " + detail);
+                            CompactionProgressIndicator progress = providerCompaction.getAndSet(null);
+                            if (progress != null) progress.failed(failure);
+                            else emitProviderMessage(renderer.red("  ✗ " + failure), true);
+                            if (claudeCliRoute) setForegroundActivity("Waiting for Claude response");
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onCompactionFailed(detail);
                             }
@@ -4250,9 +4921,13 @@ public class AgenticChatLoop {
         try {
             directResult = directLlmClient.streamChat(message, systemPrompt, toolDefs, directToolResults, modelOverride, attachments);
         } finally {
+            CompactionProgressIndicator progress = providerCompaction.getAndSet(null);
+            if (progress != null) progress.abandonIfActive(isCancelled()
+                    ? "Context compaction interrupted" : "Claude stream ended before compaction reported a result");
             // Tool-only, empty, failed and cancelled responses may emit no text.
             if (reconnecting.getAndSet(false)) setForegroundActivity("Thinking");
             thinkingRenderer.flush();
+            thinkingBlock.finish();
             markdownRenderer.flush();
             // A cancelled turn ends before Claude Code reports the tools it interrupted.
             String unfinished = isCancelled() ? stopLabel
@@ -4307,12 +4982,11 @@ public class AgenticChatLoop {
         }
         long contextInputTokens = directResult.contextInputTokens();
         if (contextInputTokens > 0) {
+            if (sessionMetrics != null) sessionMetrics.recordContextInputTokens(contextInputTokens);
             // Cached tokens still occupy the context even though providers bill them
             // separately. Capture the matching tracked-history size so later growth
             // can be projected before the next request.
-            lastReportedInputTokens = contextInputTokens;
-            lastReportedHistoryTokens = compactionService.estimateTokens(
-                    conversationLedger.snapshot().activeEntries());
+            recordReportedContextUsage(contextInputTokens, 0L);
         }
 
         result.text = directResult.text;
@@ -4357,14 +5031,59 @@ public class AgenticChatLoop {
                                           boolean ragEnabled, String systemPrompt,
                                           ArrayNode toolDefs, List<ToolCallResult> toolResults) {
         ProviderConnectivityPolicy policy = ProviderConnectivityPolicy.forProvider("kompile");
+        StreamResult merged = null;
         for (int attempt = 1; attempt <= policy.maxAttempts(); attempt++) {
+            // A mid-stream close keeps the partial answer and asks the server agent to
+            // continue from it; a pre-stream failure resends the original request.
+            String attemptMessage = merged != null && !merged.text.isEmpty()
+                    ? continuationMessage(message, merged.text) : message;
             StreamResult result = streamServerTurnAttempt(
-                    message, sessionId, serverAgent, ragEnabled, systemPrompt,
+                    attemptMessage, sessionId, serverAgent, ragEnabled, systemPrompt,
                     toolDefs, toolResults, policy);
+            if (merged != null) {
+                // Prior attempts' partial output was already rendered to the terminal;
+                // keep it as the answer prefix so the continuation appends, not restarts.
+                result.text = merged.text + result.text;
+            }
+            merged = result;
             if (result.terminalError != null && !result.terminalError.isBlank()) {
                 throw new ServerChatException(result.terminalError);
             }
-            if (!result.retryableConnectivityFailure) return result;
+            if (result.midStreamDrop && result.toolCalls.isEmpty()) {
+                // No tool call arrived, so nothing executed and reconnecting cannot
+                // duplicate side effects. With partial text the retry asks the server
+                // agent to continue; with nothing streamed it resends the turn.
+                if (attempt == policy.maxAttempts()) {
+                    merged.midStreamDrop = false;
+                    emitLine(renderer.yellow("[Kompile connection closed mid-response; kept the "
+                            + "partial answer after " + attempt + " attempts]"));
+                    return merged;
+                }
+                Duration delay = policy.retryDelay(attempt, result.connectivityHeaders);
+                String warning = "Reconnecting Kompile · " + (attempt + 1) + "/"
+                        + policy.maxAttempts() + " in " + delay.toMillis()
+                        + " ms (" + (result.connectivityFailure == null
+                        ? "connection closed" : result.connectivityFailure) + ")";
+                if (!ChatCompleter.showAlert(warning)) setForegroundActivity(warning);
+                try {
+                    if (!waitForServerRetry(delay)) {
+                        merged.midStreamDrop = false;
+                        merged.retryableConnectivityFailure = false;
+                        return merged;
+                    }
+                } finally {
+                    setForegroundActivity("Thinking");
+                }
+                continue;
+            }
+            if (result.midStreamDrop) {
+                // The stream died after complete tool_call events: those calls never
+                // ran, so surface them for normal execution — replaying the request
+                // would only regenerate them.
+                merged.midStreamDrop = false;
+                return merged;
+            }
+            if (!result.retryableConnectivityFailure) return merged;
 
             boolean replaySafe = !result.streamStarted
                     && result.text.isEmpty() && result.toolCalls.isEmpty();
@@ -4385,13 +5104,26 @@ public class AgenticChatLoop {
             try {
                 if (!waitForServerRetry(delay)) {
                     result.retryableConnectivityFailure = false;
-                    return result;
+                    return merged;
                 }
             } finally {
                 setForegroundActivity("Thinking");
             }
         }
         throw new IllegalStateException("Unreachable server connectivity retry state");
+    }
+
+    /**
+     * Continuation prompt for a response the server connection cut mid-stream: the
+     * partial answer lives only in this client, so the tail rides with the nudge.
+     */
+    private static String continuationMessage(String original, String partialText) {
+        String tail = partialText.length() > 2000
+                ? "…" + partialText.substring(partialText.length() - 2000) : partialText;
+        return (original == null ? "" : original)
+                + "\n\n[Your previous reply was cut off by a connection drop. Continue exactly "
+                + "where you stopped without repeating earlier text. The partial reply so far "
+                + "was:\n" + tail + "\nIf it was already complete, reply DONE.]";
     }
 
     private StreamResult streamServerTurnAttempt(
@@ -4402,7 +5134,7 @@ public class AgenticChatLoop {
         StreamResult result = new StreamResult();
 
         StreamingMarkdownRenderer markdownRenderer =
-                new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
+                presentationMarkdownRenderer();
         InputStream responseBody = null;
         try {
             ObjectNode request = objectMapper.createObjectNode();
@@ -4507,7 +5239,13 @@ public class AgenticChatLoop {
                     }
                 }
                 if (!isCancelled() && !terminalEvent) {
-                    throw new IOException("Server connection closed before a terminal event");
+                    // A connection that dies mid-response must not kill the whole
+                    // session: flag it so the caller reconnects (bounded) and keeps
+                    // whatever the stream already produced.
+                    result.midStreamDrop = true;
+                    result.retryableConnectivityFailure = true;
+                    result.connectivityFailure = "Server connection closed before a terminal event";
+                    return result;
                 }
             }
             markdownRenderer.flush();
@@ -4631,7 +5369,12 @@ public class AgenticChatLoop {
                 try {
                     JsonNode sources = objectMapper.readTree(data);
                     if (sources.isArray() && sources.size() > 0) {
-                        emitLine(renderer.dim("[Retrieved " + sources.size() + " documents]"));
+                        String classic = renderer.dim("[Retrieved " + sources.size() + " documents]");
+                        ChatDisplayBlock block = new ChatDisplayBlock(
+                                "sources:" + conversationSessionId, "sources", "", classic, classic,
+                                List.of(new ChatDisplayBlock.Section("sources", "sources", "Sources",
+                                        sources.toPrettyString())), false, false);
+                        if (!publishForegroundBlock(block)) emitLine(classic);
                     }
                     ServerEventListener listener = serverEventListener;
                     if (listener != null) listener.onSources(sources.deepCopy());
@@ -4659,9 +5402,7 @@ public class AgenticChatLoop {
                             : inputTokens + cacheReadTokens + cacheCreationTokens;
                     if (contextInputTokens > 0) {
                         result.contextInputTokens = contextInputTokens;
-                        lastReportedInputTokens = contextInputTokens;
-                        lastReportedHistoryTokens = compactionService.estimateTokens(
-                                conversationLedger.snapshot().activeEntries());
+                        recordReportedContextUsage(contextInputTokens, 0L);
                     }
                     if (durationMs > 0) {
                         emitLine(renderer.dim("  [completed in " + durationMs + "ms]"));
@@ -4713,6 +5454,8 @@ public class AgenticChatLoop {
         String connectivityFailure;
         HttpHeaders connectivityHeaders;
         String terminalError;
+        /** Server stream ended without a terminal event; the caller reconnects instead of failing the turn. */
+        boolean midStreamDrop;
         String nativeCompactionSummary;
         String nativeCompactionStrategy;
         JsonNode nativeCompactionPayload;

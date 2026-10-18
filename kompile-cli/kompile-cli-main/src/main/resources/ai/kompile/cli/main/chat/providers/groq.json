@@ -8,6 +8,16 @@
     "verifiedAt": "2026-08-20",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
   },
+  "fastMode": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://console.groq.com/docs/service-tiers",
+      "verifiedAt": "2026-10-14",
+      "notice": "Requests Groq Performance tier for reliable low latency. Enterprise access is required; the provider validates model support and entitlement."
+    },
+    "onRequest": {"service_tier": "performance"},
+    "offRequest": {"service_tier": "on_demand"}
+  },
   "structuredOutput": {
     "metadataSource": "DOCUMENTED_FALLBACK",
     "source": {

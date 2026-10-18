@@ -21,6 +21,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -29,9 +31,111 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@ai.kompile.cli.main.chat.testing.TemporaryUserHome
 class WorkflowControllerTest {
 
     private final ObjectMapper mapper = JsonUtils.standardMapper();
+
+    @Test
+    void requiredMemoriesLoadFullyRefreshAndFreezeForChildren(@org.junit.jupiter.api.io.TempDir Path project)
+            throws Exception {
+        Path root = Files.createDirectories(project.resolve(".kompile/memory"));
+        Path global = Files.createDirectories(ai.kompile.cli.common.KompileHome.homeDirectory().toPath().resolve("memory"));
+        Path file = root.resolve("release.md");
+        String body = "line\n".repeat(220) + "RELEASE_TAIL_RULE";
+        Files.writeString(file, body);
+        Files.writeString(root.resolve("unrelated.md"), "UNSELECTED_PRIVATE_NOTE");
+        Files.writeString(global.resolve("release.md"), "GLOBAL_RELEASE_RULE");
+        var config = new ai.kompile.cli.main.chat.enforcer.EnforcerConfig();
+        config.setWorkflowMode("enforced");
+        config.setWorkflowRequiredMemories(List.of("release.md", "global:release.md", "project:release.md"));
+        config.save(project);
+        WorkflowController controller = new WorkflowController(project, skills(), tools());
+        controller.beginTurn();
+        assertEquals(List.of("project:release.md", "global:release.md"), controller.status().requiredMemories());
+        String snapshot = controller.activeMemoryConstraints();
+        assertTrue(snapshot.contains(body));
+        assertTrue(snapshot.contains("GLOBAL_RELEASE_RULE"));
+        assertFalse(snapshot.contains("UNSELECTED_PRIVATE_NOTE"));
+        assertTrue(controller.activeSystemPrompt().contains(snapshot));
+        var contract = controller.captureChildContract();
+        Files.writeString(file, "UPDATED_RELEASE_RULE");
+        controller.completeTurn();
+        WorkflowController child = contract.newController(tools());
+        child.beginChildTurn(contract, "review", "child-memory");
+        assertEquals(snapshot, child.activeMemoryConstraints());
+        assertTrue(child.activeSystemPrompt().contains(body));
+        child.completeTurn();
+        controller.beginTurn();
+        assertTrue(controller.activeMemoryConstraints().contains("UPDATED_RELEASE_RULE"));
+        assertFalse(controller.activeMemoryConstraints().contains("RELEASE_TAIL_RULE"));
+        controller.completeTurn();
+        controller.setSessionMode(WorkflowPolicy.Mode.ADVISORY, null);
+        controller.beginTurn();
+        assertTrue(controller.activeSystemPrompt().contains("UPDATED_RELEASE_RULE"));
+        assertTrue(controller.activeMemoryConstraints().isBlank(), "advisory memory is not judge policy");
+        controller.completeTurn();
+    }
+
+    @Test
+    void missingEmptyOversizeAndEscapingMemoriesFailBeforeWork(@org.junit.jupiter.api.io.TempDir Path project)
+            throws Exception {
+        Path root = Files.createDirectories(project.resolve(".kompile/memory"));
+        var config = new ai.kompile.cli.main.chat.enforcer.EnforcerConfig();
+        config.setWorkflowMode("enforced");
+        config.setWorkflowRequiredMemories(List.of("required.md"));
+        config.save(project);
+        WorkflowController controller = new WorkflowController(project, skills(), tools());
+        assertTrue(assertThrows(IllegalStateException.class, controller::beginTurn)
+                .getMessage().contains("project:required.md"));
+        assertTrue(controller.activeSystemPrompt().isBlank());
+        Path file = root.resolve("required.md");
+        Files.writeString(file, " ");
+        assertThrows(IllegalStateException.class, controller::beginTurn);
+        Files.writeString(file, "x".repeat(WorkflowPolicy.MAX_MEMORY_CONTEXT_CHARS));
+        assertThrows(IllegalStateException.class, controller::beginTurn);
+        Files.delete(file);
+        Path outside = project.resolve("outside.md");
+        Files.writeString(outside, "not a memory file");
+        Files.createSymbolicLink(file, outside);
+        assertThrows(IllegalStateException.class, controller::beginTurn);
+        controller.setGlobalEnabled(false);
+        controller.beginTurn();
+        assertTrue(controller.activeSystemPrompt().isBlank());
+        controller.completeTurn();
+        for (String selector : List.of("../outside.md", "project:../outside.md", "global:/tmp/x.md", "alien:x.md")) {
+            assertThrows(IllegalArgumentException.class, () -> new WorkflowPolicy(
+                    WorkflowPolicy.Mode.ENFORCED, List.of(), List.of(selector), true, 2));
+        }
+        assertThrows(IllegalStateException.class, () -> new WorkflowController.ChildContract(
+                WorkflowPolicy.from(config), "prompt without memory", false));
+    }
+
+    @Test
+    void memoryReadsAreDiscoveryButWritesRemainCheckpointed() {
+        ToolRegistry tools = tools();
+        tools.register(new ai.kompile.cli.main.chat.tools.MemoryTool());
+        tools.register(tool("semantic_memory", McpToolAnnotations.WRITE));
+        WorkflowController controller = new WorkflowController(skills(), tools,
+                new WorkflowPolicy(WorkflowPolicy.Mode.ENFORCED, List.of(), true, 2));
+        controller.beginTurn("Review first before proceeding", "memory-readonly");
+        controller.beginToolBatch();
+        for (String action : List.of("read", "list", "search", "recall", "types", "read_claude",
+                "scan_providers", "read_graph", "search_nodes", "open_nodes")) {
+            var params = mapper.createObjectNode().put("action", action);
+            assertTrue(controller.beforeTool("mcp__kompile__memory", params).allowed(), action);
+            controller.afterTool("memory", params, ToolResult.success("memory evidence"));
+        }
+        assertFalse(controller.activeTurnStatus().artifactDirty());
+        for (String action : List.of("write", "save", "append", "forget", "create_entity", "delete_entity")) {
+            assertFalse(controller.beforeTool("memory", mapper.createObjectNode().put("action", action)).allowed(), action);
+        }
+        for (String action : List.of("search", "stats")) {
+            assertTrue(controller.beforeTool("semantic_memory", mapper.createObjectNode().put("action", action)).allowed());
+        }
+        assertFalse(controller.beforeTool("semantic_memory", mapper.createObjectNode().put("action", "index_turn")).allowed());
+        controller.completeTurn();
+    }
 
     @Test
     void requiredSkillsAreExpandedBeforeTheTurnAndMissingSkillsFailClearly() {
@@ -93,6 +197,31 @@ class WorkflowControllerTest {
         JsonNode completed = mapper.createObjectNode()
                 .put("action", "update").put("task_id", "1").put("status", "completed");
         controller.afterTool("todowrite", completed, ToolResult.success("updated"));
+        assertTrue(controller.beforeFinalResponse().allowed());
+        controller.completeTurn();
+    }
+
+    @Test
+    void incidentReadsRespectCheckpointsAndBookkeepingDoesNotCreateArtifactDebt() {
+        ToolRegistry tools = tools();
+        tools.register(new ai.kompile.cli.main.chat.tools.IncidentTool());
+        WorkflowController controller = new WorkflowController(skills(), tools,
+                new WorkflowPolicy(WorkflowPolicy.Mode.ENFORCED, List.of(), false, 2));
+        controller.beginTurn("List the design first before proceeding", "incident-checkpoint");
+        controller.beginToolBatch();
+        for (String action : List.of("get", "list", "search")) {
+            assertTrue(controller.beforeTool("incident", mapper.createObjectNode().put("action", action)).allowed());
+        }
+        for (String action : List.of("add", "update", "resolve", "supersede")) {
+            assertFalse(controller.beforeTool("incident", mapper.createObjectNode().put("action", action)).allowed());
+        }
+        controller.completeTurn();
+        controller.beginTurn("Record the diagnosis", "incident-update");
+        controller.beginToolBatch();
+        ObjectNode params = mapper.createObjectNode().put("action", "add");
+        assertTrue(controller.beforeTool("incident", params).allowed());
+        controller.afterTool("incident", params, ToolResult.success("Recorded"));
+        assertFalse(controller.activeTurnStatus().artifactDirty());
         assertTrue(controller.beforeFinalResponse().allowed());
         controller.completeTurn();
     }

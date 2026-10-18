@@ -253,6 +253,21 @@ class WebCommandResolverRoleFastTest {
     }
 
     @Test
+    void fastAcceptsUnlistedModelsForEverySupportedProvider() {
+        for (String provider : List.of("anthropic", "openai", "openai-codex", "gemini", "groq", "openrouter", "xai")) {
+            ChatConfig config = eligibleFastConfig();
+            config.setProvider(provider);
+            config.setModel("day-one-unlisted-model");
+            WebCommandResolver.Resolution on = WebCommandResolver.resolve(input("/fast on"),
+                    project, new ChatSessionStateStore(), config, null);
+            assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED, on.status(), provider);
+            assertTrue(on.data().path("supported").asBoolean(), provider);
+            assertTrue(on.data().path("fastMode").asBoolean(), provider);
+            assertTrue(ChatConfig.loadOrFromEnv(project).isFastMode(), provider);
+        }
+    }
+
+    @Test
     void fastOffForEligibleProviderClearsTheToggle() {
         assertTrue(WebCommandResolver.resolve(input("/fast on"), project,
                 new ChatSessionStateStore(), eligibleFastConfig(), null).exitCode() == 0);

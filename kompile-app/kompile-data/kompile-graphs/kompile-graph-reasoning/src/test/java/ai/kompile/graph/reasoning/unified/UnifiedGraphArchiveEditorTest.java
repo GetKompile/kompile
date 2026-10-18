@@ -12,6 +12,8 @@ import ai.kompile.graph.reasoning.model.SimpleGraphRelation;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.InterruptedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
@@ -21,11 +23,36 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class UnifiedGraphArchiveEditorTest {
 
     @TempDir
     Path directory;
+
+    @Test
+    void interruptedRewriteLeavesTheCommittedArchiveIntact() throws Exception {
+        Path path = directory.resolve("cancelled.kgraph");
+        UnifiedGraph source = new UnifiedGraph();
+        source.addEntity(SimpleGraphEntity.of("a"));
+        source.addEntity(SimpleGraphEntity.of("b"));
+        source.addRelation("first", "a", "b", "LINK", 1.0);
+        source.addRelation("second", "b", "a", "LINK", 1.0);
+        source.saveCompact(path);
+        byte[] committed = Files.readAllBytes(path);
+        try {
+            assertThrows(InterruptedIOException.class, () -> UnifiedGraphArchiveEditor.rewrite(
+                    path, path, new UnifiedGraph(), null, link -> {
+                        Thread.currentThread().interrupt();
+                        return true;
+                    }, Map.of("mustNotPublish", true)));
+            assertTrue(Thread.currentThread().isInterrupted(), "cancellation remains visible to the caller");
+        } finally {
+            Thread.interrupted();
+        }
+        assertArrayEquals(committed, Files.readAllBytes(path), "cancellation must not replace a committed graph");
+        assertEquals(2, UnifiedGraph.load(path).relationCount());
+    }
 
     @Test
     void replacesOwnedProjectionWithoutMaterializingSourceRelations() throws Exception {

@@ -38,6 +38,7 @@ import ai.kompile.cli.common.enforcer.DiffPatternEvaluator;
 import ai.kompile.cli.main.chat.format.ConversationReader;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.mcp.McpDiagnostics;
+import ai.kompile.cli.main.codeindex.CodeIndexDiagnostics;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -450,6 +451,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     // Background process manager for this session; the judge + enforcer register as watcher
     // entries here so they are visible in the status bar and the /processes (/activity) menu.
     private BackgroundProcessManager bgProcMgr;
+    private ResourceMonitorCommands resourceMonitor;
+    private volatile boolean resourceMonitorVisible;
+    private List<String> resourceMonitorLines = List.of();
+    private int resourceMonitorOffset;
 
     private static final class TodoActivityItem {
         private final String key;
@@ -538,6 +543,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         Terminal term = null;
         TranscriptLogScope managedTranscriptLog = null;
         Runnable mcpLogCleanup = () -> { };
+        Runnable codeIndexAlertCleanup = () -> { };
+        Runnable diagnosticNoticeCleanup = () -> { };
         try {
             term = ChatCompleter.buildSystemTerminal();
             this.terminal = term;
@@ -683,6 +690,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             });
             tui.addResizeListener(this::handleTerminalResize);
             tui.start(terminal);
+            codeIndexAlertCleanup = installCodeIndexAlertSink();
+            if (tui.isStarted()) {
+                diagnosticNoticeCleanup = TranscriptLogScope.installTerminalNoticeSink(tui::showAlert);
+            }
             initScrollLayout();
 
             // Welcome — prints into scroll region
@@ -731,6 +742,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
             Path reminderWorkingDirectory = Path.of(
                     workingDir == null || workingDir.isBlank() ? "." : workingDir);
+            parser.enableTestCapture(reminderWorkingDirectory);
             if (this.reminderManager == null) {
                 this.reminderManager = new ReminderManager(
                         objectMapper, sessionId, reminderWorkingDirectory);
@@ -807,6 +819,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                         continue;
                     }
                     String trimmed = line.trim();
+                    if (resourceMonitorVisible && !trimmed.split("\\s+", 2)[0].equalsIgnoreCase("/resource-monitor")) {
+                        closeResourceMonitorView();
+                    }
 
                     // Re-establish scroll region (JLine's readLine may have reset it)
                     tui.reestablishScrollRegion();
@@ -857,6 +872,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 }
                 resetHostInputModes();
 
+                // Stop routing diagnostics before the UI relinquishes the terminal.
+                diagnosticNoticeCleanup.run();
+                codeIndexAlertCleanup.run();
                 // Stop the unified TUI (resets scroll regions, clears screen)
                 if (tui != null) {
                     tui.stop();
@@ -895,7 +913,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             // Context injection happens before the REPL loop is entered. Restore it
             // here as well so partial terminal/TUI initialization cannot leak files.
             cleanupConfiguredContext();
+            diagnosticNoticeCleanup.run();
+            codeIndexAlertCleanup.run();
             mcpLogCleanup.run();
+            if (resourceMonitor != null) resourceMonitor.close();
+            resourceMonitorVisible = false;
             if (bgProcMgr != null) {
                 bgProcMgr.close();
                 bgProcMgr = null;
@@ -913,6 +935,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 managedTranscriptLog.close();
             }
         }
+    }
+
+    Runnable installCodeIndexAlertSink() {
+        return tui != null && tui.isStarted()
+                ? CodeIndexDiagnostics.installAlertSink(tui::showAlert)
+                : () -> { };
     }
 
     // ── Scroll region layout ─────────────────────────────────────────────
@@ -992,7 +1020,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             tui.reestablishScrollRegion();
             scrollBottom = tui.scrollBottom();
             clampScrollViewportOffsetLocked();
-            if (mirrorRender && virtualTerminal != null) {
+            if (!resourceMonitorVisible && mirrorRender && virtualTerminal != null) {
                 drawFixedInputBox();                    // Kompile keeps its input box in mirror
                 System.out.flush();
                 mirrorVtToScrollRegion(virtualTerminal); // blit; restores the cursor to the box
@@ -1174,6 +1202,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     private boolean scrollTranscriptBy(int delta) {
         synchronized (drawLock) {
+            if (resourceMonitorVisible) {
+                int before = resourceMonitorOffset;
+                resourceMonitorOffset = Math.max(0, Math.min(resourceMonitorOffset - delta,
+                        Math.max(0, resourceMonitorLines.size() - scrollViewportRows())));
+                redrawScrollViewportLocked(activeLineReader);
+                return before != resourceMonitorOffset;
+            }
             return setScrollViewportOffsetLocked(scrollViewportOffset + delta, activeLineReader);
         }
     }
@@ -1185,6 +1220,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private boolean setScrollViewportOffsetLocked(int offset, LineReader reader) {
+        if (resourceMonitorVisible) {
+            int before = resourceMonitorOffset;
+            resourceMonitorOffset = offset == Integer.MAX_VALUE ? 0
+                    : Math.max(0, resourceMonitorLines.size() - scrollViewportRows());
+            redrawScrollViewportLocked(reader);
+            return before != resourceMonitorOffset;
+        }
         if (mirrorRender) {
             // Mirror shows the agent's LIVE screen (a blit), not a Kompile scrollback. Repainting
             // the transcript here would clobber the blit and the agent's UI would vanish. There is
@@ -1215,6 +1257,15 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private void redrawScrollViewportContentLocked() {
+        if (resourceMonitorVisible) {
+            int source = resourceMonitorOffset;
+            int width = terminal != null && terminal.getWidth() > 0 ? terminal.getWidth() : 120;
+            for (int row = scrollTopRow(); row <= scrollBottom; row++) {
+                String line = source < resourceMonitorLines.size() ? resourceMonitorLines.get(source++) : "";
+                System.out.printf("\033[%d;1H\033[2K%s", row, fitScrollLine(line, Math.max(1, width - 1)));
+            }
+            return;
+        }
         int top = scrollTopRow();
         int rows = scrollViewportRows();
         int width = terminal != null && terminal.getWidth() > 0 ? terminal.getWidth() : 120;
@@ -3445,7 +3496,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     private void drawInlineResponseSpinner(String frame, String phase, String label) {
         synchronized (drawLock) {
-            if (terminal == null || scrollBottom <= 0) return;
+            if (resourceMonitorVisible || terminal == null || scrollBottom <= 0) return;
             int w = terminal.getWidth();
             if (w <= 0) w = 120;
             String plain = "  " + frame + " " + phase + " (" + label + ")";
@@ -3464,7 +3515,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     private void clearInlineResponseSpinner() {
         synchronized (drawLock) {
-            if (scrollBottom <= 0) return;
+            if (resourceMonitorVisible || scrollBottom <= 0) return;
             boolean activePrompt = activeLineReader != null && !busyInputActive;
             if (activePrompt) hideCursor();
             saveCursor();
@@ -3923,7 +3974,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 scrollBottom = tui.scrollBottom();
                 clampScrollViewportOffsetLocked();
             }
-            if (scrollViewportOffset == 0 && !redrawFromScrollback) {
+            if (!resourceMonitorVisible && scrollViewportOffset == 0 && !redrawFromScrollback) {
                 for (String line : lines) {
                     // Newline at the bottom of the scroll region triggers scroll-up.
                     System.out.printf("\033[%d;1H\033[2K%s\n", scrollBottom, line);
@@ -4887,6 +4938,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private void renderRawDisplayBytes(byte[] displayBytes) {
         if (displayBytes == null || displayBytes.length == 0) return;
         synchronized (drawLock) {
+            if (resourceMonitorVisible) return;
             try {
                 OutputStream out = terminal.output();
                 out.write(displayBytes);
@@ -4922,6 +4974,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
         }
         synchronized (drawLock) {
+            if (resourceMonitorVisible) {
+                redrawScrollViewportLocked(activeLineReader);
+                return;
+            }
             int top = tui != null ? tui.scrollTop() : 2;
             int bottom = scrollBottom;
             int regionRows = Math.max(0, bottom - top + 1);
@@ -6260,10 +6316,25 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 return "restart";
             }
             case "/help" -> printHelp();
+            case "/usage" -> {
+                if (!rest.isBlank()) {
+                    safePrintln("Usage: /usage (current native provider's account allowance)");
+                } else {
+                    var usageConfig = new ai.kompile.cli.main.chat.config.ChatConfig();
+                    usageConfig.setChatMode("passthrough");
+                    usageConfig.setPassthroughAgent(agent);
+                    String usage = new ai.kompile.cli.main.chat.config.VendorUsageService().fetch(usageConfig).text();
+                    for (String line : usage.split("\\n", -1)) safePrintln(line);
+                }
+            }
+            case "/redraw" -> fullRepaint();
             case "/agent" -> switchAgent(rest.isBlank() ? null : rest.trim(), lineReader);
             case "/status" -> printStatus(metrics);
             case "/title" -> handleTitle(rest, history);
             case "/copy" -> copyLatestResponse(rest, history);
+            case "/diffs" -> new ChatDiffsCommand(renderer).show(rest,
+                    metrics == null ? null : metrics.getSessionId(),
+                    text -> { for (String line : text.split("\\n", -1)) safePrintln(line); });
             case "/reminder" -> showReminderResult(ReminderManager.Scope.SESSION, rest);
             case "/reminder-global" -> showReminderResult(ReminderManager.Scope.PROJECT, rest);
             case "/clear" -> {
@@ -6327,6 +6398,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/queue-clear" -> clearQueuedMessages();
             case "/queue-status" -> showQueueStatus();
             case "/auto-dequeue" -> toggleAutoDequeue();
+            case "/resource-monitor" -> handleResourceMonitor(rest, metrics);
             case "/resources" -> {
                 java.nio.file.Path root = java.nio.file.Path.of(workingDir == null || workingDir.isBlank() ? "." : workingDir);
                 if (ai.kompile.cli.main.chat.tools.ResourceWizard.handles(rest)) {
@@ -6915,6 +6987,58 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         safePrintln("");
     }
 
+    private void handleResourceMonitor(String arguments, ChatSessionMetrics metrics) {
+        if (bgProcMgr == null || tui == null) {
+            safePrintln("Resource monitor unavailable: no interactive chat runtime attached.");
+            return;
+        }
+        try {
+            if (resourceMonitor == null) {
+                Path root = Path.of(workingDir == null || workingDir.isBlank() ? "." : workingDir);
+                String id = metrics != null ? metrics.getSessionId()
+                        : sessionIdentity != null ? sessionIdentity.kompileSessionId() : resumeSessionId;
+                var sampler = new ChatResourceSampler(root, id, bgProcMgr);
+                resourceMonitor = new ResourceMonitorCommands(sampler::sample, new ResourceMonitorCommands.View() {
+                    public boolean available() { return tui.isStarted(); }
+                    public boolean selected() { return resourceMonitorVisible; }
+                    public void show(String content) {
+                        synchronized (drawLock) { resourceMonitorVisible = true; resourceMonitorOffset = 0; update(content); }
+                    }
+                    public void update(String content) {
+                        synchronized (drawLock) {
+                            if (!resourceMonitorVisible) return;
+                            resourceMonitorLines = Arrays.asList((ResourceMonitorCommands.TITLE + "\n" + content).split("\\R"));
+                            resourceMonitorOffset = Math.min(resourceMonitorOffset,
+                                    Math.max(0, resourceMonitorLines.size() - scrollViewportRows()));
+                            redrawScrollViewportLocked(activeLineReader);
+                        }
+                    }
+                    public void hide() { closeResourceMonitorView(); }
+                }, (action, processId) -> {
+                    if (action.equals("embeddings"))
+                        return ai.kompile.cli.main.chat.tools.grounding.LocalEmbeddingRuntime.stopIdle(root);
+                    if (processId.startsWith("watchdog:")) {
+                        boolean killed = ai.kompile.cli.main.project.LocalSubprocessWatchdog.get().kill(
+                                processId.substring("watchdog:".length()), "Confirmed /resource-monitor kill");
+                        return killed ? "Managed subprocess stop requested: " + processId : "No live local managed subprocess: " + processId;
+                    }
+                    return killActivityItem(processId) ? "Process stop requested: " + processId
+                            : "Process is not running, not found, or owned by another session: " + processId;
+                });
+            }
+            String result = resourceMonitor.command(arguments);
+            if (!result.isBlank()) safePrintln(result);
+        } catch (Exception failure) { safePrintln("Resource monitor: " + failure.getMessage()); }
+    }
+
+    private void closeResourceMonitorView() {
+        synchronized (drawLock) {
+            resourceMonitorVisible = false;
+            resourceMonitorLines = List.of();
+            fullRepaint();
+        }
+    }
+
     private void printHelp() {
         String body = """
                 Chat commands:
@@ -6931,12 +7055,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /auto-dequeue      Toggle sending queued messages after each turn
                   /activity          Manage background processes, subagents, and logs
                   /resources help   Configure tool-argument resource rules and preview calls
+                  /resource-monitor Live per-chat CPU/RSS/GPU and managed subprocess controls
                   /process-status <id> Inspect process/subagent status
                   /jobs              Alias for the activity/job panel
                   /jobs-remove <id>  Remove a completed retained activity
                   /jobs-clear        Clear completed retained activities
                   /statusbar         Toggle the bottom status bar
                   /status            Show session metrics
+                  /usage             Vendor account credits, allowances and resets
                   /title [text]      Show or change the session title
                   /reminder [text]   List/add session reminders; use clear to reset
                   /reminder-global [text]  Project reminders shared by every session
@@ -6947,9 +7073,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /restart           Alias for /reset
                   /passthrough|/keys Forward keys straight to the agent (Ctrl+] to exit)
                   /render [mode]     Show or set render mode: mirror · decoded
+                  /redraw            Repaint the TUI without clearing the conversation
                   /mode              Show current mode
                   /archive           List archived turns (enforced sessions)
                   /rollback [id]     Roll back violated turns (or a specific turn)
+                  /diffs [count]     Recent session diffs, newest first (default 20; 1–100)
                   /diff <id>         Show the diff for an archived turn
                   /purge             Purge this session's diff archive
                   /rules             Show the active judge policy rules

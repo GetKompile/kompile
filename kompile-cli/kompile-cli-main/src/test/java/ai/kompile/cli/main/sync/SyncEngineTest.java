@@ -152,7 +152,15 @@ class SyncEngineTest {
         assertEquals(SyncCatalog.COMPONENTS, SyncCatalog.validate(List.of("all")));
         assertEquals(List.of("skills", "memories"), SyncCatalog.validate(List.of("skills, memories")));
         assertThrows(IllegalArgumentException.class, () -> SyncCatalog.validate(List.of("models")));
-        assertThrows(IllegalArgumentException.class, () -> SyncCatalog.validate(List.of("credentials")));
+        List<String> cliState = List.of(SyncCatalog.CLI_SETTINGS, SyncCatalog.CREDENTIALS,
+                SyncCatalog.TRANSCRIPTS, SyncCatalog.JUDGE_RECORDS);
+        assertEquals(cliState, SyncCatalog.validate(cliState));
+        assertEquals(SyncCatalog.DEFAULT_COMPONENTS, SyncCatalog.validate(List.of()));
+        assertFalse(SyncCatalog.includesSensitive(SyncCatalog.DEFAULT_COMPONENTS));
+        for (String component : cliState) {
+            assertTrue(SyncCatalog.isSensitive(component));
+            assertFalse(SyncCatalog.DEFAULT_COMPONENTS.contains(component));
+        }
     }
 
     @Test

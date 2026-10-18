@@ -16,12 +16,21 @@
 
 import { describeRouteTable } from '@shared/testing/route-table-harness';
 import { routes } from './app-routing.module';
+import { productChatRouteGuard } from './components/product-chat/product-chat-context.service';
 
 describeRouteTable('chat-app', routes, {
-  declared: ['/chat', '/single-chat', '/project', '/fact-sheets', '/graph', '/insights', '/settings'],
+  declared: ['/chat', '/single-chat', '/play', '/project', '/fact-sheets', '/graph', '/insights', '/settings'],
   redirects: { '/knowledge': '/fact-sheets', '/workspace': '/chat' },
   fallback: '/chat',
   // Crawl-manager and admin surfaces. Chat is an end-user app: none of these may resolve here.
   foreign: ['/crawl', '/data', '/developer', '/agents', '/enforcer',
             '/knowledge-graph', '/grounding', '/graph-simulator']
+}, [{ provide: productChatRouteGuard, useValue: () => true }]);
+
+describe('chat product route policy wiring', () => {
+  it('guards every real chat-persona component route', () => {
+    for (const route of routes.filter(value => value.component)) {
+      expect(route.canActivate).withContext(route.path || '').toContain(productChatRouteGuard);
+    }
+  });
 });

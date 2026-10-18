@@ -30,7 +30,16 @@ public class SkillRegistry {
     private final Map<String, SkillConfig> skills = new LinkedHashMap<>();
 
     public SkillRegistry() {
-        registerDefaults();
+        this(true);
+    }
+
+    private SkillRegistry(boolean defaults) {
+        if (defaults) registerDefaults();
+    }
+
+    /** Product hosts opt into capabilities explicitly instead of inheriting coding workflows. */
+    public static SkillRegistry empty() {
+        return new SkillRegistry(false);
     }
 
     private void registerDefaults() {

@@ -184,6 +184,7 @@ public class SubprocessAgentRunner {
                                   TerminalRenderer renderer, AsciiRenderer ascii) {
         this.agent = agent;
         this.workingDir = workingDir;
+        parser.enableTestCapture(Path.of(workingDir));
         this.skipPermissions = skipPermissions;
         this.injectTools = injectTools;
         this.kompileUrl = kompileUrl;
@@ -879,6 +880,7 @@ public class SubprocessAgentRunner {
                 emitLine(renderer.red("\n  Error running agent: " + e.getMessage()));
             }
         } finally {
+            parser.closeTestCapture();
             spinner.stop();
             activeProcess = null;
         }
@@ -1054,6 +1056,7 @@ public class SubprocessAgentRunner {
                 emitLine(renderer.red("\n  Error running agent: " + e.getMessage()));
             }
         } finally {
+            parser.closeTestCapture();
             spinner.stop();
         }
 

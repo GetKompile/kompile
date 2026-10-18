@@ -39,6 +39,7 @@ public final class ChatUiSession implements AutoCloseable {
     volatile Consumer<String> contentOutput;
     volatile Consumer<String> alertOutput;
     volatile ChatCompleter.TranscriptBlockOutput transcriptBlockOutput;
+    volatile ChatCompleter.DisplayBlockOutput displayBlockOutput;
     volatile ChatCompleter.CompletionDisplay completionDisplay;
     volatile Supplier<List<String>> queueSupplier;
     volatile boolean temporaryWindowActive;

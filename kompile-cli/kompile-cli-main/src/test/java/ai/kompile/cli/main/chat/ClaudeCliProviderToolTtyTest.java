@@ -57,6 +57,15 @@ class ClaudeCliProviderToolTtyTest {
 
     @Test
     void providerMcpCallPaintsInMainTranscriptWhileRunningAndAfterCompletion() throws Exception {
+        verifyProviderTool(false);
+    }
+
+    @Test
+    void invalidMcpTaskArgumentDoesNotBlockKeyboardInput() throws Exception {
+        verifyProviderTool(true);
+    }
+
+    private void verifyProviderTool(boolean invalidTask) throws Exception {
         String previousHome = System.getProperty("user.home");
         System.setProperty("user.home", home.toString());
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -85,7 +94,7 @@ class ClaudeCliProviderToolTtyTest {
         config.setContextWindowTokens(200_000);
         config.setMaxOutputTokens(4_096);
         try (DirectLlmClient client = new DirectLlmClient(config, mapper, home)) {
-            installFakeClaude(client, release);
+            installFakeClaude(client, release, invalidTask);
             AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
                     new PermissionService(), new AgentRegistry(), home, client, null);
             String session = "claude-provider-tool-" + UUID.randomUUID();
@@ -113,19 +122,31 @@ class ClaudeCliProviderToolTtyTest {
             tui.attachLineReader(reader);
             tui.start(terminal);
             panel.refresh();
+            tasks.addChangeListener(() -> {
+                panel.refresh();
+                panel.resultDisplayBlocks().forEach(tui::upsertDisplayBlock);
+            });
+            tasks.setBackgroundableCheck(loop::isBackgroundableToolPhaseActive);
             ChatCompleter.setTerminalRef(reader, terminal);
             ChatCompleter.setContentRedraw(tui::redrawContentView);
             ChatCompleter.setContentOutput(tui::recordInScrollRegion);
             ChatCompleter.setTranscriptBlockOutput(tui::upsertMainTranscriptBlock);
-            inputThread.submit(() -> reader.readLine(PROMPT));
+            Future<String> keyboard = inputThread.submit(() -> reader.readLine(PROMPT));
             await(output, () -> reader.isReading()
                     && screen(output).getRow(tui.inputTop() - 1).contains(PROMPT.strip()));
 
-            Future<String> turn = dispatch.submit(() ->
-                    loop.chat("read the notes", session, "coder", "default", false));
+            Future<String> turn = dispatch.submit(() -> {
+                tasks.startTask("provider MCP call");
+                try {
+                    return loop.chat("read the notes", session, "coder", "default", false);
+                } finally {
+                    tasks.completeCurrentTask();
+                }
+            });
             await(output, () -> bottomRows(tui, screen(output)).contains("toolu_mcp_read_1")
                     && transcriptRows(tui, screen(output)).lines()
-                            .anyMatch(row -> row.contains("Read") && row.contains("NOTES.md")));
+                            .anyMatch(row -> invalidTask ? row.contains("Task")
+                                    : row.contains("Read") && row.contains("NOTES.md")));
             assertFalse(turn.isDone(), "the tool must still be running for this check");
 
             Files.createFile(release);
@@ -136,9 +157,20 @@ class ClaudeCliProviderToolTtyTest {
             String diagnostics = "response=" + response + "\n" + screen.screenDump();
             System.out.println("[claude-provider-tool-screen]\n" + diagnostics);
             int text = transcript.indexOf("Reading the notes file now.");
-            int tool = transcript.indexOf("NOTES.md");
+            int tool = transcript.indexOf(invalidTask ? "Task" : "NOTES.md");
             int answer = transcript.indexOf("The notes file is short.");
-            assertTrue(transcript.contains("✓"), "completed tool block\n" + diagnostics);
+            if (invalidTask) {
+                await(output, () -> transcriptRows(tui, screen(output)).contains("prompt is required"));
+                assertTrue(transcriptRows(tui, screen(output)).contains("✗"),
+                        "failed task must remain visible\n" + diagnostics);
+                // Submit through the actual terminal/readline loop after the invalid
+                // argument result and task lifecycle callbacks have been rendered.
+                terminal.processInputBytes("next keyboard turn\r".getBytes(StandardCharsets.UTF_8));
+                assertEquals("next keyboard turn", keyboard.get(5, TimeUnit.SECONDS));
+                assertNull(tasks.getCurrentTask(), "completed owner must release the next turn");
+            } else {
+                assertTrue(transcript.contains("✓"), "completed tool block\n" + diagnostics);
+            }
             assertTrue(text >= 0 && text < tool && tool < answer,
                     "tool block must sit between the prose around it\n" + diagnostics);
             assertEquals(text, transcript.lastIndexOf("Reading the notes file now."),
@@ -166,7 +198,7 @@ class ClaudeCliProviderToolTtyTest {
         }
     }
 
-    private void installFakeClaude(DirectLlmClient client, Path release) throws Exception {
+    private void installFakeClaude(DirectLlmClient client, Path release, boolean invalidTask) throws Exception {
         FakeClaudeCode fake = new FakeClaudeCode(home.resolve("claude"), """
                 turn() {
                   head -n %d "$DIR/claude-stream.jsonl"
@@ -176,7 +208,45 @@ class ClaudeCliProviderToolTtyTest {
                 """.formatted(LINES_BEFORE_TOOL_RESULT, release, LINES_BEFORE_TOOL_RESULT + 1));
         try (InputStream fixture = getClass().getResourceAsStream(FIXTURE)) {
             assertNotNull(fixture, "fixture");
-            Files.write(fake.path("claude-stream.jsonl"), fixture.readAllBytes());
+            String wire = new String(fixture.readAllBytes(), StandardCharsets.UTF_8);
+            if (invalidTask) {
+                var mapper = JsonUtils.standardMapper();
+                // Real task argument validation, no agent/model subprocess launch.
+                var task = new ai.kompile.cli.mcp.stdio.StdioTaskTool(
+                        new AgentRegistry(), null, mapper, null, home);
+                ToolResult rejected = task.execute(java.util.Map.of("description", "invalid task"));
+                assertTrue(rejected.isError());
+                wire = wire.replace("mcp__kompile__read", "mcp__kompile__task");
+                StringBuilder failedWire = new StringBuilder();
+                for (String line : wire.lines().toList()) {
+                    var event = mapper.readTree(line);
+                    if ("tool_use".equals(event.path("event").path("content_block").path("type").asText())) {
+                        ((com.fasterxml.jackson.databind.node.ObjectNode) event.path("event")
+                                .path("content_block")).set("input", mapper.createObjectNode()
+                                .put("description", "invalid task"));
+                    }
+                    if ("input_json_delta".equals(event.path("event").path("delta").path("type").asText())) {
+                        var delta = (com.fasterxml.jackson.databind.node.ObjectNode) event.path("event").path("delta");
+                        if (!delta.path("partial_json").asText().isEmpty()) {
+                            delta.put("partial_json", "{\"description\":\"invalid task\"}");
+                        }
+                    }
+                    for (var block : event.path("message").path("content")) {
+                        if ("tool_use".equals(block.path("type").asText())) {
+                            ((com.fasterxml.jackson.databind.node.ObjectNode) block).set("input",
+                                    mapper.createObjectNode().put("description", "invalid task"));
+                        } else if ("tool_result".equals(block.path("type").asText())) {
+                            ((com.fasterxml.jackson.databind.node.ObjectNode) block)
+                                    .put("is_error", true).put("content", rejected.getOutput());
+                            ((com.fasterxml.jackson.databind.node.ObjectNode) event)
+                                    .put("tool_use_result", rejected.getOutput());
+                        }
+                    }
+                    failedWire.append(mapper.writeValueAsString(event)).append('\n');
+                }
+                wire = failedWire.toString();
+            }
+            Files.writeString(fake.path("claude-stream.jsonl"), wire, StandardCharsets.UTF_8);
         }
         fake.install(client, home, "claude-native-session");
     }

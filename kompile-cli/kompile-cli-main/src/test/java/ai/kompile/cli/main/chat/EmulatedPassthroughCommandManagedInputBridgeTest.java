@@ -91,6 +91,54 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     @Test
+    void codeIndexWarningsUseHeaderWithoutTouchingManagedInput() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("managed-alert", tempDir)) {
+            var tui = new ai.kompile.cli.main.chat.tui.KompileTui(
+                    new BackgroundTaskManager(), processes, new MessageQueue("managed-alert"),
+                    new TerminalRenderer(true));
+            setField(command, "tui", tui);
+            setField(command, "drawLock", tui.getDrawLock());
+            Runnable cleanup = () -> { };
+            try {
+                tui.recordInScrollRegion("retained transcript sentinel");
+                tui.start(terminal);
+                cleanup = command.installCodeIndexAlertSink();
+                // Managed passthrough paints its own draft; the TUI must not
+                // repaint that pane or reset this editing cursor for a notice.
+                terminal.writer().print("\033[24;1Hkompile > visible draft");
+                terminal.writer().flush();
+                var screen = new ai.kompile.cli.main.chat.tui.VirtualTerminal(30, 100);
+                screen.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+                int row = screen.getCursorRow();
+                int col = screen.getCursorCol();
+                terminalOutput.reset();
+
+                String warning = "[code-index] watcher unavailable; periodic refresh enabled";
+                ai.kompile.cli.main.codeindex.CodeIndexDiagnostics.alert(warning);
+                screen.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+                assertTrue(screen.getRow(1).contains("watcher unavailable"), screen::screenDump);
+                assertTrue(screen.getRow(23).contains("kompile > visible draft"), screen::screenDump);
+                assertEquals(row, screen.getCursorRow());
+                assertEquals(col, screen.getCursorCol());
+                assertEquals(List.of("retained transcript sentinel"), tui.getContentViewLines());
+
+                terminalOutput.reset();
+                tui.clearAlert();
+                screen.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+                assertFalse(screen.getRow(1).contains("watcher unavailable"), screen::screenDump);
+                assertTrue(screen.getRow(23).contains("kompile > visible draft"), screen::screenDump);
+                assertEquals(row, screen.getCursorRow());
+                assertEquals(col, screen.getCursorCol());
+            } finally {
+                cleanup.run();
+                cleanup.run(); // Closing both REPL and outer initialization is safe.
+                tui.stop();
+            }
+        }
+    }
+
+    @Test
     void managedCancelBindingRegistersEscapeWidgetAcrossKeymaps() throws Exception {
         LineReader reader = LineReaderBuilder.builder()
                 .terminal(terminal)

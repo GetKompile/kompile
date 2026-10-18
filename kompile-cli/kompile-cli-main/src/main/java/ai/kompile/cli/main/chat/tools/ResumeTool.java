@@ -1022,15 +1022,14 @@ public class ResumeTool implements CliTool {
     }
 
     /**
-     * Distinguish literal standard-chat transcripts from provider-backed Kompile
-     * wrappers. Standard chat accepts generated transcript UUIDs, legacy cli-* ids,
-     * and caller-supplied ids; the stable signals are a Kompile role (for example coder),
-     * no harvested provider session, and the absence of a managed/passthrough wrapper prefix.
+     * Distinguish standard Kompile chat from passthrough wrappers. A native session
+     * id describes the transport, not the harness: standard Claude chat records one
+     * too. Prefer the session's saved chat mode; legacy transcripts use the Kompile
+     * role and wrapper prefix to distinguish their harness.
      */
     public static boolean isStandardKompileChatSession(String sessionId, String source,
                                                         String agent, String nativeSessionId) {
-        if (sessionId == null || !"kompile".equalsIgnoreCase(source)
-                || (nativeSessionId != null && !nativeSessionId.isBlank())) {
+        if (sessionId == null || !"kompile".equalsIgnoreCase(source)) {
             return false;
         }
         String normalizedSessionId = sessionId.trim().toLowerCase(Locale.ROOT);
@@ -1041,6 +1040,12 @@ public class ResumeTool implements CliTool {
                 || normalizedSessionId.startsWith("managed-")
                 || normalizedSessionId.startsWith("enforcer-")) {
             return false;
+        }
+        if (sessionId.matches("[A-Za-z0-9_-]+")) {
+            var saved = ai.kompile.cli.main.chat.config.ChatConfig.loadSession(sessionId);
+            if (saved != null) {
+                return "standard".equalsIgnoreCase(saved.getChatMode());
+            }
         }
         String normalizedAgent = agent == null ? "" : agent.trim().toLowerCase(Locale.ROOT);
         return switch (normalizedAgent) {
@@ -3355,7 +3360,7 @@ public class ResumeTool implements CliTool {
             // transcript — surface the underlying agent's real session id for callers
             // that resume via the agent's own CLI.
             String nativeId = nativeSessionIds.get(convo.sessionId());
-            if (nativeId != null) {
+            if (!standardChat && nativeId != null) {
                 convoNode.put("native_session_id", nativeId);
             }
         }
@@ -3491,7 +3496,7 @@ public class ResumeTool implements CliTool {
             // session id — the kompile id is invalid for native --resume/--session flags.
             // Agent hint is null: the target agent may differ from the agent that ran
             // the session, so normalize by id shape instead.
-            if ("kompile".equals(conversation.source())) {
+            if (!standardChat && "kompile".equals(conversation.source())) {
                 if (nativeId != null && !nativeId.isBlank()) {
                     result.put("native_session_id", nativeId);
                     result.put("native_session_note",
@@ -3605,7 +3610,7 @@ public class ResumeTool implements CliTool {
                 convoNode.put("working_directory", convo.workingDirectory());
             }
             String nativeId = nativeSessionIds.get(convo.sessionId());
-            if (nativeId != null) {
+            if (!standardChat && nativeId != null) {
                 convoNode.put("native_session_id", nativeId);
             }
         }

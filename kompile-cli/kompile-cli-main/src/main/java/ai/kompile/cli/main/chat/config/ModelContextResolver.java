@@ -97,12 +97,16 @@ public class ModelContextResolver {
 
     /** Resolve both limits using explicit overrides, provider-qualified metadata, and local status. */
     public ModelLimits resolveLimits(ChatConfig config, String modelOverride) {
+        String model = effectiveModel(config, modelOverride);
+        LiveModelDiscovery.Model metadata = ModelDiscoveryHttp.knownModel(config, model).orElse(null);
         return resolveLimits(
                 config != null ? config.getProvider() : null,
-                effectiveModel(config, modelOverride),
+                model,
                 config != null ? config.resolveBaseUrl() : null,
-                config != null ? config.getContextWindowTokens() : 0,
-                config != null ? config.getMaxOutputTokens() : 0);
+                config != null && config.getContextWindowTokens() > 0 ? config.getContextWindowTokens()
+                        : metadata != null ? metadata.contextWindow() : 0,
+                config != null && config.getMaxOutputTokens() > 0 ? config.getMaxOutputTokens()
+                        : metadata != null ? metadata.maxOutputTokens() : 0);
     }
 
     /**
@@ -118,6 +122,20 @@ public class ModelContextResolver {
         return new ModelLimits(
                 contextSet || reported.contextWindow() <= 0 ? resolved.contextWindow() : reported.contextWindow(),
                 outputSet || reported.maxOutputTokens() <= 0 ? resolved.maxOutputTokens() : reported.maxOutputTokens());
+    }
+
+    /** Catalog/default limits are useful budgets, but are not a measurement from this vendor session. */
+    public boolean isContextWindowProvisional(ChatConfig config, String modelOverride) {
+        if (config == null) return true;
+        if (config.getContextWindowTokens() > 0) return false;
+        String model = effectiveModel(config, modelOverride);
+        if (ModelDiscoveryHttp.knownModel(config, model).filter(metadata -> metadata.contextWindow() > 0).isPresent()) {
+            return false;
+        }
+        String baseUrl = config.resolveBaseUrl();
+        return !servedStatusDecides(config.getProvider(), model, baseUrl)
+                || probeLocal(baseUrl, config.getProvider(), model)
+                        .filter(served -> served.limits().contextWindow() > 0).isEmpty();
     }
 
     /** Backward-compatible context-only lookup. */

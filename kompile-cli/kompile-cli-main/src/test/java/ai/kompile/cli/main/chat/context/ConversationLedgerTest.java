@@ -117,7 +117,8 @@ class ConversationLedgerTest {
             ledger.append(CompactionService.ConversationEntry.user("request"));
             ledger.append(CompactionService.ConversationEntry.assistant("response"));
             ledger.recordNativeSession("claude-cli", "native-1", "digest-1");
-            assertTrue(Files.exists(sidecar), "the session must outlive this process");
+            assertTrue(Files.readString(stateFile).contains("native-1"),
+                    "the journal binding must outlive this process");
 
             // A later process continues the session that holds this conversation.
             ConversationLedger restarted = new ConversationLedger(JsonUtils.standardMapper());
@@ -182,12 +183,12 @@ class ConversationLedgerTest {
             ledger.forgetNativeSession("opencode");
             assertNotNull(ledger.resumableNativeSession("claude-cli"),
                     "another transport's session is left alone");
-            assertTrue(Files.exists(sidecar));
+            assertTrue(Files.exists(stateFile));
 
             // The conversation moved to a new session; the ledger itself is unchanged.
             ledger.forgetNativeSession("claude-cli");
             assertNull(ledger.resumableNativeSession("claude-cli"));
-            assertFalse(Files.exists(sidecar), "a later process must not resume it either");
+            assertTrue(Files.exists(stateFile), "forgetting preserves the conversation journal");
             ConversationLedger restarted = new ConversationLedger(JsonUtils.standardMapper());
             restarted.configureSession(sessionId);
             assertNull(restarted.resumableNativeSession("claude-cli"));
@@ -286,8 +287,7 @@ class ConversationLedgerTest {
         ConversationLedger ledger = new ConversationLedger(JsonUtils.standardMapper());
         ledger.configureSession(sessionId);
         CompactionService.Attachment image = ledger.storeAttachment("report.png", "image/png", true, PNG);
-        Path blob = contextFile(sessionId).resolveSibling(sessionId + ".attachments")
-                .resolve(image.digest());
+        Path blob = contextFile(sessionId).getParent().resolve("attachments").resolve(image.digest());
 
         Files.write(blob, "not the image".getBytes(StandardCharsets.UTF_8));
         assertNull(ledger.readAttachment(image), "bytes that no longer match the digest");
@@ -314,6 +314,6 @@ class ConversationLedgerTest {
 
     private static Path contextFile(String sessionId) {
         return KompileHome.homeDirectory().toPath()
-                .resolve("conversations").resolve(sessionId + ".context.json");
+                .resolve("conversations").resolve(sessionId + ".context").resolve("journal.jsonl");
     }
 }

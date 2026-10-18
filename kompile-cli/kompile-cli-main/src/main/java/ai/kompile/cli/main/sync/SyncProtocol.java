@@ -101,7 +101,11 @@ public final class SyncProtocol {
                     + request.path("op").asText() + ")");
         }
         JsonNode response = MAPPER.readTree(line);
-        if (response.path("ok").asBoolean(true) == false) {
+        if (response == null || !response.isObject() || !response.path("id").isIntegralNumber()
+                || response.path("id").asInt(-1) != request.path("id").asInt(-2)) {
+            throw new IOException("sync peer response id mismatch or malformed response");
+        }
+        if (!response.path("ok").asBoolean(false)) {
             throw new IOException("sync peer rejected "
                     + request.path("op").asText() + ": " + response.path("error").asText("unknown"));
         }

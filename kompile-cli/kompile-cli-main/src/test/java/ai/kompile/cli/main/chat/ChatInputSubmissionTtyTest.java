@@ -5,7 +5,7 @@ import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tui.KompileTui;
 import ai.kompile.cli.main.chat.tui.VirtualTerminal;
 import org.jline.reader.LineReader;
-import org.jline.reader.LineReaderBuilder;
+import ai.kompile.cli.main.chat.tui.InputPaneLineReader;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Size;
 import org.jline.terminal.impl.LineDisciplineTerminal;
@@ -51,7 +51,7 @@ class ChatInputSubmissionTtyTest {
         attributes.setLocalFlag(Attributes.LocalFlag.ICANON, false);
         attributes.setInputFlag(Attributes.InputFlag.ICRNL, false);
         terminal.setAttributes(attributes);
-        LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
+        LineReader reader = new InputPaneLineReader(terminal);
         new AutosuggestionWidgets(reader).enable();
         BackgroundProcessManager processes = new BackgroundProcessManager("input-submission-test");
         MessageQueue queue = new MessageQueue("input-submission-" + UUID.randomUUID());
@@ -71,8 +71,10 @@ class ChatInputSubmissionTtyTest {
                     && screen(output).getRow(tui.inputTop() - 1).contains(PROMPT.stripTrailing()));
             // Bracketed paste covers embedded newlines, soft wrap, and compact-paste expansion.
             type(terminal, "\033[200~" + draft + "\033[201~");
-            await(output, () -> screen(output).screenDump().contains(
-                    draft.length() >= ChatCompleter.LARGE_PASTE_THRESHOLD ? "[Pasted" : "sent "));
+            // An overflowing draft scrolls its prefix out of the input viewport.
+            await(output, () -> draft.length() >= ChatCompleter.LARGE_PASTE_THRESHOLD
+                    ? reader.getBuffer().toString().startsWith("[Pasted")
+                    : draft.equals(reader.getBuffer().toString()));
             type(terminal, "\r");
             assertEquals(draft, submitted.get(5, TimeUnit.SECONDS));
             tui.clearSubmittedInput();

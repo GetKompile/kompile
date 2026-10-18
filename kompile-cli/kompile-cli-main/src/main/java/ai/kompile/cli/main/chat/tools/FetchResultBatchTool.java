@@ -52,14 +52,16 @@ public class FetchResultBatchTool implements CliTool {
                 + "(default 200), pattern (regex filter over lines). Sections come back in order; "
                 + "an expired or unknown handle reports in its section without failing the rest. "
                 + "The batch shares a bounded output budget; continue each section with its returned "
-                + "offset and character_offset. With pattern, offset is a matching-line index.";
+                + "offset and character_offset. A suffix that cannot fit is explicitly deferred with a "
+                + "1-based nextRequestIndex; resubmit those requests unchanged. With pattern, offset is a matching-line index.";
     }
 
     @Override
     public String compactHint() {
         return "MANY fetch_results in ONE call: requests=[{result_id,offset?,limit?,pattern?}] — "
                 + "same semantics as fetch_result (1-based offset, pattern greps the cached result). "
-                + "Per-entry sections; expired handles don't fail the rest. Bounded pages supply offset/character_offset continuations.";
+                + "Per-entry sections; unavailable handles don't fail the rest. Bounded pages supply "
+                + "offset/character_offset continuations. Durable handles follow conversation retention; legacy handles expire.";
     }
 
     @Override
@@ -110,13 +112,17 @@ public class FetchResultBatchTool implements CliTool {
                     + ") — split into several fetch_result_batch calls");
         }
 
-        // One shared response budget, not MAX_FETCH_CHARS multiplied by request count.
-        int sliceBudget = (ToolResultReferenceCache.MAX_FETCH_CHARS - 512) / requests.size() - 160;
+        try (var reservation = cache.reserveFetch(context.getSessionId())) {
+        // A slice needs at least 256 characters, plus its heading/continuation framing.
+        // Defer an explicit suffix rather than letting many minimum-sized slices bypass the cap.
+        int served = Math.min(requests.size(), Math.max(1, (reservation.limit() - 512) / 448));
+        int sliceBudget = (reservation.limit() - 512) / served - 160;
         StringBuilder out = new StringBuilder();
         int succeeded = 0;
         int failed = 0;
         int index = 0;
         for (JsonNode request : requests) {
+            if (index >= served) break;
             index++;
             String resultId = request.path("result_id").asText("");
             String pattern = request.path("pattern").asText("");
@@ -150,13 +156,18 @@ public class FetchResultBatchTool implements CliTool {
             }
         }
 
+        int deferred = requests.size() - served;
+        if (deferred > 0) out.append("Requests ").append(served + 1).append('-').append(requests.size())
+                .append(" were NOT read: shared page budget. Resubmit that suffix with unchanged parameters.\n");
         String summary = succeeded + "/" + requests.size() + " slices read"
-                + (failed > 0 ? ", " + failed + " failed" : "");
+                + (failed > 0 ? ", " + failed + " failed" : "")
+                + (deferred > 0 ? ", " + deferred + " deferred" : "");
         String output = summary + "\n\n" + out.toString().stripTrailing();
-        if (succeeded == 0) {
-            return ToolResult.error(output);
+        reservation.complete(output.length());
+        return new ToolResult("fetch_result_batch", output,
+                Map.of("requests", requests.size(), "succeeded", succeeded, "failed", failed,
+                        "deferred", deferred, "nextRequestIndex", served + 1,
+                        "pageBudgetChars", reservation.limit()), succeeded == 0);
         }
-        return ToolResult.success("fetch_result_batch", output,
-                Map.of("requests", requests.size(), "succeeded", succeeded, "failed", failed));
     }
 }

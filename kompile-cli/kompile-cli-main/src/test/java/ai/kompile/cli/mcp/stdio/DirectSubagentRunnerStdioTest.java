@@ -17,6 +17,11 @@ package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.cli.main.chat.SharedProcessMirror;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.common.util.JsonUtils;
+import java.nio.file.Files;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
@@ -342,6 +347,109 @@ class DirectSubagentRunnerStdioTest {
         assertTrue(runner.fake.cleanupCalled, "cleanup should still run after cancellation");
     }
 
+    @Test
+    void managedOutputIsBrowsableAcrossJvmsBeforeCompletion() throws Exception {
+        var publisher = new CoordinationStateManager(tempDir, "mcp-owner", JsonUtils.standardMapper());
+        try (var processes = new BackgroundProcessManager("mcp-owner", tempDir);
+             var chatProcesses = new BackgroundProcessManager("chat-parent", tempDir);
+             var mirror = new SharedProcessMirror(chatProcesses, publisher, "chat-parent")) {
+            ManagedTestRunner runner = new ManagedTestRunner(tempDir);
+            runner.setProcessTracking(processes, publisher);
+            runner.blockRunMessage = true;
+            CompletableFuture<String> future = runAsync(runner);
+            try {
+                assertTrue(runner.runnerCreated.await(5, TimeUnit.SECONDS));
+                assertTrue(runner.fake.runStarted.await(5, TimeUnit.SECONDS));
+                var log = processes.listAll().get(0);
+                assertTrue(log.isRunning());
+                assertTrue(processes.readOutput(log.getId(), 100).contains("managed-output"));
+                assertTrue(Files.isRegularFile(log.getOutputFile()));
+                assertTrue(log.getMetadata().containsKey("transcript"));
+
+                mirror.pollOnce();
+                assertEquals(1, chatProcesses.listAll().size());
+                var mirrored = chatProcesses.listAll().get(0);
+                assertTrue(chatProcesses.readOutput(mirrored.getId(), 100).contains("managed-output"));
+                runner.fake.cancelled.countDown();
+                future.get(5, TimeUnit.SECONDS);
+                mirror.pollOnce();
+                assertEquals(BackgroundProcessManager.ProcessState.COMPLETED, mirrored.getState());
+                assertTrue(Files.isRegularFile(log.getOutputFile()));
+            } finally {
+                runner.fake.cancelled.countDown();
+                future.get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
+    void failedManagedTaskRetainsPartialLogsAndPublishesFailure() throws Exception {
+        var publisher = new CoordinationStateManager(tempDir, "mcp-owner", JsonUtils.standardMapper());
+        try (var processes = new BackgroundProcessManager("mcp-owner", tempDir)) {
+            ManagedTestRunner runner = new ManagedTestRunner(tempDir);
+            runner.setProcessTracking(processes, publisher);
+            runner.blockRunMessage = true;
+            CompletableFuture<String> future = runAsync(runner);
+            assertTrue(runner.runnerCreated.await(5, TimeUnit.SECONDS));
+            assertTrue(runner.fake.runStarted.await(5, TimeUnit.SECONDS));
+            runner.fake.failure = new IllegalStateException("test provider failed");
+            runner.fake.cancelled.countDown();
+            assertThrows(Exception.class, () -> future.get(5, TimeUnit.SECONDS));
+            var log = processes.listAll().get(0);
+            assertEquals(BackgroundProcessManager.ProcessState.FAILED, log.getState());
+            String output = processes.readOutput(log.getId(), 100);
+            assertTrue(output.contains("managed-output"));
+            assertTrue(output.contains("test provider failed"));
+            assertEquals("FAILED", publisher.snapshotProcesses().get(0).getState());
+        }
+    }
+
+    @Test
+    void cancellationPublishesTerminalStateAndKeepsLogs() throws Exception {
+        var publisher = new CoordinationStateManager(tempDir, "mcp-owner", JsonUtils.standardMapper());
+        try (var processes = new BackgroundProcessManager("mcp-owner", tempDir)) {
+            ManagedTestRunner runner = new ManagedTestRunner(tempDir);
+            runner.setProcessTracking(processes, publisher);
+            runner.blockRunMessage = true;
+            CompletableFuture<String> future = runAsync(runner);
+            assertTrue(runner.runnerCreated.await(5, TimeUnit.SECONDS));
+            assertTrue(runner.fake.runStarted.await(5, TimeUnit.SECONDS));
+            runner.cancel();
+            assertThrows(Exception.class, () -> future.get(5, TimeUnit.SECONDS));
+            var log = processes.listAll().get(0);
+            assertFalse(log.isRunning());
+            assertTrue(processes.readOutput(log.getId(), 100).contains("managed-output"));
+            assertTrue(processes.readOutput(log.getId(), 100).contains("cancelled"));
+            assertEquals("FAILED", publisher.snapshotProcesses().get(0).getState());
+        }
+    }
+
+    @Test
+    void forksKeepTheSessionProcessTracking() throws Exception {
+        var publisher = new CoordinationStateManager(tempDir, "mcp-owner", JsonUtils.standardMapper());
+        try (var processes = new BackgroundProcessManager("mcp-owner", tempDir)) {
+            DirectSubagentRunnerStdio runner = new DirectSubagentRunnerStdio(tempDir, null);
+            runner.setProcessTracking(processes, publisher);
+            var fork = runner.forkForSubagent();
+            Field managerField = DirectSubagentRunnerStdio.class.getDeclaredField("processManager");
+            managerField.setAccessible(true);
+            assertSame(processes, managerField.get(fork));
+            Field coordinatorField = DirectSubagentRunnerStdio.class.getDeclaredField("coordinator");
+            coordinatorField.setAccessible(true);
+            assertSame(publisher, coordinatorField.get(fork));
+        }
+    }
+
+    private static CompletableFuture<String> runAsync(ManagedTestRunner runner) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return runner.runSubagent(AgentConfig.builder("codex").build(), "inspect child logs");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
     static final class ManagedTestRunner extends DirectSubagentRunnerStdio {
         private final Path testWorkDir;
         private final RoleManager testRoleManager;
@@ -413,6 +521,7 @@ class DirectSubagentRunnerStdioTest {
         volatile String thinkingOverride;
         volatile Map<String, String> extraEnvironment = Map.of();
         volatile Consumer<String> outputConsumer;
+        volatile RuntimeException failure;
 
         FakeManagedRunner(String agentName, Path workDir, boolean injectMcpTools,
                           java.util.function.BooleanSupplier blockRunMessage) {
@@ -453,6 +562,7 @@ class DirectSubagentRunnerStdioTest {
         @Override
         public String runMessage(String message, ChatHistory history, ChatSessionMetrics metrics) {
             this.message = message;
+            if (outputConsumer != null) outputConsumer.accept("managed-output");
             runStarted.countDown();
             if (blockRunMessage.getAsBoolean()) {
                 try {
@@ -461,9 +571,7 @@ class DirectSubagentRunnerStdioTest {
                     Thread.currentThread().interrupt();
                 }
             }
-            if (outputConsumer != null) {
-                outputConsumer.accept("managed-output");
-            }
+            if (failure != null) throw failure;
             return "managed-output";
         }
 

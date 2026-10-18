@@ -33,6 +33,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -80,7 +83,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *       when false, {@link #prepareForRead} falls back to the legacy inline
  *       throttled refresh and no watchers/jobs are started).</li>
  *   <li>{@code KOMPILE_CODE_INDEX_WATCH} — watcher auto-start (default true).</li>
- *   <li>{@code KOMPILE_CODE_INDEX_MAX_WATCHERS} — watcher cap (default 8).</li>
+     *   <li>{@code KOMPILE_CODE_INDEX_MAX_WATCHERS} — watcher cap (default 8).</li>
+     *   <li>{@code KOMPILE_CODE_INDEX_IDLE_SECONDS} — retire passive maintenance
+     *       after foreground inactivity (default 300, checked at least every minute).</li>
  *   <li>{@code KOMPILE_CODE_INDEX_READ_WAIT_MS} — freshness-join budget for
  *       read actions (default 2000).</li>
  *   <li>{@code KOMPILE_CODE_INDEX_LOCAL_WRITE_JOIN_MS} — reads only pay the
@@ -100,7 +105,7 @@ public final class BackgroundIndexService {
     private static final long LEARNING_DEBOUNCE_MS = 250;
     private static final long LEARNING_MAX_WAIT_MS = 2_000;
     private static final long ROOT_CACHE_TTL_MS = 60_000;
-    private static final long ACTIVE_PROJECT_WINDOW_MS = TimeUnit.HOURS.toMillis(1);
+    private static final long ACTIVE_PROJECT_WINDOW_MS = TimeUnit.MINUTES.toMillis(5);
     private static final int COMPLETED_JOB_RETENTION = 32;
 
     private static final AtomicReference<BackgroundIndexService> INSTANCE = new AtomicReference<>();
@@ -187,6 +192,8 @@ public final class BackgroundIndexService {
         volatile Path root;
         volatile IndexFileWatcher watcher;
         volatile boolean watcherFailed;
+        volatile boolean maintenanceIdle;
+        volatile long watcherEpoch;
         final AtomicBoolean watcherStartQueued = new AtomicBoolean();
         final AtomicBoolean watcherStarting = new AtomicBoolean();
         volatile long lastTouchedMs;
@@ -198,6 +205,11 @@ public final class BackgroundIndexService {
         /** writeSeq value covered by the last completed refresh. */
         volatile long cleanSeq;
         volatile boolean refreshQueued;
+        boolean forceRefreshRequested;
+        boolean startupRefreshRequested;
+        boolean startupRefreshRunning;
+        boolean startupProjectionRequested;
+        FutureTask<Void> projectionTask;
         /** The queued refresh re-checks the graph projection even if nothing changed. */
         volatile boolean verifyProjectionRequested;
         volatile boolean projectionDirty;
@@ -241,6 +253,11 @@ public final class BackgroundIndexService {
     private final ScheduledThreadPoolExecutor executor;
     private final ScheduledThreadPoolExecutor projectionExecutor;
     private final ScheduledThreadPoolExecutor learningExecutor;
+    private final ScheduledExecutorService maintenanceExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "code-index-idle-retirement");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile ProjectionPublisher projectionPublisher = LocalCodeKGraphPublisher::publish;
     private volatile ConfiguredLearning configuredLearning = BackgroundIndexService::runConfiguredLearning;
     private volatile WatcherStarter watcherStarter = IndexFileWatcher::start;
@@ -292,10 +309,17 @@ public final class BackgroundIndexService {
         if (period > 0 && enabled()) {
             executor.scheduleWithFixedDelay(this::backstopSweep, period, period, TimeUnit.SECONDS);
         }
+        if (enabled()) {
+            // Disabling refresh polling must not make idle watchers immortal.
+            long idlePeriod = Math.min(60, Math.max(1, idleWindowMs() / 1000));
+            maintenanceExecutor.scheduleWithFixedDelay(() -> maintainProjects(System.currentTimeMillis(), false),
+                    idlePeriod, idlePeriod, TimeUnit.SECONDS);
+        }
     }
 
     private void close() {
         if (!closed.compareAndSet(false, true)) return;
+        maintenanceExecutor.shutdownNow();
         List<IndexJob> strandedProjectionJobs = new ArrayList<>();
         for (ProjectState state : projects.values()) {
             IndexFileWatcher w;
@@ -389,6 +413,19 @@ public final class BackgroundIndexService {
     private int maxWatchers() { return (int) longConfig("KOMPILE_CODE_INDEX_MAX_WATCHERS", 8); }
     private long readWaitMs() { return longConfig("KOMPILE_CODE_INDEX_READ_WAIT_MS", 2000); }
     private long localWriteJoinWindowMs() { return longConfig("KOMPILE_CODE_INDEX_LOCAL_WRITE_JOIN_MS", 30_000); }
+    private long idleWindowMs() {
+        return TimeUnit.SECONDS.toMillis(Math.max(1,
+                longConfig("KOMPILE_CODE_INDEX_IDLE_SECONDS", ACTIVE_PROJECT_WINDOW_MS / 1000)));
+    }
+
+    private boolean activate(ProjectState state) {
+        synchronized (state) {
+            boolean wasIdle = state.maintenanceIdle;
+            state.maintenanceIdle = false;
+            state.lastTouchedMs = System.currentTimeMillis();
+            return wasIdle;
+        }
+    }
 
     // ── Background index jobs ───────────────────────────────────────────────
 
@@ -404,7 +441,7 @@ public final class BackgroundIndexService {
             IndexJob existing = state.activeJob;
             if (existing != null && !existing.isDone()) return existing;
             state.root = root;
-            state.lastTouchedMs = System.currentTimeMillis();
+            activate(state);
             IndexJob job = new IndexJob("idx-" + jobCounter.incrementAndGet(),
                     projectId, root.toString(), force);
             state.activeJob = job;
@@ -547,8 +584,10 @@ public final class BackgroundIndexService {
         }
         try {
             ProjectState state = stateFor(projectId);
-            state.lastTouchedMs = System.currentTimeMillis();
+            boolean resumed = activate(state);
             if (state.root == null && !loadStateMetadata(state, workingDirectory)) return null;
+            // A retired watcher missed edits. Bypass the shared refresh throttle once.
+            if (resumed) scheduleRefresh(state, 0);
 
             // Watcher registration walks the tree — never pay that on a read.
             boolean watching = isWatching(projectId);
@@ -600,7 +639,12 @@ public final class BackgroundIndexService {
         try {
             ProjectState state = stateFor(projectId);
             if (state.root == null && !loadStateMetadata(state)) return;
-            scheduleRefresh(state, IndexAutoRefresherDefaultInterval.VALUE, false);
+            boolean resumed;
+            synchronized (state) {
+                resumed = state.maintenanceIdle;
+                state.startupRefreshRequested = true;
+            }
+            scheduleRefresh(state, resumed ? 0 : IndexAutoRefresherDefaultInterval.VALUE, false);
         } catch (Exception e) {
             CodeIndexDiagnostics.alert("[code-index] session-start refresh skipped for '"
                     + projectId + "': " + diagnosticMessage(e));
@@ -644,7 +688,7 @@ public final class BackgroundIndexService {
             if (projectId == null) return;
             ProjectState state = stateFor(projectId);
             if (state.root == null && !loadStateMetadata(state)) return;
-            state.lastTouchedMs = System.currentTimeMillis();
+            activate(state);
             state.lastLocalWriteMs = state.lastTouchedMs;
             state.writeSeq.incrementAndGet();
             scheduleRefresh(state, 0);
@@ -762,7 +806,9 @@ public final class BackgroundIndexService {
      */
     private void scheduleRefresh(ProjectState state, long throttleMs, boolean verifyProjection) {
         synchronized (state) {
-            if (LocalCodeIndexer.isRemoved(state.projectId)) return;
+            if (state.maintenanceIdle && !state.startupRefreshRequested
+                    || LocalCodeIndexer.isRemoved(state.projectId)) return;
+            if (throttleMs == 0) state.forceRefreshRequested = true;
             if (verifyProjection) state.verifyProjectionRequested = true;
             if (state.refreshQueued) return;
             state.refreshQueued = true;
@@ -781,11 +827,16 @@ public final class BackgroundIndexService {
     private void runRefresh(ProjectState state, long throttleMs) {
         long seqBefore = state.writeSeq.get();
         boolean verifyProjection;
+        boolean startupRefresh;
         synchronized (state) {
             state.refreshQueued = false;
+            startupRefresh = state.startupRefreshRequested;
+            state.startupRefreshRequested = false;
+            if (state.forceRefreshRequested) throttleMs = 0;
+            state.forceRefreshRequested = false;
             verifyProjection = state.verifyProjectionRequested;
             state.verifyProjectionRequested = false;
-            if (LocalCodeIndexer.isRemoved(state.projectId)) return;
+            if (state.maintenanceIdle && !startupRefresh || LocalCodeIndexer.isRemoved(state.projectId)) return;
             IndexJob job = state.activeJob;
             if (job != null && !job.isDone()) {
                 // A full pass is in flight; its completion re-schedules us if
@@ -794,6 +845,7 @@ public final class BackgroundIndexService {
                 return;
             }
             state.refreshRunning = true;
+            state.startupRefreshRunning = startupRefresh;
         }
         try {
             IndexAutoRefresher.RefreshOutcome outcome = IndexAutoRefresher.refresh(
@@ -811,7 +863,7 @@ public final class BackgroundIndexService {
             if (state.root != null && (outcome.changed()
                     || throttleMs == 0 && !outcome.fileFailures()
                     || state.projectionDirty || verifyProjection)) {
-                scheduleProjection(state, null);
+                scheduleProjection(state, null, startupRefresh);
             }
             // A bypass pass (throttle 0) always runs, so it certifies every
             // write it saw as indexed. A throttled pass may have been skipped
@@ -831,6 +883,7 @@ public final class BackgroundIndexService {
         } finally {
             synchronized (state) {
                 state.refreshRunning = false;
+                state.startupRefreshRunning = false;
                 state.notifyAll();
             }
             if (state.dirty()) scheduleRefresh(state, 0);
@@ -845,18 +898,25 @@ public final class BackgroundIndexService {
      * debounce thread. Repeated writes coalesce into one follow-up projection.
      */
     private void scheduleProjection(ProjectState state, IndexJob job) {
+        scheduleProjection(state, job, false);
+    }
+
+    private void scheduleProjection(ProjectState state, IndexJob job, boolean startup) {
         if (closed.get()) {
             if (job != null && job.learning == null) {
                 job.learning = learningFailure("graph projection cancelled");
             }
             return;
         }
+        FutureTask<Void> task;
         synchronized (state) {
             if (LocalCodeIndexer.isRemoved(state.projectId)) {
                 if (job != null) job.learning = learningFailure("code project removed");
                 return;
             }
             state.projectionDirty = true;
+            if (startup) state.startupProjectionRequested = true;
+            if (state.maintenanceIdle && job == null && !state.startupProjectionRequested) return;
             if (job != null && !state.projectionJobs.contains(job)) {
                 state.projectionJobs.addLast(job);
             }
@@ -866,9 +926,11 @@ public final class BackgroundIndexService {
             }
             if (state.projectionQueued) return;
             state.projectionQueued = true;
+            task = new FutureTask<>(() -> { runProjection(state); return null; });
+            state.projectionTask = task;
         }
         try {
-            projectionExecutor.execute(() -> runProjection(state));
+            projectionExecutor.execute(task);
         } catch (RuntimeException failure) {
             synchronized (state) {
                 state.projectionQueued = false;
@@ -1068,8 +1130,12 @@ public final class BackgroundIndexService {
         final long seqBefore;
         final List<IndexJob> targetJobs;
         synchronized (state) {
+            // A cancelled task may already be waiting for this monitor while a
+            // foreground read queues its replacement. Do not touch that task's flags.
+            if (Thread.currentThread().isInterrupted()) return;
             state.projectionQueued = false;
-            if (!state.projectionDirty || state.root == null) {
+            if (!state.projectionDirty || state.root == null
+                    || state.maintenanceIdle && state.projectionJobs.isEmpty() && !state.startupProjectionRequested) {
                 state.notifyAll();
                 return;
             }
@@ -1087,7 +1153,8 @@ public final class BackgroundIndexService {
             LocalCodeKGraphPublisher.ProjectionResult projection = projectionPublisher.publish(
                     state.root, state.projectId, null, null);
             for (IndexJob targetJob : targetJobs) targetJob.projection = projection;
-            if (projection != null && projection.graphPath() != null) {
+            if (projection != null && projection.graphPath() != null
+                    && (!state.maintenanceIdle || !targetJobs.isEmpty())) {
                 scheduleLearning(state, projection, targetJobs);
             }
             successful = true;
@@ -1116,6 +1183,8 @@ public final class BackgroundIndexService {
                 state.projectionRunning = false;
                 state.runningProjectionJobs = List.of();
                 rerun = changedDuringProjection;
+                if (!rerun) state.startupProjectionRequested = false;
+                state.projectionTask = null;
                 state.projectionRescheduleRequested = false;
                 state.notifyAll();
             }
@@ -1130,7 +1199,7 @@ public final class BackgroundIndexService {
 
     /** Queue watcher startup on the executor (registration walks the tree). */
     private void ensureWatcherAsync(ProjectState state) {
-        if (!watchEnabled() || state.watcherFailed || closed.get()) return;
+        if (!watchEnabled() || state.maintenanceIdle || state.watcherFailed || closed.get()) return;
         IndexFileWatcher existing = state.watcher;
         if (existing != null && existing.isRunning()) return;
         if (!state.watcherStartQueued.compareAndSet(false, true)) return;
@@ -1148,7 +1217,7 @@ public final class BackgroundIndexService {
     }
 
     private boolean ensureWatcher(ProjectState state) {
-        if (!watchEnabled() || state.watcherFailed || closed.get()) return false;
+        if (!watchEnabled() || state.maintenanceIdle || state.watcherFailed || closed.get()) return false;
         IndexFileWatcher existing = state.watcher;
         if (existing != null && existing.isRunning()) return true;
         Path root = state.root;
@@ -1158,43 +1227,54 @@ public final class BackgroundIndexService {
         // belongs under the monitor that foreground freshness/job waits need to acquire.
         if (!state.watcherStarting.compareAndSet(false, true)) return false;
         IndexFileWatcher watcher = null;
+        final long watcherEpoch = state.watcherEpoch;
         try {
-            if (closed.get() || LocalCodeIndexer.isRemoved(state.projectId)) return false;
+            if (closed.get() || state.maintenanceIdle || LocalCodeIndexer.isRemoved(state.projectId)) return false;
             existing = state.watcher;
             if (existing != null && existing.isRunning()) return true;
             evictWatchersOverCap(state.projectId);
             try {
                 watcher = indexer.createWatcher(root, state.projectId, silentStream());
                 watcher.setListener(new IndexFileWatcher.WatchListener() {
+                    private boolean currentWatcher() {
+                        return !state.maintenanceIdle && state.watcherEpoch == watcherEpoch;
+                    }
+
                     @Override
                     public void onFilesChanged(Set<String> changedPaths) {
-                        state.writeSeq.incrementAndGet();
-                        state.refreshRunning = true;
+                        synchronized (state) {
+                            if (!currentWatcher()) return;
+                            state.writeSeq.incrementAndGet();
+                            state.refreshRunning = true;
+                        }
                     }
 
                     @Override
                     public void onIndexUpdated(LocalCodeIndexer.IndexResult result) {
-                        int attempted = Math.max(0,
-                                result.filesProcessed() - result.filesSkipped());
-                        int failed = Math.min(attempted, Math.max(0, result.errors()));
-                        int reindexed = Math.max(0, attempted - failed);
-                        if (reindexed > 0 || result.filesDeleted() > 0 || failed > 0) {
-                            StringBuilder note = new StringBuilder(
-                                    "[index auto-refreshed in background: ")
-                                    .append(reindexed).append(" file")
-                                    .append(reindexed == 1 ? "" : "s").append(" re-indexed");
-                            if (result.filesDeleted() > 0) {
-                                note.append(", ").append(result.filesDeleted()).append(" deleted");
+                        synchronized (state) {
+                            if (!currentWatcher()) return;
+                            int attempted = Math.max(0,
+                                    result.filesProcessed() - result.filesSkipped());
+                            int failed = Math.min(attempted, Math.max(0, result.errors()));
+                            int reindexed = Math.max(0, attempted - failed);
+                            if (reindexed > 0 || result.filesDeleted() > 0 || failed > 0) {
+                                StringBuilder note = new StringBuilder(
+                                        "[index auto-refreshed in background: ")
+                                        .append(reindexed).append(" file")
+                                        .append(reindexed == 1 ? "" : "s").append(" re-indexed");
+                                if (result.filesDeleted() > 0) {
+                                    note.append(", ").append(result.filesDeleted()).append(" deleted");
+                                }
+                                if (failed > 0) {
+                                    note.append(", ").append(failed).append(" failed");
+                                }
+                                state.lastNote.set(note.append(']').toString());
+                                if (reindexed > 0 || result.filesDeleted() > 0) {
+                                    scheduleProjection(state, null);
+                                }
                             }
-                            if (failed > 0) {
-                                note.append(", ").append(failed).append(" failed");
-                            }
-                            state.lastNote.set(note.append(']').toString());
-                            if (reindexed > 0 || result.filesDeleted() > 0) {
-                                scheduleProjection(state, null);
-                            }
+                            finishWatcherPass(true);
                         }
-                        finishWatcherPass(true);
                     }
 
                     @Override
@@ -1203,28 +1283,29 @@ public final class BackgroundIndexService {
                     }
 
                     private void finishWatcherPass(boolean successful) {
-                        IndexFileWatcher w = state.watcher;
-                        if (successful && (w == null || w.getPendingChanges().isEmpty())) {
-                            state.cleanSeq = state.writeSeq.get();
-                        }
-                        state.lastRefreshCompletedMs = System.currentTimeMillis();
                         synchronized (state) {
+                            if (!currentWatcher()) return;
+                            IndexFileWatcher w = state.watcher;
+                            if (successful && (w == null || w.getPendingChanges().isEmpty())) {
+                                state.cleanSeq = state.writeSeq.get();
+                            }
+                            state.lastRefreshCompletedMs = System.currentTimeMillis();
                             state.refreshRunning = false;
                             state.notifyAll();
+                            if (!successful) scheduleRefresh(state, WRITE_DEBOUNCE_MS);
                         }
-                        if (!successful) scheduleRefresh(state, WRITE_DEBOUNCE_MS);
                     }
                 });
                 watcherStarter.start(watcher);
                 synchronized (state) {
-                    if (!closed.get() && !LocalCodeIndexer.isRemoved(state.projectId)
-                            && root.equals(state.root)) {
+                    if (!closed.get() && !state.maintenanceIdle && state.watcherEpoch == watcherEpoch
+                            && !LocalCodeIndexer.isRemoved(state.projectId) && root.equals(state.root)) {
                         state.watcher = watcher;
                         return true;
                     }
                 }
-                // Closed/removed during registration: do not resurrect maintenance.
-                watcher.stop();
+                // Closed/removed/retired during registration: do not resurrect maintenance.
+                watcher.stop(false);
                 return false;
             } catch (Exception e) {
                 if (watcher != null) {
@@ -1293,9 +1374,52 @@ public final class BackgroundIndexService {
     // ── Backstop sweep ──────────────────────────────────────────────────────
 
     private void backstopSweep() {
-        long cutoff = System.currentTimeMillis() - ACTIVE_PROJECT_WINDOW_MS;
+        backstopSweep(System.currentTimeMillis());
+    }
+
+    /** Clock seam keeps idle-lifecycle tests deterministic without sleeping for minutes. */
+    void backstopSweep(long now) {
+        maintainProjects(now, true);
+    }
+
+    private void maintainProjects(long now, boolean refreshActive) {
+        long cutoff = now - idleWindowMs();
         for (ProjectState state : projects.values()) {
-            if (state.lastTouchedMs < cutoff) continue;
+            IndexFileWatcher retired = null;
+            boolean idle;
+            synchronized (state) {
+                // An explicit job owns its requested projection even if indexing took
+                // longer than the idle window. Passive rewrites cooperate with cancellation.
+                boolean explicitWork = state.activeJob != null && !state.activeJob.isDone()
+                        || !state.projectionJobs.isEmpty() || !state.runningProjectionJobs.isEmpty()
+                        || state.startupRefreshRequested || state.startupRefreshRunning || state.startupProjectionRequested;
+                idle = state.lastTouchedMs < cutoff && !explicitWork;
+                if (idle) {
+                    if (!state.maintenanceIdle) state.watcherEpoch++;
+                    state.maintenanceIdle = true;
+                    retired = state.watcher;
+                    state.watcher = null;
+                    state.watcherFailed = false;
+                    state.refreshRunning = false;
+                    state.forceRefreshRequested = false;
+                    state.projectionRescheduleRequested = false;
+                    // Archive publication is atomic and its relation cursor cooperates
+                    // with interruption. Release an idle snapshot instead of retaining
+                    // it until a multi-minute rewrite happens to finish.
+                    if (state.projectionTask != null) {
+                        state.projectionTask.cancel(true);
+                        if (!state.projectionRunning) {
+                            state.projectionQueued = false;
+                            state.projectionTask = null;
+                        }
+                    }
+                    state.notifyAll();
+                }
+            }
+            // Closing inotify and discarding derived-index work must not hold the
+            // foreground state monitor or synchronously flush another index pass.
+            if (retired != null) retired.stop(false);
+            if (idle || !refreshActive) continue;
             Path root = state.root;
             if (root == null || !Files.isDirectory(root)) continue;
             scheduleRefresh(state, IndexAutoRefresherDefaultInterval.VALUE);

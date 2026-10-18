@@ -95,6 +95,64 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--web", description = "Start a fresh installed CHAT web UI (LAN-accessible by default) and print its local URL without requiring chat configuration. Configure sessions in the browser, or combine with --setup to configure first.")
     private boolean web;
 
+    @CommandLine.Option(names = "--product-profile", paramLabel = "PATH",
+            description = "Installed immutable product chat policy; requires --web --single-chat or --web-session-worker.")
+    private Path productProfile;
+
+    @CommandLine.Option(names = "--web-session-worker", hidden = true,
+            description = "Persistent product JSONL worker (explicit session_open bootstrap; no initial prompt).")
+    private boolean webSessionWorker;
+
+    String productOptionError() {
+        if (!webSessionWorker && (!web || !singleWebChat || workspace))
+            return "Product chat requires --web --single-chat or --web-session-worker.";
+        if (webSessionWorker && web) return "A product worker cannot start a web server.";
+        if (workingDirectory == null) return "Product chat requires an explicit --working-dir.";
+        if (!promptParts.isEmpty()) return "Product chat does not accept a CLI prompt.";
+        var allowed = webSessionWorker
+                ? java.util.Set.of("--product-profile", "--web-session-worker", "--working-dir", "--output-format", "--json", "--session-id", "--web-controls")
+                : java.util.Set.of("--product-profile", "--web", "--single-chat", "--working-dir", "--web-port", "--open-browser", "--startup-timeout");
+        if (commandSpec != null && commandSpec.commandLine().getParseResult() != null) {
+            for (var option : commandSpec.commandLine().getParseResult().matchedOptions())
+                if (!allowed.contains(option.longestName())) return "Product chat rejects " + option.longestName();
+        }
+        if (webSessionWorker && outputFormat != null && !"stream-json".equals(outputFormat))
+            return "Product workers emit stream-json only.";
+        return null;
+    }
+
+    private int runProductWorker(ai.kompile.cli.common.ProductChatPolicy policy) {
+        try (var runtime = ai.kompile.cli.main.chat.exec.ProductSessionRuntime.open(System.in, policy)) {
+            if (sessionId != null && !sessionId.equals(runtime.sessionId()))
+                return headlessError("Product bootstrap session mismatch", 2);
+            ChatConfig config = ChatConfig.loadOrFromEnv(policy.workspace());
+            if (config == null || !config.isValid() || config.isKompileServer()
+                    || config.isClaudeCliNative() || config.isOpenCodeNative()
+                    || "passthrough".equalsIgnoreCase(config.getChatMode()))
+                return headlessError("Product workers require saved Standard Chat direct/local configuration", 2);
+            if (config.isKompileLocalServing()) {
+                LocalServingRuntimePool.Lease acquired;
+                PrintStream prior = redirectStartupOutput(HeadlessAgentRunner.OutputMode.JSON);
+                try { acquired = LocalServingRuntimePool.acquire(config, startupTimeoutSeconds); }
+                finally { restoreStartupOutput(prior); }
+                try (LocalServingRuntimePool.Lease serving = acquired) {
+                    serving.applyTo(config);
+                    return runProductConfigured(runtime, config);
+                }
+            }
+            return runProductConfigured(runtime, config);
+        } catch (Exception failure) {
+            return headlessError("Product worker initialization failed: " + failure.getClass().getSimpleName(), 2);
+        }
+    }
+
+    private int runProductConfigured(ai.kompile.cli.main.chat.exec.ProductSessionRuntime runtime, ChatConfig config) {
+        var options = new HeadlessAgentRunner.Options("", runtime.sessionId(), false, null, null,
+                HeadlessAgentRunner.OutputMode.JSON, runtime.policy().workspace(), 0, null, null, null, null,
+                config, null, false, false, null, false);
+        return HeadlessAgentRunner.productWorker(runtime).run(options).exitCode();
+    }
+
     @CommandLine.Option(names = "--web-port", paramLabel = "PORT",
             description = "Port for the launched web UI (0 = automatic). Use with --web or choose Browser in the setup wizard; --port remains the terminal server connection option.")
     private Integer webPort;
@@ -382,6 +440,27 @@ public class ChatCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        boolean productRequested = productProfile != null || ai.kompile.cli.common.ProductChatPolicy.configuredPath().isPresent();
+        if (webSessionWorker && !productRequested) return headlessError("--web-session-worker requires --product-profile", 2);
+        if (productRequested) {
+            String productError = productOptionError();
+            if (productError != null) return printError(productError, 2);
+            try {
+                var path = productProfile != null ? productProfile : ai.kompile.cli.common.ProductChatPolicy.configuredPath().orElseThrow();
+                var policy = ai.kompile.cli.common.ProductChatPolicy.load(path, effectiveWorkingDirectory());
+                if (webSessionWorker) return runProductWorker(policy);
+                String prior = System.getProperty(ai.kompile.cli.common.ProductChatPolicy.PROPERTY);
+                try {
+                    System.setProperty(ai.kompile.cli.common.ProductChatPolicy.PROPERTY, policy.manifestPath().toString());
+                    return runWebHandoff();
+                } finally {
+                    if (prior == null) System.clearProperty(ai.kompile.cli.common.ProductChatPolicy.PROPERTY);
+                    else System.setProperty(ai.kompile.cli.common.ProductChatPolicy.PROPERTY, prior);
+                }
+            } catch (Exception failure) {
+                return printError("Product profile could not be loaded: " + failure.getClass().getSimpleName(), 2);
+            }
+        }
         if (webSetup) return runWebSetup();
         if (webPort != null) {
             try {
@@ -740,7 +819,7 @@ public class ChatCommand implements Callable<Integer> {
     String webOptionError() {
         if (!promptParts.isEmpty()) return "--web does not accept a prompt; send it in the browser.";
         if (commandSpec != null && commandSpec.commandLine().getParseResult() != null) {
-            var allowed = java.util.Set.of("--web", "--web-port", "--workspace", "--single-chat", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout", "--workflow");
+            var allowed = java.util.Set.of("--web", "--web-port", "--workspace", "--single-chat", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout", "--workflow", "--product-profile");
             for (var option : commandSpec.commandLine().getParseResult().matchedOptions()) {
                 if (!allowed.contains(option.longestName())) {
                     return "--web cannot be combined with " + option.longestName()
@@ -1154,7 +1233,7 @@ public class ChatCommand implements Callable<Integer> {
 
     private int headlessError(String message, int exitCode) {
         if (liveControls != null) liveControls.close();
-        if (jsonOutput || "json".equalsIgnoreCase(outputFormat)
+        if (webSessionWorker || jsonOutput || "json".equalsIgnoreCase(outputFormat)
                 || "jsonl".equalsIgnoreCase(outputFormat)
                 || "stream-json".equalsIgnoreCase(outputFormat)) {
             System.out.println(ExecJsonEvents.event(
@@ -2003,9 +2082,9 @@ public class ChatCommand implements Callable<Integer> {
 
     /**
      * Resolves the workflow snapshot for this launch from the {@code --workflow}
-     * flag only. The interactive opt-in question lives in the setup wizard and
-     * the workflow-mode picker — never as a silent fallback here, which is what
-     * made the question appear on resumes and explicit-action launches.
+     * flag only. Interactive team selection lives in the setup wizard's explicit
+     * Workflow chat mode — never as a silent fallback here or a prompt on
+     * ordinary chats, resumes, or explicit-action launches.
      * An explicit {@code --workflow} that cannot be resolved aborts the launch
      * rather than starting unenforced. {@code config} is the chat that leads the
      * team; {@code --workflow create} defaults participant models from it.
@@ -2042,7 +2121,7 @@ public class ChatCommand implements Callable<Integer> {
             }
         }
         if (headless) return null;
-        // No flag: no workflow. (The wizard asks the opt-in question on its own.)
+        // No flag: no workflow. The wizard selects teams only in Workflow mode.
         return null;
     }
 

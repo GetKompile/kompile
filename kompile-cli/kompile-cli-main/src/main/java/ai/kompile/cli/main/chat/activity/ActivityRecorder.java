@@ -3,9 +3,8 @@ package ai.kompile.cli.main.chat.activity;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.BufferedReader;
+import java.nio.ByteBuffer;
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
@@ -19,7 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
+
 
 /** Best-effort lifecycle recorder; failures are retained as health warnings, never hidden. */
 public final class ActivityRecorder {
@@ -28,7 +27,7 @@ public final class ActivityRecorder {
     private final Clock clock;
     private static final long LOCK_TIMEOUT_MILLIS = 500L;
     private static final int MAX_WARNINGS = 32;
-    private final AtomicLong sequence;
+    static final int SEQUENCE_TAIL_BYTES = 256 * 1024;
     private final List<String> warnings = new ArrayList<>();
 
     public ActivityRecorder(ActivityStorage storage) {
@@ -39,7 +38,6 @@ public final class ActivityRecorder {
         this.storage = Objects.requireNonNull(storage, "storage");
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.clock = Objects.requireNonNull(clock, "clock");
-        this.sequence = new AtomicLong(0L);
     }
 
     public synchronized ActivityEvent record(ActivityIdentity identity, String eventType,
@@ -122,30 +120,54 @@ public final class ActivityRecorder {
 
     private long nextSequence(Path file, long requested) throws IOException {
         long persisted = 0L;
-        if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
-            try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    try {
-                        ActivityEvent existing = mapper.readValue(line, ActivityEvent.class);
-                        persisted = Math.max(persisted, existing.sequence());
-                    } catch (Exception ignored) {
-                        // Preserve valid history while ignoring a partial final record.
+        if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) && Files.size(file) > 0L) {
+            // The append lock spans recovery and write. Recover from the most recent valid
+            // envelope, not recorder-local state (other JVMs may have appended meanwhile).
+            try (FileChannel input = FileChannel.open(file, StandardOpenOption.READ,
+                    LinkOption.NOFOLLOW_LINKS)) {
+                long size = input.size();
+                long start = Math.max(0L, size - SEQUENCE_TAIL_BYTES);
+                ByteBuffer buffer = ByteBuffer.allocate((int) (size - start));
+                input.position(start);
+                while (buffer.hasRemaining() && input.read(buffer) > 0) { }
+                byte[] bytes = buffer.array();
+                int end = buffer.position();
+                boolean found = false;
+                for (int i = end - 1; i >= -1; i--) {
+                    if (i >= 0 && bytes[i] != '\n') continue;
+                    int begin = i + 1;
+                    if (i == -1 && start > 0) break; // Leading fragment is not an envelope.
+                    if (begin < end) {
+                        try {
+                            var raw = mapper.readTree(ActivityJournalReader.decodeUtf8(bytes, begin, end - begin));
+                            if (!raw.isObject() || !raw.hasNonNull("identity") || !raw.hasNonNull("eventId")
+                                    || !raw.hasNonNull("sequence") || !raw.get("sequence").canConvertToLong()
+                                    || raw.get("sequence").longValue() <= 0L)
+                                throw new IOException("Missing sequence evidence");
+                            ActivityEvent existing = mapper.treeToValue(raw, ActivityEvent.class);
+                            persisted = existing.sequence();
+                            found = true;
+                            break;
+                        } catch (Exception ignored) {
+                            // A crash may leave a malformed suffix; recovery remains bounded.
+                        }
                     }
+                    end = i;
                 }
+                if (!found) throw new IOException("Cannot determine activity sequence within bounded journal tail; append skipped");
             }
         }
-        long base = Math.max(Math.max(persisted, sequence.get()), Math.max(0L, requested));
-        long next = base == Long.MAX_VALUE ? Long.MAX_VALUE : base + 1L;
-        sequence.set(next);
-        return next;
+        long base = Math.max(persisted, Math.max(0L, requested));
+        if (base == Long.MAX_VALUE) throw new IOException("Activity sequence exhausted; append skipped");
+        return base + 1L;
     }
 
     private static boolean needsSeparator(Path file) throws IOException {
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.size(file) == 0L) return false;
-        try (RandomAccessFile input = new RandomAccessFile(file.toFile(), "r")) {
-            input.seek(input.length() - 1L);
-            return input.read() != '\n';
+        try (FileChannel input = FileChannel.open(file, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            ByteBuffer last = ByteBuffer.allocate(1);
+            input.position(input.size() - 1L);
+            return input.read(last) != 1 || last.array()[0] != '\n';
         }
     }
 

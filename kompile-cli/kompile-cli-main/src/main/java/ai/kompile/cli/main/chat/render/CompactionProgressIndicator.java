@@ -17,8 +17,10 @@
 package ai.kompile.cli.main.chat.render;
 
 import ai.kompile.cli.main.chat.ChatCompleter;
+import ai.kompile.cli.main.chat.ChatSessionContext;
 import ai.kompile.utils.AnsiConstants;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
 
@@ -27,7 +29,8 @@ import java.util.function.Consumer;
  * <p>
  * Compaction is a long, silent LLM call (seconds to minutes). This indicator
  * renders it the same way running tools are rendered: one replaceable
- * transcript block updated in place via {@link ChatCompleter#upsertTranscriptBlock},
+ * transcript block updated in place via {@link ChatCompleter#upsertDisplayBlock}
+ * (or {@link ChatCompleter#upsertTranscriptBlock} for older hosts),
  * plus a status-bar activity label. Because the block is replaced rather than
  * appended, animated frames can never scroll through, overlap the input row,
  * or leave stale progress text in the transcript.
@@ -64,6 +67,7 @@ public final class CompactionProgressIndicator implements CompactionProgress {
     private final int entriesBefore;
     private final long tokensBefore;
     private final String previousActivity;
+    private final String provider;
 
     private final Object lock = new Object();
     private String phase = "Preparing checkpoint";
@@ -77,7 +81,8 @@ public final class CompactionProgressIndicator implements CompactionProgress {
                                         int entriesBefore, long tokensBefore,
                                         Consumer<String> appendOnlySink,
                                         Consumer<String> activitySetter,
-                                        long tickMillis) {
+                                        long tickMillis, String provider) {
+        this.provider = provider;
         this.blockKey = blockKey;
         this.renderer = renderer;
         this.entriesBefore = Math.max(0, entriesBefore);
@@ -98,7 +103,19 @@ public final class CompactionProgressIndicator implements CompactionProgress {
                                                     Consumer<String> activitySetter) {
         CompactionProgressIndicator indicator = new CompactionProgressIndicator(
                 blockKey, renderer, entriesBefore, tokensBefore,
-                appendOnlySink, activitySetter, DEFAULT_TICK_MILLIS);
+                appendOnlySink, activitySetter, DEFAULT_TICK_MILLIS, null);
+        indicator.begin();
+        return indicator;
+    }
+
+    /** Native providers do not expose a portable history estimate or a post-compaction size. */
+    public static CompactionProgressIndicator startProvider(String blockKey, TerminalRenderer renderer,
+                                                            String provider,
+                                                            Consumer<String> appendOnlySink,
+                                                            Consumer<String> activitySetter) {
+        CompactionProgressIndicator indicator = new CompactionProgressIndicator(
+                blockKey, renderer, 0, 0, appendOnlySink, activitySetter, DEFAULT_TICK_MILLIS, provider);
+        indicator.phase = provider + " is summarizing its session";
         indicator.begin();
         return indicator;
     }
@@ -115,7 +132,7 @@ public final class CompactionProgressIndicator implements CompactionProgress {
             }
         }
         publishActiveFrame();
-        animator = new Thread(() -> {
+        animator = new Thread(ChatSessionContext.current().wrap(() -> {
             while (!Thread.currentThread().isInterrupted()) {
                 try {
                     Thread.sleep(tickMillis);
@@ -128,7 +145,7 @@ public final class CompactionProgressIndicator implements CompactionProgress {
                 }
                 publishActiveFrame();
             }
-        }, "compaction-progress");
+        }), "compaction-progress");
         animator.setDaemon(true);
         animator.start();
     }
@@ -154,6 +171,12 @@ public final class CompactionProgressIndicator implements CompactionProgress {
         publishFinished(renderCompleteNotice(tokensBefore, tokensAfter, preservedTurns));
     }
 
+    /** Complete the same progress block without inventing provider context savings. */
+    public void completeProvider(String trigger, long tokensBefore) {
+        publishFinished(renderer.renderProviderCompactionNotice(provider, trigger, tokensBefore)
+                + renderer.dim(" · in " + elapsed(System.nanoTime())));
+    }
+
     /** Publish a dim one-line result for a compaction that had nothing to do. */
     public void noop(String message) {
         publishFinished(renderer.dim("  · " + safeMessage(message)));
@@ -166,7 +189,7 @@ public final class CompactionProgressIndicator implements CompactionProgress {
 
     /** Publish a red one-line failure notice and stop animating. */
     public void failed(String message) {
-        publishFinished(renderer.red("  ✗ " + safeMessage(message)));
+        publishFinished(renderer.red("  ✗ " + safeMessage(message)), true);
     }
 
     /**
@@ -191,15 +214,15 @@ public final class CompactionProgressIndicator implements CompactionProgress {
     // ========================================================================
 
     private void publishActiveFrame() {
-        String block;
         synchronized (lock) {
             if (finished) return;
-            block = renderActiveFrame(renderer, phase, frame, entriesBefore, tokensBefore,
-                    elapsed(System.nanoTime()));
-        }
-        boolean stillManaged = ChatCompleter.upsertTranscriptBlock(blockKey, block);
-        synchronized (lock) {
-            if (finished) return;
+            String block = provider == null
+                    ? renderActiveFrame(renderer, phase, frame, entriesBefore, tokensBefore,
+                            elapsed(System.nanoTime()))
+                    : renderFrame(renderer, phase, frame, "provider context size not reported",
+                            elapsed(System.nanoTime()));
+            // Serialize frames with terminal publication: no late tick may revive a finished block.
+            boolean stillManaged = publishBlock(block, true, false);
             if (!stillManaged && !fallbackAnnounced && appendOnlySink != null) {
                 // Unmanaged surface: never stream animated frames; one honest
                 // start line, and the final line comes with the terminal state.
@@ -209,7 +232,18 @@ public final class CompactionProgressIndicator implements CompactionProgress {
         }
     }
 
+    private boolean publishBlock(String content, boolean running, boolean error) {
+        String text = TerminalRenderer.printableToolOutput(content);
+        return ChatCompleter.upsertDisplayBlock(new ChatDisplayBlock(blockKey, "notice", "", text, content,
+                List.of(new ChatDisplayBlock.Section("body", "notice", "", text, content)), error, running))
+                || ChatCompleter.upsertTranscriptBlock(blockKey, content);
+    }
+
     private void publishFinished(String notice) {
+        publishFinished(notice, false);
+    }
+
+    private void publishFinished(String notice, boolean error) {
         // Atomic claim: exactly one terminal publication per indicator, even
         // when complete/failed/abandonIfActive race on different threads.
         Thread animatorThread;
@@ -223,7 +257,7 @@ public final class CompactionProgressIndicator implements CompactionProgress {
             animatorThread.interrupt();
         }
         releaseActivity();
-        boolean stillManaged = ChatCompleter.upsertTranscriptBlock(blockKey, notice);
+        boolean stillManaged = publishBlock(notice, false, error);
         if (!stillManaged && appendOnlySink != null) {
             appendOnlySink.accept(notice);
         }
@@ -252,13 +286,18 @@ public final class CompactionProgressIndicator implements CompactionProgress {
     /** Two-line animated frame: spinner + phase, marquee bar + counts + elapsed. */
     static String renderActiveFrame(TerminalRenderer renderer, String phase, int frame,
                                     int entries, long tokens, String elapsed) {
+        return renderFrame(renderer, phase, frame, entries + " entr" + (entries == 1 ? "y" : "ies")
+                + " · portable history estimate: ~" + formatTokens(tokens) + " tokens", elapsed);
+    }
+
+    private static String renderFrame(TerminalRenderer renderer, String phase, int frame,
+                                      String counts, String elapsed) {
         String spinner = AnsiConstants.SPINNER_FRAMES[
                 Math.floorMod(frame, AnsiConstants.SPINNER_FRAMES.length)];
         return "  " + renderer.yellow(spinner) + " " + renderer.cyan("Compacting context")
                 + renderer.dim(" — " + phase + "…") + "\n"
                 + "  " + renderBar(renderer, frame)
-                + renderer.dim(" · " + entries + " entr" + (entries == 1 ? "y" : "ies")
-                        + " · portable history estimate: ~" + formatTokens(tokens) + " tokens · " + elapsed);
+                + renderer.dim(" · " + counts + " · " + elapsed);
     }
 
     /** Indeterminate marquee bar: a lit window travels around the track. */

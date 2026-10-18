@@ -217,6 +217,37 @@ class AllCliToolsRegisteredSweepTest {
     }
 
     @Test
+    void agentCanConfigureRequiredMemoriesThroughTheRegisteredWorkflowTool(@TempDir Path project) throws Exception {
+        var agent = ai.kompile.cli.main.chat.agent.AgentConfig.builder("memory-test")
+                .enabledTools(Set.of("*")).build();
+        var permissions = new ai.kompile.cli.main.chat.permission.PermissionService();
+        permissions.setUserOverride("enforcer_config",
+                ai.kompile.cli.main.chat.permission.PermissionService.PermissionLevel.ALLOW);
+        ToolRegistry registry = ToolRegistryFactory.create(OM, DUMMY_BASE_URL, new AgentRegistry(),
+                permissions, null, null, null, null, null, project, null);
+        assertTrue(registry.getDynamicToolManager().activateGroup("workflow").contains("enforcer_config"));
+        assertTrue(registry.getProgressiveToolsForAgent(agent).stream()
+                .anyMatch(tool -> "enforcer_config".equals(tool.id())));
+        assertTrue(registry.buildProgressiveDirectToolDefinitions(agent).toString()
+                .contains("workflow_required_memories"));
+        CliTool exposedTool = registry.get("enforcer_config");
+        ToolContext context = new ToolContext("memory-tool-test", agent, permissions, project, registry);
+        java.nio.file.Files.createDirectories(project.resolve(".kompile/memory"));
+        java.nio.file.Files.writeString(project.resolve(".kompile/memory/release.md"), "REGISTERED_TOOL_MEMORY_RULE");
+        var params = OM.createObjectNode().put("action", "set")
+                .put("field", "workflow_required_memories").put("value", "project:release.md");
+        assertTrue(!exposedTool.execute(params, context).isError());
+        params.put("field", "workflow_mode").put("value", "enforced");
+        assertTrue(!exposedTool.execute(params, context).isError());
+        var controller = new ai.kompile.cli.main.chat.workflow.WorkflowController(
+                project, new ai.kompile.cli.main.chat.skill.SkillRegistry(), registry);
+        controller.beginTurn();
+        assertTrue(controller.activeSystemPrompt().contains("REGISTERED_TOOL_MEMORY_RULE"));
+        assertTrue(controller.activeMemoryConstraints().contains("REGISTERED_TOOL_MEMORY_RULE"));
+        controller.completeTurn();
+    }
+
+    @Test
     void liveFactoryRegistersCoordinatorAndStableBundledTools(@TempDir Path tempDir) {
         CoordinationStateManager coordinator = new CoordinationStateManager(
                 tempDir, "factory-parity", OM);

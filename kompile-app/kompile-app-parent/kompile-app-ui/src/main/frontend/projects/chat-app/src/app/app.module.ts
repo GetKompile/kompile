@@ -68,6 +68,9 @@ import { FolderSidebarComponent } from './components/folder-sidebar/folder-sideb
 import { ProjectManagerComponent } from './components/project-manager/project-manager.component';
 import { ProjectPageComponent } from './components/project-page/project-page.component';
 import { UnifiedChatComponent } from './components/unified-chat/unified-chat.component';
+import { ProductChatPageComponent } from './components/product-chat/product-chat-page.component';
+import { ProductInlineBoardCardComponent } from './components/product-chat/product-inline-board-card.component';
+import { ProductInlineInitiativeCardComponent } from './components/product-chat/product-inline-initiative-card.component';
 import { ChatActivityIndicatorComponent } from './components/chat-activity-indicator/chat-activity-indicator.component';
 import { CliTerminalConsoleComponent } from './components/cli-terminal-console/cli-terminal-console.component';
 import { ChatWorkspaceComponent, WorkspaceChatPaneComponent } from './components/chat-workspace/chat-workspace.component';
@@ -100,6 +103,9 @@ import { ChatModelSelectorComponent } from './components/chat-model-selector/cha
     ProjectManagerComponent,
     ProjectPageComponent,
     UnifiedChatComponent,
+    ProductChatPageComponent,
+    ProductInlineBoardCardComponent,
+    ProductInlineInitiativeCardComponent,
     ChatWorkspaceComponent,
     WorkspaceChatPaneComponent
   ],

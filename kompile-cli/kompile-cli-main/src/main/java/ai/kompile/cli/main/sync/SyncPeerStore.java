@@ -35,8 +35,9 @@ import java.util.Optional;
  * per-peer baselines under {@code ~/.kompile/sync/state/<peer>-<scope>.json}.
  *
  * <p>Peer records hold the user@host connection string, optional port, and the
- * protocol capabilities returned by the peer's sync serve endpoint. No secrets
- * are stored; authentication relies on the user's existing SSH setup.</p>
+ * protocol capabilities returned by the peer's sync serve endpoint. TLS peers
+ * hold only the address, certificate pin and private local token file path;
+ * never the token. SSH peers rely on the user's existing SSH setup.</p>
  */
 public final class SyncPeerStore {
 
@@ -98,7 +99,8 @@ public final class SyncPeerStore {
         if (Files.isDirectory(stateDir)) {
             List<Path> matches = new ArrayList<>();
             try (var stream = Files.list(stateDir)) {
-                stream.filter(p -> p.getFileName().toString().startsWith(name + "-"))
+                stream.filter(p -> p.getFileName().toString().equals(name + "-global.json")
+                                || p.getFileName().toString().equals(name + "-project.json"))
                         .forEach(matches::add);
             }
             for (Path p : matches) {

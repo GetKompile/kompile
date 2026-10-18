@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Loads AGENTS.md files from the project hierarchy and user home,
@@ -52,6 +53,11 @@ public class AgentsMdLoader {
      * Returns empty string if no files found.
      */
     public String load() {
+        return load(file -> true);
+    }
+
+    /** Load only files not already supplied by a provider's native instruction loader. */
+    String load(Predicate<Path> include) {
         List<Path> files = findAgentsMdFiles();
         if (files.isEmpty()) {
             return "";
@@ -59,6 +65,7 @@ public class AgentsMdLoader {
 
         StringBuilder sb = new StringBuilder();
         for (Path file : files) {
+            if (!include.test(file)) continue;
             try {
                 String content = Files.readString(file);
                 if (!content.isBlank()) {

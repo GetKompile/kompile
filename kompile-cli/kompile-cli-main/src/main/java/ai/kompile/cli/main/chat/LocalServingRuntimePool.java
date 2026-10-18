@@ -201,6 +201,11 @@ public final class LocalServingRuntimePool {
     private LocalServingRuntimePool() {
     }
 
+    /** Existing resident children only; monitoring must never launch or keep a model warm. */
+    static List<KompileLocalServingBootstrap.StartupResult> residentRuntimes() {
+        return POOL.resourcesSnapshot();
+    }
+
     public static Lease acquire(ChatConfig config, int timeoutSeconds)
             throws KompileLocalServingBootstrap.BootstrapException {
         return acquire(chatRequest(config, timeoutSeconds));

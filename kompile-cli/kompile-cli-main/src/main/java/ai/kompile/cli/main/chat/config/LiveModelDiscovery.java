@@ -63,7 +63,14 @@ public final class LiveModelDiscovery {
             Map<String, String> variantLabels,
             String defaultVariant,
             boolean reasoningMandatory,
-            String capabilitySource) {
+            String capabilitySource,
+            int contextWindow,
+            int maxOutputTokens) {
+        public Model(String id, List<String> variants, Map<String, String> variantLabels,
+                     String defaultVariant, boolean reasoningMandatory, String capabilitySource) {
+            this(id, variants, variantLabels, defaultVariant, reasoningMandatory, capabilitySource, 0, 0);
+        }
+
         public Model(String id, List<String> variants) {
             this(id, variants, Map.of(), "", false, "");
         }
@@ -91,6 +98,8 @@ public final class LiveModelDiscovery {
             variantLabels = Map.copyOf(labels);
             defaultVariant = defaultVariant == null ? "" : defaultVariant.trim();
             capabilitySource = capabilitySource == null ? "" : capabilitySource.trim();
+            contextWindow = Math.max(0, contextWindow);
+            maxOutputTokens = Math.max(0, maxOutputTokens);
         }
 
         public List<Variant> thinkingVariants() {
@@ -107,6 +116,8 @@ public final class LiveModelDiscovery {
         private String defaultVariant = "";
         private boolean reasoningMandatory;
         private String capabilitySource = "";
+        private int contextWindow;
+        private int maxOutputTokens;
 
         private ModelBuilder(String id) {
             this.id = id;
@@ -130,7 +141,9 @@ public final class LiveModelDiscovery {
                     labels,
                     defaultVariant,
                     reasoningMandatory,
-                    capabilitySource);
+                    capabilitySource,
+                    contextWindow,
+                    maxOutputTokens);
         }
     }
 
@@ -237,6 +250,7 @@ public final class LiveModelDiscovery {
                     continue;
                 }
                 ModelBuilder model = new ModelBuilder(value);
+                addContextMetadata(row, model, "claude");
                 for (JsonNode effort : row.path("supportedEffortLevels")) {
                     model.addVariant(effort.asText(""), capitalize(effort.asText("")));
                 }
@@ -680,8 +694,15 @@ public final class LiveModelDiscovery {
         return type.isTextual() && "chat".equalsIgnoreCase(type.asText());
     }
 
+    private static void addContextMetadata(JsonNode model, ModelBuilder builder, String provider) {
+        ModelContextResolver.ModelLimits limits = ProviderContextMetadata.limits(provider, model);
+        if (limits.contextWindow() > 0) builder.contextWindow = limits.contextWindow();
+        if (limits.maxOutputTokens() > 0) builder.maxOutputTokens = limits.maxOutputTokens();
+    }
+
     private static void addCapabilityMetadata(
             JsonNode model, ModelBuilder builder, String provider) {
+        addContextMetadata(model, builder, provider);
         int previousSize = builder.variants.size();
         String vendor = provider == null ? "" : provider.trim().toLowerCase(Locale.ROOT);
         if ("anthropic".equals(vendor)) {
@@ -858,7 +879,9 @@ public final class LiveModelDiscovery {
                 labels,
                 defaultVariant,
                 first.reasoningMandatory() || second.reasoningMandatory(),
-                source);
+                source,
+                second.contextWindow() > 0 ? second.contextWindow() : first.contextWindow(),
+                second.maxOutputTokens() > 0 ? second.maxOutputTokens() : first.maxOutputTokens());
     }
 
     private static List<JsonNode> jsonObjects(String output) {

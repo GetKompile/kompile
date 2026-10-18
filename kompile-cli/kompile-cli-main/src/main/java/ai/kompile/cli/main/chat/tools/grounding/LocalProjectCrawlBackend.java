@@ -7,6 +7,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.main.chat.tools.ToolContext;
+import ai.kompile.cli.main.chat.tools.ProductManagedWorkTracker;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.project.ChatModelPipelineRunner;
 import ai.kompile.cli.main.project.LocalCrawlCapabilities;
@@ -157,17 +158,23 @@ public final class LocalProjectCrawlBackend {
 
         // A queued crawl outlives the initiating tool call. Give it a request-scoped context so
         // cancelling this job cannot abort the agent session (or another concurrently running job).
+        ProductManagedWorkTracker tracker = context.getProductManagedWork();
         ToolContext workerContext = new ToolContext(
                 context.getSessionId(),
                 context.getAgent(),
-                context.getPermissionService(),
+                tracker == null ? context.getPermissionService() : null,
                 context.getWorkingDirectory(),
-                context.getToolRegistry());
-        workerContext.setAutoApproveAll(context.isAutoApproveAll());
-        workerContext.setOutputConsumer(context.getOutputConsumer());
+                tracker == null ? context.getToolRegistry() : null);
+        if (tracker == null) {
+            workerContext.setAutoApproveAll(context.isAutoApproveAll());
+            workerContext.setOutputConsumer(context.getOutputConsumer());
+        } else {
+            workerContext.linkProductManagedWork(tracker);
+        }
         LocalCrawlJobRegistry.submit(jobId, knowledgeBase, localStateRoot, params,
-                workerContext::abort,
-                () -> crawlDocuments(workerParams, workerContext));
+                tracker == null ? workerContext::abort : null,
+                () -> crawlDocuments(workerParams, tracker == null ? workerContext
+                        : workerContext.forkForManagedWork(ProductManagedWorkTracker.CRAWL, jobId)), tracker);
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("backend", "project-local");
@@ -218,6 +225,22 @@ public final class LocalProjectCrawlBackend {
     }
 
     public ToolResult crawlDocuments(JsonNode params, ToolContext context) {
+        ProductManagedWorkTracker tracker = context.getProductManagedWork();
+        if (tracker != null) {
+            try {
+                if (context.isAborted() || tracker.isAdmissionStopped()) {
+                    throw new IOException("Product work admission is closed or revoked");
+                }
+                // This validator is a strict allowlist: exact lexical steps, literal local
+                // standard-text selection, disabled training/learning, no routing or runtime options.
+                LocalCorpusPublication.validateRequest(params);
+                Path root = project(context.getWorkingDirectory()).root().toRealPath();
+                Path selection = Path.of(params.path("documents").get(0).path("path").asText()).toRealPath();
+                if (!selection.startsWith(root)) throw new IOException("Product lexical sources must be within the project");
+            } catch (Exception invalid) {
+                return ToolResult.error("Product lexical crawl rejected: " + message(invalid));
+            }
+        }
         if (params.path("config").isObject()) {
             ObjectNode merged = flattenConfig(params);
             merged.remove("sources"); // explicit documents replace config.sources
@@ -241,6 +264,9 @@ public final class LocalProjectCrawlBackend {
                     throw new IOException("Internal crawl selectors require the owning durable crawl worker");
                 }
                 owningJob.submittedRequest(discovered.root());
+                if (tracker != null && !tracker.owns(ProductManagedWorkTracker.CRAWL, owningJob.jobId())) {
+                    throw new IOException("Crawl worker is not owned by this product session");
+                }
             } else {
                 owningJob = null;
             }
@@ -262,14 +288,17 @@ public final class LocalProjectCrawlBackend {
             if (refusal != null) {
                 return ToolResult.error("Project-local crawl failed: " + refusal);
             }
-            return submitAsync(params, context);
+            try { return submitAsync(params, context); }
+            catch (RuntimeException rejected) {
+                return ToolResult.error("Project-local crawl submission failed: " + message(rejected));
+            }
         }
         List<Path> temporarySources = new ArrayList<>();
         ReentrantLock crawlLock = null;
         String crawlLockKey = null;
         try {
             reportStage(params, "VALIDATING", "Validating project, sources, and pipeline bindings", 10);
-            ProjectState project = dryRun(params)
+            ProjectState project = dryRun(params) || tracker != null
                     ? project(context.getWorkingDirectory())
                     : ensureDirectoryProject(context.getWorkingDirectory());
             LocalCorpusPublication.Context publication = null;
@@ -615,7 +644,7 @@ public final class LocalProjectCrawlBackend {
                         "Loading and extracting project documents", 30);
                 ProjectCrawlCommand.ModelPipelineExecutor reportingModelExecutor =
                         (root, file, pipeline, loadedText) -> {
-                            if (preservingCorpus) {
+                            if (preservingCorpus || tracker != null) {
                                 throw new IOException("Model execution is forbidden for preserving lexical corpus updates");
                             }
                             reportStage(params, "MODEL_INITIALIZATION",
@@ -1081,6 +1110,12 @@ public final class LocalProjectCrawlBackend {
         }
         try {
             String jobId = text(params, "jobId");
+            ProductManagedWorkTracker tracker = context.getProductManagedWork();
+            if (tracker != null && ("list".equals(operation)
+                    || (Set.of("status", "cancel", "transcript").contains(operation)
+                    && !tracker.owns(ProductManagedWorkTracker.CRAWL, jobId)))) {
+                return ToolResult.error("Product crawl control requires a jobId owned by this session");
+            }
             boolean localAsyncJob = LocalCrawlJobRegistry.isJobId(jobId);
             ProjectState discovered = project(context.getWorkingDirectory());
             Path localStateRoot = discovered.root();
@@ -1182,6 +1217,10 @@ public final class LocalProjectCrawlBackend {
         if (jobId == null || jobId.isBlank()) {
             return ToolResult.error("crawl_result requires jobId");
         }
+        ProductManagedWorkTracker tracker = context.getProductManagedWork();
+        if (tracker != null && !tracker.owns(ProductManagedWorkTracker.CRAWL, jobId)) {
+            return ToolResult.error("Crawl result is not owned by this product session");
+        }
         LocalCrawlJobRegistry.AsyncJob asyncJob = LocalCrawlJobRegistry.get(jobId);
         Path localStateRoot = project(context.getWorkingDirectory()).root();
         if (asyncJob != null) {
@@ -1203,6 +1242,19 @@ public final class LocalProjectCrawlBackend {
     }
 
     public ToolResult search(String query, String topic, String knowledgeBase, int limit, ToolContext context) {
+        // Product reads must not enter project initialisation, inventory aliases, crawl bootstrap,
+        // encoder startup or semantic-cache publication, even if a caller omits its selector.
+        if (context.getProductManagedWork() != null) {
+            try {
+                Path corpus = productReadDirectory(knowledgeBase, context);
+                if (corpus == null) return productReadNotReady();
+                Path root = context.getWorkingDirectory().toAbsolutePath().normalize();
+                return ragSearch.searchLexical(root, List.of(root.resolve("data/crawls").resolve(knowledgeBase)),
+                        query, topic, limit);
+            } catch (Exception failure) {
+                return ToolResult.error("Pinned local knowledge read failed: " + message(failure));
+            }
+        }
         String selected = knowledgeBase;
         if (selected == null || selected.isBlank()) {
             selected = defaultKnowledgeBaseId(context.getWorkingDirectory());
@@ -1241,6 +1293,22 @@ public final class LocalProjectCrawlBackend {
     }
 
     public ToolResult status(String knowledgeBase, ToolContext context) {
+        if (context.getProductManagedWork() != null) {
+            try {
+                Path corpus = productReadDirectory(knowledgeBase, context);
+                if (corpus == null) return productReadNotReady();
+                ObjectNode summary = readJson(corpus.resolve("crawl-result.json"));
+                ObjectNode result = mapper.createObjectNode().put("available", true).put("backend", "project-local")
+                        .put("knowledgeBase", knowledgeBase).put("projectRoot", context.getWorkingDirectory().toString())
+                        .put("knowledge_base_count", 1).put("documents_indexed", summary.path("documentCount").asLong())
+                        .put("chunks_indexed", summary.path("chunkCount").asLong());
+                result.set("summary", summary);
+                return ToolResult.success("knowledge_status", result.toString(), Map.of("available", true,
+                        "backend", "project-local", "knowledgeBaseCount", 1));
+            } catch (Exception failure) {
+                return ToolResult.error("Pinned local knowledge status failed: " + message(failure));
+            }
+        }
         String selected = knowledgeBase;
         if (selected == null || selected.isBlank()) {
             Path workingDirectory = context.getWorkingDirectory();
@@ -1263,6 +1331,37 @@ public final class LocalProjectCrawlBackend {
             }
         }
         return status(selected, context.getWorkingDirectory());
+    }
+
+    /** Read-only product branch: the canonical direct KB is mandatory; never enumerate siblings. */
+    private Path productReadDirectory(String knowledgeBase, ToolContext context) throws IOException {
+        if (knowledgeBase == null || !knowledgeBase.matches("[a-z0-9][a-z0-9._-]{0,127}")
+                || !knowledgeBase.equals(slug(knowledgeBase)))
+            throw new IOException("An explicit canonical product knowledge base is required");
+        Path root = context.getWorkingDirectory().toAbsolutePath().normalize();
+        if (!store.findProjectRoot(root).orElse(root).equals(root)) throw new IOException("Foreign project root");
+        Path directory = root.resolve("data/crawls").resolve(knowledgeBase);
+        for (Path path = directory; path != null; path = path.getParent())
+            if (Files.isSymbolicLink(path)) throw new IOException("Symbolic-link knowledge root");
+        Path corpus = ai.kompile.cli.main.project.LocalCorpusPublication.resolveReadDirectory(root, knowledgeBase);
+        for (String name : List.of("crawl-result.json", "chunks.jsonl")) {
+            Path file = corpus.resolve(name);
+            if (Files.isSymbolicLink(file)) throw new IOException("Symbolic-link corpus artifact");
+            if (!Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return null;
+        }
+        ObjectNode summary = readJson(corpus.resolve("crawl-result.json"));
+        if (!"COMPLETED".equals(summary.path("status").asText())) return null;
+        for (String key : List.of("documentCount", "chunkCount"))
+            if (!summary.path(key).isIntegralNumber() || !summary.path(key).canConvertToLong() || summary.path(key).longValue() < 0)
+                throw new IOException("Incomplete corpus summary");
+        return corpus;
+    }
+
+    private ToolResult productReadNotReady() {
+        return new ToolResult("native_knowledge_read", mapper.createObjectNode()
+                .put("code", "NATIVE_KNOWLEDGE_NOT_READY").put("status", "NOT_READY")
+                .put("message", "The pinned knowledge index is not available; no crawl was started").toString(),
+                Map.of("code", "NATIVE_KNOWLEDGE_NOT_READY", "status", "NOT_READY"), true);
     }
 
     public ToolResult status(String knowledgeBase, Path workingDirectory) {

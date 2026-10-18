@@ -29,6 +29,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -137,8 +138,13 @@ public class RoleLoader {
      * @return RoleConfig or null if the file is not a valid role definition
      */
     RoleConfig parseRoleFile(Path file, boolean isBuiltIn) throws IOException {
-        String content = Files.readString(file);
+        return parseRoleContent(file, Files.readString(file), isBuiltIn);
+    }
 
+    /** Parse an already-validated immutable artifact snapshot without rereading a mutable file. */
+    public RoleConfig parseRoleContent(Path file, String content, boolean isBuiltIn) {
+        Objects.requireNonNull(file, "role source identity");
+        Objects.requireNonNull(content, "role snapshot");
         // Split frontmatter from body
         if (!content.startsWith("---")) {
             // No frontmatter — use filename as name, entire content as system prompt

@@ -94,6 +94,7 @@ import ai.kompile.cli.main.chat.tools.SidePanelTool;
 import ai.kompile.cli.main.chat.tools.SkillManagerTool;
 import ai.kompile.cli.main.chat.tools.SubprocessWatchdogTool;
 import ai.kompile.cli.main.chat.tools.TestMilestoneTool;
+import ai.kompile.cli.main.chat.tools.IncidentTool;
 import ai.kompile.cli.main.chat.tools.TodoReadTool;
 import ai.kompile.cli.main.chat.tools.TodoWriteTool;
 import ai.kompile.cli.main.chat.tools.ToolCallCatalogTool;
@@ -233,7 +234,7 @@ public class McpStdioCommand implements Callable<Integer> {
                 "read", "read_batch", "file_context", "file_note", "write", "edit", "edit_batch",
                 "grep", "grep_batch", "glob", "list", "bash",
                 "explore", "fetch_result", "fetch_result_batch", "patch", "edit_patch",
-                "todowrite", "todoread", "memory",
+                "todowrite", "todoread", "memory", "incident",
                 "webfetch", "websearch", "mcp_tool_search", "mcp_tool_call"
         )));
 
@@ -526,7 +527,7 @@ public class McpStdioCommand implements Callable<Integer> {
             sessionBrief = CodeIndexSessionBrief.start(wd);
 
             sessionTracker = new McpSessionTracker(om, transcriptId, wd);
-            resultReferenceCache = new ToolResultReferenceCache();
+            resultReferenceCache = new ToolResultReferenceCache(wd);
             progressLogger = new McpToolProgressLogger(
                     LogPaths.transcriptDirectory(transcriptId).toPath().resolve("mcp"));
             asyncExecutor = new AsyncToolExecutor(progressLogger);
@@ -1130,10 +1131,16 @@ public class McpStdioCommand implements Callable<Integer> {
                                 auditLogger.recordDecision(toolName, originalArgMap, argMap,
                                         auditDecision, auditReason, tr.isError(), callDuration);
                             }
+                            ToolResult rawResult = tr;
+                            if (resultReferenceCache != null && tools.containsKey("fetch_result")) {
+                                tr = resultReferenceCache.prepareForDelivery(
+                                        usageCtx != null ? usageCtx.sessionId() : toolContextSessionId(transcriptId),
+                                        toolName, tr);
+                            }
                             // Poll response: separate payload measurement for THIS poll
                             // response; never duplicates the original execution's usage.
                             var pollUsage = usageAccounting != null && usageCtx != null
-                                    ? usageAccounting.finalizeCall(usageCtx, tr, null,
+                                    ? usageAccounting.finalizeCall(usageCtx, tr, rawResult,
                                         ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTED,
                                         ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.DELIVERED,
                                         tr.isError(), System.currentTimeMillis())
@@ -1188,17 +1195,13 @@ public class McpStdioCommand implements Callable<Integer> {
                                 sendProgress(progressToken, 1, 1);
                             }
 
-                            // Auto-cache large results using reference handles
-                            // (never re-cache a fetch — the caller explicitly
-                            // asked for that content inline)
+                            // Bound successes AND diagnostics before delivery, but only when
+                            // this profile exposes the tool needed to retrieve the full result.
                             ToolResult rawResult = tr;
-                            if (!tr.isError() && resultReferenceCache != null
-                                    && tr.getOutput() != null
-                                    && !"fetch_result".equals(toolName)
-                                    && !"fetch_result_batch".equals(toolName)
-                                    && resultReferenceCache.shouldCache(tr.getOutput())) {
-                                tr = resultReferenceCache.storeAndSummarize(
-                                        toolName, tr.getTitle(), tr.getOutput(), tr.getMetadata());
+                            if (resultReferenceCache != null && tools.containsKey("fetch_result")) {
+                                tr = resultReferenceCache.prepareForDelivery(
+                                        usageCtx != null ? usageCtx.sessionId() : toolContextSessionId(transcriptId),
+                                        toolName, tr);
                             }
 
                             // Usage: measure the FINAL returned content (post substitution);
@@ -1650,6 +1653,7 @@ public class McpStdioCommand implements Callable<Integer> {
         coordinator = new CoordinationStateManager(wd, coordSessionId, om);
         highMemoryToolCallGuard = new HighMemoryToolCallGuard(coordinator);
         registerStdioCoordinationSession(coordinator, transcriptId);
+        subagentRunner.setProcessTracking(processManager, coordinator);
         subagentRunner.setBaseEnvironment(Map.of(
                 "KOMPILE_PARENT_SESSION_ID", coordinator.getSessionId(),
                 "KOMPILE_TRANSCRIPT_UUID", transcriptId));
@@ -1694,6 +1698,7 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new WebFetchTool(), om, wd);
         registerCliTool(tools, new WebSearchTool(), om, wd);
         registerCliTool(tools, new ChannelTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.PeerTool(coordinator), om, wd);
 
         // ── Workflow tools ─────────────────────────────────────────────────
         registerCliTool(tools, new TodoWriteTool(), om, wd);
@@ -1705,6 +1710,7 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new KnowledgeSearchCliTool(baseUrl, om), om, wd);
         registerCliTool(tools, new KnowledgeStatusCliTool(baseUrl, om), om, wd);
         registerCliTool(tools, new MemoryTool(), om, wd);
+        registerCliTool(tools, new IncidentTool(), om, wd);
 
         // ── Config tools ──────────────────────────────────────────────────
         registerCliTool(tools, new ConfigArchiveTool(), om, wd);
@@ -1983,20 +1989,20 @@ public class McpStdioCommand implements Callable<Integer> {
                         // Task completed — return the full result
                         var tr = status.result();
                         String title = tr.getTitle() != null ? tr.getTitle() : "";
-                        return ToolResult.success(
+                        return new ToolResult(
                                 "poll: " + taskId + " [" + status.status() + "]",
                                 "Task completed in " + status.elapsedMs() + "ms\n\n" +
                                 (title.isEmpty() ? "" : title + "\n") +
                                 (tr.getOutput() != null ? tr.getOutput() : ""),
                                 Map.of("taskId", taskId, "status", status.status(),
-                                        "elapsedMs", status.elapsedMs()));
+                                        "elapsedMs", status.elapsedMs()), tr.isError());
                     }
-                    return ToolResult.success(
+                    return new ToolResult(
                             "poll: " + taskId + " [" + status.status() + "]",
                             "Tool: " + status.toolName() + "\nStatus: " + status.status() +
                             "\nElapsed: " + status.elapsedMs() + "ms\n" + status.resultSummary(),
                             Map.of("taskId", taskId, "status", status.status(),
-                                    "elapsedMs", status.elapsedMs()));
+                                    "elapsedMs", status.elapsedMs()), "failed".equalsIgnoreCase(status.status()));
                 }
 
                 // No specific task — show all active

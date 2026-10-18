@@ -127,6 +127,31 @@ class ThinkingStreamRendererTest {
     }
 
     @Test
+    void pendingPreviewNeverCommitsOrDuplicatesHeaderAndTail() {
+        for (TerminalRenderer term : new TerminalRenderer[]{null, new TerminalRenderer(true)}) {
+            List<String> lines = new ArrayList<>();
+            ThinkingStreamRenderer renderer = new ThinkingStreamRenderer(lines::add, term);
+            renderer.accept("first");
+            String preview = renderer.pendingLinePreview();
+            assertEquals("  ✻ thinking\n  first", TerminalRenderer.printableToolOutput(preview));
+            assertEquals(preview, renderer.pendingLinePreview());
+            assertTrue(lines.isEmpty(), "Preview must not emit append-only output");
+            renderer.accept("\npartial");
+            assertEquals(2, lines.size());
+            assertEquals("  partial", TerminalRenderer.printableToolOutput(renderer.pendingLinePreview()));
+            renderer.accept(" tail\n");
+            assertEquals("", renderer.pendingLinePreview());
+            renderer.flush(); renderer.flush();
+            assertEquals(List.of("  ✻ thinking", "  first", "  partial tail"),
+                    lines.stream().map(TerminalRenderer::printableToolOutput).toList());
+            renderer.accept(" \n\n");
+            assertEquals("", renderer.pendingLinePreview());
+            renderer.accept("next burst");
+            assertEquals("  ✻ thinking\n  next burst", TerminalRenderer.printableToolOutput(renderer.pendingLinePreview()));
+        }
+    }
+
+    @Test
     void nullAndEmptyChunks_ignored() {
         List<String> lines = new ArrayList<>();
         ThinkingStreamRenderer renderer = new ThinkingStreamRenderer(lines::add, null);

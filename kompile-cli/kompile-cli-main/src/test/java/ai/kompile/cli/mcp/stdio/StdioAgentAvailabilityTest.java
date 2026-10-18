@@ -44,7 +44,7 @@ class StdioAgentAvailabilityTest {
 
     @Test
     void taskAcceptsEachSupportedAgentAndCarriesSelectionOverrides() {
-        for (String agent : List.of("codex", "claude", "opencode", "gemini", "qwen", "pi")) {
+        for (String agent : List.of("codex", "claude", "opencode", "gemini", "qwen", "pi", "kompile", "general")) {
             CapturingRunner runner = new CapturingRunner(tempDir);
             StdioTaskTool task = new StdioTaskTool(null, runner, objectMapper, null);
             ToolResult result = task.execute(Map.of(
@@ -226,7 +226,7 @@ class StdioAgentAvailabilityTest {
     private static void assertDelegationAgents(JsonNode enumValues) {
         List<String> values = new ArrayList<>();
         enumValues.forEach(value -> values.add(value.asText()));
-        assertEquals(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi"), values);
+        assertEquals(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi", "kompile", "general"), values);
     }
 
     private static void assertSelectionFields(JsonNode properties) {

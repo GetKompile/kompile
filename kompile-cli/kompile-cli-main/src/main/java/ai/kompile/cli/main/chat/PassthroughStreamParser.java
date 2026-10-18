@@ -37,6 +37,24 @@ import java.util.regex.Pattern;
 public class PassthroughStreamParser {
 
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
+    private ai.kompile.cli.main.chat.tools.ProviderTestCapture testCapture;
+    private java.nio.file.Path testCaptureDirectory;
+
+    /** Enable only on a real provider execution stream, never on imported transcripts or renderer fixtures. */
+    public void enableTestCapture(java.nio.file.Path directory) {
+        testCaptureDirectory = directory;
+        if (testCapture == null) testCapture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(directory);
+    }
+
+    public void closeTestCapture() {
+        if (testCapture != null) {
+            testCapture.close();
+            testCapture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(testCaptureDirectory);
+        }
+    }
+
+    /** Match Claude tool-result user frames to the calls whose output they carry. */
+    private final Map<String, String> claudeToolNames = new HashMap<>();
 
     /** Tracks last aggregated_output per Codex item ID for delta computation. */
     private final Map<String, String> codexAggregatedOutputs = new HashMap<>();
@@ -169,6 +187,9 @@ public class PassthroughStreamParser {
                                 } else {
                                     String name = block.has("name") ? block.get("name").asText() : "unknown";
                                     String input = block.has("input") ? block.get("input").toString() : "";
+                                    String callId = block.path("id").asText("");
+                                    if (!callId.isBlank()) claudeToolNames.put(callId, name);
+                                    if (testCapture != null) testCapture.start(callId, name, input);
                                     events.add(new ToolUse(name, input));
                                 }
                             }
@@ -222,6 +243,21 @@ public class PassthroughStreamParser {
                         }
                     }
                     return List.of();
+                }
+                case "user" -> {
+                    List<PassthroughEvent> events = new ArrayList<>();
+                    for (JsonNode block : node.path("message").path("content")) {
+                        if (!"tool_result".equals(block.path("type").asText())) continue;
+                        String callId = block.path("tool_use_id").asText("");
+                        String name = claudeToolNames.remove(callId);
+                        String output = extractToolOutputText(block.path("content"));
+                        boolean error = block.path("is_error").asBoolean();
+                        if (testCapture != null) testCapture.complete(callId, output,
+                                error ? Integer.valueOf(1) : null, false);
+                        events.add(new ToolComplete(name == null ? "tool" : name, output, error ? 1 : 0, error));
+                    }
+                    // User prompts are not model text, but tool results are observable output.
+                    return events;
                 }
                 case "result" -> {
                     long duration = node.has("duration_ms") ? node.get("duration_ms").asLong() : 0;
@@ -409,10 +445,12 @@ public class PassthroughStreamParser {
                 case "tool_use" -> {
                     String toolName = node.has("tool_name") ? node.get("tool_name").asText() : "unknown";
                     String params = node.has("parameters") ? node.get("parameters").toString() : "";
+                    if (testCapture != null) testCapture.start(node.path("tool_id").asText(), toolName, params);
                     return new ToolUse(toolName, params);
                 }
                 case "tool_result" -> {
-                    // Tool completion — skip (result displayed via tool_use)
+                    if (testCapture != null) testCapture.complete(node.path("tool_id").asText(),
+                            extractToolOutputText(node.path("output")), node.path("status").asText().equals("error") ? 1 : null, false);
                     return null;
                 }
                 case "result" -> {
@@ -624,6 +662,7 @@ public class PassthroughStreamParser {
                             String command = item.has("command") ? item.get("command").asText() : "";
                             String aggregated = item.has("aggregated_output") ? item.get("aggregated_output").asText() : "";
                             codexAggregatedOutputs.put(itemId, aggregated);
+                            if (testCapture != null) testCapture.start(itemId, "exec", command);
                             return new ToolUse("exec", command);
                         } else if ("agent_message".equals(itemType) && !itemId.isEmpty()) {
                             codexAgentMessages.put(itemId, extractCodexText(item, ""));
@@ -666,6 +705,7 @@ public class PassthroughStreamParser {
                             codexAggregatedOutputs.remove(itemId);
                             // Emit delta output
                             String delta = aggregated.substring(Math.min(previous.length(), aggregated.length()));
+                            if (testCapture != null) testCapture.complete(itemId, aggregated, exitCode, false);
                             return new ToolComplete("exec", delta, exitCode);
                         }
                     }
@@ -1056,6 +1096,7 @@ public class PassthroughStreamParser {
                     String args = node.has("args") ? node.get("args").toString() : "";
                     String callId = node.has("toolCallId") ? node.get("toolCallId").asText() : "";
                     piToolOutputs.put(callId, "");
+                    if (testCapture != null) testCapture.start(callId, toolName, args);
                     return new ToolUse(toolName, args);
                 }
                 case "tool_execution_update" -> {
@@ -1106,6 +1147,7 @@ public class PassthroughStreamParser {
                     piToolOutputs.remove(callId);
                     String delta = fullOutput.substring(Math.min(previous.length(), fullOutput.length()));
 
+                    if (testCapture != null) testCapture.complete(callId, fullOutput, isError ? 1 : exitCode, false);
                     return new ToolComplete(toolName, delta, exitCode, isError || exitCode != 0);
                 }
                 default -> {

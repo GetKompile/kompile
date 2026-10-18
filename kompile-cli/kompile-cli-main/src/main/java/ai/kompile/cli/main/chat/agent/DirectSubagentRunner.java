@@ -51,7 +51,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Each subagent runs a complete agentic loop: send prompt → receive response →
  * execute tool calls → send results → repeat until text-only response.
  */
-public class DirectSubagentRunner implements SubagentRunner {
+public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
 
     private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final ChatConfig chatConfig;
@@ -369,6 +369,14 @@ public class DirectSubagentRunner implements SubagentRunner {
                 continue;
             }
 
+            if (result.failed) {
+                session.compactor.rollbackTo(requestStart);
+                String reason = result.failureMessage != null && !result.failureMessage.isBlank()
+                        ? result.failureMessage : result.text;
+                throw new IllegalStateException("Subagent provider request failed: "
+                        + (reason == null || reason.isBlank() ? result.failureKind : reason));
+            }
+
             // Accepted response: the adapter has committed the previous pending tool
             // results, the outbound user message, and this response to the history.
             session.compactor.appendAssistant(result.text);
@@ -604,6 +612,16 @@ public class DirectSubagentRunner implements SubagentRunner {
         }), "subagent-followup-" + session.id);
         worker.setDaemon(true);
         worker.start();
+    }
+
+    /** Release retained provider clients when a one-shot harness no longer owns any children. */
+    @Override
+    public void close() {
+        for (DirectSession session : sessions.values()) {
+            cancel(session.id);
+            session.client.close();
+        }
+        sessions.clear();
     }
 
     private void trimSessions() {

@@ -105,6 +105,8 @@ class DirectSubagentRunnerCancellationTest {
             assertEquals("changed-parent-model", config.getModel());
             assertEquals("medium", config.getThinking());
             assertFalse(parent.isAborted());
+            runner.close();
+            assertFalse(runner.canSendMessage(childId.get()), "closed one-shot harness must release retained children");
         } finally {
             server.stop(0);
         }

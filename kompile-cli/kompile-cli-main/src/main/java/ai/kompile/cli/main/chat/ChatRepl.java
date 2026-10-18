@@ -19,6 +19,9 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.config.ChatUiConfig;
+import ai.kompile.cli.main.chat.config.ChatUiWizard;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
 import ai.kompile.cli.main.chat.activity.AgentActivitySnapshotService;
 import ai.kompile.cli.main.chat.activity.ActivityIdentity;
 import ai.kompile.cli.main.chat.activity.ConversationActivityService;
@@ -75,7 +78,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jline.reader.Binding;
 import org.jline.reader.History;
 import org.jline.reader.LineReader;
-import org.jline.reader.LineReaderBuilder;
+import ai.kompile.cli.main.chat.tui.InputPaneLineReader;
 import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
 import org.jline.reader.Widget;
@@ -137,6 +140,7 @@ public class ChatRepl implements AutoCloseable {
     private boolean interactiveInitialized;
     private volatile boolean interactiveFinished;
     private final AtomicBoolean resourcesClosed = new AtomicBoolean();
+    private Runnable diagnosticNoticeCleanup = () -> { };
     private Runnable codeIndexAlertCleanup = () -> { };
     private Runnable coordinationAlertCleanup = () -> { };
     private Runnable enforcerAlertCleanup = () -> { };
@@ -195,6 +199,144 @@ public class ChatRepl implements AutoCloseable {
     private final SharedProcessMirror sharedProcessMirror;
     private final ProjectActivityController projectActivityController;
     private final ConversationActivityService conversationActivityService;
+    private final TimelineLifecycle timelineLifecycle;
+    private DashboardTimelineCommands dashboardTimelineCommands;
+    private AutoCloseable processTimelineBinding = () -> { };
+
+    private void closeProcessTimelineBinding() {
+        try { processTimelineBinding.close(); }
+        catch (Exception ignored) { /* Observer disposal never interrupts shutdown. */ }
+    }
+
+    public synchronized void printDashboardTimeline(String arguments) {
+        if (resourcesClosed.get() || interactiveFinished || timelineLifecycle.closed.get()) {
+            ChatCompleter.printAbove("Timeline view is closed.");
+            return;
+        }
+        if (dashboardTimelineCommands == null) {
+            dashboardTimelineCommands = new DashboardTimelineCommands(conversationActivityService.storage(),
+                    this::getActivityIdentity, sessionContext.wrapConsumer(ChatCompleter::printAbove),
+                    conversationActivityService::recordingWarnings,
+                    () -> sessionContext.wrap(() -> {
+                        try { dashboardToolContext().checkPermission("read", "Read session timeline"); }
+                        catch (ToolExecutionException denied) { throw new IllegalStateException("Timeline read permission denied", denied); }
+                    }).run());
+        }
+        ChatCompleter.printAbove(dashboardTimelineCommands.command(arguments));
+    }
+
+    public synchronized void closeDashboardReports() {
+        if (commandRouter != null) commandRouter.closeDashboardReports();
+        if (dashboardTimelineCommands != null) {
+            dashboardTimelineCommands.close();
+            dashboardTimelineCommands = null;
+        }
+    }
+
+    public ActivityIdentity getActivityIdentity() { return timelineLifecycle.identity(); }
+    public ConversationActivityService getConversationActivityService() { return conversationActivityService; }
+    public TimelineLifecycle getTimelineLifecycle() { return timelineLifecycle; }
+
+    /** Bounded lifecycle producer, independently testable without constructing a REPL. */
+    public static final class TimelineLifecycle implements AutoCloseable {
+        private static final java.util.concurrent.CopyOnWriteArrayList<TimelineLifecycle> ACTIVE =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        private final ConversationActivityService service;
+        private final ActivityIdentity identity;
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        public TimelineLifecycle(ConversationActivityService service, String sessionId,
+                                 Path project, boolean existingTranscript) {
+            this.service = Objects.requireNonNull(service, "service");
+            this.identity = new ActivityIdentity("kompile", sessionId, UUID.randomUUID().toString(),
+                    "", "", project == null ? null : project.toString());
+            ACTIVE.add(this);
+            service.setCurrentSession(identity);
+            record("run.started", identity.runId(), Map.of("basis", "runtime-created"));
+            if (existingTranscript) record("run.resumed", identity.runId(),
+                    Map.of("basis", "existing-transcript-observed", "restoration", "not-asserted"));
+        }
+
+        public ActivityIdentity identity() { return identity; }
+        public ConversationActivityService service() { return service; }
+
+        public void toolStarted(String callId, String toolName) {
+            record("tool.started", callId, Map.of("tool", safe(toolName), "basis", "tool-callback"));
+        }
+
+        public void toolFinished(String callId, String toolName, Boolean error) {
+            record("tool.finished", callId, Map.of("tool", safe(toolName),
+                    "outcome", error == null ? "unknown" : error ? "failed" : "succeeded", "basis", "tool-result"));
+        }
+
+        public void toolDenied(String callId, String toolName) {
+            record("tool.denied", callId, Map.of("tool", safe(toolName),
+                    "outcome", "denied", "basis", "tool-callback"));
+        }
+
+        public String turnStarted(String basis) {
+            String id = UUID.randomUUID().toString();
+            record("turn.started", id, Map.of("basis", safe(basis)));
+            return id;
+        }
+
+        /** Owner release is not proof of model success, including after a cancel request. */
+        public void turnFinished(String id) {
+            record("turn.finished", id, Map.of("basis", "turn-owner-finally", "state", "released"));
+        }
+
+        private synchronized void record(String type, String operation, Map<String, String> attributes) {
+            if (!closed.get()) service.record(identity, type, identity.actorId(), operation, null, attributes);
+        }
+
+        @Override
+        public synchronized void close() {
+            if (!closed.compareAndSet(false, true)) return;
+            ACTIVE.remove(this);
+            service.record(identity, "run.closed", identity.actorId(), identity.runId(), null,
+                    Map.of("basis", "runtime-disposed", "state", "closed"));
+        }
+
+        /** Exact recording context only: historical targets never inherit the caller's run/actor. */
+        public static ProducerContext producer(String targetSession, String callerSession, Path project) {
+            ActivityIdentity target = ActivityIdentity.conversation(targetSession, project);
+            if (targetSession.equals(callerSession)) {
+                List<TimelineLifecycle> matches = ACTIVE.stream().filter(runtime ->
+                        !runtime.closed.get()
+                        && runtime.identity.conversationId().equals(target.conversationId())
+                        && runtime.identity.projectDirectory().equals(target.projectDirectory())).toList();
+                if (matches.size() == 1) {
+                    TimelineLifecycle runtime = matches.get(0);
+                    return new ProducerContext(runtime.service, runtime.identity);
+                }
+            }
+            // A write-only producer must not initialize read adapters or scan source stores.
+            return new ProducerContext(new ConversationActivityService(
+                    new ai.kompile.cli.main.chat.activity.ActivityStorage(), List.of()), target);
+        }
+
+        public record ProducerContext(ConversationActivityService service, ActivityIdentity identity) {
+            public void record(String type, String operation, Map<String, String> attributes) {
+                service.record(identity, type, identity.actorId(), operation, null, attributes);
+            }
+
+            public void recordSaved(String type, String operation, Path file, Path permittedRoot,
+                                    Map<String, String> attributes) {
+                service.record(identity, type, identity.actorId(), operation,
+                        ai.kompile.cli.main.chat.activity.ActivitySourceRef.file(
+                                "kompile", operation, type, file, permittedRoot), attributes);
+            }
+
+            /** Recorder attribution, not ownership of the process that ran the tests. */
+            public void annotateMilestone(Map<String, Object> milestone) {
+                milestone.put("sessionId", identity.conversationId());
+                if (!identity.runId().isBlank()) milestone.put("runId", identity.runId());
+                milestone.put("correlationBasis", "recording-session-context");
+            }
+        }
+
+        private static String safe(String value) { return value == null ? "" : value; }
+    }
     private final AtomicBoolean acceptingProcessWakeups = new AtomicBoolean(false);
     private final BackgroundProcessManager.MonitorCallback processExitWakeListener =
             (entry, monitor) -> sessionContext.wrap(() -> handleProcessExitWakeup(entry, monitor)).run();
@@ -431,10 +573,14 @@ public class ChatRepl implements AutoCloseable {
 
         // Initialize unified TUI (TopBar + scroll region + StatusBar)
         this.tui = new KompileTui(backgroundTaskManager, processManager, messageQueue, renderer);
+        this.tui.setUiConfig(ChatUiConfig.loadEffective(workDir, sessionId));
         this.statusBar = tui.getStatusBar();
         this.conversationActivityService = new ConversationActivityService();
-        ActivityIdentity activityIdentity = ActivityIdentity.conversation(sessionId, workDir);
-        this.conversationActivityService.setCurrentSession(activityIdentity);
+        this.timelineLifecycle = new TimelineLifecycle(conversationActivityService, sessionId,
+                workDir, Files.isRegularFile(chatHistory.getTranscriptFile(), java.nio.file.LinkOption.NOFOLLOW_LINKS));
+        try {
+        ActivityIdentity activityIdentity = timelineLifecycle.identity();
+        this.processTimelineBinding = processManager.bindTimeline(activityIdentity, conversationActivityService);
         Path taskRegistryRoot = workDir.resolve(".kompile").resolve("task-registry");
         if (Files.isDirectory(taskRegistryRoot)) {
             this.conversationActivityService.addReader(identity -> new TaskActivityAdapter(() ->
@@ -480,6 +626,7 @@ public class ChatRepl implements AutoCloseable {
         this.agenticLoop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
             @Override
             public void onToolStart(String callId, String toolName, String rawInput) {
+                timelineLifecycle.toolStarted(callId, toolName);
                 sessionContext.wrap(() -> activityPanel.recordToolStart(callId, toolName, rawInput)).run();
             }
 
@@ -492,6 +639,7 @@ public class ChatRepl implements AutoCloseable {
             public void onToolComplete(String callId, String toolName,
                                        String rawInput, ToolResult result) {
                 sessionContext.wrap(() -> {
+                timelineLifecycle.toolFinished(callId, toolName, result == null ? null : result.isError());
                 activityPanel.recordToolComplete(callId, toolName, rawInput, result);
                 McpDashboardController dashboard = dashboardController;
                 if (dashboard != null) {
@@ -503,6 +651,7 @@ public class ChatRepl implements AutoCloseable {
             @Override
             public void onToolDenied(String callId, String toolName,
                                      String rawInput, String reason) {
+                timelineLifecycle.toolDenied(callId, toolName);
                 sessionContext.wrap(() -> activityPanel.recordToolDenied(callId, toolName, rawInput, reason)).run();
             }
         });
@@ -620,6 +769,11 @@ public class ChatRepl implements AutoCloseable {
             mcpLogCleanup.run();
             throw e;
         }
+        } catch (RuntimeException | Error failure) {
+            closeProcessTimelineBinding();
+            timelineLifecycle.close();
+            throw failure;
+        }
     }
 
     private ToolContext dashboardToolContext() {
@@ -692,6 +846,11 @@ public class ChatRepl implements AutoCloseable {
     ReminderManager getReminderManager() { return reminderManager; }
     ContinueManager getContinueManager() { return continueManager; }
 
+    /** Presentation is optional; a failed/unsupported preview never rejects an attachment. */
+    void previewAttachedImage(Path path) {
+        if (tui != null) tui.previewImage(path);
+    }
+
     // ── Clipboard image paste (Claude Code-style [Image #N] chips) ────────────
 
     /**
@@ -724,6 +883,7 @@ public class ChatRepl implements AutoCloseable {
                     ImageClipboardSupport.imageMimeType(stagedImage).orElse("image/png"), true));
             noticeWhenModelLacksVision();
             statusBar.requestRedraw();
+            previewAttachedImage(stagedImage);
             return true;
         } catch (Exception e) {
             ChatCompleter.showNotice(renderer.yellow(
@@ -898,6 +1058,7 @@ public class ChatRepl implements AutoCloseable {
         KompileTui tuiNow = tui;
         ChatSessionMetrics metricsNow = sessionMetrics;
         if (tuiNow == null || metricsNow == null) return;
+        tuiNow.setContextSummary(metricsNow.contextTokenSummary());
         tuiNow.setTokenSummary(metricsNow.compactTokenSummary());
         tuiNow.setJudgeTokenSummary(judgeReplTokenSummary());
     }
@@ -1196,6 +1357,16 @@ public class ChatRepl implements AutoCloseable {
         }
     }
 
+    private void refreshProviderContextMetadata() {
+        if (directClient == null || chatConfig == null) return;
+        try {
+            ai.kompile.cli.main.chat.config.ModelDiscoveryHttp.refreshContextMetadata(chatConfig);
+            agenticLoop.refreshCompactionPolicy();
+        } catch (RuntimeException ignored) {
+            // Discovery is bounded and optional; the provider's next usage report still wins.
+        }
+    }
+
     private void activateAuxiliarySupervision() {
         if (!auxiliarySupervisionActive.compareAndSet(false, true)) return;
         if (performanceHarness != null) {
@@ -1396,6 +1567,7 @@ public class ChatRepl implements AutoCloseable {
         if (message == null || message.isBlank()) {
             throw new IllegalArgumentException("Headless crawl message must not be blank");
         }
+        refreshProviderContextMetadata();
         activateAuxiliarySupervision();
         lifecycleManager.restoreSession();
         chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled,
@@ -1426,6 +1598,7 @@ public class ChatRepl implements AutoCloseable {
                 crawlRunStore.event("headless_completed", runController.state().name());
             }
         } finally {
+            try {
             acceptingProcessWakeups.set(false);
             messageHandler.shutdown();
             closeAuxiliaryRepls();
@@ -1449,6 +1622,11 @@ public class ChatRepl implements AutoCloseable {
             sharedProcessMirror.close();
             processManager.close();
             coordinationManager.shutdown();
+            } finally {
+                closeDashboardReports();
+                closeProcessTimelineBinding();
+                timelineLifecycle.close();
+            }
         }
     }
 
@@ -1473,6 +1651,9 @@ public class ChatRepl implements AutoCloseable {
                 coordinationManager.shutdown();
             }
         } finally {
+            closeDashboardReports();
+            closeProcessTimelineBinding();
+            timelineLifecycle.close();
             shutdownScheduledLoops();
             projectActivityController.close();
             dashboardController.close();
@@ -1506,6 +1687,7 @@ public class ChatRepl implements AutoCloseable {
         if (interactiveInitialized) throw new IllegalStateException("Chat already initialized");
         interactiveInitialized = true;
         retainedTerminal = terminal;
+        refreshProviderContextMetadata();
         activateAuxiliarySupervision();
         // The real terminal is not available until after JLine is built; attach the
         // title controller below so OSC updates reach the active terminal stream.
@@ -1550,20 +1732,18 @@ public class ChatRepl implements AutoCloseable {
                 hostManaged ? "chat_input_history_" + UUID.nameUUIDFromBytes(
                         sessionId.getBytes(java.nio.charset.StandardCharsets.UTF_8)) : "chat_input_history").toPath();
 
-        LineReader reader = LineReaderBuilder.builder()
-                .terminal(terminal)
-                .completer(new ChatCompleter(
-                        () -> cachedTools,
-                        () -> skillRegistry.names(),
-                        () -> agentRegistry.getPrimaryAgents().stream()
-                                .map(AgentConfig::getName)
-                                .collect(Collectors.toCollection(LinkedHashSet::new)),
-                        () -> roleManager.getAllRoles().stream()
-                                .map(RoleConfig::getName)
-                                .collect(Collectors.toCollection(LinkedHashSet::new))
-                ))
-                .variable(LineReader.HISTORY_FILE, historyFile)
-                .build();
+        InputPaneLineReader reader = new InputPaneLineReader(terminal);
+        reader.setCompleter(new ChatCompleter(
+                () -> cachedTools,
+                () -> skillRegistry.names(),
+                () -> agentRegistry.getPrimaryAgents().stream()
+                        .map(AgentConfig::getName)
+                        .collect(Collectors.toCollection(LinkedHashSet::new)),
+                () -> roleManager.getAllRoles().stream()
+                        .map(RoleConfig::getName)
+                        .collect(Collectors.toCollection(LinkedHashSet::new))
+        ));
+        reader.setVariable(LineReader.HISTORY_FILE, historyFile);
 
         retainedReader = reader;
         reader.getHistory().load();
@@ -1844,6 +2024,7 @@ public class ChatRepl implements AutoCloseable {
         // interactive process/subagent rows.
         Runnable activityRedraw = sessionContext.wrap(() -> {
             activityPanel.refresh();
+            activityPanel.resultDisplayBlocks().forEach(tui::upsertDisplayBlock);
             refreshCurrentActivityView(tui, activityPanel);
             renderer.updateProcessActivity(titleProcessCount());
         });
@@ -1962,15 +2143,19 @@ public class ChatRepl implements AutoCloseable {
             ChatCompleter.setAlertOutput(sessionContext.wrapConsumer(tui::showAlert));
             ChatCompleter.setTranscriptBlockOutput((key, content) ->
                 withSessionContext(() -> tui.upsertMainTranscriptBlock(key, content)));
+        ChatCompleter.setDisplayBlockOutput(block -> withSessionContext(() -> tui.upsertDisplayBlock(block)));
         } else {
             ChatCompleter.setCompletionDisplay(null);
             ChatCompleter.setContentRedraw(null);
             ChatCompleter.setContentOutput(null);
             ChatCompleter.setAlertOutput(null);
             ChatCompleter.setTranscriptBlockOutput(null);
+            ChatCompleter.setDisplayBlockOutput(null);
         }
 
         if (tui.isStarted()) {
+            diagnosticNoticeCleanup = TranscriptLogScope.installTerminalNoticeSink(
+                    sessionContext.wrapConsumer(tui::showAlert));
             if (!hostManaged) {
                 codeIndexAlertCleanup = CodeIndexDiagnostics.installAlertSink(tui::showAlert);
                 enforcerAlertCleanup = EnforcerDiagnostics.installAlertSink(tui::showAlert);
@@ -1986,6 +2171,8 @@ public class ChatRepl implements AutoCloseable {
         messageHandler.startAcceptingExternalMessages();
         acceptingProcessWakeups.set(true);
         installResourceWakeups();
+        try { bindUiKeys((LineReaderImpl) lineReader, tui.getUiConfig()); }
+        catch (IllegalArgumentException conflict) { ChatCompleter.showNotice(conflict.getMessage()); }
         // JLine may invoke widgets from its redraw path, outside the lexical read call.
         lineReader.getWidgets().replaceAll((name, widget) ->
                 () -> withSessionContext(widget::apply));
@@ -2019,6 +2206,14 @@ public class ChatRepl implements AutoCloseable {
         if (line == null || line.isBlank()) return true;
 
         String trimmed = line.trim();
+        // Re-upload a retained preview after a tmux client attaches or loses its
+        // image cache. Other submitted lines still return to the parent transcript.
+        boolean redrawImagePreview = tui.isImagePreviewView() && trimmed.equalsIgnoreCase("/redraw");
+        if (tui.isImagePreviewView() && !redrawImagePreview) tui.showMainView();
+        if (ResourceMonitorCommands.VIEW_KEY.equals(tui.getContentViewKey())
+                && !trimmed.split("\\s+", 2)[0].equalsIgnoreCase("/resource-monitor")) {
+            tui.showMainView();
+        }
         String viewedSubagentId = activityPanel.viewedSubagentId();
         if (!trimmed.startsWith("/") && !viewedSubagentId.isBlank()) {
             if (activityPanel.trySendMessageToViewedSubagent(trimmed)) {
@@ -2032,7 +2227,7 @@ public class ChatRepl implements AutoCloseable {
 
         // Accepted parent input, including bracketed paste and slash commands,
         // returns from a process/tool transcript to Main before dispatch.
-        if (!activityPanel.isViewingMain()) {
+        if (!activityPanel.isViewingMain() && !redrawImagePreview) {
             activityPanel.returnToMain();
             tui.showMainView();
         }
@@ -2070,6 +2265,7 @@ public class ChatRepl implements AutoCloseable {
         interactiveFinished = true;
         LineReader reader = retainedReader;
         Terminal terminal = retainedTerminal;
+        try {
             acceptingProcessWakeups.set(false);
             agenticLoop.setBackgroundEligibilityListener(null);
             messageHandler.shutdown();
@@ -2132,6 +2328,7 @@ public class ChatRepl implements AutoCloseable {
             // Stop the unified TUI (resets scroll regions, stops refresh threads)
             tui.detachLineReader();
             tui.stop();
+            diagnosticNoticeCleanup.run();
             ChatCompleter.clearTerminalRef(reader);
             ChatCompleter.setQueueSupplier(null);
             renderer.detachTerminal();
@@ -2179,6 +2376,11 @@ public class ChatRepl implements AutoCloseable {
                     printUnexpectedExitResumeCommand(System.err, sessionId, resumeAvailable);
                 }
             }
+        } finally {
+            closeDashboardReports();
+            closeProcessTimelineBinding();
+            timelineLifecycle.close();
+        }
     }
 
     void configureHost(ScheduledLoopManager projectLoops) {
@@ -2191,6 +2393,7 @@ public class ChatRepl implements AutoCloseable {
         ChatCompleter.setContentOutput(sessionContext.wrapConsumer(tui::recordInScrollRegion));
         ChatCompleter.setTranscriptBlockOutput((key, content) ->
                 withSessionContext(() -> tui.upsertMainTranscriptBlock(key, content)));
+        ChatCompleter.setDisplayBlockOutput(block -> withSessionContext(() -> tui.upsertDisplayBlock(block)));
     }
 
     void showHostMessage(String message) {
@@ -2891,6 +3094,7 @@ public class ChatRepl implements AutoCloseable {
                 return true;
             }
             String text = reader.getBuffer().toString();
+            if (text.isBlank() && tui != null && tui.navigateSidebar(-1)) return true;
             if (activityPanel != null && activityPanel.isFocused()) {
                 if (text.isBlank() && activityPanel.selectPrevious()) {
                     redisplayWithContent(reader, tui);
@@ -2995,6 +3199,7 @@ public class ChatRepl implements AutoCloseable {
                 redisplayWithContent(reader, tui);
                 return true;
             }
+            if (reader.getBuffer().toString().isBlank() && tui != null && tui.navigateSidebar(1)) return true;
             String text = reader.getBuffer().toString();
             if (text.isBlank() && activityPanel.selectNext()) {
                 redisplayWithContent(reader, tui);
@@ -3067,12 +3272,15 @@ public class ChatRepl implements AutoCloseable {
                 if (event != null && tui != null) {
                     previousMouseEvent[0] = event;
                     switch (event.getButton()) {
-                        case WheelUp -> changed = tui.scrollChatTitle(3, event.getY()) || tui.scrollContent(3);
-                        case WheelDown -> changed = tui.scrollChatTitle(-3, event.getY()) || tui.scrollContent(-3);
+                        case WheelUp -> changed = tui.scrollSidebarAt(event.getX(), event.getY(), -3)
+                                || tui.scrollChatTitle(3, event.getY()) || tui.scrollContent(3);
+                        case WheelDown -> changed = tui.scrollSidebarAt(event.getX(), event.getY(), 3)
+                                || tui.scrollChatTitle(-3, event.getY()) || tui.scrollContent(-3);
                         case Button1 -> {
                             switch (event.getType()) {
                                 case Pressed -> {
-                                    changed = tui.handleScrollToBottomClick(
+                                    changed = tui.handleSidebarLatestClick(event.getX(), event.getY())
+                                            || tui.clickSidebarAt(event.getX(), event.getY()) || tui.handleScrollToBottomClick(
                                             event.getX(), event.getY());
                                     if (!changed) {
                                         changed = tui.beginTranscriptSelection(
@@ -3149,6 +3357,7 @@ public class ChatRepl implements AutoCloseable {
         if (originalAccept != null) {
             reader.getWidgets().put(LineReader.ACCEPT_LINE, () -> {
                 if (tui != null && tui.isTemporaryWindowActive()) return originalAccept.apply();
+                if (reader.getBuffer().toString().isBlank() && tui != null && tui.expandSidebarSelection()) return true;
                 if (activityPanel.isFocused() && reader.getBuffer().toString().isBlank()) {
                     showActivityView(tui, activityPanel.openSelectedView());
                     redisplayWithContent(reader, tui);
@@ -3387,18 +3596,130 @@ public class ChatRepl implements AutoCloseable {
     private static void refreshCurrentActivityView(
             KompileTui tui, StandardChatActivityPanel activityPanel) {
         StandardChatActivityPanel.ActivityView view = activityPanel.currentView();
+        if ((tui.isResultsView() || tui.isImagePreviewView()
+                || ResourceMonitorCommands.VIEW_KEY.equals(tui.getContentViewKey()))
+                && (view == null || view.main())) return;
         if (view == null || view.main()) {
             if (!tui.isMainContentView()) {
                 // Re-check the panel selection while the TUI draw lock is held. A
                 // delayed Main refresh must not overwrite a child explicitly opened
                 // after this callback captured its view snapshot.
-                tui.showMainViewIf(activityPanel::isViewingMain);
+                tui.showMainViewIf(() -> activityPanel.isViewingMain() && !tui.isImagePreviewView());
             }
             return;
         }
         // Explicit selection uses showActivityView. This refresh is identity-guarded
         // so a delayed child callback cannot reopen it after the user returned to Main.
         tui.updateActivityView(view.key(), view.title(), view.content());
+    }
+
+    void handleUiCommand(String arguments) {
+        ChatUiConfig config = tui.getUiConfig();
+        String input = arguments == null ? "" : arguments.strip();
+        try {
+            if (input.isEmpty()) {
+                if (activeReader == null) { config.describe().forEach(ChatCompleter::printAbove); return; }
+                ChatCompleter.setTemporaryWindowActive(true);
+                try {
+                    ChatUiWizard.run(activeReader, config, this::applyUiPreferences,
+                            tui::updateTemporaryWindow, tui::closeTemporaryWindow, workingDirectory, sessionId, toolRegistry.ids());
+                } finally { ChatCompleter.setTemporaryWindowActive(false); }
+                return;
+            }
+            String[] parts = input.split("\\s+", 2);
+            String value = parts.length > 1 ? parts[1].strip() : "";
+            switch (parts[0]) {
+                case "preset" -> { config.applyPreset(value); saveUiPreferences(config); }
+                case "layout" -> { config.set("layout.mode", value); saveUiPreferences(config); }
+                case "set" -> {
+                    String[] setting = value.split("\\s+", 2);
+                    if (setting.length != 2) throw new IllegalArgumentException("Usage: /ui set <setting.path> <value>");
+                    config.set(setting[0], setting[1]); saveUiPreferences(config);
+                }
+                case "save" -> { config.save(value, workingDirectory, sessionId); applyUiPreferences(config); ChatCompleter.showNotice("UI overrides saved to " + config.persistencePath()); }
+                case "sidebar" -> {
+                    switch (value) {
+                        case "toggle" -> toggleSidebarPreference();
+                        case "focus" -> tui.toggleSidebarFocus();
+                        case "expand" -> tui.toggleResultSelection();
+                        default -> tui.openResultsDrawer();
+                    }
+                }
+                case "results" -> tui.openResultsDrawer();
+                case "inspect" -> { if (!value.isBlank()) tui.selectSidebarItem(value); tui.openResultInspector(); }
+                case "next" -> tui.selectResult(1);
+                case "previous", "prev" -> tui.selectResult(-1);
+                case "section" -> tui.toggleSidebarSection(value);
+                case "filter" -> tui.setSidebarFilter(value);
+                case "pin" -> tui.pinSidebarSelection();
+                case "close" -> { activityPanel.returnToMain(); tui.closeResultsView(); }
+                case "status" -> config.describe().forEach(ChatCompleter::printAbove);
+                default -> throw new IllegalArgumentException("Use /ui for the wizard; preset, layout, set, save, sidebar, results, inspect, next, previous, section, filter, pin, close, status are supported.");
+            }
+        } catch (IllegalArgumentException | IOException e) { ChatCompleter.showNotice(e.getMessage()); }
+    }
+
+    private void saveUiPreferences(ChatUiConfig config) throws IOException {
+        if (activeReader instanceof LineReaderImpl reader) bindUiKeys(reader, config);
+        try { config.saveDefault(); }
+        catch (IOException | IllegalArgumentException e) {
+            if (activeReader instanceof LineReaderImpl reader) bindUiKeys(reader, tui.getUiConfig());
+            throw e;
+        }
+        applyUiPreferences(config);
+    }
+
+    private void toggleSidebarPreference() {
+        // Picker edits are previews until completion; a shortcut must not save them behind Cancel.
+        if (tui.isTemporaryWindowActive()) return;
+        ChatUiConfig previous = tui.getUiConfig();
+        tui.toggleSidebar();
+        ChatUiConfig config = tui.getUiConfig();
+        if (config.isSidebarVisible() == previous.isSidebarVisible()) return; // Narrow-window drawer, not a preference change.
+        try { saveUiPreferences(config); }
+        catch (IOException | IllegalArgumentException e) {
+            applyUiPreferences(previous);
+            ChatCompleter.showNotice("Could not save UI preferences: " + e.getMessage());
+        }
+    }
+
+    private void applyUiPreferences(ChatUiConfig config) {
+        if (activeReader instanceof LineReaderImpl reader) bindUiKeys(reader, config);
+        tui.setUiConfig(config);
+        activityPanel.resultDisplayBlocks().forEach(tui::upsertDisplayBlock);
+    }
+
+    private final Map<String, Binding> uiOriginalBindings = new java.util.HashMap<>();
+    private LineReader uiBindingReader;
+
+    private void bindUiKeys(LineReaderImpl reader, ChatUiConfig config) {
+        if (uiBindingReader != reader) { uiOriginalBindings.clear(); uiBindingReader = reader; }
+        KeyMap<Binding> keys = reader.getKeyMaps().get(LineReader.EMACS);
+        if (keys == null) return;
+        bindUiKeyMap(keys, config, uiOriginalBindings);
+        reader.getWidgets().put("kompile-ui-toggle", () -> { toggleSidebarPreference(); return true; });
+        reader.getWidgets().put("kompile-ui-focus", () -> { activityPanel.clearSelection(); tui.toggleSidebarFocus(); return true; });
+    }
+
+    static void bindUiKeyMap(KeyMap<Binding> keys, ChatUiConfig config, Map<String, Binding> originals) {
+        Map<String, String> desired = new java.util.LinkedHashMap<>();
+        for (String action : List.of("toggle", "focus")) {
+            char letter = config.getBinding(action).charAt(7);
+            String widget = "kompile-ui-" + action;
+            for (char key : new char[]{Character.toLowerCase(letter), Character.toUpperCase(letter)}) {
+                String sequence = KeyMap.ctrl('X') + key;
+                if (desired.containsKey(sequence)) throw new IllegalArgumentException("UI toggle and focus need different bindings");
+                Binding bound = keys.getBound(sequence);
+                if (bound != null && !originals.containsKey(sequence)
+                        && !(bound instanceof Reference reference && reference.name().startsWith("kompile-ui-"))) {
+                    throw new IllegalArgumentException("UI binding already used: ctrl-x " + key);
+                }
+                desired.put(sequence, widget);
+            }
+        }
+        originals.forEach((key, binding) -> { if (binding == null) keys.unbind(key); else keys.bind(binding, key); });
+        originals.clear();
+        desired.forEach((key, widget) -> { originals.put(key, keys.getBound(key)); keys.bind(new Reference(widget), key); });
     }
 
     boolean handleProjectActivityCommand(String arguments) {
@@ -3476,10 +3797,8 @@ public class ChatRepl implements AutoCloseable {
             String subagentId,
             boolean includeBackgroundMarker) {
         if (activityPanel.isCurrentTurnBackgrounded() && !includeBackgroundMarker) return;
-        String content = activityPanel.inlineSubagentTranscript(subagentId);
-        if (!content.isBlank()) {
-            tui.upsertMainTranscriptBlock("subagent:" + subagentId, content);
-        }
+        ChatDisplayBlock block = activityPanel.subagentDisplayBlock(subagentId);
+        if (block != null) tui.upsertDisplayBlock(block);
     }
 
     /**

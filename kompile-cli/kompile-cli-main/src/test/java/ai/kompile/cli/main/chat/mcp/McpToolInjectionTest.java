@@ -429,7 +429,9 @@ class McpToolInjectionTest {
             assertNotNull(launcher);
             assertNotEquals(staleBinary.toString(), launcher.command());
             assertEquals(List.of("-jar", executableJar.toAbsolutePath().toString()),
-                    launcher.prefixArgs());
+                    launcher.prefixArgs().subList(launcher.prefixArgs().size() - 2, launcher.prefixArgs().size()));
+            assertTrue(launcher.prefixArgs().stream().anyMatch(arg -> arg.startsWith("-Xms")));
+            assertTrue(launcher.prefixArgs().stream().anyMatch(arg -> arg.startsWith("-XX:G1PeriodicGCInterval=")));
         } finally {
             restoreProperty("kompile.cli.binary", previousBinary);
             restoreProperty("kompile.cli.jar", previousJar);

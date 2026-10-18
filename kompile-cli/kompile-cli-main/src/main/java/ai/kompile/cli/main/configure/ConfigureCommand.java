@@ -22,6 +22,8 @@ import ai.kompile.cli.main.chat.McpUrlResolver;
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.ChatUiConfig;
+import ai.kompile.cli.main.chat.config.ChatUiWizard;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard;
@@ -56,6 +58,7 @@ import java.util.concurrent.Callable;
                 ConfigureCommand.InitConfigureCommand.class,
                 ConfigureCommand.AppConfigureCommand.class,
                 ConfigureCommand.ChatConfigureCommand.class,
+                ConfigureCommand.UiConfigureCommand.class,
                 ConfigureCommand.PassthroughConfigureCommand.class,
                 ConfigureCommand.EnforcerConfigureCommand.class,
                 ConfigureCommand.JudgeConfigureCommand.class,
@@ -106,7 +109,8 @@ public class ConfigureCommand implements Callable<Integer> {
                         "MCP: choose profile/schema and manage custom servers",
                         "Tool gateway: LLM-based tool evaluation rules",
                         "Agent defaults: model and per-model thinking for Codex, Claude, OpenCode",
-                        "Show status only"
+                        "Show status only",
+                        "Chat display: layout, sidebar and inline content routing"
                 );
                 int choice = selectNumbered(reader, items, true);
                 if (choice < 0 || choice == 0) return 0;
@@ -122,6 +126,7 @@ public class ConfigureCommand implements Callable<Integer> {
                     case 9 -> new GatewayConfigureCommand().call();
                     case 10 -> new AgentDefaultsConfigureCommand().call();
                     case 11 -> { printStatus(workingDir); yield 0; }
+                    case 12 -> new UiConfigureCommand().call();
                     default -> 0;
                 };
                 if (result != 0) return result;
@@ -294,6 +299,27 @@ public class ConfigureCommand implements Callable<Integer> {
                     ? SetupWizard.runGlobal()
                     : SetupWizard.run(ChatConfig.Scope.PROJECT, resolveProjectDir(projectDir));
             return config != null ? 0 : 1;
+        }
+    }
+
+    @Command(name = "ui", mixinStandardHelpOptions = true,
+            description = "Configure chat layout, inline content and collapsible sidebar.")
+    public static class UiConfigureCommand implements Callable<Integer> {
+        @Option(names = {"--project-dir", "-d"}, description = "Project directory (default: resolved project)")
+        String projectDir;
+        @Option(names = "--status", description = "Print effective display preferences without opening the wizard")
+        boolean statusOnly;
+        @Override public Integer call() {
+            Path project = resolveProjectDir(projectDir);
+            ChatUiConfig config = ChatUiConfig.loadEffective(project, null);
+            if (statusOnly) { config.describe().forEach(System.out::println); return 0; }
+            try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
+                LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
+                ChatUiWizard.run(reader, config, ignored -> { }, (title, lines) -> {
+                    printHeader(title); lines.forEach(System.out::println);
+                }, () -> { }, project, null);
+                return 0;
+            } catch (Exception e) { System.err.println("UI configuration failed: " + e.getMessage()); return 1; }
         }
     }
 

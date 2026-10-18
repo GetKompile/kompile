@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "providers": {
+    "anthropic": {
+      "context": ["/max_input_tokens"],
+      "output": ["/max_tokens"],
+      "source": "https://platform.claude.com/docs/en/api/models/retrieve"
+    },
+    "claude": {
+      "context": ["/contextWindow", "/context_window"],
+      "output": ["/maxOutputTokens", "/max_output_tokens"],
+      "source": "https://platform.claude.com/docs/en/agent-sdk/typescript#model-usage"
+    },
+    "openai": {
+      "context": [], "output": [],
+      "source": "https://platform.openai.com/docs/api-reference/models/object"
+    },
+    "openai-codex": {
+      "context": ["/context_window", "/max_context_window", "/contextWindow"],
+      "output": ["/max_output_tokens", "/maxOutputTokens"],
+      "source": "https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs"
+    },
+    "gemini": {
+      "context": ["/inputTokenLimit"],
+      "output": ["/outputTokenLimit"],
+      "source": "https://ai.google.dev/api/models#Model"
+    },
+    "openrouter": {
+      "context": ["/top_provider/context_length", "/context_length"],
+      "output": ["/top_provider/max_completion_tokens"],
+      "source": "https://openrouter.ai/docs/api/api-reference/models/get-models"
+    },
+    "github-copilot": {
+      "context": ["/capabilities/limits/max_context_window_tokens", "/capabilities/limits/max_prompt_tokens"],
+      "output": ["/capabilities/limits/max_output_tokens"],
+      "source": "https://github.com/github/copilot-language-server-release"
+    },
+    "radius": {
+      "context": ["/contextWindow"],
+      "output": ["/maxTokens"],
+      "source": "https://github.com/badlogic/pi-mono/tree/main/packages/ai"
+    },
+    "opencode": {
+      "context": ["/limit/context"],
+      "output": ["/limit/output"],
+      "source": "https://opencode.ai/docs/models/"
+    },
+    "groq": {
+      "context": ["/context_window"],
+      "output": ["/max_completion_tokens"],
+      "source": "https://console.groq.com/docs/models"
+    },
+    "xai": {
+      "context": ["/context_length"],
+      "output": [],
+      "source": "https://docs.x.ai/developers/rest-api-reference/inference/models"
+    },
+    "zai": {"context": [], "output": []},
+    "deepseek": {"context": [], "output": []}
+  }
+}

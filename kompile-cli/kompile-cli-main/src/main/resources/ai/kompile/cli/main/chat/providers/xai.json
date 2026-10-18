@@ -8,6 +8,16 @@
     "verifiedAt": "2026-08-20",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
   },
+  "fastMode": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://docs.x.ai/developers/rest-api-reference/inference/chat-completions",
+      "verifiedAt": "2026-10-14",
+      "notice": "Requests xAI priority/fast processing at higher cost: fast deployment where configured, otherwise higher scheduling priority. Model support and entitlement are validated by the provider."
+    },
+    "onRequest": {"service_tier": "priority"},
+    "offRequest": {"service_tier": "default"}
+  },
   "structuredOutput": {
     "metadataSource": "DOCUMENTED_FALLBACK",
     "source": {

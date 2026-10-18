@@ -140,6 +140,29 @@ public final class ModelDiscoveryHttp {
         CACHE.clear();
     }
 
+    /** Read-only lookup of the last verified metadata for this exact route and credential. */
+    static Optional<LiveModelDiscovery.Model> knownModel(ChatConfig config, String model) {
+        if (config == null || config.isClaudeCliNative()) return Optional.empty();
+        if (config.isOpenCodeNative()) {
+            return CACHE.knownModel(config.getProvider(), "native:" + config.getProvider(), "", model);
+        }
+        OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+        ChatProvider descriptor = ChatProviderRegistry.find(config.getProvider());
+        String base = descriptor != null && !descriptor.modelDiscoveryRequiresBaseUrl()
+                ? auth != null && auth.baseUrl() != null ? auth.baseUrl() : "provider-runtime:" + config.getProvider()
+                : config.resolveBaseUrl(auth);
+        return CACHE.knownModel(config.getProvider(), base,
+                authIdentity(auth == null ? config.getApiKey() : null, auth), model);
+    }
+
+    /** Fetch metadata only at an explicit chat lifecycle boundary, never while painting a status bar. */
+    public static void refreshContextMetadata(ChatConfig config) {
+        if (config == null || config.isClaudeCliNative() || "kompile-local".equals(config.getProvider())
+                || ("none".equalsIgnoreCase(config.getAuthenticationMethod()) && !config.isOpenCodeNative())
+                || (config.getContextWindowTokens() > 0 && config.getMaxOutputTokens() > 0)) return;
+        discoverResultWithAuth(config.getProvider(), config.resolveRequestAuth(), config.getBaseUrl());
+    }
+
     private static ModelDiscovery.Result discoverResult(
             String provider,
             String key,
@@ -153,6 +176,9 @@ public final class ModelDiscoveryHttp {
                 && agent.getModelListCommand() != null
                 && !agent.getModelListCommand().isEmpty()) {
             List<LiveModelDiscovery.Model> models = LiveModelDiscovery.discoverNative(provider);
+            if (!models.isEmpty()) {
+                CACHE.put(provider, "native:" + provider, ModelDiscovery.Result.success(models, List.of("native:" + provider)));
+            }
             return models.isEmpty()
                     ? ModelDiscovery.Result.failure(
                             ModelDiscovery.Status.UNAVAILABLE,
@@ -971,6 +997,13 @@ final class ModelDiscoveryCache {
             entries.keySet().stream().findFirst().ifPresent(entries::remove);
         }
         entries.put(key, new Entry(result, Instant.now(clock)));
+    }
+
+    /** Metadata remains the last verified snapshot after picker freshness expires; it grants no model access. */
+    Optional<LiveModelDiscovery.Model> knownModel(String provider, String baseUrl, String authIdentity, String model) {
+        Entry entry = entries.get(new Key(provider, baseUrl, authIdentity));
+        if (entry == null || model == null) return Optional.empty();
+        return entry.result().models().stream().filter(candidate -> model.equals(candidate.id())).findFirst();
     }
 
     void remove(String provider, String baseUrl, String authIdentity) {

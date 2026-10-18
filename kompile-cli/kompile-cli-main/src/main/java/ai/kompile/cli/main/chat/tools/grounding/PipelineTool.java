@@ -6,6 +6,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.ProductManagedWorkTracker;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -38,14 +39,16 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /** MCP-native authoring, versioning, validation, and execution for every pipeline. */
 public final class PipelineTool implements CliTool {
@@ -61,9 +64,30 @@ public final class PipelineTool implements CliTool {
     private static final ConcurrentHashMap<String, RunState> ACTIVE_RUNS = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper;
+    private final Executor runExecutor;
+    private final HostExecutor hostExecutor;
+    private final HostExecutor productHostExecutor;
+
+    @FunctionalInterface
+    interface HostExecutor {
+        String execute(Path root, UnifiedPipelineDefinition definition, Map<String, Object> input,
+                       Consumer<Map<String, Object>> progress, Consumer<String> chunks) throws Exception;
+    }
 
     public PipelineTool(ObjectMapper mapper) {
+        this(mapper, RUNS, ChatModelPipelineRunner::executeDefinition, ChatModelPipelineRunner::executeProductDefinition);
+    }
+
+    // Same host lifecycle, with a model-free execution boundary for focused tests.
+    PipelineTool(ObjectMapper mapper, Executor runExecutor, HostExecutor hostExecutor) {
+        this(mapper, runExecutor, hostExecutor, hostExecutor);
+    }
+
+    PipelineTool(ObjectMapper mapper, Executor runExecutor, HostExecutor hostExecutor, HostExecutor productHostExecutor) {
         this.mapper = mapper;
+        this.runExecutor = runExecutor;
+        this.hostExecutor = hostExecutor;
+        this.productHostExecutor = productHostExecutor;
     }
 
     @Override
@@ -304,15 +328,27 @@ public final class PipelineTool implements CliTool {
         String action = params.path("action").asText("").trim().toLowerCase();
         if (!ACTIONS.contains(action)) return ToolResult.error("Unknown pipeline action: " + action);
         Path workingDirectory = context.getWorkingDirectory().toAbsolutePath().normalize();
-        Path projectRoot = new KompileProjectStore().findProjectRoot(workingDirectory)
-                .orElse(workingDirectory);
+        Path projectRoot = context.getProductManagedWork() != null ? workingDirectory
+                : new KompileProjectStore().findProjectRoot(workingDirectory).orElse(workingDirectory);
         PipelineDefinitionStore store = new PipelineDefinitionStore(
                 projectRoot.resolve("data/pipelines"), mapper);
         String actor = first(params.path("actor").asText(null), context.getSessionId(), "mcp-agent");
         try {
+            ProductManagedWorkTracker tracker = context.getProductManagedWork();
+            boolean product = tracker != null || (context.getToolRegistry() != null
+                    && context.getToolRegistry().isProductMode());
+            if (tracker != null) {
+                if ("run".equals(action) && context.isAborted()) throw new IllegalArgumentException("Product execution is revoked");
+                if ("test".equals(action)) throw new IllegalArgumentException(
+                        "Product pipeline execution requires run and its tracked lifecycle");
+                if (("status".equals(action) || "cancel".equals(action))
+                        && !tracker.owns(ProductManagedWorkTracker.PIPELINE, requiredText(params, "runId"))) {
+                    throw new IllegalArgumentException("Pipeline run is not owned by this product session");
+                }
+            }
             Object result = switch (action) {
-                case "capabilities" -> capabilities(projectRoot, params);
-                case "list_models" -> listModels(projectRoot, params);
+                case "capabilities" -> capabilities(projectRoot, params, product);
+                case "list_models" -> listModels(projectRoot, params, product);
                 case "list" -> list(projectRoot, store);
                 case "get" -> get(projectRoot, store, params);
                 case "versions" -> store.versions(requiredId(params));
@@ -324,7 +360,7 @@ public final class PipelineTool implements CliTool {
                 case "diff" -> diff(store, params);
                 case "promote", "rollback" -> store.promote(requiredId(params),
                         requiredLong(params, "version"), optionalLong(params, "expectedActiveVersion"), actor);
-                case "run" -> run(projectRoot, store, params);
+                case "run" -> run(projectRoot, store, params, context.getProductManagedWork());
                 case "status" -> status(requiredText(params, "runId"));
                 case "cancel" -> cancel(requiredText(params, "runId"));
                 case "delete" -> Map.of("archived", store.archive(requiredId(params),
@@ -336,7 +372,8 @@ public final class PipelineTool implements CliTool {
                     Map.of("action", action, "projectRoot", projectRoot.toString()));
         } catch (Throwable failure) {
             Map<String, Object> diagnostic = diagnostic(failure, "PIPELINE_" + action.toUpperCase(),
-                    "capabilities".equals(action) || "list_models".equals(action) || params.path("definition").has("processor"));
+                    context.getProductManagedWork() != null || "capabilities".equals(action)
+                            || "list_models".equals(action) || params.path("definition").has("processor"));
             Map<String, Object> output = new LinkedHashMap<>();
             output.put("action", action);
             output.put("status", "FAILED");
@@ -353,15 +390,15 @@ public final class PipelineTool implements CliTool {
         }
     }
 
-    private Map<String, Object> listModels(Path root, JsonNode params) throws Exception {
+    private Map<String, Object> listModels(Path root, JsonNode params, boolean product) throws Exception {
         NativeChatModels.rejectInlineCredentials(mapper.convertValue(params, Map.class));
         if (params.hasNonNull("provider") && (!params.get("provider").isTextual() || params.get("provider").asText().isBlank())) {
             throw new IllegalArgumentException("provider must be a non-empty string");
         }
-        return NativeChatModels.listModels(root, params.path("provider").asText(null));
+        return NativeChatModels.listModels(root, params.path("provider").asText(null), product);
     }
 
-    private Map<String, Object> capabilities(Path root, JsonNode params) throws Exception {
+    private Map<String, Object> capabilities(Path root, JsonNode params, boolean product) throws Exception {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("schemaVersion", UnifiedPipelineDefinition.CURRENT_SCHEMA_VERSION);
         result.put("actions", ACTIONS.stream().sorted().toList());
@@ -405,7 +442,7 @@ public final class PipelineTool implements CliTool {
         if (live || params.hasNonNull("provider") || params.hasNonNull("model") || params.hasNonNull("operation")) {
             chat.put("selection", NativeChatModels.probe(root, params.path("provider").asText(null),
                     params.path("model").asText(null), params.path("thinking").asText(null),
-                    params.path("operation").asText("text"), live, Duration.ofSeconds(probeSeconds)));
+                    params.path("operation").asText("text"), live, Duration.ofSeconds(probeSeconds), product));
         }
         result.put("chatModel", chat);
         result.put("runtime", Map.of(
@@ -727,16 +764,21 @@ public final class PipelineTool implements CliTool {
         if (timeoutNanos <= 0) throw new IllegalArgumentException("CHAT_MODEL timeout must be positive");
         Callable<HostResult> call = () -> {
             if (state != null) {
+                // The claim also fences cancellation of a task that has not entered its callable.
+                if (!state.hostEntered.compareAndSet(false, true)) throw new CancellationException("CHAT_MODEL cancelled");
                 synchronized (state) {
-                    if (state.cancelRequested.get()) throw new CancellationException("CHAT_MODEL cancelled");
                     state.hostWorker = Thread.currentThread();
                     state.hostRequestOwner = state.hostWorker;
                 }
             }
             try {
-                if (Thread.currentThread().isInterrupted()) throw new InterruptedException("CHAT_MODEL cancelled");
+                if (Thread.currentThread().isInterrupted() || (state != null && state.cancelRequested.get())) {
+                    throw new InterruptedException("CHAT_MODEL cancelled");
+                }
                 UnifiedPipelineDefinition prepared = prepare(root, definition, input, runtime, registration, false);
-                String text = ChatModelPipelineRunner.executeDefinition(root, prepared, input, event -> {
+                if (state != null && state.productManaged) requireInHostChatRoutes(root, prepared, input);
+                HostExecutor selectedExecutor = state != null && state.productManaged ? productHostExecutor : hostExecutor;
+                String text = selectedExecutor.execute(root, prepared, input, event -> {
                     if (state != null) state.progress = event;
                 }, state == null ? null : state::recordChunk);
                 if (Thread.currentThread().isInterrupted() || (state != null && state.cancelRequested.get())) {
@@ -746,10 +788,21 @@ public final class PipelineTool implements CliTool {
                 return new HostResult(prepared, Map.of("text", text, "execution", "CHAT_MODEL"));
             } finally {
                 if (state != null) {
+                    // NativeChatModels may still be draining its in-host HTTP/auth worker after
+                    // request.cancel(). Keep this owner alive/owned until that worker actually exits.
+                    if (state.productManaged) {
+                        boolean interrupted = Thread.interrupted();
+                        while (NativeChatModels.hasActiveRequest(state.hostRequestOwner)) {
+                            try { Thread.sleep(10); }
+                            catch (InterruptedException ignored) { interrupted = true; }
+                        }
+                        if (interrupted) Thread.currentThread().interrupt();
+                    }
                     synchronized (state) {
                         state.hostWorker = null;
                         state.hostFinished = true;
                         if (state.cancelRequested.get()) state.status = "CANCELLED";
+                        state.confirmStopped();
                     }
                 }
             }
@@ -759,27 +812,56 @@ public final class PipelineTool implements CliTool {
             synchronized (state) {
                 state.hostTask = task;
                 if (state.cancelRequested.get()) {
-                    task.cancel(true);
-                    state.hostFinished = true;
+                    state.cancelHostTask();
                     state.status = "CANCELLED";
                     throw new CancellationException("CHAT_MODEL cancelled before execution");
                 }
             }
         }
-        RUNS.execute(task);
+        try { runExecutor.execute(task); }
+        catch (RuntimeException rejected) {
+            task.cancel(true);
+            if (state != null) state.cancelHostTask();
+            throw rejected;
+        }
         try {
             return task.get(timeoutNanos, TimeUnit.NANOSECONDS);
         } catch (TimeoutException failure) {
             task.cancel(true); // Interrupts the owner observed by the shared native chat cancellation check.
+            if (state != null) state.cancelHostTask();
             throw new TimeoutException("CHAT_MODEL whole pipeline timed out after " + timeout);
         } catch (InterruptedException failure) {
             task.cancel(true);
+            if (state != null) state.cancelHostTask();
             Thread.currentThread().interrupt();
             throw failure;
         } catch (ExecutionException failure) {
             if (failure.getCause() instanceof Exception exception) throw exception;
             if (failure.getCause() instanceof Error error) throw error;
             throw failure;
+        }
+    }
+
+    private static void requireInHostChatRoutes(Path root, UnifiedPipelineDefinition definition,
+                                               Map<String, Object> input) throws Exception {
+        ChatModelPipelineRunner.requireProductInputs(root, definition, input);
+        var plan = ai.kompile.pipeline.serving.definition.ChatPipelineComposition.containsChat(definition)
+                ? ai.kompile.pipeline.serving.definition.ChatPipelineComposition.plan(definition)
+                : new ai.kompile.pipeline.serving.definition.ChatPipelineComposition.Plan(List.of(
+                        new ai.kompile.pipeline.serving.definition.ChatPipelineComposition.Stage(
+                                "chat", List.of("pipeline_input"), Map.of(), definition)), "chat");
+        for (var node : plan.stages()) {
+            UnifiedPipelineDefinition stage = node.definition();
+            Map<String, Object> options = new LinkedHashMap<>();
+            if (stage.getModelBindings() != null) options.put("modelBindings", stage.getModelBindings());
+            if (stage.getModelDefinitions() != null) options.put("modelDefinitions", stage.getModelDefinitions());
+            if (stage.getModelSetId() != null) options.put("modelSetId", stage.getModelSetId());
+            var pipeline = new LocalCrawlCapabilities.ResolvedPipeline(stage.getPipelineId(), "LLM", "auto", "no-op",
+                    0, 0, options, stage.getProcessor());
+            String protocol = String.valueOf(ChatModelPipelineRunner.previewSelection(root, pipeline).get("protocol"));
+            if (!Set.of("OPENAI_CHAT", "OPENAI_RESPONSES", "ANTHROPIC_MESSAGES", "PI_MESSAGES").contains(protocol)) {
+                throw new IllegalArgumentException("Product CHAT_MODEL requires an in-host HTTP route, not " + protocol);
+            }
         }
     }
 
@@ -803,9 +885,13 @@ public final class PipelineTool implements CliTool {
                 "from", left, "to", right);
     }
 
-    private Object run(Path root, PipelineDefinitionStore store, JsonNode params) throws Exception {
+    private Object run(Path root, PipelineDefinitionStore store, JsonNode params,
+                       ProductManagedWorkTracker tracker) throws Exception {
         ExecutableDefinition executable = executableDefinition(root, store, params);
         UnifiedPipelineDefinition definition = executable.definition();
+        if (tracker != null && !PipelineDefinitionValidator.isChatModel(definition)) {
+            throw new IllegalArgumentException("Product execution supports only in-host CHAT_MODEL pipelines");
+        }
         requireValid(definition);
         Map<String, Object> input = object(params, "input");
         Map<String, Object> runtime = object(params, "modelRuntime");
@@ -813,17 +899,25 @@ public final class PipelineTool implements CliTool {
         String runId = UUID.randomUUID().toString();
         RunState state = new RunState(runId, definition.getPipelineId(), definition.getDefinitionVersion(),
                 PipelineDefinitionValidator.isChatModel(definition));
+        state.productManaged = tracker != null;
+        if (tracker != null) {
+            ChatModelPipelineRunner.requireProductInputs(root, definition, input);
+            if (!runtime.isEmpty()) throw new IllegalArgumentException("Product CHAT_MODEL cannot use modelRuntime");
+            tracker.register(ProductManagedWorkTracker.PIPELINE, runId,
+                    () -> cancelState(state), state.actuallyStopped);
+        }
         ACTIVE_RUNS.put(runId, state);
-        state.future = CompletableFuture.runAsync(() -> {
-            synchronized (state) {
-                if (state.cancelRequested.get()) {
-                    state.hostFinished = state.host;
-                    state.status = "CANCELLED";
-                    return;
-                }
-                state.status = "RUNNING";
-            }
+        Runnable work = () -> {
+            if (!state.outerEntered.compareAndSet(false, true)) return;
             try {
+                synchronized (state) {
+                    if (state.cancelRequested.get()) {
+                        state.hostFinished = state.host;
+                        state.status = "CANCELLED";
+                        return;
+                    }
+                    state.status = "RUNNING";
+                }
                 if (state.host) {
                     HostResult executed = executeChatBounded(root, definition, input, runtime,
                             executable.registration(), timeout, state);
@@ -868,9 +962,26 @@ public final class PipelineTool implements CliTool {
                     }
                 }
             } finally {
-                state.execution = null;
+                synchronized (state) {
+                    state.execution = null;
+                    state.outerFinished = true;
+                    if (state.hostTask == null) state.hostFinished = state.host;
+                    state.confirmStopped();
+                }
             }
-        }, RUNS);
+        };
+        try {
+            state.future = CompletableFuture.runAsync(work, runExecutor);
+        } catch (RuntimeException rejected) {
+            synchronized (state) {
+                state.status = "FAILED";
+                state.error = rootMessage(rejected);
+                state.outerFinished = true;
+                state.hostFinished = state.host;
+                state.confirmStopped();
+            }
+            throw rejected;
+        }
         if (params.path("wait").asBoolean(false)) state.future.join();
         return state.snapshot();
     }
@@ -1233,21 +1344,30 @@ public final class PipelineTool implements CliTool {
 
     private Map<String, Object> cancel(String runId) {
         RunState state = ACTIVE_RUNS.get(runId);
-        if (state == null || Set.of("COMPLETED", "FAILED", "CANCELLED").contains(state.status)) {
-            return Map.of("runId", runId, "cancelled", false);
-        }
+        if (state == null) return Map.of("runId", runId, "cancelled", false);
+        return cancelState(state);
+    }
+
+    private Map<String, Object> cancelState(RunState state) {
+        String runId = state.runId;
         synchronized (state) {
-            if (Set.of("COMPLETED", "FAILED", "CANCELLED").contains(state.status)) {
+            if (Set.of("COMPLETED", "FAILED", "CANCELLED").contains(state.status)
+                    && (!state.host || state.hostTerminationConfirmed())) {
                 return Map.of("runId", runId, "cancelled", false);
             }
             state.cancelRequested.set(true);
             state.status = "CANCELLING";
             if (state.host) {
-                FutureTask<?> task = state.hostTask;
-                if (task != null) task.cancel(true);
+                state.cancelHostTask();
+                if (state.productManaged && state.outerEntered.compareAndSet(false, true)) {
+                    // Won before outer entry: a queued runnable can now only be a no-op.
+                    state.outerFinished = true;
+                    state.hostFinished = true;
+                }
                 // Future.cancel() acknowledges interruption, not actual worker termination.
                 boolean terminated = state.hostTerminationConfirmed();
                 if (terminated) state.status = "CANCELLED";
+                state.confirmStopped();
                 return Map.of("runId", runId, "cancelled", true,
                         "terminationConfirmed", terminated, "status", state.status);
             }
@@ -1362,6 +1482,11 @@ public final class PipelineTool implements CliTool {
         private volatile Thread hostWorker;
         private volatile Thread hostRequestOwner;
         private volatile boolean hostFinished;
+        private boolean productManaged;
+        private final AtomicBoolean hostEntered = new AtomicBoolean();
+        private final AtomicBoolean outerEntered = new AtomicBoolean();
+        private boolean outerFinished;
+        private final CompletableFuture<Void> actuallyStopped = new CompletableFuture<>();
         private volatile Map<String, Object> progress;
         private final AtomicLong streamedChunks = new AtomicLong();
         private final AtomicLong streamedChars = new AtomicLong();
@@ -1377,8 +1502,19 @@ public final class PipelineTool implements CliTool {
         }
 
         private boolean hostTerminationConfirmed() {
-            return (hostFinished || (hostTask != null && hostTask.isCancelled() && hostWorker == null))
-                    && !NativeChatModels.hasActiveRequest(hostRequestOwner);
+            return hostFinished && !NativeChatModels.hasActiveRequest(hostRequestOwner);
+        }
+
+        private synchronized void cancelHostTask() {
+            if (hostTask != null) {
+                hostTask.cancel(true);
+                // Fences callable entry, rather than treating Future.cancel as physical exit.
+                if (hostEntered.compareAndSet(false, true)) hostFinished = true;
+            }
+        }
+
+        private synchronized void confirmStopped() {
+            if (productManaged && outerFinished && hostTerminationConfirmed()) actuallyStopped.complete(null);
         }
 
         /** Observational chunk sink; must never throw into the streaming request. */

@@ -91,6 +91,50 @@ class DirectLlmClientClaudeCancelTest {
         fake.assertToolStopped();
     }
 
+    @Test
+    void withdrawingUnreadReseedKeepsInterveningProviderHistoryForNextTurn() throws Exception {
+        FakeClaudeCode fake = new FakeClaudeCode(home.resolve("claude"), """
+                emit() {
+                  if [[ $1 == '{"type":"user","isReplay":'* ]] && [ "${N:-0}" = 2 ]; then return; fi
+                  printf '%s\\n' "$1"
+                }
+                turn() {
+                  if [ "$1" = 2 ]; then
+                    printf '%s' "$2" > "$DIR/queued.uuid"
+                  else
+                    say_init
+                    say_text done
+                    say_result
+                  fi
+                }
+                on_interrupt() {
+                  uuid=$(cat "$DIR/queued.uuid")
+                  emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{"cancelled":["'"$uuid"'"],"still_queued":[]}}}'
+                }
+                """);
+        try (DirectLlmClient client = client(new StringBuilder())) {
+            installFakeClaude(client, fake);
+            assertFalse(client.streamChat("first", "system rules", null, null).failed);
+            client.clearHistoryForProviderSwitch();
+            client.addToHistory("user", "INTERVENING_PROVIDER_HISTORY");
+            client.addToHistory("assistant", "OTHER_PROVIDER_ANSWER");
+            client.setCancellationCheck(() -> Files.exists(fake.path("queued.uuid")));
+
+            DirectLlmClient.StreamResult cancelled = client.streamChat("withdraw me", "system rules", null, null);
+            assertTrue(cancelled.cancelled, cancelled.failureMessage);
+            assertFalse(client.claudeSessionHoldsConversation(),
+                    "an old parked session has not taken in the new provider history");
+
+            client.setCancellationCheck(() -> false);
+            DirectLlmClient.StreamResult next = client.streamChat("next", "system rules", null, null);
+            assertFalse(next.failed, next.failureMessage);
+            assertTrue(client.claudeSessionHoldsConversation());
+        }
+        assertTrue(fake.messages().get(2).contains("INTERVENING_PROVIDER_HISTORY"), fake.messages().toString());
+        assertTrue(fake.messages().get(2).contains("OTHER_PROVIDER_ANSWER"), fake.messages().toString());
+        assertEquals(1, fake.argv().size(), "the parked process is reused");
+    }
+
     private DirectLlmClient client(StringBuilder streamed) {
         ChatConfig config = new ChatConfig("anthropic", null, "claude-opus-5-5", null);
         config.setAuthenticationMethod("oauth");

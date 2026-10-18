@@ -47,6 +47,41 @@ class EnforcerConfigToolTest {
     }
 
     @Test
+    void requiredMemoryToolCallRemainsDiscoverableWhenSchemasAreCompressed() {
+        var defs = mapper.createArrayNode();
+        defs.addObject().put("name", tool.id()).put("description", tool.description())
+                .set("inputSchema", tool.parameterSchema());
+        for (var level : java.util.List.of(ToolSchemaOptimizer.OptimizationLevel.MODERATE,
+                ToolSchemaOptimizer.OptimizationLevel.COMPACT, ToolSchemaOptimizer.OptimizationLevel.AGGRESSIVE)) {
+            var exposed = ToolSchemaOptimizer.optimize(defs, level,
+                    java.util.Map.of(tool.id(), tool.compactHint())).get(0);
+            assertTrue(exposed.path("description").asText().contains("workflow_required_memories"), level.name());
+            assertTrue(exposed.path("description").asText().contains("project:rules.md"), level.name());
+            assertTrue(exposed.path("inputSchema").path("properties").has("action"));
+            assertTrue(exposed.path("inputSchema").path("properties").has("field"));
+            assertTrue(exposed.path("inputSchema").path("properties").has("value"));
+        }
+    }
+
+    @Test
+    void requiredWorkflowMemoriesRoundTripAndRejectPaths() throws Exception {
+        var set = mapper.createObjectNode().put("action", "set")
+                .put("field", "workflow_required_memories")
+                .put("value", "release.md,global:build.md,project:release.md");
+        assertFalse(tool.execute(set, ctx).isError());
+        assertEquals(java.util.List.of("project:release.md", "global:build.md"),
+                EnforcerConfig.load(tempDir).getWorkflowRequiredMemories());
+        assertTrue(tool.execute(mapper.createObjectNode().put("action", "status"), ctx)
+                .getOutput().contains("project:release.md"));
+        set.put("value", "project:../private.md");
+        assertTrue(tool.execute(set, ctx).isError());
+        assertEquals(2, EnforcerConfig.load(tempDir).getWorkflowRequiredMemories().size());
+        set.put("value", "");
+        assertFalse(tool.execute(set, ctx).isError());
+        assertTrue(EnforcerConfig.load(tempDir).getWorkflowRequiredMemories().isEmpty());
+    }
+
+    @Test
     void init_createsDefaultConfig() throws Exception {
         ObjectNode params = mapper.createObjectNode();
         params.put("action", "init");

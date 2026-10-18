@@ -25,8 +25,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * Stateful decoder for the {@code claude -p --output-format stream-json} protocol
  * used by Standard Chat. Deliberately separate from the passthrough decoder:
  * provider-side tools are observed and rendered, never re-dispatched locally.
- * A subagent's own messages (those carrying {@code parent_tool_use_id}) are not
- * the answer and decode to their usage only; its task events report its progress.
+ * A subagent's messages (those carrying {@code parent_tool_use_id}) are scoped
+ * to its transcript, never the main answer. Each child has independent decoding
+ * state so interleaved text, thinking and tool blocks cannot corrupt one another.
  */
 final class ClaudeCliStreamParser {
 
@@ -35,6 +36,8 @@ final class ClaudeCliStreamParser {
     record SessionInit(String sessionId) implements Event { }
     record Text(String text) implements Event { }
     record Thinking(String text) implements Event { }
+    record SubagentEvent(String toolUseId, Event event) implements Event { }
+    record UserText(String text) implements Event { }
     /** Transient provider phase; never assistant text or a transcript notice. */
     record Activity(String label) implements Event { }
     record ToolProgress(String callId, String name, long elapsedMillis) implements Event { }
@@ -118,6 +121,10 @@ final class ClaudeCliStreamParser {
      * not part of the answer.
      */
     record ApiError(String text) implements Event { }
+    /** Native compaction lifecycle, independent of provider prose and activity labels. */
+    record CompactionStarted() implements Event { }
+    /** A harmless abort/no-op that still ends any live progress UI. */
+    record CompactionSkipped(String detail) implements Event { }
     /**
      * Claude Code compacted the session it owns ({@code compact_boundary}).
      * {@code trigger} is {@code auto} or {@code manual}, empty when not reported;
@@ -189,6 +196,8 @@ final class ClaudeCliStreamParser {
     private static final Set<String> TERMINAL_TASK_STATUSES = Set.of("completed", "failed", "killed", "stopped");
 
     private final ObjectMapper mapper = JsonUtils.standardMapper();
+    private final Map<String, ClaudeCliStreamParser> subagents;
+    private final Map<String, String> taskToolIds;
     private final Map<Integer, Block> blocks = new HashMap<>();
     private final Map<Integer, StringBuilder> streamedText = new HashMap<>();
     private final Map<Integer, StringBuilder> streamedThinking = new HashMap<>();
@@ -212,7 +221,19 @@ final class ClaudeCliStreamParser {
 
     /** A parser for one turn of a process whose parsers share {@code sequences}. */
     ClaudeCliStreamParser(AtomicLong sequences) {
+        this(sequences, new HashMap<>(), new HashMap<>());
+    }
+
+    private ClaudeCliStreamParser(AtomicLong sequences, Map<String, ClaudeCliStreamParser> subagents,
+                                  Map<String, String> taskToolIds) {
         this.sequences = sequences;
+        this.subagents = subagents;
+        this.taskToolIds = taskToolIds;
+    }
+
+    /** A new parent turn must not reset a background child's in-flight blocks. */
+    ClaudeCliStreamParser nextTurn() {
+        return new ClaudeCliStreamParser(sequences, subagents, taskToolIds);
     }
 
     /**
@@ -231,6 +252,14 @@ final class ClaudeCliStreamParser {
             throw new IllegalArgumentException("Not a stream-json line", e);
         }
         if (node == null || !node.isObject()) return List.of();
+        return parseNode(node);
+    }
+
+    private List<Event> parseNode(JsonNode node) {
+        if (!mainThread(node) && Set.of("stream_event", "assistant", "user", "tool_progress", "result")
+                .contains(node.path("type").asText())) {
+            return parseSubagent(node);
+        }
         return switch (node.path("type").asText()) {
             case "system" -> parseSystem(node);
             case "stream_event" -> stamped(node,
@@ -241,6 +270,40 @@ final class ClaudeCliStreamParser {
             case "result" -> stamped(node, parseResult(node));
             default -> List.of();
         };
+    }
+
+    private List<Event> parseSubagent(JsonNode node) {
+        String parent = node.path("parent_tool_use_id").asText();
+        ClaudeCliStreamParser child = subagents.computeIfAbsent(parent, ignored -> new ClaudeCliStreamParser());
+        com.fasterxml.jackson.databind.node.ObjectNode frame = node.deepCopy();
+        frame.remove("parent_tool_use_id");
+        List<Event> events = new ArrayList<>();
+        // Preserve the existing usage ledger: only child aggregates report usage
+        // to the parent, never their stream counters or context size.
+        if ("assistant".equals(node.path("type").asText())) {
+            JsonNode message = node.path("message");
+            events.addAll(requestUsage(message.path("id").asText(""), false, message.path("usage")));
+        }
+        if ("user".equals(node.path("type").asText())) {
+            JsonNode content = node.path("message").path("content");
+            if (content.isTextual() && !content.asText().isBlank()) {
+                events.add(new SubagentEvent(parent, new UserText(content.asText())));
+            } else if (content.isArray()) {
+                for (JsonNode block : content) {
+                    if ("text".equals(block.path("type").asText())) {
+                        events.add(new SubagentEvent(parent, new UserText(block.path("text").asText(""))));
+                    }
+                }
+            }
+        }
+        for (Event event : child.parseNode(frame)) {
+            if (event instanceof Text || event instanceof Thinking || event instanceof ToolStart
+                    || event instanceof ToolInput || event instanceof ToolOutput || event instanceof ToolComplete
+                    || event instanceof Notice || event instanceof ApiError) {
+                events.add(new SubagentEvent(parent, event));
+            }
+        }
+        return events;
     }
 
     /** A frame's events, preceded by the client uuids Claude Code stamped on it. */
@@ -288,6 +351,7 @@ final class ClaudeCliStreamParser {
             case "thinking_tokens" -> mainThread(node)
                     ? List.of(new Activity("Thinking")) : List.of();
             case "compact_boundary" -> {
+                if (!mainThread(node)) yield List.of();
                 // Requests before the boundary measured the context it replaced.
                 requestContextTokens = 0;
                 yield List.of(parseCompactBoundary(node));
@@ -308,14 +372,19 @@ final class ClaudeCliStreamParser {
         };
     }
 
-    private static List<Event> taskStarted(JsonNode node) {
+    private List<Event> taskStarted(JsonNode node) {
         String taskId = node.path("task_id").asText("");
         if (taskId.isBlank()) return List.of();
         // Claude Code counts a task without the flag as backgrounded.
         JsonNode backgrounded = node.path("is_backgrounded");
-        return List.of(new TaskStarted(taskId, node.path("tool_use_id").asText(""),
+        String toolUseId = node.path("tool_use_id").asText("");
+        if (!toolUseId.isBlank()) taskToolIds.put(taskId, toolUseId);
+        TaskStarted started = new TaskStarted(taskId, toolUseId,
                 node.path("description").asText("").strip(), node.path("task_type").asText(""),
-                !backgrounded.isBoolean() || backgrounded.booleanValue()));
+                !backgrounded.isBoolean() || backgrounded.booleanValue());
+        String prompt = node.path("prompt").asText("");
+        return toolUseId.isBlank() || prompt.isBlank() ? List.of(started)
+                : List.of(started, new SubagentEvent(toolUseId, new UserText(prompt)));
     }
 
     private static List<Event> taskProgress(JsonNode node) {
@@ -329,9 +398,11 @@ final class ClaudeCliStreamParser {
                 Math.max(0L, usage.path("duration_ms").asLong(0L))));
     }
 
-    private static List<Event> taskEnded(JsonNode node, String status, String summary) {
+    private List<Event> taskEnded(JsonNode node, String status, String summary) {
         String taskId = node.path("task_id").asText("");
         if (taskId.isBlank() || !TERMINAL_TASK_STATUSES.contains(status)) return List.of();
+        String toolUseId = taskToolIds.remove(taskId);
+        if (toolUseId != null) subagents.remove(toolUseId);
         return List.of(new TaskEnded(taskId, status, summary.strip()));
     }
 
@@ -348,15 +419,15 @@ final class ClaudeCliStreamParser {
 
     private static List<Event> parseStatus(JsonNode node) {
         if ("compacting".equals(node.path("status").asText(""))) {
-            return List.of(new Activity("Compacting Claude context"),
-                    new Notice("Compacting conversation"));
+            return List.of(new CompactionStarted());
         }
         if ("requesting".equals(node.path("status").asText(""))) {
             return List.of(new Activity("Waiting for Claude response"));
         }
         if ("failed".equals(node.path("compact_result").asText(""))) {
             String detail = node.path("compact_error").asText("").strip();
-            return harmlessCompactionFailure(detail) ? List.of() : List.of(new CompactionFailed(detail));
+            return harmlessCompactionFailure(detail)
+                    ? List.of(new CompactionSkipped(detail)) : List.of(new CompactionFailed(detail));
         }
         // A finished compaction and permission-mode changes carry no live phase.
         // A successful compaction is reported by its

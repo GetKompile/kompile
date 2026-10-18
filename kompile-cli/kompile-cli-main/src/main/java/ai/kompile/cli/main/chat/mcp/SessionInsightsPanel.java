@@ -28,34 +28,19 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 /**
- * The chat's own dashboard when the project configures none: this session's judge flags, tool
- * calls and latency, latest test result and crawls, read by the sources the {@code insights}
- * tool uses and served to {@link McpDashboardController} in the {@code kompile.dashboard.v1} shape.
- *
- * <p>The sources are kept across refreshes, so each one reads only what was written since the
- * last refresh. They come from the session's own {@code insights} tool, so the panel reads
- * crawls and graphs where that tool does.</p>
- *
- * <p>The web chat's insights drawer reads the same panel between runs through {@link #snapshot}.</p>
+ * Static terminal discovery hint when the project configures no custom dashboard.
+ * Fetching the hint never constructs metric sources. The web drawer continues to read real
+ * metrics, including its live flag, through the independent {@link #snapshot} path.
  */
 public final class SessionInsightsPanel implements McpDashboardController.DashboardFetcher {
 
-    static final String TITLE = "Session insights (/dashboard hide)";
+    static final String TITLE = "+ /dashboard to see session metrics";
+    static final String HINT_DETAIL = "On-demand reports · /dashboard-summary · /dashboard-tools";
     /** The web drawer's title: the terminal's {@code /dashboard hide} means nothing there. */
     static final String SNAPSHOT_TITLE = "Session insights";
     static final String INSIGHTS_TOOL = "insights";
 
-    private final Supplier<ToolContext> contextSupplier;
-    private final IntSupplier maxLines;
-    private final BiFunction<ToolContext, Path, Insights> insightsFactory;
-    private final Clock clock;
     private final ObjectMapper mapper;
-
-    /** Guarded by this. */
-    private Insights insights;
-    /** The working directory {@link #insights} was built for. Guarded by this. */
-    private Path insightsDirectory;
-    private volatile Panel lastPanel;
 
     SessionInsightsPanel(Supplier<ToolContext> contextSupplier, KompileTui tui, InsightsConfig config) {
         this(contextSupplier, () -> contentRows(tui), (context, workDir) -> sessionInsights(context, workDir, config),
@@ -64,35 +49,26 @@ public final class SessionInsightsPanel implements McpDashboardController.Dashbo
 
     SessionInsightsPanel(Supplier<ToolContext> contextSupplier, IntSupplier maxLines,
                          BiFunction<ToolContext, Path, Insights> insightsFactory, Clock clock, ObjectMapper mapper) {
-        this.contextSupplier = Objects.requireNonNull(contextSupplier, "contextSupplier");
-        this.maxLines = Objects.requireNonNull(maxLines, "maxLines");
-        this.insightsFactory = Objects.requireNonNull(insightsFactory, "insightsFactory");
-        this.clock = clock == null ? Clock.systemDefaultZone() : clock;
+        Objects.requireNonNull(contextSupplier, "contextSupplier");
+        Objects.requireNonNull(maxLines, "maxLines");
+        Objects.requireNonNull(insightsFactory, "insightsFactory");
         this.mapper = mapper == null ? JsonUtils.standardMapper() : mapper;
     }
 
     @Override
     public synchronized String fetch() throws Exception {
-        ToolContext context = contextSupplier.get();
-        if (context == null) {
-            throw new IllegalStateException("the chat session is not ready");
-        }
-        Path workDir = context.getWorkingDirectory() != null
-                ? context.getWorkingDirectory() : Path.of(System.getProperty("user.dir"));
-        if (insights == null || !workDir.equals(insightsDirectory)) {
-            insights = insightsFactory.apply(context, workDir);
-            insightsDirectory = workDir;
-        }
-        Instant now = clock.instant();
-        Panel panel = insights.panel(InsightsQuery.session(context.getSessionId(), now, clock.getZone()),
-                maxLines.getAsInt());
-        lastPanel = panel;
-        return mapper.writeValueAsString(dashboard(panel, TITLE, now, mapper));
+        // Terminal discovery is intentionally static: no context lookup, source scans or watches.
+        ObjectNode root = mapper.createObjectNode();
+        root.put("schemaVersion", McpDashboardController.SCHEMA_VERSION);
+        root.put("title", TITLE);
+        root.put("contextVersion", "dashboard-hint-v1");
+        root.putArray("lines").add(HINT_DETAIL);
+        return mapper.writeValueAsString(root);
     }
 
-    /** The newest panel, for its watches and live flag; null before the first fetch. */
+    /** Terminal hints have no metrics panel or watches. Web snapshots are independent. */
     Panel lastPanel() {
-        return lastPanel;
+        return null;
     }
 
     /**

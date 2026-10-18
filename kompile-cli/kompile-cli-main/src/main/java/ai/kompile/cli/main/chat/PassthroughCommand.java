@@ -492,7 +492,9 @@ public class PassthroughCommand implements Callable<Integer> {
      * Claude stores conversations at ~/.claude/projects/{project-hash}/{session-id}.jsonl.
      */
     private void harvestClaudeTranscript(ChatHistory history, ChatSessionMetrics metrics, Instant sessionStart) {
-        Path claudeProjectsDir = Path.of(System.getProperty("user.home"), ".claude", "projects");
+        Path claudeProjectsDir = ai.kompile.cli.common.chat.sources.adapters.ClaudeCodeAdapter
+                .configDirectory(System.getenv(), Path.of(System.getProperty("user.home")))
+                .resolve("projects");
         if (!Files.isDirectory(claudeProjectsDir)) {
             System.err.println(YELLOW + "Warning: Could not harvest Claude transcript - projects dir not found" + RESET);
             return;

@@ -110,8 +110,14 @@ class CompactionInputTtyTest {
             field.setAccessible(true);
             ConversationLedger ledger = (ConversationLedger) field.get(loop);
             for (int i = 0; i < 3; i++) {
-                ledger.append(CompactionService.ConversationEntry.user("old request ".repeat(4000)));
-                ledger.append(CompactionService.ConversationEntry.assistant("old result ".repeat(4000)));
+                String user = "old request ".repeat(4000);
+                String assistant = "old result ".repeat(4000);
+                ledger.append(CompactionService.ConversationEntry.user(user));
+                ledger.append(CompactionService.ConversationEntry.assistant(assistant));
+                // Automatic compaction measures the actual projected provider request,
+                // not ledger-only fixtures. Seed both sides as real replay does.
+                client.addToHistory("user", user);
+                client.addToHistory("assistant", assistant);
             }
             tui.attachLineReader(reader);
             ChatCompleter.setTerminalRef(reader, terminal);

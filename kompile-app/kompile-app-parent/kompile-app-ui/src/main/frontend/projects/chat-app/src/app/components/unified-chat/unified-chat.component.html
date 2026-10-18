@@ -14,10 +14,10 @@
   ~ limitations under the License.
   -->
 
-<div class="unified-chat-wrapper" data-testid="chat-wrapper">
+<div class="unified-chat-wrapper" [class.managed-embedding]="managedEmbedding" data-testid="chat-wrapper">
 
   <!-- Chat History Sidebar (Left) -->
-  <aside *ngIf="!workspaceChat" class="history-sidebar" [class.collapsed]="!showHistorySidebar" data-testid="history-sidebar">
+  <aside *ngIf="!managedEmbedding && !workspaceChat" class="history-sidebar" [class.collapsed]="!showHistorySidebar" data-testid="history-sidebar">
     <div class="history-sidebar-header">
       <h3>Conversations</h3>
       <button mat-flat-button color="primary" type="button" class="new-chat-btn" (click)="newChat()"
@@ -355,7 +355,7 @@
   </aside>
 
   <!-- Settings Sidebar (Right) -->
-  <aside class="settings-sidebar" [class.visible]="showSettings" data-testid="settings-sidebar">
+  <aside *ngIf="!managedEmbedding" class="settings-sidebar" [class.visible]="showSettings" data-testid="settings-sidebar">
     <div class="sidebar-header">
       <h3>Chat Settings</h3>
       <button mat-icon-button type="button" class="close-btn" (click)="toggleSettings()" title="Close settings"
@@ -896,7 +896,7 @@
   </aside>
 
   <!-- Folder Sidebar (Right, before settings) -->
-  <aside class="folder-sidebar-container" [class.visible]="showFolderSidebar">
+  <aside *ngIf="!managedEmbedding" class="folder-sidebar-container" [class.visible]="showFolderSidebar">
     <app-folder-sidebar (folderSelected)="onFolderSelected($event)">
     </app-folder-sidebar>
   </aside>
@@ -906,7 +906,12 @@
 
     <!-- Header -->
     <header class="chat-header">
-      <div class="header-left">
+      <div *ngIf="managedEmbedding" class="managed-host-heading" data-testid="managed-host-heading">
+        <strong>{{ hostContext?.title }}</strong>
+        <button mat-icon-button type="button" (click)="refreshWorkspaceTranscript()" [disabled]="lifecycleBusy"
+          aria-label="Refresh this chat" title="Refresh this chat"><mat-icon>refresh</mat-icon></button>
+      </div>
+      <div *ngIf="!managedEmbedding" class="header-left">
         <button mat-icon-button type="button" class="icon-btn" (click)="toggleSettings()" title="Settings"
           aria-label="Settings" data-testid="settings-toggle-btn">
           <mat-icon>settings</mat-icon>
@@ -971,21 +976,27 @@
           <ng-container *ngIf="contextUsagePercent !== null">({{ contextUsagePercent }}%)</ng-container>
         </span>
 
-        <button mat-button type="button" class="text-btn" (click)="newChat()" *ngIf="!isStreaming"
+        <button mat-button type="button" class="text-btn" (click)="showVendorUsage()"
+          *ngIf="!managedEmbedding && selectedAgent" [disabled]="vendorUsageLoading || transcriptReadOnly"
+          data-testid="vendor-usage-btn"
+          title="Read the selected vendor account's credits, usage windows and reset times, as /usage does in the terminal — this is account data, not this chat's token totals">
+          {{ vendorUsageLoading ? 'Usage…' : 'Usage' }}
+        </button>
+        <button mat-button type="button" class="text-btn" (click)="newChat()" *ngIf="!managedEmbedding && !isStreaming"
           title="Start a new conversation, as /clear does in the terminal">
           <mat-icon>add</mat-icon>
           New
         </button>
-        <button mat-button type="button" class="text-btn" (click)="exportConversation()" *ngIf="messages.length > 0 && !isStreaming"
+        <button mat-button type="button" class="text-btn" (click)="exportConversation()" *ngIf="!managedEmbedding && messages.length > 0 && !isStreaming"
           title="Download the conversation as a text file">
           Export
         </button>
-        <button mat-button type="button" class="text-btn" (click)="compactContext()" *ngIf="messages.length > 0 && !isStreaming"
+        <button mat-button type="button" class="text-btn" (click)="compactContext()" *ngIf="!managedEmbedding && messages.length > 0 && !isStreaming"
           [disabled]="isCompacting || transcriptReadOnly"
           title="Summarize conversation to free context, as /compact does in the terminal — the model keeps a summary plus recent turns">
           {{ isCompacting ? 'Compacting…' : 'Compact' }}
         </button>
-        <button mat-button type="button" class="text-btn" (click)="clearConversation()" *ngIf="messages.length > 0" [disabled]="lifecycleBusy"
+        <button mat-button type="button" class="text-btn" (click)="clearConversation()" *ngIf="!managedEmbedding && messages.length > 0" [disabled]="lifecycleBusy"
           title="Confirm, then start a new conversation as /clear does in the terminal; this one stays in recent conversations">
           Start fresh
         </button>
@@ -1008,9 +1019,9 @@
     <section class="active-chat-title" aria-label="Current chat">
       <h2 data-testid="active-chat-title" [title]="activeChatTitle()">{{ activeChatTitleShown() }}</h2>
       <app-chat-activity-indicator [activity]="activityIndicator"></app-chat-activity-indicator>
-      <button *ngIf="!workspaceChat && currentSession && !transcriptReadOnly" mat-icon-button type="button"
+      <button *ngIf="!managedEmbedding && !workspaceChat && currentSession && !transcriptReadOnly" mat-icon-button type="button"
         (click)="startEditSessionName(currentSession)" aria-label="Rename current chat"><mat-icon>edit</mat-icon></button>
-      <form *ngIf="!workspaceChat && currentSession && editingSessionId === currentSession.id"
+      <form *ngIf="!managedEmbedding && !workspaceChat && currentSession && editingSessionId === currentSession.id"
         (ngSubmit)="saveSessionName(currentSession)">
         <textarea class="chat-name-input" aria-label="Chat title" name="chatTitle" [(ngModel)]="editingSessionName"></textarea>
         <button mat-button type="submit" [disabled]="!editingSessionName.trim()">Save</button>
@@ -1018,7 +1029,7 @@
       </form>
     </section>
 
-    <app-chat-model-selector
+    <app-chat-model-selector *ngIf="!managedEmbedding"
       [sessionId]="currentSession?.id" [workingDirectory]="workingDirectory"
       [outcome]="modelSelectorOutcome"
       [busy]="!selectedAgent || isStreaming || isLoading || lifecycleBusy || transcriptReadOnly || isCompacting"
@@ -1027,6 +1038,21 @@
 
     <!-- Conversation Area -->
     <div class="conversation-area" #conversationArea data-testid="conversation-area">
+
+      <!-- Vendor account usage: visible readout for the CLI /usage command -->
+      <div *ngIf="vendorUsage || vendorUsageLoading" class="live-command-output vendor-usage-panel"
+        [class.failed]="vendorUsage && !vendorUsage.ok" data-testid="vendor-usage-panel" role="status" aria-live="polite">
+        <div class="live-command-header">
+          <code>/usage — vendor account usage (not session tokens)</code>
+          <span class="vendor-usage-actions">
+            <button mat-icon-button type="button" (click)="showVendorUsage()" [disabled]="vendorUsageLoading || !selectedAgent"
+              title="Fetch current vendor usage again" aria-label="Refresh vendor usage"><mat-icon>refresh</mat-icon></button>
+            <button mat-icon-button type="button" (click)="vendorUsage = null; vendorUsageLoading = false"
+              title="Dismiss vendor usage" aria-label="Dismiss vendor usage"><mat-icon>close</mat-icon></button>
+          </span>
+        </div>
+        <pre>{{ vendorUsageLoading ? 'Reading vendor usage…' : vendorUsage?.text }}</pre>
+      </div>
 
       <!-- Viewport indicator: more messages above -->
       <div *ngIf="hasMoreAbove" class="viewport-indicator above" [class.loading]="isLoadingMore">
@@ -1040,7 +1066,8 @@
       <div *ngIf="messages.length === 0" class="welcome-message" data-testid="welcome-message">
         <h3>💬 Chat</h3>
 
-        <p *ngIf="selectedAgent">
+        <p *ngIf="managedEmbedding">Type a message below to start chatting with {{ hostContext?.title }}.</p>
+        <p *ngIf="!managedEmbedding && selectedAgent">
           The <strong>{{ selectedAgent.displayName }}</strong> persona is running through the Kompile CLI harness.
           Type a message below to start chatting.
         </p>
@@ -1052,7 +1079,7 @@
              history, so an empty chat shows nothing about the provider/model.
              Show it here too — plus a direct path to switch it — so a fresh
              `kompile chat --web` opener can see and change the configuration. -->
-        <div class="welcome-model-card" *ngIf="selectedAgent" data-testid="welcome-model-card">
+        <div class="welcome-model-card" *ngIf="!managedEmbedding && selectedAgent" data-testid="welcome-model-card">
           <ng-container *ngIf="contextBudget as cb; else unknownModel">
             <div class="welcome-model-row">
               <span class="model-type-badge agent">Model</span>
@@ -1077,7 +1104,7 @@
           <span class="welcome-model-hint">or type <code>/model</code> in the chat box</span>
         </div>
 
-        <div class="welcome-commands" data-testid="welcome-commands">
+        <div *ngIf="!managedEmbedding" class="welcome-commands" data-testid="welcome-commands">
           <span class="welcome-commands-label">Slash commands:</span>
           <!-- disabledInteractive keeps each command's CLI description on hover before a persona is
                selected; the button still receives clicks then, so the handler re-checks the state. -->
@@ -1098,7 +1125,7 @@
           <div class="tip" *ngIf="graphRagEnabled">
             <strong>Graph RAG Enabled:</strong> Knowledge graph entities and relationships will augment your prompts ({{ graphRagSearchType }})
           </div>
-          <div class="tip" *ngIf="!ragEnabled && !graphRagEnabled">
+          <div class="tip" *ngIf="!managedEmbedding && !ragEnabled && !graphRagEnabled">
             <strong>Tip:</strong> Enable RAG or Graph RAG in settings to include context in your prompts
           </div>
         </div>
@@ -1172,7 +1199,7 @@
                 </button>
 
                 <!-- Fork button (creates new conversation from this point) -->
-                <button *ngIf="!workspaceChat" mat-icon-button type="button" class="action-btn" (click)="forkFromMessage(i)"
+                <button *ngIf="!managedEmbedding && !workspaceChat" mat-icon-button type="button" class="action-btn" (click)="forkFromMessage(i)"
                   title="Fork conversation from here">
                   <mat-icon>call_split</mat-icon>
                 </button>
@@ -1253,6 +1280,11 @@
                     <div class="tool-call-dim" *ngIf="section.note">{{ section.note }}</div>
                   </div>
                 </details>
+                <ng-container *ngIf="segment.type === 'tool_call' && segment.toolCall?.presentation as presentation">
+                  <div *ngIf="toolPresentationTemplate" class="tool-presentation-slot" data-testid="tool-presentation-slot">
+                    <ng-container *ngTemplateOutlet="toolPresentationTemplate; context: { $implicit: presentation, toolCall: segment.toolCall }"></ng-container>
+                  </div>
+                </ng-container>
               </ng-container>
 
               <!-- Source reference links (injected into rendered markdown) -->
@@ -1630,7 +1662,7 @@
       </details>
       <!-- This session's judge flags, tool counts, last test milestone and crawl progress, as the
            terminal's dashboard area shows them -->
-      <app-session-insights-drawer [sessionId]="insightsSessionId" [workingDirectory]="workingDirectory"
+      <app-session-insights-drawer *ngIf="!managedEmbedding" [sessionId]="insightsSessionId" [workingDirectory]="workingDirectory"
         [active]="viewActive"></app-session-insights-drawer>
       <div *ngIf="harnessControlMessage" class="harness-control-message" role="status" aria-live="polite">{{ harnessControlMessage }}</div>
       <!-- A /command the live harness answered, printed as the CLI REPL prints it -->
@@ -1681,7 +1713,7 @@
             <button mat-icon-button type="button" class="queued-chip-remove" (click)="removeLatestQueued()"
               title="Remove queued message" aria-label="Remove queued message"><mat-icon>close</mat-icon></button>
           </span>
-          <button mat-button type="button" class="queued-chip-more" (click)="openCommandConfig()"
+          <button *ngIf="!managedEmbedding" mat-button type="button" class="queued-chip-more" (click)="openCommandConfig()"
             title="Show message queue, as /queue does in the terminal (Session Configuration)">Queue…</button>
         </div>
         <div *ngIf="slashSuggestions.length" id="slash-command-menu" class="slash-command-menu"
@@ -1701,7 +1733,7 @@
           title="Attach PNG, JPEG, GIF or WebP images, PDFs, or text files (8 files, 5 MiB each, 20 MiB total)"
           aria-label="Attach files" data-testid="attach-btn"><mat-icon>attach_file</mat-icon></button>
         <textarea [ngModel]="userInput" (ngModelChange)="onUserInputChange($event)" [ngModelOptions]="{standalone: true}"
-          placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : (isStreaming ? (liveControlsReady ? 'Queue a follow-up, or type / for live commands' : 'Queue a message — it sends when the run finishes') : 'Type your message...') }}"
+          placeholder="{{ managedEmbedding ? (isStreaming ? 'Queue a follow-up message' : 'Type your message...') : (!selectedAgent ? 'Select an agent to start chatting' : (isStreaming ? (liveControlsReady ? 'Queue a follow-up, or type / for live commands' : 'Queue a message — it sends when the run finishes') : 'Type your message...')) }}"
           (keydown)="handleKeydown($event)" (blur)="dismissSlashMenu()"
           role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-label="Chat message"
           [attr.aria-expanded]="slashSuggestions.length > 0"
@@ -1721,12 +1753,13 @@
       </div>
       <div class="input-hints">
         <span class="hint" *ngIf="!isStreaming">Press Enter to send, Shift+Enter for new line</span>
-        <span class="hint" *ngIf="isStreaming">Ctrl+B backgrounds a blocking task. Enter queues a follow-up; /commands run live. Escape stops this run and its work.</span>
+        <span class="hint" *ngIf="managedEmbedding && isStreaming">Enter queues a follow-up. Escape stops this run and its work.</span>
+        <span class="hint" *ngIf="!managedEmbedding && isStreaming">Ctrl+B backgrounds a blocking task. Enter queues a follow-up; /commands run live. Escape stops this run and its work.</span>
         <span class="hint" *ngIf="currentSession && messages.length > 0">
           {{ messages.length }} messages
         </span>
         <!-- Graph-RAG quick toggle -->
-        <label class="hint graph-rag-toggle" title="Enable knowledge-graph context for this message">
+        <label *ngIf="!managedEmbedding" class="hint graph-rag-toggle" title="Enable knowledge-graph context for this message">
           <input type="checkbox" [(ngModel)]="graphRagEnabled" [ngModelOptions]="{standalone: true}">
           🔗 Graph RAG
         </label>

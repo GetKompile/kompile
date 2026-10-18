@@ -151,6 +151,10 @@
             <groupId>me.tongfei</groupId>
             <artifactId>progressbar</artifactId>
             <version>${progressbar.version}</version>
+            <exclusions>
+                <!-- Use the explicit Java-compatible JLine bundle below, not both classifiers. -->
+                <exclusion><groupId>org.jline</groupId><artifactId>jline</artifactId></exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.zeroturnaround</groupId>
@@ -216,6 +220,10 @@
         <dependency>
             <groupId>org.jline</groupId>
             <artifactId>jline</artifactId>
+            <!-- Keep the Java 17 CLI free of the bundle's Java 22-only FFM provider.
+                 Classifiers have a distinct dependency-management key. -->
+            <version>${jline.version}</version>
+            <classifier>jdk11</classifier>
         </dependency>
 
         <dependency>
@@ -544,6 +552,7 @@
                                 <buildArg>-H:IncludeResources=ai/kompile/.*\.schema\.json</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/cli/main/chat/providers/.*\.json</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/cli/main/chat/model-catalogs\.json</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/cli/main/chat/context-metadata\.json</buildArg>
                                 <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
                                 <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
                                 <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->

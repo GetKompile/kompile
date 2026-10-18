@@ -13,10 +13,13 @@ import java.util.Set;
  * The newest identical section is retained, including on tool continuations.
  */
 final class MemoryContextProjection {
-    private static final String PREFIX = "<memory_context>\n[Persistent memory]\n";
+    private static final String OPEN = "<memory_context>\n";
     private static final String CLOSE = "</memory_context>";
-    private static final String[] RETRIEVAL_HEADERS = {
-            "\n[Previous conversations]\n", "\n[Retrieved documents]\n"};
+    private static final String PERSISTENT_HEADER = "[Persistent memory]\n";
+    private static final String[] SECTION_HEADERS = {
+            PERSISTENT_HEADER, "[Previous conversations]\n", "[Retrieved documents]\n",
+            "[Relevant incidents — warn-only historical evidence]\n",
+            "[Incident context unavailable; no regression conclusion]\n"};
 
     private MemoryContextProjection() { }
 
@@ -43,26 +46,87 @@ final class MemoryContextProjection {
         return projected;
     }
 
-    private static String projectText(String text, Set<String> seen) {
+    /** A native session may deduplicate only a snapshot it has acknowledged receiving. */
+    static String persistentSnapshot(String text) {
+        PersistentSection section = persistentSection(text);
+        return section == null ? null : section.snapshot();
+    }
+
+    static String withoutPersistentSnapshot(String text, String acknowledgedSnapshot) {
+        if (acknowledgedSnapshot == null) return text;
+        return projectText(text, new HashSet<>(Set.of(acknowledgedSnapshot)));
+    }
+
+    private record PersistentSection(String undecorated, int close, int header, int start, int end) {
+        String snapshot() { return undecorated.substring(start, end); }
+    }
+
+    private static PersistentSection persistentSection(String text) {
+        if (text == null) return null;
         String undecorated = ReminderManager.stripReminderBlock(text);
-        if (!undecorated.startsWith(PREFIX)) return text;
-        int close = undecorated.indexOf(CLOSE, PREFIX.length());
-        if (close < 0) return text;
-        int persistentStart = PREFIX.length();
-        int persistentEnd = close;
-        for (String header : RETRIEVAL_HEADERS) {
-            int found = undecorated.indexOf(header, persistentStart);
-            if (found >= 0 && found < persistentEnd) persistentEnd = found;
+        if (!undecorated.startsWith(OPEN)) return null;
+        int close = undecorated.indexOf(CLOSE, OPEN.length());
+        if (close < 0) return null;
+        String context = undecorated.substring(0, close);
+        if (context.indexOf("<memory_context>", OPEN.length()) >= 0) return null;
+
+        // Only parse the leading generated envelope, beginning with a known section.
+        // Never search the user's request (or an arbitrary preamble) for memory tags.
+        int section = OPEN.length();
+        int persistentHeader = -1;
+        int persistentStart = -1;
+        int persistentEnd = -1;
+        while (section < close) {
+            String header = sectionHeader(context, section);
+            if (header == null) return null;
+            // Generated memory precedes retrieval. A quoted heading inside retrieved
+            // evidence must never authorize stripping that evidence as persistent memory.
+            if (persistentHeader < 0 && ("[Previous conversations]\n".equals(header)
+                    || "[Retrieved documents]\n".equals(header))) return null;
+            int body = section + header.length();
+            int end = close;
+            for (String candidate : SECTION_HEADERS) {
+                int found = context.indexOf("\n" + candidate, body - 1);
+                if (found >= 0 && found + 1 < end) end = found + 1;
+            }
+            if (PERSISTENT_HEADER.equals(header)) {
+                // Multiple persistent sections are ambiguous, not evidence to deduplicate.
+                if (persistentHeader >= 0) return null;
+                persistentHeader = section;
+                persistentStart = body;
+                persistentEnd = end;
+            }
+            section = end;
         }
-        // Do not strip changed snapshots or infer provenance from arbitrary embedded tags.
-        String persistent = undecorated.substring(persistentStart, persistentEnd);
-        if (persistent.isBlank() || seen.add(persistent)) return text;
+        if (persistentHeader < 0 || context.substring(persistentStart, persistentEnd).isBlank()) return null;
+        return new PersistentSection(undecorated, close, persistentHeader, persistentStart, persistentEnd);
+    }
+
+    private static String projectText(String text, Set<String> seen) {
+        PersistentSection section = persistentSection(text);
+        if (section == null || seen.add(section.snapshot())) return text;
+        String undecorated = section.undecorated();
+        int close = section.close();
+        int persistentHeader = section.header();
+        int persistentEnd = section.end();
         int offset = text.length() - undecorated.length();
-        if (persistentEnd == close) {
-            return text.substring(0, offset)
-                    + undecorated.substring(close + CLOSE.length()).stripLeading();
+        if (persistentHeader == OPEN.length() && persistentEnd == close) {
+            String suffix = undecorated.substring(close + CLOSE.length());
+            String request = suffix.stripLeading();
+            // Do not expose a literal user envelope to parsing on a subsequent projection.
+            if (ReminderManager.stripReminderBlock(request).startsWith(OPEN)) {
+                return text.substring(0, offset) + OPEN + CLOSE + suffix;
+            }
+            return text.substring(0, offset) + request;
         }
-        return text.substring(0, offset) + "<memory_context>"
+        return text.substring(0, offset) + undecorated.substring(0, persistentHeader)
                 + undecorated.substring(persistentEnd);
+    }
+
+    private static String sectionHeader(String text, int start) {
+        for (String header : SECTION_HEADERS) {
+            if (text.startsWith(header, start)) return header;
+        }
+        return null;
     }
 }

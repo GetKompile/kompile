@@ -33,6 +33,8 @@ describe('Browser conversation lifecycle', () => {
       jasmine.createSpyObj('snack', ['open']), unused, unused);
     spyOn<any>(component, 'updateMonitorSubscription');
     spyOn<any>(component, 'refreshContextBudget');
+    // Run discovery has its own transport/lifecycle coverage in unified-chat-resume.spec.ts.
+    spyOn(component, 'resumeSavedRun');
     component.selectedAgent = { name: 'coder', displayName: 'Coder' } as AgentProvider;
     component.agents = [component.selectedAgent];
     component.newChat();
@@ -53,6 +55,43 @@ describe('Browser conversation lifecycle', () => {
     (component as any).loadSessions();
     return http.expectOne(request => request.url.endsWith('/agents/chat/workspace/transcript'));
   };
+  it('reopens a workspace without a checkpoint, leaves, and returns to ongoing activity without resubmitting', async () => {
+    (component.resumeSavedRun as jasmine.Spy).and.callThrough();
+    let first!: ReadableStreamDefaultController<Uint8Array>;
+    let returned!: ReadableStreamDefaultController<Uint8Array>;
+    const fetchSpy = spyOn(window, 'fetch').and.returnValues(
+      Promise.resolve(new Response(JSON.stringify({ runId: 'harness-workspace-away', agentName: 'coder', message: 'build it', messageStartIndex: 2 }))),
+      Promise.resolve(new Response(new ReadableStream<Uint8Array>({ start(value) { first = value; } }))),
+      Promise.resolve(new Response(new ReadableStream<Uint8Array>({ start(value) { returned = value; } }))));
+    const event = (name: string, data: unknown, id?: number) =>
+      `${id ? 'id: ' + id + '\n' : ''}event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+    openWorkspace().flush({ sessionId: workspaceId, turns: [
+      { role: 'user', content: 'earlier' }, { role: 'assistant', content: 'old reply' }, { role: 'user', content: 'build it' }
+    ] });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    first.enqueue(new TextEncoder().encode(event('queued', { processId: 'harness-workspace-away', reconnectable: true }, 1)
+      + event('turn_started', { turnId: 1, source: 'initial', text: '' }, 2)
+      + event('activity', { backgroundable: false, turnActive: false, controlsOpen: true,
+        processes: [{ id: 'build', state: 'RUNNING', kind: 'command' }], tasks: [] }, 3)));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(component.activityIndicator.label).toBe('Running 1 process');
+    component.detachRunView(); first.close();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    component.resumeSavedRun();
+    returned.enqueue(new TextEncoder().encode(event('activity', { backgroundable: false, turnActive: false, controlsOpen: true,
+      processes: [{ id: 'build', state: 'RUNNING', kind: 'command' }], tasks: [] })));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(component.isStreaming).toBeTrue();
+    expect(component.activityIndicator.label).toBe('Running 1 process');
+    expect(component.messages.map(message => message.content)).toEqual(['earlier', 'old reply', 'build it', '']);
+    expect(String(fetchSpy.calls.mostRecent().args[0])).toContain('/events/harness-workspace-away?after=3');
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy.calls.allArgs().every(args => !args[1]?.method)).toBeTrue();
+    component.detachRunView(); returned.close();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    localStorage.removeItem('kompile-live-run:' + workspaceId);
+  });
+
   it('derives the active title indicator from live state and clears it after transport cleanup', () => {
     component.isStreaming = true;
     component.messages = [{ id: 'live-answer', role: 'assistant', content: 'Answer', timestamp: new Date(), isStreaming: true }];

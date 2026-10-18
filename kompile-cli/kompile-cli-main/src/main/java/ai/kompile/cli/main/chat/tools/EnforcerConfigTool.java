@@ -61,7 +61,8 @@ public class EnforcerConfigTool implements CliTool {
 
     @Override
     public String description() {
-        return "View and modify the enforcer configuration for this project. "
+        return "Project enforcer and workflow settings. Set field='workflow_required_memories' "
+                + "with value='project:rules.md,global:build.md' to require memory files (workflow_mode='enforced'). "
                 + "The enforcer monitors agent output for banned keywords, patterns, and semantic equivalents. "
                 + "Actions: 'status' (summary), 'get' (full JSON config), "
                 + "'set' (update fields: keyword_mode, max_corrections, semantic_mode, semantic_threshold, "
@@ -71,6 +72,12 @@ public class EnforcerConfigTool implements CliTool {
                 + "'set_semantic' (configure semantic matching: mode, threshold, embedding_url, synonym_dictionary), "
                 + "'test' (test if a phrase would be caught by semantic expansion), "
                 + "'init' (create default config), 'delete' (remove config).";
+    }
+
+    @Override
+    public String compactHint() {
+        return "Enforcer/workflow config: action=status|get|set. For required memory use "
+                + "field=workflow_required_memories, value='project:rules.md,global:build.md'; workflow_mode=enforced.";
     }
 
     @Override
@@ -91,10 +98,10 @@ public class EnforcerConfigTool implements CliTool {
                         + "direction_monitoring, direction_goal, direction_check_every, "
                         + "direction_max_redirects, direction_confidence_threshold, "
                         + "direction_cross_turn_limit, direction_report_only, workflow_mode, "
-                        + "workflow_required_skills, workflow_require_plan_before_mutation, "
+                        + "workflow_required_skills, workflow_required_memories, workflow_require_plan_before_mutation, "
                         + "workflow_max_corrections");
         props.putObject("value").put("type", "string")
-                .put("description", "Value to set (for 'set' action). Use 'true'/'false' for booleans, numbers as strings.");
+                .put("description", "For workflow_required_memories: comma-separated project:file.md/global:file.md (bare names use project scope); empty clears selection. Otherwise use booleans/numbers as strings.");
 
         // For add/remove actions
         props.putObject("keyword").put("type", "string")
@@ -187,6 +194,8 @@ public class EnforcerConfigTool implements CliTool {
             sb.append("Workflow skills: ")
                     .append(String.join(", ", config.getWorkflowRequiredSkills())).append("\n");
         }
+        sb.append("Workflow memories: ")
+                .append(String.join(", ", WorkflowPolicy.from(config).requiredMemories())).append("\n");
         sb.append("Workflow plan:   ")
                 .append(config.isWorkflowRequirePlanBeforeMutation()
                         ? "required before mutation" : "not required")
@@ -290,6 +299,9 @@ public class EnforcerConfigTool implements CliTool {
             }
             case "workflow_required_skills" ->
                     config.setWorkflowRequiredSkills(parseSkillNames(value));
+            case "workflow_required_memories" -> config.setWorkflowRequiredMemories(
+                    new WorkflowPolicy(WorkflowPolicy.Mode.OFF, java.util.List.of(),
+                            java.util.Arrays.asList(value.split("[,\\s]+")), true, 2).requiredMemories());
             case "workflow_require_plan_before_mutation" ->
                     config.setWorkflowRequirePlanBeforeMutation(Boolean.parseBoolean(value));
             case "workflow_max_corrections" -> config.setWorkflowMaxCorrections(
@@ -303,7 +315,7 @@ public class EnforcerConfigTool implements CliTool {
                         + "direction_monitoring, direction_goal, direction_check_every, "
                         + "direction_max_redirects, direction_confidence_threshold, "
                         + "direction_cross_turn_limit, direction_report_only, workflow_mode, "
-                        + "workflow_required_skills, workflow_require_plan_before_mutation, "
+                        + "workflow_required_skills, workflow_required_memories, workflow_require_plan_before_mutation, "
                         + "workflow_max_corrections");
             }
         }

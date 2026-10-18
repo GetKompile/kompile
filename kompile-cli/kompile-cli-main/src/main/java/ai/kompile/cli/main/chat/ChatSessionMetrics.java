@@ -60,6 +60,11 @@ public class ChatSessionMetrics {
     private final AtomicLong cacheReadTokens = new AtomicLong(0);
     private final AtomicLong cacheCreationTokens = new AtomicLong(0);
 
+    // Last measured request input is NOT cumulative session usage. Unknown after
+    // compaction/model changes until a new request reports its input (including cache).
+    private record ContextUsage(String model, long input, int window, boolean provisionalWindow) { }
+    private volatile ContextUsage contextUsage = new ContextUsage(null, -1, 0, false);
+
     // Estimated tokens (chars/4 fallback)
     private final AtomicLong estimatedInputChars = new AtomicLong(0);
     private final AtomicLong estimatedOutputChars = new AtomicLong(0);
@@ -205,6 +210,49 @@ public class ChatSessionMetrics {
         fireChange();
     }
 
+    /** Update the active model's window without carrying another model's measurement. */
+    public void recordContextWindow(String model, int window) {
+        recordContextWindow(model, window, false);
+    }
+
+    /** Native CLI settings can cap a catalog window; mark it provisional until reported. */
+    public synchronized void recordContextWindow(String model, int window, boolean provisional) {
+        ContextUsage previous = contextUsage;
+        ContextUsage next = new ContextUsage(model,
+                Objects.equals(model, previous.model()) ? previous.input() : -1, Math.max(0, window), provisional);
+        if (!next.equals(previous)) {
+            contextUsage = next;
+            fireChange();
+        }
+    }
+
+    /** Latest request input, including cached input; never added to session totals. */
+    public synchronized void recordContextInputTokens(long input) {
+        ContextUsage previous = contextUsage;
+        ContextUsage next = new ContextUsage(previous.model(), input > 0 ? input : -1,
+                previous.window(), previous.provisionalWindow());
+        if (!next.equals(previous)) {
+            contextUsage = next;
+            fireChange();
+        }
+    }
+
+    /** This is last measured INPUT, not live occupancy or the next request's size. */
+    public String contextTokenSummary() {
+        ContextUsage context = contextUsage;
+        if (context.window() <= 0) return "";
+        String used = context.input() < 0 ? "?" : formatNumber(context.input());
+        String percent = context.input() < 0 ? ""
+                : String.format(Locale.ROOT, " %.0f%%", context.input() * 100.0 / context.window());
+        return used + "/" + (context.provisionalWindow() ? "~" : "")
+                + formatNumber(context.window()) + percent + " last input";
+    }
+
+    private void invalidateContextUsage() {
+        ContextUsage previous = contextUsage;
+        contextUsage = new ContextUsage(previous.model(), -1, previous.window(), previous.provisionalWindow());
+    }
+
     // ========================================================================
     // Change listeners (drive live UI surfaces)
     // ========================================================================
@@ -288,7 +336,8 @@ public class ChatSessionMetrics {
     // Agentic context tracking
     // ========================================================================
 
-    public void recordCompaction(long tokensBefore, long tokensAfter) {
+    public synchronized void recordCompaction(long tokensBefore, long tokensAfter) {
+        invalidateContextUsage();
         compactionEvents.incrementAndGet();
         totalTokensBeforeCompaction.addAndGet(Math.max(0, tokensBefore));
         totalTokensAfterCompaction.addAndGet(Math.max(0, tokensAfter));
@@ -301,7 +350,8 @@ public class ChatSessionMetrics {
      * A compaction the provider ran on a session it owns. Only the event is
      * known, so the tokens-saved totals are left alone.
      */
-    public void recordProviderCompaction() {
+    public synchronized void recordProviderCompaction() {
+        invalidateContextUsage();
         compactionEvents.incrementAndGet();
         fireChange();
     }
@@ -603,6 +653,15 @@ public class ChatSessionMetrics {
         tokens.put("estimatedOutput", getEstimatedOutputTokens());
         tokens.put("estimatedTotal", getEstimatedInputTokens() + getEstimatedOutputTokens());
         root.set("tokens", tokens);
+
+        // Current context is a separate snapshot, never cumulative billed session tokens.
+        ContextUsage measuredContext = contextUsage;
+        ObjectNode context = root.putObject("context");
+        context.put("model", measuredContext.model());
+        context.put("window", measuredContext.window());
+        context.put("provisionalWindow", measuredContext.provisionalWindow());
+        if (measuredContext.input() >= 0) context.put("lastInputTokens", measuredContext.input());
+        else context.putNull("lastInputTokens");
 
         // Timing
         ObjectNode timing = mapper.createObjectNode();

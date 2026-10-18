@@ -138,7 +138,7 @@ class AgenticChatLoopAttachmentReplayTest {
     void aStoredImageThatIsGoneIsResentAsAMarker() throws Exception {
         CompactionService.Attachment image = recordTurn(true);
         Files.delete(KompileHome.homeDirectory().toPath().resolve("conversations")
-                .resolve(sessionId + ".attachments").resolve(image.digest()));
+                .resolve(sessionId + ".context").resolve("attachments").resolve(image.digest()));
 
         JsonNode earlier = userMessageContaining(resumeAndAsk(), "what is in it?");
 

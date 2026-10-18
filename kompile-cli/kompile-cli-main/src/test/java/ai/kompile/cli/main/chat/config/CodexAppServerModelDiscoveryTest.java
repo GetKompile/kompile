@@ -146,6 +146,7 @@ class CodexAppServerModelDiscoveryTest {
                 read account
                 printf '%s\\n' '{"id":3,"result":{"account":{"type":"chatgpt","planType":"plus"}}}'
                 read models
+                printf '%s\\n' '{"models":[{"slug":"gpt-6-astra","context_window":272000,"effective_context_window_percent":95}]}' > "$CODEX_HOME/models_cache.json"
                 printf '%s\\n' '{"id":4,"result":{"data":[{"id":"gpt-6-astra"}],"nextCursor":null}}'
                 """, StandardCharsets.UTF_8);
         assertTrue(shim.toFile().setExecutable(true));
@@ -162,6 +163,16 @@ class CodexAppServerModelDiscoveryTest {
                     .map(LiveModelDiscovery.Model::id).toList());
             assertEquals(List.of(CodexAppServerModelDiscovery.ATTEMPTED_RESOURCE),
                     result.attemptedEndpoints());
+            assertEquals(272000, result.models().get(0).contextWindow(),
+                    "read authenticated cache limits before the isolated CODEX_HOME is deleted");
+            ChatConfig config = new ChatConfig("openai-codex", null, "gpt-6-astra", null) {
+                @Override
+                public OAuthProviderFlow.RequestAuth resolveRequestAuth() {
+                    return oauthContext(Duration.ofSeconds(5)).auth();
+                }
+            };
+            assertEquals(272000, new ModelContextResolver(uri -> java.util.Optional.empty())
+                    .resolveContextWindow(config, null));
 
             Files.delete(shim);
             ModelDiscovery.Result cached = ModelDiscoveryHttp.discoverResultWithAuth(

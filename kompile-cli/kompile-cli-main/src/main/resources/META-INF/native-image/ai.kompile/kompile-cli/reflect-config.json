@@ -1,5 +1,10 @@
 [
   {
+    "name": "ai.kompile.cli.main.chat.DiagnosticConsoleAppender",
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "ai.kompile.core.agent.CliAgentRegistry$CliAgentDef",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,

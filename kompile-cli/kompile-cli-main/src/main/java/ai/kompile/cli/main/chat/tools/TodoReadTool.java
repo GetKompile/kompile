@@ -73,7 +73,8 @@ public class TodoReadTool implements CliTool {
                 sessionId, context.getWorkingDirectory());
 
         if (todos.isEmpty()) {
-            return ToolResult.success("No tasks for session '" + sessionId + "'.");
+            return TodoWriteTool.withTodoSnapshot(
+                    ToolResult.success("No tasks for session '" + sessionId + "'."), sessionId, todos);
         }
 
         StringBuilder sb = new StringBuilder();
@@ -93,10 +94,10 @@ public class TodoReadTool implements CliTool {
             sb.append("\n");
         }
 
-        return ToolResult.success("Tasks",
+        return TodoWriteTool.withTodoSnapshot(ToolResult.success("Tasks",
                 sb.toString().trim(),
                 Map.of("total", todos.size(), "pending", pending,
                         "inProgress", inProgress, "completed", completed,
-                        "sessionId", sessionId));
+                        "sessionId", sessionId)), sessionId, todos);
     }
 }

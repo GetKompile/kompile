@@ -246,23 +246,28 @@ public class BackgroundTaskManager {
     /**
      * Starts tracking a new background task.
      */
-    public synchronized BackgroundTask startTask(String description) {
+    public BackgroundTask startTask(String description) {
         BackgroundTask task = new BackgroundTask(description);
-        tasks.put(task.getId(), task);
-        taskOrder.add(task.getId());
-        currentTask = task;
-        backgroundRequested = false;
+        synchronized (this) {
+            tasks.put(task.getId(), task);
+            taskOrder.add(task.getId());
+            currentTask = task;
+            backgroundRequested = false;
+        }
+        // UI listeners acquire the draw lock; rendering takes this manager's
+        // lock in the opposite order. Never notify while holding our monitor.
         fireChange();
         return task;
     }
 
     /** Transfer completion ownership to the detached worker, not the next turn. */
-    public synchronized void detachTask(BackgroundTask task) {
-        if (currentTask == task) {
+    public void detachTask(BackgroundTask task) {
+        synchronized (this) {
+            if (currentTask != task) return;
             currentTask = null;
             backgroundRequested = false;
-            fireChange();
         }
+        fireChange();
     }
 
     public void completeDetachedTask(BackgroundTask task, Throwable error) {
@@ -293,14 +298,16 @@ public class BackgroundTaskManager {
     /**
      * Signals that the current task should be backgrounded.
      */
-    public synchronized BackgroundTask requestBackground() {
-        if (!isCurrentTaskBackgroundable()) {
-            return null;
+    public BackgroundTask requestBackground() {
+        BackgroundTask task;
+        synchronized (this) {
+            if (!isCurrentTaskBackgroundable()) return null;
+            task = currentTask;
+            backgroundRequested = true;
+            task.setStatus(BackgroundTask.BackgroundTaskStatus.BACKGROUNDED);
         }
-        backgroundRequested = true;
-        currentTask.setStatus(BackgroundTask.BackgroundTaskStatus.BACKGROUNDED);
         fireChange();
-        return currentTask;
+        return task;
     }
 
     public boolean isBackgroundRequested() {
@@ -315,21 +322,22 @@ public class BackgroundTaskManager {
      * Marks the current task as completed. If it was backgrounded,
      * adds to pending notifications.
      */
-    public synchronized void completeCurrentTask() {
-        if (currentTask != null) {
-            boolean wasBackgrounded = currentTask.wasBackgrounded();
-            if (currentTask.getStatus() != BackgroundTask.BackgroundTaskStatus.FAILED) {
-                currentTask.setStatus(BackgroundTask.BackgroundTaskStatus.COMPLETED);
+    public void completeCurrentTask() {
+        BackgroundTask finished;
+        synchronized (this) {
+            if (currentTask == null) return;
+            finished = currentTask;
+            if (finished.getStatus() != BackgroundTask.BackgroundTaskStatus.FAILED) {
+                finished.setStatus(BackgroundTask.BackgroundTaskStatus.COMPLETED);
             }
-            if (wasBackgrounded) {
-                pendingNotifications.add(currentTask);
+            if (finished.wasBackgrounded()) {
+                pendingNotifications.add(finished);
             }
-            BackgroundTask finished = currentTask;
             currentTask = null;
             backgroundRequested = false;
-            fireCompletion(finished);
-            fireChange();
         }
+        fireCompletion(finished);
+        fireChange();
     }
 
     /**
@@ -338,19 +346,20 @@ public class BackgroundTaskManager {
      * pending notifications so the REPL surfaces the failure at the next
      * prompt.
      */
-    public synchronized void failCurrentTask(Throwable error) {
-        if (currentTask != null) {
-            boolean wasBackgrounded = currentTask.wasBackgrounded();
-            currentTask.setError(error);
-            if (wasBackgrounded) {
-                pendingNotifications.add(currentTask);
+    public void failCurrentTask(Throwable error) {
+        BackgroundTask finished;
+        synchronized (this) {
+            if (currentTask == null) return;
+            finished = currentTask;
+            finished.setError(error);
+            if (finished.wasBackgrounded()) {
+                pendingNotifications.add(finished);
             }
-            BackgroundTask finished = currentTask;
             currentTask = null;
             backgroundRequested = false;
-            fireCompletion(finished);
-            fireChange();
         }
+        fireCompletion(finished);
+        fireChange();
     }
 
     /**

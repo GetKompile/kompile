@@ -33,6 +33,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -101,7 +102,9 @@ public final class MilestoneInsights implements InsightSource {
 
     /** One recorded result: a run of a module, or the latest result of one test class. */
     record Result(String id, boolean run, String module, Instant at, boolean passing, long total, long passed,
-                  String commit, String branch, String message, String tags, String notes) {
+                  String commit, String branch, String message, String tags, String notes, String outcome) {
+
+        boolean conclusive() { return "passed".equals(outcome) || "failed".equals(outcome); }
 
         /** The share of tests that passed; 1 or 0 by the pass flag when the count is unknown. */
         double score() {
@@ -109,7 +112,7 @@ public final class MilestoneInsights implements InsightSource {
         }
 
         String result() {
-            return passing ? "pass" : "FAIL";
+            return conclusive() ? (passing ? "pass" : "FAIL") : outcome.toUpperCase(Locale.ROOT);
         }
 
         /** "118/120", or "-" when no test count was recorded. */
@@ -136,6 +139,7 @@ public final class MilestoneInsights implements InsightSource {
         final List<Path> unreadable = new ArrayList<>();
         int stores;
         int incomplete;
+        int neutral;
     }
 
     /** One module's runs, oldest first. */
@@ -506,6 +510,10 @@ public final class MilestoneInsights implements InsightSource {
             notes.add("No test milestones in " + String.join(" or ", dirs)
                     + "; the test_milestone tool records them.");
         }
+        if (scan.neutral > 0) {
+            notes.add(Format.count(scan.neutral, "observed execution")
+                    + " without a conclusive executed test result excluded from pass/fail trends (details: test_milestone get).");
+        }
         if (scan.incomplete > 0) {
             notes.add(Format.count(scan.incomplete, "milestone file") + " without an id or a readable timestamp "
                     + (scan.incomplete == 1 ? "is" : "are") + " not counted.");
@@ -535,6 +543,7 @@ public final class MilestoneInsights implements InsightSource {
                 if (result == null) {
                     scan.incomplete++;
                 } else if (window.contains(result.at())) {
+                    if (!result.conclusive()) { scan.neutral++; continue; }
                     (result.run() ? scan.runs : scan.classes).merge(result.id(), result, MilestoneInsights::newer);
                 }
             }
@@ -561,7 +570,7 @@ public final class MilestoneInsights implements InsightSource {
                 count(milestone.get("passed")),
                 commit != null ? TestMilestoneReader.shortCommit(commit) : Values.text(milestone.get("commitShort")),
                 Values.text(milestone.get("branch")), Values.text(milestone.get("commitMessage")),
-                Values.text(milestone.get("tags")), Values.text(milestone.get("notes")));
+                Values.text(milestone.get("tags")), Values.text(milestone.get("notes")), TestMilestoneReader.outcome(milestone));
     }
 
     private static List<Map<String, Object>> regressions(Path baseDir) {

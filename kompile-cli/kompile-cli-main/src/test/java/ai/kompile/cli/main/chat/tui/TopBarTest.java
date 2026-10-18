@@ -39,6 +39,24 @@ class TopBarTest {
     }
 
     @Test
+    void contextWindowIsSeparateFromBillingAndTakesPriorityOnNarrowTerminals() {
+        var bar = new TopBar(new Object());
+        bar.setContextSummary("120,000/200,000 60% last input");
+        bar.setTokenSummary("↑1,000,000 ↓500,000 Σ1,500,000");
+        String wide = tokenRow(bar, 120);
+        assertTrue(wide.contains("context: 120,000/200,000 60% last input"), wide);
+        assertTrue(wide.contains("session tokens: ↑1,000,000 ↓500,000 Σ1,500,000"), wide);
+        String narrow = tokenRow(bar, 60);
+        assertTrue(narrow.startsWith("context: 120,000/200,000 60% last input"), narrow);
+        assertEquals(59, narrow.length());
+        assertTrue(narrow.endsWith("…"));
+        bar.setAlert("Connection lost");
+        assertTrue(tokenRow(bar, 80).contains("Connection lost"));
+        bar.setAlert("");
+        assertTrue(tokenRow(bar, 80).contains("context:"));
+    }
+
+    @Test
     void wrapsFullTitleAndAllowsScrollingWithoutTakingOverTheChat() {
         var title = new java.util.concurrent.atomic.AtomicReference<>("x".repeat(240) + " THE END");
         var bar = new TopBar(new Object());
@@ -54,6 +72,17 @@ class TopBarTest {
         assertEquals(TopBar.TOP_HEIGHT + 1, bar.getHeight(40));
         assertTrue(AnsiConstants.stripAnsi(bar.render(40)).contains("Chat: Renamed chat"));
         assertFalse(bar.scrollTitle(1, 40));
+    }
+
+    @Test
+    void diagnosticControlsAndWideTextCannotEscapeTheNoticeRow() {
+        var bar = new TopBar(new Object());
+        bar.setAlert("\033[24;1H\b\u0007warning\r\n" + "界".repeat(100));
+        for (int width : new int[] {1, 4, 20, 80}) {
+            String row = tokenRow(bar, width);
+            assertFalse(row.chars().anyMatch(Character::isISOControl), row);
+            assertTrue(new org.jline.utils.AttributedString(row).columnLength() <= Math.max(0, width - 1), row);
+        }
     }
 
     private static String tokenRow(TopBar bar, int width) {

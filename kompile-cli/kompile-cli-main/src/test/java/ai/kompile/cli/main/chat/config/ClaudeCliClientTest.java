@@ -138,6 +138,48 @@ class ClaudeCliClientTest {
     Path tempDir;
 
     @Test
+    void exposesTheNativeFileBeforeTheFirstTurnFinishes() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(System.getenv("CLAUDE_CONFIG_DIR") == null);
+        Path nativeFile = Files.createDirectories(Path.of(System.getProperty("user.home"))
+                .resolve(".claude/projects/" + tempDir.getFileName())).resolve("live-native.jsonl");
+        Files.writeString(nativeFile, "first record\n");
+        String owner = tempDir.getFileName().toString();
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  emit '{"type":"system","subtype":"init","session_id":"live-native"}'
+                  say_text working
+                  while [ ! -f "$DIR/go" ]; do sleep 0.05; done
+                  say_result
+                }
+                """);
+        var streamed = new java.util.concurrent.CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try (ClaudeCliClient client = client(fake)) {
+            client.setTranscriptSessionId(owner);
+            Thread turn = new Thread(() -> {
+                try {
+                    client.send("sonnet", null, false, null, "first", "", chunk -> streamed.countDown(), null);
+                } catch (Throwable error) { failure.set(error); }
+            });
+            turn.start();
+            try {
+                assertTrue(streamed.await(5, TimeUnit.SECONDS));
+                assertTrue(turn.isAlive(), "the first turn is still waiting, not completed");
+                Path link = Path.of(System.getProperty("user.home"))
+                        .resolve(".kompile/conversations/" + owner + "/claude-code/live-native.jsonl");
+                assertTrue(Files.isSameFile(nativeFile, link));
+                Files.writeString(nativeFile, "live update\n", StandardOpenOption.APPEND);
+                assertTrue(Files.readString(link).contains("live update"));
+            } finally {
+                Files.createFile(fake.path("go"));
+                turn.join(10_000);
+            }
+            assertFalse(turn.isAlive());
+            assertNull(failure.get(), String.valueOf(failure.get()));
+        }
+    }
+
+    @Test
     void streamsTextDeltasAndExtractsFinalText() throws Exception {
         FakeClaudeCode fake = fake("""
                 turn() {
@@ -329,6 +371,126 @@ class ClaudeCliClientTest {
             assertDoesNotThrow(client::stopOnJvmShutdown);
             assertEquals(List.of(), fake.argv(), "the shutdown hook must not start a process by itself");
         }
+    }
+
+    private static String memoryTurn(String memory, String evidence, String request) {
+        return "<kompile_reminders>\nkeep reminder\n</kompile_reminders>\n\n"
+                + "<memory_context>\n[Relevant incidents — warn-only historical evidence]\nincident " + evidence
+                + "\n[Persistent memory]\n" + memory
+                + "\n[Retrieved documents]\nretrieval " + evidence
+                + "\n</memory_context>\n\n" + request;
+    }
+
+    @Test
+    void acknowledgedMemoryIsSentOnceWhileTurnEvidenceAndRemindersAlwaysRemain() throws Exception {
+        FakeClaudeCode fake = fake();
+        try (ClaudeCliClient client = client(fake)) {
+            client.send("sonnet", null, false, null, memoryTurn("stable sentinel", "one", "first"), "", null, null);
+            client.send("sonnet", null, false, null, memoryTurn("stable sentinel", "two", "second"), "", null, null);
+            client.send("sonnet", null, false, null, memoryTurn("changed sentinel", "three", "third"), "", null, null);
+            client.send("sonnet", null, false, null, memoryTurn("changed sentinel", "four", "fourth"), "", null, null);
+        }
+        List<String> messages = fake.messages();
+        assertTrue(messages.get(0).contains("stable sentinel"));
+        assertFalse(messages.get(1).contains("[Persistent memory]"));
+        assertTrue(messages.get(1).contains("incident two"));
+        assertTrue(messages.get(1).contains("retrieval two"));
+        assertTrue(messages.get(1).contains("keep reminder"));
+        assertTrue(messages.get(1).startsWith("[User message]\nsecond\n"));
+        assertTrue(messages.get(2).contains("changed sentinel"));
+        assertFalse(messages.get(3).contains("changed sentinel"));
+    }
+
+    @Test
+    void compactionInvalidatesMemoryReceiptEvenWhenCompactedTurnDeliveredANewSnapshot() throws Exception {
+        FakeClaudeCode fake = fake(COMPACTS_SECOND_TURN);
+        try (ClaudeCliClient client = client(fake)) {
+            client.send("sonnet", null, false, null, memoryTurn("old sentinel", "one", "first"), "", null, null);
+            client.send("sonnet", null, false, null, memoryTurn("new sentinel", "two", "second"), "", null, null);
+            client.send("sonnet", null, false, null, memoryTurn("new sentinel", "three", "third"), "", null, null);
+            client.send("sonnet", null, false, null, memoryTurn("new sentinel", "four", "fourth"), "", null, null);
+        }
+        assertTrue(fake.messages().get(1).contains("new sentinel"));
+        assertTrue(fake.messages().get(2).contains("new sentinel"), "compaction makes retention uncertain");
+        assertFalse(fake.messages().get(3).contains("new sentinel"));
+    }
+
+    @Test
+    void acceptedFailedTurnStillAcknowledgesMemoryWithoutResendingIt() throws Exception {
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  say_init
+                  if [ "$1" = 1 ]; then
+                    say_text partial
+                    emit '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"errors":["failed after acceptance"]}'
+                  else
+                    say_text ok
+                    say_result
+                  fi
+                }
+                """);
+        try (ClaudeCliClient client = client(fake)) {
+            assertThrows(ClaudeCliClient.TurnFailedException.class,
+                    () -> client.send("sonnet", null, false, null,
+                            memoryTurn("stable sentinel", "one", "first"), "", null, null));
+            client.send("sonnet", null, false, null, memoryTurn("stable sentinel", "two", "second"), "", null, null);
+        }
+        assertFalse(fake.messages().get(1).contains("stable sentinel"));
+    }
+
+    @Test
+    void memoryReceiptDoesNotSurviveExplicitResumeOrSessionReplacement() throws Exception {
+        FakeClaudeCode fake = fake();
+        try (ClaudeCliClient client = client(fake)) {
+            client.send("sonnet", null, false, null, memoryTurn("stable sentinel", "one", "first"), "", null, null);
+            DirectLlmClient.ClaudeNativeSession saved = client.nativeSession();
+            client.resumeSession(saved.sessionId(), saved.instructionsDigest());
+            client.send("sonnet", null, false, null, memoryTurn("stable sentinel", "two", "second"), "", null, null);
+            client.startNewSession();
+            client.send("sonnet", null, false, null, memoryTurn("stable sentinel", "three", "third"), "", null, null);
+        }
+        assertTrue(fake.messages().get(1).contains("stable sentinel"));
+        assertTrue(fake.messages().get(2).contains("stable sentinel"));
+    }
+
+    @Test
+    void memoryIsResentAfterTheLiveProcessExitsAndResumes() throws Exception {
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  say_init
+                  say_text ok
+                  say_result
+                  exit 0
+                }
+                """);
+        try (ClaudeCliClient client = client(fake)) {
+            client.send("sonnet", null, false, null, memoryTurn("stable sentinel", "one", "first"), "", null, null);
+            FakeClaudeCode.await("first process to exit", () -> !client.processAlive());
+            client.send("sonnet", null, false, null, memoryTurn("stable sentinel", "two", "second"), "", null, null);
+        }
+        assertTrue(fake.messages().get(1).contains("stable sentinel"));
+        assertEquals(2, fake.argv().size());
+    }
+
+    @Test
+    void rejectedBeforeSubmissionDoesNotAcknowledgeTheMemorySnapshot() throws Exception {
+        FakeClaudeCode fake = fake("""
+                startup() {
+                  if [ ! -f "$DIR/allow" ]; then
+                    emit '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["Session ID test-session is already in use"]}'
+                    exit 1
+                  fi
+                }
+                """);
+        try (ClaudeCliClient client = client(fake)) {
+            assertThrows(ClaudeCliClient.TurnNotStartedException.class,
+                    () -> client.send("sonnet", null, false, null,
+                            memoryTurn("stable sentinel", "one", "first"), "", null, null));
+            assertNull(client.nativeSession());
+            Files.createFile(fake.path("allow"));
+            client.send("sonnet", null, false, null, memoryTurn("stable sentinel", "two", "second"), "", null, null);
+        }
+        assertTrue(fake.messages().get(fake.messages().size() - 1).contains("stable sentinel"));
     }
 
     @Test
@@ -556,7 +718,11 @@ class ClaudeCliClientTest {
 
         try (ClaudeCliClient client = client(fake)) {
             assertEquals("done", client.send("sonnet", null, false, null, "look it up", "",
-                    text -> recorder.timeline.add("text:" + text), recorder));
+                    text -> {
+                        assertEquals(List.of(1010L, 1020L), recorder.contexts,
+                                "both requests' inputs, including cache, arrive before result; child input is excluded");
+                        recorder.timeline.add("text:" + text);
+                    }, recorder));
         }
         // Each request counts as it runs, the subagent's input included; the
         // result adds the subagent's output, which only modelUsage reports.
@@ -564,6 +730,7 @@ class ClaudeCliClientTest {
                 "done:toolu_task", "usage:20/1/1000/0", "text:done", "usage:0/3/0/0",
                 "usage:0/75/0/0"), recorder.timeline);
         assertEquals(List.of("{\"prompt\":\"look\"}"), recorder.toolInputDeltas);
+        assertEquals(List.of(1010L, 1020L, 1020L), recorder.contexts);
     }
 
     @Test
@@ -592,6 +759,7 @@ class ClaudeCliClientTest {
         }
         // The interrupted request's output was billed though its turn is not shown.
         assertEquals(List.of("10/1/1000/0", "0/24/0/0"), recorder.usage);
+        assertEquals(1010L, recorder.contexts.get(0), "input is known before cancellation");
     }
 
     @Test
@@ -865,10 +1033,12 @@ class ClaudeCliClientTest {
             Thread first = new Thread(() -> client.applyIdleSettings("haiku", "high", false));
             Thread second = new Thread(() -> client.applyIdleSettings("opus", "high", false));
             first.start();
-            second.start();
             first.join(2_000);
-            second.join(2_000);
             assertFalse(first.isAlive(), "applyIdleSettings must not block its caller on a turn in progress");
+            // Thread.start() order is not execution order. Submit opus only after
+            // haiku returned, while the same foreground turn still holds turnLock.
+            second.start();
+            second.join(2_000);
             assertFalse(second.isAlive(), "applyIdleSettings must not block its caller on a turn in progress");
 
             Files.createFile(fake.path("go"));
@@ -1330,6 +1500,89 @@ class ClaudeCliClientTest {
     }
 
     @Test
+    void backgroundChildKeepsItsStreamAndToolStateAfterTheParentTurnEnds() throws Exception {
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  say_init
+                  emit '{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"tool-agent","description":"Inspect code","task_type":"local_agent"}'
+                  emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"message_start","message":{"id":"child-1"}}}'
+                  emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Child prose"}}}'
+                  emit '{"type":"assistant","parent_tool_use_id":"tool-agent","message":{"id":"child-1","content":[{"type":"tool_use","id":"read-child","name":"Read","input":{"path":"parser.java"}}]}}'
+                  mkfifo "$DIR/go"
+                  (
+                    read -t 10 -r _ <> "$DIR/go"
+                    emit '{"type":"assistant","parent_tool_use_id":"tool-agent","message":{"id":"child-1","content":[{"type":"text","text":"Child prose"}]}}'
+                    emit '{"type":"user","parent_tool_use_id":"tool-agent","message":{"content":[{"type":"tool_result","tool_use_id":"read-child","content":"source code"}]}}'
+                    emit '{"type":"system","subtype":"task_notification","task_id":"agent-1","status":"completed","summary":"found the bug"}'
+                  ) &
+                  say_text "$ANSWER"
+                  say_result
+                }
+                """);
+        Path workspace = tempDir.resolve("background-child-workspace");
+        Files.createDirectories(workspace.resolve(".kompile"));
+        Recorder recorder = new Recorder();
+        LinkedBlockingQueue<String> followUps = new LinkedBlockingQueue<>();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("claude-test", workspace);
+             ClaudeCliClient client = client(fake)) {
+            client.setTaskProcesses(processes);
+            client.setFollowUpListener(followUps::add);
+            assertEquals("ok", client.send("sonnet", null, false, null, "inspect", "", null, recorder));
+            BackgroundProcessManager.ProcessEntry row = processes.listAll().stream()
+                    .filter(entry -> "agent-1".equals(entry.getMetadata().get("task_id")))
+                    .findFirst().orElseThrow();
+            try (FileChannel go = FileChannel.open(fake.path("go"), StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+                go.write(ByteBuffer.wrap("go\n".getBytes(StandardCharsets.UTF_8)));
+                FakeClaudeCode.await("the background child's row to end", () -> !row.isRunning());
+            }
+            String transcript = Files.readString(row.getOutputFile());
+            assertTrue(transcript.contains("Result [read-child]:\nsource code\n"), transcript);
+            assertEquals(1, transcript.split("Child prose", -1).length - 1, transcript);
+            assertTrue(recorder.toolResults.isEmpty());
+            assertTrue(followUps.isEmpty(), "a child's own frames must not invent a parent follow-up turn");
+        }
+    }
+
+    @Test
+    void childConversationReachesItsViewerWithoutBecomingTheParentAnswer() throws Exception {
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  say_init
+                  emit '{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"tool-agent","description":"Inspect code","task_type":"local_agent","prompt":"Find the bug"}'
+                  emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"message_start","message":{"id":"child-1"}}}'
+                  emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check the parser"}}}'
+                  emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Child prose"}}}'
+                  emit '{"type":"assistant","parent_tool_use_id":"tool-agent","message":{"id":"child-1","content":[{"type":"thinking","thinking":"Check the parser"},{"type":"text","text":"Child prose"},{"type":"tool_use","id":"read-child","name":"Read","input":{"path":"parser.java"}}]}}'
+                  emit '{"type":"user","parent_tool_use_id":"tool-agent","message":{"content":[{"type":"tool_result","tool_use_id":"read-child","content":"source code"}]}}'
+                  emit '{"type":"system","subtype":"task_notification","task_id":"agent-1","status":"completed","summary":"found the bug"}'
+                  say_text "$ANSWER"
+                  say_result
+                }
+                """);
+        Path workspace = tempDir.resolve("child-workspace");
+        Files.createDirectories(workspace.resolve(".kompile"));
+        Recorder recorder = new Recorder();
+        StringBuilder parent = new StringBuilder();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("claude-test", workspace);
+             ClaudeCliClient client = client(fake)) {
+            client.setTaskProcesses(processes);
+            assertEquals("ok", client.send("sonnet", null, false, null, "inspect", "", parent::append, recorder));
+            assertEquals("ok", parent.toString());
+            assertTrue(recorder.toolResults.isEmpty(), "child tools must not enter the parent's tool cards");
+            BackgroundProcessManager.ProcessEntry row = processes.listAll().stream()
+                    .filter(entry -> "agent-1".equals(entry.getMetadata().get("task_id")))
+                    .findFirst().orElseThrow();
+            String transcript = Files.readString(row.getOutputFile());
+            assertEquals(BackgroundProcessManager.ProcessState.COMPLETED, row.getState());
+            assertTrue(transcript.contains("User:\nFind the bug\n"), transcript);
+            assertTrue(transcript.contains("Thinking:\nCheck the parser\nAssistant:\nChild prose\n"), transcript);
+            assertTrue(transcript.contains("Tool [read-child]: Read\nInput: {\"path\":\"parser.java\"}\n"), transcript);
+            assertTrue(transcript.contains("Result [read-child]:\nsource code\n"), transcript);
+            assertEquals(1, transcript.split("Child prose", -1).length - 1, "aggregate must not repeat stream text");
+        }
+    }
+
+    @Test
     void aBackgroundedToolCallPointsAtItsProcessRowInsteadOfClaudeCodesLaunchMetadata() throws Exception {
         // Claude Code's own tool_result text for a call it backgrounds is its
         // internal launch metadata (an agent id, an output file, instructions
@@ -1505,6 +1758,70 @@ class ClaudeCliClientTest {
     }
 
     @Test
+    void nativeOutputHookIsRegisteredAndReturnsSchemaPreservingDurableReplacement() throws Exception {
+        String callback = """
+                {"type":"control_request","request_id":"output-hook-1","request":{"subtype":"hook_callback","callback_id":"%s","input":{"hook_event_name":"PostToolUse","tool_name":"Read","tool_use_id":"native-read-1","tool_response":{"type":"text","file":{"filePath":"/project/file.txt","content":"%s","numLines":1,"startLine":1,"totalLines":1}}}}}
+                """.formatted(ClaudeNativeToolOutputPolicy.CALLBACK_ID, "x".repeat(20_000)).strip();
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  emit '%s'
+                  while IFS= read -r reply; do
+                    if [[ $reply == *'"request_id":"output-hook-1"'* ]]; then
+                      printf '%%s' "$reply" > "$DIR/hook-response.json"
+                      break
+                    fi
+                  done
+                  say_init
+                  say_text ok
+                  say_result
+                }
+                """.formatted(callback));
+        Path launcher = Files.createFile(tempDir.resolve("kompile-output-hook"));
+        assertTrue(launcher.toFile().setExecutable(true));
+        String previous = System.getProperty("kompile.cli.binary");
+        System.setProperty("kompile.cli.binary", launcher.toString());
+        try (ClaudeCliClient client = client(fake)) {
+            client.setTranscriptSessionId("native-output-test");
+            assertEquals("ok", client.send("sonnet", null, false, "system", "read", "", null, null));
+            JsonNode registration = fake.awaitControl("initialize").path("hooks").path("PostToolUse").get(0);
+            assertNotNull(registration);
+            assertEquals(ClaudeNativeToolOutputPolicy.MATCHER, registration.path("matcher").asText());
+            assertEquals(ClaudeNativeToolOutputPolicy.CALLBACK_ID, registration.path("hookCallbackIds").get(0).asText());
+            JsonNode response = JsonUtils.standardMapper().readTree(fake.path("hook-response.json").toFile());
+            assertEquals("success", response.path("response").path("subtype").asText());
+            JsonNode output = response.path("response").path("response").path("hookSpecificOutput");
+            assertTrue(output.path("updatedToolOutput").path("file").path("content").asText().length() <= 1_000);
+            assertTrue(output.path("additionalContext").asText().contains("d1.native-output-test."));
+            assertFalse(output.has("permissionDecision"));
+            assertFalse(fake.argv().get(0).contains("--disallowedTools"));
+        } finally {
+            if (previous == null) System.clearProperty("kompile.cli.binary");
+            else System.setProperty("kompile.cli.binary", previous);
+        }
+    }
+
+    @Test
+    void nativeOutputBoundingCanBeDisabledWithoutChangingNativeTools() throws Exception {
+        FakeClaudeCode fake = fake();
+        Path launcher = Files.createFile(tempDir.resolve("kompile-output-off"));
+        assertTrue(launcher.toFile().setExecutable(true));
+        String binary = System.getProperty("kompile.cli.binary");
+        String bound = System.getProperty("kompile.chat.claude.boundNativeOutput");
+        System.setProperty("kompile.cli.binary", launcher.toString());
+        System.setProperty("kompile.chat.claude.boundNativeOutput", "false");
+        try (ClaudeCliClient client = client(fake)) {
+            client.send("sonnet", null, false, null, "hi", "", null, null);
+            assertFalse(fake.awaitControl("initialize").has("hooks"));
+            assertFalse(fake.argv().get(0).contains("--disallowedTools"));
+        } finally {
+            if (binary == null) System.clearProperty("kompile.cli.binary");
+            else System.setProperty("kompile.cli.binary", binary);
+            if (bound == null) System.clearProperty("kompile.chat.claude.boundNativeOutput");
+            else System.setProperty("kompile.chat.claude.boundNativeOutput", bound);
+        }
+    }
+
+    @Test
     void aJudgeRunsClaudeCodeWithoutToolsMcpServersSkillsOrASavedSession() throws Exception {
         FakeClaudeCode verdict = new FakeClaudeCode(tempDir.resolve("verdict-claude"), LOGS_ARGUMENTS);
         Path judgeWorkspace = Files.createDirectories(tempDir.resolve("judge-workspace"));
@@ -1512,6 +1829,7 @@ class ClaudeCliClientTest {
         try (ClaudeCliClient client = new ClaudeCliClient(judgeWorkspace, null, verdict.binary(),
                 new ClaudeCliClient.Mode(true, true, ""))) {
             assertEquals("ok", client.send("sonnet", null, false, "judge the turn", "the turn", "", null, null));
+            assertFalse(verdict.awaitControl("initialize").has("hooks"), "tool-free requests register no output hooks");
         }
         String args = Files.readString(verdict.path("args"), StandardCharsets.UTF_8);
         // No built-in tool, no MCP server (the project's .mcp.json included), no skills.
@@ -1941,6 +2259,7 @@ class ClaudeCliClientTest {
         final List<String> notices = new ArrayList<>();
         final List<String> retries = new ArrayList<>();
         final List<String> usage = new ArrayList<>();
+        final List<Long> contexts = new ArrayList<>();
         final List<String> compactions = new ArrayList<>();
         final List<String> toolInputDeltas = new ArrayList<>();
         /** Usage and finished tools in the order they arrived; a test's output can add its text. */
@@ -1970,6 +2289,11 @@ class ClaudeCliClientTest {
         public void onToolComplete(String callId, String name, String output, int exitCode, boolean error) {
             toolResults.add(callId + ":" + output + ":" + error);
             timeline.add("done:" + callId);
+        }
+
+        @Override
+        public void onContextUsage(long input) {
+            contexts.add(input);
         }
 
         @Override

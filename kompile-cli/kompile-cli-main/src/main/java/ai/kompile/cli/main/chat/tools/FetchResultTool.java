@@ -56,14 +56,15 @@ public class FetchResultTool implements CliTool {
                 "that repeats work and can miss data; only re-run when you genuinely need a narrower or " +
                 "different query. Pages are bounded to protect context; continue with the returned " +
                 "offset and character_offset (for a partial long line). With pattern, offset is a " +
-                "1-based matching-line index.";
+                "1-based matching-line index. Character page limits adapt to recent delivered text, not provider token counts.";
     }
 
     @Override
     public String compactHint() {
-        return "READ a large cached result (not an error) by result_id — don't re-run or use bash. "
+        return "Fetch only needed evidence from a cached result by result_id — prefer pattern or a narrow range. "
                 + "offset=1-based line; limit=lines(200); pattern=<regex> filters to matching lines "
-                + "(grep it). Pages are bounded; use returned offset/character_offset to continue. Expires ~15min.";
+                + "(grep it). Pages are bounded; use returned offset/character_offset to continue. "
+                + "Durable handles follow conversation retention; legacy handles have an idle TTL.";
     }
 
     @Override
@@ -120,7 +121,11 @@ public class FetchResultTool implements CliTool {
 
         // Public contract is a 1-based line offset (consistent with the read tool); the cache
         // slice primitive is 0-based, so convert here. A blank pattern means a plain slice.
-        return cache.getSlice(resultId, offset - 1, limit, pattern.isBlank() ? null : pattern,
-                params.path("character_offset").asInt(0), ToolResultReferenceCache.MAX_FETCH_CHARS);
+        try (var reservation = cache.reserveFetch(context.getSessionId())) {
+            ToolResult result = cache.getSlice(resultId, offset - 1, limit, pattern.isBlank() ? null : pattern,
+                    params.path("character_offset").asInt(0), reservation.limit());
+            reservation.complete(result.getOutput() == null ? 0 : result.getOutput().length());
+            return result;
+        }
     }
 }

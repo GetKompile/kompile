@@ -19,7 +19,7 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked, Renderer, Tokens } from 'marked';
 import hljs from 'highlight.js';
 import DOMPurify, { Config as DOMPurifyConfig } from 'dompurify';
-import { ToolCallChart, ToolCallRun, ToolCallSection, ToolUseEvent } from '../models/api-models';
+import { ToolCallChart, ToolCallRun, ToolCallSection, ToolUseEvent, ToolPresentation } from '../models/api-models';
 
 /**
  * Represents a parsed segment of a message — either text content (which may contain markdown),
@@ -60,6 +60,59 @@ export interface ToolCallView {
   sections: ToolCallSectionView[];
   /** The tool's chart of the same answer, drawn by ToolCallChartComponent. */
   chart?: ToolCallChart;
+  /** Present only after host identity, success and registration checks. Never HTML. */
+  presentation?: ToolPresentation;
+}
+
+/** A host-owned registration, never populated from a model or descriptor. */
+export interface ToolPresentationRegistration {
+  readonly kind: string;
+  readonly serverId: string;
+  readonly toolName: string;
+  readonly validateData: (data: Readonly<Record<string, unknown>>) => boolean;
+}
+export interface ToolPresentationContext {
+  readonly sessionId: string;
+  readonly registrations: readonly ToolPresentationRegistration[];
+}
+
+/** Shared live/history boundary. Products alone register kinds and their data schemas. */
+export function validateToolPresentation(call: ToolUseEvent, context?: ToolPresentationContext): ToolPresentation | undefined {
+  if (!context || call.status !== 'completed' || call.ok !== true || call.detail?.error) return undefined;
+  const value = call.detail?.presentation;
+  const record = (item: unknown): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item);
+  const exact = (item: unknown, keys: string[]) => record(item) && Object.keys(item).length === keys.length
+    && keys.every(key => Object.prototype.hasOwnProperty.call(item, key));
+  const id = (item: unknown): item is string => typeof item === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(item);
+  if (!exact(value, ['version', 'kind', 'data', 'source', 'identity']) || !value || value.version !== 1
+    || typeof value.kind !== 'string' || value.kind.length > 128 || !record(value.data)
+    || !exact(value.source, ['serverId', 'toolName']) || !id(value.source.serverId) || !id(value.source.toolName)
+    || !exact(value.identity, ['sessionId', 'turnId', 'callId']) || !id(value.identity.sessionId)
+    || !id(value.identity.callId) || typeof value.identity.turnId !== 'string' || !/^[0-9a-f]{32}$/.test(value.identity.turnId)
+    || value.identity.sessionId !== context.sessionId || value.identity.callId !== call.callId) return undefined;
+  // Gateway-mediated calls (mcp_tool_call) carry the inner tool identity in the envelope's
+  // source block, which the CLI sets from the actual dispatched tool — not caller-controlled.
+  // Direct calls carry the full namespace id. Both paths are trusted because the source block
+  // is CLI-generated provenance, not model-supplied.
+  const GATEWAY_TOOLS = new Set(['mcp_tool_call']);
+  const matches = (name: string) => name === value.source.toolName || name === `mcp__${value.source.serverId}__${value.source.toolName}`;
+  if (!GATEWAY_TOOLS.has(call.tool) && !matches(call.toolName || call.tool)) return undefined;
+  if (call.tool && !GATEWAY_TOOLS.has(call.tool) && !matches(call.tool)) return undefined;
+  const registration = context.registrations.find(item => item.kind === value.kind
+    && item.serverId === value.source.serverId && item.toolName === value.source.toolName);
+  if (!registration) return undefined;
+  try {
+    // Snapshot JSON only. The registration may reject unknown fields; no caller-owned object is retained.
+    const json = JSON.stringify(value);
+    if (json.length > 16384) return undefined;
+    const copy: ToolPresentation = JSON.parse(json);
+    if (!registration.validateData(copy.data)) return undefined;
+    const freeze = (item: any): any => {
+      if (item && typeof item === 'object') { Object.values(item).forEach(freeze); Object.freeze(item); }
+      return item;
+    };
+    return freeze(copy);
+  } catch { return undefined; }
 }
 
 /** One detail section: sanitized highlighted runs, or diff lines colored by prefix. */
@@ -345,7 +398,7 @@ export class MarkdownRendererService {
    * answer streams and stopped once it ends without a result; a completed call carries the row
    * the CLI printed and its bounded sections, highlighted here.
    */
-  renderToolCall(call: ToolUseEvent, streaming: boolean): ToolCallView {
+  renderToolCall(call: ToolUseEvent, streaming: boolean, context?: ToolPresentationContext): ToolCallView {
     const completed = call.status === 'completed';
     const detail = completed ? call.detail : undefined;
     return {
@@ -362,7 +415,8 @@ export class MarkdownRendererService {
         html: this.sanitizeAndTrust(section.diff === true ? this.diffHtml(section) : this.highlightRuns(section)),
         note: section.note
       })),
-      chart: detail?.chart
+      chart: detail?.chart,
+      presentation: validateToolPresentation(call, context)
     };
   }
 

@@ -232,7 +232,7 @@ public class CompactionService {
                         entry.role,
                         summary,
                         entry.toolName,
-                        entry.toolCallId
+                        entry.toolCallId, entry.attachments, entry.outcome
                 ));
             } else if (entry.type == EntryType.SYSTEM || entry.type == EntryType.USER) {
                 // Always preserve system and user messages
@@ -250,6 +250,30 @@ public class CompactionService {
 
         int totalAfter = estimateTokens(compacted);
         return new CompactionResult(compacted, totalBefore, totalAfter, true);
+    }
+
+    /**
+     * A nonmutating wire projection: shrink only tool-result bodies before a
+     * caller-selected complete-exchange boundary. Never clip user/assistant text,
+     * call arguments, attachments or identifiers, and never grow a short result.
+     */
+    public CompactionResult pruneToolResults(List<ConversationEntry> entries, int preserveFromIndex) {
+        int before = estimateTokens(entries);
+        List<ConversationEntry> projected = new ArrayList<>(entries);
+        boolean changed = false;
+        int end = Math.max(0, Math.min(preserveFromIndex, entries.size()));
+        for (int i = 0; i < end; i++) {
+            ConversationEntry entry = entries.get(i);
+            if (entry.type != EntryType.TOOL_RESULT || entry.content == null
+                    || entry.content.length() <= 600) continue;
+            String summary = summarizeToolResultContent(entry.toolName, entry.content);
+            if (summary.length() >= entry.content.length()) continue;
+            projected.set(i, new ConversationEntry(entry.type, entry.role, summary,
+                    entry.toolName, entry.toolCallId, entry.attachments, entry.outcome));
+            changed = true;
+        }
+        return new CompactionResult(List.copyOf(projected), before,
+                estimateTokens(projected), changed);
     }
 
     /**
@@ -409,6 +433,16 @@ public class CompactionService {
     public record Attachment(String path, String mimeType, boolean image, String digest, long size) {
     }
 
+    /** Optional authoritative execution evidence; absence means unknown, never success. */
+    public record ToolOutcome(boolean error, boolean terminal, String executedArguments,
+                              String rawResultHandle, String rawDigest, long rawChars,
+                              Integer exitCode, Boolean outputTruncated) {
+        public ToolOutcome(boolean error, boolean terminal, String executedArguments,
+                           String rawResultHandle, String rawDigest, long rawChars) {
+            this(error, terminal, executedArguments, rawResultHandle, rawDigest, rawChars, null, false);
+        }
+    }
+
     public static class ConversationEntry {
         public final EntryType type;
         public final String role;
@@ -417,6 +451,7 @@ public class CompactionService {
         public final String toolCallId;
         /** Files the user sent with this turn; empty for every other entry. */
         public final List<Attachment> attachments;
+        public final ToolOutcome outcome;
 
         public ConversationEntry(EntryType type, String role, String content,
                                   String toolName, String toolCallId) {
@@ -425,6 +460,13 @@ public class CompactionService {
 
         public ConversationEntry(EntryType type, String role, String content,
                                   String toolName, String toolCallId, List<Attachment> attachments) {
+            this(type, role, content, toolName, toolCallId, attachments, null);
+        }
+
+        public ConversationEntry(EntryType type, String role, String content,
+                                  String toolName, String toolCallId, List<Attachment> attachments,
+                                  ToolOutcome outcome) {
+            this.outcome = outcome;
             this.type = type;
             this.role = role;
             this.content = content;
@@ -456,6 +498,10 @@ public class CompactionService {
 
         public static ConversationEntry toolResult(String toolName, String callId, String content) {
             return new ConversationEntry(EntryType.TOOL_RESULT, "tool", content, toolName, callId);
+        }
+
+        public static ConversationEntry toolResult(String toolName, String callId, String content, ToolOutcome outcome) {
+            return new ConversationEntry(EntryType.TOOL_RESULT, "tool", content, toolName, callId, List.of(), outcome);
         }
     }
 

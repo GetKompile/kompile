@@ -113,6 +113,15 @@ class BackgroundIndexServiceSessionStartTest {
     }
 
     @Test
+    void aNewSessionCanRefreshRetiredStateWithoutRestartingWatchers() throws Exception {
+        anUnchangedIndexIsCheckedWithoutAProjectionOrAWatcher();
+        service.backstopSweep(System.currentTimeMillis() + java.util.concurrent.TimeUnit.HOURS.toMillis(2));
+        aChangedTreeIsIndexedAndProjectedWithoutAWatcher();
+        service.backstopSweep(System.currentTimeMillis() + java.util.concurrent.TimeUnit.HOURS.toMillis(2));
+        assertFalse(service.isWatching(projectId));
+    }
+
+    @Test
     void aChangedTreeIsIndexedAndProjectedWithoutAWatcher() throws Exception {
         LocalCodeIndexer indexer = new LocalCodeIndexer();
         Files.writeString(project.resolve("Beta.java"), "public class Beta {}\n");

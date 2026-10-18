@@ -51,7 +51,13 @@ public class FrontendConfigController {
 
     private final AppIndexConfigService configService;
 
-    private String fallbackAppTitle = "Kompile RAG Console";
+    /** Console UI title; settable per host so managed products can rebrand without a rebuild. */
+    @Value("${kompile.app.fallback-title:Kompile RAG Console}")
+    private String fallbackAppTitle;
+
+    /** Product display name for managed product views; persisted config wins when set. */
+    @Value("${kompile.app.fallback-product-name:Kompile}")
+    private String fallbackProductName;
 
     @Value("${spring.application.name:kompile-rag-app}")
     private String applicationName;
@@ -59,6 +65,8 @@ public class FrontendConfigController {
     // Fallback branding defaults — used only when app-index-config.json has no
     // branding set. The canonical source is the kompile app JSON config
     // (AppIndexConfig), seeded by the CLI and editable via the app UI.
+    // Logo defaults stay bundled; a managed host can override the whole set via
+    // the persisted config without code changes.
     private static final String DEFAULT_LOGO_URL = "assets/branding/kompile-logo.svg";
     private static final String DEFAULT_LOGO_ALT = "Kompile";
     private static final String DEFAULT_FAVICON_URL = "assets/branding/kompile-logo.svg";
@@ -76,6 +84,7 @@ public class FrontendConfigController {
     @GetMapping
     public ResponseEntity<Map<String, Object>> getConfig() {
         String appTitle = fallbackAppTitle;
+        String productName = fallbackProductName;
         String logoUrl = DEFAULT_LOGO_URL;
         String logoAlt = DEFAULT_LOGO_ALT;
         boolean showLogo = true;
@@ -86,6 +95,13 @@ public class FrontendConfigController {
             if (config != null) {
                 if (config.getAppTitle() != null && !config.getAppTitle().isBlank()) {
                     appTitle = config.getAppTitle();
+                }
+                // Product name falls back to appTitle when unset: a rebranded console
+                // (e.g. Elthoria) should not leak the engine brand into product views.
+                if (config.getProductName() != null && !config.getProductName().isBlank()) {
+                    productName = config.getProductName();
+                } else if (config.getAppTitle() != null && !config.getAppTitle().isBlank()) {
+                    productName = config.getAppTitle();
                 }
                 if (config.getLogoUrl() != null && !config.getLogoUrl().isBlank()) {
                     logoUrl = config.getLogoUrl();
@@ -104,6 +120,7 @@ public class FrontendConfigController {
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("appTitle", appTitle);
+        response.put("productName", productName);
         response.put("applicationName", applicationName);
         response.put("logoUrl", logoUrl);
         response.put("logoAlt", logoAlt);

@@ -113,6 +113,32 @@ class SharedProcessMirrorTest {
     }
 
     @Test
+    void onlyThisChatsMcpProcessesBecomeAutomaticTranscriptCards() throws Exception {
+        childOwner("mcp-mine", "local-chat");
+        childOwner("mcp-claude", "other-chat");
+        // Process ids collide across MCP sessions; parent identity, not id or provider,
+        // determines whose output may be placed in the transcript.
+        publish("mcp-mine", "proc-001", "build", "This chat's build", "RUNNING", 0);
+        publish("mcp-claude", "proc-001", "claude", "Other chat's Claude task", "RUNNING", 0);
+        publish("unregistered", "proc-002", "build", "Unknown parent", "RUNNING", 0);
+        writeLog("live process output\n");
+        mirror.pollOnce();
+
+        assertEquals(3, mirror.mirroredIds().size(), "global process inspection is unchanged");
+        var mine = processes.get("shared-mcp-mine-proc-001");
+        assertNotNull(mine);
+        assertEquals("local-chat", mine.getMetadata().get("parentSessionId"));
+        var tasks = new BackgroundTaskManager();
+        var bar = new ai.kompile.cli.main.chat.tui.StatusBar(tasks, processes, null,
+                new ai.kompile.cli.main.chat.render.TerminalRenderer(true));
+        var panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+        panel.refresh();
+        assertEquals(List.of("process:shared-mcp-mine-proc-001"), panel.resultDisplayBlocks().stream()
+                .map(ai.kompile.cli.main.chat.render.ChatDisplayBlock::key).toList());
+        assertTrue(panel.resultDisplayBlocks().toString().contains("live process output"));
+    }
+
+    @Test
     void ownSessionPublishesAreNeverMirrored() {
         publish("local-chat", "proc-777", "local echo", "My own launch", "RUNNING", 0);
 

@@ -18,6 +18,8 @@ import { NgModule } from '@angular/core';
 import { RouterModule, Routes } from '@angular/router';
 
 import { UnifiedChatComponent } from './components/unified-chat/unified-chat.component';
+import { ProductChatPageComponent } from './components/product-chat/product-chat-page.component';
+import { productChatRouteGuard } from './components/product-chat/product-chat-context.service';
 import { ChatWorkspaceComponent } from './components/chat-workspace/chat-workspace.component';
 import { ProjectPageComponent } from './components/project-page/project-page.component';
 import { GraphPageComponent } from './components/graph-page/graph-page.component';
@@ -41,14 +43,15 @@ export const routes: Routes = [
   { path: '', redirectTo: 'chat', pathMatch: 'full' },
 
   // ── Primary nav tabs ────────────────────────────────────────────────────
-  { path: 'chat',        component: ChatWorkspaceComponent, title: 'Kompile Chat' },
+  { path: 'chat',        component: ChatWorkspaceComponent, canActivate: [productChatRouteGuard], title: 'Kompile Chat' },
+  { path: 'play',        component: ProductChatPageComponent, canActivate: [productChatRouteGuard], title: 'Elthoria Play' },
   { path: 'workspace',   redirectTo: 'chat', pathMatch: 'full' },
-  { path: 'single-chat', component: UnifiedChatComponent, title: 'Kompile Chat — Single chat' },
-  { path: 'project',     component: ProjectPageComponent,  title: 'Kompile Chat — Project' },
-  { path: 'fact-sheets', component: FactSheetPageComponent, title: 'Kompile Chat — Fact Sheets' },
-  { path: 'graph',       component: GraphPageComponent,    title: 'Kompile Chat — Graph' },
-  { path: 'insights',    component: InsightsPageComponent, title: 'Kompile Chat — Insights' },
-  { path: 'settings',    component: ChatSettingsComponent, title: 'Kompile Chat — Connections' },
+  { path: 'single-chat', component: UnifiedChatComponent, canActivate: [productChatRouteGuard], title: 'Kompile Chat — Single chat' },
+  { path: 'project',     component: ProjectPageComponent,  canActivate: [productChatRouteGuard], title: 'Kompile Chat — Project' },
+  { path: 'fact-sheets', component: FactSheetPageComponent, canActivate: [productChatRouteGuard], title: 'Kompile Chat — Fact Sheets' },
+  { path: 'graph',       component: GraphPageComponent,    canActivate: [productChatRouteGuard], title: 'Kompile Chat — Graph' },
+  { path: 'insights',    component: InsightsPageComponent, canActivate: [productChatRouteGuard], title: 'Kompile Chat — Insights' },
+  { path: 'settings',    component: ChatSettingsComponent, canActivate: [productChatRouteGuard], title: 'Kompile Chat — Connections' },
 
   // ── Legacy path redirects ────────────────────────────────────────────────
   { path: 'knowledge', redirectTo: 'fact-sheets', pathMatch: 'full' },

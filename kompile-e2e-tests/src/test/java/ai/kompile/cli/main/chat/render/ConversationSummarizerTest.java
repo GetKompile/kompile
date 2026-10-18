@@ -69,7 +69,7 @@ class ConversationSummarizerTest {
     class PromptStructure {
 
         @Test
-        void promptIncludesAllNineSectionHeaders() {
+        void promptIncludesContinuationStateHeaders() {
             List<CompactionService.ConversationEntry> history = new ArrayList<>();
             history.add(CompactionService.ConversationEntry.user("hello"));
 
@@ -77,15 +77,13 @@ class ConversationSummarizerTest {
 
             String prompt = client.lastPrompt;
             assertNotNull(prompt);
-            assertTrue(prompt.contains("## 1. Primary Request and Intent"));
-            assertTrue(prompt.contains("## 2. Key Technical Concepts"));
-            assertTrue(prompt.contains("## 3. Files and Code Sections"));
-            assertTrue(prompt.contains("## 4. Errors and Fixes"));
-            assertTrue(prompt.contains("## 5. Problem Solving"));
-            assertTrue(prompt.contains("## 6. All User Messages"));
-            assertTrue(prompt.contains("## 7. Pending Tasks"));
-            assertTrue(prompt.contains("## 8. Current Work"));
-            assertTrue(prompt.contains("## 9. Optional Next Step"));
+            assertTrue(prompt.contains("## Goal and Latest User Direction"));
+            assertTrue(prompt.contains("## Active Constraints and Decisions"));
+            assertTrue(prompt.contains("## Completed Work and Evidence"));
+            assertTrue(prompt.contains("## Pending Work and Unresolved Failures"));
+            assertTrue(prompt.contains("## Resume Details and References"));
+            assertTrue(prompt.contains("Use at most 512 characters"));
+            assertFalse(prompt.contains("## 6. All User Messages"));
         }
 
         @Test

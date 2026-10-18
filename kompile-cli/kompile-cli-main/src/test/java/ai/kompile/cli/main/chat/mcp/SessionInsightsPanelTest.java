@@ -65,44 +65,41 @@ class SessionInsightsPanelTest {
 
         JsonNode root = mapper.readTree(raw);
         assertEquals(McpDashboardController.SCHEMA_VERSION, root.path("schemaVersion").asText());
-        assertEquals("2026-10-03T12:34:56Z", root.path("contextVersion").asText(), "the refresh time, to the second");
+        assertEquals("dashboard-hint-v1", root.path("contextVersion").asText());
         McpDashboardController.DashboardSnapshot snapshot = McpDashboardController.parse(raw, mapper);
         assertEquals(SessionInsightsPanel.TITLE, snapshot.title());
-        assertEquals(List.of("Judge: 2 flagged · 1 blocked", "↳ blocked: bash rm -rf build",
-                "Tools: 14 calls · p50 120ms"), snapshot.lines(), "each detail beneath its summary, unchanged");
+        assertEquals("+ /dashboard to see session metrics", snapshot.title());
+        assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), snapshot.lines());
+        assertTrue(judge.queries.isEmpty());
+        assertTrue(tools.queries.isEmpty());
     }
 
     @Test
-    void fillsOnlyTheRowsTheDashboardAreaHasEachTime() throws Exception {
+    void hintHasOneCompactDetailAcrossResponsiveRowCounts() throws Exception {
         AtomicInteger rows = new AtomicInteger(1);
         SessionInsightsPanel panel = panel(() -> session("chat-1", tempDir), rows::get,
                 new FakeSource("judge", new Panel.Line("Judge: 1 flagged", "↳ flagged: git push", false)),
                 new FakeSource("tools", Panel.Line.of("Tools: 3 calls")));
 
-        assertEquals(List.of("Judge: 1 flagged"), lines(panel.fetch()));
+        assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), lines(panel.fetch()));
         rows.set(2);
-        assertEquals(List.of("Judge: 1 flagged", "Tools: 3 calls"), lines(panel.fetch()),
-                "every summary before any detail");
+        assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), lines(panel.fetch()));
         rows.set(3);
-        assertEquals(List.of("Judge: 1 flagged", "↳ flagged: git push", "Tools: 3 calls"), lines(panel.fetch()));
+        assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), lines(panel.fetch()));
     }
 
     @Test
-    void asksEachSourceAboutThisSessionAsOfTheClock() throws Exception {
+    void terminalHintNeverAsksMetricSources() throws Exception {
         FakeSource judge = new FakeSource("judge", Panel.Line.of("Judge: no verdicts yet"));
         SessionInsightsPanel panel = panel(() -> session("chat-7", tempDir), () -> 8, judge);
 
         panel.fetch();
 
-        InsightsQuery query = judge.queries.get(0);
-        assertTrue(query.sessionScoped());
-        assertEquals(Set.of("chat-7"), query.getSessionIds());
-        assertEquals(NOW, query.getNow());
-        assertEquals(ZoneOffset.UTC, query.getZone());
+        assertTrue(judge.queries.isEmpty());
     }
 
     @Test
-    void keepsItsSourcesUntilTheWorkingDirectoryChanges() throws Exception {
+    void terminalHintDoesNotBuildSourcesWhenWorkingDirectoryChanges() throws Exception {
         Path other = tempDir.resolve("other");
         AtomicReference<Path> workDir = new AtomicReference<>(tempDir);
         List<Path> built = new CopyOnWriteArrayList<>();
@@ -114,21 +111,20 @@ class SessionInsightsPanelTest {
 
         panel.fetch();
         panel.fetch();
-        assertEquals(List.of(tempDir), built, "kept, so each source reads only what was appended");
+        assertTrue(built.isEmpty(), "terminal hint never builds sources");
 
         workDir.set(other);
-        assertEquals(List.of("Judge: " + other), lines(panel.fetch()));
+        assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), lines(panel.fetch()));
         panel.fetch();
-        assertEquals(List.of(tempDir, other), built);
+        assertTrue(built.isEmpty());
 
         workDir.set(null);
         panel.fetch();
-        assertEquals(Path.of(System.getProperty("user.dir")), built.get(2),
-                "a context without a directory reads the process's");
+        assertTrue(built.isEmpty());
     }
 
     @Test
-    void exposesTheLatestPanelForItsWatchesAndLiveFlag() throws Exception {
+    void terminalHintNeverExposesMetricWatchesOrLiveState() throws Exception {
         FakeSource crawl = new FakeSource("crawl",
                 new Panel.Line("Crawl: 1 active: docs 45% (extraction)", null, true));
         crawl.watches = List.of(new Panel.Watch(tempDir, "state.json"));
@@ -136,26 +132,23 @@ class SessionInsightsPanelTest {
         assertNull(panel.lastPanel(), "nothing before the first refresh");
 
         panel.fetch();
-        assertTrue(panel.lastPanel().live());
-        assertEquals(List.of(new Panel.Watch(tempDir, "state.json")), panel.lastPanel().watches());
+        assertNull(panel.lastPanel(), "terminal hint has no live metrics or watches");
 
         crawl.line = Panel.Line.of("Crawl: none active");
         crawl.watches = List.of();
         panel.fetch();
-        assertFalse(panel.lastPanel().live());
-        assertEquals(List.of(), panel.lastPanel().watches());
+        assertNull(panel.lastPanel());
     }
 
     @Test
-    void refusesToRefreshBeforeTheChatSessionExists() {
+    void hintDoesNotRequireAChatContext() throws Exception {
         AtomicInteger built = new AtomicInteger();
         SessionInsightsPanel panel = new SessionInsightsPanel(() -> null, () -> 8, (context, dir) -> {
             built.incrementAndGet();
             return new Insights();
         }, CLOCK, mapper);
 
-        IllegalStateException failure = assertThrows(IllegalStateException.class, panel::fetch);
-        assertEquals("the chat session is not ready", failure.getMessage());
+        assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), lines(panel.fetch()));
         assertEquals(0, built.get());
         assertNull(panel.lastPanel());
     }

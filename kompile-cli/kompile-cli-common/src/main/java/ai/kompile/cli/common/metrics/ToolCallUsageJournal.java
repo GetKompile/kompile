@@ -128,11 +128,15 @@ public final class ToolCallUsageJournal {
         }
 
         synchronized (instanceLock) {
-            try (java.nio.channels.FileChannel channel =
-                         java.nio.channels.FileChannel.open(lockFile,
-                                 StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
-                try (java.nio.channels.FileLock ignore = channel.lock()) {
-                    Files.createDirectories(journalFile.getParent());
+            try {
+                return ToolJournalFiles.locked(journalFile, () -> {
+                    if (usage.sessionId() != null && !usage.sessionId().isBlank()) {
+                        String session = validateSessionKey(usage.sessionId());
+                        Path purged = journalFile.getParent().getParent().resolve(".purged").resolve(session);
+                        ToolJournalFiles.safe(purged);
+                        if (Files.exists(purged, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                            return new WriteResult.Skipped("Session was permanently purged");
+                    }
                     // Idempotency check under lock: skip same-revision duplicates,
                     // supersede on higher revision.
                     ExistingState state = scanInvocations();
@@ -149,8 +153,8 @@ public final class ToolCallUsageJournal {
                     Files.writeString(journalFile, line,
                             StandardOpenOption.CREATE, StandardOpenOption.APPEND);
                     return new WriteResult.Written();
-                }
-            } catch (IOException ioProblem) {
+                });
+            } catch (IOException | IllegalArgumentException ioProblem) {
                 return new WriteResult.Failed(ioProblem.getClass().getSimpleName()
                         + ": " + String.valueOf(ioProblem.getMessage()));
             }
@@ -311,35 +315,29 @@ public final class ToolCallUsageJournal {
 
     /** Repair a torn tail by truncating the incomplete final line. Returns bytes removed. */
     public long repairTornTail() throws IOException {
-        long bytes = tornTailBytes();
-        if (bytes <= 0) {
-            return 0;
-        }
         synchronized (instanceLock) {
-            try (java.nio.channels.FileChannel channel =
-                         java.nio.channels.FileChannel.open(lockFile,
-                                 StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
-                try (java.nio.channels.FileLock ignore = channel.lock()) {
-                    try (java.nio.channels.FileChannel fileChannel = java.nio.channels.FileChannel.open(
-                            journalFile, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
-                        long size = fileChannel.size();
-                        fileChannel.truncate(size - bytes);
-                    }
+            return ToolJournalFiles.locked(journalFile, () -> {
+                long bytes = tornTailBytes(); // determine damage under the same lease as writers
+                if (bytes <= 0) return 0L;
+                try (java.nio.channels.FileChannel fileChannel = java.nio.channels.FileChannel.open(
+                        journalFile, StandardOpenOption.READ, StandardOpenOption.WRITE,
+                        java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    long size = fileChannel.size();
+                    fileChannel.truncate(size - bytes);
+                    fileChannel.force(true);
                 }
-            }
+                return bytes;
+            });
         }
-        return bytes;
     }
 
     /** Retention: drop lines older than the cutoff instant. Returns lines removed. Nonfatal. */
     public long pruneOlderThan(Instant cutoff) {
         synchronized (instanceLock) {
-            try (java.nio.channels.FileChannel channel =
-                         java.nio.channels.FileChannel.open(lockFile,
-                                 StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
-                try (java.nio.channels.FileLock ignore = channel.lock()) {
+            try {
+                return ToolJournalFiles.locked(journalFile, () -> {
                     if (!Files.exists(journalFile)) {
-                        return 0;
+                        return 0L;
                     }
                     List<String> kept = new ArrayList<>();
                     long removed = 0;
@@ -363,7 +361,7 @@ public final class ToolCallUsageJournal {
                         Files.move(tmp, journalFile, StandardCopyOption.REPLACE_EXISTING);
                     }
                     return removed;
-                }
+                });
             } catch (IOException ioProblem) {
                 return -1; // nonfatal signal
             }

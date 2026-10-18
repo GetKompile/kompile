@@ -600,10 +600,10 @@ public class EmbeddingSubprocessMain {
             } catch (Exception e) {
                 logger.warn("Error sending heartbeat: {}", e.getMessage());
             }
-        }, 10, 10, TimeUnit.SECONDS);
+        }, 0, 2, TimeUnit.SECONDS);
 
-        logger.info("Heartbeat thread started (10s interval)");
-        sendLog("INFO", "Heartbeat", "Heartbeat thread started with 10s interval");
+        logger.info("Heartbeat thread started (2s interval)");
+        sendLog("INFO", "Heartbeat", "Heartbeat thread started with 2s interval");
     }
 
     /**
@@ -617,7 +617,9 @@ public class EmbeddingSubprocessMain {
 
         EmbeddingSubprocessMessage.Heartbeat heartbeat = EmbeddingSubprocessMessage.heartbeat(
                 uptimeMs, modelLoaded, currentModelId, total, avgEmbedTime);
-        sendMessage(heartbeat);
+        sendMessage(new EmbeddingSubprocessMessage.Heartbeat(heartbeat.uptimeMs(), heartbeat.modelLoaded(),
+                heartbeat.modelId(), heartbeat.memoryUsagePercent(), heartbeat.heapUsedBytes(), heartbeat.heapMaxBytes(),
+                heartbeat.totalEmbeddings(), heartbeat.avgEmbedTimeMs(), SubprocessMemoryWatchdog.deviceMemoryStatus()));
     }
 
     /**

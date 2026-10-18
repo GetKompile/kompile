@@ -59,6 +59,29 @@ public class ToolContext {
     private boolean judgeToolCallScoped;
     private volatile WorkflowTeamEnforcement workflow;
     private volatile String coordinationAgent;
+    private volatile ProductManagedWorkTracker productManagedWork;
+    private boolean managedWorkOnly;
+
+    /** Optional session lifecycle observer; null preserves ordinary tool behavior. */
+    public void linkProductManagedWork(ProductManagedWorkTracker tracker) { productManagedWork = tracker; }
+    public ProductManagedWorkTracker getProductManagedWork() { return productManagedWork; }
+
+    /**
+     * A registered crawl may outlive its initiating turn. This is not a tool-execution
+     * capability: no registry, permission service, approval bypass or turn output sink is retained.
+     * The product tracker, rather than a completed turn's abort check, owns its lifetime.
+     */
+    public ToolContext forkForManagedWork(String kind, String id) {
+        ProductManagedWorkTracker tracker = productManagedWork;
+        if (tracker == null || !tracker.owns(kind, id)) {
+            throw new IllegalStateException("Managed worker must be registered before execution");
+        }
+        ToolContext worker = new ToolContext(sessionId, agent, null, workingDirectory, null);
+        worker.productManagedWork = tracker;
+        worker.managedWorkOnly = true;
+        worker.linkAbortCheck(tracker::isAdmissionStopped);
+        return worker;
+    }
 
     public boolean isSupervisedChild() { return supervisedChild; }
 
@@ -220,6 +243,8 @@ public class ToolContext {
         child.bindJudgeControl(judgeControl, judgeToolCallScoped);
         child.workflow = workflow;
         child.coordinationAgent = coordinationAgent;
+        child.productManagedWork = productManagedWork;
+        child.managedWorkOnly = managedWorkOnly;
         return child;
     }
 
@@ -256,6 +281,9 @@ public class ToolContext {
      * if permission is denied.
      */
     public void checkPermission(String permissionKey, String description) throws ToolExecutionException {
+        if (managedWorkOnly) {
+            throw new ToolExecutionException("Managed job context cannot execute generic tools", true);
+        }
         WorkflowTeamEnforcement team = workflow;
         if (team != null) {
             WorkflowTeamEnforcement.ToolDecision decision = team.evaluateToolUse(permissionKey);

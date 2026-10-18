@@ -279,6 +279,8 @@ public class TerminalRenderer {
     public String renderToolResultDetail(String toolName, String rawInput, ToolResult result,
                                          boolean outputShownLive) {
         if (result == null || outputShownLive) return "";
+        List<TodoWriteTool.TodoItem> todos = todoItems(toolName, rawInput, result);
+        if (todos != null) return renderTodoList(todos);
 
         StringBuilder detail = new StringBuilder();
         for (DetailSection section : toolResultDetailSections(toolName, rawInput, result)) {
@@ -289,9 +291,7 @@ public class TerminalRenderer {
             for (DetailLine line : section.lines()) {
                 // Lines were cut on printable text; styling afterwards means escape
                 // sequences are never sliced mid-span.
-                String visible = ansiEnabled && line.hint() != null
-                        ? highlighter.highlight(line.text(), line.hint()) : line.text();
-                detail.append("\n     ").append(section.diff() ? colorDiffLine(visible) : visible);
+                detail.append("\n     ").append(renderDetailLine(line, section.diff()));
             }
             if (section.truncated()) {
                 detail.append("\n     ").append(dim(DETAIL_TRUNCATED_NOTE));
@@ -335,6 +335,7 @@ public class TerminalRenderer {
         String preview = null;
         String output = result.getOutput();
         if (!outputShownLive && output != null && !output.isEmpty()
+                && todoItems(toolName, rawInput, result) == null
                 && (shouldShowPreview(cleanName, meta)
                     || ((title == null || title.isBlank()) && meta.isEmpty()))) {
             String first = firstOutputLine(printableToolOutput(output), 140);
@@ -403,6 +404,127 @@ public class TerminalRenderer {
     }
 
     /**
+     * Retained inspector payloads, deliberately independent of the terminal/web
+     * 2400-char/48-line preview. The caller explicitly chooses a char ceiling.
+     * A streamed result is still included: a newly opened viewer has not seen it.
+     * Completed output supersedes overlapping live text; complementary live logs
+     * stay available in a separate section.
+     */
+    public static List<ChatDisplayBlock.Section> toolDisplaySections(
+            String toolName, String rawInput, ToolResult result, String liveOutput, int maxChars) {
+        if (maxChars <= 0 || maxChars > ChatDisplayBlock.MAX_SECTION_CHARS) {
+            throw new IllegalArgumentException("Inspector limit must be 1.."
+                    + ChatDisplayBlock.MAX_SECTION_CHARS);
+        }
+        List<ChatDisplayBlock.Section> sections = new ArrayList<>();
+        addDisplaySection(sections, "arguments", "arguments", "Arguments", rawInput, maxChars);
+        List<String> diff = renderEditDiffLines(toolName, rawInput);
+        if (!diff.isEmpty()) {
+            addDisplaySection(sections, "diff", "diff", "Diff", String.join("\n", diff), maxChars);
+        } else if ("write".equals(stripMcpPrefix(toolName))) {
+            // Keep the source text rather than a stripped/split inline preview.
+            try {
+                addDisplaySection(sections, "content", "content", "Content",
+                        textValue(JSON.readTree(rawInput), "content"), maxChars);
+            } catch (Exception ignored) { }
+        }
+        String output = result == null ? liveOutput : result.getOutput();
+        if (output == null || output.isEmpty()) output = liveOutput;
+        if (result != null && liveOutput != null && !liveOutput.isBlank()
+                && output != null && !output.isEmpty()) {
+            String live = printableToolOutput(liveOutput).strip();
+            String completed = printableToolOutput(output).strip();
+            if (!completed.contains(live)) {
+                if (result.isOutputStreamed() && !completed.isEmpty() && live.contains(completed)) {
+                    output = liveOutput;
+                } else {
+                    addDisplaySection(sections, "live-output", "output", "Live output", liveOutput, maxChars);
+                }
+            }
+        }
+        addDisplaySection(sections, "output", "output", "Output", output, maxChars);
+        if (result != null && !result.getMetadata().isEmpty()) {
+            try {
+                addDisplaySection(sections, "metadata", "metadata", "Metadata",
+                        JSON.writerWithDefaultPrettyPrinter().writeValueAsString(result.getMetadata()), maxChars);
+            } catch (Exception ignored) {
+                addDisplaySection(sections, "metadata", "metadata", "Metadata",
+                        String.valueOf(result.getMetadata()), maxChars);
+            }
+        }
+        return List.copyOf(sections);
+    }
+
+    /** Same syntax/diff styling as transcript details, with the retained viewer's larger budget. */
+    public List<ChatDisplayBlock.Section> renderToolDisplaySections(
+            String toolName, String rawInput, ToolResult result, String liveOutput, int maxChars) {
+        if (maxChars <= 0 || maxChars > ChatDisplayBlock.MAX_SECTION_CHARS) {
+            throw new IllegalArgumentException("Inspector limit must be 1.." + ChatDisplayBlock.MAX_SECTION_CHARS);
+        }
+        List<TodoWriteTool.TodoItem> todos = todoItems(toolName, rawInput, result);
+        if (todos != null) {
+            String formatted = ChatDisplayBlock.boundedStyledText(renderTodoList(todos), maxChars);
+            return List.of(new ChatDisplayBlock.Section("todos", "todos", "Tasks",
+                    printableToolOutput(formatted), formatted));
+        }
+        String cleanName = stripMcpPrefix(toolName);
+        List<ChatDisplayBlock.Section> rendered = new ArrayList<>();
+        for (ChatDisplayBlock.Section section : toolDisplaySections(toolName, rawInput, result, liveOutput, maxChars)) {
+            String formatted;
+            if (section.kind().equals("arguments") || section.kind().equals("metadata")) {
+                formatted = highlighter.highlight(section.content(), "json");
+            } else {
+                boolean diff = section.kind().equals("diff");
+                String hint = section.id().equals("content") || isContentTool(cleanName) ? languageFromRawInput(rawInput) : null;
+                boolean usable = hint != null && SyntaxHighlighter.familyForFilename(hint) != SyntaxHighlighter.Family.NONE;
+                List<DetailSection> details = new ArrayList<>();
+                addBoundedSection(details, section.title(), List.of(section.content().split("\\R", -1)), diff,
+                        usable ? hint : null, !usable && isContentTool(cleanName), "read_batch".equals(cleanName),
+                        maxChars, maxChars + 1);
+                StringBuilder body = new StringBuilder();
+                for (DetailSection detail : details) {
+                    for (int index = 0; index < detail.lines().size(); index++) {
+                        if (index > 0) body.append('\n');
+                        body.append(renderDetailLine(detail.lines().get(index), detail.diff()));
+                    }
+                }
+                formatted = body.toString();
+            }
+            rendered.add(new ChatDisplayBlock.Section(section.id(), section.kind(), section.title(), section.content(), formatted));
+        }
+        return List.copyOf(rendered);
+    }
+
+    private String renderDetailLine(DetailLine line, boolean diff) {
+        String visible = ansiEnabled && line.hint() != null ? highlighter.highlight(line.text(), line.hint()) : line.text();
+        return diff ? colorDiffLine(visible) : visible;
+    }
+
+    /** Plain fallback sections (including explicit diff sections not produced by a tool). */
+    public String renderDisplaySection(ChatDisplayBlock.Section section) {
+        String formatted = section.formattedContent();
+        if (!ansiEnabled) return printableToolOutput(formatted);
+        if (section.kind().equals("diff") && formatted.equals(section.content())) {
+            return renderDiff(formatted);
+        }
+        return formatted;
+    }
+
+    /** Full diff text using the same line colors as inline edit details, without preview limits. */
+    public String renderDiff(String diff) {
+        return java.util.Arrays.stream(printableToolOutput(diff).split("\\R", -1))
+                .map(this::colorDiffLine).collect(java.util.stream.Collectors.joining("\n"));
+    }
+
+    private static void addDisplaySection(List<ChatDisplayBlock.Section> sections,
+                                          String id, String kind, String title,
+                                          String content, int maxChars) {
+        if (content == null || content.isEmpty()) return;
+        sections.add(new ChatDisplayBlock.Section(id, kind, title,
+                ChatDisplayBlock.boundedPlainText(content, maxChars)));
+    }
+
+    /**
      * Best-effort language hint from a tool-call input JSON body:
      * looks for file_path / path / filename / file keys and maps the value
      * through {@link SyntaxHighlighter#familyForFilename}. Returns null when
@@ -459,6 +581,24 @@ public class TerminalRenderer {
         return rendered.toString();
     }
 
+    /** Retain only SGR styling in presentation snapshots, never tool/model cursor controls. */
+    public static String safeStyledDisplayText(String text) {
+        if (text == null || text.isEmpty()) return "";
+        var styles = SAFE_DISPLAY_STYLE.matcher(text);
+        StringBuilder safe = new StringBuilder();
+        int previous = 0;
+        while (styles.find()) {
+            safe.append(printableToolOutput(text.substring(previous, styles.start())));
+            safe.append(styles.group());
+            previous = styles.end();
+        }
+        safe.append(printableToolOutput(text.substring(previous)));
+        return safe.toString();
+    }
+
+    private static final java.util.regex.Pattern SAFE_DISPLAY_STYLE =
+            java.util.regex.Pattern.compile("\033\\[[0-9;:]*m");
+
     /** Tool output without ANSI escapes or control characters other than line breaks and tabs. */
     public static String printableToolOutput(String output) {
         String stripped = AnsiConstants.stripAnsi(output == null ? "" : output);
@@ -489,8 +629,16 @@ public class TerminalRenderer {
                                           List<String> lines, boolean diff,
                                           String languageHint, boolean perLineHints,
                                           boolean batchSectionHints) {
+        addBoundedSection(sections, label, lines, diff, languageHint, perLineHints, batchSectionHints,
+                MAX_INLINE_TOOL_DETAIL_CHARS, MAX_INLINE_TOOL_DETAIL_LINES);
+    }
+
+    private static void addBoundedSection(List<DetailSection> sections, String label,
+                                          List<String> lines, boolean diff, String languageHint,
+                                          boolean perLineHints, boolean batchSectionHints,
+                                          int maxChars, int maxLines) {
         if (lines == null || lines.isEmpty()) return;
-        List<DetailLine> shown = new ArrayList<>(Math.min(lines.size(), MAX_INLINE_TOOL_DETAIL_LINES));
+        List<DetailLine> shown = new ArrayList<>(Math.min(lines.size(), maxLines));
         int shownChars = 0;
         boolean truncated = false;
         boolean inferPerLine = !diff && perLineHints && languageHint == null;
@@ -498,8 +646,8 @@ public class TerminalRenderer {
         String sectionLanguageHint = null;
         boolean insideBatchSection = false;
         for (String line : lines) {
-            if (shownChars >= MAX_INLINE_TOOL_DETAIL_CHARS
-                    || shown.size() >= MAX_INLINE_TOOL_DETAIL_LINES) {
+            if (shownChars >= maxChars
+                    || shown.size() >= maxLines) {
                 truncated = true;
                 break;
             }
@@ -512,7 +660,7 @@ public class TerminalRenderer {
                 insideBatchSection = true;
                 sectionLanguageHint = languageFromBatchSectionHeader(plainLine);
             }
-            int remaining = MAX_INLINE_TOOL_DETAIL_CHARS - shownChars;
+            int remaining = maxChars - shownChars;
             String visible = raw;
             if (visible.length() > remaining) {
                 visible = visible.substring(0, remaining);
@@ -550,32 +698,36 @@ public class TerminalRenderer {
                 (reason != null ? " " + dim(reason) : "");
     }
 
-    /**
-     * Render the reminder block injected into an outbound prompt as a loud inline
-     * section, so the user can see exactly what the agent received.
-     *
-     * @param reminderContent body of the {@code <kompile_reminders>} block
-     *                        ({@link ai.kompile.cli.main.chat.ReminderManager#reminderBlockContent});
-     *                        returns an empty string when absent
-     */
+    /** Compact fallback for surfaces without interactive result cards. */
     public String renderReminderSection(String reminderContent) {
-        if (reminderContent == null || reminderContent.isBlank()) {
-            return "";
-        }
-        StringBuilder section = new StringBuilder();
-        section.append('\n')
-                .append("  ").append(bold(yellow("⚑ REMINDERS APPLIED TO THIS PROMPT")))
-                .append('\n');
-        for (String line : reminderContent.split("\\R", -1)) {
-            String trimmed = line.strip();
-            // The block's own narration duplicates the header above it.
-            if (!trimmed.isEmpty() && !trimmed.startsWith("The user configured these reminders")) {
-                section.append("  ").append(yellow("│ ")).append(trimmed).append('\n');
-            }
-        }
-        section.append("  ").append(yellow("└─"))
-                .append(' ').append(dim("reminders attach per the configured interval — /reminder list"));
-        return section.toString();
+        String summary = reminderSummary(reminderLines(reminderContent));
+        return summary.isEmpty() ? "" : summary + " " + dim("— /reminder list · /reminder-global list");
+    }
+
+    /** Retain the exact applied reminders for expansion without flooding the transcript. */
+    public ChatDisplayBlock renderReminderBlock(String reminderContent) {
+        List<String> lines = reminderLines(reminderContent);
+        String summary = reminderSummary(lines);
+        if (summary.isEmpty()) return null;
+        return new ChatDisplayBlock("reminders:" + java.util.UUID.randomUUID(), "reminders", "",
+                summary, summary + " " + dim("— /ui results"),
+                List.of(new ChatDisplayBlock.Section("reminders", "reminders", "Applied reminders",
+                        String.join("\n", lines))), false, false);
+    }
+
+    private String reminderSummary(List<String> lines) {
+        if (lines.isEmpty()) return "";
+        long count = lines.stream().filter(line -> line.matches("[0-9]+\\. .*" )).count();
+        return "  " + bold(yellow("⚑ REMINDERS APPLIED TO THIS PROMPT")) + " " + dim("(" + count + ")");
+    }
+
+    private static List<String> reminderLines(String reminderContent) {
+        if (reminderContent == null || reminderContent.isBlank()) return List.of();
+        return printableToolOutput(reminderContent).lines().map(String::strip)
+                .filter(line -> !line.isEmpty()
+                        && !line.startsWith("The user configured these reminders")
+                        && !line.startsWith("Kompile added an automatic session reminder"))
+                .toList();
     }
 
     // ========================================================================
@@ -623,6 +775,11 @@ public class TerminalRenderer {
         StringBuilder detailed = new StringBuilder("  ").append(magenta("│")).append("  ")
                 .append(rendered.replace("\n", "\n  │  "));
 
+        List<TodoWriteTool.TodoItem> todos = todoItems(toolName, rawInput, result);
+        if (todos != null) {
+            return detailed.append('\n').append(renderTodoList(todos)
+                    .replace("\n", "\n  │  ")).toString();
+        }
         List<String> changeLines = renderEditDiffLines(toolName, rawInput);
         if (!changeLines.isEmpty()) {
             detailed.append("\n  ").append(magenta("│")).append("  ").append(dim("↳ changes:"));
@@ -818,6 +975,67 @@ public class TerminalRenderer {
     // Todo list rendering
     // ========================================================================
 
+    public static boolean isTodoTool(String toolName) {
+        String name = stripMcpPrefix(toolName).replace("_", "");
+        return "todowrite".equals(name) || "todoread".equals(name);
+    }
+
+    /** Result snapshots take precedence over arguments (which may describe pre-update state). */
+    private static List<TodoWriteTool.TodoItem> todoItems(String toolName, String rawInput, ToolResult result) {
+        if (!isTodoTool(toolName) || result == null || result.isError()) return null;
+        JsonNode tasks = null;
+        Object snapshot = result.getMetadata().get(TodoWriteTool.TASKS_METADATA);
+        if (snapshot != null) tasks = JSON.valueToTree(snapshot);
+        if (tasks == null) {
+            // Native provider tools can return an array or {todos:[...]}, without MCP metadata.
+            try {
+                JsonNode output = JSON.readTree(result.getOutput());
+                if (output != null) tasks = output.isArray() ? output : output.get("todos");
+            } catch (Exception ignored) { }
+        }
+        if (tasks == null && stripMcpPrefix(toolName).replace("_", "").equals("todowrite")) {
+            try { tasks = JSON.readTree(rawInput).get("todos"); } catch (Exception ignored) { }
+        }
+        if (tasks != null && tasks.isArray()) {
+            List<TodoWriteTool.TodoItem> items = new ArrayList<>();
+            for (JsonNode task : tasks) {
+                String subject = task.isTextual() ? task.asText()
+                        : task.path("subject").asText(task.path("content").asText(""));
+                if (subject.isBlank()) continue;
+                String status = task.path("status").asText("pending");
+                if (!Set.of("pending", "in_progress", "completed", "cancelled").contains(status)) status = "pending";
+                items.add(new TodoWriteTool.TodoItem(task.path("id").asText(String.valueOf(items.size() + 1)),
+                        subject, task.path("description").asText(task.path("task_description").asText("")),
+                        status, task.path("priority").asText("medium")));
+            }
+            return items;
+        }
+        // Read results from older MCP servers used checkbox text, not structured snapshots.
+        if (stripMcpPrefix(toolName).replace("_", "").equals("todoread")) {
+            String output = printableToolOutput(result.getOutput());
+            if (output.strip().startsWith("No tasks")) return List.of();
+            List<TodoWriteTool.TodoItem> items = new ArrayList<>();
+            var checkbox = java.util.regex.Pattern.compile("^\\[([x~ !])\\] #([^:]+): (.*)$");
+            for (String line : output.split("\\R")) {
+                var match = checkbox.matcher(line);
+                if (match.matches()) {
+                    String status = switch (match.group(1)) {
+                        case "x" -> "completed";
+                        case "~" -> "in_progress";
+                        case "!" -> "cancelled";
+                        default -> "pending";
+                    };
+                    items.add(new TodoWriteTool.TodoItem(match.group(2), match.group(3), "", status, "medium"));
+                } else if (line.startsWith("    ") && !items.isEmpty()) {
+                    TodoWriteTool.TodoItem item = items.get(items.size() - 1);
+                    item.description += (item.description.isEmpty() ? "" : "\n") + line.strip();
+                }
+            }
+            if (!items.isEmpty()) return items;
+        }
+        return null; // Unknown payloads and errors must remain visible, never masquerade as an empty list.
+    }
+
     /**
      * Render the full todo list with progress indicator.
      */
@@ -867,6 +1085,7 @@ public class TerminalRenderer {
      * Render a single todo item with status icon and color.
      */
     public String renderTodoItem(TodoWriteTool.TodoItem item) {
+        boolean current = "in_progress".equals(item.status);
         String icon;
         String color;
         boolean strikethrough = false;
@@ -878,7 +1097,7 @@ public class TerminalRenderer {
                 strikethrough = true;
                 break;
             case "in_progress":
-                icon = yellow("●");
+                icon = bold(yellow("▶"));
                 color = "yellow";
                 break;
             case "cancelled":
@@ -892,18 +1111,23 @@ public class TerminalRenderer {
                 break;
         }
 
-        String subject = item.subject;
+        String subject = printableToolOutput(item.subject);
         if (strikethrough && ansiEnabled) {
             subject = ESC + "9m" + subject + RESET; // strikethrough
         }
 
         switch (color) {
             case "dim": subject = dim(subject); break;
-            case "yellow": subject = yellow(subject); break;
+            case "yellow": subject = bold(yellow(subject)); break;
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append("  ").append(icon).append(" ").append(dim("#" + item.id)).append(" ").append(subject);
+        String id = printableToolOutput(item.id);
+        String taskId = current ? bold(yellow("#" + id)) : dim("#" + id);
+        sb.append("  ").append(icon).append(" ").append(taskId).append(" ").append(subject);
+        if (current) {
+            sb.append(" ").append(bold(yellow("[current]")));
+        }
 
         // Show priority if not medium (default)
         if (item.priority != null && !"medium".equals(item.priority)) {
@@ -912,7 +1136,7 @@ public class TerminalRenderer {
         }
 
         if (item.description != null && !item.description.isEmpty()) {
-            sb.append("\n    ").append(dim(truncatePreview(item.description, 80)));
+            sb.append("\n    ").append(dim(truncatePreview(printableToolOutput(item.description), 80)));
         }
 
         return sb.toString();
@@ -922,9 +1146,12 @@ public class TerminalRenderer {
      * Render a todo update event (when a task status changes).
      */
     public String renderTodoUpdate(String taskId, String subject, String oldStatus, String newStatus) {
+        if ("in_progress".equals(newStatus)) {
+            return renderTodoItem(new TodoWriteTool.TodoItem(taskId, subject, null, newStatus, "medium")) +
+                    " " + dim(oldStatus + " → " + newStatus);
+        }
         String icon = switch (newStatus) {
             case "completed" -> green("✓");
-            case "in_progress" -> yellow("●");
             case "cancelled" -> red("✗");
             default -> dim("○");
         };
@@ -1015,10 +1242,12 @@ public class TerminalRenderer {
      * the size before are shown when reported; the size after is not known.
      */
     public String renderProviderCompactionNotice(String provider, String trigger, long tokensBefore) {
-        StringBuilder text = new StringBuilder("  ─── context compacted by ").append(provider);
+        StringBuilder text = new StringBuilder(" · ").append(provider);
         if (trigger != null && !trigger.isBlank()) text.append(" (").append(trigger.strip()).append(')');
-        if (tokensBefore > 0) text.append(" · ").append(tokensBefore).append(" tokens before");
-        return "\n" + dim(text.append(" ───").toString()) + "\n";
+        if (tokensBefore > 0) text.append(" · provider context before: ")
+                .append(CompactionProgressIndicator.formatTokens(tokensBefore)).append(" tokens");
+        text.append(" · provider context after not reported");
+        return "  " + green("✓ Context compacted") + dim(text.toString());
     }
 
     // ========================================================================
@@ -1553,7 +1782,8 @@ public class TerminalRenderer {
         if (!result.getMetadata().isEmpty()) {
             for (Map.Entry<String, Object> entry : result.getMetadata().entrySet()) {
                 if (isSensitiveParam(entry.getKey()) || "path".equals(entry.getKey())
-                        || ToolResult.OUTPUT_STREAMED_METADATA.equals(entry.getKey())) continue;
+                        || ToolResult.OUTPUT_STREAMED_METADATA.equals(entry.getKey())
+                        || TodoWriteTool.TASKS_METADATA.equals(entry.getKey())) continue;
                 if (summary.length() > 0) summary.append(" · ");
                 summary.append(entry.getKey()).append("=").append(entry.getValue());
                 if (summary.length() >= maxLen) break;
@@ -1627,6 +1857,7 @@ public class TerminalRenderer {
             if ("path".equals(key) || "created".equals(key) || "matchType".equals(key)
                     || ToolResult.OUTPUT_STREAMED_METADATA.equals(key)
                     || ToolResult.CHART_METADATA.equals(key)
+                    || TodoWriteTool.TASKS_METADATA.equals(key)
                     || isSensitiveParam(key)) continue;
             if (!first) sb.append(", ");
             sb.append(key).append("=").append(entry.getValue());

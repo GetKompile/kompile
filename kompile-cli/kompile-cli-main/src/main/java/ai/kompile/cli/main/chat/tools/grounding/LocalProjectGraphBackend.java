@@ -6414,8 +6414,31 @@ public final class LocalProjectGraphBackend {
     return value.trim().toUpperCase(Locale.ROOT).replace('-', '_').replace(' ', '_');
   }
 
+  /** Product reads never use omission bootstrap, numeric KB aliases or ancestor inventories. */
+  private Path productGraphPath(ToolContext context, JsonNode params) throws IOException {
+    JsonNode selected = params.get("knowledgeBase");
+    if (selected == null || !selected.isTextual()
+        || !selected.textValue().matches("[a-z0-9][a-z0-9._-]{0,127}")
+        || !selected.textValue().equals(this.slug(selected.textValue()))
+        || params.has("factSheetId") || params.has("fact_sheet_id") || params.has("knowledge_base"))
+      throw new IOException("Explicit canonical product knowledge base required");
+    Path root = context.getWorkingDirectory().toAbsolutePath().normalize();
+    if (!this.projectStore.findProjectRoot(root).orElse(root).equals(root))
+      throw new IOException("Foreign product project root");
+    Path graph = root.resolve("data/crawls").resolve(selected.textValue()).resolve("graph.kgraph");
+    for (Path path = graph; path != null; path = path.getParent())
+      if (Files.isSymbolicLink(path)) throw new IOException("Symbolic-link product graph");
+    if (!Files.isRegularFile(graph, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+      throw new IOException("NATIVE_KNOWLEDGE_NOT_READY: pinned graph is unavailable; no crawl was started");
+    return graph;
+  }
+
   private LocalProjectGraphBackend.GraphSelection selectGraph(ToolContext context, JsonNode params)
       throws Exception {
+    if (context.getProductManagedWork() != null) {
+      Path graph = productGraphPath(context, params);
+      return new GraphSelection(UnifiedGraph.load(graph), graph);
+    }
     Long factSheetId = this.optionalLong(params, "factSheetId", "fact_sheet_id");
     String knowledgeBase =
         this.firstNonBlank(this.text(params, "knowledgeBase"), this.text(params, "knowledge_base"));
@@ -6438,6 +6461,7 @@ public final class LocalProjectGraphBackend {
 
   private LocalProjectGraphBackend.GraphSelection selectQueryGraph(
       ToolContext context, JsonNode params, Query query) throws Exception {
+    if (context.getProductManagedWork() != null) return this.selectGraph(context, params);
     if (boundedArchiveIntent(query) && query.entityId() != null && !query.entityId().isBlank()) {
       JsonNode effectiveSelector = params;
       Long factSheetId = this.optionalLong(params, "factSheetId", "fact_sheet_id");
@@ -6551,7 +6575,9 @@ public final class LocalProjectGraphBackend {
       return null;
     } else {
       JsonNode selector = this.effectiveQuerySelector(context, params);
-      List<Path> paths = this.selectedGraphPaths(context.getWorkingDirectory(), selector);
+      List<Path> paths = context.getProductManagedWork() == null
+          ? this.selectedGraphPaths(context.getWorkingDirectory(), selector)
+          : List.of(productGraphPath(context, selector));
       if (paths.size() != 1) {
         return null;
       } else {
@@ -6599,6 +6625,10 @@ public final class LocalProjectGraphBackend {
   }
 
   private JsonNode effectiveQuerySelector(ToolContext context, JsonNode params) throws Exception {
+    if (context.getProductManagedWork() != null) {
+      productGraphPath(context, params);
+      return params;
+    }
     Long factSheetId = this.optionalLong(params, "factSheetId", "fact_sheet_id");
     String knowledgeBase =
         this.firstNonBlank(this.text(params, "knowledgeBase"), this.text(params, "knowledge_base"));

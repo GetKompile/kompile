@@ -18,11 +18,8 @@
       "verifiedAt": "2026-09-06",
       "notice": "Higher credit consumption; account, model and regional availability are provider-owned. Fast mode is separate from reasoning effort and Codex-Spark."
     },
-    "modelPatterns": [
-      "^gpt-5\\.(?:4|5|6)(?:-[0-9]{4}-[0-9]{2}-[0-9]{2})?$",
-      "^gpt-5\\.6-(?:sol|terra|luna)$",
-      "^gpt-6-astra$"
-    ]
+    "onRequest": {"service_tier": "priority"},
+    "offRequest": {"service_tier": "default"}
   },
   "profiles": [
     {

@@ -390,7 +390,7 @@ public class ChatImportCommand implements Callable<Integer> {
     // cleanup
     // ------------------------------------------------------------
     @CommandLine.Command(name = "cleanup",
-            description = "Enforce retention on Kompile-authored transcripts in ~/.kompile/conversations/.")
+            description = "Archive expired Kompile sessions and their owned payloads; native agent originals are untouched.")
     public static class CleanupCmd implements Callable<Integer> {
         @CommandLine.Mixin RemoteOptions remote;
         @CommandLine.Option(names = {"--max-age-days"}, defaultValue = "90")
@@ -399,11 +399,49 @@ public class ChatImportCommand implements Callable<Integer> {
         long maxTotalMb;
         @CommandLine.Option(names = {"--max-per-source"}, defaultValue = "1000")
         int maxPerSource;
-        @CommandLine.Option(names = {"--dry-run"}, description = "Report deletions without removing files")
+        @CommandLine.Option(names = {"--dry-run"}, description = "Preview retirement or purge without changing files")
         boolean dryRun;
+        @CommandLine.Option(names = "--pin", description = "Protect this session from retention (local only)")
+        String pin;
+        @CommandLine.Option(names = "--unpin", description = "Remove this session's retention protection (local only)")
+        String unpin;
+        @CommandLine.Option(names = "--restore", description = "Restore an archived session without overwriting data (local only)")
+        String restore;
+        @CommandLine.Option(names = "--purge-trash", description = "Permanently delete archived payloads older than the grace period (local only)")
+        boolean purgeTrash;
+        @CommandLine.Option(names = "--compact-journals", description = "Remove global tool-call/usage records for permanently purged sessions (local only)")
+        boolean compactJournals;
+        @CommandLine.Option(names = "--grace-days", defaultValue = "7", description = "Trash grace period; minimum one day")
+        long graceDays;
 
         @Override
         public Integer call() throws Exception {
+            int operations = (pin == null ? 0 : 1) + (unpin == null ? 0 : 1)
+                    + (restore == null ? 0 : 1) + (purgeTrash ? 1 : 0) + (compactJournals ? 1 : 0);
+            if (operations > 1) throw new IllegalArgumentException("Choose only one pin/unpin/restore/purge/compact operation");
+            File conversationsDir = new File(KompileHome.homeDirectory(), "conversations");
+            if (operations > 0) {
+                if (remote.useRemote()) throw new IllegalArgumentException("Pin, restore, purge and compaction are local-only operations");
+                if (compactJournals) {
+                    var result = new ai.kompile.cli.common.metrics.ToolJournalCompactor(conversationsDir.toPath()).compact(dryRun);
+                    System.out.printf("%s %d records / %d bytes from global journals%n",
+                            dryRun ? "Would remove" : "Removed", result.removedRecords(), result.reclaimableBytes());
+                } else if (purgeTrash) {
+                    long bytes = ChatTranscriptRetention.purgeTrash(conversationsDir,
+                            java.time.Duration.ofDays(graceDays), dryRun);
+                    System.out.printf("%s %d bytes of expired trash%n", dryRun ? "Would reclaim" : "Reclaimed", bytes);
+                } else if (dryRun) {
+                    System.out.println("Would " + (restore != null ? "restore " + restore
+                            : pin != null ? "pin " + pin : "unpin " + unpin));
+                } else if (restore != null) {
+                    ChatTranscriptRetention.restore(conversationsDir, restore);
+                    System.out.println("Restored " + restore);
+                } else {
+                    ChatTranscriptRetention.setPinned(conversationsDir, pin != null ? pin : unpin, pin != null);
+                    System.out.println((pin != null ? "Pinned " : "Unpinned ") + (pin != null ? pin : unpin));
+                }
+                return 0;
+            }
             if (remote.useRemote()) {
                 String path = API_BASE + "/retention?dryRun=" + dryRun
                         + "&maxAgeDays=" + maxAgeDays
@@ -412,17 +450,20 @@ public class ChatImportCommand implements Callable<Integer> {
                 System.out.println(remote.client().delete(path));
                 return 0;
             }
-            File conversationsDir = new File(KompileHome.homeDirectory(), "conversations");
             ChatTranscriptRetention.Policy policy = ChatTranscriptRetention.Policy.of(
                     maxAgeDays, maxTotalMb, maxPerSource);
             ChatTranscriptRetention.Result result = new ChatTranscriptRetention(policy)
                     .apply(conversationsDir, dryRun);
-            System.out.printf("%s %d transcripts (age=%d, count=%d, size=%d)%n",
-                    dryRun ? "Would delete" : "Deleted",
+            System.out.printf("%s %d sessions (age=%d, count=%d, size=%d)%n",
+                    dryRun ? "Would archive" : "Archived",
                     result.totalDeleted(),
                     result.deletedByAge(), result.deletedByCount(), result.deletedBySize());
+            System.out.printf("Owned hot bytes=%d; archived bytes=%d; protected sessions=%d; reclaimed bytes=0%n",
+                    result.hotBytesBefore(), result.archivedBytes(), result.protectedSessions());
+            System.out.println("Shared catalogs remain retained. Use --purge-trash after the grace period to reclaim space.");
             System.out.println("Conversations dir: " + conversationsDir.getAbsolutePath());
-            return 0;
+            result.failures().forEach(f -> System.err.println("Retention incomplete: " + f));
+            return result.failures().isEmpty() ? 0 : 1;
         }
     }
 

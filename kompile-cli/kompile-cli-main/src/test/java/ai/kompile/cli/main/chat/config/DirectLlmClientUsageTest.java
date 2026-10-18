@@ -276,6 +276,90 @@ class DirectLlmClientUsageTest {
     }
 
     @Test
+    void boundedOneShotCapsOnlyTheIsolatedRequestAndRespectsTheLiveCeiling() throws Exception {
+        var requests = new java.util.concurrent.CopyOnWriteArrayList<com.fasterxml.jackson.databind.JsonNode>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            requests.add(MAPPER.readTree(exchange.getRequestBody()));
+            sse(exchange, "data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n"
+                    + "data: [DONE]\n\n");
+            exchange.close();
+        });
+        server.start();
+        try (Fixture fixture = new Fixture(server);
+             DirectLlmClient client = client("openai", "gpt-4o", fixture)) {
+            client.setWireMaxOutputTokens(6_000);
+            client.setContextWindowTokens(128_000);
+            client.addToHistory("user", "live-history-marker");
+            assertFalse(client.streamOneShot("summary", "system", null, 2_048).failed);
+            assertFalse(client.streamOneShot("summary", "system", null, 8_192).failed);
+            assertEquals(1, client.getHistorySize());
+            assertFalse(client.streamChat("continue", "system", null, null).failed);
+            assertEquals(3, requests.size());
+            assertEquals(2_048, requests.get(0).path("max_completion_tokens").asInt());
+            assertEquals(6_000, requests.get(1).path("max_completion_tokens").asInt());
+            assertEquals(6_000, requests.get(2).path("max_completion_tokens").asInt());
+            assertFalse(requests.get(0).toString().contains("live-history-marker"));
+            assertTrue(requests.get(2).toString().contains("live-history-marker"));
+        }
+    }
+
+    @Test
+    void boundedUtilityLimitUsesEachSupportedHttpProtocolWithoutChangingOrdinaryRequests() throws Exception {
+        for (String provider : List.of("anthropic", "openai", "radius", "openai-codex")) {
+            var requests = new java.util.concurrent.CopyOnWriteArrayList<com.fasterxml.jackson.databind.JsonNode>();
+            HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/", exchange -> {
+                String path = exchange.getRequestURI().getPath();
+                if (path.equals("/v1/config")) {
+                    json(exchange, "{\"baseUrl\":\"http://127.0.0.1:" + exchange.getLocalAddress().getPort()
+                            + "/pi\",\"models\":[{\"id\":\"test-model\",\"input\":[\"text\"]}]}");
+                } else {
+                    requests.add(MAPPER.readTree(exchange.getRequestBody()));
+                    if (path.equals("/v1/messages")) {
+                        sse(exchange, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n"
+                                + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+                                + "data: {\"type\":\"message_stop\"}\n\n");
+                    } else if (path.equals("/pi/messages")) {
+                        sse(exchange, "data: {\"type\":\"done\",\"reason\":\"stop\"}\n\n");
+                    } else {
+                        sse(exchange, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n"
+                                + "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n");
+                    }
+                }
+                exchange.close();
+            });
+            server.start();
+            String model = switch (provider) {
+                case "anthropic" -> "claude-sonnet-4-6";
+                case "openai" -> "gpt-6-astra";
+                case "openai-codex" -> "gpt-5";
+                default -> "test-model";
+            };
+            try (Fixture fixture = new Fixture(server);
+                 DirectLlmClient client = client(provider, model, fixture)) {
+                assertFalse(client.streamOneShot("summary", "system", null, 2_048).failed, provider);
+                assertFalse(client.streamChat("continue", "system", null, null).failed, provider);
+                assertEquals(2, requests.size(), provider);
+                if (provider.equals("anthropic")) {
+                    assertEquals(2_048, requests.get(0).path("max_tokens").asInt());
+                    assertEquals(8_192, requests.get(1).path("max_tokens").asInt());
+                } else if (provider.equals("radius")) {
+                    assertEquals(2_048, requests.get(0).path("options").path("maxTokens").asInt());
+                    assertEquals(8_192, requests.get(1).path("options").path("maxTokens").asInt());
+                } else if (provider.equals("openai")) {
+                    assertEquals(2_048, requests.get(0).path("max_output_tokens").asInt());
+                    assertFalse(requests.get(1).has("max_output_tokens"));
+                } else {
+                    assertFalse(requests.get(0).has("max_output_tokens"),
+                            "subscription Codex owns its limit and rejects unsupported fields");
+                    assertFalse(requests.get(1).has("max_output_tokens"));
+                }
+            }
+        }
+    }
+
+    @Test
     void oneShotAndStructuredOneShotForwardUsageWithoutTouchingHistory() throws Exception {
         try (Fixture server = fixture("/chat/completions", exchange -> sse(exchange, """
                 data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}

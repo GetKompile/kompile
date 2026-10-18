@@ -32,6 +32,9 @@ export const environment = {
   production: false,
   apiUrl: getApiUrl(), // Your backend API base URL (dynamically determined)
   appTitle: 'Kompile RAG Console', // Configurable application title
+  // User-facing product name for managed product views. Runtime value from
+  // /api/config (productName) wins when present; see FrontendConfigController.
+  productName: 'Kompile',
 
   // ───────────────────────────────────────────────────────────────────────────
   // White-label branding (top-left header logo + name).

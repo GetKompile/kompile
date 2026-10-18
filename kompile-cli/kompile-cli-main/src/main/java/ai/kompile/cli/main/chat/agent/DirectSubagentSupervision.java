@@ -34,7 +34,8 @@ public final class DirectSubagentSupervision {
 
         public Contract withCeiling(ToolContext parent) {
             var inheritedWorkflow = "planner".equals(parent.getAgent().getName())
-                    ? new WorkflowController.ChildContract(workflow.policy(), workflow.systemPrompt(), true)
+                    ? new WorkflowController.ChildContract(workflow.policy(), workflow.systemPrompt(), true,
+                            workflow.memoryContext())
                     : workflow;
             return new Contract(inheritedWorkflow, parentPrompt, evaluator, policy, toolReview,
                     reviewRequired, maxCorrections, ceiling == null ? Ceiling.capture(parent) : ceiling);

@@ -129,6 +129,55 @@ class AgenticChatLoopTokenAccountingTest {
         }
     }
 
+    @Test
+    void liveNativeContextUsesLastRequestNotBillingAndInvalidatesAcrossCompaction() throws Exception {
+        var mapper = JsonUtils.standardMapper();
+        var config = new ChatConfig("openai", "test-key", "test-model", null);
+        config.setDefaultMemory(false);
+        config.setContextWindowTokens(200_000);
+        var metrics = new ChatSessionMetrics("live-context");
+        ChatCompleter.setContentOutput(ignored -> { });
+        try (var client = new DirectLlmClient(config, mapper, directory) {
+            @Override
+            public StreamResult streamChat(String message, String systemPrompt, ArrayNode tools,
+                                           List<ToolCallResultInput> results, String model,
+                                           List<AttachmentInput> attachments) {
+                var listener = getProviderActivityListener();
+                listener.onContextUsage(150_000);
+                assertEquals("150,000/200,000 75% last input", metrics.contextTokenSummary());
+                listener.onTokenUsage(10, 100, 149_990, 0);
+                listener.onContextUsage(160_000);
+                listener.onTokenUsage(10, 100, 159_990, 0);
+                assertEquals("160,000/200,000 80% last input", metrics.contextTokenSummary());
+                assertEquals(310_200, metrics.getTotalTokens());
+                listener.onCompacted("auto", 160_000);
+                assertEquals("?/200,000 last input", metrics.contextTokenSummary());
+                listener.onContextUsage(20_000);
+                listener.onModelLimits(100_000, 32_000);
+                assertEquals("20,000/100,000 20% last input", metrics.contextTokenSummary());
+                var result = new StreamResult();
+                result.lastRequestInputTokens = 20_000;
+                result.inputTokens = 20;
+                result.cacheReadTokens = 309_980;
+                result.outputTokens = 200;
+                result.cancelled = true;
+                return result;
+            }
+        }) {
+            var loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            loop.configureConversationSession("live-context");
+            loop.setSessionMetrics(metrics);
+            var stream = AgenticChatLoop.class.getDeclaredMethod("streamDirectTurn",
+                    String.class, String.class, ArrayNode.class, List.class, String.class, List.class);
+            stream.setAccessible(true);
+            stream.invoke(loop, "hello", "system", null, null, null, List.of());
+            assertEquals("20,000/100,000 20% last input", metrics.contextTokenSummary(),
+                    "cancelling does not turn last input into cumulative billing");
+            assertEquals(310_200, metrics.getTotalTokens());
+        }
+    }
+
     private void verifyAccounting(boolean emitUsage, boolean compaction) throws Exception {
         var mapper = JsonUtils.standardMapper();
         var config = new ChatConfig("openai", "test-key", "test-model", null);

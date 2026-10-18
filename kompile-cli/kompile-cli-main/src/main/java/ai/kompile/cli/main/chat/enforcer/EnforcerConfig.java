@@ -126,6 +126,10 @@ public class EnforcerConfig {
     @JsonProperty
     private List<String> workflowRequiredSkills = new ArrayList<>();
 
+    /** Scoped Markdown files loaded in full before workflow work: project:file.md or global:file.md. */
+    @JsonProperty
+    private List<String> workflowRequiredMemories = new ArrayList<>();
+
     /** Hold mutating tools until this turn successfully creates a todo plan. */
     @JsonProperty
     private boolean workflowRequirePlanBeforeMutation = true;

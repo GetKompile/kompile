@@ -31,6 +31,26 @@ class CompactionServiceModelAwareTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
+    @Test
+    void toolPruningPreservesEverythingExceptOldResultBodies() {
+        var service = new CompactionService(mapper);
+        var source = List.of(
+                CompactionService.ConversationEntry.user("original constraints"),
+                CompactionService.ConversationEntry.toolCall("read", "old-id", "x".repeat(4_000)),
+                CompactionService.ConversationEntry.toolResult("read", "old-id",
+                        "y".repeat(10_000) + "\n[saved to: /archive/tool.txt]"),
+                CompactionService.ConversationEntry.assistant("z".repeat(10_000)),
+                CompactionService.ConversationEntry.toolResult("read", "recent-id", "r".repeat(10_000)));
+        var result = service.pruneToolResults(source, 4);
+        assertTrue(result.isCompacted());
+        assertTrue(result.getTokensAfter() < result.getTokensBefore());
+        for (int i : List.of(0, 1, 3, 4)) assertTrue(source.get(i) == result.getEntries().get(i));
+        assertEquals("old-id", result.getEntries().get(2).toolCallId);
+        assertTrue(result.getEntries().get(2).content.contains("/archive/tool.txt"));
+        assertTrue(source.get(2).content.contains("y".repeat(10_000)), "input is unchanged");
+        assertFalse(service.pruneToolResults(source, 0).isCompacted());
+    }
+
     private static List<CompactionService.ConversationEntry> entriesOfTokens(int approxTokens) {
         // chars/4 heuristic → approxTokens*4 chars split over a few entries
         List<CompactionService.ConversationEntry> entries = new ArrayList<>();

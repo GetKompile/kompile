@@ -36,6 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -629,6 +630,163 @@ class AgenticChatLoopContextOverflowRecoveryTest {
     }
 
     @Test
+    void interruptedNativeCheckpointDoesNotRecompactItsPortableDigest() throws Exception {
+        for (String provider : List.of("openai", "openai-codex")) {
+            ObjectMapper mapper = JsonUtils.standardMapper();
+            ChatConfig config = new ChatConfig(provider, "test-key", "gpt-6-astra", "http://unused.invalid");
+            config.setContextWindowTokens(128_000);
+            ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+            AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+            String session = "interrupted-native-" + UUID.randomUUID();
+            ConversationLedger.CompactionCheckpoint checkpoint = seedOpaqueCheckpoint(loop, client, session);
+            client.reportedInputTokens = 20_000;
+            AtomicBoolean cancelled = new AtomicBoolean();
+            loop.setCancelSignal(cancelled);
+            client.interruptNextRequest = cancelled;
+
+            loop.chat("interrupted request", session, "coder", "default", false);
+
+            assertTrue(cancelled.get());
+            assertEquals(20_000, loop.lastReportedInputTokens(),
+                    "repair of the same native checkpoint must retain its measured occupancy");
+            assertSame(checkpoint, ledgerOf(loop).snapshot().checkpoint());
+            cancelled.set(false);
+            client.reportedInputTokens = 0;
+            assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+            assertEquals("done", loop.chat("continue again", session, "coder", "default", false));
+            assertEquals(0, client.summaryCalls);
+            assertEquals(0, client.nativeCompactionCalls);
+            assertEquals(0, client.toolCompactionCalls);
+            assertSame(checkpoint, ledgerOf(loop).snapshot().checkpoint(),
+                    "the portable digest is not the context sent alongside the native checkpoint");
+        }
+    }
+
+    @Test
+    void restoredOpaqueCheckpointWithoutUsageWaitsForProviderMeasurement() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("openai-codex", "test-key", "gpt-6-astra", "http://unused.invalid");
+        config.setContextWindowTokens(128_000);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "restored-native-" + UUID.randomUUID();
+        seedOpaqueCheckpoint(loop, client, session);
+        ScriptedClient resumedClient = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop resumed = newLoop(mapper, resumedClient, new ToolRegistry(mapper));
+        resumed.configureConversationSession(session);
+        var checkpoint = ledgerOf(resumed).snapshot().checkpoint();
+
+        assertEquals("done", resumed.chat("continue", session, "coder", "default", false));
+        assertEquals("done", resumed.chat("continue again", session, "coder", "default", false));
+
+        assertEquals(0, resumed.lastReportedInputTokens(), "unknown native occupancy is not an exact zero count");
+        assertEquals(0, resumedClient.summaryCalls);
+        assertEquals(0, resumedClient.nativeCompactionCalls);
+        assertEquals(0, resumedClient.toolCompactionCalls);
+        assertSame(checkpoint, ledgerOf(resumed).snapshot().checkpoint());
+    }
+
+    @Test
+    void nativeCheckpointRepairStillCompactsMeasuredPressure() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("openai-codex", "test-key", "gpt-6-astra", "http://unused.invalid");
+        config.setContextWindowTokens(128_000);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "measured-native-pressure-" + UUID.randomUUID();
+        seedOpaqueCheckpoint(loop, client, session);
+        client.reportedInputTokens = 120_000;
+        assertEquals("done", loop.chat("measure", session, "coder", "default", false));
+        loop.rebuildDirectHistoryForProviderSwitch();
+        assertEquals(120_000, loop.lastReportedInputTokens());
+        client.nativeCompaction = new DirectLlmClient.NativeCompactionResult(true, true, null,
+                mapper.createArrayNode().addObject().put("type", "compaction")
+                        .put("encrypted_content", "replacement-checkpoint"), null);
+        client.reportedInputTokens = 0;
+
+        assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+
+        assertEquals(1, client.nativeCompactionCalls, "real measured native pressure must still compact");
+        assertEquals(0, loop.lastReportedInputTokens(), "the replacement checkpoint invalidates the old count");
+    }
+
+    @Test
+    void nativeCheckpointWithoutUsageStillCompactsLargeVisibleTail() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("openai-codex", "test-key", "gpt-6-astra", "http://unused.invalid");
+        config.setContextWindowTokens(128_000);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "visible-native-pressure-" + UUID.randomUUID();
+        seedOpaqueCheckpoint(loop, client, session);
+        ConversationLedger ledger = ledgerOf(loop);
+        for (int i = 0; i < 4; i++) {
+            ledger.append(CompactionService.ConversationEntry.user("u".repeat(60_000)));
+            ledger.append(CompactionService.ConversationEntry.assistant("a".repeat(60_000)));
+        }
+        loop.rebuildDirectHistoryForProviderSwitch();
+        client.nativeCompaction = new DirectLlmClient.NativeCompactionResult(true, true, null,
+                mapper.createArrayNode().addObject().put("type", "compaction")
+                        .put("encrypted_content", "replacement-checkpoint"), null);
+
+        assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+
+        assertEquals(1, client.nativeCompactionCalls, "visible post-checkpoint growth is still counted");
+    }
+
+    @Test
+    void opaqueCheckpointWithUnknownOccupancyStillRecoversFromProviderOverflow() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("openai-codex", "test-key", "gpt-6-astra", "http://unused.invalid");
+        config.setContextWindowTokens(128_000);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.FIRST_OVERFLOW, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "unknown-native-overflow-" + UUID.randomUUID();
+        seedOpaqueCheckpoint(loop, client, session);
+
+        assertEquals("recovered", loop.chat("continue", session, "coder", "default", false));
+
+        assertEquals(2, client.chatCalls, "provider overflow still allows exactly one safe retry");
+        assertEquals(0, client.nativeCompactionCalls,
+                "emergency recovery preserves the pending request via portable summarization");
+        assertEquals(1, client.summaryCalls);
+        assertEquals("overflow-recovery", ledgerOf(loop).snapshot().checkpoint().strategy());
+        assertEquals(client.prompts.get(0), client.prompts.get(1));
+    }
+
+    @Test
+    void changedNativeCheckpointOrModelInvalidatesItsUsageAnchor() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("openai-codex", "test-key", "gpt-6-astra", "http://unused.invalid");
+        config.setContextWindowTokens(128_000);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "changed-native-anchor-" + UUID.randomUUID();
+        seedOpaqueCheckpoint(loop, client, session);
+        client.reportedInputTokens = 20_000;
+        assertEquals("done", loop.chat("measure", session, "coder", "default", false));
+        ConversationLedger ledger = ledgerOf(loop);
+        var snapshot = ledger.snapshot();
+        var checkpoint = snapshot.checkpoint();
+        assertTrue(ledger.commitNativeCompaction(snapshot.version(),
+                snapshot.coveredThroughForPrefix(snapshot.activeEntries().size()), checkpoint.summary(),
+                checkpoint.strategy(), checkpoint.provider(), checkpoint.model(), 150_000, 150_000,
+                checkpoint.nativePayload()));
+        loop.rebuildDirectHistoryForProviderSwitch();
+        assertEquals(0, loop.lastReportedInputTokens(), "a different checkpoint has unknown occupancy");
+        client.reportedInputTokens = 30_000;
+        assertEquals("done", loop.chat("measure replacement", session, "coder", "default", false));
+        config.setModel("different-model");
+        loop.rebuildDirectHistoryForProviderSwitch();
+
+        assertEquals(0, loop.lastReportedInputTokens(), "model switches must invalidate the measurement");
+        var estimate = client.estimateInputTokens("continue", "system", null, null, null, List.of());
+        assertTrue(estimate.supported(), "the incompatible native checkpoint must replay its portable summary");
+        assertTrue(estimate.inputTokens() > loop.compactionTriggerTokens(),
+                "a portable summary actually replayed on the wire still occupies context");
+    }
+
+    @Test
     void missingUsageStillCompactsGenuinelyLargeProjectedOpenAiHistory() throws Exception {
         ObjectMapper mapper = JsonUtils.standardMapper();
         ChatConfig config = new ChatConfig("openai", "test-key", "gpt-test", "http://unused.invalid");
@@ -662,6 +820,82 @@ class AgenticChatLoopContextOverflowRecoveryTest {
         assertEquals(0, client.tokenCountCalls, "the counting API does not receive attachments");
         assertEquals(1, client.summaryCalls, "retain the usage-based fallback rather than undercounting");
         assertEquals(List.of(attachment), client.attachments.get(0));
+    }
+
+    @Test
+    void oldToolBodiesArePrunedBeforeSummaryWithoutChangingTheLedger() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("custom", null, "pruning-test", "http://unused.invalid");
+        config.setContextWindowTokens(128_000);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "pruning-" + UUID.randomUUID();
+        loop.configureConversationSession(session);
+        ConversationLedger ledger = ledgerOf(loop);
+        seedToolHeavyHistory(ledger, "old request");
+        loop.rebuildDirectHistoryForProviderSwitch();
+        var original = ledger.snapshot();
+        var compact = AgenticChatLoop.class.getDeclaredMethod("compactHistoryBeforeTurn",
+                String.class, String.class, ArrayNode.class, String.class);
+        compact.setAccessible(true);
+        compact.invoke(loop, "continue", "instructions", null, null);
+
+        assertEquals(0, client.summaryCalls, "tool-only projection creates enough headroom");
+        assertTrue(loop.lastReportedInputTokens() < loop.compactionTriggerTokens());
+        assertEquals(original.version(), ledger.snapshot().version());
+        assertEquals(original.allEvents(), ledger.snapshot().allEvents());
+        assertTrue(ledger.snapshot().checkpoint() == null);
+        Field wire = DirectLlmClient.class.getDeclaredField("conversationHistory");
+        wire.setAccessible(true);
+        String projected = wire.get(client).toString();
+        assertTrue(projected.contains("old-call"), "tool call/result link survives");
+        assertTrue(projected.contains("/archive/output.txt"), "evidence is recoverable");
+        assertTrue(projected.contains("retained-assistant-tail"), "recent exchange remains verbatim");
+        assertFalse(projected.contains("x".repeat(10_000)));
+
+        compact.invoke(loop, "continue", "instructions", null, null);
+        assertEquals(0, client.summaryCalls, "raw archived bodies must not refill projected occupancy");
+        assertEquals(original.version(), ledger.snapshot().version());
+
+        client.reportedInputTokens = 50_000;
+        assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+        assertEquals(50_000, loop.lastReportedInputTokens());
+        assertEquals("done", loop.chat("next", session, "coder", "default", false));
+        assertEquals(0, client.summaryCalls, "settled usage must stay anchored to the raw ledger");
+        assertEquals(original.allEvents(), ledger.snapshot().allEvents().subList(0, original.allEvents().size()));
+        assertTrue(ledger.snapshot().checkpoint() == null);
+        assertTrue(wire.get(client).toString().contains("old-call"));
+    }
+
+    @Test
+    void pruningStillOverBudgetFallsThroughToSummary() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("custom", null, "pruning-test", "http://unused.invalid");
+        config.setContextWindowTokens(128_000);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        loop.configureConversationSession("pruning-summary-" + UUID.randomUUID());
+        ConversationLedger ledger = ledgerOf(loop);
+        seedToolHeavyHistory(ledger, "u".repeat(400_000));
+        loop.rebuildDirectHistoryForProviderSwitch();
+        var compact = AgenticChatLoop.class.getDeclaredMethod("compactHistoryBeforeTurn",
+                String.class, String.class, ArrayNode.class, String.class);
+        compact.setAccessible(true);
+        compact.invoke(loop, "continue", "instructions", null, null);
+        assertEquals(1, client.summaryCalls);
+        assertTrue(ledger.snapshot().checkpoint() != null);
+        assertEquals(6, ledger.snapshot().allEvents().size(), "raw events still survive summarization");
+    }
+
+    private void seedToolHeavyHistory(ConversationLedger ledger, String oldRequest) {
+        ledger.append(CompactionService.ConversationEntry.user(oldRequest));
+        ledger.append(CompactionService.ConversationEntry.toolCall("read", "old-call", "{\"path\":\"old.txt\"}"));
+        ledger.append(CompactionService.ConversationEntry.toolResult("read", "old-call",
+                "x".repeat(480_000) + "\n[saved to: /archive/output.txt]"));
+        ledger.append(CompactionService.ConversationEntry.assistant("old answer"));
+        ledger.append(CompactionService.ConversationEntry.user("recent " + "u".repeat(80_000)));
+        ledger.append(CompactionService.ConversationEntry.assistant("a".repeat(80_000)
+                + " retained-assistant-tail"));
     }
 
     @Test
@@ -704,6 +938,25 @@ class AgenticChatLoopContextOverflowRecoveryTest {
         assertTrue(ledger.snapshot().activeEvents().isEmpty());
         assertEquals(3, ledger.snapshot().allEvents().size());
         assertEquals(second.getTokensAfter(), loop.estimateConversationTokens());
+    }
+
+    private ConversationLedger.CompactionCheckpoint seedOpaqueCheckpoint(
+            AgenticChatLoop loop, ScriptedClient client, String session) throws Exception {
+        loop.configureConversationSession(session);
+        ConversationLedger ledger = ledgerOf(loop);
+        ledger.append(CompactionService.ConversationEntry.user("old request"));
+        ledger.append(CompactionService.ConversationEntry.assistant("old answer"));
+        var snapshot = ledger.snapshot();
+        ArrayNode nativePayload = client.mapper.createArrayNode();
+        nativePayload.addObject().put("type", "compaction").put("encrypted_content", "opaque-checkpoint");
+        assertTrue(ledger.commitNativeCompaction(snapshot.version(), 2,
+                "portable-only ".repeat(45_000), "native-openai_responses",
+                client.getConfiguredProvider(), client.getConfiguredModel(), 180_000, 150_000, nativePayload));
+        loop.rebuildDirectHistoryForProviderSwitch();
+        assertTrue(loop.estimateConversationTokens() > loop.compactionTriggerTokens());
+        assertFalse(client.estimateInputTokens("continue", "system", null, null, null, List.of()).supported(),
+                "the real local estimator must decline the opaque native context");
+        return ledger.snapshot().checkpoint();
     }
 
     private ScriptedClient millionTokenClient(ObjectMapper mapper) {
@@ -836,10 +1089,12 @@ class AgenticChatLoopContextOverflowRecoveryTest {
         private final Scenario scenario;
         private int chatCalls;
         private int summaryCalls;
+        private int nativeCompactionCalls;
         private int tokenCountCalls;
         private int toolCompactionCalls;
         private final List<String> countedPrompts = new ArrayList<>();
         private long exactInputTokens;
+        private long reportedInputTokens;
         private int configuredNativeTrigger;
         private final List<Integer> nativeTriggersByRequest = new ArrayList<>();
         private final List<String> prompts = new ArrayList<>();
@@ -901,6 +1156,7 @@ class AgenticChatLoopContextOverflowRecoveryTest {
 
             StreamResult result = new StreamResult();
             result.text = scenario == Scenario.FIRST_OVERFLOW ? "recovered" : "done";
+            result.inputTokens = reportedInputTokens;
             if (scenario == Scenario.NATIVE_COMPACTION && chatCalls == 1) {
                 result.nativeCompactionSummary = nativeStreamPayload == null
                         ? "Earlier requests completed successfully." : null;
@@ -949,6 +1205,7 @@ class AgenticChatLoopContextOverflowRecoveryTest {
 
         @Override
         public NativeCompactionResult tryNativeCompact(String modelOverride) {
+            nativeCompactionCalls++;
             return nativeCompaction;
         }
 

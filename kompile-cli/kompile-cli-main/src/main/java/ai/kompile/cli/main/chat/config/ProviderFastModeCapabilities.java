@@ -5,47 +5,47 @@
 package ai.kompile.cli.main.chat.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.InputStream;
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Pattern;
 
 /**
- * Documented fast-mode eligibility, separate from thinking/effort. Model names
- * and dated upstream sources live in the provider's resource, not in the UI.
- * Eligibility is not an account entitlement check: the provider still owns
- * billing, organization policy, capacity and regional availability.
+ * Provider-level fast/priority request contract, separate from thinking/effort.
+ * Never gate on model names: the provider validates model support, account
+ * entitlement, billing, capacity and regional availability on each request.
  */
 public record ProviderFastModeCapabilities(
-        List<Pattern> modelPatterns, String sourceUrl, String notice) {
+        ObjectNode onRequest, ObjectNode offRequest, String sourceUrl, String notice) {
     private static final Map<String, ProviderFastModeCapabilities> CACHE = new ConcurrentHashMap<>();
 
     public ProviderFastModeCapabilities {
-        modelPatterns = List.copyOf(modelPatterns);
+        onRequest = onRequest == null ? null : onRequest.deepCopy();
+        offRequest = offRequest == null ? null : offRequest.deepCopy();
     }
 
     public boolean supports(String model) {
-        return model != null && modelPatterns.stream()
-                .anyMatch(pattern -> pattern.matcher(model.trim()).matches());
+        return onRequest != null && model != null && !model.isBlank();
+    }
+
+    /** Requests are rebuilt each turn, so omitted off fields revert to provider defaults. */
+    public void apply(ObjectNode request, boolean enabled) {
+        ObjectNode fields = enabled ? onRequest : offRequest;
+        if (fields != null) request.setAll(fields.deepCopy());
     }
 
     public static ProviderFastModeCapabilities none() {
-        return new ProviderFastModeCapabilities(List.of(), "", "");
+        return new ProviderFastModeCapabilities(null, null, "", "");
     }
 
     public static ProviderFastModeCapabilities forProvider(String providerId) {
         String provider = providerId == null ? "" : providerId.trim().toLowerCase(Locale.ROOT);
-        // Only transports with implemented fast-mode wire contracts may opt in.
-        return switch (provider) {
-            case "openai", "openai-codex", "anthropic" -> CACHE.computeIfAbsent(
-                    provider, ProviderFastModeCapabilities::load);
-            default -> none();
-        };
+        // Resource descriptors own the contracts; no provider or model allowlist.
+        if (!provider.matches("[a-z0-9][a-z0-9-]*")) return none();
+        return CACHE.computeIfAbsent(provider, ProviderFastModeCapabilities::load);
     }
 
     private static ProviderFastModeCapabilities load(String provider) {
@@ -63,16 +63,13 @@ public record ProviderFastModeCapabilities(
             String notice = source.path("notice").asText("");
             if (!url.startsWith("https://") || notice.isBlank()) return none();
             LocalDate.parse(source.path("verifiedAt").asText(""));
-            JsonNode patterns = fast.path("modelPatterns");
-            if (!patterns.isArray() || patterns.isEmpty()) return none();
-            List<Pattern> compiled = new ArrayList<>();
-            for (JsonNode pattern : patterns) {
-                if (!pattern.isTextual() || pattern.asText().isBlank()) return none();
-                compiled.add(Pattern.compile(pattern.asText(), Pattern.CASE_INSENSITIVE));
-            }
-            return new ProviderFastModeCapabilities(compiled, url, notice);
+            JsonNode on = fast.path("onRequest");
+            JsonNode off = fast.path("offRequest");
+            if (!(on instanceof ObjectNode onFields) || onFields.isEmpty()
+                    || !(off instanceof ObjectNode offFields)) return none();
+            return new ProviderFastModeCapabilities(onFields, offFields, url, notice);
         } catch (Exception invalidResource) {
-            // Missing or malformed documentation must not enable a paid feature.
+            // Missing or malformed contracts must not enable a paid feature.
             return none();
         }
     }

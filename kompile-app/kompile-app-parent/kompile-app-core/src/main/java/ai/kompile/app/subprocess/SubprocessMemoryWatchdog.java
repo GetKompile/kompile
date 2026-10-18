@@ -1291,6 +1291,26 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         return new GpuProbe(deviceId, ownedBytes, totalBytes, usage, driverUsedBytes);
     }
 
+    /**
+     * Backend/device-scoped telemetry for an ALREADY INITIALIZED subprocess. Never call from a
+     * frontend merely to discover hardware: initialization belongs to the child launch contract.
+     * Descriptor queries route to their own backend, not the primary NativeOps singleton.
+     */
+    public static Map<String, Object> deviceMemoryStatus() {
+        return DeviceMemoryTelemetry.collect(ProcessHandle.current().pid(), System.currentTimeMillis(), () -> {
+            DeviceMemoryManager memory = DeviceMemoryManager.getInstance();
+            List<DeviceMemoryTelemetry.Probe> probes = new ArrayList<>();
+            for (DeviceDescriptor device : Nd4j.getBackendRegistry().getAllDevices()) {
+                if (!device.getDeviceType().isGpu()) continue;
+                probes.add(new DeviceMemoryTelemetry.Probe(device.getBackendId(), device.getDeviceId(),
+                        device.getDeviceType().name(), device.getDeviceIndex(), device.getDeviceName(),
+                        device::getTotalMemory, device::getAvailableMemory,
+                        () -> memory.getAllocatedMemory(device)));
+            }
+            return probes;
+        });
+    }
+
     /** Query one GPU for process-owned memory usage. Returns null when ownership is unavailable. */
     private static GpuProbe queryGpu(NativeOps ops, DeviceMemoryManager deviceMemory, int deviceId) {
         try {

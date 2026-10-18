@@ -151,6 +151,8 @@ describe('UnifiedChat command outcomes', () => {
     );
     spyOn<any>(component, 'updateMonitorSubscription');
     spyOn<any>(component, 'refreshContextBudget');
+    // These tests supply command SSE, not the independent ongoing-run discovery endpoint.
+    spyOn(component, 'resumeSavedRun');
     component.selectedAgent = agent;
     component.agents = [agent];
     component.newChat();
@@ -181,7 +183,7 @@ describe('UnifiedChat command outcomes', () => {
   });
 
   for (const [command, status] of [
-    ['/help', 'COMPLETED'], ['/missing', 'UNKNOWN_COMMAND'],
+    ['/help', 'COMPLETED'], ['/usage', 'COMPLETED'], ['/missing', 'UNKNOWN_COMMAND'],
     ['/login', 'TERMINAL_REQUIRED'], ['/resume', 'LIVE_SESSION_REQUIRED'],
     ['/unsupported', 'NOT_YET_SUPPORTED']
   ]) {
@@ -251,6 +253,46 @@ describe('UnifiedChat command outcomes', () => {
     component.sendMessage();
     expect(send).not.toHaveBeenCalled();
     expect(component.messages).toEqual([]);
+  });
+
+  describe('/usage panel', () => {
+    const usageOutcome: CommandOutcome = {
+      command: '/usage', status: 'COMPLETED',
+      text: 'Vendor usage — OpenAI Codex\n5-hour window: 40% used, 60% remaining; resets 2026-10-17T01:00:00Z',
+      ok: true, exit: 0
+    };
+
+    it('the header button requests usage without consuming the composer draft or attachments', async () => {
+      component.userInput = 'Unfinished draft';
+      const attachments = [{ name: 'draft.txt' }] as any;
+      component.pendingAttachments = attachments;
+      fetchSpy.and.resolveTo(response(event('command', usageOutcome)
+        + event('complete', { content: usageOutcome.text, commandOutcome: usageOutcome })));
+      component.showVendorUsage();
+      await send.calls.mostRecent().returnValue;
+      expect(component.userInput).toBe('Unfinished draft');
+      expect(component.pendingAttachments).toBe(attachments);
+      // It went through the same sendMessage path, as the CLI command itself does.
+      expect(send).toHaveBeenCalled();
+      expect(component.vendorUsage?.text).toContain('5-hour window');
+      expect(component.vendorUsage?.ok).toBeTrue();
+      expect(component.vendorUsageLoading).toBeFalse();
+    });
+
+    it('a failed lookup renders its vendor guidance as a failure, without deleting the draft', async () => {
+      const failed: CommandOutcome = {
+        command: '/usage', status: 'COMPLETED',
+        text: 'Vendor usage — Anthropic\nAnthropic does not expose remaining API credit through an inference API key.',
+        ok: true, exit: 0
+      };
+      component.userInput = 'Keep me';
+      fetchSpy.and.resolveTo(response(event('command', failed)
+        + event('complete', { content: failed.text, commandOutcome: failed })));
+      component.showVendorUsage();
+      await send.calls.mostRecent().returnValue;
+      expect(component.vendorUsage?.text).toContain('does not expose remaining API credit');
+      expect(component.userInput).toBe('Keep me');
+    });
   });
 
   describe('/model menu', () => {
@@ -646,7 +688,7 @@ describe('UnifiedChat session configuration modal', () => {
       .toBe(component.liveSlashCommands.length + component.slashCommands.length);
     expect(input.getAttribute('aria-expanded')).toBe('true');
     expect(component.slashCommands.map(item => item.command))
-      .toEqual(['/help', '/model', '/role', '/fast', '/ultracode', '/skills']);
+      .toEqual(['/help', '/usage', '/model', '/role', '/fast', '/ultracode', '/skills']);
     typeInput('/Mo');
     const options = slashMenu(fixture)!.querySelectorAll('[role="option"]');
     expect(options.length).toBe(1);

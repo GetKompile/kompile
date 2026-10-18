@@ -12,6 +12,10 @@ import ai.kompile.pipeline.serving.definition.ChatPipelineComposition;
 import ai.kompile.pipeline.serving.definition.PipelineDefinitionValidator;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.utils.NativeImageInfo;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -25,6 +29,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.LinkOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -85,6 +90,21 @@ public final class ChatModelPipelineRunner {
                                             Map<String, Object> input,
                                             Consumer<Map<String, Object>> progress,
                                             Consumer<String> chunkConsumer) throws Exception {
+        return executeDefinition(root, definition, input, progress, chunkConsumer, false);
+    }
+
+    /** Product-only entry: every execution selection must remain in-host HTTP, including later stages. */
+    public static String executeProductDefinition(Path root, UnifiedPipelineDefinition definition,
+                                                   Map<String, Object> input,
+                                                   Consumer<Map<String, Object>> progress,
+                                                   Consumer<String> chunkConsumer) throws Exception {
+        return executeDefinition(root, definition, input, progress, chunkConsumer, true);
+    }
+
+    private static String executeDefinition(Path root, UnifiedPipelineDefinition definition,
+                                             Map<String, Object> input,
+                                             Consumer<Map<String, Object>> progress,
+                                             Consumer<String> chunkConsumer, boolean product) throws Exception {
         var validation = PipelineDefinitionValidator.validate(definition);
         if (!validation.valid() || !PipelineDefinitionValidator.isChatModel(definition)) {
             throw new IllegalArgumentException("Invalid host chat definition: " + String.join("; ", validation.errors()));
@@ -109,7 +129,7 @@ public final class ChatModelPipelineRunner {
             if (single.getModelSetId() != null) options.put("modelSetId", single.getModelSetId());
             var pipeline = new LocalCrawlCapabilities.ResolvedPipeline(single.getPipelineId(), "LLM", "auto", "no-op",
                     0, 0, options, single.getProcessor());
-            preflightInput(root, pipeline, ChatPipelineComposition.input(stage, preview));
+            preflightInput(root, pipeline, ChatPipelineComposition.input(stage, preview), product);
             pipelines.put(stage.name(), pipeline);
             preview.put(stage.name(), Map.of("text", "intermediate text"));
         }
@@ -125,9 +145,10 @@ public final class ChatModelPipelineRunner {
                 tagged.put("stage", stage.name());
                 progress.accept(tagged);
             };
+            if (product) requireProductStageInput(root, selectedInput, stringOption(pipeline, "operation", null));
             String text = selectedInput.containsKey("text")
-                    ? extractText(root, (String) selectedInput.get("text"), pipeline, stageProgress, chunkConsumer)
-                    : extract(root, inputFile(root, selectedInput), pipeline, null, stageProgress, chunkConsumer);
+                    ? extractText(root, (String) selectedInput.get("text"), pipeline, stageProgress, chunkConsumer, product)
+                    : extract(root, inputFile(root, selectedInput), pipeline, null, stageProgress, chunkConsumer, product);
             checkInterrupted();
             if (text == null || text.isBlank()) throw new IOException("CHAT_MODEL stage returned no text: " + stage.name());
             retained += text.length();
@@ -141,13 +162,68 @@ public final class ChatModelPipelineRunner {
         if (Thread.currentThread().isInterrupted()) throw new InterruptedException("CHAT_MODEL cancelled");
     }
 
+    /** Source-only validation; parse-plan registration, checksum and human approval are enforced upstream. */
+    public static void requireProductInputs(Path workspace, UnifiedPipelineDefinition definition,
+                                            Map<String, Object> input) throws IOException {
+        if (!PipelineDefinitionValidator.isChatModel(definition)) throw new IOException(
+                "Product execution supports only in-host CHAT_MODEL pipelines");
+        var plan = ChatPipelineComposition.containsChat(definition) ? ChatPipelineComposition.plan(definition)
+                : new ChatPipelineComposition.Plan(List.of(new ChatPipelineComposition.Stage(
+                        "chat", List.of("pipeline_input"), Map.of(), definition)), "chat");
+        Map<String, Map<String, Object>> preview = new LinkedHashMap<>();
+        preview.put("pipeline_input", input);
+        for (var stage : plan.stages()) {
+            requireProductStageInput(workspace, ChatPipelineComposition.input(stage, preview),
+                    stringValue(stage.definition().getProcessor().get("operation")));
+            preview.put(stage.name(), Map.of("text", "intermediate text"));
+        }
+    }
+
+    private static void requireProductStageInput(Path workspace, Map<String, Object> input,
+                                                 String operation) throws IOException {
+        long count = List.of("text", "filePath", "path").stream().filter(input::containsKey).count();
+        if (count != 1) throw new IOException("Product CHAT_MODEL requires exactly one text or PDF file input");
+        if (List.of("image", "images", "audio", "video", "input_ids", "attention_mask", "position_ids")
+                .stream().anyMatch(input::containsKey)) throw new IOException("Product CHAT_MODEL does not accept media/tensor payloads");
+        if (input.containsKey("text")) {
+            if (!(input.get("text") instanceof String text) || text.isBlank())
+                throw new IOException("Product CHAT_MODEL requires non-empty inline text");
+            if (operation != null && !Set.of("text", "graph_extraction", "json_schema").contains(operation))
+                throw new IOException("Product CHAT_MODEL operation does not match inline text");
+            return;
+        }
+        // Never admit native-image Poppler helpers into the product's physically owned host lifecycle.
+        if (NativeImageInfo.isRunningInNativeImage()) throw new IOException(
+                "Product PDF requires JAR PDFBox execution; native-image PDF helpers are denied");
+        if (!"pdf".equals(operation)) throw new IOException("Product file input requires operation=pdf");
+        Object value = input.get(input.containsKey("filePath") ? "filePath" : "path");
+        if (!(value instanceof String path) || path.isBlank()) throw new IOException("Invalid product PDF path");
+        Path root = workspace.toAbsolutePath().normalize();
+        Path sources = root.resolve("data/content/sources");
+        Path file = root.resolve(path).toAbsolutePath().normalize();
+        if (!file.startsWith(sources) || !file.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".pdf"))
+            throw new IOException("Product PDF must be under workspace data/content/sources");
+        // Compare against canonical paths and inspect every component, not just the final filename.
+        for (Path cursor = file; cursor != null; cursor = cursor.getParent()) {
+            if (Files.isSymbolicLink(cursor)) throw new IOException("Product PDF path must be symlink-free");
+        }
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || !file.toRealPath().equals(file))
+            throw new IOException("Product PDF must be a real regular file");
+        if (Files.size(file) > 64L * 1024 * 1024) throw new IOException("Product PDF exceeds 64 MiB");
+        try (var source = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+            if (!java.util.Arrays.equals(source.readNBytes(5), "%PDF-".getBytes(StandardCharsets.US_ASCII)))
+                throw new IOException("Product PDF requires a %PDF- signature");
+        }
+    }
+
     private static Path inputFile(Path root, Map<String, Object> input) {
         return root.resolve(String.valueOf(input.containsKey("filePath") ? input.get("filePath") : input.get("path")))
                 .toAbsolutePath().normalize();
     }
 
     private static void preflightInput(Path root, LocalCrawlCapabilities.ResolvedPipeline pipeline,
-                                       Map<String, Object> input) throws IOException {
+                                       Map<String, Object> input, boolean product) throws IOException {
+        if (product) requireProductStageInput(root, input, stringOption(pipeline, "operation", null));
         long count = List.of("text", "filePath", "path").stream().filter(input::containsKey).count();
         if (count != 1) throw new IOException("CHAT_MODEL requires exactly one text or file input");
         for (String key : List.of("text", "filePath", "path")) if (input.containsKey(key)
@@ -162,7 +238,7 @@ public final class ChatModelPipelineRunner {
             kind = mediaKind(file);
             if (kind == MediaKind.UNSUPPORTED) throw new IOException("Unsupported CHAT_MODEL input type: " + mimeType(file));
         }
-        NativeChatModels.Selection selection = resolveChatSelection(root, pipeline);
+        NativeChatModels.Selection selection = resolveChatSelection(root, pipeline, product);
         selection.requireSupported(kind == MediaKind.TEXT ? "text" : "image");
         validateOperation(pipeline, selection, kind);
     }
@@ -182,16 +258,23 @@ public final class ChatModelPipelineRunner {
                                  String loadedText,
                                  Consumer<Map<String, Object>> progress,
                                  Consumer<String> chunkConsumer) throws Exception {
+        return extract(projectRoot, file, pipeline, loadedText, progress, chunkConsumer, false);
+    }
+
+    private static String extract(Path projectRoot, Path file,
+                                  LocalCrawlCapabilities.ResolvedPipeline pipeline, String loadedText,
+                                  Consumer<Map<String, Object>> progress,
+                                  Consumer<String> chunkConsumer, boolean product) throws Exception {
         Path root = projectRoot == null
                 ? Path.of("").toAbsolutePath().normalize()
                 : projectRoot.toAbsolutePath().normalize();
         Path document = file.toAbsolutePath().normalize();
-        NativeChatModels.Selection selection = resolveChatSelection(root, pipeline);
+        NativeChatModels.Selection selection = resolveChatSelection(root, pipeline, product);
         MediaKind kind = mediaKind(document);
         validateOperation(pipeline, selection, kind);
 
         return switch (kind) {
-            case PDF -> extractPdf(root, document, pipeline, selection, progress, chunkConsumer);
+            case PDF -> extractPdf(root, document, pipeline, selection, progress, chunkConsumer, product);
             case IMAGE -> extractImage(root, document, pipeline, selection, progress, chunkConsumer);
             case TEXT -> extractText(root, document, pipeline, loadedText, selection, progress, chunkConsumer);
             case UNSUPPORTED -> throw new IOException(
@@ -239,8 +322,15 @@ public final class ChatModelPipelineRunner {
                                      LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                      Consumer<Map<String, Object>> progress,
                                      Consumer<String> chunkConsumer) throws Exception {
+        return extractText(root, text, pipeline, progress, chunkConsumer, false);
+    }
+
+    private static String extractText(Path root, String text,
+                                      LocalCrawlCapabilities.ResolvedPipeline pipeline,
+                                      Consumer<Map<String, Object>> progress,
+                                      Consumer<String> chunkConsumer, boolean product) throws Exception {
         if (text == null || text.isBlank()) throw new IOException("CHAT_MODEL requires non-empty text");
-        NativeChatModels.Selection selection = resolveChatSelection(root, pipeline);
+        NativeChatModels.Selection selection = resolveChatSelection(root, pipeline, product);
         validateOperation(pipeline, selection, MediaKind.TEXT);
         return extractText(root, root.resolve("inline.txt"), pipeline, text, selection, progress, chunkConsumer);
     }
@@ -329,17 +419,23 @@ public final class ChatModelPipelineRunner {
                                      LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                      NativeChatModels.Selection selection,
                                      Consumer<Map<String, Object>> progress,
-                                     Consumer<String> chunkConsumer) throws Exception {
+                                     Consumer<String> chunkConsumer, boolean product) throws Exception {
+        if (product && NativeImageInfo.isRunningInNativeImage()) throw new IOException(
+                "Product PDF requires JAR PDFBox execution; native-image PDF helpers are denied");
         int maxPages = intOption(pipeline, "maxPages", DEFAULT_MAX_PAGES, 1, Integer.MAX_VALUE);
         int batchSize = intOption(
                 pipeline, "pageBatchSize", DEFAULT_PAGE_BATCH_SIZE, 1, 20);
         int dpi = intOption(pipeline, "pdfRenderDpi", DEFAULT_PDF_DPI, 72, 300);
         List<String> outputs = new ArrayList<>();
+        ProductPdfCapture capture = product && "json".equalsIgnoreCase(stringOption(pipeline, "outputFormat", null))
+                ? new ProductPdfCapture(intOption(pipeline, "maxResponseChars", DEFAULT_MAX_RESPONSE_CHARS,
+                        1, 20_000_000)) : null;
+        String result;
 
         // Under GraalVM native image PDFBox is never touched: PDDocument's static initializer, like
         // any BufferedImage/ImageIO use, loads libawt, whose JNI_OnLoad aborts the whole process
         // (see LocalDocumentLoaderRegistry#load). Poppler counts and renders the pages there instead.
-        try (PDDocument pdf = NativeImageInfo.isRunningInNativeImage() ? null : Loader.loadPDF(file.toFile())) {
+        try (PDDocument pdf = !product && NativeImageInfo.isRunningInNativeImage() ? null : Loader.loadPDF(file.toFile())) {
             PdfPageSelection selectionPlan = selectPdfPages(
                     pdf == null ? LocalDocumentLoaderRegistry.pdfPageCountWithPdfinfo(file) : pdf.getNumberOfPages(),
                     maxPages, pageRangeOption(pipeline));
@@ -374,23 +470,108 @@ public final class ChatModelPipelineRunner {
                 String prompt = renderPrompt(pipeline, file, pageStart, pageEnd, pageRange, "pdf")
                         + "\nThe supplied images are original PDF page(s) " + pageRange
                         + " of " + selectionPlan.totalPages() + ". Process only those original pages.";
+                StringBuilder rawCapture = capture == null ? null : new StringBuilder();
                 String response = call(root, pipeline, selection,
-                        prompt, attachments, chunkConsumer);
-                outputs.add((selectionPlan.totalPages() > 1 || selectedPageCount > 1
+                        prompt, attachments, rawCapture == null ? chunkConsumer : rawCapture::append);
+                if (capture != null) {
+                    // Validate the raw streamed provider text, not NativeChatModels' optional
+                    // schema-repaired result. Product capture never strips fences or guesses JSON.
+                    if (rawCapture.length() == 0) throw ProductPdfCapture.invalid("provider exposed no raw capture text");
+                    capture.append(rawCapture.toString());
+                } else outputs.add((selectionPlan.totalPages() > 1 || selectedPageCount > 1
                         ? "## Pages " + pageRange + "\n\n" : "") + response);
             }
 
+            result = capture == null ? String.join("\n\n", outputs).strip() : capture.finish();
             String selectedRange = formatPageRange(selectedPages);
             report(progress, "REMOTE_CHAT_MODEL", 100,
                     "Remote PDF extraction completed", Map.of(
-                            "inputKind", "pdf", "responseChars", String.join("\n\n", outputs).length(),
+                            "inputKind", "pdf", "responseChars", capture == null
+                                    ? String.join("\n\n", outputs).length() : result.length(),
                             "totalPages", selectionPlan.totalPages(),
                             "selectedPageCount", selectedPageCount,
                             "pageRange", selectedRange, "maxPages", maxPages));
         }
 
-        String result = String.join("\n\n", outputs).strip();
+        if (capture != null && chunkConsumer != null) {
+            // Product capture observers see one validated envelope, never partial batch objects.
+            try { chunkConsumer.accept(result); }
+            catch (RuntimeException ignored) { /* Observers cannot corrupt the captured result. */ }
+        }
         return result;
+    }
+
+    /** Product capture transport only; candidate semantics and approval remain upstream authority. */
+    private static final class ProductPdfCapture {
+        private static final JsonFactory JSON = JsonFactory.builder()
+                .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build();
+        private static final String PREFIX = "{\"schemaVersion\":1,\"candidates\":[";
+        private static final String SUFFIX = "]}";
+        // Match the capture envelope/codec budgets without depending on Elthoria in the host CLI.
+        private static final int MAX_CANDIDATES = 100, MAX_BYTES = 12 * 1024 * 1024;
+        private static final int MAX_TOKENS = 200_000, MAX_DEPTH = 64;
+        private final int maxChars;
+        private final StringBuilder candidates = new StringBuilder();
+        private int count, bytes = PREFIX.length() + SUFFIX.length(), tokens = 7;
+
+        private ProductPdfCapture(int maxChars) { this.maxChars = maxChars; }
+
+        private void append(String response) throws IOException {
+            if (response.length() > maxChars) throw invalid("batch exceeds maxResponseChars=" + maxChars);
+            try (JsonParser parser = JSON.createParser(response)) {
+                if (parser.nextToken() != JsonToken.START_OBJECT) throw invalid("one raw JSON object required");
+                boolean version = false, array = false;
+                int batchCount = 0;
+                for (JsonToken token; (token = parser.nextToken()) != JsonToken.END_OBJECT;) {
+                    if (token != JsonToken.FIELD_NAME) throw invalid("incomplete envelope");
+                    String field = parser.currentName();
+                    token = parser.nextToken();
+                    if ("schemaVersion".equals(field)) {
+                        if (token != JsonToken.VALUE_NUMBER_INT || !"1".equals(parser.getText()))
+                            throw invalid("schemaVersion must be integer 1");
+                        version = true;
+                    } else if ("candidates".equals(field)) {
+                        if (token != JsonToken.START_ARRAY) throw invalid("candidates must be an array");
+                        array = true;
+                        while (parser.nextToken() != JsonToken.END_ARRAY) {
+                            if (parser.currentToken() != JsonToken.START_OBJECT)
+                                throw invalid("every candidate must be an object");
+                            int start = (int) parser.getTokenLocation().getCharOffset();
+                            int depth = 1;
+                            if (++tokens > MAX_TOKENS) throw invalid("capture token limit exceeded");
+                            while (depth > 0) {
+                                token = parser.nextToken();
+                                if (token == null) throw invalid("incomplete candidate");
+                                if (++tokens > MAX_TOKENS) throw invalid("capture token limit exceeded");
+                                if (token == JsonToken.START_OBJECT || token == JsonToken.START_ARRAY) {
+                                    if (++depth + 2 > MAX_DEPTH) throw invalid("capture nesting limit exceeded");
+                                } else if (token == JsonToken.END_OBJECT || token == JsonToken.END_ARRAY) depth--;
+                            }
+                            // Copy validated source tokens, not a JsonNode/Map roundtrip: arbitrary-precision
+                            // numbers, literal data and physical page evidence must remain byte-for-byte intact.
+                            String candidate = response.substring(start, (int) parser.getCurrentLocation().getCharOffset());
+                            int separator = count == 0 ? 0 : 1;
+                            if (++count > MAX_CANDIDATES) throw invalid("capture requires 1..100 complete candidates globally");
+                            if ((long) PREFIX.length() + candidates.length() + separator + candidate.length() + SUFFIX.length() > maxChars)
+                                throw invalid("merged envelope exceeds maxResponseChars=" + maxChars);
+                            bytes += separator + candidate.getBytes(StandardCharsets.UTF_8).length;
+                            if (bytes > MAX_BYTES) throw invalid("capture byte limit exceeded");
+                            if (separator != 0) candidates.append(',');
+                            candidates.append(candidate);
+                            batchCount++;
+                        }
+                    } else throw invalid("unknown envelope property");
+                }
+                if (!version || !array || batchCount == 0) throw invalid("schemaVersion 1 and 1..100 candidates required per batch");
+                if (parser.nextToken() != null) throw invalid("one envelope required; trailing JSON is forbidden");
+            }
+        }
+
+        private String finish() { return PREFIX + candidates + SUFFIX; }
+
+        private static IOException invalid(String detail) {
+            return new IOException("Product PDF capture JSON: " + detail);
+        }
     }
 
     private static byte[] renderPdfPagePng(PDFRenderer renderer, int pageNumber, int dpi) throws IOException {
@@ -502,6 +683,19 @@ public final class ChatModelPipelineRunner {
                 Duration.ofMinutes(longOption(pipeline, "timeoutMinutes", 30, 1, 1440)),
                 intOption(pipeline, "maxResponseChars", DEFAULT_MAX_RESPONSE_CHARS, 1_000, 20_000_000),
                 chunkConsumer);
+    }
+
+    private static NativeChatModels.Selection resolveChatSelection(
+            Path projectRoot, LocalCrawlCapabilities.ResolvedPipeline pipeline, boolean product) throws IOException {
+        NativeChatModels.Selection selection = resolveChatSelection(projectRoot, pipeline);
+        // Guard the actual detached selection, never a preview from an earlier ChatConfig read.
+        // This runs before attachments, NativeChatModels.call, or any CLI-backed generation.
+        if (product) {
+            String protocol = String.valueOf(selection.preview().get("protocol"));
+            if (!Set.of("OPENAI_CHAT", "OPENAI_RESPONSES", "ANTHROPIC_MESSAGES", "PI_MESSAGES").contains(protocol))
+                throw new IOException("Product CHAT_MODEL requires an in-host HTTP route, not " + protocol);
+        }
+        return selection;
     }
 
     private static NativeChatModels.Selection resolveChatSelection(

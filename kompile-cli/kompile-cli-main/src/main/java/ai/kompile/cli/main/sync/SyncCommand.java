@@ -58,7 +58,7 @@ public class SyncCommand implements Callable<Integer> {
     private String peerName;
 
     @Option(names = {"--only", "-o"}, split = ",",
-            description = "Component subset: skills,memories,roles,prompts,provider-skills,harness-settings,harness-credentials,all (all includes secrets).")
+            description = "Component subset: skills,memories,roles,prompts,provider-skills,harness-settings,harness-credentials,cli-settings,credentials,transcripts,judge-records,all (includes secrets).")
     private List<String> only;
 
     @Option(names = "--direction", defaultValue = "both", description = "push | pull | both (default: both).")
@@ -119,10 +119,11 @@ public class SyncCommand implements Callable<Integer> {
             scope = SyncScope.parse(scopeToken);
             dir = parseDirection(direction);
             if (forceLocal && forceRemote) throw new IllegalArgumentException("Choose only one conflict winner.");
-            if (SyncCatalog.includesHarness(components)) {
+            if (SyncCatalog.includesSensitive(components)) {
                 System.err.println(SyncCatalog.HARNESS_WARNING);
+                System.err.println("CLI transcripts, credentials, judge records and settings may contain secrets. Close writers before applying whole-file snapshots.");
                 if (scope.isProject()) throw new IllegalArgumentException("Harness sync requires --scope global.");
-                if (localMode && remoteUserHome == null) {
+                if (SyncCatalog.includesHarness(components) && localMode && remoteUserHome == null) {
                     throw new IllegalArgumentException("Harness sync with --local requires --remote-user-home to identify the other profile.");
                 }
                 if (!dryRun && !assumeYes) {
@@ -159,7 +160,8 @@ public class SyncCommand implements Callable<Integer> {
             if (SyncCatalog.includesHarness(components) && session.remoteMountIdentity().isBlank()) {
                 throw new IOException("Peer does not identify its harness mounts; update both Kompile installs.");
             }
-            String mountIdentity = SyncSession.sha256((paths.mountIdentity() + "\n" + session.remoteMountIdentity())
+            String mountIdentity = SyncSession.sha256((paths.mountIdentity() + "\n" + session.remoteMountIdentity()
+                    + (peer.hasNonNull("fingerprint") ? "\n" + peer.path("fingerprint").asText().toLowerCase(java.util.Locale.ROOT) : ""))
                     .getBytes(java.nio.charset.StandardCharsets.UTF_8));
             store.validateBaselineMounts(peerName, scope, mountIdentity);
 
@@ -225,6 +227,13 @@ public class SyncCommand implements Callable<Integer> {
             if (scope.isProject() && localHome == null) home = Path.of(scope.projectId());
             return SyncTransport.localSubprocess(binary, home, Map.of(), options);
         }
+        if (peer.hasNonNull("address")) {
+            if (scope.isProject()) throw new IllegalArgumentException("Address-based peers expose a fixed global profile; use SSH for project sync.");
+            try {
+                return new PeerConnection(peer.path("address").asText(), peer.path("fingerprint").asText(),
+                        PeerTls.readSecret(Path.of(peer.path("tokenFile").asText())));
+            } catch (IOException e) { throw new IllegalArgumentException("Cannot read peer token file.", e); }
+        }
         String ssh = peer.path("ssh").asText();
         int port = peer.path("port").asInt(-1);
         String remoteHome = peer.path("remoteHome").asText("");
@@ -241,7 +250,7 @@ public class SyncCommand implements Callable<Integer> {
     private String transportDescription(ObjectNode peer) {
         return localMode
                 ? "local:" + (localHome != null ? localHome : "~/.kompile")
-                : "ssh:" + peer.path("ssh").asText("?");
+                : peer.path("address").asText("ssh:" + peer.path("ssh").asText("?"));
     }
 
     private static Path defaultBinary() {
@@ -287,7 +296,7 @@ public class SyncCommand implements Callable<Integer> {
     }
 
     /** Select the winning content, or its deletion only with explicit authorization. */
-    private static SyncPlan resolveConflicts(SyncPlan original, boolean takeRemote, boolean allowDelete) {
+    static SyncPlan resolveConflicts(SyncPlan original, boolean takeRemote, boolean allowDelete) {
         SyncPlan plan = new SyncPlan();
         for (SyncPlan.Item item : original.items()) {
             if (item.action() == SyncPlan.Action.CONFLICT) {
@@ -360,7 +369,7 @@ public class SyncCommand implements Callable<Integer> {
         System.out.println("Sync complete. Baseline updated.");
     }
 
-    private static void saveBaseline(SyncPlan plan, SyncSession.Direction direction, boolean allowDelete,
+    static void saveBaseline(SyncPlan plan, SyncSession.Direction direction, boolean allowDelete,
                                      Map<String, String> baseline, String peerName, SyncScope scope,
                                      SyncPeerStore store, String mountIdentity) throws IOException {
         Map<String, String> nextBaseline = new HashMap<>(baseline);
@@ -405,7 +414,7 @@ public class SyncCommand implements Callable<Integer> {
         }
     }
 
-    private static String plannedLocalHash(SyncPlan plan, SyncEntry entry) {
+    static String plannedLocalHash(SyncPlan plan, SyncEntry entry) {
         return plan.items().stream().filter(item -> item.entry().packagePath().equals(entry.packagePath()))
                 .findFirst().orElseThrow().localHash();
     }

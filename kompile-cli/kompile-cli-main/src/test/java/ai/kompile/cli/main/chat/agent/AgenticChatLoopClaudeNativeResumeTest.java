@@ -2,6 +2,8 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatCompleter;
+import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.FakeClaudeCode;
@@ -39,6 +41,8 @@ class AgenticChatLoopClaudeNativeResumeTest {
 
     @Test
     void aRestartedChatResumesTheClaudeCodeSessionInsteadOfRestoringHistory() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(System.getenv("CLAUDE_CONFIG_DIR") == null,
+                "integration fixture must not write into a real configured Claude account");
         String home = System.getProperty("user.home");
         System.setProperty("user.home", Files.createDirectories(directory.resolve("home")).toString());
         List<String> lines = Collections.synchronizedList(new ArrayList<>());
@@ -70,6 +74,11 @@ class AgenticChatLoopClaudeNativeResumeTest {
             ConversationLedger.NativeSession saved = ledger.resumableNativeSession("claude-cli");
             assertNotNull(saved, "the next restart can resume the same session again");
             assertEquals(nativeSession, saved.sessionId());
+            Path link = KompileHome.homeDirectory().toPath().resolve("conversations")
+                    .resolve(SESSION).resolve("claude-code").resolve(nativeSession + ".jsonl");
+            assertTrue(Files.isSymbolicLink(link), "the running transport exposes the native transcript");
+            assertEquals(2, Files.readString(link).lines().count(), "resume appends through the same link");
+            assertEquals(nativeSession, ChatHistory.resolveNativeSessionId(SESSION, "claude"));
         } finally {
             ChatCompleter.setContentOutput(null);
             ChatCompleter.setTranscriptBlockOutput(null);
@@ -88,6 +97,10 @@ class AgenticChatLoopClaudeNativeResumeTest {
         config.setContextWindowTokens(200_000);
         config.setMaxOutputTokens(4_096);
         Path project = Files.createDirectories(directory.resolve("project"));
+        ChatHistory history = new ChatHistory(SESSION);
+        history.open("(local)", "claude", false, project);
+        history.logUserMessage(message);
+        history.close();
         try (DirectLlmClient client = new DirectLlmClient(config, mapper, project)) {
             AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
                     new PermissionService(), new AgentRegistry(), project, client, null);
@@ -105,7 +118,19 @@ class AgenticChatLoopClaudeNativeResumeTest {
 
     /** Both processes start the same fake, so its logs cover the whole chat. */
     private void installFakeClaude(DirectLlmClient client, Path project) throws Exception {
-        if (fake == null) fake = new FakeClaudeCode(directory.resolve("claude"), "ANSWER=done");
+        if (fake == null) {
+            Path nativeProject = Files.createDirectories(Path.of(System.getProperty("user.home"))
+                    .resolve(".claude/projects/test-project"));
+            fake = new FakeClaudeCode(directory.resolve("claude"), """
+                    ANSWER=done
+                    turn() {
+                      printf '%%s\\n' '{"type":"assistant","message":{"role":"assistant","content":"done"}}' >> '%s/'"$SESSION"'.jsonl'
+                      say_init
+                      say_text "$ANSWER"
+                      say_result
+                    }
+                    """.formatted(nativeProject));
+        }
         fake.install(client, project, null);
     }
 }

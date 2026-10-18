@@ -131,6 +131,27 @@ class LocalEmbeddingRuntimeTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void manualStopRefusesActiveLeaseAndReleasesOnlySelectedIdleFolder() throws Exception {
+        FakeEmbeddingProcess process = new FakeEmbeddingProcess();
+        LocalEmbeddingRuntime runtime = LocalEmbeddingRuntime.runtimeForTests(0, process);
+        Map<Path, LocalEmbeddingRuntime> live = (Map<Path, LocalEmbeddingRuntime>)
+                org.springframework.test.util.ReflectionTestUtils.getField(LocalEmbeddingRuntime.class, "LIVE_RUNTIMES");
+        live.put(projectRoot.toRealPath(), runtime);
+        Path otherFolder = Files.createDirectory(projectRoot.resolve("other"));
+        assertTrue(LocalEmbeddingRuntime.stopIdle(otherFolder).contains("No folder-local"));
+        try (LocalProjectRagSearch.EmbeddingRuntime lease = runtime.acquireForTests(false)) {
+            assertTrue(LocalEmbeddingRuntime.stopIdle(projectRoot).contains("refused"));
+            assertEquals(0, process.stops.get());
+            assertTrue((Boolean) LocalEmbeddingRuntime.runtimeStatus(projectRoot).get("running"));
+        }
+        assertTrue(LocalEmbeddingRuntime.stopIdle(projectRoot).contains("next folder-local query"));
+        assertEquals(1, process.stops.get());
+        assertEquals(false, LocalEmbeddingRuntime.runtimeStatus(projectRoot).get("running"));
+        assertTrue(LocalEmbeddingRuntime.stopIdle(projectRoot).contains("No folder-local"));
+    }
+
+    @Test
     void idleShutdownWindowResetsAfterEveryUse() throws Exception {
         FakeEmbeddingProcess process = new FakeEmbeddingProcess();
         LocalEmbeddingRuntime runtime = LocalEmbeddingRuntime.runtimeForTests(500, process);

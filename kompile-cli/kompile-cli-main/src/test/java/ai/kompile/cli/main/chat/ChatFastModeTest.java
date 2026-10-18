@@ -86,7 +86,8 @@ class ChatFastModeTest {
         active.setFastMode(true);
         assertTrue(ChatRepl.buildModelProviderCandidateFrom(active, "openai-codex", "gpt-5.6-sol", null).isFastMode());
         assertFalse(ChatRepl.buildModelProviderCandidateFrom(active, "anthropic", "claude-opus-5", null).isFastMode());
-        assertFalse(ChatRepl.buildModelProviderCandidateFrom(active, "openai-codex", "gpt-5.3-codex-spark", null).isFastMode());
+        assertTrue(ChatRepl.buildModelProviderCandidateFrom(active, "openai-codex", "gpt-5.3-codex-spark", null).isFastMode());
+        assertTrue(ChatRepl.buildModelProviderCandidateFrom(active, "openai-codex", "day-one-unlisted-model", null).isFastMode());
         assertTrue(active.isFastMode(), "candidate creation/cancellation must not change active state");
     }
 
@@ -97,7 +98,7 @@ class ChatFastModeTest {
         ChatCommand modelSwitch = new ChatCommand();
         new picocli.CommandLine(modelSwitch).parseArgs("--model", "gpt-5.3-codex-spark");
         modelSwitch.applyCommandLineOverrides(config);
-        assertFalse(config.isFastMode());
+        assertTrue(config.isFastMode(), "model changes must not clear a supported provider's preference");
 
         config.setModel("gpt-5.5");
         config.setFastMode(true);

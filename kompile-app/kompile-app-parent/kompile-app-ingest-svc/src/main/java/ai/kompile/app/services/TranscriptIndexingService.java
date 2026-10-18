@@ -108,6 +108,10 @@ public class TranscriptIndexingService {
                         truncated = true;
                         break;
                     }
+                    Path purged = getToolCallsDir().getParent().resolve(".purged").resolve(
+                            ai.kompile.cli.common.metrics.ToolCallUsageJournal.validateSessionKey(session.sessionId()));
+                    ai.kompile.cli.common.metrics.ToolJournalFiles.safe(purged);
+                    if (Files.exists(purged, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
                     if (!reindex && alreadyIndexed.contains(session.sessionId())) continue;
                     try {
                         int count = indexSession(adapter, session);

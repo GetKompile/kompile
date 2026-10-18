@@ -22,20 +22,26 @@ public final class SpinProjectComposition {
     private final Path template;
     private final ObjectNode manifest;
     private final KompileProjectDistribution distribution;
+    private final Path entrypoint;
     private final List<SpinDefinition.ModelAsset> models;
     private final String contentId;
 
     private SpinProjectComposition(Path template, ObjectNode manifest,
                                    KompileProjectDistribution distribution,
-                                   List<SpinDefinition.ModelAsset> models, String contentId) {
+                                   Path entrypoint, List<SpinDefinition.ModelAsset> models, String contentId) {
         this.template = template;
         this.manifest = manifest;
         this.distribution = distribution;
+        this.entrypoint = entrypoint;
         this.models = List.copyOf(models);
         this.contentId = contentId;
     }
 
     static SpinProjectComposition load(Path root, JsonNode envelope) throws IOException {
+        return load(root, envelope, null);
+    }
+
+    static SpinProjectComposition load(Path root, JsonNode envelope, Path suppliedRuntime) throws IOException {
         if (!envelope.isObject()) throw new IOException("Spin v2 requires project.template");
         var fields = envelope.fieldNames();
         while (fields.hasNext()) {
@@ -78,7 +84,13 @@ public final class SpinProjectComposition {
             if (!"bundle".equals(disposition)) {
                 throw new IOException("Software " + software.getId() + " requires an unimplemented acquisition stage: " + disposition);
             }
-            requirePath(root, software.getPath(), "software " + software.getId());
+            requireReleasePath(root, suppliedRuntime, software.getPath(), "software " + software.getId());
+        }
+        Path entrypoint = distribution.getEntrypoint() == null ? null
+                : requireReleasePath(root, suppliedRuntime, distribution.getEntrypoint(), "distribution.entrypoint");
+        if (entrypoint != null && (!Files.isRegularFile(entrypoint, LinkOption.NOFOLLOW_LINKS)
+                || (!isWindowsCommand(entrypoint) && !Files.isExecutable(entrypoint)))) {
+            throw new IOException("distribution.entrypoint must be an executable regular file: " + entrypoint);
         }
         List<SpinDefinition.ModelAsset> models = new ArrayList<>();
         Set<String> modelIds = new HashSet<>();
@@ -147,12 +159,33 @@ public final class SpinProjectComposition {
             }
         }
         String contentId = HashUtils.sha256Hex(hashes.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        return new SpinProjectComposition(template, (ObjectNode) node.deepCopy(), distribution, models,
+        return new SpinProjectComposition(template, (ObjectNode) node.deepCopy(), distribution, entrypoint, models,
                 contentId.substring(0, 24));
     }
 
+    private static boolean isWindowsCommand(Path path) {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        return os.contains("win") && (name.endsWith(".cmd") || name.endsWith(".bat") || name.endsWith(".exe"));
+    }
+
+    /** Resolve release paths against the actual runtime when --runtime-dir supplies it separately. */
+    private static Path requireReleasePath(Path root, Path suppliedRuntime, String value, String field)
+            throws IOException {
+        if (suppliedRuntime != null && value != null && value.startsWith("runtime/")) {
+            return requirePath(suppliedRuntime, value.substring("runtime/".length()), field);
+        }
+        if (suppliedRuntime != null && "runtime".equals(value)) {
+            if (Files.isSymbolicLink(suppliedRuntime) || !Files.isDirectory(suppliedRuntime, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException(field + " requires a regular bundled runtime directory");
+            }
+            return suppliedRuntime;
+        }
+        return requirePath(root, value, field);
+    }
+
     static Path requirePath(Path root, String value, String field) throws IOException {
-        if (value == null || value.isBlank() || value.contains("\\") || value.matches("^[A-Za-z]:.*")) {
+        if (value == null || value.isBlank() || value.contains("\\") || value.indexOf(':') >= 0) {
             throw new IOException(field + " requires a portable project-relative path");
         }
         Path relative;
@@ -165,12 +198,20 @@ public final class SpinProjectComposition {
             if ("..".equals(part.toString())) throw new IOException(field + " contains parent traversal");
         }
         Path resolved = root.resolve(relative).normalize();
+        if (!resolved.startsWith(root) || Files.isSymbolicLink(root)) {
+            throw new IOException(field + " path escapes its root or has a symbolic link: " + value);
+        }
         Path current = root;
         for (Path part : root.relativize(resolved)) {
             current = current.resolve(part);
             if (Files.isSymbolicLink(current)) throw new IOException(field + " contains a symbolic link");
         }
         if (!Files.exists(resolved, LinkOption.NOFOLLOW_LINKS)) throw new IOException(field + " is missing: " + value);
+        if ((!Files.isRegularFile(resolved, LinkOption.NOFOLLOW_LINKS)
+                && !Files.isDirectory(resolved, LinkOption.NOFOLLOW_LINKS))
+                || !resolved.toRealPath().startsWith(root.toRealPath())) {
+            throw new IOException(field + " must be a contained regular file or directory: " + value);
+        }
         return resolved;
     }
 
@@ -198,6 +239,7 @@ public final class SpinProjectComposition {
     public Path template() { return template; }
     public ObjectNode manifest() { return manifest.deepCopy(); }
     public KompileProjectDistribution distribution() { return distribution; }
+    public Path entrypoint() { return entrypoint; }
     public List<SpinDefinition.ModelAsset> models() { return models; }
     public String contentId() { return contentId; }
 }

@@ -59,7 +59,7 @@ class DirectSubagentRunnerCompactionTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private static final String SUMMARY_PHRASE =
-            "Summarize the following conversation transcript";
+            "Transcript to summarize:";
     private static final String SUMMARY_MARKER = "[Conversation summary]";
     private static final String SECOND_TASK_PAD = "b".repeat(1_000);
     private static final String OVERFLOW_PROMPT = "Third run that overflows the window";

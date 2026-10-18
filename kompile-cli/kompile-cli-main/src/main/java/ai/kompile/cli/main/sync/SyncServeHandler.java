@@ -136,7 +136,10 @@ public final class SyncServeHandler implements AutoCloseable {
         String action = request.path("action").asText("");
         paths.checkUnchanged(entry, targetHashes.get(entry.packagePath()));
         if ("write".equals(action)) {
-            byte[] bytes = Base64.getDecoder().decode(request.path("dataBase64").asText());
+            String payload = request.path("dataBase64").asText();
+            if (payload.length() > 22_369_624) throw new IOException("Sync payload exceeds 16MiB.");
+            byte[] bytes = Base64.getDecoder().decode(payload);
+            if (bytes.length > 16 * 1024 * 1024) throw new IOException("Sync payload exceeds 16MiB.");
             String expected = request.path("entry").path("sha256").asText("");
             String actual = SyncSession.sha256(bytes);
             if (!expected.equals(actual)) {

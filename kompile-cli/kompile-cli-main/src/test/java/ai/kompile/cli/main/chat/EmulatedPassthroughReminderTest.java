@@ -52,7 +52,9 @@ class EmulatedPassthroughReminderTest {
         String rendered = replay(turn);
 
         assertTrue(rendered.contains("REMINDERS APPLIED TO THIS PROMPT"));
-        assertTrue(rendered.contains("[project] Keep project context"));
+        assertFalse(rendered.contains("[project] Keep project context"),
+                "reminders should be collapsed in resumed output too");
+        assertTrue(rendered.contains("(1)"));
         assertFalse(rendered.contains("<kompile_reminders>"));
         assertFalse(rendered.contains("</kompile_reminders>"));
         assertFalse(rendered.contains("The user configured these reminders"));
@@ -131,7 +133,7 @@ class EmulatedPassthroughReminderTest {
                     new Class<?>[]{String.class}, decoratedPrompt("Continue")));
 
             List<String> rows = scrollback(command);
-            assertTrue(rows.size() > 4, "a multiline reminder must occupy multiple retained rows");
+            assertTrue(rows.size() <= 4, "a collapsed reminder summary must stay compact even when narrow");
             for (String row : rows) {
                 assertFalse(row.contains("\n"), "a retained row must not contain a newline");
                 assertFalse(row.contains("\r"), "a retained row must not contain a carriage return");
@@ -142,7 +144,8 @@ class EmulatedPassthroughReminderTest {
             }
             String visible = rows.stream().map(row -> AttributedString.fromAnsi(row).toString())
                     .reduce("", String::concat);
-            assertEquals(1, occurrences(visible, "Keep project context"));
+            assertEquals(0, occurrences(visible, "Keep project context"));
+            assertTrue(visible.contains("REMINDERS APPLIED TO THIS PROMPT"));
             assertEquals(draft, field(command, "busyInputBuffer").toString());
         }
     }

@@ -256,11 +256,11 @@ class McpDashboardControllerTest {
 
             controller.prepare();
             assertEquals(SessionInsightsPanel.TITLE, tui.getDashboardSnapshot().title());
-            assertEquals(List.of("Loading session insights…"), tui.getDashboardSnapshot().lines());
+            assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), tui.getDashboardSnapshot().lines());
 
             assertTrue(controller.refresh().refreshed());
             assertEquals(SessionInsightsPanel.TITLE, tui.getDashboardSnapshot().title());
-            assertEquals(List.of("Tools: 3 calls · p50 120ms"), tui.getDashboardSnapshot().lines());
+            assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), tui.getDashboardSnapshot().lines());
             controller.close();
         } finally {
             processes.close();
@@ -268,23 +268,23 @@ class McpDashboardControllerTest {
     }
 
     @Test
-    void theSessionPanelRefreshesAfterEveryToolCallFailedOnesIncluded() {
+    void terminalHintDoesNotScanAfterToolCallsIncludingFailures() {
         BackgroundProcessManager processes = new BackgroundProcessManager("dashboard-session-every-call-test");
         try {
             KompileTui tui = tui(processes, true);
             PanelSource source = new PanelSource(Panel.Line.of("Tools: 1 call"));
             McpDashboardController controller = sessionController(tui, () -> session(tempDir), source);
             assertTrue(controller.refresh().refreshed());
-            assertEquals(1, source.asks.get());
+            assertEquals(0, source.asks.get());
 
             controller.onToolComplete("bash", "{\"command\":\"false\"}", ToolResult.error("exit 1"));
-            awaitAsks(source, 2);
             controller.onToolComplete("read", "{}", success());
-            awaitAsks(source, 3);
 
             source.line = Panel.Line.of("Tools: 4 calls · 1 failed");
             controller.onToolComplete("edit", "{}", success());
-            awaitDashboard(tui, List.of("Tools: 4 calls · 1 failed"));
+            assertEquals(0, source.asks.get());
+            assertNull(controller.panelWatcher());
+            assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), tui.getDashboardSnapshot().lines());
             controller.close();
         } finally {
             processes.close();
@@ -309,7 +309,7 @@ class McpDashboardControllerTest {
     }
 
     @Test
-    void aFirstFailureExplainsItselfAndArmsTheRetryTimer() {
+    void missingChatContextStillShowsHintWithoutRetryTimer() {
         BackgroundProcessManager processes = new BackgroundProcessManager("dashboard-session-first-failure-test");
         try {
             KompileTui tui = tui(processes, true);
@@ -318,18 +318,14 @@ class McpDashboardControllerTest {
             McpDashboardController controller = sessionController(tui, context::get, source);
 
             McpDashboardController.RefreshResult failed = controller.refresh();
-            assertFalse(failed.refreshed());
-            assertEquals("Dashboard refresh failed: the chat session is not ready", failed.message());
+            assertTrue(failed.refreshed());
             assertEquals(SessionInsightsPanel.TITLE, tui.getDashboardSnapshot().title());
-            assertEquals(List.of("Session insights unavailable · /dashboard refresh", "the chat session is not ready"),
-                    tui.getDashboardSnapshot().lines());
-            PanelWatcher watcher = controller.panelWatcher();
-            assertNotNull(watcher, "a panel whose first read failed is retried on the timer");
-            assertTrue(watcher.isRunning());
+            assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), tui.getDashboardSnapshot().lines());
+            assertNull(controller.panelWatcher());
 
             context.set(session(tempDir));
             assertTrue(controller.refresh().refreshed());
-            assertEquals(List.of("Judge: no verdicts yet"), tui.getDashboardSnapshot().lines());
+            assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), tui.getDashboardSnapshot().lines());
             controller.close();
         } finally {
             processes.close();
@@ -337,7 +333,7 @@ class McpDashboardControllerTest {
     }
 
     @Test
-    void aLaterFailureKeepsTheSessionRowsWithoutAnAlert() {
+    void hintDoesNotDependOnContextAndNeedsNoAlert() {
         BackgroundProcessManager processes = new BackgroundProcessManager("dashboard-session-later-failure-test");
         try {
             KompileTui tui = tui(processes, true);
@@ -348,10 +344,10 @@ class McpDashboardControllerTest {
             String alert = tui.getCurrentAlert();
 
             context.set(null);
-            assertFalse(controller.refresh().refreshed());
+            assertTrue(controller.refresh().refreshed());
 
-            assertEquals(List.of("Judge: no verdicts yet"), tui.getDashboardSnapshot().lines());
-            assertEquals(alert, tui.getCurrentAlert(), "the panel tries again on its timer, quietly");
+            assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), tui.getDashboardSnapshot().lines());
+            assertEquals(alert, tui.getCurrentAlert(), "the hint never needs chat context");
             controller.close();
         } finally {
             processes.close();
@@ -359,7 +355,7 @@ class McpDashboardControllerTest {
     }
 
     @Test
-    void unchangedSessionRowsAreNotRedrawn() {
+    void unchangedHintIsNotRedrawnWhenMetricSourcesChange() {
         BackgroundProcessManager processes = new BackgroundProcessManager("dashboard-session-redraw-test");
         try {
             AtomicInteger draws = new AtomicInteger();
@@ -374,7 +370,7 @@ class McpDashboardControllerTest {
 
             source.line = Panel.Line.of("Judge: 1 flagged");
             assertTrue(controller.refresh().refreshed());
-            assertEquals(2, draws.get());
+            assertEquals(1, draws.get(), "source state cannot change the static hint");
             controller.close();
         } finally {
             processes.close();
@@ -426,9 +422,9 @@ class McpDashboardControllerTest {
             assertFalse(tui.getDashboardSnapshot().visible());
 
             controller.onToolComplete("bash", "{}", success());
-            assertEquals(1, source.asks.get(), "a hidden panel is only marked stale");
-            assertEquals("Dashboard shown; refresh scheduled.", controller.command("show").message());
-            awaitAsks(source, 2);
+            assertEquals(0, source.asks.get(), "a hidden hint never scans metrics");
+            assertEquals("Dashboard shown.", controller.command("show").message());
+            assertNull(controller.panelWatcher());
             controller.close();
         } finally {
             processes.close();
@@ -436,7 +432,7 @@ class McpDashboardControllerTest {
     }
 
     @Test
-    void aWriteToAFileThePanelReadsRefreshesIt() throws Exception {
+    void terminalHintNeverRegistersMetricFileWatches() throws Exception {
         BackgroundProcessManager processes = new BackgroundProcessManager("dashboard-session-watch-test");
         try {
             KompileTui tui = tui(processes, true);
@@ -444,14 +440,14 @@ class McpDashboardControllerTest {
             source.watches = List.of(new Panel.Watch(tempDir, "chat-1.jsonl"));
             McpDashboardController controller = sessionController(tui, () -> session(tempDir), source);
             assertTrue(controller.refresh().refreshed());
-            assertTrue(controller.panelWatcher().isWatching(tempDir));
+            assertNull(controller.panelWatcher());
 
             source.line = Panel.Line.of("Tools: 1 call");
             Files.writeString(tempDir.resolve("chat-1.jsonl"), "{}\n",
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
 
-            awaitAsks(source, 2);
-            awaitDashboard(tui, List.of("Tools: 1 call"));
+            assertEquals(0, source.asks.get());
+            assertEquals(List.of(SessionInsightsPanel.HINT_DETAIL), tui.getDashboardSnapshot().lines());
             controller.close();
         } finally {
             processes.close();
@@ -459,7 +455,7 @@ class McpDashboardControllerTest {
     }
 
     @Test
-    void closingTheControllerStopsTheSessionPanelsWatcher() throws Exception {
+    void closingHintControllerHasNoWatcherToStop() throws Exception {
         BackgroundProcessManager processes = new BackgroundProcessManager("dashboard-session-close-test");
         try {
             KompileTui tui = tui(processes, true);
@@ -468,18 +464,26 @@ class McpDashboardControllerTest {
             McpDashboardController controller = sessionController(tui, () -> session(tempDir), source);
             assertTrue(controller.refresh().refreshed());
             PanelWatcher watcher = controller.panelWatcher();
-            assertTrue(watcher.isRunning());
+            assertNull(watcher);
 
             controller.close();
 
             assertNull(controller.panelWatcher());
-            awaitStopped(watcher);
-            assertFalse(watcher.isWatching(tempDir));
             controller.onToolComplete("bash", "{}", success());
             assertFalse(controller.requestRefresh());
-            assertEquals(1, source.asks.get());
+            assertEquals(0, source.asks.get());
         } finally {
             processes.close();
+        }
+    }
+
+    @Test
+    void bareDashboardControllerDiscoversReportsWithoutFetchingCustomSource() {
+        AtomicInteger calls = new AtomicInteger();
+        try (McpDashboardController controller = controller(null, calls,
+                "{\"schemaVersion\":\"kompile.dashboard.v1\",\"contextVersion\":\"v1\",\"lines\":[\"Ready\"]}")) {
+            assertTrue(controller.command("").message().contains("/dashboard-summary"));
+            assertEquals(0, calls.get());
         }
     }
 

@@ -269,7 +269,7 @@ public class SetupWizard {
     /**
      * Invocation-only routing plus the workflow team chosen during setup; never
      * part of a profile, credential, or persisted session config. {@code workflow}
-     * is null when the user declined a workflow (or selected None). {@code webPort}
+     * is null when the user did not choose Workflow mode. {@code webPort}
      * is the launch-only browser port; null or 0 retains automatic selection.
      */
     public record SetupResult(ChatConfig config, Destination destination,
@@ -477,8 +477,7 @@ public class SetupWizard {
                     selected.setPassthroughManaged(true);
                     System.out.println("  The lead runs Kompile managed so /workflow commands stay available.");
                 }
-                // Workflow team step is part of the setup wizard itself, including when
-                // a saved profile is used (templates offered when none exist).
+                // Saved profiles select a team only in the explicit Workflow chat mode.
                 WorkflowSelection workflow = workflowStep(reader, projectRoot, selected, workflowRequested);
                 if (workflow.cancelled()) return null;
                 boolean nativeTeam = workflow.snapshot() != null && "passthrough".equalsIgnoreCase(selected.getChatMode());
@@ -667,8 +666,7 @@ public class SetupWizard {
             }
             config.setPassthroughManaged(passthroughManaged);
             if ("passthrough".equals(chatMode) && !configurePassthroughModel(reader, config)) return null;
-            // Workflow team step: part of the wizard proper, forced when Workflow was
-            // chosen and offered for every fresh config that can lead a team.
+            // Fresh configurations select a team only in the explicit Workflow chat mode.
             WorkflowSelection workflow = workflowStep(reader, projectRoot, config, workflowRequested);
             if (workflow.cancelled()) return null;
             boolean nativeTeam = workflow.snapshot() != null && "passthrough".equalsIgnoreCase(config.getChatMode());
@@ -835,49 +833,11 @@ public class SetupWizard {
 
     // ── Workflow team selection ─────────────────────────────────────────────
 
-    /**
-     * Interactive workflow-team selection shown before launch. Following the
-     * profile contract: "no" and blank keep normal setup, "cancel"/EOF aborts
-     * the launch, and choosing a workflow resolves roles immediately — an
-     * unresolvable workflow aborts rather than degrading to prompt-only
-     * instructions.
-     */
-    public static WorkflowSelection selectWorkflow(Path projectRoot) {
-        try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
-            LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
-            return selectWorkflow(reader, projectRoot);
-        } catch (IOException e) {
-            System.err.println("Could not open workflow picker: " + e.getMessage());
-            return new WorkflowSelection(null, true);
-        }
-    }
-
-    /** Gated wrapper: "no"/blank skips with a null (non-cancelled) selection. */
-    public static WorkflowSelection selectWorkflow(LineReader reader, Path projectRoot) {
-        return selectWorkflow(reader, projectRoot, null);
-    }
-
-    /**
-     * Gated wrapper for the chat {@code lead} configures: "no"/blank skips with a
-     * null (non-cancelled) selection.
-     */
-    public static WorkflowSelection selectWorkflow(LineReader reader, Path projectRoot, ChatConfig lead) {
-        Boolean use = profileYesNo(reader, "Run this chat with a workflow team?");
-        if (use == null) return new WorkflowSelection(null, true);
-        if (!use) return new WorkflowSelection(null, false);
-        return chooseWorkflow(reader, projectRoot, lead);
-    }
-
-    /**
-     * The workflow step for a configuration the wizard produced: the forced
-     * picker when Workflow was chosen, the opt-in question when the
-     * configuration can lead a team, and nothing otherwise.
-     */
-    private static WorkflowSelection workflowStep(LineReader reader, Path projectRoot,
-                                                  ChatConfig config, boolean required) {
-        if (required) return chooseWorkflow(reader, projectRoot, config);
-        if (!canLeadWorkflow(config)) return new WorkflowSelection(null, false);
-        return selectWorkflow(reader, projectRoot, config);
+    /** Select a team only when Workflow was explicitly chosen as the chat mode. */
+    static WorkflowSelection workflowStep(LineReader reader, Path projectRoot,
+                                           ChatConfig config, boolean workflowRequested) {
+        if (workflowRequested) return chooseWorkflow(reader, projectRoot, config);
+        return new WorkflowSelection(null, false);
     }
 
     public static WorkflowSelection chooseWorkflow(LineReader reader, Path projectRoot) {
@@ -885,8 +845,8 @@ public class SetupWizard {
     }
 
     /**
-     * The forced picker shown when Workflow is chosen as a chat mode (or after
-     * the opt-in question): saved teams first, then the zero-config templates,
+     * The picker shown when Workflow is chosen as a chat mode:
+     * saved teams first, then the zero-config templates,
      * then the full creation wizard. Every path ends at the participant-model
      * step, whose defaults come from {@code lead} (the chat leading the team,
      * null when unknown) and the project's saved chat profiles.

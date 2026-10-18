@@ -103,6 +103,50 @@ class ClaudeTaskBridgeTest {
     }
 
     @Test
+    void childTranscriptKeepsTextThinkingInputsAndResultsSeparateAcrossTasks() throws Exception {
+        bridge.onEvent(PROCESS, started("task-1"));
+        bridge.onEvent(PROCESS, started("task-2"));
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        for (String line : List.of(
+                """
+                {"type":"user","parent_tool_use_id":"toolu_task-1","message":{"content":"Inspect the code"}}""",
+                """
+                {"type":"stream_event","parent_tool_use_id":"toolu_task-1","event":{"type":"message_start","message":{"id":"child-1"}}}""",
+                """
+                {"type":"stream_event","parent_tool_use_id":"toolu_task-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Need evidence"}}}""",
+                """
+                {"type":"stream_event","parent_tool_use_id":"toolu_task-1","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I will "}}}""",
+                """
+                {"type":"assistant","parent_tool_use_id":"toolu_task-2","message":{"id":"child-2","content":[{"type":"text","text":"Other child"}]}}""",
+                """
+                {"type":"stream_event","parent_tool_use_id":"toolu_task-1","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"inspect it"}}}""",
+                """
+                {"type":"assistant","parent_tool_use_id":"toolu_task-1","message":{"id":"child-1","content":[{"type":"thinking","thinking":"Need evidence"},{"type":"text","text":"I will inspect it"},{"type":"tool_use","id":"read-1","name":"Read","input":{"path":"code.java"}}]}}""",
+                """
+                {"type":"user","parent_tool_use_id":"toolu_task-1","message":{"content":[{"type":"tool_result","tool_use_id":"read-1","content":"file contents","is_error":true}]}}""",
+                """
+                {"type":"assistant","parent_tool_use_id":"toolu_task-1","message":{"id":"child-final","content":[{"type":"text","text":"Found the cause"}]}}""")) {
+            parser.parse(line).forEach(event -> bridge.onEvent(PROCESS, event));
+        }
+        // Content is visible while the child is still running, including partial lines.
+        String live = Files.readString(row("task-1").getOutputFile());
+        assertTrue(live.endsWith("Assistant:\nFound the cause"), live);
+        bridge.onEvent(PROCESS, new ClaudeCliStreamParser.TaskEnded("task-1", "completed", "fixed"));
+        String transcript = Files.readString(row("task-1").getOutputFile());
+        assertEquals("Claude Code started local_agent task task-1: index the docs\n"
+                + "User:\nInspect the code\nThinking:\nNeed evidence\nAssistant:\nI will inspect it\n"
+                + "Tool [read-1]: Read\nInput: {\"path\":\"code.java\"}\n"
+                + "Result [read-1] (error):\nfile contents\nAssistant:\nFound the cause\n"
+                + "Claude Code reports the task completed: fixed\n", transcript);
+        assertFalse(transcript.contains("Other child"));
+        assertFalse(Files.readString(row("task-2").getOutputFile()).contains("inspect it"));
+        // A foreign process cannot write into a child's row, even with the same tool id.
+        bridge.onEvent(OTHER_PROCESS, new ClaudeCliStreamParser.SubagentEvent("toolu_task-2",
+                new ClaudeCliStreamParser.Text("foreign")));
+        assertFalse(Files.readString(row("task-2").getOutputFile()).contains("foreign"));
+    }
+
+    @Test
     void progressUpdatesTheRowAndLogsEachNewLine() throws Exception {
         bridge.onEvent(PROCESS, started("task-1"));
         bridge.onEvent(PROCESS, new ClaudeCliStreamParser.TaskProgress(

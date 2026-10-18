@@ -491,6 +491,7 @@ class ClaudeCliStreamParserTest {
         }
         assertEquals(List.of(
                 new ClaudeCliStreamParser.TaskStarted("a1", "toolu_1", "Explore the repo", "local_agent", true),
+                new ClaudeCliStreamParser.SubagentEvent("toolu_1", new ClaudeCliStreamParser.UserText("look")),
                 new ClaudeCliStreamParser.TaskProgress("a1", "Explore the repo", "Grep", "Searching", 10, 1, 5),
                 new ClaudeCliStreamParser.BackgroundTasks(List.of("a1")),
                 new ClaudeCliStreamParser.TaskEnded("a1", "completed", ""),
@@ -527,7 +528,15 @@ class ClaudeCliStreamParserTest {
                 {"type":"assistant","message":{"id":"msg-main","content":[{"type":"text","text":"Main answer"}]},"parent_tool_use_id":null}""")) {
             events.addAll(parser.parse(line));
         }
-        assertEquals(List.of(new ClaudeCliStreamParser.Text("Main answer")), events);
+        assertEquals(List.of(new ClaudeCliStreamParser.Text("Main answer")), events.stream()
+                .filter(event -> !(event instanceof ClaudeCliStreamParser.SubagentEvent)).toList());
+        assertEquals(List.of(
+                new ClaudeCliStreamParser.SubagentEvent("toolu_task", new ClaudeCliStreamParser.Text("Subagent notes")),
+                new ClaudeCliStreamParser.SubagentEvent("toolu_task", new ClaudeCliStreamParser.ToolStart("toolu_sub", "Grep", "{\"pattern\":\"x\"}")),
+                new ClaudeCliStreamParser.SubagentEvent("toolu_task", new ClaudeCliStreamParser.ToolInput("toolu_sub", "Grep", "{\"pattern\":\"x\"}")),
+                new ClaudeCliStreamParser.SubagentEvent("toolu_task", new ClaudeCliStreamParser.ToolOutput("toolu_sub", "Grep", "searching")),
+                new ClaudeCliStreamParser.SubagentEvent("toolu_task", new ClaudeCliStreamParser.ToolComplete("toolu_sub", "Grep", "3 matches", false))),
+                events.stream().filter(ClaudeCliStreamParser.SubagentEvent.class::isInstance).toList());
     }
 
     @Test
@@ -575,11 +584,24 @@ class ClaudeCliStreamParserTest {
             events.addAll(parser.parse(line));
         }
         assertEquals(List.of(
-                new ClaudeCliStreamParser.Activity("Compacting Claude context"),
-                new ClaudeCliStreamParser.Notice("Compacting conversation"),
+                new ClaudeCliStreamParser.CompactionStarted(),
                 new ClaudeCliStreamParser.Notice("Fast mode is unavailable"),
                 new ClaudeCliStreamParser.Notice("Context is 90% full"),
                 new ClaudeCliStreamParser.Notice("Switched to claude-sonnet-5")), events);
+    }
+
+    @Test
+    void childCompactionDoesNotResetOrReportParentContext() {
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        parser.parse("""
+                {"type":"stream_event","event":{"type":"message_start","message":{"id":"parent-request","usage":{"input_tokens":10,"cache_read_input_tokens":120000}}},"parent_tool_use_id":null}
+                """);
+        assertEquals(List.of(), parser.parse("""
+                {"type":"system","subtype":"compact_boundary","parent_tool_use_id":"child-1","compact_metadata":{"trigger":"auto","pre_tokens":180000}}
+                """));
+        assertEquals(120_010, turnComplete(parser, """
+                {"type":"result","subtype":"success","num_turns":1}
+                """).contextTokens(), "only a main-thread boundary invalidates main-thread usage");
     }
 
     @Test
@@ -604,13 +626,14 @@ class ClaudeCliStreamParserTest {
     }
 
     @Test
-    void compactionFailuresClaudeCodeDoesNotShowAsErrorsProduceNoEvents() {
+    void harmlessCompactionOutcomesEndProgressWithoutReportingFailures() {
         // Claude Code 2.1.282 reports an aborted compaction, one with too little to
         // summarize and one a hook blocked as failed; the session still fits.
         ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
         for (String detail : List.of("aborted", "too_few_groups", "Request was aborted.",
                 "Not enough messages to compact.", "Compaction blocked by PreCompact hook: policy")) {
-            assertEquals(List.of(), parser.parse(compactionFailure(detail)), detail);
+            assertEquals(List.of(new ClaudeCliStreamParser.CompactionSkipped(detail)),
+                    parser.parse(compactionFailure(detail)), detail);
         }
         for (String detail : List.of("exhausted",
                 "Compaction failed · conversation could not be reduced below the context limit")) {
@@ -671,7 +694,8 @@ class ClaudeCliStreamParserTest {
                         {"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: Repeated 529 Overloaded errors"}]},"parent_tool_use_id":null,"error":"server_error"}
                         """.trim()));
         // A subagent's failed request does not end the turn.
-        assertEquals(List.of(new ClaudeCliStreamParser.Notice("Prompt is too long")),
+        assertEquals(List.of(new ClaudeCliStreamParser.SubagentEvent("toolu_task",
+                        new ClaudeCliStreamParser.ApiError("Prompt is too long"))),
                 parser.parse("""
                         {"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Prompt is too long"}]},"parent_tool_use_id":"toolu_task","error":"invalid_request","is_api_error_message":true}
                         """.trim()));

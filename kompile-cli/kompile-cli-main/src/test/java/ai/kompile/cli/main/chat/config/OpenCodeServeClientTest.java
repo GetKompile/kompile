@@ -530,6 +530,44 @@ class OpenCodeServeClientTest {
         }
     }
 
+    @Test
+    void contextUsesLatestRequestWithMergedCacheNotTurnTotalsOrLateEarlierMessages() throws Exception {
+        List<Long> contexts = new CopyOnWriteArrayList<>();
+        List<String> usage = new CopyOnWriteArrayList<>();
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:1", "context-session")) {
+            var activity = new OpenCodeServeClient.ActivityListener() {
+                public void onToolStart(String id, String name, String input) { }
+                public void onToolComplete(String id, String name, String out, int exit, boolean error) { }
+                public void onTokenUsage(long input, long output, long read, long write) {
+                    usage.add(input + ":" + output + ":" + read + ":" + write);
+                }
+                public void onContextUsage(long input) { contexts.add(input); }
+            };
+            Class<?> type = Class.forName(OpenCodeServeClient.class.getName() + "$EventBusListener");
+            var constructor = type.getDeclaredConstructor(OpenCodeServeClient.class, String.class,
+                    java.util.function.Consumer.class, OpenCodeServeClient.ActivityListener.class);
+            constructor.setAccessible(true);
+            Object listener = constructor.newInstance(client, "context-session", null, activity);
+            var handle = type.getDeclaredMethod("handleTokens", com.fasterxml.jackson.databind.JsonNode.class);
+            handle.setAccessible(true);
+            handle.invoke(listener, objectMapper.readTree(usageInfo("context-session", "m1", 100, 20)));
+            handle.invoke(listener, objectMapper.readTree(usageInfo("context-session", "m2", 200, 30)));
+            // An output-only partial snapshot must preserve the measured cached prefix.
+            handle.invoke(listener, objectMapper.readTree("""
+                    {"sessionID":"context-session","id":"m2","role":"assistant","tokens":{"output":40}}
+                    """));
+            handle.invoke(listener, objectMapper.readTree(usageInfo("context-session", "m1", 150, 50)));
+            handle.invoke(listener, objectMapper.readTree(usageInfo("other-session", "m3", 9000, 50)));
+            assertEquals(List.of(1300L, 1400L, 1400L), contexts);
+            assertEquals(List.of("100:20:1000:200", "200:30:1000:200", "0:10:0:0", "50:30:0:0"), usage);
+            var stop = type.getDeclaredMethod("stop");
+            stop.setAccessible(true);
+            stop.invoke(listener);
+        }
+    }
+
     private static String usageInfo(String session, String id, long input, long output) {
         return """
                 {"sessionID":"%s","id":"%s","role":"assistant",

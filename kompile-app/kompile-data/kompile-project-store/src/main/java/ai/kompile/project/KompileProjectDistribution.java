@@ -49,6 +49,10 @@ public class KompileProjectDistribution {
     private String materialization = "bundle";
     @JsonDeserialize(using = StrictStringDeserializer.class)
     private String buildTier = "assemble";
+    /** Optional product adapter, relative to the spin release root (not the project template). */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonDeserialize(using = StrictStringDeserializer.class)
+    private String entrypoint;
     private List<Target> targets = new ArrayList<>();
     private List<Software> software = new ArrayList<>();
     private Web web = new Web();
@@ -59,6 +63,8 @@ public class KompileProjectDistribution {
     public void setMaterialization(String materialization) { this.materialization = materialization; }
     public String getBuildTier() { return buildTier; }
     public void setBuildTier(String buildTier) { this.buildTier = buildTier; }
+    public String getEntrypoint() { return entrypoint; }
+    public void setEntrypoint(String entrypoint) { this.entrypoint = entrypoint; }
     public List<Target> getTargets() { return targets; }
     public void setTargets(List<Target> targets) {
         this.targets = targets == null ? null : new ArrayList<>(targets);
@@ -80,6 +86,13 @@ public class KompileProjectDistribution {
         requireChoice("distribution.delivery", delivery, DELIVERIES);
         requireChoice("distribution.materialization", materialization, MATERIALIZATIONS);
         requireChoice("distribution.buildTier", buildTier, BUILD_TIERS);
+        if (entrypoint != null) {
+            requireRelativePath(entrypoint, "distribution.entrypoint");
+            if (entrypoint.contains("\\")
+                    || !Path.of(entrypoint).normalize().toString().replace('\\', '/').equals(entrypoint)) {
+                throw new IllegalArgumentException("distribution.entrypoint requires a canonical portable release-relative path");
+            }
+        }
         if (targets == null || software == null || web == null) {
             throw new IllegalArgumentException("distribution targets, software and web must not be null");
         }
@@ -146,15 +159,19 @@ public class KompileProjectDistribution {
     }
 
     private static void requireRelativePath(String path) {
-        requireText("software.path", path);
+        requireRelativePath(path, "software.path");
+    }
+
+    private static void requireRelativePath(String path, String field) {
+        requireText(field, path);
         // Check both separator forms independently of the host OS (including drives and UNC).
         String portable = path.replace('\\', '/');
         if (portable.startsWith("/") || portable.indexOf(':') >= 0 || Path.of(path).isAbsolute()) {
-            throw new IllegalArgumentException("software.path must be relative: " + path);
+            throw new IllegalArgumentException(field + " must be relative: " + path);
         }
         for (String part : portable.split("/")) {
             if ("..".equals(part)) {
-                throw new IllegalArgumentException("software.path must not traverse parents: " + path);
+                throw new IllegalArgumentException(field + " must not traverse parents: " + path);
             }
         }
     }

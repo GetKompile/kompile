@@ -156,6 +156,13 @@ public class KompileAdapter implements ChatSourceAdapter {
         return parseTranscript(file);
     }
 
+    /** Display-only projection; legacy readTurns/model restoration deliberately excludes this data. */
+    public List<ai.kompile.cli.common.chat.sources.ProductDisplayTurn> readProductDisplayTurns(String sessionId) throws IOException {
+        String safe = ChatAdapterSupport.safeSessionId(sessionId)
+                .orElseThrow(() -> new IOException("Invalid session id: " + sessionId));
+        return KompileTranscriptFormat.readProductDisplayTurns(conversationsDir().resolve(safe + ".txt"), safe);
+    }
+
     /** True once this transcript holds the turns of the given vendor session. */
     public boolean carriesOver(String sessionId, String source, String nativeSessionId) throws IOException {
         String safe = ChatAdapterSupport.safeSessionId(sessionId)

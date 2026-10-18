@@ -1,0 +1,24 @@
+.tool-presentation-slot { min-width: 0; margin: .5rem 0; }
+
+// Embedding layout only. Unrelated components are not instantiated in managed mode.
+.unified-chat-wrapper.managed-embedding {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+
+  .chat-container {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .managed-host-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}

@@ -19,6 +19,8 @@ package ai.kompile.cli.main.chat.tui;
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
 import ai.kompile.cli.main.chat.MessageQueue;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
+import ai.kompile.cli.main.chat.config.ChatUiConfig;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.utils.AnsiConstants;
 import org.jline.reader.LineReader;
@@ -92,6 +94,7 @@ public class KompileTui {
     private static final long MIN_ASYNC_FRAME_NANOS = TimeUnit.MILLISECONDS.toNanos(50);
     private static final long RESIZE_POLL_MILLIS = 100L;
     private static final String SCROLL_TO_BOTTOM_CONTROL = "[↓ Scroll to bottom]";
+    private static final String SIDEBAR_LATEST_CONTROL = "[↓ Latest]";
     private static final Pattern WEB_LINK = Pattern.compile("https?://[^\\s\\p{Cntrl}<>\"│]+");
 
     private final TopBar topBar;
@@ -112,6 +115,15 @@ public class KompileTui {
                 thread.setDaemon(true);
                 return thread;
             });
+    private static final String IMAGE_PREVIEW_VIEW = "__image_preview__";
+    private final KittyImagePreview imageGraphics = new KittyImagePreview();
+    private final ExecutorService imagePreviewExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "kompile-image-preview");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private KittyImagePreview.Image previewImage;
+    private long imagePreviewRequest;
     private final AtomicBoolean redrawQueued = new AtomicBoolean(false);
     private final AtomicBoolean redrawDirty = new AtomicBoolean(false);
     private final AtomicBoolean inputRedisplayRequested = new AtomicBoolean(false);
@@ -153,10 +165,20 @@ public class KompileTui {
     private static final class TranscriptEntry {
         private final String key;
         private List<String> lines;
+        // Presentation is replaceable; the transcript source survives /ui previews
+        // and the independent, smaller inspector-card cache.
+        private List<String> sourceLines;
+        private boolean sourceTrimmed;
+        private boolean typed;
+        private String displayKind = "custom";
+        private String displayTool = "";
+        private String displaySummary = "";
+        private boolean displayError;
 
         private TranscriptEntry(String key, List<String> lines) {
             this.key = key;
             this.lines = lines;
+            this.sourceLines = lines;
         }
     }
 
@@ -182,11 +204,29 @@ public class KompileTui {
             List<VisualRow> rows,
             List<Integer> absoluteIndexes) {}
 
+    private final ChatSidebar sidebar;
+    private volatile ChatUiConfig uiConfig = ChatUiConfig.classic();
+    private boolean sidebarHidden;
+    private boolean sidebarFocused;
+    private static final String RESULTS_VIEW = "__results__";
+    private static final String INSPECTOR_VIEW = "__result_inspector__";
+
     private final Deque<TranscriptEntry> mainTranscriptEntries = new ArrayDeque<>();
     private int mainTranscriptLineCount;
+    private int mainTranscriptSourceLineCount;
     private volatile String contentViewKey = MAIN_CONTENT_VIEW;
     private volatile String contentViewTitle = "Main chat";
     private volatile List<String> contentViewLines = List.of();
+    /** One immutable active-view layout, never a cache of previously visited transcripts. */
+    private TranscriptLayout transcriptLayout;
+    private long transcriptLayoutBuilds;
+    private record TranscriptLayout(List<String> source, int columns, boolean preserveHeader,
+                                    boolean pinHeader, List<VisualRow> rows, int bodyRows) { }
+
+    long transcriptLayoutBuildCountForTests() {
+        synchronized (drawLock) { return transcriptLayoutBuilds; }
+    }
+
     /** Rows from the transcript tail, or from the top for a temporary picker. */
     private volatile int contentScrollOffset = 0;
     /** Activity views pin their title row while their transcript body scrolls. */
@@ -228,6 +268,7 @@ public class KompileTui {
      * ChatRepl leaves this at 0 (readline lives inside the scroll region).
      */
     private volatile int reservedMiddleRows = 0;
+    private boolean resizeFramePending;
 
     /** Optional callback for recalculating reserved rows on resize. */
     private volatile ReservedRowsCalculator reservedRowsCalculator;
@@ -244,6 +285,7 @@ public class KompileTui {
                       MessageQueue messageQueue,
                       TerminalRenderer renderer) {
         this.renderer = renderer;
+        this.sidebar = new ChatSidebar(renderer);
         this.messageQueue = messageQueue;
         this.topBar = new TopBar(drawLock);
         // StatusBar with externalScrollManagement=true — we own the scroll region
@@ -316,34 +358,57 @@ public class KompileTui {
     }
 
     void showAlert(String message, java.util.concurrent.Executor expiryExecutor) {
+        long version;
         synchronized (drawLock) {
-            long version = alertVersion.incrementAndGet();
+            version = alertVersion.incrementAndGet();
             topBar.setAlert(message);
-            if (started) requestRedraw();
-            expiryExecutor.execute(() -> {
-                synchronized (drawLock) {
-                    if (alertVersion.compareAndSet(version, version + 1)) {
-                        topBar.setAlert("");
-                        if (started) requestRedraw();
-                    }
-                }
-            });
         }
+        redrawAlert();
+        expiryExecutor.execute(() -> {
+            synchronized (drawLock) {
+                if (!alertVersion.compareAndSet(version, version + 1)) return;
+                topBar.setAlert("");
+            }
+            redrawAlert();
+        });
     }
 
     public void clearAlert() {
         synchronized (drawLock) {
             alertVersion.incrementAndGet();
             topBar.setAlert("");
-            if (started) requestRedraw();
+        }
+        redrawAlert();
+    }
+
+    private void redrawAlert() {
+        // Standard chat redraws under JLine's reader lock. Managed passthrough
+        // owns its input and transcript itself: repaint only the header there,
+        // without moving its editing cursor or replacing the agent's screen.
+        synchronized (drawLock) {
+            if (!started || terminal == null) return;
+            if (lineReader != null) {
+                requestRedraw();
+            } else {
+                if (!isCompactLayout()) writeTerminal(SAVE_CURSOR + topBar.render(terminalWidth) + RESTORE_CURSOR);
+            }
         }
     }
 
-    /**
-     * The first row of the scrollable content region.
-     */
+    /** Small windows retain only the transcript and its input, not auxiliary chrome. */
+    public boolean isCompactLayout() {
+        int height = terminalHeight > 0 ? terminalHeight : 24;
+        int width = terminalWidth > 0 ? terminalWidth : 80;
+        return height < 16 || width < uiConfig.getMinChatColumns();
+    }
+
+    private int statusBarHeight() {
+        return isCompactLayout() ? 0 : StatusBar.STATUS_HEIGHT;
+    }
+
     private int topBarHeight() {
-        topBar.setMaxTitleRows(Math.max(1, ((terminalHeight > 0 ? terminalHeight : 24) - 12) / 4));
+        if (isCompactLayout()) return 0;
+        topBar.setMaxTitleRows(Math.max(1, Math.min(3, (terminalHeight > 0 ? terminalHeight : 24) / 16)));
         return topBar.getHeight(terminalWidth);
     }
 
@@ -361,20 +426,25 @@ public class KompileTui {
 
     /** Stable responsive row budget; dashboard updates never resize the transcript. */
     public int getDashboardRegionRows() {
-        if (!dashboard.visible()) return 0;
+        if (!dashboard.visible() || isCompactLayout()) return 0;
         int height = terminalHeight > 0 ? terminalHeight : 24;
+        int editorRows = inputPaneLayout ? inputRowsForTerminal(height) + 1 : 1;
         return dashboardRowsForLayout(
                 height - (topBarHeight() - TopBar.TOP_HEIGHT),
-                reservedMiddleRows, queueRowsForTerminal(height));
+                getReservedMiddleRows() + editorRows, getQueueRegionRows(), minimumTranscriptRows(height));
     }
 
     static int dashboardRowsForLayout(int height, int reservedRows, int queueRows) {
+        return dashboardRowsForLayout(height, reservedRows, queueRows, minimumTranscriptRows(height));
+    }
+
+    private static int dashboardRowsForLayout(int height, int reservedRows, int queueRows, int transcriptRows) {
         int desired = dashboardRowsForTerminal(height);
         int baseScrollTop = TopBar.TOP_HEIGHT + 1;
         int bottomWithoutDashboard = height - StatusBar.STATUS_HEIGHT
                 - Math.max(0, reservedRows) - Math.max(0, queueRows);
         int availableScrollRows = Math.max(0, bottomWithoutDashboard - baseScrollTop + 1);
-        int rows = Math.min(desired, Math.max(0, availableScrollRows - 5));
+        int rows = Math.min(desired, Math.max(0, availableScrollRows - transcriptRows));
         return rows < 2 ? 0 : rows;
     }
 
@@ -393,8 +463,8 @@ public class KompileTui {
     public int scrollBottom() {
         if (terminalHeight <= 0) return scrollTop() + 2;
         return Math.max(scrollTop(),
-                terminalHeight - StatusBar.STATUS_HEIGHT
-                        - reservedMiddleRows - getQueueRegionRows());
+                terminalHeight - statusBarHeight()
+                        - getReservedMiddleRows() - getQueueRegionRows());
     }
 
     /**
@@ -421,7 +491,7 @@ public class KompileTui {
 
     /** Separator row between transcript and the JLine-owned pane. */
     public int inputSeparatorRow() {
-        return Math.max(scrollTop(), inputTop() - 1);
+        return isCompactLayout() ? inputTop() : Math.max(scrollTop(), inputTop() - 1);
     }
 
     /** Last 1-based row owned by transcript content. */
@@ -434,7 +504,7 @@ public class KompileTui {
 
     /** Number of fixed rows allocated to upcoming/queued messages. */
     public int getQueueRegionRows() {
-        return queueRowsForTerminal(terminalHeight);
+        return isCompactLayout() ? 0 : queueRowsForTerminal(terminalHeight);
     }
 
     static int queueRowsForTerminal(int height) {
@@ -468,7 +538,22 @@ public class KompileTui {
     }
 
     public int getReservedMiddleRows() {
-        return reservedMiddleRows;
+        if (isCompactLayout()) return 0;
+        // Legacy managed terminals include their own editor in this reservation.
+        // Only the attached-editor layout owns all of the budgets below.
+        if (!inputPaneLayout) return reservedMiddleRows;
+        int height = terminalHeight > 0 ? terminalHeight : 24;
+        int editorRows = inputRowsForTerminal(height) + 1;
+        int available = Math.max(0, height - topBarHeight() - statusBarHeight()
+                - getQueueRegionRows() - editorRows - minimumTranscriptRows(height));
+        // Dashboard and activity share the remaining space; neither can consume
+        // the transcript's allocation. Retain a dashboard heading/body when it fits.
+        int dashboardMinimum = dashboard.visible() && available >= 2 ? 2 : 0;
+        return Math.min(Math.min(reservedMiddleRows, height / 6), available - dashboardMinimum);
+    }
+
+    private static int minimumTranscriptRows(int height) {
+        return Math.max(4, height / 3);
     }
 
     public void addResizeListener(Runnable listener) {
@@ -546,7 +631,7 @@ public class KompileTui {
 
     /** Zero-based floating-control column, centered for the current terminal width. */
     public int scrollToBottomControlX() {
-        int width = terminalWidth > 0 ? terminalWidth : 80;
+        int width = getChatColumns() + 1;
         int controlWidth = AnsiConstants.visibleLength(SCROLL_TO_BOTTOM_CONTROL);
         return Math.max(1, (width - controlWidth) / 2);
     }
@@ -575,6 +660,7 @@ public class KompileTui {
     public boolean beginTranscriptSelection(int x, int y) {
         synchronized (drawLock) {
             SelectionPoint point = selectionPointAt(x, y, false);
+            if (point != null) sidebarFocused = false;
             if (point == null) {
                 boolean changed = clearTranscriptSelectionLocked();
                 if (changed) replaceScrollRegion(contentViewLines, contentViewPinsHeader);
@@ -705,6 +791,13 @@ public class KompileTui {
         detachLineReader();
         this.lineReader = reader;
         inputPaneLayout = reader != null;
+        if (reader instanceof InputPaneLineReader paneReader) {
+            paneReader.setInputRows(this::getInputRegionRows);
+            paneReader.setInputColumns(this::getInputColumns);
+            paneReader.setBeforeViewportChange(() -> renderFrame(false, true));
+            paneReader.setAfterRedisplay(() -> redrawSidebarAfterInput(reader));
+            paneReader.setTranscriptOutput(this::recordInScrollRegion);
+        }
         if (reader == null) return;
         Object binding = new Object();
         readerBinding = binding;
@@ -750,6 +843,13 @@ public class KompileTui {
 
     private void detachLineReaderLocked() {
         LineReader previous = lineReader;
+        if (previous instanceof InputPaneLineReader paneReader) {
+            paneReader.setInputRows(null);
+            paneReader.setInputColumns(null);
+            paneReader.setBeforeViewportChange(null);
+            paneReader.setAfterRedisplay(null);
+            paneReader.setTranscriptOutput(null);
+        }
         ReaderRedrawDispatch dispatch = readerRedrawDispatch;
         readerRedrawDispatch = null;
         readerBinding = null;
@@ -1172,6 +1272,19 @@ public class KompileTui {
         }
     }
 
+    /**
+     * Recover the physical display without changing retained views or session state.
+     * Use the resize recovery path so the full screen is erased and JLine restores
+     * its draft and editing cursor under the reader lock.
+     */
+    public void requestFullRedraw() {
+        if (!started || terminal == null) return;
+        synchronized (drawLock) {
+            resizeFramePending = true;
+        }
+        requestRedrawWithInput();
+    }
+
     private void requestRedrawWithInput() {
         inputRedisplayRequested.set(true);
         requestRedraw();
@@ -1317,6 +1430,9 @@ public class KompileTui {
             savedContentViewLines = null;
             temporaryWindowLines = List.of();
             temporaryCommandOutputBlocks.clear();
+            // Results/inspector pages are projections, not immutable snapshots:
+            // settings and live card updates may have changed while the picker owned them.
+            refreshResultsViewLocked();
             // The nested picker readLine has finished. Leave a clean cursor row
             // for the outer chat loop to render the normal "kompile> " prompt.
             replaceScrollRegion(contentViewLines, contentViewPinsHeader, true);
@@ -1371,11 +1487,6 @@ public class KompileTui {
         // Recalculate reserved rows now that we have real terminal dimensions
         recalcReservedMiddleRows(reservedRowsCalculator);
 
-        if (terminalHeight < 12) {
-            this.terminal = null;
-            return; // Too small for top+bottom bars; may retry with a larger terminal.
-        }
-
         started = true;
         topBar.setTerminalWidth(terminalWidth);
 
@@ -1420,7 +1531,7 @@ public class KompileTui {
                     detachLineReaderLocked();
                     return;
                 }
-                writeTerminal(ESC + "r");
+                writeTerminal(imageGraphics.clear() + ESC + "r");
                 terminal = null;
                 attachmentVersion++;
                 // Keep the last input-pane geometry for detached viewport updates.
@@ -1457,6 +1568,8 @@ public class KompileTui {
             if (!started || terminal != active || attachmentVersion != version) return;
             synchronized (drawLock) {
                 if (!updateTerminalSize(size)) return;
+                resizeFramePending = true;
+                if (!activePaneLayout().split() && !RESULTS_VIEW.equals(contentViewKey)) sidebarFocused = false;
                 topBar.setTerminalWidth(terminalWidth);
                 recalcReservedMiddleRows(reservedRowsCalculator);
                 statusBar.syncTerminalSize();
@@ -1482,10 +1595,14 @@ public class KompileTui {
             resizeExecutor.shutdownNow();
             redrawExecutor.shutdownNow();
             synchronized (drawLock) {
+                imagePreviewExecutor.shutdownNow();
+                imagePreviewRequest++;
+                previewImage = null;
+                transcriptLayout = null;
                 clearTranscriptSelectionLocked();
                 // Only an attached surface may clear terminal rows on final close.
                 if (terminal != null) {
-                    terminal.writer().print(ESC + "r" + ESC + "2J" + ESC + "H");
+                    terminal.writer().print(imageGraphics.clear() + ESC + "r" + ESC + "2J" + ESC + "H");
                     terminal.writer().flush();
                 }
                 terminal = null;
@@ -1517,7 +1634,7 @@ public class KompileTui {
         synchronized (drawLock) {
             writeTerminal(scrollRegionSequence()
                     + renderContentRegion(contentViewLines, contentViewPinsHeader, false)
-                    + renderScrollToBottomControl());
+                    + renderScrollToBottomControl() + SAVE_CURSOR + renderSidebarRegion() + RESTORE_CURSOR);
         }
     }
 
@@ -1556,26 +1673,47 @@ public class KompileTui {
      * visible again when the user returns to the main chat.
      */
     public boolean upsertMainTranscriptBlock(String key, String text) {
+        return upsertMainTranscriptBlock(key, text, null);
+    }
+
+    private boolean upsertMainTranscriptBlock(String key, String text, ChatDisplayBlock block) {
         if (key == null || key.isBlank()) return false;
-        List<String> lines = splitLines(text);
+        List<String> lines = block != null ? displayLines(text) : splitLines(text);
+        List<String> source = block == null ? lines : displayLines(block.classic().isEmpty()
+                ? block.sections().stream().map(ChatDisplayBlock.Section::formattedContent)
+                        .collect(java.util.stream.Collectors.joining("\n")) : block.classic());
         synchronized (drawLock) {
             List<String> previousContentLines = contentViewLines;
             int previousRows = 0;
+            int rowsAfterBlock = 0;
+            boolean preserveScrollback = isMainContentView() && contentScrollOffset > 0;
             TranscriptEntry matched = null;
-            for (TranscriptEntry entry : mainTranscriptEntries) {
+            for (var entries = mainTranscriptEntries.descendingIterator(); entries.hasNext();) {
+                TranscriptEntry entry = entries.next();
                 if (key.equals(entry.key)) {
                     matched = entry;
                     previousRows = visualRows(entry.lines).size();
                     mainTranscriptLineCount -= entry.lines.size();
+                    mainTranscriptSourceLineCount -= entry.sourceLines.size();
                     break;
                 }
+                if (preserveScrollback) rowsAfterBlock += visualRows(entry.lines).size();
             }
             if (matched == null) {
+                rowsAfterBlock = 0; // New entries are appended at the live tail.
                 matched = new TranscriptEntry(key, List.of());
                 mainTranscriptEntries.addLast(matched);
             }
             matched.lines = List.copyOf(lines);
+            matched.sourceLines = List.copyOf(source);
+            matched.sourceTrimmed = false;
+            matched.typed = block != null;
+            if (block != null) {
+                matched.displayKind = block.kind(); matched.displayTool = block.toolName();
+                matched.displaySummary = block.summary(); matched.displayError = block.error();
+            }
             mainTranscriptLineCount += matched.lines.size();
+            mainTranscriptSourceLineCount += matched.sourceLines.size();
             trimMainTranscript();
 
             if (isMainContentView()) {
@@ -1585,15 +1723,252 @@ public class KompileTui {
                     clearTranscriptSelectionLocked();
                 }
                 int nextRows = visualRows(matched.lines).size();
-                if (contentScrollOffset > 0 && nextRows > previousRows) {
+                if (preserveScrollback) {
+                    // Offset is measured from the tail. Changes entirely above the
+                    // viewport leave it alone; changes below it adjust for shrink
+                    // as well as growth so already-visible messages stay in place.
+                    boolean aboveViewport = rowsAfterBlock >= contentScrollOffset + transcriptCapacity();
                     contentScrollOffset = clampScrollOffset(
-                            contentScrollOffset + nextRows - previousRows,
+                            contentScrollOffset + (aboveViewport ? 0 : nextRows - previousRows),
                             contentViewLines, false);
                 }
             }
         }
         requestRedraw();
         return started;
+    }
+
+    /** Resolve the left chat/editor column and the right results column. */
+    public record PaneLayout(int chatColumns, int sidebarColumns) {
+        public boolean split() { return sidebarColumns > 0; }
+    }
+
+    public static PaneLayout paneLayout(int terminalWidth, ChatUiConfig config) {
+        int available = transcriptColumns(terminalWidth);
+        if (config.getLayoutMode().equals("inline")) return new PaneLayout(available, 0);
+        int side = Math.max(24, available * config.getSidebarWidthPercent() / 100);
+        side = Math.min(side, available - config.getMinChatColumns() - 1);
+        return side < 24 ? new PaneLayout(available, 0) : new PaneLayout(available - side - 1, side);
+    }
+
+    private PaneLayout activePaneLayout() {
+        return isCompactLayout() || temporaryWindowActive || !isMainContentView() || sidebarHidden
+                ? new PaneLayout(transcriptColumns(terminalWidth), 0) : paneLayout(terminalWidth, uiConfig);
+    }
+
+    public int getChatColumns() { return activePaneLayout().chatColumns(); }
+
+    public int getInputColumns() {
+        return activePaneLayout().split() ? getChatColumns() : (terminalWidth > 0 ? terminalWidth : 80);
+    }
+
+    /** Sidebar continues beside the editor and footer, down to the terminal bottom. */
+    public int sidebarBottom() {
+        // A third-party reader without our viewport adapter still owns full-width input.
+        return lineReader != null && !(lineReader instanceof InputPaneLineReader)
+                ? transcriptBottom() : (terminalHeight > 0 ? terminalHeight : 24);
+    }
+
+    private int sidebarCapacity() { return Math.max(1, sidebarBottom() - scrollTop() + 1); }
+    private int footerWidth() { return activePaneLayout().split() ? getChatColumns() + 1 : terminalWidth; }
+
+    private void redrawSidebarAfterInput(LineReader reader) {
+        synchronized (drawLock) {
+            if (!isCurrentAttachment() || lineReader != reader || !activePaneLayout().split()) return;
+            writeTerminal(SAVE_CURSOR + renderSidebarRegion() + RESTORE_CURSOR);
+        }
+    }
+    public boolean isSidebarVisible() { synchronized (drawLock) { return activePaneLayout().split(); } }
+    public boolean isSidebarFocused() { synchronized (drawLock) { return sidebarFocused; } }
+    public boolean isResultsView() { return RESULTS_VIEW.equals(contentViewKey) || INSPECTOR_VIEW.equals(contentViewKey); }
+    public ChatUiConfig getUiConfig() { synchronized (drawLock) { return uiConfig.copy(); } }
+    public List<String> getSidebarLines() {
+        synchronized (drawLock) {
+            return sidebar.render(uiConfig, Math.max(24, activePaneLayout().sidebarColumns()), sidebarCapacity());
+        }
+    }
+
+    public void setUiConfig(ChatUiConfig config) {
+        synchronized (drawLock) {
+            uiConfig = config == null ? ChatUiConfig.classic() : config.copy();
+            sidebar.trim(uiConfig);
+            sidebarHidden = !uiConfig.isSidebarVisible();
+            clearTranscriptSelectionLocked();
+            mainTranscriptLineCount = 0;
+            for (TranscriptEntry entry : mainTranscriptEntries) {
+                if (entry.typed) {
+                    ChatDisplayBlock block = sidebar.get(entry.key);
+                    entry.lines = block != null && !entry.sourceTrimmed
+                            ? displayLines(sidebar.inline(block, uiConfig)) : retainedInlineLines(entry);
+                }
+                mainTranscriptLineCount += entry.lines.size();
+            }
+            trimMainTranscript();
+            if (isMainContentView()) contentViewLines = mainTranscriptSnapshot();
+            refreshResultsViewLocked();
+            if (!activePaneLayout().split() && !RESULTS_VIEW.equals(contentViewKey)) sidebarFocused = false;
+            contentScrollOffset = clampScrollOffset(contentScrollOffset, contentViewLines, contentViewPinsHeader);
+        }
+        requestRedrawWithInput();
+    }
+
+    private List<String> retainedInlineLines(TranscriptEntry entry) {
+        ChatUiConfig.Policy policy = uiConfig.policy(entry.displayError ? "error" : entry.displayKind, entry.displayTool);
+        if (policy.inline().equals("none") && !entry.displayError) return List.of();
+        if (policy.inline().equals("full")) return entry.sourceLines;
+        return entry.displaySummary.isBlank()
+                ? entry.sourceLines.stream().filter(line -> !line.isBlank()).findFirst().map(List::of).orElse(List.of())
+                : displayLines(entry.displaySummary);
+    }
+
+    private static List<String> displayLines(String text) { return text == null || text.isEmpty() ? List.of() : splitLines(text); }
+
+    public boolean upsertDisplayBlock(ChatDisplayBlock block) {
+        if (block == null || block.key().isBlank()) return false;
+        synchronized (drawLock) {
+            sidebar.upsert(block, uiConfig);
+            if (block.kind().equals("custom") && block.summary().isBlank()
+                    && block.classic().isBlank() && block.sections().isEmpty()) {
+                mainTranscriptEntries.removeIf(entry -> {
+                    if (block.key().equals(entry.key)) {
+                        mainTranscriptLineCount -= entry.lines.size();
+                        mainTranscriptSourceLineCount -= entry.sourceLines.size();
+                        return true;
+                    }
+                    return false;
+                });
+                if (isMainContentView()) contentViewLines = mainTranscriptSnapshot();
+            } else {
+                // Card eviction is not a transcript deletion event.
+                upsertMainTranscriptBlock(block.key(), sidebar.inline(block, uiConfig), block);
+            }
+            refreshResultsViewLocked();
+        }
+        if (started) requestRedraw();
+        return started;
+    }
+
+    private void refreshResultsViewLocked() {
+        if (temporaryWindowActive) return;
+        if (RESULTS_VIEW.equals(contentViewKey)) {
+            updateActivityView(RESULTS_VIEW, "Results", String.join("\n", sidebar.allRows(uiConfig, transcriptColumns(terminalWidth))));
+        } else if (INSPECTOR_VIEW.equals(contentViewKey)) {
+            updateActivityView(INSPECTOR_VIEW, "Result inspector", String.join("\n", sidebar.inspectorLines()));
+        }
+    }
+
+    public void openResultsDrawer() {
+        synchronized (drawLock) {
+            sidebarFocused = true;
+            showActivityView(RESULTS_VIEW, "Results · ↑/↓ selects · Enter inspects · /ui close", String.join("\n", sidebar.allRows(uiConfig, transcriptColumns(terminalWidth))));
+            contentScrollOffset = clampScrollOffset(Integer.MAX_VALUE, contentViewLines, true);
+            requestRedraw();
+        }
+    }
+
+    public void openResultInspector() {
+        synchronized (drawLock) {
+            sidebarFocused = false;
+            showActivityView(INSPECTOR_VIEW, "Result inspector · /ui close", String.join("\n", sidebar.inspectorLines()));
+            contentScrollOffset = clampScrollOffset(Integer.MAX_VALUE, contentViewLines, true);
+            requestRedraw();
+        }
+    }
+
+    public void toggleSidebar() {
+        synchronized (drawLock) {
+            if (!paneLayout(terminalWidth, uiConfig).split()) { openResultsDrawer(); return; }
+            sidebarHidden = !sidebarHidden;
+            uiConfig.set("sidebar.visible", Boolean.toString(!sidebarHidden));
+            sidebarFocused = false;
+            clearTranscriptSelectionLocked();
+        }
+        requestRedrawWithInput();
+    }
+
+    public void toggleSidebarFocus() {
+        synchronized (drawLock) {
+            if (!activePaneLayout().split()) { openResultsDrawer(); return; }
+            sidebarFocused = !sidebarFocused;
+        }
+        requestRedraw();
+    }
+
+    /** Inspection navigation is independent of activity follow-up routing. */
+    public boolean navigateSidebar(int delta) {
+        synchronized (drawLock) {
+            if (!sidebarFocused) return false;
+            if (!activePaneLayout().split() && !RESULTS_VIEW.equals(contentViewKey)) { sidebarFocused = false; return false; }
+            selectResult(delta);
+        }
+        requestRedraw();
+        return true;
+    }
+    public boolean expandSidebarSelection() {
+        synchronized (drawLock) {
+            if (!sidebarFocused) return false;
+            if (!activePaneLayout().split() && !RESULTS_VIEW.equals(contentViewKey)) { sidebarFocused = false; return false; }
+            if (RESULTS_VIEW.equals(contentViewKey)) { openResultInspector(); return true; }
+            sidebar.toggleSelected(uiConfig);
+        }
+        requestRedraw();
+        return true;
+    }
+    public void selectResult(int delta) {
+        synchronized (drawLock) {
+            sidebar.select(delta, uiConfig);
+            refreshResultsViewLocked();
+            if (RESULTS_VIEW.equals(contentViewKey)) {
+                int target = sidebar.selectedRow(uiConfig, transcriptColumns(terminalWidth));
+                int bodyRows = transcriptLayout(contentViewLines, true).bodyRows();
+                contentScrollOffset = clampScrollOffset(bodyRows - target - Math.max(1, transcriptCapacity() - 1), contentViewLines, true);
+            }
+        }
+        requestRedraw();
+    }
+    public void toggleResultSelection() { synchronized (drawLock) { sidebar.toggleSelected(uiConfig); refreshResultsViewLocked(); } requestRedraw(); }
+    public void selectSidebarItem(String key) { synchronized (drawLock) { sidebar.selectKey(key); refreshResultsViewLocked(); } requestRedraw(); }
+    public void toggleSidebarSection(String section) { synchronized (drawLock) { sidebar.toggleSection(section, uiConfig); refreshResultsViewLocked(); } requestRedraw(); }
+    public void setSidebarFilter(String filter) { synchronized (drawLock) { sidebar.setFilter(filter); refreshResultsViewLocked(); } requestRedraw(); }
+    public void pinSidebarSelection() { synchronized (drawLock) { sidebar.togglePin(); } requestRedraw(); }
+    public void closeResultsView() { synchronized (drawLock) { sidebarFocused = false; } showMainView(); }
+
+    public boolean isSidebarCoordinate(int x, int y) {
+        synchronized (drawLock) {
+            PaneLayout layout = activePaneLayout();
+            return layout.split() && x > layout.chatColumns() && x < transcriptColumns(terminalWidth)
+                    && y >= scrollTop() - 1 && y < sidebarBottom();
+        }
+    }
+    public boolean scrollSidebarAt(int x, int y, int delta) {
+        synchronized (drawLock) {
+            if (!isSidebarCoordinate(x, y)) return false;
+            sidebar.scroll(delta, uiConfig, activePaneLayout().sidebarColumns(), sidebarCapacity());
+        }
+        requestRedraw();
+        return true;
+    }
+    /** The floating "latest" shortcut sits over the last sidebar row; checked before card clicks. */
+    public boolean handleSidebarLatestClick(int x, int y) {
+        synchronized (drawLock) {
+            PaneLayout layout = activePaneLayout();
+            if (!isSidebarLatestControlVisible()) return false;
+            if (y != sidebarLatestControlY()
+                    || x < sidebarLatestControlX(layout)
+                    || x >= sidebarLatestControlX(layout) + AnsiConstants.visibleLength(SIDEBAR_LATEST_CONTROL)) return false;
+            sidebar.jumpToLatest(uiConfig, layout.sidebarColumns(), sidebarCapacity());
+        }
+        requestRedraw();
+        return true;
+    }
+    public boolean clickSidebarAt(int x, int y) {
+        synchronized (drawLock) {
+            if (!isSidebarCoordinate(x, y)) return false;
+            sidebarFocused = true;
+            sidebar.clickRow(y - scrollTop() + 1, uiConfig, activePaneLayout().sidebarColumns(), sidebarCapacity());
+        }
+        requestRedraw();
+        return true;
     }
 
     public void printInScrollRegion(String text) {
@@ -1621,6 +1996,70 @@ public class KompileTui {
         requestRedraw();
     }
 
+    public boolean isImagePreviewView() {
+        return IMAGE_PREVIEW_VIEW.equals(contentViewKey);
+    }
+
+    /** The selected preview can be temporarily covered by a picker. Called under drawLock. */
+    private boolean hasImagePreviewSelection() {
+        return isImagePreviewView() || (temporaryWindowActive && IMAGE_PREVIEW_VIEW.equals(savedContentViewKey));
+    }
+
+    /** Preview a trusted local attachment without putting graphics escapes in retained text. */
+    public boolean previewImage(java.nio.file.Path path) {
+        synchronized (drawLock) {
+            if (stopped || !started || temporaryWindowActive || path == null
+                    || !KittyImagePreview.eligible(terminal, uiConfig.getImageProtocol())) return false;
+            long request = ++imagePreviewRequest;
+            Terminal previewTerminal = terminal;
+            String protocol = uiConfig.getImageProtocol();
+            previewImage = null;
+            showActivityView(IMAGE_PREVIEW_VIEW, "Image preview · /ui close", "");
+            imagePreviewExecutor.execute(() -> {
+                synchronized (drawLock) {
+                    if (stopped || request != imagePreviewRequest || !hasImagePreviewSelection()) return;
+                }
+                try {
+                    if (!KittyImagePreview.supported(previewTerminal, protocol)) {
+                        throw new java.io.IOException("terminal graphics capabilities are unavailable");
+                    }
+                    synchronized (drawLock) {
+                        if (stopped || request != imagePreviewRequest || !hasImagePreviewSelection()) return;
+                    }
+                    KittyImagePreview.Image prepared = KittyImagePreview.read(path);
+                    synchronized (drawLock) {
+                        if (stopped || request != imagePreviewRequest || !hasImagePreviewSelection()) return;
+                        previewImage = prepared;
+                        String title = "Image preview · " + prepared.name() + " · /ui close";
+                        if (temporaryWindowActive) {
+                            savedContentViewTitle = title;
+                            savedContentViewLines = List.of("── " + title + " ──");
+                        } else {
+                            updateActivityView(IMAGE_PREVIEW_VIEW, title, "");
+                        }
+                        requestRedraw();
+                    }
+                } catch (java.io.IOException | RuntimeException | LinkageError unavailable) {
+                    synchronized (drawLock) {
+                        if (stopped || request != imagePreviewRequest || !hasImagePreviewSelection()) return;
+                        if (temporaryWindowActive) {
+                            savedContentViewKey = MAIN_CONTENT_VIEW;
+                            savedContentViewTitle = "Main chat";
+                            savedContentViewLines = null;
+                            savedContentViewPinsHeader = false;
+                            savedContentScrollOffset = 0;
+                            imagePreviewRequest++;
+                        } else {
+                            showMainViewIf(this::isImagePreviewView);
+                        }
+                        showAlert("Image still attached; preview unavailable: " + unavailable.getMessage());
+                    }
+                }
+            });
+            return true;
+        }
+    }
+
     /**
      * Replace the transcript area with one process/subagent/task view. The
      * replacement is cursor-addressed rather than newline-driven, so live input
@@ -1634,13 +2073,19 @@ public class KompileTui {
         boolean plainOutput = !started;
         synchronized (drawLock) {
             if (temporaryWindowActive) return;
+            boolean wasSplit = activePaneLayout().split();
             clearTranscriptSelectionLocked();
+            if (!IMAGE_PREVIEW_VIEW.equals(key)) {
+                imagePreviewRequest++;
+                previewImage = null;
+            }
             contentViewKey = key == null || key.isBlank() ? "activity" : key;
             contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
             contentViewLines = List.copyOf(lines);
             contentScrollOffset = 0;
             contentViewPinsHeader = true;
             replaceScrollRegion(lines, true);
+            if (wasSplit != activePaneLayout().split()) requestRedrawWithInput();
         }
         if (plainOutput) {
             lines.forEach(System.out::println);
@@ -1662,12 +2107,12 @@ public class KompileTui {
             if (!selectionStableAcross(contentViewLines, true, lines, true)) {
                 clearTranscriptSelectionLocked();
             }
-            int previousSize = visualBodyRows(contentViewLines, true).size();
+            int previousSize = transcriptLayout(contentViewLines, true).bodyRows();
             boolean followingTail = contentScrollOffset == 0;
             contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
             contentViewLines = List.copyOf(lines);
             contentViewPinsHeader = true;
-            int nextSize = visualBodyRows(lines, true).size();
+            int nextSize = transcriptLayout(contentViewLines, true).bodyRows();
             if (!followingTail && nextSize > previousSize) {
                 contentScrollOffset += nextSize - previousSize;
             }
@@ -1693,7 +2138,10 @@ public class KompileTui {
             // same lock. An ownership check before acquiring it is not sufficient.
             if (temporaryWindowActive) return;
             if (stillSelected != null && !stillSelected.getAsBoolean()) return;
+            imagePreviewRequest++;
+            previewImage = null;
             clearTranscriptSelectionLocked();
+            boolean wasSplit = activePaneLayout().split();
             contentViewKey = MAIN_CONTENT_VIEW;
             contentViewTitle = "Main chat";
             List<String> lines = mainTranscriptSnapshot();
@@ -1701,6 +2149,7 @@ public class KompileTui {
             contentScrollOffset = 0;
             contentViewPinsHeader = false;
             replaceScrollRegion(lines, false);
+            if (wasSplit != activePaneLayout().split()) requestRedrawWithInput();
         }
     }
 
@@ -1749,6 +2198,7 @@ public class KompileTui {
         List<String> retained = List.copyOf(lines);
         mainTranscriptEntries.addLast(new TranscriptEntry(null, retained));
         mainTranscriptLineCount += retained.size();
+        mainTranscriptSourceLineCount += retained.size();
         trimMainTranscript();
         if (isMainContentView()) {
             contentViewLines = mainTranscriptSnapshot();
@@ -1757,17 +2207,25 @@ public class KompileTui {
 
     private void trimMainTranscript() {
         boolean trimmed = false;
-        while (mainTranscriptLineCount > MAX_MAIN_TRANSCRIPT_LINES
+        while ((mainTranscriptLineCount > MAX_MAIN_TRANSCRIPT_LINES
+                || mainTranscriptSourceLineCount > MAX_MAIN_TRANSCRIPT_LINES
+                || mainTranscriptEntries.size() > MAX_MAIN_TRANSCRIPT_LINES)
                 && !mainTranscriptEntries.isEmpty()) {
             trimmed = true;
             TranscriptEntry first = mainTranscriptEntries.peekFirst();
-            int overflow = mainTranscriptLineCount - MAX_MAIN_TRANSCRIPT_LINES;
-            if (first.lines.size() <= overflow) {
+            int overflow = Math.max(1, Math.max(mainTranscriptLineCount, mainTranscriptSourceLineCount)
+                    - MAX_MAIN_TRANSCRIPT_LINES);
+            if (first.sourceLines.size() <= overflow) {
                 mainTranscriptEntries.removeFirst();
                 mainTranscriptLineCount -= first.lines.size();
+                mainTranscriptSourceLineCount -= first.sourceLines.size();
             } else {
-                first.lines = List.copyOf(first.lines.subList(overflow, first.lines.size()));
-                mainTranscriptLineCount -= overflow;
+                mainTranscriptLineCount -= first.lines.size();
+                first.sourceLines = List.copyOf(first.sourceLines.subList(overflow, first.sourceLines.size()));
+                first.sourceTrimmed = true;
+                first.lines = first.typed ? retainedInlineLines(first) : first.sourceLines;
+                mainTranscriptSourceLineCount -= overflow;
+                mainTranscriptLineCount += first.lines.size();
             }
         }
         if (trimmed && selectionBelongsToActiveView()) clearTranscriptSelectionLocked();
@@ -1814,15 +2272,21 @@ public class KompileTui {
             if (preserveInputCursor) {
                 frame.append('\033').append('7').append(ESC).append("?25l");
             }
+            if (resizeFramePending && (!preserveInputCursor || clearInputRows)) {
+                // Reflow or explicit display recovery can leave debris anywhere on screen.
+                frame.append(imageGraphics.clear()).append(ESC).append('r').append(ESC).append("2J");
+                resizeFramePending = false;
+            }
             frame.append(scrollRegionSequence());
-            frame.append(topBar.render(terminalWidth));
+            if (!isCompactLayout()) frame.append(topBar.render(terminalWidth));
             frame.append(renderDashboardRegion());
             frame.append(renderContentRegion(
                     contentViewLines, contentViewPinsHeader, clearInputRows));
             frame.append(renderScrollToBottomControl());
             frame.append(renderInputSeparator());
             frame.append(renderQueueRegion());
-            frame.append(statusBar.render(terminalHeight, terminalWidth));
+            if (!isCompactLayout()) frame.append(statusBar.render(terminalHeight, footerWidth(), getReservedMiddleRows()));
+            frame.append(renderSidebarRegion());
             frame.append(ESC).append(inputAnchorRow()).append(";1H");
             if (preserveInputCursor) {
                 frame.append('\033').append('8').append(ESC).append("?25h");
@@ -1859,8 +2323,8 @@ public class KompileTui {
     }
 
     private String renderInputSeparator() {
-        if (lineReader == null || inputSeparatorRow() >= inputTop()) return "";
-        int width = Math.max(1, (terminalWidth > 0 ? terminalWidth : 80) - 1);
+        if (isCompactLayout() || lineReader == null || inputSeparatorRow() >= inputTop()) return "";
+        int width = Math.max(1, footerWidth() - 1);
         return ESC + inputSeparatorRow() + ";1H" + ESC + "2K"
                 + DIM + "─".repeat(width) + RESET;
     }
@@ -1908,7 +2372,7 @@ public class KompileTui {
     }
 
     private String truncateDashboardLine(String value, int maxColumns) {
-        AttributedString text = AttributedString.fromAnsi(value == null ? "" : value);
+        AttributedString text = TerminalRowText.fromAnsi(value == null ? "" : value);
         if (text.columnLength() <= maxColumns) return toAnsi(text);
         int bodyColumns = Math.max(0, maxColumns - 1);
         return toAnsi(text.columnSubSequence(0, bodyColumns)) + "…";
@@ -1925,10 +2389,14 @@ public class KompileTui {
             frame.append(ESC).append(row).append(";1H").append(ESC).append("2K");
         }
         List<String> visible = visibleContentLines(lines, preserveHeader);
-        int row = top;
-        for (int i = 0; i < visible.size() && row <= contentBottom; i++, row++) {
-            frame.append(ESC).append(row).append(";1H").append(visible.get(i));
+        for (int row = top; row <= contentBottom; row++) {
+            int index = row - top;
+            if (index < visible.size()) frame.append(ESC).append(row).append(";1H").append(visible.get(index));
         }
+        frame.append(imageGraphics.render(
+                isImagePreviewView() && !temporaryWindowActive ? previewImage : null,
+                terminal, previewImage != null && KittyImagePreview.eligible(terminal, uiConfig.getImageProtocol()),
+                top + 1, getChatColumns(), contentBottom - top));
         if (clearInputRow) {
             for (int inputRow = inputTop(); inputRow <= scrollBottom(); inputRow++) {
                 frame.append(ESC).append(inputRow).append(";1H").append(ESC).append("2K");
@@ -1941,6 +2409,46 @@ public class KompileTui {
         }
         return frame.toString();
     }
+
+    /** Paint only the right column. The caller restores or anchors the input cursor. */
+    private String renderSidebarRegion() {
+        PaneLayout panes = activePaneLayout();
+        if (!panes.split()) return "";
+        List<String> rows = sidebar.render(uiConfig, panes.sidebarColumns(), sidebarCapacity());
+        boolean latestVisible = isSidebarLatestControlVisible();
+        StringBuilder frame = new StringBuilder();
+        for (int row = scrollTop(); row <= sidebarBottom(); row++) {
+            int index = row - scrollTop();
+            frame.append(ESC).append(row).append(';').append(panes.chatColumns() + 1).append('H')
+                    .append(RESET).append(ESC).append('K').append(DIM).append('│').append(RESET);
+            if (index < rows.size()) frame.append(rows.get(index));
+        }
+        if (latestVisible) {
+            frame.append(ESC).append(sidebarLatestControlY() + 1).append(';')
+                    .append(sidebarLatestControlX(panes) + 1).append('H')
+                    .append(BOLD).append(CYAN).append(INVERSE).append(SIDEBAR_LATEST_CONTROL).append(RESET);
+        }
+        return frame.toString();
+    }
+
+    /** Whether the floating sidebar "latest" shortcut should currently be shown. */
+    public boolean isSidebarLatestControlVisible() {
+        synchronized (drawLock) {
+            PaneLayout layout = activePaneLayout();
+            return layout.split()
+                    && layout.sidebarColumns() > AnsiConstants.visibleLength(SIDEBAR_LATEST_CONTROL) + 2
+                    && sidebar.isScrolledAwayFromLatest(uiConfig, layout.sidebarColumns(), sidebarCapacity());
+        }
+    }
+
+    /** Zero-based floating-control column, centered within the sidebar pane's cells. */
+    private int sidebarLatestControlX(PaneLayout panes) {
+        int paneStart = panes.chatColumns() + 1;
+        int controlWidth = AnsiConstants.visibleLength(SIDEBAR_LATEST_CONTROL);
+        return paneStart + Math.max(0, (panes.sidebarColumns() - controlWidth) / 2);
+    }
+    /** Zero-based row of the sidebar pane's last row. */
+    private int sidebarLatestControlY() { return sidebarBottom() - 1; }
 
     /** Paint a floating bottom-center shortcut over the scrolled transcript. */
     private String renderScrollToBottomControl() {
@@ -1960,7 +2468,9 @@ public class KompileTui {
         }
         List<String> visible = visibleQueueLines();
         for (int i = 0; i < visible.size() && i < rows; i++) {
-            frame.append(ESC).append(top + i).append(";1H").append(visible.get(i));
+            AttributedString text = TerminalRowText.fromAnsi(visible.get(i));
+            frame.append(ESC).append(top + i).append(";1H")
+                    .append(toAnsi(text.columnSubSequence(0, Math.min(getChatColumns(), text.columnLength()))));
         }
         return frame.toString();
     }
@@ -1970,7 +2480,7 @@ public class KompileTui {
         if (rows <= 0) return List.of();
         List<MessageQueue.QueuedMessage> messages =
                 messageQueue == null ? List.of() : messageQueue.getAll();
-        int width = terminalWidth > 0 ? terminalWidth : 80;
+        int width = Math.max(1, footerWidth());
         if (messages.isEmpty()) {
             return List.of();
         }
@@ -2061,7 +2571,7 @@ public class KompileTui {
             return;
         }
         writeTerminal(renderContentRegion(lines, preserveHeader, clearInputRow)
-                + renderScrollToBottomControl());
+                + renderScrollToBottomControl() + SAVE_CURSOR + renderSidebarRegion() + RESTORE_CURSOR);
     }
 
     private List<String> visibleContentLines(List<String> lines, boolean preserveHeader) {
@@ -2108,16 +2618,12 @@ public class KompileTui {
 
     private int clampScrollOffset(int requested, List<String> lines, boolean preserveHeader) {
         int capacity = transcriptCapacity();
-        int bodyCount = visualBodyRows(lines, preserveHeader).size();
+        int bodyCount = transcriptLayout(lines, preserveHeader).bodyRows();
         int bodyCapacity = preserveHeader && capacity > 1 ? capacity - 1 : capacity;
         int maximum = Math.max(0, bodyCount - Math.max(1, bodyCapacity));
         return Math.max(0, Math.min(requested, maximum));
     }
 
-    private List<String> visualBodyRows(List<String> lines, boolean preserveHeader) {
-        if (lines == null || lines.isEmpty()) return List.of();
-        return visualRows(preserveHeader ? lines.subList(1, lines.size()) : lines);
-    }
 
     /**
      * Convert retained logical lines into bounded terminal rows. JLine performs
@@ -2145,11 +2651,11 @@ public class KompileTui {
 
     private List<VisualRow> visualRowsWithMetadata(List<String> lines, int logicalLineOffset) {
         if (lines == null || lines.isEmpty()) return List.of();
-        int width = transcriptColumns(terminalWidth);
+        int width = getChatColumns();
         List<VisualRow> rows = new ArrayList<>();
         for (int logicalLine = 0; logicalLine < lines.size(); logicalLine++) {
             String line = lines.get(logicalLine);
-            AttributedString attributed = AttributedString.fromAnsi(line == null ? "" : line);
+            AttributedString attributed = TerminalRowText.fromAnsi(line == null ? "" : line);
             List<Hyperlink> links = webLinks(attributed.toString());
             List<AttributedString> wrapped = attributed.columnSplitLength(width);
             if (wrapped.isEmpty()) {
@@ -2172,17 +2678,41 @@ public class KompileTui {
     }
 
     private List<VisualRow> selectableVisualRows(List<String> lines, boolean preserveHeader) {
-        if (lines == null || lines.isEmpty()) return List.of();
-        if (preserveHeader && transcriptCapacity() > 1) {
-            List<VisualRow> headerRows = visualRowsWithMetadata(List.of(lines.get(0)), 0);
-            List<VisualRow> bodyRows = visualRowsWithMetadata(lines.subList(1, lines.size()), 1);
-            List<VisualRow> rows = new ArrayList<>(bodyRows.size() + 1);
-            rows.add(headerRows.isEmpty()
-                    ? new VisualRow(AttributedString.EMPTY, 0) : headerRows.get(0));
-            rows.addAll(bodyRows);
-            return List.copyOf(rows);
+        return transcriptLayout(lines, preserveHeader).rows();
+    }
+
+    private TranscriptLayout transcriptLayout(List<String> lines, boolean preserveHeader) {
+        int columns = getChatColumns();
+        boolean pinHeader = preserveHeader && transcriptCapacity() > 1;
+        TranscriptLayout cached = transcriptLayout;
+        // Active content is immutable and replaced on every edit. Identity avoids
+        // an O(history) equality/hash walk on every status tick or selection move.
+        if (cached != null && cached.source() == lines && cached.columns() == columns
+                && cached.preserveHeader() == preserveHeader && cached.pinHeader() == pinHeader) {
+            return cached;
         }
-        return visualRowsWithMetadata(lines, 0);
+        if (lines == contentViewLines && cached != null && cached.source() == lines
+                && (cached.columns() != columns || cached.pinHeader() != pinHeader)) {
+            clearTranscriptSelectionLocked();
+        }
+        List<VisualRow> rows = visualRowsWithMetadata(lines, 0);
+        int headerRows = 0;
+        if (pinHeader) {
+            while (headerRows < rows.size() && rows.get(headerRows).logicalLine() == 0) headerRows++;
+        }
+        int bodyRows = rows.size() - headerRows;
+        if (pinHeader && headerRows > 1) {
+            List<VisualRow> pinned = new ArrayList<>(bodyRows + 1);
+            pinned.add(rows.get(0));
+            pinned.addAll(rows.subList(headerRows, rows.size()));
+            rows = List.copyOf(pinned);
+        }
+        TranscriptLayout layout = new TranscriptLayout(lines, columns, preserveHeader, pinHeader, rows, bodyRows);
+        transcriptLayoutBuilds++;
+        // Selection comparison can inspect an old snapshot; do not retain it or
+        // evict the active layout merely to compare two transient snapshots.
+        if (lines == contentViewLines) transcriptLayout = layout;
+        return layout;
     }
 
     private String renderVisualRow(VisualRow row, int rowIndex, SelectionRange selection) {
@@ -2258,6 +2788,7 @@ public class KompileTui {
 
     private SelectionPoint selectionPointAt(
             int x, int y, boolean clampToTranscript, boolean preferBodyAtPinnedTop) {
+        if (!clampToTranscript && (x < 0 || x >= getChatColumns())) return null;
         VisibleVisualRows visible = visibleVisualRows(contentViewLines, contentViewPinsHeader);
         if (visible.rows().isEmpty()) return null;
         int top = scrollTop() - 1;
@@ -2464,6 +2995,12 @@ public class KompileTui {
     /** Live token usage summary rendered on top-bar row 2 when idle. */
     public void setTokenSummary(String summary) {
         topBar.setTokenSummary(summary);
+        if (started) redrawBars();
+    }
+
+    /** Last measured request input / context window, separate from session billing. */
+    public void setContextSummary(String summary) {
+        topBar.setContextSummary(summary);
         if (started) redrawBars();
     }
 

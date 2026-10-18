@@ -367,7 +367,8 @@ final class CodexAppServerModelDiscovery {
                                             runtime, process, diagnostics, false),
                                     List.of(ATTEMPTED_RESOURCE));
                         }
-                        List<LiveModelDiscovery.Model> discovered = new ArrayList<>(models.values());
+                        List<LiveModelDiscovery.Model> discovered = withCachedLimits(
+                                new ArrayList<>(models.values()), discoveryHome);
                         return new ModelDiscovery.Result(
                                 discovered.isEmpty()
                                         ? ModelDiscovery.Status.SUCCESS_EMPTY
@@ -388,7 +389,7 @@ final class CodexAppServerModelDiscovery {
                 }
                 return new ModelDiscovery.Result(
                         ModelDiscovery.Status.SUCCESS,
-                        new ArrayList<>(models.values()),
+                        withCachedLimits(new ArrayList<>(models.values()), discoveryHome),
                         successMessage(runtime, planType, models.size())
                                 + "; pagination stopped after 20 pages",
                         List.of(ATTEMPTED_RESOURCE));
@@ -434,6 +435,31 @@ final class CodexAppServerModelDiscovery {
         }
     }
 
+    private static List<LiveModelDiscovery.Model> withCachedLimits(List<LiveModelDiscovery.Model> models, Path home) {
+        try {
+            // model/list does not expose limits in all Codex releases. The same process writes
+            // its authenticated server metadata here. Never borrow the user's other account cache.
+            return mergeCachedLimits(models, MAPPER.readTree(home.resolve("models_cache.json").toFile()));
+        } catch (Exception ignored) {
+            return models;
+        }
+    }
+
+    static List<LiveModelDiscovery.Model> mergeCachedLimits(List<LiveModelDiscovery.Model> models, JsonNode cache) {
+        Map<String, ModelContextResolver.ModelLimits> limits = new LinkedHashMap<>();
+        for (JsonNode row : cache.path("models")) {
+            limits.put(row.path("slug").asText(""), ProviderContextMetadata.limits("openai-codex", row));
+        }
+        return models.stream().map(model -> {
+            var found = limits.get(model.id());
+            if (found == null) return model;
+            return new LiveModelDiscovery.Model(model.id(), model.variants(), model.variantLabels(),
+                    model.defaultVariant(), model.reasoningMandatory(), model.capabilitySource(),
+                    model.contextWindow() > 0 ? model.contextWindow() : found.contextWindow(),
+                    model.maxOutputTokens() > 0 ? model.maxOutputTokens() : found.maxOutputTokens());
+        }).toList();
+    }
+
     static List<LiveModelDiscovery.Model> parseModels(JsonNode result) {
         JsonNode data = result == null ? null : result.path("data");
         if (data == null || !data.isArray()) {
@@ -467,7 +493,9 @@ final class CodexAppServerModelDiscovery {
                     labels,
                     node.path("defaultReasoningEffort").asText(""),
                     false,
-                    ATTEMPTED_RESOURCE));
+                    ATTEMPTED_RESOURCE,
+                    ProviderContextMetadata.limits("openai-codex", node).contextWindow(),
+                    ProviderContextMetadata.limits("openai-codex", node).maxOutputTokens()));
         }
         return List.copyOf(models);
     }

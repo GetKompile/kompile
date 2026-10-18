@@ -25,6 +25,62 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class KompileTuiAttachmentTest {
     @Test
+    void inputReaderRoutesBothPrintAboveOverloadsToCurrentOwnerOnly() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (LineDisciplineTerminal terminal = new LineDisciplineTerminal("input-routing", "xterm", output, StandardCharsets.UTF_8);
+             BackgroundProcessManager processes = new BackgroundProcessManager("input-routing")) {
+            InputPaneLineReader reader = new InputPaneLineReader(terminal);
+            KompileTui first = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("input-routing-first"), new TerminalRenderer(true));
+            KompileTui second = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("input-routing-second"), new TerminalRenderer(true));
+            try {
+                first.attachLineReader(reader);
+                reader.printAbove("first plain");
+                reader.printAbove(new org.jline.utils.AttributedString("first styled"));
+                assertTrue(first.getContentViewLines().contains("first plain"));
+                assertTrue(first.getContentViewLines().contains("first styled"));
+                assertEquals(0, output.size(), "Retaining output must not write directly to an unattached terminal");
+                first.detachLineReader();
+                reader.printAbove("standalone output");
+                assertTrue(output.toString(StandardCharsets.UTF_8).contains("standalone output"));
+                assertFalse(first.getContentViewLines().contains("standalone output"));
+                output.reset();
+                second.attachLineReader(reader);
+                reader.printAbove("second plain");
+                reader.printAbove(new org.jline.utils.AttributedString("second styled"));
+                assertTrue(second.getContentViewLines().contains("second plain"));
+                assertTrue(second.getContentViewLines().contains("second styled"));
+                assertFalse(first.getContentViewLines().contains("second plain"));
+                assertEquals(0, output.size());
+            } finally { first.stop(); second.stop(); }
+        }
+    }
+
+    @Test
+    void fullRedrawBetweenPromptsRetainsStateAndDetachedRedrawIsSilent() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.tui.attachLineReader(f.reader);
+            f.tui.start(f.terminal);
+            f.tui.recordInScrollRegion("retained transcript");
+            f.tui.showActivityView("redraw-view", "Redraw", "activity row\n".repeat(60));
+            f.tui.scrollContent(10);
+            f.queue.enqueue("queued work");
+            List<String> viewport = f.tui.getVisibleContentLines();
+            f.drain(); f.output.reset();
+            f.tui.requestFullRedraw(); f.drain();
+            assertTrue(f.output.toString(StandardCharsets.UTF_8).contains("\033[2J"));
+            assertEquals(viewport, f.tui.getVisibleContentLines());
+            assertEquals(1, f.queue.getAll().size());
+            f.tui.detachTerminal(); f.output.reset();
+            f.tui.requestFullRedraw(); f.drain();
+            assertEquals(0, f.output.size());
+            f.tui.showMainView();
+            assertTrue(f.tui.getContentViewLines().contains("retained transcript"));
+        }
+    }
+
+    @Test
     void detachRetainsActivityViewportDraftQueueAndBackgroundOutput() throws Exception {
         try (Fixture f = new Fixture()) {
             f.tui.attachLineReader(f.reader);
@@ -122,8 +178,9 @@ class KompileTuiAttachmentTest {
 
     @Test
     void queuedOldFrameCannotPaintAReattachedTerminal() throws Exception {
-        try (Fixture f = new Fixture();
-             LineDisciplineTerminal other = terminal(new ByteArrayOutputStream())) {
+        // Stop the attached TUI before its caller-owned terminal is closed.
+        try (LineDisciplineTerminal other = terminal(new ByteArrayOutputStream());
+             Fixture f = new Fixture()) {
             f.tui.start(f.terminal);
             f.drain();
             ExecutorService executor = f.redrawExecutor();
@@ -357,15 +414,21 @@ class KompileTuiAttachmentTest {
     }
 
     @Test
-    void undersizedStartupCanRetryAndUnstartedStopIsFinal() throws Exception {
+    void undersizedStartupUsesCompactLayoutAndUnstartedStopIsFinal() throws Exception {
         try (Fixture f = new Fixture()) {
             f.terminal.setSize(new Size(80, 8));
             f.tui.start(f.terminal);
-            assertFalse(f.tui.isStarted());
-            assertFalse(f.tui.isTerminalAttached());
-            f.terminal.setSize(new Size(80, 24));
-            f.tui.start(f.terminal);
+            assertTrue(f.tui.isStarted());
             assertTrue(f.tui.isTerminalAttached());
+            assertTrue(f.tui.isCompactLayout());
+            f.tui.recordInScrollRegion("small-window transcript");
+            f.drain();
+            assertTrue(f.output.toString(StandardCharsets.UTF_8).contains("small-window transcript"));
+            f.terminal.setSize(new Size(80, 24));
+            f.tui.handleResize();
+            assertTrue(f.tui.isTerminalAttached());
+            assertFalse(f.tui.isCompactLayout());
+            assertTrue(f.tui.getContentViewLines().contains("small-window transcript"));
         }
         try (Fixture f = new Fixture()) {
             f.tui.stop();

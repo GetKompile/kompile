@@ -1,5 +1,8 @@
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
@@ -15,6 +18,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -105,6 +109,70 @@ class NormalChatProjectContextTest {
         assertFalse(systemPrompt.contains("LEAKED_SKILLS_BLOCK"));
         assertFalse(systemPrompt.contains(SystemPromptManager.MANAGED_PROMPT_BEGIN));
         assertFalse(systemPrompt.contains(SkillsInjection.SKILLS_BEGIN_PREFIX));
+    }
+
+    @Test
+    void nativeClaudeOmitsImportedProjectFileButKeepsOtherInstructionsAndSkills() throws Exception {
+        Path project = tempDir.resolve("native-project");
+        Path module = Files.createDirectories(project.resolve("module"));
+        Files.createDirectories(project.resolve(".git"));
+        Files.writeString(project.resolve("AGENTS.md"), "IMPORTED_PROJECT_RULES");
+        Files.writeString(project.resolve("CLAUDE.md"), "# Native instructions\n@AGENTS.md\n");
+        Files.writeString(module.resolve("AGENTS.md"), "UNIMPORTED_MODULE_RULES");
+        Path global = KompileHome.homeDirectory().toPath();
+        Files.createDirectories(global);
+        Files.writeString(global.resolve("AGENTS.md"), "GLOBAL_KOMPILE_RULES");
+        ProjectChatContext context = ProjectChatContext.load(module, new SkillRegistry());
+
+        String nativePrompt = context.renderSystemPrompt(true);
+        assertFalse(nativePrompt.contains("IMPORTED_PROJECT_RULES"));
+        assertTrue(nativePrompt.contains("UNIMPORTED_MODULE_RULES"));
+        assertTrue(nativePrompt.contains("GLOBAL_KOMPILE_RULES"));
+        assertTrue(nativePrompt.contains("# Kompile Skills"));
+        assertTrue(context.renderSystemPrompt().contains("IMPORTED_PROJECT_RULES"),
+                "API/server providers still need the entire instruction hierarchy");
+        assertTrue(context.agentsMdContent().contains("IMPORTED_PROJECT_RULES"),
+                "inspection and stored project context remain complete");
+    }
+
+    @Test
+    void nativeClaudeKeepsInstructionsWhenImportIsOnlyAnExampleOrComment() throws Exception {
+        Path project = Files.createDirectories(tempDir.resolve("example-project"));
+        Files.writeString(project.resolve("AGENTS.md"), "REQUIRED_RULES");
+        for (String claude : List.of("```md\n@AGENTS.md\n```\n",
+                "~~~\n@AGENTS.md\n~~~\n", "<!--\n@AGENTS.md\n-->\n",
+                "````md\n```\n@AGENTS.md\n```\n````\n",
+                "~~~~\n~~~\n@AGENTS.md\n~~~~\n",
+                "```md\n```not-a-closing-fence\n@AGENTS.md\n```\n",
+                "    @AGENTS.md\n", "\t@AGENTS.md\n",
+                "Read AGENTS.md when needed.", "@some-other-file.md")) {
+            Files.writeString(project.resolve("CLAUDE.md"), claude);
+            assertTrue(ProjectChatContext.load(project).renderSystemPrompt(true)
+                    .contains("REQUIRED_RULES"), claude);
+        }
+        Files.delete(project.resolve("CLAUDE.md"));
+        assertTrue(ProjectChatContext.load(project).renderSystemPrompt(true).contains("REQUIRED_RULES"));
+        Files.createSymbolicLink(project.resolve("CLAUDE.md"), project.resolve("AGENTS.md"));
+        assertTrue(ProjectChatContext.load(project).renderSystemPrompt(true).contains("REQUIRED_RULES"));
+    }
+
+    @Test
+    void instructionDedupIsAppliedOnlyToNativeClaudeRoute() throws Exception {
+        Path project = Files.createDirectories(tempDir.resolve("route-project"));
+        Files.writeString(project.resolve("AGENTS.md"), "NATIVE_IMPORTED_RULES");
+        Files.writeString(project.resolve("CLAUDE.md"), "@./AGENTS.md\n");
+        ObjectMapper mapper = new ObjectMapper();
+        AgentRegistry agents = new AgentRegistry();
+        ChatConfig config = new ChatConfig("anthropic", "unused-key", "claude-opus-5-5", null);
+        config.setAuthenticationMethod("oauth");
+        try (DirectLlmClient client = new DirectLlmClient(config, mapper, project)) {
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), agents, project, client, null, new SkillRegistry());
+            assertFalse(loop.buildSystemPrompt(agents.getDefault()).contains("NATIVE_IMPORTED_RULES"));
+            config.setAuthenticationMethod("api_key");
+            assertTrue(loop.buildSystemPrompt(agents.getDefault()).contains("NATIVE_IMPORTED_RULES"),
+                    "switching to direct API must restore inline instructions");
+        }
     }
 
     @Test

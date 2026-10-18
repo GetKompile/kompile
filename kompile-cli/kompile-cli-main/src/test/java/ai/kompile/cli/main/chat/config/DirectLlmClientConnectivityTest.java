@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -292,6 +294,79 @@ class DirectLlmClientConnectivityTest {
     }
 
     @Test
+    void anthropicMidAnswerConnectionCloseResumesWithBoundedContinuation()
+            throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        TestServer fixture = startServer("/v1/messages", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            int call = calls.incrementAndGet();
+            if (call == 1) {
+                // The connection closes after visible text with no terminal event.
+                respondSse(exchange,
+                        "data: {\"type\":\"message_start\",\"message\":{\"usage\":"
+                                + "{\"input_tokens\":3}}}\n\n"
+                                + "data: {\"type\":\"content_block_start\","
+                                + "\"content_block\":{\"type\":\"text\"}}\n\n"
+                                + "data: {\"type\":\"content_block_delta\",\"delta\":"
+                                + "{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n");
+            } else {
+                respondSse(exchange,
+                        "data: {\"type\":\"content_block_start\","
+                                + "\"content_block\":{\"type\":\"text\"}}\n\n"
+                                + "data: {\"type\":\"content_block_delta\",\"delta\":"
+                                + "{\"type\":\"text_delta\",\"text\":\" finished\"}}\n\n"
+                                + "data: {\"type\":\"message_stop\"}\n\n");
+            }
+        });
+        try (fixture; DirectLlmClient client = new DirectLlmClient(
+                new ChatConfig("anthropic", "key", "claude-test", fixture.baseUrl()),
+                new ObjectMapper(), FAST_POLICY)) {
+            StringBuilder output = new StringBuilder();
+            client.setOutputConsumer(output::append);
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertFalse(result.failed,
+                    "a recovered mid-answer close must not fail the turn");
+            assertEquals("partial finished", result.text);
+            assertEquals(2, calls.get(), "the resume must consume one continuation pass");
+            assertTrue(output.toString().contains("partial"));
+            assertTrue(output.toString().contains("finished"));
+        }
+    }
+
+    @Test
+    void anthropicMidAnswerCloseWhereTheResumeAlsoDropsKeepsThePartialAnswer()
+            throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        TestServer fixture = startServer("/v1/messages", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            calls.incrementAndGet();
+            respondSse(exchange,
+                    "data: {\"type\":\"content_block_start\","
+                            + "\"content_block\":{\"type\":\"text\"}}\n\n"
+                            + "data: {\"type\":\"content_block_delta\",\"delta\":"
+                            + "{\"type\":\"text_delta\",\"text\":\"kept\"}}\n\n");
+        });
+        try (fixture; DirectLlmClient client = new DirectLlmClient(
+                new ChatConfig("anthropic", "key", "claude-test", fixture.baseUrl()),
+                new ObjectMapper(), FAST_POLICY)) {
+            client.setOutputConsumer(ignored -> { });
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertTrue(result.failed);
+            assertTrue(result.text.startsWith("kept"),
+                    "the partial answer must survive even when every resume drops");
+            assertEquals(DirectLlmClient.FailureKind.PROVIDER_ERROR, result.failureKind);
+            assertTrue(result.failureMessage.contains("kept the partial response"));
+            assertEquals(1 + 3, calls.get(), "1 initial + ANTHROPIC_MID_STREAM_RESUME_ATTEMPTS");
+        }
+    }
+
+    @Test
     void retriesTransientStatusesWithoutCommittingFailedAttempts() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         TestServer fixture = startServer(exchange -> {
@@ -318,6 +393,104 @@ class DirectLlmClientConnectivityTest {
             assertEquals(2, events.size());
             assertEquals(2, events.get(0).attempt());
             assertEquals(3, events.get(1).attempt());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void retriesCodexUpstreamRetryBufferFailuresWithoutDuplicatingTheRequest(boolean inBand)
+            throws Exception {
+        List<String> requests = new java.util.concurrent.CopyOnWriteArrayList<>();
+        TestServer fixture = startServer("/codex/responses", exchange -> {
+            requests.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            if (requests.size() < FAST_POLICY.maxAttempts()) {
+                respondCodexRetryBufferFailure(exchange, inBand);
+            } else {
+                respondSse(exchange, responsesCompletion("recovered"));
+            }
+        });
+        try (fixture; DirectLlmClient client = codexClient(fixture)) {
+            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            StringBuilder output = new StringBuilder();
+            client.setConnectivityEventConsumer(events::add);
+            client.setOutputConsumer(output::append);
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertEquals(FAST_POLICY.maxAttempts(), requests.size());
+            assertTrue(requests.stream().allMatch(requests.get(0)::equals),
+                    "rejected attempts must not commit or duplicate history");
+            assertEquals("recovered", result.text);
+            assertEquals("recovered", output.toString(),
+                    "recovered errors must not leak into model output");
+            assertFalse(result.failed);
+            assertEquals(FAST_POLICY.maxAttempts() - 1, events.size());
+            assertEquals(2, events.get(0).attempt());
+            assertEquals(3, events.get(1).attempt());
+            assertTrue(events.get(0).reason().contains("request retry"));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void codexRetryBufferRetriesStopAtTheConfiguredBudget(boolean inBand) throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        TestServer fixture = startServer("/codex/responses", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            calls.incrementAndGet();
+            respondCodexRetryBufferFailure(exchange, inBand);
+        });
+        try (fixture; DirectLlmClient client = codexClient(fixture)) {
+            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            client.setConnectivityEventConsumer(events::add);
+            client.setOutputConsumer(ignored -> { });
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertEquals(FAST_POLICY.maxAttempts(), calls.get());
+            assertEquals(FAST_POLICY.maxAttempts() - 1, events.size());
+            assertTrue(result.failed);
+            assertFalse(result.isContextOverflow());
+            assertFalse(result.canRetryAfterContextOverflow());
+            assertTrue(result.text.contains("request retry"));
+            assertTrue(result.text.contains("buffer limit"));
+            if (!inBand) assertEquals(507, result.failureStatusCode);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void codexRetryBufferFailureAfterTextOrToolOutputIsNeverReplayed(boolean toolOutput)
+            throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        String started = toolOutput
+                ? "data: {\"type\":\"response.output_item.added\",\"output_index\":0,"
+                    + "\"item\":{\"type\":\"function_call\",\"id\":\"fc_test\",\"call_id\":\"call_test\","
+                    + "\"name\":\"read\",\"arguments\":\"{}\"}}\n\n"
+                : "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,"
+                    + "\"delta\":\"partial\"}\n\n";
+        TestServer fixture = startServer("/codex/responses", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            calls.incrementAndGet();
+            respondSse(exchange, started + codexRetryBufferError());
+        });
+        try (fixture; DirectLlmClient client = codexClient(fixture)) {
+            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            client.setConnectivityEventConsumer(events::add);
+            client.setOutputConsumer(ignored -> { });
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertEquals(1, calls.get());
+            assertTrue(events.isEmpty());
+            assertTrue(result.failed);
+            assertFalse(result.isReplaySafe());
+            assertTrue(result.text.contains("Response was not replayed"));
+            if (toolOutput) assertEquals(1, result.toolCalls.size());
+            else assertTrue(result.text.startsWith("partial"));
         }
     }
 
@@ -614,6 +787,23 @@ class DirectLlmClientConnectivityTest {
         ChatConfig config = new ChatConfig(
                 "openai", "test-key", "test-model", server.baseUrl());
         return new DirectLlmClient(config, new ObjectMapper(), FAST_POLICY);
+    }
+
+    private static DirectLlmClient codexClient(TestServer server) {
+        ChatConfig config = new ChatConfig(
+                "openai-codex", "test-key", "test-model", server.baseUrl());
+        return new DirectLlmClient(config, new ObjectMapper(), FAST_POLICY);
+    }
+
+    private static void respondCodexRetryBufferFailure(HttpExchange exchange, boolean inBand)
+            throws Exception {
+        if (inBand) respondSse(exchange, codexRetryBufferError());
+        else respond(exchange, 507, "exceeded request retry buffer limit upstream");
+    }
+
+    private static String codexRetryBufferError() {
+        return "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":507,"
+                + "\"message\":\"exceeded request retry context buffer limit upstream\"}}}\n\n";
     }
 
     private static String completion(String text) {

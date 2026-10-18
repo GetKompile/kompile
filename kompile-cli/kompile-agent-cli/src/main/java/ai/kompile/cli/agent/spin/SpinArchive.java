@@ -47,6 +47,8 @@ public final class SpinArchive {
     private static final long MAX_EXTRACTED_BYTES = Long.getLong(
             "kompile.spin.maxExtractedBytes", 128L * 1024L * 1024L * 1024L);
     private static final long MAX_CHECKSUM_MANIFEST_BYTES = 32L * 1024L * 1024L;
+    // Private ZIP extra field: portable executable bit (ZIP's DOS attributes lose Unix modes).
+    private static final int EXECUTABLE_EXTRA_ID = 0x4b53;
     private static final Set<String> STORED_EXTENSIONS = Set.of(
             ".gguf", ".ggml", ".sdz", ".jar", ".zip", ".gz", ".xz", ".zst",
             ".png", ".jpg", ".jpeg", ".mp3", ".mp4", ".onnx", ".safetensors");
@@ -68,7 +70,7 @@ public final class SpinArchive {
 
         Path runtime = embeddedRuntime == null ? null
                 : requireDirectory(embeddedRuntime, "embedded runtime");
-        SpinDefinition definition = SpinDefinition.load(root, runtime != null);
+        SpinDefinition definition = SpinDefinition.load(root, runtime);
         if (runtime != null && !"embedded".equals(definition.delivery())) {
             throw new IOException("--runtime-dir requires runtime.delivery: embedded");
         }
@@ -197,6 +199,10 @@ public final class SpinArchive {
                         sink.write(buffer, 0, read);
                     }
                 }
+                if (executableEntry(entry) && !System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")
+                        && !output.toFile().setExecutable(true, false) && !Files.isExecutable(output)) {
+                    throw new IOException("Could not restore bundled executable: " + name);
+                }
             }
         } catch (IOException | RuntimeException failure) {
             deleteTree(destination);
@@ -297,6 +303,7 @@ public final class SpinArchive {
             throws IOException {
         ZipEntry entry = new ZipEntry(name);
         entry.setTime(0L);
+        if (file.executable()) entry.setExtra(new byte[]{0x53, 0x4b, 1, 0, 1});
         if (file.stored()) {
             entry.setMethod(ZipEntry.STORED);
             entry.setSize(file.size());
@@ -364,7 +371,20 @@ public final class SpinArchive {
             }
         }
         return new PayloadFile(file, HashUtils.toHex(digest.digest()),
-                size, crc.getValue(), shouldStore(file));
+                size, crc.getValue(), shouldStore(file), Files.isExecutable(file));
+    }
+
+    private static boolean executableEntry(ZipEntry entry) {
+        byte[] extra = entry.getExtra();
+        if (extra == null) return false;
+        for (int offset = 0; offset + 4 <= extra.length;) {
+            int id = (extra[offset] & 0xff) | ((extra[offset + 1] & 0xff) << 8);
+            int size = (extra[offset + 2] & 0xff) | ((extra[offset + 3] & 0xff) << 8);
+            if (size > extra.length - offset - 4) return false;
+            if (id == EXECUTABLE_EXTRA_ID && size == 1) return extra[offset + 4] == 1;
+            offset += 4 + size;
+        }
+        return false;
     }
 
     private static Map<String, Path> payloadFiles(Path root, String prefix)
@@ -502,5 +522,5 @@ public final class SpinArchive {
     public record BuildResult(Path archive, String id, String version,
                               String sha256, long bytes) { }
     private record PayloadFile(Path path, String sha256, long size, long crc,
-                               boolean stored) { }
+                               boolean stored, boolean executable) { }
 }

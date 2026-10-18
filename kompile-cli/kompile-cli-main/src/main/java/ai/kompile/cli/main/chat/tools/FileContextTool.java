@@ -7,6 +7,7 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.codeindex.FileContextService;
+import ai.kompile.cli.main.chat.incidents.IncidentStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -85,9 +86,14 @@ public final class FileContextTool implements CliTool {
 
         FileContextService.ContextSnapshot snapshot = service.lookup(path, context.getWorkingDirectory());
         int maxChars = params.path("max_chars").asInt(FileContextService.DEFAULT_RENDER_CHARS);
+        maxChars = Math.max(512, Math.min(FileContextService.MAX_RENDER_CHARS,
+                maxChars > 0 ? maxChars : FileContextService.DEFAULT_RENDER_CHARS));
+        String incidents = new IncidentStore(context.getWorkingDirectory())
+                .context(null, path.toString(), Math.min(2000, maxChars / 2));
         Map<String, Object> metadata = snapshot.metadata();
-        return ToolResult.success("file_context: " + display(context, path),
-                service.render(snapshot, maxChars), metadata);
+        String rendered = incidents + service.render(snapshot, maxChars - incidents.length());
+        if (rendered.length() > maxChars) rendered = rendered.substring(0, maxChars);
+        return ToolResult.success("file_context: " + display(context, path), rendered, metadata);
     }
 
     private static String display(ToolContext context, Path path) {

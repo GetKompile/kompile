@@ -74,6 +74,7 @@ public class McpSocketSession implements Runnable {
     private final SharedResourcePool pool;
     private final String sessionId;
     private final Runnable onClose;
+    private final ToolResultReferenceCache resultReferenceCache;
 
     /** Per-session tool map — built lazily in background after first initialize request. */
     private final ConcurrentHashMap<String, ToolDef> tools = new ConcurrentHashMap<>();
@@ -101,10 +102,16 @@ public class McpSocketSession implements Runnable {
 
     public McpSocketSession(SocketChannel channel, SharedResourcePool pool,
                             String sessionId, Runnable onClose) {
+        this(channel, pool, sessionId, onClose, new ToolResultReferenceCache());
+    }
+
+    McpSocketSession(SocketChannel channel, SharedResourcePool pool, String sessionId,
+                     Runnable onClose, ToolResultReferenceCache resultReferenceCache) {
         this.channel = channel;
         this.pool = pool;
         this.sessionId = sessionId;
         this.onClose = onClose;
+        this.resultReferenceCache = resultReferenceCache;
     }
 
     @Override
@@ -123,6 +130,7 @@ public class McpSocketSession implements Runnable {
             JsonNode header = sessionOm.readTree(headerLine);
             String workDirStr = header.has("workDir") ? header.get("workDir").asText() : null;
             this.workDir = workDirStr != null ? Paths.get(workDirStr) : pool.defaultWorkDir();
+            resultReferenceCache.configureOutputBudget(this.workDir);
             // Resolved per client on the brief's own thread; initialize waits only within its budget.
             this.sessionBrief = CodeIndexSessionBrief.start(workDir);
             this.requestedProfile = header.path("profile").asText("full");
@@ -357,8 +365,8 @@ public class McpSocketSession implements Runnable {
 
                             if (progressToken != null) sendProgress(om, progressToken, 1, 1);
 
-                            result.set("result",
-                                    McpToolResultSerializer.toMcpCallResult(om, tr, null, toolName));
+                            result.set("result", toolCallResult(om, toolName, tr,
+                                    tools.containsKey("fetch_result")));
                         }
                     }
                 }
@@ -490,6 +498,13 @@ public class McpSocketSession implements Runnable {
         sendNotification(om, "notifications/progress", params);
     }
 
+    /** Apply the same reference-backed delivery budget as stdio, preserving error status. */
+    ObjectNode toolCallResult(ObjectMapper om, String toolName, ToolResult result, boolean fetchAvailable) {
+        ToolResult delivered = fetchAvailable
+                ? resultReferenceCache.prepareForDelivery(sessionId, toolName, result) : result;
+        return McpToolResultSerializer.toMcpCallResult(om, delivered, null, toolName);
+    }
+
     // ── Tool registration (mirrors McpStdioCommand.buildToolMap) ──────────
 
     /**
@@ -518,11 +533,14 @@ public class McpSocketSession implements Runnable {
         // Patch is kompile-specific (multi-hunk unified diff), always register
         register(map, new PatchTool(), om, wd);
         register(map, new ReadBatchTool(), om, wd);
+        register(map, new FetchResultTool(resultReferenceCache), om, wd);
+        register(map, new FetchResultBatchTool(resultReferenceCache), om, wd);
 
         // Knowledge & memory (kompile-specific, always register)
         register(map, new TranscriptSearchTool(), om, wd);
         register(map, new ConversationImportTool(), om, wd);
         register(map, new MemoryTool(), om, wd);
+        register(map, new IncidentTool(), om, wd);
         register(map, new FileContextTool(), om, wd);
         register(map, new FileNoteTool(), om, wd);
         register(map, new ChannelTool(null, om), om, wd);
@@ -532,6 +550,7 @@ public class McpSocketSession implements Runnable {
         register(map, new ProjectConfigTool(), om, wd);
         register(map, new EnforcerConfigTool(), om, wd);
         register(map, new JudgeControlTool(), om, wd);
+        register(map, new ai.kompile.cli.main.chat.tools.PeerTool(coordinator), om, wd);
 
         // Test milestone
         register(map, new TestMilestoneTool(), om, wd);
@@ -570,6 +589,7 @@ public class McpSocketSession implements Runnable {
 
         // Delegation tools — use shared registries from the pool
         var subagentRunner = new DirectSubagentRunnerStdio(wd, pool.roleManager());
+        subagentRunner.setProcessTracking(processManager, coordinator);
         subagentRunner.setBaseEnvironment(Map.of(
                 "KOMPILE_PARENT_SESSION_ID", coordinator.getSessionId()));
         var enforcerTool = new StdioEnforcerTool(subagentRunner, om, wd, processManager);

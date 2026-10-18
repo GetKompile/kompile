@@ -121,12 +121,7 @@ public class ToolCallLoggingHook implements AgentHook {
         record.put("projectDirectory", projectDirectory);
 
         String jsonLine = MAPPER.writeValueAsString(record) + "\n";
-        synchronized (ToolCallLoggingHook.class) {
-            Files.writeString(dir.resolve(sessionId + ".jsonl"), jsonLine,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            Files.writeString(dir.resolve("all-tool-calls.jsonl"), jsonLine,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        }
+        ai.kompile.cli.common.metrics.ToolJournalFiles.appendCatalog(dir, sessionId, jsonLine);
     }
 
     /** Mirrors ai.kompile.cli.main.chat.ToolCallRecord#categorize so categories stay consistent. */

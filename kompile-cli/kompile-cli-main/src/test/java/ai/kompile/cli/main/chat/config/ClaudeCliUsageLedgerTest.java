@@ -39,6 +39,23 @@ class ClaudeCliUsageLedgerTest {
     }
 
     @Test
+    void contextUsesMergedRequestInputEvenWhenALaterSnapshotOmitsCachedFields() {
+        var ledger = new ClaudeCliUsageLedger(false);
+        var start = new RequestUsage(1, "main", true, counts(10, 1, 100_000, 20_000));
+        ledger.request(start);
+        assertEquals(120_010, ledger.requestInputTokens(start));
+        var partial = new RequestUsage(2, "main", true, counts(10, 30));
+        ledger.request(partial);
+        assertEquals(120_010, ledger.requestInputTokens(partial), "missing cache is not zero cache");
+        var child = new RequestUsage(3, "child", false, counts(900_000, 50));
+        ledger.request(child);
+        assertEquals(0, ledger.requestInputTokens(child), "a child cannot size the parent's context");
+        var next = new RequestUsage(4, "next", true, counts(8_000, 1));
+        ledger.request(next);
+        assertEquals(8_000, ledger.requestInputTokens(next), "a new request replaces, not adds to context");
+    }
+
+    @Test
     void theTotalsSettleTheSubagentOutputNoRequestReported() {
         ClaudeCliUsageLedger ledger = new ClaudeCliUsageLedger(false);
         List<TokenCounts> added = feed(ledger, parse(new ClaudeCliStreamParser(),

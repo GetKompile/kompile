@@ -551,7 +551,7 @@ public class ChatConfig {
         return fastModeCapabilities().supports(model);
     }
 
-    /** Recheck the effective request model, including per-request overrides. */
+    /** Apply the preference to any nonblank request model on a supported provider route. */
     public boolean useFastMode(String requestModel) {
         return fastMode && fastModeCapabilities().supports(requestModel);
     }
@@ -848,8 +848,9 @@ public class ChatConfig {
      * (subscription/OAuth route). Same vendor as the direct HTTP route;
      * {@code isAnthropicFormat()} stays false here because the CLI owns the
      * credentials and the wire protocol is Claude Code stream-json, not the
-     * Anthropic Messages API. Kompile never touches this credential — the user
-     * manages it with Claude Code (`claude auth login`).
+     * Anthropic Messages API. The user manages the credential with Claude Code
+     * (`claude auth login`); only the separate read-only /usage lookup reads its
+     * file-store access token, without importing or refreshing it.
      */
     @JsonIgnore
     public boolean isClaudeCliNative() {

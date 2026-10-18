@@ -368,6 +368,9 @@ final class CompactTopologyCodec {
         }
 
         CoreLink next() throws IOException {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new java.io.InterruptedIOException("Compact topology traversal cancelled");
+            }
             if (position >= linkCount) {
                 validateEnd();
                 return null;

@@ -124,6 +124,26 @@ class WebChatContextTest {
     }
 
     @Test
+    void productArtifactPathReachesBothHandoffTiersAndIsClearedForChildren() throws Exception {
+        Path manifest = java.nio.file.Files.writeString(directory.resolve("profile.json"), "{}");
+        String previous = System.getProperty(ProductChatPolicy.PROPERTY);
+        try {
+            System.setProperty(ProductChatPolicy.PROPERTY, manifest.toString());
+            var jvm = WebChatContext.jvmArguments(directory, false, null, false);
+            org.junit.jupiter.api.Assertions.assertTrue(jvm.contains("-D" + ProductChatPolicy.PROPERTY + "=" + manifest.toRealPath()));
+            var environment = new HashMap<>(WebChatContext.environment(directory, false, null, false));
+            assertEquals(manifest.toRealPath().toString(), environment.get(ProductChatPolicy.ENVIRONMENT));
+            WebChatContext.clearEnvironment(environment);
+            org.junit.jupiter.api.Assertions.assertFalse(environment.containsKey(ProductChatPolicy.ENVIRONMENT));
+            assertThrows(IllegalArgumentException.class, () -> WebChatContext.jvmArguments(directory, true));
+            assertThrows(IllegalArgumentException.class, () -> WebChatContext.jvmArguments(directory, false, "other-role"));
+        } finally {
+            if (previous == null) System.clearProperty(ProductChatPolicy.PROPERTY);
+            else System.setProperty(ProductChatPolicy.PROPERTY, previous);
+        }
+    }
+
+    @Test
     void theServerReadsTheTeamNewSessionsStartWith() {
         String previous = System.getProperty(WebChatContext.WORKFLOW);
         try {

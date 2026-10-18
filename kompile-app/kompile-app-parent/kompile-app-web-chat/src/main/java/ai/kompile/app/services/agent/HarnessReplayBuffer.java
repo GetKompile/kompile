@@ -22,6 +22,9 @@ final class HarnessReplayBuffer implements KompileCliHarnessClient.HarnessEventS
     private long sequence;
     private int bytes;
     private boolean terminal;
+    // Activity is state, not a delta: a caught-up cursor or an overflow must not hide running work.
+    private Event latestActivity;
+    private Event evictedEnding;
     private Connection connection;
     final long createdAt = System.currentTimeMillis();
 
@@ -33,6 +36,11 @@ final class HarnessReplayBuffer implements KompileCliHarnessClient.HarnessEventS
         if (terminal) return;
         JsonNode data = mapper.valueToTree(value);
         Event event = new Event(++sequence, name, data, mapper.writeValueAsBytes(data).length + name.length() + 32);
+        if (name.equals("activity")) latestActivity = event.bytes() <= maxBytes ? event : null;
+        // A long final answer can evict itself. Its transcript is durable; retain only its ending.
+        if (event.bytes() > maxBytes && java.util.Set.of("complete", "error", "cancelled").contains(name))
+            evictedEnding = new Event(event.id(), name, mapper.valueToTree(name.equals("error")
+                    ? "Run ended while the page was away; reload its saved transcript." : java.util.Map.of()), 0);
         events.addLast(event); bytes += event.bytes();
         while (bytes > maxBytes || events.size() > maxEvents) bytes -= events.removeFirst().bytes();
         deliver(event);
@@ -48,6 +56,7 @@ final class HarnessReplayBuffer implements KompileCliHarnessClient.HarnessEventS
      * first gets a resync marker naming the new cursor, so the client knows to reload the transcript.
      */
     synchronized void attach(long after, Connection next) {
+        long requestedAfter = after;
         long oldest = events.isEmpty() ? sequence + 1 : events.getFirst().id();
         if (after < 0 || after > sequence) throw new IllegalArgumentException("Invalid replay cursor");
         Connection previous = connection;
@@ -59,6 +68,12 @@ final class HarnessReplayBuffer implements KompileCliHarnessClient.HarnessEventS
             deliver(new Event(RESYNC_ID, "resync", data, 0));
         }
         for (Event event : events) if (event.id() > after) deliver(event);
+        if (evictedEnding != null && evictedEnding.id() > requestedAfter)
+            deliver(new Event(RESYNC_ID, evictedEnding.name(), evictedEnding.data(), 0));
+        // Out-of-band state does not advance the replay cursor. Send after deltas so old activity
+        // in the window cannot overwrite the current snapshot, including when the cursor is caught up.
+        if (!terminal && evictedEnding == null && latestActivity != null)
+            deliver(new Event(RESYNC_ID, "activity", latestActivity.data(), 0));
         if (terminal && connection != null) {
             Connection done = connection; connection = null; done.complete();
         }

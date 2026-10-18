@@ -23,6 +23,7 @@ import ai.kompile.cli.main.chat.tools.DynamicToolManager;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.tools.ToolResultReferenceCache;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.mcp.stdio.AsyncToolExecutor;
@@ -41,6 +42,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -51,6 +53,95 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.*;
 
 class McpStdioCommandTest {
+
+    @Test
+    @ResourceLock("user.home")
+    void stdioBoundsDiagnosticOutputOnlyWhenFetchIsAvailable(@TempDir Path home) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", home.toString());
+        try {
+            ObjectMapper mapper = JsonUtils.standardMapper();
+            McpStdioCommand command = new McpStdioCommand();
+            AsyncToolExecutor executor = prepareToolDispatch(command);
+            try {
+                ToolResultReferenceCache cache = new ToolResultReferenceCache(16000, 60000);
+                Field cacheField = McpStdioCommand.class.getDeclaredField("resultReferenceCache");
+                cacheField.setAccessible(true);
+                cacheField.set(command, cache);
+                String output = "compile failed\n" + "stack frame\n".repeat(4000);
+                var task = delegationTool(mapper, ignored -> ToolResult.error(output));
+                Map<String, McpStdioCommand.ToolDef> tools = new LinkedHashMap<>();
+                tools.put("task", task);
+                ObjectNode request = mapper.createObjectNode();
+                request.put("id", 1).put("method", "tools/call");
+                request.putObject("params").put("name", "task").putObject("arguments");
+                Method handle = McpStdioCommand.class.getDeclaredMethod(
+                        "handleMessage", JsonNode.class, Map.class, ObjectMapper.class);
+                handle.setAccessible(true);
+
+                JsonNode inline = (JsonNode) handle.invoke(command, request, tools, mapper);
+                assertTrue(inline.path("result").path("isError").asBoolean());
+                assertTrue(inline.path("result").path("content").get(0).path("text").asText().contains(output));
+                assertEquals(0, cache.size());
+
+                tools.put("fetch_result", new McpStdioCommand.ToolDef("fetch_result", "fetch",
+                        mapper.createObjectNode(), McpToolAnnotations.READ_ONLY,
+                        ignored -> ToolResult.success("fetch")));
+                JsonNode bounded = (JsonNode) handle.invoke(command, request, tools, mapper);
+                assertTrue(bounded.path("result").path("isError").asBoolean());
+                assertTrue(bounded.path("result").path("content").get(0).path("text").asText().contains("Tool failed"));
+                String id = bounded.path("result").path("structuredContent")
+                        .path("metadata").path("result_id").asText();
+                assertEquals(output, cache.get(id).orElseThrow().output());
+
+                Method executePoll = McpStdioCommand.class.getDeclaredMethod("executePoll", Map.class);
+                executePoll.setAccessible(true);
+                tools.put("poll", new McpStdioCommand.ToolDef("poll", "poll",
+                        mapper.createObjectNode(), McpToolAnnotations.READ_ONLY, args -> {
+                            try {
+                                return (ToolResult) executePoll.invoke(command, args);
+                            } catch (Exception failure) {
+                                throw new AssertionError(failure);
+                            }
+                        }));
+                ((ObjectNode) request.path("params")).put("name", "poll");
+                for (boolean throwsException : List.of(false, true)) {
+                    String taskId = executor.submit("failed-" + throwsException, () -> {
+                        if (throwsException) throw new IllegalStateException(output);
+                        return ToolResult.error(output);
+                    });
+                    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
+                        while ("running".equals(executor.getStatus(taskId).status())) Thread.sleep(5);
+                    });
+                    ((ObjectNode) request.path("params").path("arguments")).put("task_id", taskId);
+                    JsonNode polled = (JsonNode) handle.invoke(command, request, tools, mapper);
+                    assertTrue(polled.path("result").path("isError").asBoolean());
+                    assertTrue(polled.path("result").path("content").get(0).path("text")
+                            .asText().contains("Tool failed"));
+                    String pollId = polled.path("result").path("structuredContent")
+                            .path("metadata").path("result_id").asText();
+                    assertFalse(pollId.isBlank());
+                    assertTrue(cache.get(pollId).orElseThrow().output().endsWith(output));
+                }
+            } finally {
+                executor.shutdown();
+            }
+        } finally {
+            if (previousHome == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", previousHome);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void incidentMixedActionToolIsInCoreButNotReadOnlyProfiles() throws Exception {
+        Field field = McpStdioCommand.class.getDeclaredField("PROFILE_TOOLS");
+        field.setAccessible(true);
+        Map<String, Set<String>> profiles = (Map<String, Set<String>>) field.get(null);
+        assertTrue(profiles.get("core").contains("incident"));
+        assertFalse(profiles.get("minimal").contains("incident"));
+        assertFalse(profiles.get("explore").contains("incident"));
+    }
 
     @Test
     void daemonBridgeIsExplicitOptInAndNoDaemonNeverEnablesIt() throws Exception {
@@ -310,7 +401,7 @@ class McpStdioCommandTest {
         for (String field : List.of("name", "prompt", "agent", "role", "model", "thinking")) {
             assertEquals("string", properties.path(field).path("type").asText(), field);
         }
-        assertEquals(mapper.valueToTree(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi")),
+        assertEquals(mapper.valueToTree(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi", "kompile", "general")),
                 properties.path("agent").path("enum"));
         assertEquals("array", properties.path("agents").path("type").asText());
         assertEquals("integer", properties.path("agent_count").path("type").asText());

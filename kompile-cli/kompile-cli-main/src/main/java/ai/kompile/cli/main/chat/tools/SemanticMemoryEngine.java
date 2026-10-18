@@ -54,10 +54,10 @@ public class SemanticMemoryEngine {
 
     private final List<MemoryEntry> memories = new CopyOnWriteArrayList<>();
     private final Map<String, float[]> denseVectors = new ConcurrentHashMap<>();
-    private final Map<String, double[]> tfidfVectors = new ConcurrentHashMap<>();
-    private final Map<String, Integer> documentFrequency = new ConcurrentHashMap<>();
-    private final Set<String> vocabulary = ConcurrentHashMap.newKeySet();
-    private volatile List<String> vocabularyOrder = List.of();
+    // Publish entries, document frequencies and sparse vectors together for lock-free queries.
+    private volatile TfidfIndex tfidfIndex = new TfidfIndex(List.of(), Map.of(), Map.of(), 0);
+    // Corpus mutations and rebuilds are serialized on this engine.
+    private boolean tfidfDirty;
     private final List<Path> watchDirs = new CopyOnWriteArrayList<>();
     private final Path projectDirectory;
     private final boolean denseEnabled;
@@ -183,7 +183,8 @@ public class SemanticMemoryEngine {
      * Attempt to load GenericDenseSameDiffEncoder via reflection.
      * Falls back to TF-IDF if anserini/ND4J not on classpath.
      */
-    private void initializeDenseEncoder() {
+    /** Package-private so startup-policy tests can stub loading without native/model side effects. */
+    void initializeDenseEncoder() {
         try {
             Class<?> encoderClass = Class.forName(
                     "io.anserini.encoder.samediff.GenericDenseSameDiffEncoder");
@@ -215,8 +216,13 @@ public class SemanticMemoryEngine {
             if (denseVectors.containsKey(entry.id)) continue;
             float[] vec = denseEncode(entry.content);
             if (vec != null) {
-                denseVectors.put(entry.id, vec);
-                reindexed++;
+                synchronized (this) {
+                    // Encoding runs outside the mutation lock. A replaced/deleted
+                    // entry must not acquire the old snapshot's vector afterward.
+                    if (memories.contains(entry) && denseVectors.putIfAbsent(entry.id, vec) == null) {
+                        reindexed++;
+                    }
+                }
             }
         }
         if (reindexed > 0) {
@@ -253,7 +259,8 @@ public class SemanticMemoryEngine {
      * @return ranked list of retrieved memories, most similar first
      */
     public List<RetrievedMemory> query(String text, int topK, double threshold) {
-        if (memories.isEmpty() || text == null || text.isBlank()) {
+        if (text == null || text.isBlank()
+                || (useDenseEmbeddings ? memories.isEmpty() : tfidfIndex.entries.isEmpty())) {
             return Collections.emptyList();
         }
 
@@ -286,14 +293,15 @@ public class SemanticMemoryEngine {
     }
 
     private List<RetrievedMemory> queryTfidf(String text, double threshold) {
-        double[] queryVec = tfidfVector(tokenize(text));
+        TfidfIndex index = tfidfIndex;
+        SparseVector queryVec = tfidfVector(tokenize(text), index.documentFrequency, index.entries.size());
 
         List<RetrievedMemory> results = new ArrayList<>();
-        for (MemoryEntry entry : memories) {
-            double[] memVec = tfidfVectors.get(entry.id);
+        for (MemoryEntry entry : index.entries) {
+            SparseVector memVec = index.vectors.get(entry.id);
             if (memVec == null) continue;
 
-            double sim = cosineSimilarityDouble(queryVec, memVec);
+            double sim = cosineSimilaritySparse(queryVec, memVec);
             if (sim >= threshold) {
                 results.add(new RetrievedMemory(entry, sim));
             }
@@ -326,7 +334,7 @@ public class SemanticMemoryEngine {
                     memories.size(), encoderMode, typeCounts);
         } else {
             return String.format("Indexed: %d memories, mode: %s, vocab: %d terms, types: %s",
-                    memories.size(), encoderMode, vocabulary.size(), typeCounts);
+                    memories.size(), encoderMode, tfidfIndex.documentFrequency.size(), typeCounts);
         }
     }
 
@@ -359,7 +367,7 @@ public class SemanticMemoryEngine {
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
-    private void refreshIndex() {
+    private synchronized void refreshIndex() {
         long now = System.currentTimeMillis();
         if (now - lastRefreshTime < REFRESH_INTERVAL_MS / 2) return;
         lastRefreshTime = now;
@@ -371,20 +379,24 @@ public class SemanticMemoryEngine {
                 System.err.println("[SemanticMemory] Error scanning " + dir + ": " + e.getMessage());
             }
         }
+        if (tfidfDirty) rebuildTfidfIndex();
     }
 
     private void scanDirectory(Path dir) throws IOException {
-        if (!Files.isDirectory(dir)) return;
-
         Set<String> seenIds = new HashSet<>();
-        try (var stream = Files.walk(dir, 5)) {
-            stream.filter(p -> p.toString().endsWith(".md"))
-                  .filter(Files::isRegularFile)
-                  .forEach(file -> {
-                      Path normalized = file.toAbsolutePath().normalize();
-                      seenIds.add("file:" + normalized);
-                      indexMemoryFile(normalized, false);
-                  });
+        if (Files.isDirectory(dir)) {
+            try (var stream = Files.walk(dir, 5)) {
+                stream.filter(p -> p.toString().endsWith(".md"))
+                      .filter(Files::isRegularFile)
+                      .forEach(file -> {
+                          Path normalized = file.toAbsolutePath().normalize();
+                          seenIds.add("file:" + normalized);
+                          indexMemoryFile(normalized, false);
+                      });
+            }
+        } else if (!Files.notExists(dir)) {
+            // Do not treat an inaccessible directory as a confirmed deletion.
+            return;
         }
 
         Path normalizedDir = dir.toAbsolutePath().normalize();
@@ -395,31 +407,37 @@ public class SemanticMemoryEngine {
                 .map(entry -> entry.id)
                 .collect(Collectors.toSet());
         if (!removedIds.isEmpty()) {
+            tfidfDirty = true;
             memories.removeIf(entry -> removedIds.contains(entry.id));
             removedIds.forEach(denseVectors::remove);
-            removedIds.forEach(tfidfVectors::remove);
         }
-        rebuildTfidfIndex();
     }
 
     private void indexMemoryFile(Path file) {
         indexMemoryFile(file, true);
     }
 
-    private void indexMemoryFile(Path file, boolean rebuildTfidf) {
+    private synchronized void indexMemoryFile(Path file, boolean rebuildTfidf) {
         Path normalizedFile = file.toAbsolutePath().normalize();
         String id = "file:" + normalizedFile;
         try {
             long lastModified = Files.getLastModifiedTime(file).toMillis();
             // Skip if already indexed and file hasn't changed
             for (MemoryEntry existing : memories) {
-                if (existing.id.equals(id) && existing.indexedAt >= lastModified) {
+                if (existing.id.equals(id) && existing.indexedAt == lastModified) {
                     return;
                 }
             }
 
             String content = Files.readString(file);
-            if (content.isBlank()) return;
+            if (content.isBlank()) {
+                if (memories.removeIf(entry -> entry.id.equals(id))) {
+                    denseVectors.remove(id);
+                    tfidfDirty = true;
+                    if (rebuildTfidf) rebuildTfidfIndex();
+                }
+                return;
+            }
 
             // Parse YAML frontmatter if present
             String type = "unknown";
@@ -443,11 +461,6 @@ public class SemanticMemoryEngine {
                 }
             }
 
-            // Remove existing entry if updating
-            memories.removeIf(e -> e.id.equals(id));
-            denseVectors.remove(id);
-            tfidfVectors.remove(id);
-
             String searchableContent = name + "\n" + description + "\n" + content;
             MemoryEntry entry = new MemoryEntry(id, type, name,
                     StringUtils.truncate(searchableContent, MAX_MEMORY_CONTENT_LENGTH),
@@ -463,45 +476,40 @@ public class SemanticMemoryEngine {
         addEntry(entry, true);
     }
 
-    private void addEntry(MemoryEntry entry, boolean rebuildTfidf) {
+    private synchronized void addEntry(MemoryEntry entry, boolean rebuildTfidf) {
+        tfidfDirty = true;
         memories.removeIf(existing -> existing.id.equals(entry.id));
         denseVectors.remove(entry.id);
-        tfidfVectors.remove(entry.id);
         if (useDenseEmbeddings) {
             float[] vec = denseEncode(entry.content);
             if (vec != null) {
-                memories.add(entry);
                 denseVectors.put(entry.id, vec);
-                if (rebuildTfidf) rebuildTfidfIndex();
-                return;
             }
-            // Dense encoding failed for this entry — fall through to TF-IDF for this entry
         }
 
         memories.add(entry);
         if (rebuildTfidf) rebuildTfidfIndex();
     }
 
-    /** Rebuild document frequencies and vectors against one stable vocabulary order. */
+    /** Publish one complete lexical snapshot, only after the corpus changes. */
     private synchronized void rebuildTfidfIndex() {
-        documentFrequency.clear();
-        vocabulary.clear();
-        tfidfVectors.clear();
+        List<MemoryEntry> entries = List.copyOf(memories);
+        Map<String, Integer> documentFrequency = new HashMap<>();
+        Map<String, SparseVector> vectors = new HashMap<>();
 
-        for (MemoryEntry entry : memories) {
+        for (MemoryEntry entry : entries) {
             Set<String> uniqueTokens = new HashSet<>(tokenize(entry.content));
-            vocabulary.addAll(uniqueTokens);
             for (String token : uniqueTokens) {
                 documentFrequency.merge(token, 1, Integer::sum);
             }
         }
 
-        List<String> ordered = new ArrayList<>(vocabulary);
-        Collections.sort(ordered);
-        vocabularyOrder = List.copyOf(ordered);
-        for (MemoryEntry entry : memories) {
-            tfidfVectors.put(entry.id, tfidfVector(tokenize(entry.content)));
+        for (MemoryEntry entry : entries) {
+            vectors.put(entry.id, tfidfVector(tokenize(entry.content), documentFrequency, entries.size()));
         }
+        tfidfIndex = new TfidfIndex(entries, Map.copyOf(documentFrequency), Map.copyOf(vectors),
+                tfidfIndex.generation + 1);
+        tfidfDirty = false;
     }
 
     // ── Dense encoding via SameDiff ───────────────────────────────────────────
@@ -546,41 +554,53 @@ public class SemanticMemoryEngine {
                 .collect(Collectors.toList());
     }
 
-    private double[] tfidfVector(List<String> tokens) {
+    private SparseVector tfidfVector(List<String> tokens, Map<String, Integer> documentFrequency,
+                                     int documentCount) {
         Map<String, Integer> termFreq = new HashMap<>();
         for (String token : tokens) {
-            termFreq.merge(token, 1, Integer::sum);
+            // Match the old vocabulary projection: unknown query terms have no weight or norm.
+            if (documentFrequency.containsKey(token)) termFreq.merge(token, 1, Integer::sum);
         }
 
-        List<String> vocabList = vocabularyOrder;
-        double[] vec = new double[vocabList.size()];
-        int totalDocs = Math.max(1, memories.size());
+        String[] terms = termFreq.keySet().toArray(String[]::new);
+        Arrays.sort(terms);
+        double[] weights = new double[terms.length];
+        int totalDocs = Math.max(1, documentCount);
+        double normSquared = 0;
 
-        for (int i = 0; i < vocabList.size(); i++) {
-            String term = vocabList.get(i);
-            int tf = termFreq.getOrDefault(term, 0);
-            int df = documentFrequency.getOrDefault(term, 1);
-            vec[i] = tf * Math.log((double) totalDocs / df + 1);
+        for (int i = 0; i < terms.length; i++) {
+            String term = terms[i];
+            int tf = termFreq.get(term);
+            int df = documentFrequency.get(term);
+            weights[i] = tf * Math.log((double) totalDocs / df + 1);
+            normSquared += weights[i] * weights[i];
         }
-        return vec;
+        return new SparseVector(terms, weights, Math.sqrt(normSquared));
     }
 
-    private static double cosineSimilarityDouble(double[] a, double[] b) {
-        int len = Math.min(a.length, b.length);
-        double dot = 0, normA = 0, normB = 0;
-        for (int i = 0; i < len; i++) {
-            dot += a[i] * b[i];
-            normA += a[i] * a[i];
-            normB += b[i] * b[i];
+    private static double cosineSimilaritySparse(SparseVector a, SparseVector b) {
+        if (a.norm == 0 || b.norm == 0) return 0;
+        double dot = 0;
+        int i = 0, j = 0;
+        while (i < a.terms.length && j < b.terms.length) {
+            int comparison = a.terms[i].compareTo(b.terms[j]);
+            if (comparison == 0) {
+                dot += a.weights[i++] * b.weights[j++];
+            } else if (comparison < 0) {
+                i++;
+            } else {
+                j++;
+            }
         }
-        for (int i = len; i < a.length; i++) normA += a[i] * a[i];
-        for (int i = len; i < b.length; i++) normB += b[i] * b[i];
-
-        if (normA == 0 || normB == 0) return 0;
-        return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+        return dot / (a.norm * b.norm);
     }
 
     // ── Data Types ────────────────────────────────────────────────────────────
+
+    private record SparseVector(String[] terms, double[] weights, double norm) {}
+
+    private record TfidfIndex(List<MemoryEntry> entries, Map<String, Integer> documentFrequency,
+                              Map<String, SparseVector> vectors, long generation) {}
 
     /** A single indexed memory item. */
     public static class MemoryEntry {

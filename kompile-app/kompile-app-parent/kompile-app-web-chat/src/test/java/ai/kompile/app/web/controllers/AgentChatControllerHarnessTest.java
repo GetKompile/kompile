@@ -3,6 +3,8 @@ package ai.kompile.app.web.controllers;
 import ai.kompile.app.services.agent.AgentChatService;
 import ai.kompile.app.services.agent.AgentRegistryService;
 import ai.kompile.app.services.agent.ChatHarnessClient;
+import ai.kompile.app.services.agent.ProductChatSessionService;
+import ai.kompile.app.web.security.ProductChatHttpFilter;
 import ai.kompile.app.web.dto.AgentChatCompactRequest;
 import ai.kompile.app.web.dto.AgentChatRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -18,6 +20,8 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -43,6 +47,26 @@ class AgentChatControllerHarnessTest {
     }
 
     @Test
+    void legacyPermissionDefaultIsNormalizedOnlyForRawValidatedProductTurns() {
+        ProductChatSessionService products = mock(ProductChatSessionService.class);
+        when(products.enabled()).thenReturn(true);
+        controller.setProductChatSessionService(products);
+        SseEmitter expected = new SseEmitter();
+        when(products.stream(any())).thenReturn(expected);
+        AgentChatRequest unvalidated = new AgentChatRequest();
+        assertTrue(unvalidated.isSkipPermissions());
+        controller.streamChat(unvalidated, loopbackRequest());
+        assertTrue(unvalidated.isSkipPermissions(), "No silent normalization without filter validation");
+        AgentChatRequest validated = new AgentChatRequest();
+        MockHttpServletRequest servlet = loopbackRequest();
+        servlet.setAttribute(ProductChatHttpFilter.VALIDATED_TURN_ATTRIBUTE, Boolean.TRUE);
+        assertSame(expected, controller.streamChat(validated, servlet));
+        assertFalse(validated.isSkipPermissions());
+        verify(harness, never()).executeChat(any(), any());
+        verify(legacyChat, never()).executeChat(any(), any());
+    }
+
+    @Test
     void ordinaryBrowserTurnUsesKompileCliHarness() {
         AgentChatRequest request = new AgentChatRequest();
         request.setMessage("crawl this project");
@@ -55,6 +79,17 @@ class AgentChatControllerHarnessTest {
 
         verify(harness).executeChat(same(request), same(emitter));
         verify(legacyChat, never()).executeChat(any(), any());
+    }
+
+    @Test
+    void ongoingRunCanBeFoundBySessionWithoutStartingAnotherTurn() {
+        var active = Map.<String, Object>of("runId", "harness-ongoing");
+        when(harness.activeRun("browser-1", "/project")).thenReturn(active);
+        assertSame(active, controller.activeRun("browser-1", "/project"));
+        verify(harness, never()).executeChat(any(), any());
+        when(harness.activeRun("", "/project")).thenThrow(new IllegalArgumentException("Invalid session"));
+        assertEquals(HttpStatus.BAD_REQUEST, assertThrows(ResponseStatusException.class,
+                () -> controller.activeRun("", "/project")).getStatusCode());
     }
 
     @Test

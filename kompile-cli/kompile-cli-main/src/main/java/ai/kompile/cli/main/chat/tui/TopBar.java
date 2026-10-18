@@ -51,6 +51,7 @@ public class TopBar {
     private volatile boolean enforcerActive = false;
     private volatile String alert = "";
     private volatile String tokenSummary = "";
+    private volatile String contextSummary = "";
     private volatile String judgeTokenSummary = "";
     private volatile int terminalWidth = 80;
     private volatile Supplier<String> chatTitleSupplier = () -> "";
@@ -140,6 +141,11 @@ public class TopBar {
         this.tokenSummary = summary == null ? "" : summary.strip();
     }
 
+    /** Last measured input / active model window, separate from cumulative usage. */
+    public void setContextSummary(String summary) {
+        this.contextSummary = summary == null ? "" : summary.strip();
+    }
+
     /** Judge session summary (calls + tokens); shown next to the token summary. */
     public void setJudgeTokenSummary(String summary) {
         this.judgeTokenSummary = summary == null ? "" : summary.strip();
@@ -171,9 +177,9 @@ public class TopBar {
         int drawWidth = Math.max(1, w - 1);
         StringBuilder frame = new StringBuilder();
         frame.append(ESC).append("1;1H").append(ESC).append("2K")
-                .append(buildContent(w));
+                .append(clipRow(buildContent(w), drawWidth));
         frame.append(ESC).append("2;1H").append(ESC).append("2K")
-                .append(buildAlert(w));
+                .append(clipRow(buildAlert(w), drawWidth));
         int row = 3;
         for (AttributedString titleRow : titleRows(w)) {
             frame.append(ESC).append(row++).append(";1H").append(ESC).append("2K")
@@ -183,9 +189,14 @@ public class TopBar {
                 .append(DIM).append(titleScrollable(w)
                         ? new AttributedString("↕ Scroll title with mouse wheel; /title shows full title")
                                 .columnSubSequence(0, drawWidth).toString()
-                        : HORIZONTAL_LINE.repeat(Math.min(drawWidth, 200)))
+                        : HORIZONTAL_LINE.repeat(drawWidth))
                 .append(RESET);
         return frame.toString();
+    }
+
+    private static String clipRow(String text, int columns) {
+        AttributedString row = TerminalRowText.fromAnsi(text);
+        return row.columnSubSequence(0, Math.min(columns, row.columnLength())).toAnsi();
     }
 
     private String buildContent(int width) {
@@ -240,7 +251,7 @@ public class TopBar {
     }
 
     private String buildAlert(int width) {
-        if (alert.isBlank() && tokenSummary.isBlank() && judgeTokenSummary.isBlank()) {
+        if (alert.isBlank() && contextSummary.isBlank() && tokenSummary.isBlank() && judgeTokenSummary.isBlank()) {
             return " ".repeat(Math.max(1, width - 1));
         }
         if (!alert.isBlank()) {
@@ -250,8 +261,15 @@ public class TopBar {
         // of the way of the logo/agent bar above.
         String summary = tokenSummary;
         String judge = judgeTokenSummary;
+        String context = contextSummary;
         StringBuilder content = new StringBuilder();
+        // Prioritize the window on narrow terminals; cumulative billing may be clipped.
+        if (!context.isEmpty()) {
+            content.append(DIM).append("context: ").append(RESET)
+                   .append(CYAN).append(context).append(RESET);
+        }
         if (!summary.isEmpty()) {
+            if (content.length() > 0) content.append("   ");
             content.append(DIM).append("session tokens: ").append(RESET)
                    .append(CYAN).append(summary).append(RESET);
         }
@@ -276,11 +294,14 @@ public class TopBar {
 
     private String renderAlert(String alertText, int width) {
         String singleLine = AnsiConstants.stripAnsi(alertText)
-                .replace('\r', ' ').replace('\n', ' ').replaceAll("\\s+", " ").strip();
-        int available = Math.max(1, width - 5);
-        String clipped = singleLine.length() <= available
-                ? singleLine
-                : singleLine.substring(0, Math.max(1, available - 1)) + "\u2026";
+                .replaceAll("[\\p{Cntrl}]", " ").replaceAll("\\s+", " ").strip();
+        // Diagnostics may contain wide Unicode or terminal controls. Count cells,
+        // not UTF-16 chars, and leave the final column unused to prevent wrapping.
+        int available = Math.max(0, width - 4);
+        if (available == 0) return "";
+        AttributedString text = new AttributedString(singleLine);
+        String clipped = text.columnLength() <= available ? singleLine
+                : text.columnSubSequence(0, Math.max(0, available - 1)).toString() + "\u2026";
         return YELLOW + BOLD + " \u26a0 " + RESET + YELLOW + clipped + RESET;
     }
 }

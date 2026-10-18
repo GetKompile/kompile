@@ -24,7 +24,6 @@ import ai.kompile.pipelines.framework.api.data.NDArray;
 import ai.kompile.pipelines.steps.vlm.util.VLMSameDiffUtils;
 import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.eclipse.deeplearning4j.llm.generation.sampling.Sampler;
-import org.eclipse.deeplearning4j.llm.generation.sampling.SamplerUtils;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 
@@ -123,23 +122,27 @@ public class TokenSamplingStepRunner implements PipelineStepRunner {
                 org.nd4j.linalg.indexing.NDArrayIndex.point(seqLen - 1),
                 org.nd4j.linalg.indexing.NDArrayIndex.all());
 
-        // Apply repetition penalty if previous tokens are available
-        if (samplingConfig.getRepetitionPenalty() != 1.0 && input.has(VLMConstants.KEY_GENERATED_TOKENS)) {
+        // Previous tokens feed the sampler's device-side penalty step. The penalty
+        // returns a new array (the logits are never modified in place), so it must
+        // run inside the sampler rather than as a discarded pre-pass.
+        INDArray history = null;
+        if (input.has(VLMConstants.KEY_GENERATED_TOKENS)) {
             List<Long> previousTokensList = input.getList(VLMConstants.KEY_GENERATED_TOKENS,
                     ai.kompile.pipelines.framework.api.data.ValueType.INT64);
             if (previousTokensList != null && !previousTokensList.isEmpty()) {
-                int[] previousTokens = new int[previousTokensList.size()];
+                long[] previousTokens = new long[previousTokensList.size()];
                 for (int i = 0; i < previousTokensList.size(); i++) {
-                    previousTokens[i] = previousTokensList.get(i).intValue();
+                    previousTokens[i] = previousTokensList.get(i);
                 }
-                SamplerUtils.applyRepetitionPenalty(lastLogits, previousTokens,
-                        samplingConfig.getRepetitionPenalty());
+                history = Nd4j.createFromArray(previousTokens);
             }
         }
 
-        // Sample using DL4J's Sampler
-        long nextTokenId = sampler.sample(lastLogits);
+        long nextTokenId = sampler.sample(lastLogits, samplingConfig, history);
 
+        if (history != null) {
+            history.close();
+        }
         lastLogits.close();
 
         boolean isEos = (nextTokenId == eosTokenId);

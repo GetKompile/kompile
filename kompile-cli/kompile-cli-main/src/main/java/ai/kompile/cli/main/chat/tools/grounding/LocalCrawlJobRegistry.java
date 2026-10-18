@@ -5,6 +5,7 @@
  */
 package ai.kompile.cli.main.chat.tools.grounding;
 
+import ai.kompile.cli.main.chat.tools.ProductManagedWorkTracker;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,7 +21,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -75,16 +78,42 @@ final class LocalCrawlJobRegistry {
                            JsonNode request,
                            Runnable cancelHook,
                            Callable<ToolResult> work) {
+        return submit(jobId, knowledgeBase, projectRoot, request, cancelHook, work, null);
+    }
+
+    static AsyncJob submit(String jobId, String knowledgeBase, Path projectRoot, JsonNode request,
+                           Runnable cancelHook, Callable<ToolResult> work, ProductManagedWorkTracker tracker) {
+        return submit(jobId, knowledgeBase, projectRoot, request, cancelHook, work, tracker, EXECUTOR);
+    }
+
+    // Injectable queue only; production uses the existing crawl executor.
+    static AsyncJob submit(String jobId, String knowledgeBase, Path projectRoot, JsonNode request,
+                           Runnable cancelHook, Callable<ToolResult> work, ProductManagedWorkTracker tracker,
+                           Executor executor) {
         cleanup();
-        LocalCrawlJobStore.initialize(projectRoot, jobId, knowledgeBase, request);
         AsyncJob job = new AsyncJob(jobId, knowledgeBase, projectRoot, request, cancelHook, work);
         FutureTask<Void> task = new FutureTask<>(() -> {
             job.run();
             return null;
         });
         job.future = task;
-        JOBS.put(jobId, job);
-        EXECUTOR.execute(task);
+        CompletableFuture<Void> initialized = new CompletableFuture<>();
+        if (tracker != null) tracker.register(ProductManagedWorkTracker.CRAWL, jobId, () -> {
+            initialized.join(); // The tracker bounds this hook, including an initialization/publication fence.
+            job.cancel();
+        }, job.actuallyStopped);
+        try {
+            LocalCrawlJobStore.initialize(projectRoot, jobId, knowledgeBase, request);
+            initialized.complete(null);
+            JOBS.put(jobId, job);
+            executor.execute(task);
+        } catch (RuntimeException rejected) {
+            initialized.completeExceptionally(rejected);
+            // No callable can enter after cancellation wins workerEntered. Persist its terminal
+            // marker even on submission rejection; failure to publish leaves cleanup unproved.
+            job.cancel();
+            throw rejected;
+        }
         return job;
     }
 
@@ -219,6 +248,8 @@ final class LocalCrawlJobRegistry {
         private volatile Instant stageUpdatedAt = createdAt;
         private volatile Map<String, Object> pipelineProgress = Map.of();
         private final AtomicBoolean workerEntered = new AtomicBoolean(false);
+        private volatile boolean workerExited;
+        private final CompletableFuture<Void> actuallyStopped = new CompletableFuture<>();
 
         private AsyncJob(String jobId,
                          String knowledgeBase,
@@ -243,7 +274,7 @@ final class LocalCrawlJobRegistry {
             if (submittedRequest == null || projectRoot == null
                     || !projectRoot.equals(LocalCrawlJobStore.normalizeRoot(root))
                     || Thread.currentThread() != workerThread
-                    || !workerEntered.get() || startedAt == null || terminal()) {
+                    || !workerEntered.get() || workerExited || startedAt == null || terminal()) {
                 throw new IOException("No active durable crawl job for corpus publication");
             }
             return submittedRequest.deepCopy();
@@ -328,8 +359,16 @@ final class LocalCrawlJobRegistry {
                         + failure.getClass().getName()
                         + (message == null || message.isBlank() ? "" : ": " + message));
             } finally {
-                finish();
+                try { finish(); }
+                finally {
+                    workerExited = true;
+                    confirmStopped();
+                }
             }
+        }
+
+        private void confirmStopped() {
+            if (workerExited && finishedAt != null) actuallyStopped.complete(null);
         }
 
         /** Terminal stage derived WITHOUT the finishedAt publish gate — for finish() itself. */
@@ -370,6 +409,7 @@ final class LocalCrawlJobRegistry {
                 finalizationError = null;
                 finalizationPending = false;
                 finishedAt = terminalTime;
+                confirmStopped();
             } catch (RuntimeException failure) {
                 // Polling retries this frozen terminal snapshot. Future.done is not evidence
                 // of durable completion, and must never make the job look terminal.
@@ -424,7 +464,9 @@ final class LocalCrawlJobRegistry {
                 boolean cancelled = submitted.cancel(true);
                 if (cancelled && workerEntered.compareAndSet(false, true)) {
                     result = ToolResult.error("Project-local crawl cancelled before execution.");
+                    workerExited = true;
                     finish();
+                    confirmStopped();
                 }
             }
             return true;

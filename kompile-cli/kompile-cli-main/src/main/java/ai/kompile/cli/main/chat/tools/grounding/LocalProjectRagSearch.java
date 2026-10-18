@@ -75,6 +75,17 @@ final class LocalProjectRagSearch {
 
     synchronized ToolResult search(Path projectRoot, List<Path> knowledgeBases, String query,
                                    String topic, int limit) {
+        return search(projectRoot, knowledgeBases, query, topic, limit, false);
+    }
+
+    /** Product authority permits persisted lexical evidence, not automatic encoder execution. */
+    synchronized ToolResult searchLexical(Path projectRoot, List<Path> knowledgeBases, String query,
+                                          String topic, int limit) {
+        return search(projectRoot, knowledgeBases, query, topic, limit, true);
+    }
+
+    private ToolResult search(Path projectRoot, List<Path> knowledgeBases, String query,
+                              String topic, int limit, boolean lexicalOnly) {
         final Path root;
         final List<Path> localKnowledgeBases = new ArrayList<>();
         try {
@@ -112,20 +123,22 @@ final class LocalProjectRagSearch {
             }
         }
 
-        ToolResult chunks = searchChunks(root, localKnowledgeBases, query, topic, limit);
-        if (chunks.isError()) return chunks;
+        ToolResult chunks = searchChunks(root, localKnowledgeBases, query, topic, limit, lexicalOnly);
+        if (chunks.isError() || lexicalOnly) return chunks;
         return withGraphEvidence(localKnowledgeBases, query, chunks);
     }
 
     private ToolResult searchChunks(Path root, List<Path> localKnowledgeBases,
-                                    String query, String topic, int limit) {
+                                    String query, String topic, int limit, boolean lexicalOnly) {
         try {
-            List<Chunk> chunks = loadChunks(root, localKnowledgeBases);
+            List<Chunk> chunks = loadChunks(root, localKnowledgeBases, lexicalOnly);
             if (chunks.isEmpty()) {
-                return emptyResult(query, localKnowledgeBases.size(), "hybrid", null);
+                return emptyResult(query, localKnowledgeBases.size(), lexicalOnly ? "lexical-only" : "hybrid", null);
             }
             String effectiveQuery = topic == null || topic.isBlank()
                     ? query : query + "\nTopic: " + topic.strip();
+            if (lexicalOnly) return format(query, topic, localKnowledgeBases,
+                    lexicalHits(chunks, effectiveQuery, limit), "lexical-only", null, null);
             try (EmbeddingRuntime embedding = runtimeFactory.open(root, mapper)) {
                 Map<String, VectorEntry> vectors = ensureVectors(chunks, localKnowledgeBases, embedding);
                 float[] queryVector = singleEmbedding(embedding.embedBatch(List.of(effectiveQuery)));
@@ -208,7 +221,7 @@ final class LocalProjectRagSearch {
         return ToolResult.success("knowledge_search: " + query, output.toString(), metadata);
     }
 
-    private List<Chunk> loadChunks(Path root, List<Path> knowledgeBases) throws IOException {
+    private List<Chunk> loadChunks(Path root, List<Path> knowledgeBases, boolean strictLexical) throws IOException {
         List<Chunk> chunks = new ArrayList<>();
         for (Path directoryValue : knowledgeBases) {
             Path directory = directoryValue.toRealPath();
@@ -218,10 +231,21 @@ final class LocalProjectRagSearch {
             if (!directory.equals(root.resolve("data/crawls").resolve(knowledgeBase))) {
                 throw new IOException("Local RAG requires a direct folder-local knowledge base");
             }
+            int expectedChunks = -1;
+            if (strictLexical) {
+                Path summaryPath = containedRegularFile(corpusDirectory, "crawl-result.json");
+                if (summaryPath == null) throw new IOException("Pinned corpus summary is missing");
+                JsonNode summary = mapper.readTree(summaryPath.toFile());
+                if (summary == null || !"COMPLETED".equals(summary.path("status").asText())
+                        || !summary.path("chunkCount").isIntegralNumber() || !summary.path("chunkCount").canConvertToInt()
+                        || summary.path("chunkCount").intValue() < 0) throw new IOException("Invalid pinned corpus summary");
+                expectedChunks = summary.path("chunkCount").intValue();
+            }
             Path documentsPath = containedRegularFile(corpusDirectory, "documents.jsonl");
             Map<String, String> sources = documentsPath == null
                     ? Map.of() : documentSources(documentsPath);
             Path chunksPath = containedRegularFile(corpusDirectory, "chunks.jsonl");
+            if (strictLexical && chunksPath == null) throw new IOException("Pinned lexical corpus is missing");
             if (chunksPath != null) {
                 try (Stream<String> lines = Files.lines(chunksPath, StandardCharsets.UTF_8)) {
                     lines.filter(line -> !line.isBlank()).forEach(line -> {
@@ -229,27 +253,33 @@ final class LocalProjectRagSearch {
                             JsonNode chunk = mapper.readTree(line);
                             String content = chunk.path("text").asText("");
                             if (content.isBlank()) {
+                                if (strictLexical) throw new IllegalArgumentException("Malformed pinned lexical chunk");
                                 return;
                             }
                             String documentId = chunk.path("documentId").asText("");
                             String chunkId = chunk.path("chunkId").asText("");
+                            if (strictLexical && (documentId.isBlank() || chunkId.isBlank()))
+                                throw new IllegalArgumentException("Pinned chunk identity is missing");
                             chunks.add(new Chunk(directory, knowledgeBase,
                                     sources.getOrDefault(documentId, documentId), documentId,
                                     chunkId, documentId + "\u0000" + chunkId,
                                     content, sha256(content), pages(chunk.path("pages")),
                                     sourceMetadata(chunk.path("sourceMetadata"))));
                         } catch (Exception ignored) {
+                            if (strictLexical) throw new IllegalArgumentException("Unreadable pinned lexical corpus", ignored);
                             // Keep healthy chunks searchable when one JSONL row is malformed.
                         }
                     });
                 }
             }
+            if (strictLexical && chunks.size() - chunksBeforeDirectory != expectedChunks)
+                throw new IOException("Pinned lexical corpus row count does not match its summary");
             // Recheck immutable integrity after materializing rows. Never fall back to mutable
             // projections or an older graph when a published lexical generation is damaged.
             if (!corpusDirectory.equals(LocalCorpusPublication.resolveReadDirectory(root, knowledgeBase))) {
                 throw new IOException("Corpus generation changed during knowledge search; retry");
             }
-            if (directory.equals(corpusDirectory) && chunks.size() == chunksBeforeDirectory) {
+            if (!strictLexical && directory.equals(corpusDirectory) && chunks.size() == chunksBeforeDirectory) {
                 try {
                     loadGraphChunks(directory, knowledgeBase, chunks);
                 } catch (IOException e) {

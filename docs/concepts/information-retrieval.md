@@ -238,6 +238,56 @@ document ("This chunk is from the introduction of a paper about...").
 Disabled by default (`enabled=false`). Config persisted to
 `~/.kompile/config/contextual-rag-config.json`.
 
+## Required workflow memories
+
+Saving a Markdown memory makes it searchable; it does not make it a policy rule.
+Normal chat injects the bounded `MEMORY.md` indexes, not every linked file.
+For workflow guidance that must be present before work, explicitly select files
+in `.kompile/enforcer-config.json`:
+
+```json
+{
+  "workflowMode": "enforced",
+  "workflowRequiredMemories": ["project:release-rules.md", "global:build-rules.md"]
+}
+```
+
+Agents can configure this through the existing `enforcer_config` tool, available
+in the `workflow` activation group in chat and registered on both MCP transports:
+
+```json
+{"action":"set","field":"workflow_required_memories","value":"project:release-rules.md,global:build-rules.md"}
+```
+
+To persist enforced mode, call the same tool with
+`{"action":"set","field":"workflow_mode","value":"enforced"}`.
+Use `action="status"` or `action="get"` to inspect the saved selection. These calls
+save configuration; they do not silently change a running turn's frozen policy.
+A bare filename defaults to project scope; paths and unknown scopes are rejected.
+`/judge workflow status` lists the configured memories. Use `/judge workflow reload` after changing the
+selection; selected file contents are read fresh
+at the beginning of each turn.
+
+The standard/headless agentic harness loads these files **in full before the first
+model request**. Missing, empty, escaping-symlink, or over-budget files fail the
+turn before work, rather than silently omitting or truncating policy. The complete
+selected memory block is limited to 32,000 characters, independently of the
+normal 6,000-character chat memory envelope. Direct subagents inherit the frozen
+parent snapshot, including read-only planner children.
+
+In enforced mode, the inline LLM enforcer receives selected memory in a distinct
+workflow-constraint block for tool, streaming, and final-response review. Only
+applicable workflow guidance is enforceable; historical facts are not new tasks,
+and current user instructions and explicit enforcer rules take precedence.
+Advisory mode loads the files without promoting them into judge constraints;
+workflow off/global off skips loading. Unselected memory remains advisory.
+
+Host loading is deterministic. Semantic compliance review still depends on the
+configured LLM judge, its availability, and fallback policy; keyword-only mode
+does not interpret Markdown rules. This setting does not add a memory gate to
+external provider passthrough or standalone MCP clients. Memory read/search/recall
+calls remain available during read-only discovery; write/save/delete actions do not.
+
 ## Semantic memory
 
 The `SemanticMemoryEngine` embeds and indexes agent conversation turns

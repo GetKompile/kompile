@@ -14,8 +14,10 @@ public final class ChatCommandCatalog {
     public record Entry(String name, WebSupport webSupport) { }
 
     private static final Set<String> NAMES = Set.of(
-            "quit", "exit", "resources", "help", "auth", "setup", "provider", "tools", "subagents",
-            "local-tools", "tool", "local-tool", "status", "dashboard", "title", "history", "clear",
+            "quit", "exit", "resources", "resource-monitor", "help", "auth", "setup", "provider", "tools", "subagents",
+            "local-tools", "tool", "local-tool", "status", "dashboard", "title", "history", "diffs", "clear", "redraw",
+            "dashboard-summary", "dashboard-tools", "dashboard-judge", "dashboard-tests", "dashboard-crawl",
+            "dashboard-graph", "dashboard-tokens", "dashboard-tasks", "dashboard-processes", "dashboard-timeline", "timeline",
             "restart", "reset", "reset-all", "compact", "auto-compact", "rag", "agents", "local-agents",
             "agent", "local-agent", "config", "sessions", "ask", "agent-chat", "crawl", "conversations",
             "transcript", "copy", "memory", "recall", "reminder", "reminder-global", "continue",
@@ -23,10 +25,10 @@ public final class ChatCommandCatalog {
             "plan", "queue", "queues", "queue-send", "queue-send-all", "queue-remove", "queue-edit",
             "queue-move", "queue-clear", "queue-status", "loop", "loop-global", "jobs", "jobs-remove",
             "jobs-clear", "activity", "processes", "process-kill", "process-output", "process-status",
-            "process-monitors", "statusbar", "auto-dequeue", "stats", "passthrough", "resume", "resume-all", "mode", "menu",
+            "process-monitors", "statusbar", "auto-dequeue", "stats", "usage", "passthrough", "resume", "resume-all", "mode", "menu",
             "skills", "roles", "role", "model", "thinking", "fast", "ultracode", "mcp", "enforce", "enforcer", "judge", "judge-global",
             "direction", "forward", "image", "file", "attach", "attachments");
-    private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar");
+    private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar", "resource-monitor", "redraw");
     private static final Set<String> LIVE = Arrays.stream((
             "clear restart reset reset-all compact auto-compact rag agent local-agent role fast ultracode mcp title "
             + "memory permissions plan queue queues queue-send queue-send-all queue-remove queue-edit queue-move "
@@ -50,7 +52,7 @@ public final class ChatCommandCatalog {
     }
     public static Set<String> liveRunCommands() { return LIVE_RUN; }
     public static WebSupport webSupport(String name) {
-        if ("help".equals(name) || "skills".equals(name) || "model".equals(name)
+        if ("help".equals(name) || "usage".equals(name) || "skills".equals(name) || "model".equals(name)
                 || "role".equals(name) || "thinking".equals(name) || "fast".equals(name) || "ultracode".equals(name)
                 || "reminder".equals(name) || "reminder-global".equals(name)
                 || "continue".equals(name) || "judge".equals(name) || "judge-global".equals(name)
@@ -73,6 +75,7 @@ public final class ChatCommandCatalog {
                 + "\n/model is fully supported over web input: bare /model lists locally known "
                 + "models (no live provider call), /model <id> validates and persists the selection "
                 + "for the session; later MODEL_INPUT turns use it."
+                + "\n/usage reads the selected vendor account's credits/allowance windows and resets (when exposed), not session token estimates."
                 + "\n/thinking lists supported effort options for the session's provider/model; "
                 + "/thinking <value> or /thinking default persists the choice for this session only."
                 + "\n/role and /fast are fully supported over web input: the bare form returns the "

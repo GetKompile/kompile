@@ -29,6 +29,11 @@ public interface ChatHarnessClient {
         throw new IllegalStateException("Run replay unavailable");
     }
 
+    /** Find server-owned work after a browser loses its run checkpoint; never starts a process. */
+    default Map<String, Object> activeRun(String browserSessionId, String workingDirectory) {
+        return Map.of();
+    }
+
     /** Non-secret harness/provider/persona capabilities for a project directory. */
     JsonNode capabilities(String workingDirectory, boolean refresh);
 

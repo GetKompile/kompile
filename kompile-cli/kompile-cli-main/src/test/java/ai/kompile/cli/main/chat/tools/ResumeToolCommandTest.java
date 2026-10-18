@@ -386,8 +386,8 @@ class ResumeToolCommandTest {
 
         assertFalse(ResumeTool.isStandardKompileChatSession(
                 "cli-wrapper", "kompile", "opencode", null));
-        assertFalse(ResumeTool.isStandardKompileChatSession(
-                "cli-wrapper", "kompile", "coder", "native-session-id"));
+        assertTrue(ResumeTool.isStandardKompileChatSession(
+                "cli-standard-with-claude-transport", "kompile", "coder", "native-session-id"));
         assertFalse(ResumeTool.isStandardKompileChatSession(
                 "passthrough-wrapper", "kompile", "coder", null));
         assertFalse(ResumeTool.isStandardKompileChatSession(
@@ -451,17 +451,51 @@ class ResumeToolCommandTest {
     }
 
     @Test
+    @org.junit.jupiter.api.parallel.ResourceLock(org.junit.jupiter.api.parallel.Resources.SYSTEM_PROPERTIES)
+    void savedChatModeDistinguishesHarnessFromVendorTransport() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.resolve("chat-mode-home").toString());
+        try {
+            for (String vendor : List.of("claude", "codex", "gemini", "opencode", "qwen", "pi")) {
+                String id = "standard-" + vendor;
+                var config = new ai.kompile.cli.main.chat.config.ChatConfig();
+                config.setChatMode("standard");
+                config.bindSession(id);
+                assertTrue(ResumeTool.isStandardKompileChatSession(id, "kompile", vendor, "native-id"),
+                        vendor + " must resume through the Kompile harness");
+                assertFalse(ResumeTool.isStandardKompileChatSession(id, vendor, vendor, "native-id"),
+                        "external sessions must retain native routing");
+
+                config.setChatMode("passthrough");
+                config.bindSession(id);
+                assertFalse(ResumeTool.isStandardKompileChatSession(id, "kompile", "coder", "native-id"),
+                        "saved passthrough mode must retain native routing");
+            }
+        } finally {
+            if (previousHome == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", previousHome);
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.parallel.ResourceLock(org.junit.jupiter.api.parallel.Resources.SYSTEM_PROPERTIES)
     void standardChatsAreExposedAndDefaultToLiteralKompileResume() throws Exception {
         String previousHome = System.getProperty("user.home");
+        ChatSourceRegistry previousSources = ChatSourceRegistry.getInstance();
+        ChatSourceRegistry.setInstance(ChatSourceRegistry.of(List.of()));
         Path home = tempDir.resolve("standard-chat-home");
         System.setProperty("user.home", home.toString());
         try {
             String transcriptUuid = "123e4567-e89b-12d3-a456-426614174000";
             ChatHistory history = new ChatHistory(transcriptUuid);
-            history.open("(local)", null, false);
+            history.open("(local)", "claude", false);
             history.logUserMessage("resume my literal standard chat");
             history.logAgentResponse("coder", "saved response", 10);
             history.close();
+            ChatHistory.recordNativeSessionId(transcriptUuid, "claude-native-transport");
+            var config = new ai.kompile.cli.main.chat.config.ChatConfig();
+            config.setChatMode("standard");
+            config.bindSession(transcriptUuid);
 
             ResumeTool tool = new ResumeTool(true);
             ObjectMapper mapper = new ObjectMapper();
@@ -484,6 +518,7 @@ class ResumeToolCommandTest {
             assertEquals("kompile", standard.path("agent").asText());
             assertEquals("standard_chat", standard.path("session_type").asText());
             assertEquals("kompile", standard.path("resume_target").asText());
+            assertFalse(standard.has("native_session_id"), "do not recommend Claude Code resume");
             assertTrue(standard.path("resume_command").asText()
                     .contains("chat --resume " + transcriptUuid + " --mode standard"));
 
@@ -500,7 +535,25 @@ class ResumeToolCommandTest {
             assertEquals(transcriptUuid, resumeJson.path("session_id").asText());
             assertTrue(resumeJson.path("resume_command").asText()
                     .contains("chat --resume " + transcriptUuid + " --mode standard"));
+            assertFalse(resumeJson.has("native_session_id"));
+            assertFalse(resumeJson.has("native_session_note"));
+            assertTrue(resumeJson.path("conversation_history").asText().contains("saved response"));
+
+            for (String action : List.of("recent", "resume_all")) {
+                ObjectNode request = mapper.createObjectNode().put("action", action);
+                ToolResult result = tool.execute(request, null);
+                assertFalse(result.isError(), result.getOutput());
+                JsonNode payload = mapper.readTree(result.getOutput());
+                JsonNode entries = payload.path("conversations");
+                if (entries.isMissingNode()) entries = payload.path("sessions");
+                assertEquals(1, entries.size(), payload.toString());
+                JsonNode entry = entries.get(0);
+                if (entry.has("payload")) entry = entry.path("payload");
+                assertEquals("standard_chat", entry.path("session_type").asText(), payload.toString());
+                assertFalse(entry.has("native_session_id"), payload.toString());
+            }
         } finally {
+            ChatSourceRegistry.setInstance(previousSources);
             if (previousHome == null) {
                 System.clearProperty("user.home");
             } else {

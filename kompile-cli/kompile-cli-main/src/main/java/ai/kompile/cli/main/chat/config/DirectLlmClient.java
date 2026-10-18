@@ -20,6 +20,7 @@ import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.chat.LocalServingRuntimePool;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tools.ToolResultStore;
 import ai.kompile.core.llm.ModelContextWindows;
 import ai.kompile.core.llm.StructuredChatLanguageModel;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -96,7 +97,14 @@ public class DirectLlmClient implements AutoCloseable {
         /** Settled usage deltas, never cumulative SSE snapshots; input/cache categories are disjoint. */
         default void onTokenUsage(long input, long output,
                                   long cacheRead, long cacheCreation) { }
+        /** Latest main-thread request input, including cache; not a billing delta. */
+        default void onContextUsage(long inputTokens) { }
+        /** Limits the native provider actually enforces, when it reports them. */
+        default void onModelLimits(int contextWindow, int maxOutputTokens) { }
         default void onNotice(String text) { }
+        default void onCompactionStarted() { }
+        /** A harmless abort/no-op, not a context-overflow failure. */
+        default void onCompactionSkipped(String detail) { }
         /**
          * The provider compacted a session it owns. {@code trigger} is its reason
          * ({@code auto}, {@code manual}), empty when not reported;
@@ -147,6 +155,8 @@ public class DirectLlmClient implements AutoCloseable {
     private final Path workingDirectory;
     private final List<ObjectNode> conversationHistory;
     private final Object historyLock = new Object();
+    private final ToolEvidenceProjection toolEvidenceProjection = new ToolEvidenceProjection();
+    private volatile ToolResultStore toolResultArchive;
     private volatile AtomicBoolean cancelSignal;
     private volatile java.util.function.BooleanSupplier cancellationCheck;
     private volatile java.util.function.Consumer<String> outputConsumer;
@@ -170,14 +180,32 @@ public class DirectLlmClient implements AutoCloseable {
     private volatile boolean claudeCompactionFailed;
     private volatile int nativeCompactionTriggerTokens;
     private volatile int wireMaxOutputTokens;
+    // Set only on isolated utility clients; ordinary provider request policy is unchanged.
+    private int utilityMaxOutputTokens;
     private volatile int contextWindowTokens;
     // The limits Claude Code last reported enforcing, with the model its turn ran.
     private volatile ClaudeModelLimits claudeModelLimits;
     private volatile String promptCacheSessionId;
+    private volatile String transcriptSessionId;
+
+    /** Explicit transcript ownership, independent of prompt-cache keys and utility lanes. */
+    public void setTranscriptSessionId(String sessionId) {
+        transcriptSessionId = sessionId;
+    }
     private volatile JsonOutputSpec requestedJsonOutput;
     private final Set<ProviderCompactionCapabilities.TokenCounting> unavailableTokenCounters =
             new LinkedHashSet<>();
     private final Set<String> unavailableNativeCompactionRoutes = new LinkedHashSet<>();
+    private static final String ANTHROPIC_COMPACTION_BETA = "compact-2026-09-04";
+    private static final String ANTHROPIC_CONTEXT_BETA = "context-management-2025-06-27";
+    /** Continuation passes after a mid-answer connection close (1 initial + 3 resumes). */
+    private static final int ANTHROPIC_MID_STREAM_RESUME_ATTEMPTS = 3;
+    private record AnthropicCapabilityKey(String endpoint, String model, OAuthProviderFlow.RequestAuth auth) { }
+    private record AnthropicContextCapabilities(boolean summarize, boolean clearTools) {
+        private static final AnthropicContextCapabilities NONE = new AnthropicContextCapabilities(false, false);
+    }
+    private final Map<AnthropicCapabilityKey, AnthropicContextCapabilities> anthropicContextCapabilities =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private volatile boolean openCodeNeedsSeed = true;
 
     private record JsonOutputSpec(String name, JsonNode schema, boolean strict) { }
@@ -859,6 +887,218 @@ public class DirectLlmClient implements AutoCloseable {
         }
     }
 
+    /** Preserve the conversation's actual instruction/tool envelope on Claude summary requests. */
+    public NativeCompactionResult tryNativeCompact(String modelOverride, String systemPrompt,
+                                                  ArrayNode toolDefs, String focusInstruction) {
+        if (getClass() != DirectLlmClient.class
+                || compactionCapabilities(modelOverride).nativeCompaction()
+                != ProviderCompactionCapabilities.NativeCompaction.ANTHROPIC_MESSAGES) {
+            return tryNativeCompact(modelOverride);
+        }
+        synchronized (historyLock) {
+            try {
+                String model = modelOverride == null || modelOverride.isBlank()
+                        ? config.getModel() : modelOverride;
+                return compactAnthropic(model, systemPrompt, toolDefs, focusInstruction);
+            } catch (Exception e) {
+                return new NativeCompactionResult(true, false, null, null, formatExceptionMessage(e));
+            }
+        }
+    }
+
+    public boolean supportsAnthropicOnDemandCompaction(String modelOverride) {
+        if (getClass() != DirectLlmClient.class || isCancelled()
+                || compactionCapabilities(modelOverride).nativeCompaction()
+                != ProviderCompactionCapabilities.NativeCompaction.ANTHROPIC_MESSAGES) return false;
+        try {
+            String model = modelOverride == null || modelOverride.isBlank() ? config.getModel() : modelOverride;
+            return anthropicCapabilities(model, config.resolveRequestAuth()).summarize();
+        } catch (Exception ignored) {
+            return false; // Unavailable metadata is not evidence of capability.
+        }
+    }
+
+    private AnthropicCapabilityKey anthropicCapabilityKey(String model, OAuthProviderFlow.RequestAuth auth) {
+        return new AnthropicCapabilityKey(trimTrailingSlashes(config.resolveBaseUrl(auth)), model, auth);
+    }
+
+    private AnthropicContextCapabilities anthropicCapabilities(
+            String model, OAuthProviderFlow.RequestAuth auth) throws Exception {
+        if (!"anthropic".equals(config.getProvider()) || config.isClaudeCliNative() || isCancelled()) {
+            return AnthropicContextCapabilities.NONE;
+        }
+        AnthropicCapabilityKey key = anthropicCapabilityKey(model, auth);
+        AnthropicContextCapabilities cached = anthropicContextCapabilities.get(key);
+        if (cached != null) return cached;
+        String encodedModel = java.net.URLEncoder.encode(model, StandardCharsets.UTF_8).replace("+", "%20");
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(key.endpoint() + "/v1/models/" + encodedModel))
+                .timeout(Duration.ofSeconds(5)).header("anthropic-version", "2023-06-01").GET();
+        applyAnthropicAuthentication(builder, auth, config.getProvider(), false);
+        builder.setHeader("anthropic-beta", mergeHeaderValue(auth, "anthropic-beta", ANTHROPIC_COMPACTION_BETA));
+        HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() / 100 != 2) {
+            if (response.statusCode() == 400 || response.statusCode() == 404 || response.statusCode() == 422) {
+                anthropicContextCapabilities.put(key, AnthropicContextCapabilities.NONE);
+            }
+            return AnthropicContextCapabilities.NONE; // Do not cache transient or authentication failures.
+        }
+        JsonNode capabilities = objectMapper.readTree(response.body()).path("capabilities");
+        JsonNode compact = capabilities.path("compaction");
+        AnthropicContextCapabilities found = new AnthropicContextCapabilities(
+                compact.path("supported").asBoolean(false)
+                        && compact.path("summarize").path("supported").asBoolean(false),
+                capabilities.path("context_management").path("clear_tool_uses_20250919")
+                        .path("supported").asBoolean(false));
+        anthropicContextCapabilities.put(key, found);
+        return found;
+    }
+
+    private NativeCompactionResult compactAnthropic(String model, String systemPrompt,
+                                                   ArrayNode toolDefs, String focusInstruction) throws Exception {
+        if (isCancelled() || conversationHistory.isEmpty()) return NativeCompactionResult.unsupported();
+        OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+        AnthropicContextCapabilities capabilities = anthropicCapabilities(model, auth);
+        if (!capabilities.summarize()) return NativeCompactionResult.unsupported();
+        ArrayNode messages = buildAnthropicMessages(null, null);
+        Set<String> unanswered = new LinkedHashSet<>();
+        for (JsonNode message : messages) {
+            for (JsonNode block : message.path("content")) {
+                if ("tool_use".equals(block.path("type").asText())) unanswered.add(block.path("id").asText());
+                if ("tool_result".equals(block.path("type").asText())) unanswered.remove(block.path("tool_use_id").asText());
+            }
+        }
+        if (!unanswered.isEmpty()) {
+            return new NativeCompactionResult(true, false, null, null, "Complete outstanding tool calls before compaction");
+        }
+        String instructions = "Write a concise continuation state in at most 12000 characters. Preserve the latest user "
+                + "direction, active constraints and decisions, completed work with validation evidence, unresolved tasks "
+                + "and failures, and exact resume identifiers and saved-output references. Merge prior summaries, "
+                + "deduplicate unchanged facts and replace superseded state. Do not enumerate every message or file. "
+                + "Never report proposals as verified work. Do not call tools; return only a faithful summary.";
+        if (focusInstruction != null && !focusInstruction.isBlank()) instructions += "\nUser focus: " + focusInstruction.strip();
+        if (instructions.length() > 16_384) {
+            return new NativeCompactionResult(true, false, null, null, "Compaction instructions exceed the API limit");
+        }
+        ObjectNode request = objectMapper.createObjectNode();
+        request.put("model", model);
+        int outputLimit = wireMaxOutputTokens > 0 ? Math.min(8192, wireMaxOutputTokens) : 8192;
+        if (config.getMaxOutputTokens() > 0) outputLimit = Math.min(outputLimit, config.getMaxOutputTokens());
+        request.put("max_tokens", outputLimit);
+        request.set("messages", messages);
+        String system = effectiveAnthropicSystemPrompt(auth, systemPrompt);
+        if (!system.isBlank()) request.put("system", system);
+        if (toolDefs != null && !toolDefs.isEmpty()) request.set("tools", convertToolDefsToAnthropic(toolDefs));
+        request.putObject("compaction").put("type", "summarize").put("instructions", instructions);
+        // No context_management, tool_choice, structured-output format or ordinary reply.
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(config.resolveBaseUrl(auth) + "/v1/messages"))
+                .timeout(Duration.ofMinutes(2)).header("content-type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
+        applyAnthropicAuthentication(builder, auth, config.getProvider(), false);
+        builder.setHeader("anthropic-beta", mergeHeaderValue(auth, "anthropic-beta", ANTHROPIC_COMPACTION_BETA));
+        if (isCancelled()) return new NativeCompactionResult(true, false, null, null, "Compaction cancelled");
+        HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() / 100 != 2) {
+            if ((response.statusCode() == 400 || response.statusCode() == 404 || response.statusCode() == 422)
+                    && !isContextOverflowFailure(response.statusCode(), response.body())
+                    && isAnthropicCompactionUnsupported(response.body())) {
+                anthropicContextCapabilities.put(anthropicCapabilityKey(model, auth),
+                        new AnthropicContextCapabilities(false, capabilities.clearTools()));
+            }
+            return new NativeCompactionResult(true, false, null, null, "HTTP " + response.statusCode());
+        }
+        JsonNode body = objectMapper.readTree(response.body());
+        StreamResult usage = new StreamResult();
+        readAnthropicUsage(body.path("usage"), usage);
+        ProviderActivityListener listener = providerActivityListener;
+        if (listener != null && hasTokenUsage(usage)) listener.onTokenUsage(
+                usage.inputTokens + usage.compactionInputTokens, usage.outputTokens + usage.compactionOutputTokens,
+                usage.cacheReadTokens + usage.compactionCacheReadTokens, usage.cacheCreationTokens + usage.compactionCacheCreationTokens);
+        JsonNode content = body.path("content");
+        JsonNode block = content.isArray() && content.size() == 1 ? content.get(0) : objectMapper.nullNode();
+        boolean valid = !isCancelled() && "compaction".equals(body.path("stop_reason").asText())
+                && "compaction".equals(block.path("type").asText())
+                && block.path("content").isTextual() && !block.path("content").asText().isBlank()
+                && block.path("content").asText().length() <= 12_000
+                && block.path("signature").isTextual() && !block.path("signature").asText().isBlank();
+        if (!valid) return new NativeCompactionResult(true, false, null, null, "No complete signed summary returned", usage);
+        ObjectNode checkpoint = objectMapper.createObjectNode().put("role", "assistant");
+        checkpoint.putArray("content").add(block.deepCopy());
+        // Publication is owned by the ledger; never mutate live history before its commit.
+        return new NativeCompactionResult(true, true, block.path("content").asText(), checkpoint, null, usage);
+    }
+
+    private boolean isAnthropicCompactionUnsupported(String body) {
+        String error = extractErrorMessage(body).toLowerCase(Locale.ROOT);
+        return (!error.contains("instructions") && (error.contains("compaction is not supported")
+                || error.contains("unsupported compaction")))
+                || (error.contains(ANTHROPIC_COMPACTION_BETA)
+                && (error.contains("unsupported") || error.contains("unknown beta") || error.contains("not supported")));
+    }
+
+    /** Signed API blocks cannot seed Claude Code even when vendor/model names match. */
+    public boolean canReplayNativeCheckpoint(JsonNode payload, String modelOverride) {
+        ArrayNode messages = objectMapper.createArrayNode();
+        if (payload != null && payload.isArray()) messages.addAll((ArrayNode) payload);
+        else if (payload != null) messages.add(payload);
+        return !hasSignedAnthropicCompaction(messages)
+                || resolveRoute(modelOverride).protocol() == WireProtocol.ANTHROPIC_MESSAGES;
+    }
+
+    public boolean anthropicThresholdCompactionAvailable(String modelOverride) {
+        String model = modelOverride == null || modelOverride.isBlank() ? config.getModel() : modelOverride;
+        synchronized (historyLock) {
+            return !hasSignedAnthropicCompaction(buildAnthropicMessages(null, null))
+                    && !unavailableNativeCompactionRoutes.contains("anthropic:" + model);
+        }
+    }
+
+    private static boolean hasSignedAnthropicCompaction(JsonNode messages) {
+        for (JsonNode message : messages) {
+            for (JsonNode block : message.path("content")) {
+                if ("compaction".equals(block.path("type").asText())
+                        && block.path("signature").isTextual() && !block.path("signature").asText().isBlank()) return true;
+            }
+        }
+        return false;
+    }
+
+    private String applyAnthropicContextManagement(ObjectNode request, String model,
+                                                 OAuthProviderFlow.RequestAuth auth) throws Exception {
+        boolean signed = hasSignedAnthropicCompaction(request.path("messages"));
+        AnthropicContextCapabilities capabilities = AnthropicContextCapabilities.NONE;
+        if (nativeCompactionTriggerTokens > 0 && utilityMaxOutputTokens == 0) {
+            try {
+                capabilities = anthropicCapabilities(model, auth);
+            } catch (Exception metadataUnavailable) {
+                // Optional feature discovery cannot break an ordinary request.
+                if (metadataUnavailable instanceof InterruptedException) Thread.currentThread().interrupt();
+            }
+        }
+        String beta = signed ? ANTHROPIC_COMPACTION_BETA : "";
+        ArrayNode edits = objectMapper.createArrayNode();
+        if (nativeCompactionTriggerTokens > 0 && capabilities.clearTools()) {
+            ObjectNode clear = edits.addObject().put("type", "clear_tool_uses_20250919");
+            clear.putObject("trigger").put("type", "input_tokens").put("value", Math.max(1024, nativeCompactionTriggerTokens * 3L / 4));
+            clear.putObject("keep").put("type", "tool_uses").put("value", 8);
+            clear.putObject("clear_at_least").put("type", "input_tokens")
+                    .put("value", Math.min(5000, Math.max(1024, nativeCompactionTriggerTokens / 10)));
+            beta += (beta.isEmpty() ? "" : ",") + ANTHROPIC_CONTEXT_BETA;
+        }
+        if (!signed && !capabilities.summarize() && nativeCompactionTriggerTokens >= 50_000
+                && compactionCapabilities(model).nativeCompaction()
+                        == ProviderCompactionCapabilities.NativeCompaction.ANTHROPIC_MESSAGES
+                && !unavailableNativeCompactionRoutes.contains("anthropic:" + model)) {
+            ObjectNode compact = edits.addObject().put("type", "compact_20260112");
+            compact.putObject("trigger").put("type", "input_tokens").put("value", nativeCompactionTriggerTokens);
+            compact.put("instructions", "Preserve current goals, active constraints and decisions, unresolved tasks, "
+                    + "validation evidence and exact resume references. Do not call tools; return a concise summary.");
+            beta += (beta.isEmpty() ? "" : ",") + "compact-2026-01-12";
+        }
+        if (!edits.isEmpty()) request.putObject("context_management").set("edits", edits);
+        return beta;
+    }
+
     private NativeCompactionResult compactResponses(String model, boolean codex) throws Exception {
         OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
         String baseUrl = config.resolveBaseUrl(auth);
@@ -869,7 +1109,7 @@ public class DirectLlmClient implements AutoCloseable {
         request.put("model", model);
         ArrayNode input = request.putArray("input");
         conversationHistory.forEach(item -> input.add(item.deepCopy()));
-        request.set("input", MemoryContextProjection.project(input));
+        request.set("input", projectRequestHistory(input));
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofMinutes(2))
                 .header("content-type", "application/json")
@@ -1007,15 +1247,7 @@ public class DirectLlmClient implements AutoCloseable {
         if (toolDefs != null && !toolDefs.isEmpty()) {
             request.set("tools", convertToolDefsToAnthropic(toolDefs));
         }
-        boolean nativeCompaction = nativeCompactionTriggerTokens >= 50_000
-                && !unavailableNativeCompactionRoutes.contains("anthropic:" + model);
-        if (nativeCompaction) {
-            request.putObject("context_management").putArray("edits").addObject()
-                    .put("type", "compact_20260112")
-                    .putObject("trigger")
-                    .put("type", "input_tokens")
-                    .put("value", nativeCompactionTriggerTokens);
-        }
+        String contextBeta = applyAnthropicContextManagement(request, model, auth);
         HttpRequest.Builder builder = HttpRequest.newBuilder(
                         URI.create(baseUrl + "/v1/messages/count_tokens"))
                 .timeout(Duration.ofSeconds(30))
@@ -1024,9 +1256,8 @@ public class DirectLlmClient implements AutoCloseable {
                 .POST(HttpRequest.BodyPublishers.ofString(
                         objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
         applyAnthropicAuthentication(builder, auth, config.getProvider(), false);
-        if (nativeCompaction) {
-            builder.setHeader("anthropic-beta",
-                    mergeHeaderValue(auth, "anthropic-beta", "compact-2026-01-12"));
+        if (!contextBeta.isEmpty()) {
+            builder.setHeader("anthropic-beta", mergeHeaderValue(auth, "anthropic-beta", contextBeta));
         }
         HttpResponse<String> response = httpClient.send(
                 builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -1175,7 +1406,13 @@ public class DirectLlmClient implements AutoCloseable {
             boolean applied,
             String portableSummary,
             JsonNode nativePayload,
-            String diagnostic) {
+            String diagnostic,
+            StreamResult usage) {
+
+        public NativeCompactionResult(boolean supported, boolean applied, String portableSummary,
+                                      JsonNode nativePayload, String diagnostic) {
+            this(supported, applied, portableSummary, nativePayload, diagnostic, null);
+        }
 
         public static NativeCompactionResult unsupported() {
             return new NativeCompactionResult(false, false, null, null, null);
@@ -1207,6 +1444,7 @@ public class DirectLlmClient implements AutoCloseable {
                                          ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
                                          String effectiveModel, List<AttachmentInput> attachments) {
         StreamResult result = new StreamResult();
+        result.lastRequestInputTokens = 0; // Never use a multi-request billing sum as context.
         StringBuilder streamed = new StringBuilder();
         try {
             OpenCodeServeClient client = openCodeClient();
@@ -1264,6 +1502,13 @@ public class DirectLlmClient implements AutoCloseable {
                                 listener.onTokenUsage(
                                         input, output, cacheRead, cacheCreation);
                             }
+                        }
+
+                        @Override
+                        public void onContextUsage(long inputTokens) {
+                            result.lastRequestInputTokens = inputTokens;
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) listener.onContextUsage(inputTokens);
                         }
 
                         @Override
@@ -1370,11 +1615,6 @@ public class DirectLlmClient implements AutoCloseable {
             // rejection warns the user with the actionable fix.
             recordStreamFailure(result, e, "[Error: ");
         } catch (Exception e) {
-            // A cancelled turn Claude Code took in left its message, with any earlier
-            // conversation restored in it, in the session the next turn continues.
-            if (isCancelled() && client != null && client.nativeSession() != null) {
-                claudeNeedsSeed = false;
-            }
             boolean overflow = isContextOverflowFailure(0, e.getMessage());
             // Claude Code could not fit its session in the context window.
             if (overflow) claudeCompactionFailed = true;
@@ -1438,6 +1678,7 @@ public class DirectLlmClient implements AutoCloseable {
         String restored = claudeNeedsSeed ? restoredConversation(systemPrompt, userMessage) : "";
         // Cancelling the chat turn stops the CLI and the tools it started.
         client.setCancellationCheck(this::isCancelled);
+        client.setTranscriptSessionId(transcriptSessionId);
         // Ultracode replaces the effort level on this route; fast mode is
         // rechecked against the effective request model like the HTTP routes.
         return client.send(effectiveModel, config.effectiveEffort(),
@@ -1457,6 +1698,14 @@ public class DirectLlmClient implements AutoCloseable {
     /** Forwards a Claude Code turn's activity to the installed listeners and records it in the result. */
     private ClaudeCliClient.ActivityListener claudeActivity(StreamResult result, String effectiveModel) {
         return new ClaudeCliClient.ActivityListener() {
+            @Override
+            public void onTurnAccepted(ClaudeNativeSession session) {
+                // A parked session's existence does not mean it took this seed.
+                // Only current-turn acceptance consumes it, even on later failure.
+                claudeNeedsSeed = false;
+                result.claudeNativeSession = session;
+            }
+
             @Override
             public void onActivity(String label) {
                 ProviderActivityListener listener = providerActivityListener;
@@ -1503,7 +1752,20 @@ public class DirectLlmClient implements AutoCloseable {
             }
 
             @Override
+            public void onCompactionStarted() {
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onCompactionStarted();
+            }
+
+            @Override
+            public void onCompactionSkipped(String detail) {
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onCompactionSkipped(detail);
+            }
+
+            @Override
             public void onCompacted(String trigger, long tokensBefore) {
+                result.lastRequestInputTokens = 0;
                 claudeCompactionFailed = false;
                 ProviderActivityListener listener = providerActivityListener;
                 if (listener != null) listener.onCompacted(trigger, tokensBefore);
@@ -1555,12 +1817,16 @@ public class DirectLlmClient implements AutoCloseable {
             @Override
             public void onContextUsage(long contextTokens) {
                 result.lastRequestInputTokens = Math.max(0L, contextTokens);
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onContextUsage(contextTokens);
             }
 
             @Override
             public void onModelLimits(int contextWindow, int maxOutputTokens) {
                 claudeModelLimits = new ClaudeModelLimits(effectiveModel,
                         new ModelContextResolver.ModelLimits(contextWindow, maxOutputTokens));
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onModelLimits(contextWindow, maxOutputTokens);
             }
 
             @Override
@@ -1707,6 +1973,8 @@ public class DirectLlmClient implements AutoCloseable {
     public void clearHistory() {
         synchronized (historyLock) {
             conversationHistory.clear();
+            toolEvidenceProjection.clear();
+            toolResultArchive = null;
             resetOpenCodeClient();
             resetClaudeClient();
         }
@@ -1722,6 +1990,8 @@ public class DirectLlmClient implements AutoCloseable {
     public void clearHistoryForProviderSwitch() {
         synchronized (historyLock) {
             conversationHistory.clear();
+            toolEvidenceProjection.clear();
+            toolResultArchive = null;
             resetOpenCodeClient();
             claudeNeedsSeed = true;
         }
@@ -1863,6 +2133,7 @@ public class DirectLlmClient implements AutoCloseable {
             List<ToolCallResultInput> results, String modelOverride) {
         if (results == null || results.isEmpty()) return;
         synchronized (historyLock) {
+            protectToolResultErrors(results);
             switch (routeHistoryFormat(modelOverride)) {
                 case OPENAI_CHAT_ENVELOPE -> {
                     for (ToolCallResultInput replayed : results) {
@@ -1945,6 +2216,24 @@ public class DirectLlmClient implements AutoCloseable {
      * the request turn), then restore the snapshot — yielding a clean call.
      */
     public StreamResult streamOneShot(String prompt, String systemPrompt, String modelOverride) {
+        return streamOneShotIsolated(prompt, systemPrompt, modelOverride, 0);
+    }
+
+    /**
+     * Utility ceiling on supported HTTP transports; live chat policy stays untouched.
+     * Native CLI/session transports (including subscription Codex) own their limits.
+     */
+    public StreamResult streamOneShot(String prompt, String systemPrompt, String modelOverride,
+                                     int maxOutputTokens) {
+        if (getClass() != DirectLlmClient.class) {
+            // Preserve existing specialization/test interception of the three-argument API.
+            return streamOneShot(prompt, systemPrompt, modelOverride);
+        }
+        return streamOneShotIsolated(prompt, systemPrompt, modelOverride, maxOutputTokens);
+    }
+
+    private StreamResult streamOneShotIsolated(
+            String prompt, String systemPrompt, String modelOverride, int maxOutputTokens) {
         if (getClass() == DirectLlmClient.class) {
             // Utility calls must not clear or lock the live chat history while a
             // judge/summary network request is in flight. A fresh client also gives
@@ -1963,6 +2252,16 @@ public class DirectLlmClient implements AutoCloseable {
                 }
                 if (cancellationCheck != null) {
                     isolated.setCancellationCheck(cancellationCheck);
+                }
+                if (maxOutputTokens > 0) {
+                    int ceiling = wireMaxOutputTokens > 0
+                            ? Math.min(maxOutputTokens, wireMaxOutputTokens) : maxOutputTokens;
+                    if (config.getMaxOutputTokens() > 0) {
+                        ceiling = Math.min(ceiling, config.getMaxOutputTokens());
+                    }
+                    isolated.utilityMaxOutputTokens = ceiling;
+                    isolated.setWireMaxOutputTokens(ceiling);
+                    isolated.setContextWindowTokens(contextWindowTokens);
                 }
                 isolated.setOutputConsumer(outputConsumer);
                 isolated.setProviderActivityListener(providerActivityListener);
@@ -2352,12 +2651,10 @@ public class DirectLlmClient implements AutoCloseable {
         return !normalized.startsWith("gpt-5");
     }
 
-    private void applyOpenAiFastMode(ObjectNode request, String model) {
-        if (("openai".equals(config.getProvider()) || config.isOpenAiCodexFormat())
-                && config.fastModeCapabilities().supports(model)) {
-            // Codex's service_tier="fast" maps to "priority" on the wire.
-            // Explicit default also overrides an OpenAI project's paid default.
-            request.put("service_tier", config.useFastMode(model) ? "priority" : "default");
+    private void applyFastMode(ObjectNode request, String model) {
+        var capabilities = config.fastModeCapabilities();
+        if (capabilities.supports(model)) {
+            capabilities.apply(request, config.isFastMode());
         }
     }
 
@@ -2663,8 +2960,12 @@ public class DirectLlmClient implements AutoCloseable {
             request.set("input", input);
             request.put("stream", true);
             request.put("store", false);
+            if (!codex && utilityMaxOutputTokens > 0) {
+                request.put("max_output_tokens", wireMaxTokens(utilityMaxOutputTokens,
+                        contextWindowTokens, estimateRequestInputTokens(input, toolDefs)));
+            }
             applyReasoningEffort(request, true);
-            applyOpenAiFastMode(request, effectiveModel);
+            applyFastMode(request, effectiveModel);
             applyOpenAiPromptCacheControls(request, effectiveModel);
             String nativeRouteKey = "responses:" + effectiveModel;
             boolean nativeCompaction = compactionCapabilities(effectiveModel).nativeCompaction()
@@ -2808,6 +3109,44 @@ public class DirectLlmClient implements AutoCloseable {
         return bounded;
     }
 
+    private void protectToolResultErrors(List<ToolCallResultInput> results) {
+        if (results == null) return;
+        for (ToolCallResultInput result : results) {
+            if (result != null && result.isError) toolEvidenceProjection.protectError(result.callId);
+        }
+    }
+
+    public boolean supportsPortableToolReplay(String modelOverride) {
+        return routeHistoryFormat(modelOverride) != RouteHistoryFormat.TEXT;
+    }
+
+    /** Whether provider-owned opaque items would be lost by a portable reviewed retirement. */
+    public boolean hasOpaqueHistory() {
+        synchronized (historyLock) {
+            for (ObjectNode item : conversationHistory) {
+                if (item.hasNonNull("encrypted_content") || "compaction".equals(item.path("type").asText())) return true;
+                for (JsonNode part : item.path("content")) {
+                    String type = part.path("type").asText();
+                    if ("compaction".equals(type) || "redacted_thinking".equals(type)
+                            || ("thinking".equals(type) && part.hasNonNull("signature"))) return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    /** The owning loop supplies an archive only while its current agent can use read. */
+    public void setToolResultArchive(ToolResultStore archive) { this.toolResultArchive = archive; }
+
+    /** Count, estimate, compact and stream the same nonmutating evidence projection. */
+    private ArrayNode projectRequestHistory(ArrayNode messages) {
+        ArrayNode projected = MemoryContextProjection.project(messages);
+        ToolResultStore archive = Boolean.parseBoolean(System.getProperty("kompile.chat.retireToolEvidence", "true"))
+                ? toolResultArchive : null;
+        return Boolean.parseBoolean(System.getProperty("kompile.chat.deduplicateToolEvidence", "true"))
+                ? toolEvidenceProjection.project(projected, archive) : projected;
+    }
+
     private ArrayNode buildResponsesInput(
             String userMessage,
             String systemPrompt,
@@ -2837,7 +3176,7 @@ public class DirectLlmClient implements AutoCloseable {
         if (userMessage != null || !attachments.isEmpty()) {
             input.add(createResponsesUserMessage(userMessage, attachments));
         }
-        return MemoryContextProjection.project(input);
+        return projectRequestHistory(input);
     }
 
     /**
@@ -2910,6 +3249,7 @@ public class DirectLlmClient implements AutoCloseable {
         if (toolResults == null || toolResults.isEmpty()) {
             return List.of();
         }
+        protectToolResultErrors(toolResults);
         Set<String> submittedOutputs = new LinkedHashSet<>(historyLinks.outputs());
         List<ObjectNode> staged = new ArrayList<>();
         for (ToolCallResultInput toolResult : toolResults) {
@@ -3342,7 +3682,8 @@ public class DirectLlmClient implements AutoCloseable {
             }
             request.set("context", context);
             ObjectNode options = objectMapper.createObjectNode();
-            options.put("maxTokens", 8192);
+            options.put("maxTokens", utilityMaxOutputTokens > 0
+                    ? Math.min(8192, utilityMaxOutputTokens) : 8192);
             options.put("cacheRetention", config.promptCacheRetention().wireValue());
             String cacheSessionId = activePromptCacheSessionId();
             if (cacheSessionId != null) {
@@ -3493,7 +3834,7 @@ public class DirectLlmClient implements AutoCloseable {
         if (userMessage != null || !attachments.isEmpty()) {
             messages.add(createPiUserMessage(userMessage, attachments));
         }
-        return MemoryContextProjection.project(messages);
+        return projectRequestHistory(messages);
     }
 
     private void appendPiToolResultHistory(List<ToolCallResultInput> toolResults) {
@@ -4234,7 +4575,7 @@ public class DirectLlmClient implements AutoCloseable {
         request.set("messages", messages);
         request.put("stream", true);
         applyReasoningEffort(request, false);
-        applyOpenAiFastMode(request, effectiveModel);
+        applyFastMode(request, effectiveModel);
         applyOpenAiCompatiblePromptCacheControls(request, effectiveModel);
         applyChatCompletionsJsonOutput(request);
         boolean openAi = "openai".equals(config.getProvider());
@@ -4377,6 +4718,7 @@ public class DirectLlmClient implements AutoCloseable {
     private ArrayNode buildOpenAiMessages(String userMessage, String systemPrompt,
                                            List<ToolCallResultInput> toolResults,
                                            List<AttachmentInput> attachments) {
+        protectToolResultErrors(toolResults);
         ArrayNode messages = objectMapper.createArrayNode();
 
         // System prompt
@@ -4408,7 +4750,7 @@ public class DirectLlmClient implements AutoCloseable {
             messages.add(openAiUserMessage(userMessage, attachments));
         }
 
-        ArrayNode projected = MemoryContextProjection.project(messages);
+        ArrayNode projected = projectRequestHistory(messages);
         return "zai".equalsIgnoreCase(config.getProvider())
                 ? normalizeZaiMessages(projected) : projected;
     }
@@ -4757,28 +5099,13 @@ public class DirectLlmClient implements AutoCloseable {
             OAuthProviderFlow.RequestAuth auth = retryAuth != null ? retryAuth : config.resolveRequestAuth();
             ObjectNode request = objectMapper.createObjectNode();
             request.put("model", effectiveModel);
-            request.put("max_tokens", 8192);
+            request.put("max_tokens", utilityMaxOutputTokens > 0
+                    ? Math.min(8192, utilityMaxOutputTokens) : 8192);
             request.put("stream", true);
             boolean fastMode = config.useFastMode(effectiveModel);
-            if (fastMode) request.put("speed", "fast");
+            applyFastMode(request, effectiveModel);
 
             String nativeRouteKey = "anthropic:" + effectiveModel;
-            boolean nativeCompaction = compactionCapabilities(effectiveModel).nativeCompaction()
-                    == ProviderCompactionCapabilities.NativeCompaction.ANTHROPIC_MESSAGES
-                    && nativeCompactionTriggerTokens >= 50_000
-                    && !unavailableNativeCompactionRoutes.contains(nativeRouteKey);
-            if (nativeCompaction) {
-                ObjectNode edit = objectMapper.createObjectNode();
-                edit.put("type", "compact_20260112");
-                edit.putObject("trigger")
-                        .put("type", "input_tokens")
-                        .put("value", nativeCompactionTriggerTokens);
-                edit.put("instructions",
-                        "Summarize the conversation for continuing the task. Preserve code, "
-                                + "file paths, decisions, pending work, and tool outcomes. "
-                                + "Do not call tools while compacting; return summary text only.");
-                request.putObject("context_management").putArray("edits").add(edit);
-            }
 
             String effectiveSystem = effectiveAnthropicSystemPrompt(auth, systemPrompt);
             if (!effectiveSystem.isBlank()) request.put("system", effectiveSystem);
@@ -4792,6 +5119,9 @@ public class DirectLlmClient implements AutoCloseable {
                     request.set("tools", anthropicTools);
                 }
             }
+            String contextBeta = applyAnthropicContextManagement(request, effectiveModel, auth);
+            boolean nativeCompaction = contextBeta.contains("compact-2026-01-12");
+            boolean clearing = contextBeta.contains(ANTHROPIC_CONTEXT_BETA);
             applyAnthropicPromptCacheControl(request);
 
             String baseUrl = config.resolveBaseUrl(auth);
@@ -4804,8 +5134,8 @@ public class DirectLlmClient implements AutoCloseable {
                     .timeout(connectivityPolicy.requestTimeout());
             applyAnthropicAuthentication(requestBuilder, auth, config.getProvider(),
                     "github-copilot".equals(config.getProvider()));
-            if (nativeCompaction || fastMode) {
-                String beta = nativeCompaction ? "compact-2026-01-12" : "";
+            if (!contextBeta.isEmpty() || fastMode) {
+                String beta = contextBeta;
                 if (fastMode) beta += (beta.isEmpty() ? "" : ",") + "fast-mode-2026-02-01";
                 requestBuilder.setHeader("anthropic-beta",
                         mergeHeaderValue(auth, "anthropic-beta", beta));
@@ -4813,45 +5143,124 @@ public class DirectLlmClient implements AutoCloseable {
             applyProviderRequestHeaders(requestBuilder, userMessage);
             HttpRequest httpRequest = requestBuilder.build();
 
-            HttpResponse<java.io.InputStream> response = httpClient.send(
-                    httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+            // A stream that closes mid-answer with visible text is resumed with a
+            // bounded continuation pass (the same contract as the OpenAI route's
+            // silent-drop resume) instead of surfacing a failed turn.
+            int resumePass = 0;
+            while (true) {
+                HttpResponse<java.io.InputStream> response = httpClient.send(
+                        httpRequest, HttpResponse.BodyHandlers.ofInputStream());
 
-            if (response.statusCode() != 200) {
-                if (response.statusCode() == 401) {
-                    recordUnauthorizedResponse(result, response.body(), auth);
-                    return result;
-                }
-                String body = readResponseBody(response.body());
-                if (recordKnownProviderFailure(result, response.statusCode(), body, response.headers())) return result;
-                if (nativeCompaction && (response.statusCode() == 400
-                        || response.statusCode() == 404 || response.statusCode() == 422)
-                        && !isContextOverflowFailure(response.statusCode(), body)) {
-                    unavailableNativeCompactionRoutes.add(nativeRouteKey);
-                    return streamAnthropic(
-                            userMessage, systemPrompt, toolDefs, toolResults,
-                            effectiveModel, attachments, auth);
-                }
-                String error = extractErrorMessage(body) + ProviderResponseFailure.diagnostics(body, response.headers());
-                String finalMessage = "[Anthropic API error " + response.statusCode()
-                        + ": " + error + "]";
-                if (isContextOverflowFailure(response.statusCode(), body)) {
+                if (response.statusCode() != 200) {
+                    if (response.statusCode() == 401) {
+                        recordUnauthorizedResponse(result, response.body(), auth);
+                        return result;
+                    }
+                    String body = readResponseBody(response.body());
+                    if (recordKnownProviderFailure(result, response.statusCode(), body, response.headers())) return result;
+                    if (clearing && (response.statusCode() == 400 || response.statusCode() == 422)
+                            && !isContextOverflowFailure(response.statusCode(), body)
+                            && (body.contains("clear_tool_uses_20250919") || body.contains(ANTHROPIC_CONTEXT_BETA))) {
+                        AnthropicCapabilityKey key = anthropicCapabilityKey(effectiveModel, auth);
+                        AnthropicContextCapabilities previous = anthropicContextCapabilities.getOrDefault(
+                                key, AnthropicContextCapabilities.NONE);
+                        anthropicContextCapabilities.put(key, new AnthropicContextCapabilities(previous.summarize(), false));
+                        return streamAnthropic(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments, auth);
+                    }
+                    if (nativeCompaction && (response.statusCode() == 400
+                            || response.statusCode() == 404 || response.statusCode() == 422)
+                            && !isContextOverflowFailure(response.statusCode(), body)) {
+                        unavailableNativeCompactionRoutes.add(nativeRouteKey);
+                        return streamAnthropic(
+                                userMessage, systemPrompt, toolDefs, toolResults,
+                                effectiveModel, attachments, auth);
+                    }
+                    String error = extractErrorMessage(body) + ProviderResponseFailure.diagnostics(body, response.headers());
+                    String finalMessage = "[Anthropic API error " + response.statusCode()
+                            + ": " + error + "]";
+                    if (isContextOverflowFailure(response.statusCode(), body)) {
+                        appendProviderFailure(
+                                result, response.statusCode(), body, finalMessage, false);
+                        return result;
+                    }
+                    if (recordHttpConnectivityFailure(
+                            result, response.statusCode(), response.headers(),
+                            "Anthropic HTTP " + response.statusCode() + ": " + error,
+                            finalMessage)) {
+                        return result;
+                    }
                     appendProviderFailure(
                             result, response.statusCode(), body, finalMessage, false);
                     return result;
                 }
-                if (recordHttpConnectivityFailure(
-                        result, response.statusCode(), response.headers(),
-                        "Anthropic HTTP " + response.statusCode() + ": " + error,
-                        finalMessage)) {
-                    return result;
-                }
-                appendProviderFailure(
-                        result, response.statusCode(), body, finalMessage, false);
-                return result;
-            }
 
-            parseAnthropicStream(guardResponseStream(response.body()), result);
-            result.toolCalls.addAll(rescueTextEncodedToolCalls(result, toolDefs));
+                // The flag belongs to THIS pass: a prior pass's drop must not leak
+                // into a continuation that completed cleanly.
+                result.silentStreamDrop = false;
+                parseAnthropicStream(guardResponseStream(response.body()), result);
+                result.toolCalls.addAll(rescueTextEncodedToolCalls(result, toolDefs));
+
+                if (result.silentStreamDrop && !result.cancelled && !result.failed
+                        && result.toolCalls.isEmpty()
+                        && resumePass < ANTHROPIC_MID_STREAM_RESUME_ATTEMPTS) {
+                    resumePass++;
+                    emitConnectivityEvent(new ConnectivityEvent(
+                            config.getProvider(), resumePass,
+                            ANTHROPIC_MID_STREAM_RESUME_ATTEMPTS, Duration.ofSeconds(1),
+                            "connection closed mid-answer with partial text; asking the "
+                                    + "model to continue"));
+                    try {
+                        Thread.sleep(Math.min(1_000L, connectivityPolicy.initialBackoff().toMillis()));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    // The Messages API requires user-after-alternating-roles: the
+                    // continuation nudge must follow the partial answer as an
+                    // assistant turn.
+                    ObjectNode partialMsg = messages.addObject();
+                    partialMsg.put("role", "assistant");
+                    ArrayNode partialContent = partialMsg.putArray("content");
+                    ObjectNode partialText = partialContent.addObject();
+                    partialText.put("type", "text");
+                    partialText.put("text", result.text);
+                    ObjectNode continueMsg = messages.addObject();
+                    continueMsg.put("role", "user");
+                    continueMsg.put("content",
+                            "Your previous response was cut off by a connection drop. Continue "
+                                    + "exactly where you stopped without repeating earlier text. "
+                                    + "If it was already complete, reply DONE.");
+                    request.set("messages", messages);
+                    requestBuilder = HttpRequest.newBuilder()
+                            .uri(URI.create(baseUrl + "/v1/messages"))
+                            .header("Content-Type", "application/json")
+                            .header("anthropic-version", "2023-06-01")
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    objectMapper.writeValueAsString(request)))
+                            .timeout(connectivityPolicy.requestTimeout());
+                    applyAnthropicAuthentication(requestBuilder, auth, config.getProvider(),
+                            "github-copilot".equals(config.getProvider()));
+                    if (!contextBeta.isEmpty() || fastMode) {
+                        String beta = contextBeta;
+                        if (fastMode) beta += (beta.isEmpty() ? "" : ",") + "fast-mode-2026-02-01";
+                        requestBuilder.setHeader("anthropic-beta",
+                                mergeHeaderValue(auth, "anthropic-beta", beta));
+                    }
+                    applyProviderRequestHeaders(requestBuilder, userMessage);
+                    httpRequest = requestBuilder.build();
+                    continue;
+                }
+                if (result.silentStreamDrop && !result.cancelled && !result.failed) {
+                    // The continuation also dropped (or the budget ran out): keep the
+                    // partial answer but mark the turn so it is not presented as done.
+                    result.failed = true;
+                    result.failureKind = FailureKind.PROVIDER_ERROR;
+                    result.failureMessage = "[Anthropic connection closed mid-answer; kept the "
+                            + "partial response after " + resumePass + " resume attempt"
+                            + (resumePass == 1 ? "" : "s") + "]";
+                }
+                break;
+            }
 
             if (!result.cancelled && !result.failed && result.nativeCompactionSummary != null
                     && !result.nativeCompactionSummary.isBlank()) {
@@ -5037,7 +5446,10 @@ public class DirectLlmClient implements AutoCloseable {
             messages.add(anthropicUserMessage(userMessage, attachments));
         }
 
-        return MemoryContextProjection.project(messages);
+        // Native clear_tool_uses may remove the inline original independently of
+        // our duplicate receipt. Keep full evidence whenever native edits are armed.
+        return nativeCompactionTriggerTokens > 0
+                ? MemoryContextProjection.project(messages) : projectRequestHistory(messages);
     }
 
     private ObjectNode createAnthropicToolResultMessage(
@@ -5234,7 +5646,13 @@ public class DirectLlmClient implements AutoCloseable {
             }
         }
         if (!result.cancelled && !result.failed && !terminal) {
-            throw new EOFException("Anthropic stream ended before a terminal event");
+            if (result.text.isEmpty() && result.toolCalls.isEmpty()) {
+                throw new EOFException("Anthropic stream ended before a terminal event");
+            }
+            // The connection closed mid-answer with visible text: flag it so the
+            // route's bounded resume asks the model to continue instead of failing
+            // the turn (same contract as the OpenAI silent-drop resume).
+            result.silentStreamDrop = true;
         }
         finishGenerationOutcome(result);
     }

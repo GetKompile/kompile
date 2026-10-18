@@ -101,6 +101,30 @@ class ExecJsonEventsTest {
     }
 
     @Test
+    void productAndExistingControlEventsRoundTripCanonicalDataAndSequence() throws Exception {
+        long sequence = 40;
+        for (String wireType : List.of("session_ready", "session_idle", "session_closed", "session_cleanup",
+                "protocol_error", "capability_result", "content_approvals", "content_approval", "turn_completed", "control", "activity",
+                "turn_started", "turn_complete")) {
+            HeadlessRunEvent.Type type = HeadlessRunEvent.Type.valueOf(wireType.toUpperCase(java.util.Locale.ROOT));
+            ObjectNode data = mapper.createObjectNode().put("version", 1).put("sessionId", "s")
+                    .put("requestId", "request-1").put("turnId", "turn-1")
+                    .put("content", "first\nsecond").put("ok", false);
+            var event = new HeadlessRunEvent(0, type, "s", "", "", "", "", false,
+                    0, 0, "", Map.of(), data).withSequence(++sequence);
+            String line = ExecJsonEvents.event(mapper, event);
+            assertFalse(line.contains("\n"), "one sequenced JSONL envelope per event");
+            JsonNode roundTrip = mapper.readTree(line);
+            assertEquals(sequence, roundTrip.path("seq").asLong());
+            assertEquals(wireType, roundTrip.path("type").asText());
+            assertEquals(type, HeadlessRunEvent.Type.valueOf(roundTrip.path("type").asText().toUpperCase(java.util.Locale.ROOT)));
+            assertEquals("s", roundTrip.path("session_id").asText());
+            assertEquals(data, roundTrip.path("data"));
+            assertFalse(roundTrip.has("detail"));
+        }
+    }
+
+    @Test
     void richEventsPreserveSequenceAndLifecycle() throws Exception {
         JsonNode started = mapper.readTree(ExecJsonEvents.event(mapper,
                 HeadlessRunEvent.started("s", "model", "/work", Map.of(

@@ -195,7 +195,13 @@ class AgenticChatLoopQueueSteeringTest {
                 null, objectMapper, tools, new PermissionService(), new AgentRegistry(),
                 workingDirectory, client, null);
         AtomicInteger eligibilityChanges = new AtomicInteger();
-        loop.setBackgroundEligibilityListener(eligibilityChanges::incrementAndGet);
+        AtomicBoolean lastEligibility = new AtomicBoolean();
+        loop.setBackgroundEligibilityListener(() -> {
+            // Model completion also requests repaints. Count state transitions,
+            // not redundant notifications while eligibility remains unchanged.
+            boolean active = loop.isBackgroundableToolPhaseActive();
+            if (lastEligibility.getAndSet(active) != active) eligibilityChanges.incrementAndGet();
+        });
 
         assertFalse(loop.isBackgroundableToolPhaseActive(),
                 "model thinking is not backgroundable");

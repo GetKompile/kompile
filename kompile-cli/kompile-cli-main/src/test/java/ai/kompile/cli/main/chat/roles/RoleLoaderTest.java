@@ -21,6 +21,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -30,6 +31,24 @@ class RoleLoaderTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void parsesFrozenRoleSnapshotWithoutReadingItsSourcePath() {
+        Path absent = tempDir.resolve("installed-gm.md");
+        String snapshot = """
+                ---
+                name: frozen-gm
+                tools: mcp_tool_search, mcp_tool_call
+                can_spawn: false
+                ---
+                Use the authoritative game tools.
+                """;
+        RoleConfig loaded = new RoleLoader(tempDir).parseRoleContent(absent, snapshot, false);
+        assertEquals("frozen-gm", loaded.getName());
+        assertEquals(Set.of("mcp_tool_search", "mcp_tool_call"), loaded.getEnabledTools());
+        assertEquals("Use the authoritative game tools.", loaded.getSystemPrompt());
+        assertTrue(Files.notExists(absent));
+    }
 
     @Test
     void roundTripsPerAgentModelAndModelSpecificThinkingDefaults() throws Exception {

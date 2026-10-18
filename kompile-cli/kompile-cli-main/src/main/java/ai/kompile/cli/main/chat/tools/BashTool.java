@@ -248,14 +248,28 @@ public class BashTool implements CliTool {
         Consumer<String> liveOutput = context.getOutputConsumer();
         AtomicBoolean outputStreamed = new AtomicBoolean(false);
 
-        // Execute via ProcessManager. Interactive chat installs a live output
-        // consumer; MCP/headless callers still receive the same canonical result.
-        ProcessManager.ProcessResult result = ProcessManager.executeInterruptibly(
-                command, workDir, timeout * 1000, context::isAborted,
-                liveOutput == null ? null : line -> {
-                    outputStreamed.set(true);
-                    liveOutput.accept(line);
+        // Observe the raw stream even in MCP/headless mode; the returned output is bounded.
+        List<String> captureWarnings = new java.util.concurrent.CopyOnWriteArrayList<>();
+        TestMilestoneCapture capture = TestMilestoneCapture.start(command, workDir,
+                context.getSessionId(), UUID.randomUUID().toString(), warning -> {
+                    if (captureWarnings.size() < 16) captureWarnings.add(warning);
+                    if (liveOutput != null) liveOutput.accept("Warning: " + warning);
+                    else System.err.println("Warning: " + warning); // Never corrupt MCP stdout.
                 });
+        ProcessManager.ProcessResult result;
+        String milestoneId;
+        try (capture) {
+            result = ProcessManager.executeInterruptibly(
+                    command, workDir, timeout * 1000, context::isAborted, line -> {
+                        if (capture != null) capture.accept(line);
+                        if (liveOutput != null) {
+                            outputStreamed.set(true);
+                            liveOutput.accept(line);
+                        }
+                    });
+            milestoneId = capture == null ? null : capture.finish(result.getExitCode(),
+                    result.isTimedOut(), result.isAborted(), null);
+        }
 
         String outputStr = result.getOutput();
 
@@ -266,6 +280,8 @@ public class BashTool implements CliTool {
         meta.put("timedOut", result.isTimedOut());
         meta.put("aborted", result.isAborted());
         meta.put("riskLevel", risk.name());
+        if (milestoneId != null) meta.put("testMilestoneId", milestoneId);
+        if (!captureWarnings.isEmpty()) meta.put("testCaptureWarnings", List.copyOf(captureWarnings));
         meta.put(ToolResult.OUTPUT_STREAMED_METADATA, outputStreamed.get());
 
         if (result.isTimedOut()) {

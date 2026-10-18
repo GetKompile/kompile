@@ -75,15 +75,15 @@ public class DynamicToolManager {
         GROUPS.put("workflow", new ToolGroup("workflow",
                 "Todo tracking, project/enforcer configuration, archives, side panels, and ambient capture",
                 Set.of("todowrite", "todoread", "project_config", "enforcer_config", "judge_control",
-                        "config_archive", "side_panel", "dictation", "ambient_garden")));
+                        "config_archive", "side_panel", "dictation", "ambient_garden", "incident")));
 
         GROUPS.put("web", new ToolGroup("web",
                 "Web search, page retrieval, and interactive browsing",
                 Set.of("webfetch", "websearch", "browser")));
 
         GROUPS.put("integrations", new ToolGroup("integrations",
-                "Provider login, non-secret channel status, and allowlisted delivery",
-                Set.of("channel")));
+                "Provider login, channel delivery, encrypted CLI peer sync and agent messaging",
+                Set.of("channel", "peer")));
 
         GROUPS.put("process", new ToolGroup("process",
                 "Background processes, subprocess memory watchdog, result polling, server control, process mining, and agent coordination",
@@ -101,7 +101,7 @@ public class DynamicToolManager {
 
         GROUPS.put("memory", new ToolGroup("memory",
                 "Persistent memory plus semantic, RAG, and knowledge-base search",
-                Set.of("memory", "semantic_memory", "rag_search", "knowledge_search")));
+                Set.of("memory", "incident", "semantic_memory", "rag_search", "knowledge_search")));
 
         GROUPS.put("crawl", new ToolGroup("crawl",
                 "Build and maintain pipelines, then run and inspect folder-local model-backed crawls",

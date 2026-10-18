@@ -192,8 +192,8 @@ class ResumeCommandTest {
                 "cli-standard", "claude", "coder", null));
         assertFalse(ResumeCommand.shouldResumeStandardChat(
                 "cli-wrapper", "auto", "codex", null));
-        assertFalse(ResumeCommand.shouldResumeStandardChat(
-                "cli-wrapper", "auto", "coder", "native-session"));
+        assertTrue(ResumeCommand.shouldResumeStandardChat(
+                "cli-standard-with-claude-transport", "auto", "coder", "native-session"));
         assertFalse(ResumeCommand.shouldResumeStandardChat(
                 (ChatHistory.ConversationSummary) null, "auto", null),
                 "an external UUID without a Kompile transcript must remain eligible for native resume");
@@ -218,6 +218,10 @@ class ResumeCommandTest {
             history.open("(local)", null, false);
             history.logUserMessage("literal standard transcript");
             history.close();
+            ChatHistory.recordNativeSessionId("custom-standard-list", "claude-native-transport");
+            var summary = ChatHistory.listResumableConversations().stream()
+                    .filter(item -> item.sessionId().equals("custom-standard-list")).findFirst().orElseThrow();
+            assertTrue(ResumeCommand.shouldResumeStandardChat(summary, "auto", "claude-native-transport"));
 
             int exitCode = new CommandLine(new ResumeCommand()).execute(
                     "--list", "--filter-source", "kompile", "--filter-agent", "kompile");

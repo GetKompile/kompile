@@ -26,6 +26,7 @@ import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.SharedProcessMirror;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRunController;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.agent.CustomAgentLoader;
@@ -55,11 +56,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -242,6 +245,13 @@ public final class HeadlessAgentRunner {
     public record Result(int exitCode, String text, String sessionId) {}
 
     private final WebHarnessControls webControls;
+    private ProductSessionRuntime productSession;
+
+    public static HeadlessAgentRunner productWorker(ProductSessionRuntime session) {
+        HeadlessAgentRunner runner = new HeadlessAgentRunner();
+        runner.productSession = java.util.Objects.requireNonNull(session);
+        return runner;
+    }
     /** The web command the caller already resolved; resolving it again would apply its effects twice. */
     private final WebCommandResolver.Resolution resolvedCommand;
 
@@ -262,6 +272,7 @@ public final class HeadlessAgentRunner {
                 return runWithRedirect(opts);
             } finally {
                 if (webControls != null) webControls.close();
+                if (productSession != null) productSession.close();
             }
         }
     }
@@ -304,6 +315,15 @@ public final class HeadlessAgentRunner {
 
     private Result runInternal(Options opts, PrintStream realOut, PrintStream realErr,
                                ObjectMapper mapper, EventPublisher events) {
+        final var productPolicy = productSession == null ? null : productSession.policy();
+        if (productPolicy != null && (opts.autoApproveTools() || opts.webInput() != null
+                || opts.serverBaseUrl() != null || opts.roleName() != null || opts.agentName() != null
+                || opts.resume() || opts.modelOverride() != null || opts.outputMode() != OutputMode.JSON
+                || opts.memoryEnabled() || opts.ragEnabled() || !opts.attachments().isEmpty()
+                || opts.timeoutMs() != 0 || opts.outputLastMessage() != null || opts.crawlBaseUrl() != null
+                || (opts.prompt() != null && !opts.prompt().isBlank())
+                || !opts.workingDirectory().toAbsolutePath().normalize().equals(productPolicy.workspace())))
+            throw new IllegalArgumentException("Incompatible product worker options");
         // Explicit web input only: commands cannot fall through into an LLM, even
         // without provider configuration. Do not load memory/project instructions first.
         WebCommandResolver.Resolution webResolution = opts.webInput() == null ? null
@@ -398,8 +418,13 @@ public final class HeadlessAgentRunner {
             return new Result(2, "", opts.sessionId());
         }
 
+        if (productPolicy != null && (config.isKompileServer() || config.isClaudeCliNative() || config.isOpenCodeNative()
+                || ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current() != null))
+            throw new IllegalArgumentException("Product worker requires a direct/local configured model without a workflow");
         AgentRegistry agentRegistry = new AgentRegistry();
-        for (var custom : new CustomAgentLoader(opts.workingDirectory()).loadAll().values()) {
+        for (var custom : (productPolicy == null
+                ? new CustomAgentLoader(opts.workingDirectory()).loadAll()
+                : java.util.Map.<String, AgentConfig>of()).values()) {
             agentRegistry.register(custom);
         }
         RoleManager roleManager = new RoleManager(opts.workingDirectory());
@@ -407,7 +432,17 @@ public final class HeadlessAgentRunner {
                 serverMode ? null : opts.agentName(), config.getDefaultAgent(), "coder");
         String serverAgent = serverMode
                 ? firstNonBlank(opts.agentName(), "claude-cli") : defaultAgent;
-        String localAgent = localTurnAgent(
+        RoleConfig productRole = productPolicy == null ? null
+                : new ai.kompile.cli.main.chat.roles.RoleLoader(opts.workingDirectory())
+                .parseRoleContent(productPolicy.roleFile(), productPolicy.roleSnapshot(), false);
+        if (productRole != null && !productPolicy.role().equals(productRole.getName()))
+            throw new IllegalArgumentException("Product role identity mismatch");
+        AgentConfig frozenProductAgent = productRole == null ? null : productRole.toAgentConfig().toBuilder()
+                .enabledTools(java.util.Set.copyOf(productRole.getEnabledTools()))
+                .permissionOverrides(java.util.Map.copyOf(productRole.getPermissionOverrides()))
+                .canSpawnSubagents(false).build();
+        if (frozenProductAgent != null) agentRegistry.register(frozenProductAgent);
+        String localAgent = productPolicy != null ? productPolicy.role() : localTurnAgent(
                 agentRegistry, roleManager, opts.roleName(), durableRole, defaultAgent);
         if (localAgent == null) {
             String msg = "Role not found: " + opts.roleName();
@@ -473,7 +508,7 @@ public final class HeadlessAgentRunner {
         // ── Build the agent harness (auto-approve: non-interactive) ─────────
         PermissionService permissionService = new PermissionService();
         permissionService.setAutoApproveAll(opts.autoApproveTools());
-        if (webControls != null) {
+        if (webControls != null || productPolicy != null) {
             // The JSONL reader owns stdin. ASK must fail closed, never consume a control frame.
             permissionService.setPromptListener(ignored -> permissionService.submitPromptResponse("deny"));
         }
@@ -489,17 +524,22 @@ public final class HeadlessAgentRunner {
             processManager.enableSessionHistory();
         }
         TerminalRenderer renderer = new TerminalRenderer();
-        ToolRegistry toolRegistry = ToolRegistryFactory.create(
+        final ChatConfig runtimeConfig = config;
+        java.util.function.Supplier<ToolRegistry> registryFactory = () -> ToolRegistryFactory.create(
                 mapper, serverMode ? opts.serverBaseUrl() : "", agentRegistry,
                 permissionService, renderer, processManager,
-                serverMode ? null : config, roleManager, opts.crawlBaseUrl(),
+                serverMode ? null : runtimeConfig, roleManager, opts.crawlBaseUrl(),
                 opts.workingDirectory(), coordinationManager);
-        ProjectChatContext projectContext = ProjectChatContext.load(opts.workingDirectory());
+        ToolRegistry toolRegistry = productPolicy == null ? registryFactory.get() : ToolRegistry.createProduct(registryFactory);
+        if (productPolicy != null) toolRegistry.freezeProductPolicy(productPolicy, productRole.getEnabledTools());
+        ProjectChatContext projectContext = productPolicy == null
+                ? ProjectChatContext.load(opts.workingDirectory()) : ProjectChatContext.forProduct(opts.workingDirectory());
         AgenticChatLoop loop = new AgenticChatLoop(
                 serverMode ? opts.serverBaseUrl() : null,
                 mapper, toolRegistry, permissionService, agentRegistry,
                 opts.workingDirectory(), directClient, processManager,
                 projectContext.skillRegistry());
+        if (frozenProductAgent != null) loop.setAgentConfig(frozenProductAgent);
         loop.setWorkflowGlobalEnabled(
                 HarnessConfig.load(mapper).isJudgeGlobalEnabled());
         loop.configureConversationSession(opts.sessionId());
@@ -541,6 +581,7 @@ public final class HeadlessAgentRunner {
         // ── Ordered tool lifecycle events ───────────────────────────────────
         final ToolEventCounter toolCounter = new ToolEventCounter();
         Map<String, Long> toolStarts = new ConcurrentHashMap<>();
+        Map<String, ai.kompile.cli.common.chat.sources.ProductDisplayTurn.ToolPresentation> productPresentations = new LinkedHashMap<>();
         loop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
             @Override
             public void onToolStart(String callId, String toolName, String rawInput) {
@@ -554,9 +595,33 @@ public final class HeadlessAgentRunner {
                 Long started = toolStarts.remove(key);
                 long duration = started == null ? 0 : Math.max(0, System.currentTimeMillis() - started);
                 toolCounter.inc();
+                JsonNode detail = toolDetail(mapper, toolName, rawInput, result);
+                if (productSession != null && detail instanceof ObjectNode object) {
+                    try {
+                        String turnId = productSession.currentTurnId();
+                        ToolCallJson.identify(object, opts.sessionId(), turnId, callId);
+                        var presentation = ai.kompile.cli.common.chat.sources.ProductDisplayTurn.presentation(
+                                opts.sessionId(), turnId, callId, toolName, object.get("presentation"));
+                        if (presentation != null) synchronized (productPresentations) {
+                            var existing = productPresentations.get(callId);
+                            if (existing != null) {
+                                // Replay/collision cannot change the descriptor already bound to this call.
+                                object.set("presentation", existing.presentation());
+                            } else if (productPresentations.size() >= ai.kompile.cli.common.chat.sources.ProductDisplayTurn.MAX_PRESENTATIONS) {
+                                object.remove("presentation");
+                            } else {
+                                var proposed = new ArrayList<>(productPresentations.values());
+                                proposed.add(presentation);
+                                var metadata = ai.kompile.cli.common.chat.sources.ProductDisplayTurn.metadata(opts.sessionId(), turnId, proposed);
+                                if (metadata != null && metadata.path("toolPresentations").size() == proposed.size())
+                                    productPresentations.put(callId, presentation);
+                                else object.remove("presentation");
+                            }
+                        } else object.remove("presentation");
+                    } catch (RuntimeException unavailable) { object.remove("presentation"); }
+                }
                 events.publish(HeadlessRunEvent.toolCompleted(opts.sessionId(), callId, toolName,
-                        rawInput, result != null && !result.isError(), duration,
-                        toolDetail(mapper, toolName, rawInput, result)));
+                        rawInput, result != null && !result.isError(), duration, detail));
             }
         });
         ChatSessionMetrics metrics = new EventEmittingMetrics(opts.sessionId(), events);
@@ -571,7 +636,7 @@ public final class HeadlessAgentRunner {
         // ── A vendor chat opened in Kompile chat starts with its vendor history ─
         boolean carriedOver;
         try {
-            carriedOver = HeadlessPassthroughRunner.carryOverNativeTranscript(
+            carriedOver = productPolicy == null && HeadlessPassthroughRunner.carryOverNativeTranscript(
                     opts.sessionId(), opts.workingDirectory());
         } catch (java.io.IOException e) {
             events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), e.getMessage(), 1));
@@ -623,21 +688,21 @@ public final class HeadlessAgentRunner {
                         }
                     }
                 }) : null;
-        String resolvedPrompt = webResolution != null ? webResolution.modelPrompt()
+        String resolvedPrompt = productPolicy != null ? "" : webResolution != null ? webResolution.modelPrompt()
                 : projectContext.skillRegistry().resolveInvocation(opts.prompt())
                 .map(SkillRegistry.SkillInvocation::prompt)
                 .orElse(opts.prompt());
         ChatMemory chatMemory = new ChatMemory(
                 null, opts.sessionId(), opts.memoryEnabled(), opts.workingDirectory());
-        String memoryContext = chatMemory.buildMemoryContext(resolvedPrompt);
+        String memoryContext = productPolicy == null ? chatMemory.buildMemoryContext(resolvedPrompt) : null;
         String effectivePrompt = memoryContext == null || memoryContext.isBlank()
                 ? resolvedPrompt
                 : "<memory_context>\n" + memoryContext
                 + "</memory_context>\n\n" + resolvedPrompt;
         // Decorate once here: the transcript records the outbound text and the agentic
         // loop's idempotent decoration will not tick or stack a second block.
-        String outboundPrompt = reminderManager.decorateUserTurn(effectivePrompt);
-        history.logUserMessage(outboundPrompt);
+        String outboundPrompt = productPolicy == null ? reminderManager.decorateUserTurn(effectivePrompt) : "";
+        if (productPolicy == null) history.logUserMessage(outboundPrompt);
 
         // ── Run; the public wrapper already routed terminal chrome off stdout ─
 
@@ -650,8 +715,10 @@ public final class HeadlessAgentRunner {
         try {
             // Process-backed MCP bundles are intentionally acquired inside the cleanup
             // scope so even a required-server startup failure closes headless resources.
-            mcpBundleTools = McpBundleToolLoader.load(
-                    opts.workingDirectory(), toolRegistry, opts.sessionId());
+            mcpBundleTools = productPolicy == null ? McpBundleToolLoader.load(
+                    opts.workingDirectory(), toolRegistry, opts.sessionId())
+                    : McpBundleToolLoader.loadProduct(productPolicy, toolRegistry, opts.sessionId());
+            if (productPolicy != null) restoreProductConversation(loop, opts.sessionId());
             final String turnAgent = localAgent;
             if (webControls != null) {
                 // As in the CLI, processes owned by other sessions join the live activity panel.
@@ -680,7 +747,35 @@ public final class HeadlessAgentRunner {
                         new WebChatInput(WebChatInput.VERSION, raw, "", initial.sessionId()),
                         opts.workingDirectory(), opts.sessionStateStoreOrDefault(), opts.chatConfig()));
             }
-            response = webControls != null
+            final McpBundleToolLoader productMcp = mcpBundleTools;
+            response = productSession != null
+                    ? productSession.run(loop, toolRegistry, prompt -> {
+                        history.logUserMessage(prompt);
+                        String turnId = productSession.currentTurnId();
+                        synchronized (productPresentations) { productPresentations.clear(); }
+                        long turnStart = System.currentTimeMillis();
+                        String text = "";
+                        try {
+                            text = loop.chat(prompt, opts.sessionId(), turnAgent, serverAgent, false);
+                            return text;
+                        } finally {
+                            long elapsed = System.currentTimeMillis() - turnStart;
+                            List<ai.kompile.cli.common.chat.sources.ProductDisplayTurn.ToolPresentation> presentations;
+                            synchronized (productPresentations) {
+                                presentations = List.copyOf(productPresentations.values());
+                                productPresentations.clear();
+                            }
+                            // Completed tool actions stay completed even if display storage is unavailable.
+                            try { history.logProductAgentResponse(effectiveAgent, text, elapsed, turnId, presentations); }
+                            catch (RuntimeException unavailable) {
+                                realErr.println("Warning: Product display history unavailable; do not resubmit completed actions.");
+                            }
+                            metrics.recordAssistantTurn(text, elapsed);
+                        }
+                    }, capability -> productMcp.callReadCapability(capability,
+                            new ToolContext(opts.sessionId(), frozenProductAgent, permissionService,
+                                    opts.workingDirectory(), toolRegistry)), events::publish)
+                    : webControls != null
                     ? webControls.run(loop, processManager, opts.sessionId(), outboundPrompt, opts.timeoutMs(), cancel,
                     prompt -> {
                         String outbound = reminderManager.decorateUserTurn(prompt);
@@ -722,8 +817,19 @@ public final class HeadlessAgentRunner {
             if (sharedMirror != null) {
                 sharedMirror.close();
             }
+            boolean managedWorkStopped = productSession == null
+                    || drainProductManagedWork(toolRegistry, Duration.ofSeconds(5));
             if (mcpBundleTools != null) {
                 mcpBundleTools.close();
+            }
+            if (productSession != null) {
+                boolean mcpStopped = mcpBundleTools != null && mcpBundleTools.productCleanupConfirmed();
+                boolean confirmed = mcpStopped && managedWorkStopped;
+                events.publish(new HeadlessRunEvent(0, HeadlessRunEvent.Type.SESSION_CLEANUP,
+                        opts.sessionId(), "", "", "", "", confirmed, 0, 0, "", Map.of(),
+                        mapper.createObjectNode().put("confirmed", confirmed)
+                                .put("mcpCleanupConfirmed", mcpStopped)
+                                .put("managedWorkCleanupConfirmed", managedWorkStopped)));
             }
             if (directClient != null) {
                 directClient.close();
@@ -735,11 +841,11 @@ public final class HeadlessAgentRunner {
         long durationMs = System.currentTimeMillis() - start;
 
         try {
-            if (webControls == null) history.logAgentResponse(effectiveAgent, response, durationMs);
+            if (webControls == null && productSession == null) history.logAgentResponse(effectiveAgent, response, durationMs);
         } catch (Exception ignored) {
             // best-effort
         }
-        if (webControls == null) metrics.recordAssistantTurn(response, durationMs);
+        if (webControls == null && productSession == null) metrics.recordAssistantTurn(response, durationMs);
         metrics.saveToFile(
                 KompileHome.homeDirectory().toPath().resolve("conversations")
                         .resolve(opts.sessionId() + ".metrics.json"), mapper);
@@ -774,6 +880,14 @@ public final class HeadlessAgentRunner {
             realErr.println("[timed out after " + (opts.timeoutMs() / 1000) + "s]");
         }
         return new Result(exitCode, response, opts.sessionId());
+    }
+
+    static boolean drainProductManagedWork(ToolRegistry tools, Duration timeout) {
+        var content = tools.productContentSession();
+        if (content == null) return true;
+        boolean confirmed = content.tracker().cancelAndAwait(timeout);
+        if (!confirmed) tools.markProductUnknownOutcome();
+        return confirmed;
     }
 
     /**
@@ -874,6 +988,13 @@ public final class HeadlessAgentRunner {
         } catch (RuntimeException renderFailure) {
             return null;
         }
+    }
+
+    /** Resume canonical conversation data only; role, model and tool policy remain frozen. */
+    static void restoreProductConversation(AgenticChatLoop loop, String sessionId) throws IOException {
+        if (!ChatHistory.exists(sessionId)) return;
+        List<ChatHistory.Turn> turns = new ChatHistory(sessionId).readTurns();
+        if (turns != null && !turns.isEmpty()) loop.restoreHistory(turns);
     }
 
     /** The run's auth as reported in its events; package-private for tests. */

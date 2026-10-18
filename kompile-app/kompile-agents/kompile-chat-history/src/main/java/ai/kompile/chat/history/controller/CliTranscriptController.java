@@ -232,7 +232,14 @@ public class CliTranscriptController {
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("dryRun", dryRun);
-        body.put("totalDeleted", result.totalDeleted());
+        body.put("totalDeleted", result.totalDeleted()); // legacy count of retired sessions
+        body.put("totalRetired", result.totalRetired());
+        body.put("archivedBytes", result.archivedBytes());
+        body.put("hotBytesBefore", result.hotBytesBefore());
+        body.put("reclaimedBytes", result.reclaimedBytes());
+        body.put("protectedSessions", result.protectedSessions());
+        body.put("archiveDirectory", ".trash");
+        body.put("failures", result.failures());
         body.put("deletedByAge", result.deletedByAge());
         body.put("deletedByCount", result.deletedByCount());
         body.put("deletedBySize", result.deletedBySize());

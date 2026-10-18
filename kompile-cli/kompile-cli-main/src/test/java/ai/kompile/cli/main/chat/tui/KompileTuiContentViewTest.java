@@ -2,7 +2,9 @@ package ai.kompile.cli.main.chat.tui;
 
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
 import ai.kompile.cli.main.chat.MessageQueue;
+import ai.kompile.cli.main.chat.config.ChatUiConfig;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import org.junit.jupiter.api.Test;
@@ -12,6 +14,107 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class KompileTuiContentViewTest {
+
+    @Test
+    void unchangedTranscriptLayoutIsReusedAcrossRedrawsAndScrolls() throws Exception {
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("layout-cache")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("layout-cache"), new TerminalRenderer(true));
+            try {
+                for (int i = 0; i < 1000; i++) {
+                    tui.recordInScrollRegion("line " + i + " " + "wrapped transcript ".repeat(8));
+                }
+                List<String> visible = tui.getVisibleContentLines();
+                long builds = tui.transcriptLayoutBuildCountForTests();
+                var management = java.lang.management.ManagementFactory.getThreadMXBean();
+                com.sun.management.ThreadMXBean allocations = management instanceof com.sun.management.ThreadMXBean bean
+                        && bean.isThreadAllocatedMemorySupported() && bean.isThreadAllocatedMemoryEnabled() ? bean : null;
+                long thread = Thread.currentThread().getId();
+                long before = allocations == null ? -1 : allocations.getThreadAllocatedBytes(thread);
+                for (int i = 0; i < 100; i++) {
+                    assertEquals(visible, tui.getVisibleContentLines());
+                    tui.getContentScrollOffset();
+                }
+                if (before >= 0) {
+                    long allocated = allocations.getThreadAllocatedBytes(thread) - before;
+                    assertTrue(allocated < 8 * 1024 * 1024L,
+                            "unchanged viewport reads must allocate for the viewport, not history: " + allocated);
+                    System.out.println("100 cached transcript viewport reads allocated " + allocated + " bytes");
+                }
+                tui.scrollContent(1);
+                tui.scrollToBottom();
+                assertEquals(builds, tui.transcriptLayoutBuildCountForTests(),
+                        "status ticks and scrolling must not reparse or wrap retained history");
+
+                tui.recordInScrollRegion("new tail");
+                assertTrue(tui.getVisibleContentLines().contains("new tail"));
+                long afterEdit = tui.transcriptLayoutBuildCountForTests();
+                assertTrue(afterEdit > builds, "content replacement invalidates the layout");
+                var width = KompileTui.class.getDeclaredField("terminalWidth");
+                width.setAccessible(true);
+                width.setInt(tui, 40);
+                tui.getVisibleContentLines();
+                assertTrue(tui.transcriptLayoutBuildCountForTests() > afterEdit,
+                        "column changes must rebuild wrapping");
+
+                tui.showActivityView("test:layout", "pinned title", "other view body");
+                assertTrue(tui.getVisibleContentLines().stream().anyMatch(line -> line.contains("other view body")));
+                tui.showMainView();
+                assertTrue(tui.getVisibleContentLines().contains("new tail"), "view switches must not reuse stale rows");
+            } finally {
+                tui.stop();
+            }
+        }
+    }
+
+    @Test
+    void oneRowActivityCanReachBothHeaderAndTailAndClearsPinnedSelection() throws Exception {
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("single-row-layout")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("single-row-layout"), new TerminalRenderer(false));
+            try {
+                tui.showActivityView("one-row", "title", "A\nB");
+                tui.getVisibleContentLines();
+                int body = tui.scrollTop();
+                assertTrue(tui.beginTranscriptSelection(0, body));
+                tui.finishTranscriptSelection(1, body);
+                assertTrue(tui.hasTranscriptSelection());
+                var height = KompileTui.class.getDeclaredField("terminalHeight");
+                height.setAccessible(true);
+                height.setInt(tui, 1);
+                assertEquals(List.of("B"), tui.getVisibleContentLines());
+                assertFalse(tui.hasTranscriptSelection(), "unpinned row indexes must not reuse pinned selection coordinates");
+                assertTrue(tui.scrollToTop());
+                assertTrue(tui.getVisibleContentLines().get(0).contains("title"));
+                tui.scrollToBottom();
+                assertEquals(List.of("B"), tui.getVisibleContentLines());
+                tui.showTemporaryWindow("document", List.of("A", "B"));
+                assertTrue(tui.scrollContent(-2)); // Positive wheel deltas scroll up, also in documents.
+                assertEquals("B", tui.getVisibleContentLines().get(0).replace('|', ' ').replace('│', ' ').strip());
+                assertTrue(tui.scrollToBottom());
+                assertEquals(tui.getContentViewLines().size() - 1, tui.getContentScrollOffset(),
+                        "the final document row must remain reachable without a pinned header");
+                assertEquals(1, tui.getVisibleContentLines().size());
+            } finally { tui.stop(); }
+        }
+    }
+
+    @Test
+    void transcriptRowsNeverEmitTerminalControlsFromToolOutput() {
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("transcript-controls")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("transcript-controls"), new TerminalRenderer(true));
+            for (String control : List.of("\b", "\u0000", "\u0007", "\u007f", "\u009b24;1H",
+                    "\033]0;foreign title\007", "\033Pforeign payload\033\\")) {
+                tui.recordInScrollRegion("prefix" + control + "suffix");
+                for (String row : tui.getVisibleContentLines()) {
+                    String plain = org.jline.utils.AttributedString.fromAnsi(row).toString();
+                    assertFalse(plain.codePoints().anyMatch(Character::isISOControl),
+                            () -> "terminal control survived in row: " + plain.codePoints().boxed().toList());
+                }
+            }
+        }
+    }
 
     @Test
     void ephemeralAlertsExpireWithoutClearingNewerMessagesOrTranscript() {
@@ -40,6 +143,42 @@ class KompileTuiContentViewTest {
     }
 
     @Test
+    void managedAlertExpiryRepaintsOnlyHeaderAndRestoresCursor() throws Exception {
+        var output = new java.io.ByteArrayOutputStream();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("managed-alert-expiry");
+             var terminal = new org.jline.terminal.impl.LineDisciplineTerminal(
+                     "alert-expiry", "xterm", output, java.nio.charset.StandardCharsets.UTF_8)) {
+            terminal.setSize(new org.jline.terminal.Size(80, 24));
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("managed-alert-expiry"), new TerminalRenderer(true));
+            try {
+                tui.start(terminal);
+                terminal.writer().print("\033[20;1Hmanaged draft sentinel");
+                terminal.writer().flush();
+                VirtualTerminal screen = new VirtualTerminal(24, 80);
+                screen.feed(output.toString(java.nio.charset.StandardCharsets.UTF_8));
+                int row = screen.getCursorRow();
+                int col = screen.getCursorCol();
+                output.reset();
+                java.util.List<Runnable> timers = new java.util.ArrayList<>();
+                tui.showAlert("[code-index] background refresh failed", timers::add);
+                screen.feed(output.toString(java.nio.charset.StandardCharsets.UTF_8));
+                assertTrue(screen.getRow(1).contains("background refresh failed"), screen::screenDump);
+                output.reset();
+                timers.get(0).run();
+                screen.feed(output.toString(java.nio.charset.StandardCharsets.UTF_8));
+                assertEquals("", tui.getCurrentAlert());
+                assertFalse(screen.getRow(1).contains("background refresh failed"), screen::screenDump);
+                assertTrue(screen.getRow(19).contains("managed draft sentinel"), screen::screenDump);
+                assertEquals(row, screen.getCursorRow());
+                assertEquals(col, screen.getCursorCol());
+            } finally {
+                tui.stop();
+            }
+        }
+    }
+
+    @Test
     void dashboardUsesAStableResponsivePinnedRegion() {
         assertEquals(0, KompileTui.dashboardRowsForTerminal(12));
         assertEquals(0, KompileTui.dashboardRowsForTerminal(16));
@@ -47,7 +186,8 @@ class KompileTuiContentViewTest {
         assertEquals(9, KompileTui.dashboardRowsForTerminal(80));
         assertEquals(0, KompileTui.dashboardRowsForLayout(16, 3, 2),
                 "small terminals must retain usable transcript/input rows");
-        assertEquals(8, KompileTui.dashboardRowsForLayout(24, 3, 3));
+        assertEquals(5, KompileTui.dashboardRowsForLayout(24, 3, 3),
+                "dashboard must leave a third of the terminal for the transcript");
 
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("tui-dashboard-test");
@@ -316,7 +456,11 @@ class KompileTuiContentViewTest {
 
             // The two-row viewport shows the body and bottom border, one row each:
             // a wider panel would wrap and leave each right border on its own row.
-            assertEquals(panelLines.subList(1, 3), tui.getVisibleContentLines());
+            // Without an attached terminal, JLine 4 serializes box drawing as ASCII.
+            // Compare presentation rows here; the copied source must stay Unicode below.
+            assertEquals(panelLines.subList(1, 3).stream()
+                    .map(line -> new org.jline.utils.AttributedString(line).toAnsi()).toList(),
+                    tui.getVisibleContentLines());
             int body = tui.scrollTop() - 1;
             assertTrue(tui.beginTranscriptSelection(0, body));
             assertTrue(tui.finishTranscriptSelection(columns - 1, body));
@@ -415,6 +559,47 @@ class KompileTuiContentViewTest {
                     "mutating rows before the selected range must invalidate stale coordinates");
         } finally {
             processes.close();
+        }
+    }
+
+    @Test
+    void replacingBlocksOutsideScrollbackViewportKeepsVisibleMessagesInPlace() throws Exception {
+        for (boolean typed : new boolean[]{false, true}) {
+            for (boolean updateAbove : new boolean[]{false, true}) {
+                var output = new java.io.ByteArrayOutputStream();
+                try (BackgroundProcessManager processes = new BackgroundProcessManager("scrollback-replace");
+                     var terminal = new org.jline.terminal.impl.LineDisciplineTerminal(
+                             "scrollback-replace", "xterm", output, java.nio.charset.StandardCharsets.UTF_8)) {
+                    terminal.setSize(new org.jline.terminal.Size(80, 24));
+                    KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                            new MessageQueue("scrollback-replace"), new TerminalRenderer(true)) {
+                        @Override public void requestRedraw() { }
+                    };
+                    try {
+                        tui.start(terminal);
+                        java.util.function.BiConsumer<String, String> upsert = (key, text) -> {
+                            if (typed) tui.upsertDisplayBlock(ai.kompile.cli.main.chat.render.ChatDisplayBlock.text(key, "tool", text));
+                            else tui.upsertMainTranscriptBlock(key, text);
+                        };
+                        upsert.accept("older-tool", "OLDER TOOL");
+                        for (int i = 0; i < 100; i++) tui.recordInScrollRegion("MESSAGE-" + i);
+                        upsert.accept("tail-tool", "LIVE TOOL\n" + "progress\n".repeat(29).stripTrailing());
+                        tui.scrollContent(35);
+                        List<String> visible = tui.getVisibleContentLines();
+                        assertTrue(visible.stream().allMatch(line -> line.startsWith("MESSAGE-")));
+                        VirtualTerminal screen = new VirtualTerminal(24, 80);
+                        tui.redrawContentView(); screen.feed(output.toString(java.nio.charset.StandardCharsets.UTF_8)); output.reset();
+                        String before = screen.screenDump();
+                        if (updateAbove) upsert.accept("older-tool", "OLDER TOOL\n" + "new output\n".repeat(39).stripTrailing());
+                        else upsert.accept("tail-tool", "COMPLETED TOOL");
+                        tui.redrawContentView(); screen.feed(output.toString(java.nio.charset.StandardCharsets.UTF_8));
+                        assertEquals(visible, tui.getVisibleContentLines(),
+                                "Updating a " + (typed ? "typed" : "legacy") + " block " + (updateAbove ? "above" : "below") + " the viewport must not replace visible messages");
+                        assertEquals(before, screen.screenDump());
+                        assertTrue(tui.getContentViewLines().contains("MESSAGE-99"));
+                    } finally { tui.stop(); }
+                }
+            }
         }
     }
 
@@ -663,6 +848,50 @@ class KompileTuiContentViewTest {
 
             tui.showMainView();
             assertTrue(tui.getContentViewLines().contains("output while picker is open"));
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void sidebarLatestShortcutAppearsWhenScrolledUpAndClickSnapsBackToNewestCards() {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-sidebar-latest-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-sidebar-latest-queue"), new TerminalRenderer(false));
+            ChatUiConfig config = ChatUiConfig.classic();
+            config.applyPreset("focused");
+            config.set("layout.minChatColumns", "20");
+            config.set("sidebar.wrap", "false");
+            tui.setUiConfig(config);
+            assertTrue(KompileTui.paneLayout(0, config).split(), "test requires the split pane layout");
+
+            for (int i = 0; i < 60; i++) {
+                tui.upsertDisplayBlock(new ChatDisplayBlock("t" + i, "tool", "read", "diff " + i, "diff " + i,
+                        List.of(), false, false));
+            }
+
+            int controlY = tui.sidebarBottom() - 1;
+            int paneStart = tui.getChatColumns() + 1;
+            int paneEnd = KompileTui.transcriptColumns(0);
+            java.util.function.IntPredicate hitAt = x -> tui.handleSidebarLatestClick(x, controlY);
+
+            // Following the tail: no shortcut anywhere in the sidebar pane.
+            assertFalse(tui.isSidebarLatestControlVisible());
+            for (int x = paneStart; x < paneEnd; x++) assertFalse(hitAt.test(x), "shortcut click at x=" + x);
+
+            // Wheel up inside the pane: the floating shortcut appears.
+            assertTrue(tui.scrollSidebarAt(paneStart, controlY, -30));
+            assertTrue(tui.isSidebarLatestControlVisible());
+
+            // Clicking outside the control span does not jump; the span itself does.
+            assertFalse(hitAt.test(paneStart), "left edge must not be part of the control");
+            boolean jumped = false;
+            for (int x = paneStart; x < paneEnd; x++) if (hitAt.test(x)) { jumped = true; break; }
+            assertTrue(jumped, "clicking the control must jump back to the newest cards");
+            assertFalse(tui.isSidebarLatestControlVisible());
         } finally {
             processes.close();
         }

@@ -12,11 +12,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
@@ -37,11 +35,11 @@ import java.util.Objects;
  * resumable.</p>
  *
  * <p>A provider that keeps its own session (the Claude Code CLI) is recorded in a
- * sidecar file with the ledger version it has seen. A later process continues that
+ * journal record with the ledger version it has seen. A later process continues that
  * session only while the ledger is still at that version.</p>
  *
  * <p>Files sent with a user turn are stored once, by SHA-256, in a directory beside
- * the ledger; the event records only the reference. A later process can therefore
+ * the journal; the event records only the reference. A later process can therefore
  * resend an image from an earlier turn.</p>
  */
 public final class ConversationLedger {
@@ -54,9 +52,9 @@ public final class ConversationLedger {
     private long version;
     private long nextSequence = 1L;
     private CompactionCheckpoint checkpoint;
-    private Path stateFile;
-    private Path nativeSessionFile;
+    private ConversationLedgerJournal journal;
     private Path attachmentDirectory;
+    private Path legacyAttachmentDirectory;
     /** Attachment bytes with no file: the ledger is unbound, or the write failed. */
     private final Map<String, byte[]> unpersistedAttachments = new HashMap<>();
     private NativeSession nativeSession;
@@ -74,17 +72,17 @@ public final class ConversationLedger {
         if (sessionId != null && (!events.isEmpty() || checkpoint != null)) {
             throw new IllegalStateException("Conversation ledger is already bound to " + sessionId);
         }
-        sessionId = normalized;
         String safeFileName = normalized.replaceAll("[^A-Za-z0-9._-]", "_");
         if (safeFileName.isBlank() || ".".equals(safeFileName)
                 || "..".equals(safeFileName)) {
             throw new IllegalArgumentException("Invalid conversation session id");
         }
-        stateFile = KompileHome.homeDirectory().toPath()
-                .resolve("conversations").resolve(safeFileName + ".context.json");
-        nativeSessionFile = stateFile.resolveSibling(safeFileName + ".native-session.json");
-        attachmentDirectory = stateFile.resolveSibling(safeFileName + ".attachments");
+        Path root = KompileHome.homeDirectory().toPath().resolve("conversations");
+        journal = new ConversationLedgerJournal(objectMapper, root, safeFileName);
+        attachmentDirectory = journal.attachmentDirectory();
+        legacyAttachmentDirectory = root.resolve(safeFileName + ".attachments");
         load();
+        sessionId = normalized;
     }
 
     public synchronized boolean hasDurableState() {
@@ -93,17 +91,16 @@ public final class ConversationLedger {
 
     public synchronized Event append(CompactionService.ConversationEntry entry) {
         Objects.requireNonNull(entry, "entry");
+        Objects.requireNonNull(entry.type, "entry.type");
         Event event = new Event(
-                nextSequence++, entry.type, entry.role, entry.content,
-                entry.toolName, entry.toolCallId, Instant.now(), entry.attachments);
-        events.add(event);
-        version++;
-        if (!persist()) {
-            events.remove(events.size() - 1);
-            version--;
-            nextSequence--;
+                nextSequence, entry.type, entry.role, entry.content,
+                entry.toolName, entry.toolCallId, Instant.now(), entry.attachments, entry.outcome);
+        if (!persist(version + 1, "event", event)) {
             throw new IllegalStateException("Could not durably append conversation context");
         }
+        events.add(event);
+        version++;
+        nextSequence++;
         return event;
     }
 
@@ -176,8 +173,7 @@ public final class ConversationLedger {
         long lastSequence = events.isEmpty() ? 0L : events.get(events.size() - 1).sequence();
         long coverage = Math.max(priorCoverage,
                 Math.min(Math.max(0L, coveredThroughSequence), lastSequence));
-        CompactionCheckpoint previous = checkpoint;
-        checkpoint = new CompactionCheckpoint(
+        CompactionCheckpoint next = new CompactionCheckpoint(
                 coverage,
                 summary.strip(),
                 strategy == null ? "generic" : strategy,
@@ -187,12 +183,9 @@ public final class ConversationLedger {
                 Math.max(0L, tokensAfter),
                 nativePayload == null ? null : nativePayload.deepCopy(),
                 Instant.now());
+        if (!persist(version + 1, "checkpoint", next)) return false;
+        checkpoint = next;
         version++;
-        if (!persist()) {
-            version--;
-            checkpoint = previous;
-            return false;
-        }
         return true;
     }
 
@@ -203,15 +196,9 @@ public final class ConversationLedger {
     public synchronized void recordNativeSession(
             String transport, String nativeSessionId, String instructionsDigest) {
         if (transport == null || nativeSessionId == null || nativeSessionId.isBlank()) return;
-        nativeSession = new NativeSession(
+        NativeSession next = new NativeSession(
                 transport, nativeSessionId, version, instructionsDigest, Instant.now());
-        if (nativeSessionFile == null) return;
-        try {
-            writeAtomically(nativeSessionFile, nativeSession);
-        } catch (IOException e) {
-            System.err.println("Warning: Could not persist the native session "
-                    + nativeSessionFile + ": " + e.getMessage());
-        }
+        if (persist(version, "native", next)) nativeSession = next;
     }
 
     /**
@@ -223,7 +210,8 @@ public final class ConversationLedger {
         NativeSession saved = nativeSession;
         if (saved == null || !Objects.equals(saved.transport(), transport)
                 || saved.sessionId() == null || saved.sessionId().isBlank()
-                || version <= 0L || saved.syncedVersion() != version) {
+                || version <= 0L || saved.syncedVersion() != version
+                || (journal != null && !journal.isCurrent(version))) {
             return null;
         }
         return saved;
@@ -236,14 +224,7 @@ public final class ConversationLedger {
     public synchronized void forgetNativeSession(String transport) {
         NativeSession saved = nativeSession;
         if (saved == null || !Objects.equals(saved.transport(), transport)) return;
-        nativeSession = null;
-        if (nativeSessionFile == null) return;
-        try {
-            Files.deleteIfExists(nativeSessionFile);
-        } catch (IOException e) {
-            System.err.println("Warning: Could not remove the native session "
-                    + nativeSessionFile + ": " + e.getMessage());
-        }
+        if (persist(version, "native", null)) nativeSession = null;
     }
 
     /**
@@ -265,20 +246,8 @@ public final class ConversationLedger {
         // A damaged blob is rewritten: attaching the image again is what repairs it.
         if (holds(blob, digest)) return attachment;
         try {
-            Files.createDirectories(attachmentDirectory);
-            Path temporary = Files.createTempFile(attachmentDirectory, digest, ".tmp");
-            try {
-                Files.write(temporary, data);
-                try {
-                    Files.move(temporary, blob,
-                            StandardCopyOption.REPLACE_EXISTING,
-                            StandardCopyOption.ATOMIC_MOVE);
-                } catch (AtomicMoveNotSupportedException ignored) {
-                    Files.move(temporary, blob, StandardCopyOption.REPLACE_EXISTING);
-                }
-            } finally {
-                Files.deleteIfExists(temporary);
-            }
+            journal.storeBlob(version, digest, data);
+            unpersistedAttachments.remove(digest);
         } catch (IOException e) {
             System.err.println("Warning: Could not save attachment " + path
                     + " for later turns: " + e.getMessage());
@@ -300,7 +269,12 @@ public final class ConversationLedger {
         if (held != null) return held.clone();
         if (attachmentDirectory == null) return null;
         try {
-            byte[] data = Files.readAllBytes(attachmentDirectory.resolve(attachment.digest()));
+            Path blob = attachmentDirectory.resolve(attachment.digest());
+            if (!Files.exists(blob) && legacyAttachmentDirectory != null) {
+                blob = legacyAttachmentDirectory.resolve(attachment.digest());
+            }
+            if (Files.isSymbolicLink(blob) || Files.isSymbolicLink(blob.getParent())) return null;
+            byte[] data = Files.readAllBytes(blob);
             if (sha256(data).equals(attachment.digest())) return data;
             System.err.println("Warning: Saved attachment " + attachment.path()
                     + " is damaged; it will not be resent");
@@ -349,67 +323,29 @@ public final class ConversationLedger {
     }
 
     private void load() {
-        events.clear();
-        unpersistedAttachments.clear();
-        checkpoint = null;
-        version = 0L;
-        nextSequence = 1L;
-        loadNativeSession();
-        if (stateFile == null || !Files.exists(stateFile)) return;
         try {
-            State state = objectMapper.readValue(stateFile.toFile(), State.class);
-            if (state.schemaVersion() != SCHEMA_VERSION) {
-                throw new IOException("unsupported conversation context schema "
-                        + state.schemaVersion());
-            }
+            ConversationLedgerJournal.Restored restored = journal.open();
+            State state = restored.state();
+            events.clear();
             if (state.events() != null) events.addAll(state.events());
             checkpoint = state.checkpoint();
-            version = Math.max(0L, state.version());
-            nextSequence = events.stream().mapToLong(Event::sequence).max().orElse(0L) + 1L;
-        } catch (Exception e) {
-            System.err.println("Warning: Could not restore compacted context "
-                    + stateFile + ": " + e.getMessage());
-            events.clear();
-            checkpoint = null;
-            version = 0L;
-            nextSequence = 1L;
-        }
-    }
-
-    private void loadNativeSession() {
-        nativeSession = null;
-        if (nativeSessionFile == null || !Files.exists(nativeSessionFile)) return;
-        try {
-            nativeSession = objectMapper.readValue(nativeSessionFile.toFile(), NativeSession.class);
-        } catch (Exception e) {
-            System.err.println("Warning: Could not restore the native session "
-                    + nativeSessionFile + ": " + e.getMessage());
-        }
-    }
-
-    private boolean persist() {
-        if (stateFile == null) return true;
-        try {
-            writeAtomically(stateFile,
-                    new State(SCHEMA_VERSION, version, List.copyOf(events), checkpoint));
-            return true;
+            nativeSession = restored.nativeSession();
+            version = state.version();
+            nextSequence = events.size() + 1L;
         } catch (IOException e) {
-            System.err.println("Warning: Could not persist compacted context "
-                    + stateFile + ": " + e.getMessage());
-            return false;
+            // Never reset and overwrite a corrupt source of truth.
+            throw new IllegalStateException("Could not restore conversation context", e);
         }
     }
 
-    private void writeAtomically(Path file, Object value) throws IOException {
-        Files.createDirectories(file.getParent());
-        Path temporary = file.resolveSibling(file.getFileName() + ".tmp");
-        objectMapper.writerWithDefaultPrettyPrinter().writeValue(temporary.toFile(), value);
+    private boolean persist(long newVersion, String kind, Object payload) {
+        if (journal == null) return true;
         try {
-            Files.move(temporary, file,
-                    StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException ignored) {
-            Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
+            journal.append(version, newVersion, kind, payload);
+            return true;
+        } catch (IOException | IllegalArgumentException e) {
+            System.err.println("Warning: Could not persist conversation context: " + e.getMessage());
+            return false;
         }
     }
 
@@ -422,7 +358,14 @@ public final class ConversationLedger {
             String toolCallId,
             Instant createdAt,
             @JsonInclude(JsonInclude.Include.NON_EMPTY)
-            List<CompactionService.Attachment> attachments) {
+            List<CompactionService.Attachment> attachments,
+            @JsonInclude(JsonInclude.Include.NON_NULL) CompactionService.ToolOutcome outcome) {
+
+        public Event(long sequence, CompactionService.EntryType type, String role, String content,
+                     String toolName, String toolCallId, Instant createdAt,
+                     List<CompactionService.Attachment> attachments) {
+            this(sequence, type, role, content, toolName, toolCallId, createdAt, attachments, null);
+        }
 
         public Event {
             // Ledgers written before attachments were recorded have no such field.
@@ -432,7 +375,7 @@ public final class ConversationLedger {
 
         public CompactionService.ConversationEntry toEntry() {
             return new CompactionService.ConversationEntry(
-                    type, role, content, toolName, toolCallId, attachments);
+                    type, role, content, toolName, toolCallId, attachments, outcome);
         }
     }
 

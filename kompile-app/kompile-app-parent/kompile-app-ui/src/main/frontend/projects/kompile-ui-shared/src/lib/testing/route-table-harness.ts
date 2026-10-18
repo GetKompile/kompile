@@ -18,7 +18,7 @@ import { TestBed } from '@angular/core/testing';
 import { Router, Route, Routes } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 import { Location } from '@angular/common';
-import { Component, NgZone } from '@angular/core';
+import { Component, NgZone, Provider } from '@angular/core';
 
 @Component({ template: '<router-outlet></router-outlet>', standalone: false })
 class HarnessRootComponent {}
@@ -54,7 +54,9 @@ export interface RouteTableExpectations {
 export function describeRouteTable(
   appName: string,
   routes: Routes,
-  expected: RouteTableExpectations
+  expected: RouteTableExpectations,
+  // Topology fixtures may substitute a guard token; guard behavior needs its own policy tests.
+  providers: Provider[] = []
 ): void {
   describe(`${appName} route table`, () => {
     let router: Router;
@@ -67,7 +69,8 @@ export function describeRouteTable(
     beforeEach(async () => {
       await TestBed.configureTestingModule({
         imports: [RouterTestingModule.withRoutes(stubbed)],
-        declarations: [HarnessRootComponent, HarnessStubComponent]
+        declarations: [HarnessRootComponent, HarnessStubComponent],
+        providers
       }).compileComponents();
 
       router = TestBed.inject(Router);

@@ -7,9 +7,19 @@ description: Plan and orchestrate every task through the live kompile MCP tool s
 
 Operate kompile as a live capability router. Discover current tools and skills before relying on the bundled snapshot, then execute through the narrowest dedicated tool.
 
+## Compact preflight and context discipline
+
+Before task actions, establish the outcome, scope, applicable instructions, evidence, risks, validation and execution shape. A small direct task needs only a concise plan; multi-step work uses `todowrite`. The detailed references below expand this preflight only when their topic applies.
+
+- Use tool schemas and skill descriptions already visible in the current context. Do not activate a group, list every role, or reload a catalog merely to rediscover an available capability.
+- Read required skills and routed references completely once per agent/context generation. Reuse an unchanged document already read in that context; reread when its contents changed, are no longer available after compaction, or a higher-priority instruction requires it. Never reuse a parent's loaded-skill state for a child.
+- Keep mandatory safety rules active. Reference documents are not optional when their task-specific trigger applies; batch only the references actually needed for the chosen route.
+- Maintain compact continuation state in task notes and handoffs: current objective, decisions, unresolved failures, exact test selectors/results, active process IDs and evidence references. Resume from that state or the existing compaction checkpoint before searching bounded transcript passages. Never rebuild context by dumping an entire transcript.
+- Keep raw logs and full tool outputs in their durable stores. Request targeted excerpts or cached-result pages; batching calls does not by itself reduce their combined payload.
+
 ## Core workflow
 
-Apply this workflow to every task. Do not begin execution before completing the planning and orchestration preflight.
+Apply this workflow to every task, reusing the preflight above instead of generating a second planning narrative.
 
 1. Read the project `AGENTS.md` with `mcp__kompile__read`. Treat the closest applicable instructions as authoritative.
 2. Define the outcome, scope, constraints, risks, dependencies, acceptance criteria, and validation evidence. When prior decisions, preferences, investigations, or cross-session continuity could affect the task, retrieve them using [memory-and-transcript-search.md](references/memory-and-transcript-search.md) and verify retrieved claims against current primary evidence.
@@ -29,44 +39,11 @@ Memory is a retrieval input, not a write-only log. Before planning any non-trivi
 
 After an investigation, decision, or fix produces durable project knowledge, save one compact typed memory only after the recall step. Prefer `project`, `feedback`, or `reference` with a precise name and description; do not save a transcript dump. A task is not considered memory-aware merely because it wrote a memory: it must also show a read/use path.
 
-## Routing guide
+## Tool routing
 
-- Known file: `read`; many known files: `read_batch`
-- File-name discovery: `glob` or `explore`; directory listing: `list`
-- Text search: `grep` or `grep_batch`
-- Code semantics: `local_code_index`, `code_search`, `code_graph`, or `lsp`
-- File mutation: `edit`, `edit_batch`, `edit_patch`, `patch`, or `write`
-- Long-running command: `process`; short build/test/git command: `bash`
-- Web lookup/fetch: `websearch` / `webfetch`; browser interaction: `browser`
-- Persisted work tracking: `todowrite` / `todoread`
-- Delegation: `task`, `multi_task`, or `quorum_task`
-- Concurrent edits: acquire and release locks with `edit_coordinator`
-- Persistent project/user knowledge: `memory`; semantic memory retrieval: `semantic_memory`
-- Prior conversation evidence: `transcript_search`; session browsing/migration: `resume` / `conversation_import`
-- Indexed documents: `rag_search`; relationships and structured reasoning: graph tools
-- Skill operations: `skill_manager`; configuration: `project_config`, `enforcer_config`, or `config_archive`
-- Historical evidence: `diff_index` for file edits; `transcript_search`, `conversation_import`, `resume`, or `tool_call_catalog` for conversations and tool usage
-- Test and agent evaluation: `test_milestone` / `performance_harness`
+Use dedicated Kompile tools: `read`/`read_batch`, `glob`, `list`, `grep`/`grep_batch` for file I/O; the code index first for symbols and callers; `edit`/`write` for mutations; `process` for long commands and `bash` only for permitted system commands. Use the live schemas for arguments, not a copied catalog.
 
-## Historical file-edit search
-
-Use `diff_index` when the question is about edits recorded from coding-agent sessions. It searches indexed file paths, old text, new text, and unified diffs.
-
-- `action=search`: combine `query`, `file_path`, `project`, `agent`, `source`, `since`, and `until`; use `sort_by` plus `sort_dir`, and cap results with `limit`. `query` is a case-insensitive substring; `file_path` accepts a substring or glob.
-- Valid `sort_by` values are `timestamp`, `file_path`, `project`, `agent`, `source`, `lines_added`, `lines_removed`, and `total_changes`.
-- `action=get`: retrieve the complete old/new text and unified diff for a returned `id`. Prefer this over setting `include_content=true` on broad searches.
-- `action=projects`, `agents`, `sessions`, `session`, or `stats`: browse available facets and indexed history. Pass `session_id` to `action=session`.
-- Use `grep` for current file contents, `diff_index` for historical agent edits, `transcript_search` for conversation text, and Git commands for committed repository history.
-
-```yaml
-action: search
-file_path: "src/**/*.java"
-query: "acquireGpuForJob"
-since: "2026-08-01"
-sort_by: total_changes
-sort_dir: desc
-limit: 20
-```
+Use `memory`/`semantic_memory` for durable notes, `transcript_search` for prior conversation evidence, and `diff_index` for historical agent edits. The [memory and transcript reference](references/memory-and-transcript-search.md) covers retrieval; [tool-catalog.md](references/tool-catalog.md) covers other tool families. Git access always requires the user's permission and must respect project prohibitions.
 
 ## Hard rules
 
@@ -79,7 +56,7 @@ limit: 20
 
 ## References
 
-- Read [default-planning.md](references/default-planning.md) before executing any workflow.
+- Read [default-planning.md](references/default-planning.md) when complex or high-risk work needs expanded dependency, acceptance or escalation planning beyond the compact preflight.
 - Read [memory-and-transcript-search.md](references/memory-and-transcript-search.md) when prior decisions, preferences, investigations, or cross-session context may affect the workflow, and before persisting new memory.
 - Read [skill-and-agent-routing.md](references/skill-and-agent-routing.md) when selecting skills or delegating any plan step.
 - Read [tool-catalog.md](references/tool-catalog.md) when selecting among tool families or auditing the installed MCP surface.

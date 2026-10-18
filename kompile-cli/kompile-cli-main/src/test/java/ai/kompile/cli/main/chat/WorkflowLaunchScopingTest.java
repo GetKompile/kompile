@@ -22,9 +22,9 @@ import picocli.CommandLine;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * The launch dialog contract: the opt-in question is asked by the setup wizard
- * and the workflow-mode picker only — never on {@code --resume}/{@code
- * --continue} or other explicit-action launches, and never twice in one launch.
+ * Interactive team selection belongs only to the explicit Workflow chat mode
+ * — never to ordinary chats, {@code --resume}/{@code --continue}, or other
+ * explicit-action launches, and never twice in one launch.
  */
 class WorkflowLaunchScopingTest {
 

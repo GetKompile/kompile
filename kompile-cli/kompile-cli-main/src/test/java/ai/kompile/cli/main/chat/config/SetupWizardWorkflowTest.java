@@ -35,9 +35,9 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * The plain `kompile chat` path MUST surface the workflow question. With no
- * saved workflows the wizard offers templates that create roles and save the
- * team — a user is never asked to hand-edit chat-workflows.json. Roles are
+ * Only the explicit Workflow chat mode prompts for a team. With no saved
+ * workflows the wizard offers templates that create roles and save the team
+ * — a user is never asked to hand-edit chat-workflows.json. Roles are
  * created in the user's home, so the class runs in a temporary one.
  */
 @TemporaryUserHome
@@ -47,25 +47,27 @@ class SetupWizardWorkflowTest {
     Path project;
 
     @Test
-    void emptyStoreStillAsksAndOffersTemplates() {
-        // Gated wrapper: "no" skips with null; EOF cancels.
-        SetupWizard.WorkflowSelection declined =
-                SetupWizard.selectWorkflow(reader("no"), project);
-        assertFalse(declined.cancelled());
-        assertNull(declined.snapshot());
-
-        // Forced picker (the Workflow chat-mode path): no yes/no gate — the menu
-        // IS the question, even with an empty store.
-        SetupWizard.WorkflowSelection cancelled =
-                SetupWizard.chooseWorkflow(reader(), project);
-        assertTrue(cancelled.cancelled());
+    void ordinaryChatsSkipTeamSelectionWithoutReadingInput() {
+        LineReader noPrompt = (LineReader) Proxy.newProxyInstance(LineReader.class.getClassLoader(),
+                new Class<?>[]{LineReader.class},
+                (proxy, method, args) -> {
+                    throw new AssertionError("Ordinary chat must not prompt for a workflow: " + method);
+                });
+        for (String mode : List.of("standard", "passthrough")) {
+            ChatConfig config = new ChatConfig("custom", null, "model", "http://localhost:9000/v1");
+            config.setChatMode(mode);
+            SetupWizard.WorkflowSelection skipped =
+                    SetupWizard.workflowStep(noPrompt, project, config, false);
+            assertFalse(skipped.cancelled());
+            assertNull(skipped.snapshot());
+        }
     }
 
     @Test
     void designerWorkersTemplateCreatesRolesAndSavesAndActivates() throws Exception {
         // Forced picker (workflow mode): template is option 1 in an empty store.
-        SetupWizard.WorkflowSelection selection = SetupWizard.chooseWorkflow(
-                reader("1"), project);
+        SetupWizard.WorkflowSelection selection = SetupWizard.workflowStep(
+                reader("1"), project, null, true);
         assertNotNull(selection.snapshot(), "template creation must yield an activatable workflow");
         assertFalse(selection.cancelled());
 
@@ -123,14 +125,22 @@ class SetupWizardWorkflowTest {
     }
 
     @Test
-    void gatedWrapperStillHonorsYesNoAndCancel() throws Exception {
-        // The opt-in gate survives for non-mode callers (e.g. resume flows).
-        SetupWizard.WorkflowSelection skipped =
-                SetupWizard.selectWorkflow(reader("no"), project);
+    void explicitWorkflowModeHonorsCancelAndEof() {
+        assertTrue(SetupWizard.workflowStep(reader(), project, null, true).cancelled());
+        assertTrue(SetupWizard.workflowStep(reader("q"), project, null, true).cancelled());
+    }
+
+    @Test
+    void reusedProfileSkipsTeamSelectionEvenWithSavedWorkflows() throws Exception {
+        WorkflowTeamStore.save(project, WorkflowWizard.designerWorkersTeam(), true);
+        ChatConfig config = new ChatConfig("custom", null, "model", "http://localhost:9000/v1");
+        ChatProfiles.save(project, ChatProfiles.capture("local", config), false);
+        ChatConfig reused = SetupWizard.selectProjectProfile(
+                reader("y", "1", "1"), project, "standard").config();
+        assertNotNull(reused);
+        SetupWizard.WorkflowSelection skipped = SetupWizard.workflowStep(reader(), project, reused, false);
         assertFalse(skipped.cancelled());
         assertNull(skipped.snapshot());
-        assertTrue(SetupWizard.selectWorkflow(reader(), project).cancelled());
-        assertTrue(SetupWizard.selectWorkflow(reader("y", "q"), project).cancelled());
     }
 
     /** A saved team activates only when its roles exist, as they do once the template has run. */

@@ -37,8 +37,49 @@ class ToolResultReferenceCacheTest {
 
     @BeforeEach
     void setUp() {
-        // Use default threshold (8000) and TTL (15 minutes)
-        cache = new ToolResultReferenceCache();
+        // Keep legacy tests ephemeral: never create files in the real Kompile home.
+        cache = new ToolResultReferenceCache(ToolResultReferenceCache.DEFAULT_CACHE_THRESHOLD_CHARS, 900_000);
+    }
+
+    @Test
+    void deliveryCachesErrorsWithoutTurningThemIntoSuccesses() {
+        String diagnostic = "failure at compile step\n" + "trace line\n".repeat(4000);
+        ToolResult raw = new ToolResult("build failed", diagnostic, Map.of("exitCode", 1), true);
+        ToolResult delivered = cache.prepareForDelivery("session", "bash", raw);
+
+        assertTrue(delivered.isError());
+        assertEquals(raw.getTitle(), delivered.getTitle());
+        assertEquals(1, delivered.getMetadata().get("exitCode"));
+        assertTrue(delivered.getOutput().contains("Tool failed"));
+        assertFalse(delivered.getOutput().contains("Normal, not an error"));
+        assertTrue(delivered.getOutput().length() < diagnostic.length());
+        String id = (String) delivered.getMetadata().get("result_id");
+        assertEquals(diagnostic, cache.get(id).orElseThrow().output());
+        assertEquals(diagnostic, raw.getOutput());
+    }
+
+    @Test
+    void deliveryLeavesSmallResultsAndExplicitFetchesAlone() {
+        ToolResult small = ToolResult.error("bad input");
+        assertSame(small, cache.prepareForDelivery("session", "read", small));
+        ToolResult large = ToolResult.success("x".repeat(20000));
+        assertSame(large, cache.prepareForDelivery("session", "fetch_result", large));
+        assertSame(large, cache.prepareForDelivery("session", "fetch_result_batch", large));
+        assertEquals(0, cache.size());
+    }
+
+    @Test
+    void deliveryCacheFailurePreservesFullErrorAndDoesNotInventAHandle() {
+        ToolResultReferenceCache tiny = new ToolResultReferenceCache(1, 60000, 0, null,
+                System::currentTimeMillis);
+        ToolResult raw = new ToolResult("failed", "full diagnostic", Map.of("result_id", "stale"), true);
+        ToolResult delivered = tiny.prepareForDelivery("session", "bash", raw);
+
+        assertTrue(delivered.isError());
+        assertTrue(delivered.getOutput().contains(raw.getOutput()));
+        assertFalse(delivered.getMetadata().containsKey("result_id"));
+        assertEquals(false, delivered.getMetadata().get("cached"));
+        assertTrue(delivered.getMetadata().containsKey("resultCacheError"));
     }
 
     // ===================================================================

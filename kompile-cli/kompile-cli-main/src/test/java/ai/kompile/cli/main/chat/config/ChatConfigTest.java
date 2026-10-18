@@ -186,7 +186,8 @@ class ChatConfigTest {
         assertNotNull(loaded);
         assertTrue(loaded.isFastMode());
         assertTrue(loaded.useFastMode("gpt-5.5"));
-        assertFalse(loaded.useFastMode("gpt-5.3-codex-spark"));
+        assertTrue(loaded.useFastMode("gpt-5.3-codex-spark"));
+        assertTrue(loaded.useFastMode("day-one-unlisted-model"));
         assertEquals("high", loaded.getThinking());
         loaded.setFastMode(false);
         loaded.saveLoadedOrGlobal();

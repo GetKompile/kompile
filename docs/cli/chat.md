@@ -2,6 +2,83 @@
 
 Kompile supports first-party local model chat, external/direct model chat, an installed chat subprocess, server-connected RAG, and agent passthrough.
 
+## Context windows and token usage
+
+Standard CLI chat reads the selected vendor's model metadata at session startup
+and uses refreshed picker metadata after model/provider changes. Anthropic,
+Gemini, OpenRouter, Copilot, Radius and OpenCode have separate limit-field
+mappings in `ai/kompile/cli/main/chat/context-metadata.json`. Codex also reads
+`context_window` from the catalog written by its authenticated discovery process,
+not an unrelated account's `~/.codex` cache. Claude Code's session-reported limits
+remain authoritative for its native route.
+
+Deployments can override vendor JSON-pointer mappings with
+`-Dkompile.chat.contextMetadataConfig=/path/to/context-metadata.json` (same
+`schemaVersion: 1` / `providers` shape). Missing limit fields stay unknown; providers
+whose model-list API omits limits use the provider-scoped catalog/documented fallback,
+marked `~` in the context counter until the vendor reports a limit or you set an override.
+Explicit `contextWindowTokens` and `maxOutputTokens` settings still override resolver
+budgets. Metadata lookups do not generate chat completions.
+
+The context counter is the latest request's input, including cached input, divided
+by the active model's window—not cumulative session usage. Session token totals
+include all requests and outputs. OpenCode multi-step turns keep these ledgers
+separate. Session metrics JSON persists the window and last measured input under
+`context`; compaction invalidates that input until another request reports usage.
+
+## Terminal image previews
+
+In the standard terminal chat, `/image <path>`, `/file <image-path>`, and clipboard
+image paste show the latest attachment in a bounded Kitty-protocol preview when
+terminal support is detected. The original image is still attached to the next
+message; only its preview is downsampled. Submit your next line or use `/ui close`
+to return to the retained chat transcript.
+
+- `/ui set images.protocol auto` — default; detects support on the background preview
+  worker. Direct terminals use JLine's hints; multiplexers also check their running
+  instance and client metadata. Unknown/unsupported setups keep the text/chip UI.
+- `/ui set images.protocol kitty` — force on for a known-compatible setup, bypassing
+  automatic capability checks.
+- `/ui set images.protocol off` — disable previews.
+
+It previews one static frame through installed Java image decoders (PNG/JPEG/GIF;
+WebP needs an installed decoder). Files over 5 MiB or 32 megapixels are not previewed;
+preview failures do not reject attachments. No model/tool escape sequences are
+passed through, and image bytes are not embedded in transcript text.
+
+### Multiplexers
+
+Multiplexer previews are automatically enabled when the prerequisites below are
+recognized. Detection uses bounded, read-only multiplexer metadata checks, never
+terminal responses from the chat input stream. Kompile does not change multiplexer
+configuration. Forced `kitty`/`off` modes remain optional overrides.
+
+- **tmux 3.3+ (one layer):** enable `allow-passthrough on` in your own tmux
+  configuration, use a UTF-8 client, and ensure tmux recognizes the outer terminal's
+  true-color (`RGB`/`Tc`) capability. The outer terminal must support Kitty Unicode
+  placeholders (for example Kitty 0.28+), not just basic Kitty graphics. Uploads
+  and virtual placements use DCS passthrough; cursor movements and explicitly
+  positioned placeholder cells stay inside tmux's pane grid. This keeps pane
+  moves, splitting and clipping under tmux's control. Automatic mode checks the
+  running server version, inherited pane passthrough permission, and each attached
+  client's UTF-8/RGB features and known placeholder-capable terminal identity
+  (Kitty/Ghostty). No attached client or unknown capabilities means text fallback.
+- **Zellij 0.45.1+:** enable Kitty graphics in Zellij and its host terminal. Kompile
+  uses Zellij's native, pane-managed ordinary placements, not tmux passthrough or
+  Unicode placeholders. Automatic mode checks the running ancestor executable's
+  version and a known Kitty-capable host; unavailable process metadata falls back
+  to text. The forced override is available when automatic recognition is unavailable.
+- **GNU screen and nested/mixed multiplexers:** not supported. Screen contexts and
+  detectable mixed nesting retain text fallback. Nesting multiple tmux servers
+  cannot be reliably inferred from `TMUX`; do not enable previews there.
+
+After attaching a new tmux client/terminal, returning to a window whose initial
+upload happened while hidden, or losing terminal image resources, use `/redraw`
+to re-upload the retained preview. Tmux's saved placeholder text is not an image
+cache and does not replay passthrough uploads. Misconfigured RGB/passthrough or an
+unsupported placeholder extension can show missing images/private-use glyphs;
+use `/ui set images.protocol off` to retain the normal attachment UI.
+
 ## Web chat
 
 Run `kompile chat --web` (add `--open-browser` to open it locally). This launches
@@ -119,15 +196,43 @@ Inside an active external/direct standard-chat session, run `/auth` (or its alia
 
 For direct providers and models that expose reasoning effort, the wizard also offers a Thinking Effort choice after model selection. Choose the provider/model default or an explicit value from `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the choice is saved with the standard-chat configuration and sent on direct model requests. Not every reasoning model supports every explicit value.
 
+### Configurable chat display
+
+Standard chat defaults to **Classic**, preserving existing inline rendering. Run **`/ui`** for the live display wizard, or **`kompile configure ui`** outside chat. Both use the same numbered-list flow, with one choice per line and the current selection marked `* current`. Every page—including preset, layout, content placement, sidebar sections, sizes, shortcuts and save scope—accepts **numbers only**. `0` returns to the previous page (or finishes at the main menu); each page has a numbered Cancel option. No setting paths or raw enum values are required. UI settings are independent of provider/model configuration and `/thinking` effort.
+
+- **Classic:** existing inline presentation.
+- **Focused:** chat and thinking inline, successful tool bodies in a collapsed results sidebar; failures still have an inline summary.
+- **Verbose:** inline details plus sidebar navigation.
+
+Choose **Preset**, then **Focused**, **Classic**, or **Verbose** from its numbered list. **Layout** independently offers Inline, Split, and Automatic; Split/Automatic use a right-hand sidebar when chat can retain its minimum width, otherwise `/ui results` opens a full-width drawer. In Split/Automatic mode the sidebar extends to the terminal bottom, beside the left-column input, queue, and activity/status rows. The input editor is full-width when no sidebar is visible. Windows shorter than 16 rows or narrower than the configured minimum chat width collapse to the transcript and input only: header, dashboard, queue, activity/status bars, and sidebar are hidden. Enlarging the window restores the configured layout without changing saved preferences.
+
+The sidebar supports tool arguments/output/metadata, diffs, file content, processes/monitors, subagents, todos, sources and custom `side_panel` content. Click card/section headers to collapse or expand them. Mouse-wheel scrolling is pane-specific. **Ctrl+X S** toggles the sidebar (or opens the drawer); **Ctrl+X R** focuses its selection. With an empty draft, Up/Down selects cards and Enter toggles a split-pane card or inspects a drawer selection. Inspection never changes the chat input's recipient. `/ui close` returns to Main.
+
+Other controls: `/ui inspect`, `/ui next`, `/ui previous`, `/ui sidebar expand`, `/ui section output`, `/ui filter tools`, `/ui filter all`, `/ui pin`, and `/ui status`. Pinning keeps a result at the top of the filtered list. A full-width inspector supports the usual transcript selection/copy controls. Sidebar, results drawer and inspector retain the transcript's tool-heading colors, syntax highlighting for file/search output, edit/patch colors, and formatted assistant/thinking/subagent content. Wrapping or clipping changes the viewport, not token styles. Plain/non-ANSI output remains unstyled; tool-supplied cursor controls are still stripped.
+
+**Content placement** first lists content types and result sections. Select one, then choose **In chat** or **In sidebar**. Chat offers Hide, Summary only, and Show content; the sidebar offers Hide, Collapsed card, and Expanded card. Individual-tool choices come from available session tools and already-configured tool rules. **Sidebar** provides numbered choices for width, minimum chat width, wrapping, follow mode, section visibility/order, retained completed-card count, and retained content budget. Width choices are actual percentages, not repeated increase/decrease controls; choosing a value accepts it once and returns to the Sidebar menu. Minimum chat width works the same way. Choosing a content-placement value finishes that content dialog and returns to the content list. **Keyboard shortcuts** lists available choices rather than requiring key strings.
+
+Changes preview live. **Done automatically saves** your choices and closes the wizard; no separate Save action is required. **Cancel** or Escape discards the preview and leaves saved preferences unchanged. To choose a different scope, select **Save preferences**, then This conversation (inside chat), This project, or All projects. A successful save **finishes and closes the wizard**. Back from the scope picker returns to settings. `/ui preset`, `/ui layout`, `/ui set`, and sidebar visibility toggles (including **Ctrl+X S**) also save automatically.
+
+UI preferences survive exit, restart, and conversation resume. UI files are `~/.kompile/chat-ui-config.json`, `<project>/.kompile/chat-ui-config.json`, and `~/.kompile/conversations/<id>.chat-ui-config.json`. Fields merge in that order over preset defaults. Automatic saves use the highest valid existing scope, or user-wide preferences when no scoped configuration exists; a conversation-only save intentionally applies only to that conversation. Saving writes explicit edits and preserves unrelated settings. Layout, sizes, sidebar visibility, section order, wrapping/follow, content/tool rules, and shortcuts are restored at startup. Focus, selection, filters, and individual result-card state remain transient. Preset changes preserve explicit content overrides. Invalid configuration layers are reported and ignored without erasing valid lower-layer settings. `/ui status` and `kompile configure ui --status` print effective preferences and the automatic-save path.
+
+Completed tool results and edit/patch diffs accumulate across turns; streaming updates replace only the same invocation's card. Display retention defaults to 256 completed cards and 2,097,152 retained presentation characters (including plain/styled copies). Configure both in **`/ui` → Sidebar → Retained completed cards / Retained content**, or with `/ui set sidebar.maxItems 512` and `/ui set sidebar.maxChars 4194304`. Limits accept 1–4096 cards and 1024–67,108,864 characters and persist in the usual UI preference scopes; `/ui status` shows the effective values. When a limit is exceeded, hidden content is evicted before configured visible results, then the oldest unprotected cards are evicted with an omission notice. Temporary filters do not change retention priority. Active cards are outside the completed-history budget; selected and pinned cards are protected, so protected content can exceed the limits. Individual typed card sections share a 128k-character ceiling; cuts are disclosed. Inline previews remain smaller. These limits do not alter tool results supplied to the model or persisted by the existing transcript/result machinery. Legacy replay text without typed metadata stays inline; this feature does not reinterpret raw passthrough-agent screens.
+
+### Input and background activity
+
 At the standard chat prompt, Ctrl-C exits through the normal session cleanup path. Use the configured cancel key (Escape by default) to cancel an in-progress main-model operation. Main-model thinking is not advertised as backgroundable. While a backgroundable tool invocation is running — `task` delegations and `bash` commands — Ctrl+B detaches it to the activity pane so the main prompt can continue; press Down to select the row, Enter to open it, then type a follow-up, or press Delete to stop it. The pane suppresses the duplicate parent-turn task row while the active or retained child row is available, so opening the visible backgrounded row cannot silently target Main chat instead. Escape leaves active work running rather than acting as a second kill key.
 
-While a `task` delegation runs, the main transcript shows a collapsed subagent block rather than a running transcript: a header line with the child id/type and elapsed time, plus only the last few one-line steps — `⟳` marks the command currently in flight, `⎿` its finished outcome — and a hidden-step count. Raw tool output and the child's streamed text never repaint the main window; they stay in the retained transcript, opened with Down then Enter.
+Subagents show only a compact launch notice in the main transcript, with their id/type and a pointer to the process browser below. This applies to Classic, Focused and Verbose presentation, including Claude Code's native agents. Live status, steps, tool output and streamed answers stay in the browser: press Down to select the subagent, then Enter to browse its full transcript; select **Main chat** and press Enter (or `/activity close`) to return. Ctrl+B still backgrounds eligible invocations, and Delete stops selected running work.
 
 With Claude Code in standard `kompile chat`, Ctrl+B also backgrounds its native `Agent` (legacy `Task`) and `Bash` calls. Kompile sends Claude's native background control, keeping the agent and session alive while the parent resumes and queued or fresh messages proceed. These tasks retain their process-panel rows; they are not detached copies of the parent conversation. If Claude rejects the request (for example, background tasks are disabled or the installed CLI does not support the control), chat shows the error and leaves the work running.
 
 The agent can background its own work without waiting for Ctrl+B: a `task` or `bash` call with `background: true` requests the same transfer while the invocation is starting. The parent turn continues immediately with a placeholder result, and each detached item delivers its final result as a `[System background task completion]` message at the next boundary — so several independent delegations and commands can run concurrently and are collected as they finish. For long-lived processes the `process` tool remains the better fit (monitoring and output capture); for server-side crawls and pipelines the native async job APIs (`_background: true` on the MCP stdio surface) already detach. If the running harness cannot background (headless runs, subagent child contexts), the request is silently ignored and the call runs synchronously; the tool result metadata reports `backgrounded` either way.
 
 Direct task subagents apply the same context compaction as the main chat loop. Each child session sizes its budget from its own model (context overrides in the chat config apply to children too) and shares the auto-compact policy: when the next child request approaches the trigger, old tool bodies are pruned first, and if that is not enough the older half of the child conversation is summarized at a complete-exchange boundary. A retained child keeps accepting follow-ups across compaction. If the provider still rejects a child request as too long, the child history is summarized once and the same request is retried; a child whose context cannot shrink below the provider limit fails its task with an explicit error instead of looping.
+
+For generic direct chat routes with measurable client-owned history, automatic compaction first projects old tool results as short previews and saved-output references, preserving complete recent exchanges and leaving the raw ledger unchanged. It remeasures the pending request and only summarizes if the projection still exceeds the trigger. Provider-native compaction and provider-owned sessions keep their own policies. Portable summaries carry current goals, active constraints and decisions, validation evidence, unresolved work, and resume references rather than an exhaustive narrative. They have an adaptive character budget capped at 12,000; oversized, refused, or provider-truncated summaries are rejected rather than silently clipped. The existing deterministic fallback remains available. Isolated summary requests use an output-token ceiling on supported HTTP transports without changing live chat limits; native session transports, including subscription Codex, retain ownership of their generation limits.
+
+Anthropic direct API chats discover on-demand summarization and tool-result clearing through the Models API, scoped to endpoint, model and credentials. Supported models use server-side tool clearing (call identifiers and recent tool uses remain intact) and signed on-demand compaction at completed-turn boundaries or `/compact`. Summaries are committed before wire history is replaced; the signed block is replayed unchanged, first in history, with its required beta header. Unsupported models retain threshold compaction or portable summary fallback. Claude Code CLI sessions continue to own native compaction and are never rewritten by this API path.
 
 The activity pane also contains a **Project activity** row. Open it with Down/Enter or run
 `/activity agents` to see currently registered project agents, their verified processes, and tool
@@ -149,9 +254,10 @@ as one report per topic, across the project's chat sessions. Every surface reads
 - The read-only `insights` MCP tool answers a topic and a plain-words question ("flags for bash",
   "slowest calls of the read tool, last 3 days") with a table, sparklines or a small graph; the web
   chat draws the chart in the tool's card.
-- When the project configures no dashboard of its own, the terminal chat's dashboard area shows
-  **Session insights**: this session's judge flags, tool calls and latency, the latest test result
-  and crawl progress. `/dashboard hide` hides it.
+- When the project configures no dashboard of its own, the terminal chat keeps the compact dashboard
+  area and shows **`+ /dashboard to see session metrics`**. The hint does not scan metrics or poll
+  historical stores. `/dashboard` prints the on-demand summary and report commands; `/dashboard hide`
+  hides the hint. Configured project dashboards keep precedence and their existing behavior.
 - The web chat shows the same rows in a **Session insights** drawer in each chat, read again as tool
   calls finish and replies end, and more often while a crawl runs. Its **All reports for this
   project** link opens the **Insights** page (`/#/insights`, also in the top navigation): a tab per
@@ -195,7 +301,7 @@ limits**: it writes only the settings changed and refuses a limit that is not a 
 | `maxBytesPerFile` | `4194304` (4 MiB) | Bytes read from the end of each judge session log |
 | `maxToolIndexBytes` | `268435456` (256 MiB) | Bytes read from the end of the tool-call index or usage journal |
 | `sparklineBuckets` | `14` | Points in a sparkline and in a chart series |
-| `sessionPanel` | `true` | Whether the terminal shows Session insights when the project has no dashboard |
+| `sessionPanel` | `true` | Whether the terminal shows the compact `/dashboard` hint when the project has no dashboard |
 
 ## Project chat profiles
 
@@ -252,26 +358,32 @@ cleared.
 
 ## Fast mode
 
-In standard chat, `/fast` toggles premium fast mode independently of thinking effort.
-Use `/fast on`, `/fast off`, or `/fast status` for explicit control. Setup and the
-`/model` picker also offer an on/off choice for documented supported provider/model
-combinations. It defaults to **off**, is saved at the loaded chat-config scope, and
-applies to subsequent requests without clearing the conversation. The top pane
-shows `fast: on (requested)` or `fast: off` for eligible models.
+In standard chat, `/fast` toggles premium fast/priority mode independently of thinking
+effort. Use `/fast on`, `/fast off`, or `/fast status` for explicit control. Setup
+also offers an on/off choice for supported providers. It defaults to **off**, is
+saved at the loaded chat-config scope, and applies to subsequent requests without
+clearing the conversation. The top pane shows `fast: on (requested)` or `fast: off`.
 
-The current documented eligibility includes OpenAI/Codex GPT-5.4, GPT-5.5, GPT-5.6
-and GPT-6 Astra, and Anthropic Claude Opus 5 / Opus 4.8. Unknown models and other
-providers do not get a fast-mode picker. Switching providers or selecting an
-unsupported model clears the preference. Model eligibility and dated sources live
-in `chat/providers/*.json`; eligibility does **not** guarantee account access,
-regional availability, or available fast capacity.
+Kompile accepts **every model ID** on Anthropic, OpenAI/Codex, Gemini, Groq,
+OpenRouter, and xAI routes, including newly released and unlisted IDs. There is no
+client model allowlist. Model changes within a provider retain the preference;
+provider switches clear it. Provider request contracts and dated sources live in
+`chat/providers/*.json`. The provider, not Kompile, validates model support, account
+access, regional availability, and capacity.
 
-Fast mode costs more; it is not a cheaper/smaller model or reduced reasoning effort.
-Kompile sends `service_tier: "priority"` for OpenAI/Codex (and explicit `"default"`
-when off), or `speed: "fast"` plus `anthropic-beta: fast-mode-2026-02-01` for
-Anthropic. Existing authentication and compaction beta headers are preserved.
-The provider may reject an unavailable request or use standard capacity; the UI
-reports the requested setting, not a measured speed guarantee.
+Fast mode may cost more; it is not a cheaper/smaller model or reduced reasoning effort:
+
+| Provider | `/fast on` | `/fast off` |
+|---|---|---|
+| OpenAI/Codex, OpenRouter, xAI | `service_tier: "priority"` | `service_tier: "default"` |
+| Gemini (OpenAI-compatible API) | `service_tier: "priority"` | `service_tier: "standard"` |
+| Groq | `service_tier: "performance"` (enterprise access required) | `service_tier: "on_demand"` |
+| Anthropic API | `speed: "fast"` and `anthropic-beta: fast-mode-2026-02-01` | omit fast fields/header |
+
+Existing authentication and compaction beta headers are preserved. The provider
+may reject an unavailable request or use standard capacity; the UI reports the
+requested setting, not a measured speed guarantee. Other routes remain unchanged
+unless they declare a verified fast-mode request contract.
 
 Native Claude/Codex **passthrough** keeps the native CLI's `/fast` handler and
 settings; it does not use the standard-chat preference. Claude documents
@@ -285,6 +397,12 @@ Sources (checked 2026-09-06):
 - [Codex speed](https://developers.openai.com/codex/agent-configuration/speed)
 - [Codex configuration reference](https://developers.openai.com/codex/config-file/config-reference)
 - [OpenAI API fast mode](https://developers.openai.com/api/docs/guides/fast-mode)
+
+Additional provider contracts checked 2026-10-14:
+- [Gemini OpenAI compatibility: Flex and Priority inference](https://ai.google.dev/gemini-api/docs/openai#flex_and_priority_inference)
+- [Groq service tiers](https://console.groq.com/docs/service-tiers)
+- [OpenRouter service tiers](https://openrouter.ai/docs/guides/features/service-tiers)
+- [xAI Chat Completions request schema](https://docs.x.ai/developers/rest-api-reference/inference/chat-completions.md)
 
 ## Native chat for MCP pipelines
 

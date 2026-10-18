@@ -3058,6 +3058,8 @@ export interface CommandMessageMetadata {
 }
 
 export interface LocalAgentMessage extends CommandMessageMetadata {
+  /** The server acknowledged an explicit Stop, including one replayed after an absence. */
+  stopped?: boolean;
   /** Unique message ID */
   id: string;
 
@@ -3195,6 +3197,25 @@ export interface ToolCallDetail {
   sections?: ToolCallSection[];
   /** The same answer as a chart, drawn under the row (kompile-cli-insights Charts). */
   chart?: ToolCallChart;
+  /** Inert, structured completion metadata. Never parsed from model prose or tool output. */
+  presentation?: ToolPresentation;
+}
+
+/** Host-rendered tool metadata; this grants no URL, HTML, script or command capability. */
+export interface ToolPresentation {
+  readonly version: 1;
+  readonly kind: string;
+  readonly data: Readonly<Record<string, unknown>>;
+  readonly source: { readonly serverId: string; readonly toolName: string };
+  readonly identity: { readonly sessionId: string; readonly turnId: string; readonly callId: string };
+}
+
+/** Additive canonical assistant-turn display metadata, not model history blocks. */
+export interface ProductDisplayTurn {
+  role: string;
+  content: string;
+  productTurnId?: string;
+  toolPresentations?: { callId: string; toolName: string; textOffset?: number; presentation: ToolPresentation }[];
 }
 
 /** One bounded detail body under a tool row: diff, content, output or result. */
@@ -3517,6 +3538,11 @@ export interface LocalAgentChatRequest {
 
   /** Stable browser conversation key, hashed by the server before CLI persistence. */
   sessionId?: string;
+  /** Opaque run identity, available for Stop/recovery before the first SSE event. */
+  runId?: string;
+  /** Managed product turn identity; its derived runId stays local, never in the product wire body. */
+  turnId?: string;
+  messageStartIndex?: number;
 
   /** Agent to use */
   agentName?: string;

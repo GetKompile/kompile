@@ -19,6 +19,11 @@ package ai.kompile.cli.main.chat.render;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.common.KompileHome;
 import lombok.Getter;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -111,6 +116,43 @@ public class OutputTruncator {
         preview.append("\nUse grep or read with offset/limit to access specific sections.");
 
         return new TruncationResult(preview.toString(), true, savedFile);
+    }
+
+    /**
+     * Product tools return typed game/reasoning JSON, not coding-tool stdout.
+     * Compact that model projection within a separate, fixed UTF-8 budget so a
+     * pretty-printer cannot turn an ordinary candidate set into invalid JSON.
+     * Oversize projections explicitly direct a narrower READ, never a mutation retry.
+     * Raw tool results remain in the caller's normal insights/transcript pipeline.
+     */
+    public TruncationResult truncateProduct(String output, String toolName, ObjectMapper mapper) {
+        if (output == null || output.isBlank()) return truncate(output, toolName);
+        String trimmed = output.stripLeading();
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return truncate(output, toolName);
+        try {
+            // Do not parse arbitrarily large structured results just to create a preview.
+            if (output.length() > 1_048_576) return productProjectionLimit(output.getBytes(StandardCharsets.UTF_8).length, mapper);
+            JsonNode value = mapper.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                    .with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION).readTree(output);
+            if (value != null && value.isContainerNode()) {
+                String compact = mapper.writer().without(SerializationFeature.INDENT_OUTPUT).writeValueAsString(value);
+                int bytes = compact.getBytes(StandardCharsets.UTF_8).length;
+                return bytes <= 65_536 ? new TruncationResult(compact, false, null) : productProjectionLimit(bytes, mapper);
+            }
+        } catch (IOException notStructuredJson) {
+            // Text and malformed/mixed output retain the ordinary preview behavior.
+        }
+        return truncate(output, toolName);
+    }
+
+    private TruncationResult productProjectionLimit(int bytes, ObjectMapper mapper) throws IOException {
+        String notice = mapper.writer().without(SerializationFeature.INDENT_OUTPUT).writeValueAsString(
+                mapper.createObjectNode().put("schemaVersion", "kompile.product-tool-projection.v1")
+                        .put("projectionTruncated", true).put("maxUtf8Bytes", 65_536).put("observedUtf8Bytes", bytes)
+                        .put("guidance", "The tool outcome was received; only its model projection is bounded. "
+                                + "Read narrower confirmed state or request fewer items. Do not replay a mutation to retrieve output."));
+        return new TruncationResult(notice, true, null);
     }
 
     /**

@@ -49,6 +49,19 @@ public class AppIndexConfig {
     private String appTitle;
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Product naming for harness spins (Elthoria and similar managed products).
+    // Distinct from appTitle: appTitle names the console UI; productName names
+    // the hosted product as the user sees it (page header, browser tab, error
+    // copy). Persisted alongside branding and served at /api/config.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** User-facing product name for managed product views (default: appTitle). */
+    private String productName;
+
+    /** User-facing name of the underlying reasoning engine shown in help/log copy. */
+    private String engineName;
+
+    // ─────────────────────────────────────────────────────────────────────────
     // White-label branding (top-left header logo + name + browser-tab favicon).
     // Persisted in app-index-config.json; seeded by the CLI (GlobalBootstrap /
     // init-project) and served to the frontend by FrontendConfigController.
@@ -203,6 +216,8 @@ public class AppIndexConfig {
                 .logoAlt("Kompile")
                 .showLogo(true)
                 .faviconUrl("assets/branding/kompile-logo.svg")
+                .productName("Kompile")
+                .engineName("Kompile engine")
                 // Default to Anserini (embedded)
                 .vectorStoreType(VectorStoreType.ANSERINI)
                 .vectorStorePath(baseDir + "/vector_index")
@@ -240,6 +255,8 @@ public class AppIndexConfig {
         }
         return AppIndexConfig.builder()
                 .appTitle(other.appTitle != null ? other.appTitle : this.appTitle)
+                .productName(other.productName != null ? other.productName : this.productName)
+                .engineName(other.engineName != null ? other.engineName : this.engineName)
                 // White-label branding
                 .logoUrl(other.logoUrl != null ? other.logoUrl : this.logoUrl)
                 .logoAlt(other.logoAlt != null ? other.logoAlt : this.logoAlt)

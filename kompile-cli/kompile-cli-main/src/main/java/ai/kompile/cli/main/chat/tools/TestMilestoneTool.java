@@ -18,6 +18,8 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.insights.TestMilestoneReader;
+import ai.kompile.cli.main.chat.ChatRepl.TimelineLifecycle;
+import ai.kompile.cli.main.chat.TranscriptLogScope;
 import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -114,6 +116,11 @@ public class TestMilestoneTool implements CliTool {
                 "Number of tests skipped (optional).");
 
         // Config params
+        props.putObject("auto_capture").put("type", "object").put("description",
+                "Automatic harness capture settings for action=config: enabled, fallbackEnabled, " +
+                "disabledFrameworks, includeCommands, excludeCommands, reportPaths, customRules. " +
+                "Custom rules have commandRegex and summaryRegex with total/passed/failed named groups; " +
+                "optional skipped/errors groups. Project settings override global defaults.");
         addStringProp(props, "project",
                 "Project name (for init). Defaults to directory name.");
         addStringProp(props, "path",
@@ -149,13 +156,13 @@ public class TestMilestoneTool implements CliTool {
         context.checkPermission(permissionKey(), "test milestone tracking");
 
         String action = params.path("action").asText("");
-        Path workDir = context.getWorkingDirectory();
+        Path workDir = TestCaptureConfig.root(context.getWorkingDirectory());
 
         try {
             return switch (action) {
                 // Milestone actions
-                case "record"  -> doRecord(params, workDir, true);
-                case "fail"    -> doRecord(params, workDir, false);
+                case "record"  -> doRecord(params, workDir, true, context);
+                case "fail"    -> doRecord(params, workDir, false, context);
                 case "list"    -> doList(params, workDir);
                 case "get"     -> doGet(params, workDir);
                 case "check"   -> doCheck(params, workDir);
@@ -179,6 +186,8 @@ public class TestMilestoneTool implements CliTool {
                         "Config: init|config|add_module|remove_module|set_target|status. " +
                         "Regressions: add_regression|remove_regression|list_regressions");
             };
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error("Invalid milestone configuration: " + e.getMessage());
         } catch (IOException e) {
             return ToolResult.error("I/O error: " + e.getMessage());
         }
@@ -239,13 +248,22 @@ public class TestMilestoneTool implements CliTool {
     }
 
     private ToolResult doConfig(JsonNode params, Path workDir) throws IOException {
+        if (params.has("auto_capture")) TestCaptureConfig.validate(params.get("auto_capture"));
         Map<String, Object> config = loadConfig(workDir);
-        if (config == null) {
-            return ToolResult.error("No config found. Run action=init first.");
-        }
+        if (config == null) config = params.has("auto_capture") ? loadOrInitConfig(workDir) : new LinkedHashMap<>();
 
         // If any update fields are provided, update them
         boolean updated = false;
+        if (params.has("auto_capture")) {
+            Map<String, Object> capture = new LinkedHashMap<>();
+            if (config.get("autoCapture") instanceof Map<?, ?> existing) {
+                existing.forEach((key, value) -> capture.put(String.valueOf(key), value));
+            }
+            capture.putAll(MAPPER.convertValue(params.get("auto_capture"), MAP_TYPE));
+            TestCaptureConfig.validate(MAPPER.valueToTree(capture));
+            config.put("autoCapture", capture);
+            updated = true;
+        }
         if (params.has("build_command") && !params.path("build_command").asText("").isEmpty()) {
             config.put("buildCommand", params.get("build_command").asText());
             updated = true;
@@ -261,10 +279,12 @@ public class TestMilestoneTool implements CliTool {
 
         if (updated) {
             saveConfig(workDir, config);
-            return ToolResult.success("Config updated", formatConfig(config));
+            return ToolResult.success("Config updated", formatConfig(config)
+                    + "\nAutomatic capture (effective; enabled by default): " + TestCaptureConfig.effective(workDir));
         }
 
-        return ToolResult.success("Project config", formatConfig(config));
+        return ToolResult.success("Project config", formatConfig(config)
+                + "\nAutomatic capture (effective; enabled by default): " + TestCaptureConfig.effective(workDir));
     }
 
     @SuppressWarnings("unchecked")
@@ -481,9 +501,7 @@ public class TestMilestoneTool implements CliTool {
     @SuppressWarnings("unchecked")
     private ToolResult doStatus(JsonNode params, Path workDir) throws IOException {
         Map<String, Object> config = loadConfig(workDir);
-        if (config == null) {
-            return ToolResult.error("No config found. Run action=init first.");
-        }
+        if (config == null) config = Map.of("project", workDir.getFileName() == null ? "tests" : workDir.getFileName().toString());
 
         String projectName = str(config.get("project"));
         Map<String, Object> projectTargets = (Map<String, Object>) config.getOrDefault("targets",
@@ -499,6 +517,7 @@ public class TestMilestoneTool implements CliTool {
 
         StringBuilder sb = new StringBuilder();
         sb.append("Project: ").append(projectName).append("\n");
+        sb.append("Automatic capture (enabled by default): ").append(TestCaptureConfig.effective(workDir)).append("\n");
         // Outside a git repository there is no branch or commit to name.
         if (currentBranch != null) sb.append("Branch:  ").append(currentBranch).append("\n");
         if (currentCommit != null) sb.append("Commit:  ").append(currentCommit).append("\n");
@@ -520,14 +539,13 @@ public class TestMilestoneTool implements CliTool {
                 .max(Comparator.comparing(m -> str(m.get("timestamp"))));
         if (latestAll.isPresent()) {
             Map<String, Object> latest = latestAll.get();
-            boolean passing = Boolean.TRUE.equals(latest.get("passing"));
-            sb.append("\nLatest milestone: ").append(passing ? "WORKING" : "FAILING");
+            sb.append("\nLatest milestone: ").append(statusLabel(latest));
             String label = joined(" — ", latest.get("commitShort"), latest.get("id"));
             sb.append(label.isEmpty() ? "" : " (" + label + ")").append("\n");
 
             // Check against targets
             Integer total = TestMilestoneReader.count(latest, "totalTests");
-            if (total != null && !projectTargets.isEmpty()) {
+            if (total != null && TestMilestoneReader.isConclusive(latest) && !projectTargets.isEmpty()) {
                 int passedCount = count(latest, "passed");
                 int failedCount = count(latest, "failed");
                 double passRate = total > 0 ? (double) passedCount / total : 0;
@@ -568,7 +586,7 @@ public class TestMilestoneTool implements CliTool {
                 // Latest milestone for this module
                 Optional<Map<String, Object>> modLatest = milestones.stream()
                         .filter(m -> modName.equals(m.get("module")))
-                        .filter(m -> Boolean.TRUE.equals(m.get("passing")))
+                        .filter(m -> TestMilestoneReader.isConclusive(m) && Boolean.TRUE.equals(m.get("passing")))
                         .max(Comparator.comparing(m -> str(m.get("timestamp"))));
                 if (modLatest.isPresent()) {
                     Map<String, Object> ml = modLatest.get();
@@ -590,9 +608,11 @@ public class TestMilestoneTool implements CliTool {
 
         // Milestone history summary
         long totalMilestones = milestones.size();
-        long workingCount = milestones.stream().filter(m -> Boolean.TRUE.equals(m.get("passing"))).count();
+        long workingCount = milestones.stream().filter(m -> TestMilestoneReader.isConclusive(m) && Boolean.TRUE.equals(m.get("passing"))).count();
+        long failingCount = milestones.stream().filter(m -> TestMilestoneReader.isConclusive(m) && Boolean.FALSE.equals(m.get("passing"))).count();
         sb.append("\nHistory: ").append(totalMilestones).append(" milestones (")
-                .append(workingCount).append(" working, ").append(totalMilestones - workingCount).append(" failing)\n");
+                .append(workingCount).append(" working, ").append(failingCount).append(" failing, ")
+                .append(totalMilestones - workingCount - failingCount).append(" neutral)\n");
 
         return ToolResult.success("Status", sb.toString());
     }
@@ -601,7 +621,7 @@ public class TestMilestoneTool implements CliTool {
     //  MILESTONE ACTIONS
     // ═══════════════════════════════════════════════════════════════════════
 
-    private ToolResult doRecord(JsonNode params, Path workDir, boolean passing) throws IOException {
+    private ToolResult doRecord(JsonNode params, Path workDir, boolean passing, ToolContext context) throws IOException {
         Path msDir = milestonesDir(workDir);
         Files.createDirectories(msDir);
         // Auto-init config if not present
@@ -630,8 +650,7 @@ public class TestMilestoneTool implements CliTool {
         if (notes != null) milestone.put("notes", notes);
         if (tags != null) milestone.put("tags", tags);
         milestone.put("timestamp", Instant.now().toString());
-
-        MAPPER.writeValue(msDir.resolve(id + ".json").toFile(), milestone);
+        TestMilestoneStore.save(workDir, milestone, milestoneProducer(context));
 
         String status = passing ? "WORKING" : "FAILING";
         StringBuilder sb = new StringBuilder();
@@ -662,6 +681,13 @@ public class TestMilestoneTool implements CliTool {
 
         return ToolResult.success("Milestone recorded", sb.toString(),
                 Map.of("id", id, "passing", passing));
+    }
+
+    private static TimelineLifecycle.ProducerContext milestoneProducer(ToolContext context) {
+        String session = TranscriptLogScope.currentTranscriptId();
+        if (session == null || session.isBlank()) session = context.getSessionId();
+        if (session == null || session.isBlank()) return null;
+        return TimelineLifecycle.producer(session.trim(), session.trim(), context.getWorkingDirectory());
     }
 
     private ToolResult doList(JsonNode params, Path workDir) throws IOException {
@@ -702,7 +728,7 @@ public class TestMilestoneTool implements CliTool {
                     str(m.get("commitShort")),
                     StringUtils.truncate(str(m.get("branch")), 20),
                     StringUtils.truncate(str(m.get("module")), 15),
-                    passing ? "PASS" : "FAIL",
+                    TestMilestoneReader.isConclusive(m) ? (passing ? "PASS" : "FAIL") : TestMilestoneReader.outcome(m).toUpperCase(Locale.ROOT),
                     day(m.get("timestamp"))
             ));
         }
@@ -751,7 +777,7 @@ public class TestMilestoneTool implements CliTool {
         for (Map<String, Object> m : matches) {
             boolean passing = Boolean.TRUE.equals(m.get("passing"));
             sb.append("ID: ").append(str(m.get("id")))
-                    .append(" | ").append(passing ? "WORKING" : "FAILING");
+                    .append(" | ").append(statusLabel(m));
             if (m.get("module") != null) sb.append(" | Module: ").append(m.get("module"));
             if (m.get("notes") != null) sb.append(" | ").append(m.get("notes"));
             sb.append("\n");
@@ -783,11 +809,13 @@ public class TestMilestoneTool implements CliTool {
 
         StringBuilder sb = new StringBuilder();
         sb.append("FROM: ").append(fromId).append(commitSuffix(from))
-                .append(" — ").append(fromPassing ? "WORKING" : "FAILING").append("\n");
+                .append(" — ").append(statusLabel(from)).append("\n");
         sb.append("TO:   ").append(toId).append(commitSuffix(to))
-                .append(" — ").append(toPassing ? "WORKING" : "FAILING").append("\n\n");
+                .append(" — ").append(statusLabel(to)).append("\n\n");
 
-        if (fromPassing && !toPassing) sb.append("REGRESSION detected\n");
+        if (!TestMilestoneReader.isConclusive(from) || !TestMilestoneReader.isConclusive(to))
+            sb.append("No pass/fail comparison: an execution has no conclusive test result\n");
+        else if (fromPassing && !toPassing) sb.append("REGRESSION detected\n");
         else if (!fromPassing && toPassing) sb.append("FIX detected\n");
         else sb.append("Both ").append(fromPassing ? "WORKING" : "FAILING").append("\n");
 
@@ -811,7 +839,7 @@ public class TestMilestoneTool implements CliTool {
         List<Map<String, Object>> milestones = loadAllMilestones(workDir);
         String filterBranch = branch;
         Optional<Map<String, Object>> latest = milestones.stream()
-                .filter(m -> Boolean.TRUE.equals(m.get("passing")))
+                .filter(m -> TestMilestoneReader.isConclusive(m) && Boolean.TRUE.equals(m.get("passing")))
                 .filter(m -> filterBranch == null || filterBranch.equals(m.get("branch")))
                 .filter(m -> module == null || module.equals(m.get("module")))
                 .max(Comparator.comparing(m -> str(m.get("timestamp"))));
@@ -863,8 +891,8 @@ public class TestMilestoneTool implements CliTool {
             return ToolResult.success("No milestones recorded. Run action=init then action=record.");
         }
 
-        long passing = milestones.stream().filter(m -> Boolean.TRUE.equals(m.get("passing"))).count();
-        long failing = milestones.size() - passing;
+        long passing = milestones.stream().filter(m -> TestMilestoneReader.isConclusive(m) && Boolean.TRUE.equals(m.get("passing"))).count();
+        long failing = milestones.stream().filter(m -> TestMilestoneReader.isConclusive(m) && Boolean.FALSE.equals(m.get("passing"))).count();
 
         Set<String> moduleNames = milestones.stream()
                 .map(m -> str(m.get("module"))).filter(s -> !s.isEmpty())
@@ -876,14 +904,14 @@ public class TestMilestoneTool implements CliTool {
         // Last working per module
         Map<String, Map<String, Object>> latestPerModule = new LinkedHashMap<>();
         milestones.stream()
-                .filter(m -> Boolean.TRUE.equals(m.get("passing")))
+                .filter(m -> TestMilestoneReader.isConclusive(m) && Boolean.TRUE.equals(m.get("passing")))
                 .filter(m -> !str(m.get("module")).isEmpty())
                 .sorted((a, b) -> str(b.get("timestamp")).compareTo(str(a.get("timestamp"))))
                 .forEach(m -> latestPerModule.putIfAbsent(str(m.get("module")), m));
 
         // Last working overall
         Optional<Map<String, Object>> latestOverall = milestones.stream()
-                .filter(m -> Boolean.TRUE.equals(m.get("passing")))
+                .filter(m -> TestMilestoneReader.isConclusive(m) && Boolean.TRUE.equals(m.get("passing")))
                 .max(Comparator.comparing(m -> str(m.get("timestamp"))));
 
         StringBuilder sb = new StringBuilder();
@@ -892,6 +920,7 @@ public class TestMilestoneTool implements CliTool {
         sb.append("Total milestones: ").append(milestones.size()).append("\n");
         sb.append("  Working: ").append(passing).append("\n");
         sb.append("  Failing: ").append(failing).append("\n");
+        sb.append("  Neutral: ").append(milestones.size() - passing - failing).append("\n");
         if (!moduleNames.isEmpty()) sb.append("Modules: ").append(String.join(", ", moduleNames)).append("\n");
         if (!branches.isEmpty()) sb.append("Branches: ").append(String.join(", ", branches)).append("\n");
 
@@ -1077,6 +1106,12 @@ public class TestMilestoneTool implements CliTool {
     // ═══════════════════════════════════════════════════════════════════════
 
     @SuppressWarnings("unchecked")
+    private static String statusLabel(Map<String, Object> milestone) {
+        return TestMilestoneReader.isConclusive(milestone)
+                ? (Boolean.TRUE.equals(milestone.get("passing")) ? "WORKING" : "FAILING")
+                : TestMilestoneReader.outcome(milestone).toUpperCase(Locale.ROOT);
+    }
+
     private String formatConfig(Map<String, Object> config) {
         StringBuilder sb = new StringBuilder();
         sb.append("Project: ").append(config.get("project")).append("\n");

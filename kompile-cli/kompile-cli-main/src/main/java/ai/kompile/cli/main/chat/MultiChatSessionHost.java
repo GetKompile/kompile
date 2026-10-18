@@ -101,6 +101,7 @@ public final class MultiChatSessionHost implements AutoCloseable {
                     if (!ChatUiSession.current().usesLegacyOutput()) ChatCompleter.showAlert(text);
                     else host.reportDiagnostic(text);
                 };
+                Runnable noticeCleanup = TranscriptLogScope.installTerminalNoticeSink(host::reportDiagnostic);
                 Runnable codeCleanup = CodeIndexDiagnostics.installAlertSink(diagnostic);
                 Runnable enforcerCleanup = EnforcerDiagnostics.installAlertSink(diagnostic);
                 try {
@@ -108,6 +109,7 @@ public final class MultiChatSessionHost implements AutoCloseable {
                 } finally {
                     enforcerCleanup.run();
                     codeCleanup.run();
+                    noticeCleanup.run();
                 }
             }
         }

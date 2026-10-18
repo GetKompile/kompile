@@ -17,12 +17,17 @@
 package ai.kompile.cli.main.chat.render;
 
 import ai.kompile.cli.main.chat.ChatCompleter;
+import ai.kompile.cli.main.chat.ChatUiSession;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -47,6 +52,7 @@ class CompactionProgressIndicatorTest {
     @AfterEach
     void tearDown() {
         ChatCompleter.setTranscriptBlockOutput(null);
+        ChatCompleter.setDisplayBlockOutput(null);
     }
 
     @Test
@@ -184,6 +190,91 @@ class CompactionProgressIndicatorTest {
         assertEquals(100, CompactionProgressIndicator.savedPercent(10, 0));
         assertEquals("120,000", CompactionProgressIndicator.formatTokens(120_000L));
         assertEquals("0", CompactionProgressIndicator.formatTokens(0L));
+    }
+
+    @Test
+    void nativeCompactionUsesTheSharedSurfaceWithoutInventingContextMeasurements() {
+        Map<String, ChatDisplayBlock> blocks = new ConcurrentHashMap<>();
+        List<String> fallback = new ArrayList<>();
+        ChatCompleter.setDisplayBlockOutput(block -> {
+            blocks.put(block.key(), block);
+            return true;
+        });
+        CompactionProgressIndicator indicator = CompactionProgressIndicator.startProvider(
+                "compact:native", plainRenderer, "Claude Code", fallback::add, null);
+        try {
+            ChatDisplayBlock active = blocks.get("compact:native");
+            assertTrue(active.running());
+            assertTrue(active.classic().contains("Compacting context"));
+            assertTrue(active.classic().contains("Claude Code is summarizing its session"));
+            assertFalse(active.classic().contains("history estimate") || active.classic().contains("0 entries"));
+            indicator.completeProvider("auto", 180_000);
+            ChatDisplayBlock done = blocks.get("compact:native");
+            assertFalse(done.running());
+            assertFalse(done.error());
+            assertTrue(done.classic().contains("✓ Context compacted"));
+            assertTrue(done.classic().contains("provider context before: 180,000 tokens"));
+            assertTrue(done.classic().contains("provider context after not reported"));
+            assertFalse(done.classic().contains("%") || done.classic().contains("preserved"));
+            assertEquals(1, blocks.size(), "progress must collapse into the same block");
+            assertTrue(fallback.isEmpty());
+        } finally {
+            indicator.abandonIfActive("test ended");
+        }
+    }
+
+    @Test
+    void typedFailureFinishesTheBlockAndRestoresActivity() {
+        Map<String, ChatDisplayBlock> blocks = new ConcurrentHashMap<>();
+        List<String> activity = new ArrayList<>();
+        ChatCompleter.setDisplayBlockOutput(block -> {
+            blocks.put(block.key(), block);
+            return true;
+        });
+        String previous = ChatCompleter.getActivity();
+        CompactionProgressIndicator indicator = CompactionProgressIndicator.startProvider(
+                "compact:failure", plainRenderer, "Claude Code", line -> failUnexpectedFallback(), activity::add);
+        indicator.failed("Context compaction failed: summary unavailable");
+        indicator.abandonIfActive("must not replace failure");
+        assertEquals(List.of(CompactionProgressIndicator.ACTIVITY_LABEL), activity.subList(0, 1));
+        assertEquals(previous, activity.get(1));
+        ChatDisplayBlock done = blocks.get("compact:failure");
+        assertTrue(done.error());
+        assertFalse(done.running());
+        assertTrue(done.classic().contains("summary unavailable"));
+    }
+
+    private static void failUnexpectedFallback() {
+        org.junit.jupiter.api.Assertions.fail("typed surface must not emit append-only output");
+    }
+
+    @Test
+    void animationStaysBoundToItsOwningSession() throws Exception {
+        CountDownLatch frames = new CountDownLatch(2);
+        AtomicInteger leaked = new AtomicInteger();
+        ChatCompleter.setTranscriptBlockOutput((key, text) -> {
+            leaked.incrementAndGet();
+            return true;
+        });
+        try (ChatUiSession owner = new ChatUiSession()) {
+            CompactionProgressIndicator indicator;
+            try (var ignored = owner.bind()) {
+                ChatCompleter.setTranscriptBlockOutput((key, text) -> {
+                    frames.countDown();
+                    return true;
+                });
+                indicator = CompactionProgressIndicator.startProvider(
+                        "compact:owner", plainRenderer, "Claude Code", line -> failUnexpectedFallback(), null);
+            }
+            try {
+                assertTrue(frames.await(2, TimeUnit.SECONDS), "animator must publish beyond the first frame");
+                assertEquals(0, leaked.get(), "worker must never route to the legacy/sibling session");
+            } finally {
+                try (var ignored = owner.bind()) {
+                    indicator.noop("done");
+                }
+            }
+        }
     }
 
     @Test

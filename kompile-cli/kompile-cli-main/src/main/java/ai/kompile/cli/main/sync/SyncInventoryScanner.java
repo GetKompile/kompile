@@ -62,11 +62,22 @@ public final class SyncInventoryScanner {
                         entries.add(SyncEntry.file(component, file.getKey(), SyncSession.sha256(bytes), bytes.length, null));
                     }
                 }
+            } else if (SyncCatalog.CLI_SETTINGS.equals(component) || SyncCatalog.CREDENTIALS.equals(component)) {
+                var names = SyncCatalog.CREDENTIALS.equals(component) ? List.of("auth.json")
+                        : List.of("chat-config.json", "harness-config.json", "judge-defaults.json");
+                for (String name : names) {
+                    var candidate = SyncEntry.file(component, name, null, 0, null);
+                    Path target = paths.resolve(candidate);
+                    if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                        byte[] bytes = paths.read(candidate);
+                        entries.add(SyncEntry.file(component, name, SyncSession.sha256(bytes), bytes.length, null));
+                    }
+                }
             } else {
                 Path root = paths.componentRoot(component);
                 SyncPaths.rejectLinks(root);
                 if (Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
-                    scanComponent(root, component, entries);
+                    scanComponent(paths, root, component, entries);
                 }
             }
             entries.sort(Comparator.comparing(SyncEntry::relativePath));
@@ -75,7 +86,7 @@ public final class SyncInventoryScanner {
         return inventory;
     }
 
-    private static void scanComponent(Path componentRoot, String component, List<SyncEntry> out) throws IOException {
+    private static void scanComponent(SyncPaths paths, Path componentRoot, String component, List<SyncEntry> out) throws IOException {
         Files.walkFileTree(componentRoot, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
@@ -89,7 +100,7 @@ public final class SyncInventoryScanner {
             }
 
             @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 String name = file.getFileName().toString();
                 if (attrs.isSymbolicLink() || !attrs.isRegularFile()) {
                     return FileVisitResult.CONTINUE;
@@ -98,12 +109,19 @@ public final class SyncInventoryScanner {
                     return FileVisitResult.CONTINUE;
                 }
                 String relative = componentRoot.relativize(file).toString().replace('\\', '/');
+                if (!SyncPaths.allowedCliPath(component, relative)) return FileVisitResult.CONTINUE;
                 String unitId = unitIdFor(component, relative);
+                if (attrs.size() > 16 * 1024 * 1024) throw new IOException("Sync file exceeds 16MiB: " + component + "/" + relative);
                 try {
-                    String sha = sha256(file);
-                    out.add(SyncEntry.file(component, relative, sha, Files.size(file), unitId));
+                    if (SyncCatalog.isSensitive(component)) {
+                        byte[] bytes = paths.read(SyncEntry.file(component, relative, null, 0, unitId));
+                        out.add(SyncEntry.file(component, relative, SyncSession.sha256(bytes), bytes.length, unitId));
+                    } else {
+                        out.add(SyncEntry.file(component, relative, sha256(file), Files.size(file), unitId));
+                    }
                 } catch (IOException e) {
-                    // Unreadable files are skipped rather than failing the whole inventory.
+                    if (SyncCatalog.isSensitive(component)) throw e;
+                    // Unreadable ordinary files are skipped rather than failing the whole inventory.
                 }
                 return FileVisitResult.CONTINUE;
             }

@@ -61,8 +61,27 @@ public class ClaudeCodeAdapter implements ChatSourceAdapter {
         return "Claude Code";
     }
 
+    /** Claude's storage override also applies to history, settings and plugins. */
+    public static Path configDirectory(Map<String, String> environment, Path userHome) {
+        String configured = environment.get("CLAUDE_CONFIG_DIR");
+        return configured == null || configured.isBlank()
+                ? userHome.resolve(".claude")
+                : Path.of(configured).toAbsolutePath().normalize();
+    }
+
     protected Path rootDir() {
-        return ChatAdapterSupport.userHome().resolve(".claude").resolve("projects");
+        return configDirectory(System.getenv(), ChatAdapterSupport.userHome()).resolve("projects");
+    }
+
+    /** Exact native ID lookup for live transcript links: no alias or transcript scans. */
+    public Optional<Path> nativeTranscriptFile(String sessionId) {
+        if (sessionId == null || sessionId.isBlank() || !Files.isDirectory(rootDir())) {
+            return Optional.empty();
+        }
+        List<Path> files = directSessionFiles(rootDir(), sessionId);
+        // Do not select an arbitrary copy when the same UUID occurs in several projects.
+        return files.size() == 1 ? Optional.of(files.get(0).toAbsolutePath().normalize())
+                : Optional.empty();
     }
 
     protected Path historyFile() {

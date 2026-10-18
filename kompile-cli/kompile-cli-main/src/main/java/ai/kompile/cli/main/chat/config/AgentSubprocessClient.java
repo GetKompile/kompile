@@ -85,6 +85,7 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
         this.agentName = agentName;
         this.agentBinary = resolveAgentBinary(agentName);
         this.workingDir = new File(workingDir).getAbsoluteFile();
+        parser.enableTestCapture(this.workingDir.toPath());
     }
 
     /**
@@ -96,6 +97,7 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
         this.agentName = agentName;
         this.agentBinary = binaryPath;
         this.workingDir = new File(workingDir).getAbsoluteFile();
+        parser.enableTestCapture(this.workingDir.toPath());
     }
 
     public String getAgentName() {
@@ -418,6 +420,8 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
 
         } catch (IOException e) {
             result.text = "Error running agent: " + e.getMessage();
+        } finally {
+            parser.closeTestCapture();
         }
 
         return result;
@@ -545,6 +549,7 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
 
     @Override
     public void close() {
+        parser.closeTestCapture();
         Process p = activeProcess;
         if (p != null && p.isAlive()) {
             p.destroy();

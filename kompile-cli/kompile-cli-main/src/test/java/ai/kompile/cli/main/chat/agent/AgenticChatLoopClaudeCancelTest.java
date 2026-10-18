@@ -6,6 +6,7 @@ import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.FakeClaudeCode;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
@@ -55,6 +56,7 @@ class AgenticChatLoopClaudeCancelTest {
     void releaseOutput() {
         ChatCompleter.setContentOutput(null);
         ChatCompleter.setTranscriptBlockOutput(null);
+        ChatCompleter.setDisplayBlockOutput(null);
         ChatCompleter.setActivity(null);
     }
 
@@ -107,6 +109,34 @@ class AgenticChatLoopClaudeCancelTest {
                     "the earlier conversation is not restored into the session twice\n" + next);
         } finally {
             stopTask(fake.path("task.pid"));
+        }
+    }
+
+    @Test
+    void escapeDuringNativeCompactionFinishesTheSharedProgressBlock() throws Exception {
+        Map<String, ChatDisplayBlock> blocks = new ConcurrentHashMap<>();
+        ChatCompleter.setDisplayBlockOutput(block -> {
+            blocks.put(block.key(), block);
+            return true;
+        });
+        FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("compacting"), """
+                turn() {
+                  say_init
+                  emit '{"type":"system","subtype":"status","status":"compacting"}'
+                  start_tool
+                }
+                """);
+        try (Chat chat = new Chat("claude-cancel-compaction", fake, List.of())) {
+            chat.sendAndEscape(fake, "continue");
+            var compactions = blocks.values().stream()
+                    .filter(block -> block.key().startsWith("compact:provider:")).toList();
+            assertEquals(1, compactions.size());
+            var finished = compactions.get(0);
+            assertFalse(finished.running(), finished.toString());
+            assertTrue(finished.classic().contains("Context compaction interrupted"), finished.toString());
+            assertFalse(chat.client.claudeCompactionFailed(), "Esc must not trigger fallback compaction");
+            assertNotEquals("Compacting", ChatCompleter.getActivity());
+            fake.assertToolStopped();
         }
     }
 

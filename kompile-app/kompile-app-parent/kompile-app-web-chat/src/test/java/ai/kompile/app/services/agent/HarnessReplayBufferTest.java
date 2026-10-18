@@ -65,6 +65,43 @@ class HarnessReplayBufferTest {
         assertEquals(1, behind.events.size());
         assertEquals(5, behind.events.get(0).data().path("after").asLong());
     }
+    @Test void currentActivityIsRestoredAtACaughtUpCursorAndAfterOverflow() throws Exception {
+        var buffer = new HarnessReplayBuffer(new ObjectMapper(), 1024, 2);
+        buffer.send("activity", Map.of("turnActive", false, "processes", List.of(Map.of("id", "build", "state", "RUNNING")),
+                "tasks", List.of()));
+        buffer.send("chunk", "text");
+        buffer.send("chunk", "more"); // activity has left the replay window
+        var caughtUp = new Connection();
+        buffer.attach(3, caughtUp);
+        assertEquals(List.of("activity"), caughtUp.events.stream().map(HarnessReplayBuffer.Event::name).toList());
+        assertEquals(0, caughtUp.events.get(0).id()); // snapshot never advances the cursor
+        assertEquals("build", caughtUp.events.get(0).data().path("processes").get(0).path("id").asText());
+        var asleep = new Connection();
+        buffer.attach(0, asleep);
+        assertEquals(List.of("resync", "chunk", "chunk", "activity"),
+                asleep.events.stream().map(HarnessReplayBuffer.Event::name).toList());
+        buffer.send("activity", Map.of("turnActive", false, "processes", List.of(), "tasks", List.of()));
+        var latest = new Connection(); buffer.attach(4, latest);
+        assertTrue(latest.events.get(0).data().path("processes").isEmpty());
+        buffer.send("complete", Map.of("content", "done")); buffer.complete();
+        var finished = new Connection(); buffer.attach(5, finished);
+        assertTrue(finished.events.isEmpty()); // no stale running snapshot after completion
+        assertTrue(finished.completed);
+    }
+
+    @Test void oversizedFinalAnswerStillReplaysATerminalMarkerAndResyncsTheTranscript() throws Exception {
+        var buffer = new HarnessReplayBuffer(new ObjectMapper(), 1024, 2);
+        buffer.send("chunk", "partial");
+        buffer.send("complete", Map.of("content", "x".repeat(2000)));
+        // Reconnect in the publication gap before complete(): the ending must already be replayable.
+        var returned = new Connection(); buffer.attach(1, returned);
+        buffer.complete();
+        assertEquals(List.of("resync", "complete"), returned.events.stream().map(HarnessReplayBuffer.Event::name).toList());
+        assertEquals(2, returned.events.get(0).data().path("after").asLong());
+        assertEquals(0, returned.events.get(1).id());
+        assertTrue(returned.completed);
+    }
+
     @Test void finishedRunPastTheWindowResyncsThenDeliversItsEnding() throws Exception {
         var buffer = new HarnessReplayBuffer(new ObjectMapper(), 1024, 2);
         for (int i = 0; i < 3; i++) buffer.send("chunk", "text");

@@ -5,6 +5,7 @@ import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tui.KompileTui;
+import ai.kompile.cli.main.chat.tui.InputPaneLineReader;
 import ai.kompile.cli.main.chat.tui.VirtualTerminal;
 import org.jline.reader.*;
 import org.jline.keymap.KeyMap;
@@ -50,6 +51,7 @@ class ChatCompleterTtyTest {
     private ByteArrayOutputStream terminalOutput;
     private LineDisciplineTerminal terminal;
     private LineReader reader;
+    private boolean tmuxEnvironment;
 
     /** TAB character (triggers completion). */
     private static final char TAB = '\t';
@@ -62,8 +64,13 @@ class ChatCompleterTtyTest {
 
         // LineDisciplineTerminal with xterm type gives us proper cursor movement,
         // line editing, and completion rendering — unlike DumbTerminal which ignores TAB.
+        tmuxEnvironment = false;
         terminal = new LineDisciplineTerminal("test", "xterm", terminalOutput,
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8) {
+            @Override public String getenv(String name) {
+                return tmuxEnvironment && name.equals("TMUX") ? "/tmp/test-tmux,1,0" : super.getenv(name);
+            }
+        };
         terminal.setSize(new Size(120, 40));
 
         // Set raw-ish attributes so JLine handles line discipline
@@ -90,13 +97,12 @@ class ChatCompleterTtyTest {
                 () -> roles
         );
 
-        reader = LineReaderBuilder.builder()
-                .terminal(terminal)
-                .completer(completer)
-                .option(LineReader.Option.AUTO_LIST, true)
-                .option(LineReader.Option.LIST_AMBIGUOUS, true)
-                .option(LineReader.Option.AUTO_MENU, true)
-                .build();
+        InputPaneLineReader paneReader = new InputPaneLineReader(terminal);
+        paneReader.setCompleter(completer);
+        paneReader.setOpt(LineReader.Option.AUTO_LIST);
+        paneReader.setOpt(LineReader.Option.LIST_AMBIGUOUS);
+        paneReader.setOpt(LineReader.Option.AUTO_MENU);
+        reader = paneReader;
 
         // Enable autosuggestion (fish-style history hints)
         try {
@@ -142,6 +148,11 @@ class ChatCompleterTtyTest {
         String output = readLineOutputSanitized("/hel" + TAB + CR);
         assertTrue(output.contains("help"),
                 "should complete /hel → /help, output: " + output);
+    }
+
+    @Test
+    void tabCompletesRedrawCommand() throws Exception {
+        assertTrue(readLineOutputSanitized("/redr" + TAB + CR).contains("/redraw"));
     }
 
     @Test
@@ -1019,6 +1030,558 @@ class ChatCompleterTtyTest {
         }
     }
 
+    @ParameterizedTest
+    @CsvSource({"false, false, false", "true, false, false", "false, true, false", "true, true, false",
+            "false, false, true", "true, false, true", "false, true, true", "true, true, true"})
+    void overflowingPasteKeepsCursorAndEditingInsideInputPane(
+            boolean softWrapped, boolean clipboardPaste, boolean splitLayout) throws Exception {
+        int startWidth = splitLayout ? 120 : 72;
+        terminal.setSize(new Size(startWidth, 24));
+        BackgroundProcessManager processes = new BackgroundProcessManager("overflow-paste-test");
+        MessageQueue queue = new MessageQueue("overflow-paste-" + UUID.randomUUID());
+        KompileTui tui = new KompileTui(
+                new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        String draft = softWrapped ? "wrapped draft ".repeat(38) + "tail"
+                : "first row\nsecond row\nthird row\nfourth row\nfifth row\nsixth row\nfinal row";
+        try {
+            if (splitLayout) {
+                var config = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+                config.applyPreset("focused"); config.set("content.tool.sidebar", "expanded");
+                config.set("content.content.sidebar", "expanded"); config.set("sidebar.follow", "manual");
+                tui.setUiConfig(config);
+                String body = java.util.stream.IntStream.range(0, 100).mapToObj(i -> "SIDEBAR-ROW-" + i)
+                        .collect(java.util.stream.Collectors.joining("\n"));
+                tui.upsertDisplayBlock(new ai.kompile.cli.main.chat.render.ChatDisplayBlock("side:height", "tool", "read",
+                        "Tall sidebar", "", List.of(new ai.kompile.cli.main.chat.render.ChatDisplayBlock.Section("content", "content", "Content", body)), false, false));
+            }
+            tui.attachLineReader(reader);
+            ChatCompleter.setTerminalRef(reader, terminal);
+            ChatCompleter.enableAutoTrigger(reader);
+            tui.start(terminal);
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(100);
+            if (line.isDone()) line.get(1, TimeUnit.SECONDS); // surface early reader failures
+            if (clipboardPaste) {
+                reader.getWidgets().put("test-clipboard-paste", () -> ChatCompleter.insertPastedText(reader, draft));
+                reader.getKeyMaps().get(LineReader.MAIN).bind(new Reference("test-clipboard-paste"), "\033[99~");
+                keyboardPipe.write("\033[99~".getBytes(StandardCharsets.UTF_8));
+                keyboardPipe.flush();
+            } else {
+                keyboardPipe.write(("\033[200~" + draft + "\033[201~").getBytes(StandardCharsets.UTF_8));
+                keyboardPipe.flush();
+            }
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!draft.equals(reader.getBuffer().toString()) && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(draft, reader.getBuffer().toString());
+            Thread.sleep(100);
+            VirtualTerminal frame = new VirtualTerminal(24, startWidth);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            if (splitLayout) {
+                assertTrue(tui.isSidebarVisible());
+                for (int row = tui.scrollTop() - 1; row < 24; row++)
+                    assertEquals('│', frame.getRow(row).charAt(tui.getChatColumns()), frame::screenDump);
+                assertTrue(frame.getRow(23).contains("SIDEBAR-ROW-"), frame::screenDump);
+                assertTrue(frame.getCursorCol() < tui.getChatColumns(), frame::screenDump);
+            }
+            assertTrue(frame.getCursorRow() >= tui.inputTop() - 1
+                            && frame.getCursorRow() < tui.scrollBottom(),
+                    "paste cursor must remain in the input pane\n" + frame.screenDump());
+            assertTrue(frame.getRow(frame.getCursorRow()).contains(softWrapped ? "tail" : "final row"),
+                    "cursor must point at the visible end of the draft\n" + frame.screenDump());
+
+            // Move to the beginning of the entire buffer, not just the last logical line.
+            // JLine's default Meta-< recalls history; bind a buffer-home key explicitly.
+            reader.getKeyMaps().get(LineReader.MAIN).bind(
+                    new Reference(LineReader.BEGINNING_OF_BUFFER_OR_HISTORY), "\033[1;5H");
+            keyboardPipe.write((softWrapped ? KeyMap.ctrl('A') : "\033[1;5H").getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (reader.getBuffer().cursor() != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, reader.getBuffer().cursor());
+            Thread.sleep(50);
+            frame = new VirtualTerminal(24, startWidth);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertEquals(tui.inputTop() - 1, frame.getCursorRow(), frame::screenDump);
+            assertTrue(frame.getRow(frame.getCursorRow()).contains("kompile >"), frame::screenDump);
+            keyboardPipe.write('X');
+            keyboardPipe.flush();
+            Thread.sleep(75);
+            tui.recordInScrollRegion("overflow async sentinel");
+            Thread.sleep(150);
+            VirtualTerminal redrawn = new VirtualTerminal(24, startWidth);
+            redrawn.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertTrue(redrawn.getRow(tui.inputTop() - 1).contains("kompile > X"), redrawn::screenDump);
+            assertEquals(tui.inputTop() - 1, redrawn.getCursorRow(), redrawn::screenDump);
+            assertTrue(redrawn.screenDump().contains("overflow async sentinel"), redrawn::screenDump);
+
+            // Polling-driven resize (no WINCH) must update both width and pane height.
+            terminalOutput.reset();
+            terminal.setSize(new Size(48, 20));
+            tui.handleResize();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!terminalOutput.toString(StandardCharsets.UTF_8).contains("kompile > X")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            VirtualTerminal resized = new VirtualTerminal(20, 48);
+            resized.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertEquals(tui.inputTop() - 1, resized.getCursorRow(), resized::screenDump);
+            assertTrue(resized.getRow(tui.inputTop() - 1).contains("kompile > X"), resized::screenDump);
+            assertTrue(tui.isCompactLayout());
+            assertFalse(resized.screenDump().contains("/processes"), resized::screenDump);
+            for (Size size : List.of(new Size(48, 8), new Size(120, 40), new Size(40, 24), new Size(120, 40))) {
+                terminalOutput.reset();
+                terminal.setSize(size); tui.handleResize();
+                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                VirtualTerminal resizedFrame;
+                do {
+                    resizedFrame = new VirtualTerminal(size.getRows(), size.getColumns());
+                    resizedFrame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+                    // Prompt text is emitted before the adjacent sidebar repaint restores
+                    // the input cursor. Do not snapshot that intentionally partial frame.
+                    if (resizedFrame.getCursorRow() == tui.inputTop() - 1
+                            && resizedFrame.getRow(tui.inputTop() - 1).contains("kompile > X")) break;
+                    Thread.sleep(10);
+                } while (System.nanoTime() < deadline);
+                assertEquals(tui.inputTop() - 1, resizedFrame.getCursorRow(), resizedFrame.screenDump());
+                assertTrue(resizedFrame.getRow(tui.inputTop() - 1).contains("kompile > X"), resizedFrame.screenDump());
+                assertEquals("X" + draft, reader.getBuffer().toString());
+                assertEquals(size.getRows() < 16 || size.getColumns() < 60, tui.isCompactLayout());
+                if (tui.isCompactLayout()) assertEquals(1, tui.scrollTop());
+                if (splitLayout && tui.isSidebarVisible()) {
+                    for (int row = tui.scrollTop() - 1; row < size.getRows(); row++)
+                        assertEquals('│', resizedFrame.getRow(row).charAt(tui.getChatColumns()), resizedFrame::screenDump);
+                    assertTrue(resizedFrame.getRow(size.getRows() - 1).contains("SIDEBAR-ROW-"), resizedFrame::screenDump);
+                    assertTrue(resizedFrame.getCursorCol() < tui.getChatColumns(), resizedFrame::screenDump);
+                }
+            }
+            if (splitLayout) {
+                // Switching to a full-width inspector and back must also reflow the draft.
+                tui.openResultInspector(); Thread.sleep(150);
+                assertFalse(tui.isSidebarVisible());
+                assertEquals("X" + draft, reader.getBuffer().toString());
+                tui.closeResultsView(); Thread.sleep(150);
+                assertTrue(tui.isSidebarVisible());
+                assertEquals("X" + draft, reader.getBuffer().toString());
+            }
+            assertEquals("X" + draft, reader.getBuffer().toString());
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("X" + draft, line.get(5, TimeUnit.SECONDS));
+        } finally {
+            ChatCompleter.clearTerminalRef(reader);
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            processes.close();
+            queue.clear();
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false,false", "true,false", "false,true", "true,true"})
+    void imagePreviewsNeverWriteIntoLiveInputPane(boolean split, boolean tmux, @TempDir Path root) throws Exception {
+        tmuxEnvironment = tmux;
+        terminal.setSize(new Size(120, 24));
+        BackgroundProcessManager processes = new BackgroundProcessManager("image-input-boundary");
+        MessageQueue queue = new MessageQueue("image-input-boundary-" + UUID.randomUUID());
+        KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true)) {
+            @Override public void requestRedraw() { } // Paint deterministically under the reader lock.
+        };
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        String draft = "draft row one\ndraft row two";
+        try {
+            var config = tui.getUiConfig();
+            if (split) config.applyPreset("focused");
+            config.set("images.protocol", "kitty");
+            tui.setUiConfig(config);
+            tui.attachLineReader(reader);
+            tui.start(terminal);
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(100);
+            keyboardPipe.write(("\033[200~" + draft + "\033[201~").getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!draft.equals(reader.getBuffer().toString()) && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals(draft, reader.getBuffer().toString());
+            reader.getWidgets().put("test-image-position", () -> { reader.getBuffer().cursor(4); return tui.redrawForInputWidget(); });
+            reader.callWidget("test-image-position");
+            VirtualTerminal frame = new VirtualTerminal(24, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8)); terminalOutput.reset();
+            int cursorRow = frame.getCursorRow(), cursorCol = frame.getCursorCol();
+            int columns = tui.getInputColumns();
+            List<String> input = new ArrayList<>();
+            for (int row = tui.inputTop() - 1; row < tui.scrollBottom(); row++)
+                input.add((frame.getRow(row) + " ".repeat(columns)).substring(0, columns));
+            Path png = root.resolve("preview.png");
+            javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(20, 10,
+                    java.awt.image.BufferedImage.TYPE_INT_ARGB), "png", png.toFile());
+            assertTrue(tui.previewImage(png));
+            var field = KompileTui.class.getDeclaredField("imagePreviewExecutor"); field.setAccessible(true);
+            ((ExecutorService) field.get(tui)).submit(() -> { }).get(3, TimeUnit.SECONDS);
+            reader.callWidget("kompile-redraw-frame");
+            String wire = terminalOutput.toString(StandardCharsets.UTF_8); terminalOutput.reset();
+            assertTrue(wire.contains("a=t,t=d,f=100"));
+            assertFalse(wire.contains("a=q"), "image output must never query stdin during editing");
+            if (tmux) {
+                assertTrue(wire.contains("\033Ptmux;\033\033_G"));
+                assertTrue(wire.contains("a=p,U=1"));
+                assertTrue(wire.contains(new String(Character.toChars(0x10EEEE))));
+                var placement = java.util.regex.Pattern.compile("c=([0-9]+),r=([0-9]+)").matcher(wire);
+                var origin = java.util.regex.Pattern.compile("\\033\\[([0-9]+);1H\\033\\[0;38;2;").matcher(wire);
+                assertTrue(placement.find()); assertTrue(origin.find());
+                assertTrue(Integer.parseInt(placement.group(1)) <= tui.getChatColumns());
+                assertTrue(Integer.parseInt(origin.group(1)) + Integer.parseInt(placement.group(2)) - 1 < tui.inputTop() - 1);
+            } else {
+                assertTrue(wire.contains(",C=1,q=2"));
+                var placement = java.util.regex.Pattern.compile("\\033\\[([0-9]+);1H\\033_Ga=p,[^\\033]*c=([0-9]+),r=([0-9]+)").matcher(wire);
+                assertTrue(placement.find());
+                assertTrue(Integer.parseInt(placement.group(2)) <= tui.getChatColumns());
+                assertTrue(Integer.parseInt(placement.group(1)) + Integer.parseInt(placement.group(3)) - 1 < tui.inputTop() - 1);
+            }
+            frame.feed(wire);
+            assertEquals(cursorRow, frame.getCursorRow(), frame::screenDump);
+            assertEquals(cursorCol, frame.getCursorCol(), frame::screenDump);
+            for (int row = tui.inputTop() - 1; row < tui.scrollBottom(); row++)
+                assertEquals(input.get(row - tui.inputTop() + 1), (frame.getRow(row) + " ".repeat(columns)).substring(0, columns), frame::screenDump);
+            assertEquals(draft, reader.getBuffer().toString());
+            tui.showMainView();
+            reader.callWidget("kompile-redraw-frame");
+            assertTrue(terminalOutput.toString(StandardCharsets.UTF_8).contains("a=d,d=I"));
+            keyboardPipe.write('X'); keyboardPipe.write(CR); keyboardPipe.flush();
+            assertEquals("drafXt row one\ndraft row two", line.get(5, TimeUnit.SECONDS));
+        } finally { tui.detachLineReader(); executor.shutdownNow(); tui.stop(); processes.close(); queue.clear(); }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void subagentTranscriptFramesNeverWriteIntoLiveInputPane(boolean split) throws Exception {
+        terminal.setSize(new Size(120, 24));
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes = new BackgroundProcessManager("subagent-input-boundary");
+        MessageQueue queue = new MessageQueue("subagent-input-boundary-" + UUID.randomUUID());
+        KompileTui tui = new KompileTui(tasks, processes, queue, new TerminalRenderer(true)) {
+            @Override public void requestRedraw() { } // Repaint each snapshot under JLine's lock below.
+        };
+        StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, tui.getStatusBar(), () -> 0);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        String draft = "draft first row\ndraft second row";
+        try {
+            if (split) { var config = tui.getUiConfig(); config.applyPreset("focused"); tui.setUiConfig(config); }
+            tui.attachLineReader(reader); tui.start(terminal);
+            ChatCompleter.setTerminalRef(reader, terminal);
+            // Model the existing diagnostic fallback when a managed sink throws.
+            ChatCompleter.setContentOutput(ignored -> { throw new IllegalStateException("sink unavailable"); });
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(100);
+            keyboardPipe.write(("\033[200~" + draft + "\033[201~").getBytes(StandardCharsets.UTF_8)); keyboardPipe.flush();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!draft.equals(reader.getBuffer().toString()) && System.nanoTime() < deadline) Thread.sleep(10);
+            reader.getWidgets().put("test-input-position", () -> { reader.getBuffer().cursor(4); return tui.redrawForInputWidget(); });
+            reader.callWidget("test-input-position"); Thread.sleep(50);
+            VirtualTerminal frame = new VirtualTerminal(24, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8)); terminalOutput.reset();
+            int cursorRow = frame.getCursorRow(), cursorCol = frame.getCursorCol();
+            List<String> input = new ArrayList<>();
+            int inputColumns = tui.getInputColumns();
+            for (int row = tui.inputTop() - 1; row < tui.scrollBottom(); row++) input.add((frame.getRow(row) + " ".repeat(inputColumns)).substring(0, inputColumns));
+            tui.getStatusBar().registerSubagent("child", "explore", "Live child");
+            String output = ("CHILD-OUTPUT\t".repeat(30) + "界 é\033[2J\033[24;1H\n"
+                    + "\0338RESTORED-CURSOR-LEAK\b\u0000\u007f\n"
+                    + "\033]0;foreign title\007\033Pforeign payload\033\\\n").repeat(100);
+            for (int i = 0; i < 5; i++) {
+                tui.getStatusBar().appendSubagentOutput("child", output);
+                tui.upsertDisplayBlock(panel.subagentDisplayBlock("child"));
+                // Diagnostic/fallback producers may still call the reader directly.
+                // JLine's default printAbove prints inside its editor scroll region.
+                String fallback = "SUBAGENT FALLBACK " + "long output ".repeat(100);
+                switch (i % 3) {
+                    case 0 -> reader.printAbove(fallback);
+                    case 1 -> reader.printAbove(org.jline.utils.AttributedString.fromAnsi("\033[32m" + fallback + "\033[0m"));
+                    default -> ChatCompleter.printAbove(fallback);
+                }
+                // Also exercise the full child transcript opened via Enter.
+                if (i > 0) tui.showActivityView("subagent:child", "Child", output);
+                reader.callWidget("kompile-redraw-frame");
+                frame.feed(terminalOutput.toString(StandardCharsets.UTF_8)); terminalOutput.reset();
+                assertEquals(draft, reader.getBuffer().toString());
+                for (int row = tui.inputTop() - 1; row < tui.scrollBottom(); row++)
+                    assertEquals(input.get(row - tui.inputTop() + 1), (frame.getRow(row) + " ".repeat(inputColumns)).substring(0, inputColumns), frame::screenDump);
+                assertEquals(cursorRow, frame.getCursorRow(), frame::screenDump);
+                assertEquals(cursorCol, frame.getCursorCol(), frame::screenDump);
+            }
+            tui.showMainView();
+            assertTrue(String.join("\n", tui.getContentViewLines()).contains("SUBAGENT FALLBACK"),
+                    "Fallback output must be retained, not dropped to keep the pane clean");
+            keyboardPipe.write('X'); keyboardPipe.write(CR); keyboardPipe.flush();
+            assertEquals("drafXt first row\ndraft second row", line.get(5, TimeUnit.SECONDS));
+        } finally { ChatCompleter.clearTerminalRef(reader); tui.detachLineReader(); executor.shutdownNow(); tui.stop(); processes.close(); queue.clear(); }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void fullRedrawRepairsCorruptedScreenAndPreservesDraftAndViewport(boolean split) throws Exception {
+        terminal.setSize(new Size(120, 24));
+        BackgroundProcessManager processes = new BackgroundProcessManager("redraw-recovery");
+        MessageQueue queue = new MessageQueue("redraw-recovery-" + UUID.randomUUID());
+        KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        String draft = "first draft row\nsecond draft row";
+        try {
+            if (split) { var config = tui.getUiConfig(); config.applyPreset("focused"); tui.setUiConfig(config); }
+            tui.attachLineReader(reader); tui.start(terminal);
+            tui.showActivityView("recovery-view", "Recovery view", "RETAINED ACTIVITY\n".repeat(60));
+            tui.scrollContent(10);
+            List<String> viewport = tui.getVisibleContentLines();
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(100);
+            keyboardPipe.write(("\033[200~" + draft + "\033[201~").getBytes(StandardCharsets.UTF_8)); keyboardPipe.flush();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!draft.equals(reader.getBuffer().toString()) && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals(draft, reader.getBuffer().toString());
+            reader.getWidgets().put("test-redraw-position", () -> { reader.getBuffer().cursor(4); return tui.redrawForInputWidget(); });
+            reader.callWidget("test-redraw-position");
+            var redrawField = KompileTui.class.getDeclaredField("redrawExecutor"); redrawField.setAccessible(true);
+            ExecutorService redrawExecutor = (ExecutorService) redrawField.get(tui);
+            redrawExecutor.submit(() -> {}).get(3, TimeUnit.SECONDS);
+            VirtualTerminal frame = new VirtualTerminal(24, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8)); terminalOutput.reset();
+            List<String> input = new ArrayList<>();
+            for (int row = tui.inputTop() - 1; row < tui.scrollBottom(); row++) input.add(frame.getRow(row));
+            int cursorRow = frame.getCursorRow(), cursorCol = frame.getCursorCol();
+            // Foreign writes corrupt transcript, editor and sidebar; also lose the cursor anchor.
+            terminal.writer().print("\033[r\033[2J\033[H");
+            for (int row = 1; row <= 24; row++) terminal.writer().print("\033[" + row + ";1H" + "CORRUPTED DISPLAY ".repeat(7));
+            terminal.writer().flush();
+            tui.requestFullRedraw();
+            redrawExecutor.submit(() -> {}).get(3, TimeUnit.SECONDS);
+            String recovery = terminalOutput.toString(StandardCharsets.UTF_8);
+            assertTrue(recovery.contains("\033[2J"), "Recovery must erase the physical screen, not just redisplay cached input");
+            frame.feed(recovery);
+            assertFalse(frame.screenDump().contains("CORRUPTED"), frame::screenDump);
+            assertTrue(frame.screenDump().contains("RETAINED ACTIVITY"), frame::screenDump);
+            assertEquals(viewport, tui.getVisibleContentLines());
+            assertEquals(draft, reader.getBuffer().toString());
+            assertEquals(4, reader.getBuffer().cursor());
+            for (int row = tui.inputTop() - 1; row < tui.scrollBottom(); row++)
+                assertEquals(input.get(row - tui.inputTop() + 1), frame.getRow(row), frame::screenDump);
+            assertEquals(cursorRow, frame.getCursorRow(), frame::screenDump);
+            assertEquals(cursorCol, frame.getCursorCol(), frame::screenDump);
+            keyboardPipe.write('X'); keyboardPipe.write(CR); keyboardPipe.flush();
+            assertEquals("firsXt draft row\nsecond draft row", line.get(5, TimeUnit.SECONDS));
+        } finally { tui.detachLineReader(); executor.shutdownNow(); tui.stop(); processes.close(); queue.clear(); }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false, start", "false, middle", "false, end", "true, start", "true, middle", "true, end"})
+    void uiLayoutRedrawRestoresExactInputCellsAndCursor(boolean multiline, String cursorPosition) throws Exception {
+        terminal.setSize(new Size(120, 24));
+        BackgroundProcessManager processes = new BackgroundProcessManager("ui-input-cells-test");
+        MessageQueue queue = new MessageQueue("ui-input-cells-" + UUID.randomUUID());
+        // Keep the queued frame from winning the race: the next edit must notice
+        // the new /ui viewport before the background redraw gets a turn.
+        KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true)) {
+            @Override public void requestRedraw() { }
+        };
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        String draft = multiline ? "first draft row\nsecond draft row\nthird draft row\nfourth draft row\nfifth draft row\nlast draft row"
+                : "0123456789 ".repeat(18) + " tail";
+        int editCursor = switch (cursorPosition) {
+            case "start" -> 0;
+            case "middle" -> draft.length() / 2;
+            default -> draft.length();
+        };
+        try {
+            tui.attachLineReader(reader);
+            ChatCompleter.setTerminalRef(reader, terminal);
+            tui.start(terminal);
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(100);
+            keyboardPipe.write(("\033[200~" + draft + "\033[201~").getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!draft.equals(reader.getBuffer().toString()) && System.nanoTime() < deadline) Thread.sleep(10);
+            reader.getWidgets().put("test-ui-position", () -> { reader.getBuffer().cursor(editCursor); return tui.redrawForInputWidget(); });
+            reader.callWidget("test-ui-position");
+            Thread.sleep(100);
+            VirtualTerminal frame = new VirtualTerminal(24, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            List<String> expected = new ArrayList<>();
+            for (int row = tui.inputTop() - 1; row < tui.scrollBottom(); row++) expected.add(frame.getRow(row));
+            int cursorRow = frame.getCursorRow(), cursorCol = frame.getCursorCol();
+            for (String mode : List.of("split", "split", "inline", "split", "inline")) {
+                terminalOutput.reset();
+                var config = tui.getUiConfig();
+                config.set("layout.mode", mode);
+                config.set("layout.sidebarWidthPercent", config.getSidebarWidthPercent() == 35 ? "45" : "35");
+                tui.setUiConfig(config);
+                // Model a key-driven redisplay beating the queued /ui frame.
+                reader.callWidget(LineReader.REDISPLAY);
+                Thread.sleep(100);
+                frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+                assertEquals(draft, reader.getBuffer().toString());
+                assertEquals(editCursor, reader.getBuffer().cursor());
+                if (mode.equals("inline")) {
+                    for (int row = tui.inputTop() - 1; row < tui.scrollBottom(); row++)
+                        assertEquals(expected.get(row - tui.inputTop() + 1), frame.getRow(row), frame::screenDump);
+                    assertEquals(cursorRow, frame.getCursorRow(), frame::screenDump);
+                    assertEquals(cursorCol, frame.getCursorCol(), frame::screenDump);
+                }
+            }
+            keyboardPipe.write('X'); keyboardPipe.write(CR); keyboardPipe.flush();
+            assertEquals(draft.substring(0, editCursor) + "X" + draft.substring(editCursor), line.get(5, TimeUnit.SECONDS));
+        } finally {
+            ChatCompleter.clearTerminalRef(reader);
+            tui.detachLineReader(); executor.shutdownNow(); tui.stop(); processes.close(); queue.clear();
+        }
+    }
+
+    @Test
+    void uiChordsInstallOnRealEmacsMapWithoutCapturingPrintableLetters() {
+        org.jline.keymap.KeyMap<org.jline.reader.Binding> keys = reader.getKeyMaps().get(LineReader.EMACS);
+        Map<String, org.jline.reader.Binding> originals = new HashMap<>();
+        ai.kompile.cli.main.chat.config.ChatUiConfig config = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+        ChatRepl.bindUiKeyMap(keys, config, originals);
+        assertEquals("kompile-ui-toggle", ((org.jline.reader.Reference) keys.getBound(org.jline.keymap.KeyMap.ctrl('X') + "s")).name());
+        assertEquals("kompile-ui-focus", ((org.jline.reader.Reference) keys.getBound(org.jline.keymap.KeyMap.ctrl('X') + "r")).name());
+        assertEquals(LineReader.SELF_INSERT, ((org.jline.reader.Reference) keys.getBound("s")).name());
+        assertEquals(LineReader.SELF_INSERT, ((org.jline.reader.Reference) keys.getBound("r")).name());
+    }
+
+    @Test
+    void uiBindingCollisionIsTransactionalAndRebindingRestoresOldKeys() {
+        org.jline.keymap.KeyMap<org.jline.reader.Binding> keys = new org.jline.keymap.KeyMap<>();
+        Map<String, org.jline.reader.Binding> originals = new HashMap<>();
+        ai.kompile.cli.main.chat.config.ChatUiConfig config = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+        ChatRepl.bindUiKeyMap(keys, config, originals);
+        String occupied = org.jline.keymap.KeyMap.ctrl('X') + "q";
+        keys.bind(new org.jline.reader.Reference("existing-action"), occupied);
+        config.set("bindings.toggle", "ctrl-x q");
+        assertThrows(IllegalArgumentException.class, () -> ChatRepl.bindUiKeyMap(keys, config, originals));
+        assertEquals("existing-action", ((org.jline.reader.Reference) keys.getBound(occupied)).name());
+        assertEquals("kompile-ui-toggle", ((org.jline.reader.Reference) keys.getBound(org.jline.keymap.KeyMap.ctrl('X') + "s")).name());
+        config.set("bindings.toggle", "ctrl-x z");
+        ChatRepl.bindUiKeyMap(keys, config, originals);
+        assertNull(keys.getBound(org.jline.keymap.KeyMap.ctrl('X') + "s"));
+        assertEquals("kompile-ui-toggle", ((org.jline.reader.Reference) keys.getBound(org.jline.keymap.KeyMap.ctrl('X') + "z")).name());
+    }
+
+    @Test
+    void numberedWizardCompletesSizingAndSaveThenRendersNewUiWithRealInput(@TempDir Path project) throws Exception {
+        terminal.setSize(new Size(120, 24));
+        BackgroundProcessManager processes = new BackgroundProcessManager("wizard-value-tty");
+        MessageQueue queue = new MessageQueue("wizard-value-tty-" + UUID.randomUUID());
+        KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true));
+        ExecutorService inputThread = Executors.newSingleThreadExecutor();
+        BlockingQueue<String> pages = new LinkedBlockingQueue<>();
+        AtomicInteger closes = new AtomicInteger();
+        try {
+            tui.attachLineReader(reader);
+            ChatCompleter.setTerminalRef(reader, terminal);
+            tui.start(terminal);
+            tui.recordInScrollRegion("CHAT READY");
+            tui.upsertDisplayBlock(new ai.kompile.cli.main.chat.render.ChatDisplayBlock("tool:wizard", "tool", "read",
+                    "READ FILE", "READ FILE\nTOOL BODY", List.of(new ai.kompile.cli.main.chat.render.ChatDisplayBlock.Section("output", "output", "Output", "TOOL BODY")), false, false));
+            Future<?> wizard = inputThread.submit(() -> {
+                ChatCompleter.setTemporaryWindowActive(true);
+                try {
+                    ai.kompile.cli.main.chat.config.ChatUiWizard.run(reader, tui.getUiConfig(), tui::setUiConfig,
+                            (title, lines) -> { tui.updateTemporaryWindow(title, lines); pages.add(title); },
+                            () -> { closes.incrementAndGet(); tui.closeTemporaryWindow(); }, project, "wizard-tty");
+                } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+                finally { ChatCompleter.setTemporaryWindowActive(false); }
+            });
+            for (String[] step : List.of(
+                    new String[]{"Chat display", "1"}, new String[]{"Choose a preset", "2"},
+                    new String[]{"Chat display", "4"}, new String[]{"Sidebar", "1"},
+                    new String[]{"Sidebar width", "5"}, new String[]{"Sidebar", "2"},
+                    new String[]{"Minimum chat width", "4"}, new String[]{"Sidebar", "0"},
+                    new String[]{"Chat display", "6"}, new String[]{"Save preferences", "2"})) {
+                assertEquals(step[0], pages.poll(3, TimeUnit.SECONDS), "Each accepted value must advance, not repeat its page");
+                keyboardPipe.write((step[1] + "\r").getBytes(StandardCharsets.UTF_8));
+                keyboardPipe.flush();
+            }
+            wizard.get(5, TimeUnit.SECONDS);
+            assertTrue(pages.isEmpty(), "Completion must not reopen another dialog");
+            assertEquals(1, closes.get());
+            assertFalse(tui.isTemporaryWindowActive());
+            assertEquals("focused", tui.getUiConfig().getPreset());
+            assertEquals(40, tui.getUiConfig().getSidebarWidthPercent());
+            assertEquals(50, tui.getUiConfig().getMinChatColumns());
+            assertTrue(tui.isSidebarVisible());
+            assertEquals(40, ai.kompile.cli.main.chat.config.ChatUiConfig.load(List.of(ai.kompile.cli.main.chat.config.ChatUiConfig.projectPath(project))).getSidebarWidthPercent());
+            tui.redrawContentView();
+            VirtualTerminal frame = new VirtualTerminal(24, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertTrue(frame.screenDump().contains("CHAT READY"), frame::screenDump);
+            assertTrue(frame.screenDump().contains("READ FILE"), frame::screenDump);
+            assertTrue(frame.screenDump().contains("│"), frame::screenDump);
+            for (int row = tui.scrollTop() - 1; row < tui.inputTop() - 1; row++) {
+                assertFalse(frame.getRow(row).substring(0, tui.getChatColumns()).contains("READ FILE"), frame::screenDump);
+            }
+        } finally {
+            ChatCompleter.setTemporaryWindowActive(false);
+            ChatCompleter.clearTerminalRef(reader);
+            tui.detachLineReader(); inputThread.shutdownNow(); tui.stop(); processes.close(); queue.clear();
+        }
+    }
+
+    @Test
+    void focusedToolUpdatesAndLiveLayoutSwitchPreserveMultilineDraft() throws Exception {
+        terminal.setSize(new Size(120, 24));
+        BackgroundProcessManager processes = new BackgroundProcessManager("focused-draft-test");
+        MessageQueue queue = new MessageQueue("focused-draft-" + UUID.randomUUID());
+        KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        String draft = "draft first row\ndraft second row\ndraft third row";
+        try {
+            ai.kompile.cli.main.chat.config.ChatUiConfig focused = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+            focused.applyPreset("focused");
+            tui.setUiConfig(focused);
+            tui.attachLineReader(reader);
+            ChatCompleter.setTerminalRef(reader, terminal);
+            ChatCompleter.enableAutoTrigger(reader);
+            tui.start(terminal);
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            keyboardPipe.write(("\033[200~" + draft + "\033[201~").getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!draft.equals(reader.getBuffer().toString()) && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals(draft, reader.getBuffer().toString());
+            Thread.sleep(75);
+            tui.upsertDisplayBlock(new ai.kompile.cli.main.chat.render.ChatDisplayBlock("tool:focused", "tool", "bash",
+                    "Build finished", "Build finished\nSIDEBAR OUTPUT",
+                    List.of(new ai.kompile.cli.main.chat.render.ChatDisplayBlock.Section("output", "output", "Output", "SIDEBAR OUTPUT")), false, false));
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!terminalOutput.toString(StandardCharsets.UTF_8).contains("Build finished") && System.nanoTime() < deadline) Thread.sleep(10);
+            Thread.sleep(75);
+            VirtualTerminal frame = new VirtualTerminal(24, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            for (String row : draft.split("\n")) assertTrue(frame.screenDump().contains(row), frame::screenDump);
+            assertTrue(tui.isSidebarVisible());
+            terminalOutput.reset();
+            tui.setUiConfig(ai.kompile.cli.main.chat.config.ChatUiConfig.classic());
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!terminalOutput.toString(StandardCharsets.UTF_8).contains("SIDEBAR OUTPUT") && System.nanoTime() < deadline) Thread.sleep(10);
+            Thread.sleep(75);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            for (String row : draft.split("\n")) assertTrue(frame.screenDump().contains(row), frame::screenDump);
+            assertFalse(tui.isSidebarVisible());
+            assertEquals(draft, reader.getBuffer().toString());
+            keyboardPipe.write(CR); keyboardPipe.flush();
+            assertEquals(draft, line.get(5, TimeUnit.SECONDS));
+        } finally {
+            ChatCompleter.clearTerminalRef(reader);
+            tui.detachLineReader(); executor.shutdownNow(); tui.stop(); processes.close(); queue.clear();
+        }
+    }
+
     @Test
     void shrinkingMultilineDraftAfterAsyncRedrawDoesNotEraseTranscript() throws Exception {
         terminal.setSize(new Size(72, 24));
@@ -1616,7 +2179,29 @@ class ChatCompleterTtyTest {
     }
 
     @Test
+    void rawStderrStaysAboveTranscriptAndPreservesLiveDraft(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tempDir) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        java.io.PrintStream previousErr = System.err;
+        try {
+            System.setProperty("user.home", tempDir.toString());
+            System.setErr(new java.io.PrintStream(terminal.output(), true, StandardCharsets.UTF_8));
+            try (TranscriptLogScope scope = TranscriptLogScope.open("tty-raw-diagnostic", tempDir, false)) {
+                codeIndexAlertStaysAboveTranscriptAndPreservesLiveDraft(true);
+                assertTrue(java.nio.file.Files.readString(scope.logFile()).contains("unclassified library warning"));
+            }
+        } finally {
+            System.setErr(previousErr);
+            if (previousHome == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", previousHome);
+        }
+    }
+
+    @Test
     void codeIndexAlertStaysAboveTranscriptAndPreservesLiveDraft() throws Exception {
+        codeIndexAlertStaysAboveTranscriptAndPreservesLiveDraft(false);
+    }
+
+    private void codeIndexAlertStaysAboveTranscriptAndPreservesLiveDraft(boolean rawStderr) throws Exception {
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("chat-completer-top-alert-test");
         MessageQueue queue = new MessageQueue(
@@ -1624,9 +2209,11 @@ class ChatCompleterTtyTest {
         KompileTui tui = new KompileTui(
                 new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true));
         ExecutorService executor = Executors.newSingleThreadExecutor();
+        Runnable cleanup = () -> { };
         try {
             tui.attachLineReader(reader);
             tui.start(terminal);
+            if (rawStderr) cleanup = TranscriptLogScope.installTerminalNoticeSink(tui::showAlert);
             tui.recordInScrollRegion("retained transcript sentinel");
 
             Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
@@ -1639,19 +2226,29 @@ class ChatCompleterTtyTest {
                 Thread.sleep(10);
             }
 
+            // Buffer mutation precedes JLine's paint; wait on the same redraw lock
+            // before asserting the physical terminal, as the resize test does below.
+            reader.callWidget(LineReader.REDISPLAY);
             VirtualTerminal frame = new VirtualTerminal(40, 120);
             frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
             assertTrue(frame.getRow(tui.inputTop() - 1)
                     .contains("kompile > visible draft"), frame::screenDump);
             terminalOutput.reset();
-            String warning = "[code-index] watcher unavailable; periodic refresh enabled";
-            tui.showAlert(warning);
+            String warning = rawStderr ? "unclassified library warning: watcher unavailable"
+                    : "[code-index] watcher unavailable; periodic refresh enabled";
+            if (rawStderr) {
+                Thread diagnostic = new Thread(() -> System.err.println(warning), "unbound-library-thread");
+                diagnostic.start();
+                diagnostic.join(2000);
+                assertFalse(diagnostic.isAlive());
+            } else tui.showAlert(warning);
             deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (!terminalOutput.toString(StandardCharsets.UTF_8).contains(warning)
                     && System.nanoTime() < deadline) {
                 Thread.sleep(10);
             }
 
+            reader.callWidget(LineReader.REDISPLAY);
             frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
             assertTrue(frame.getRow(1).contains("watcher unavailable"), frame::screenDump);
             assertFalse(tui.getContentViewLines().stream().anyMatch(row -> row.contains("code-index")),
@@ -1666,6 +2263,7 @@ class ChatCompleterTtyTest {
             keyboardPipe.flush();
             assertEquals("visible draft", line.get(5, TimeUnit.SECONDS));
         } finally {
+            cleanup.run();
             tui.detachLineReader();
             executor.shutdownNow();
             tui.stop();

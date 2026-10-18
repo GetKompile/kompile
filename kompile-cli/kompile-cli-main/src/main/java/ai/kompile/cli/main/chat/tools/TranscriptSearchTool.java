@@ -19,11 +19,14 @@ package ai.kompile.cli.main.chat.tools;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ConversationSearchIndex;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -41,7 +44,9 @@ import java.util.stream.Stream;
  * Actions:
  * <ul>
  *   <li><b>list</b> - List saved conversations with optional ID-prefix and agent filters</li>
- *   <li><b>read</b> - Read a session by exact ID or unique ID prefix</li>
+ *   <li><b>read</b> - Read a session by exact ID or unique ID prefix, with lossless line pagination</li>
+ *   <li><b>fulltext</b> - Explicit indexed FTS5 syntax, BM25 ranking and bounded snippets/pages</li>
+ *   <li><b>rebuild_index</b> - Recreate projection rows from sources without changing history</li>
  *   <li><b>search</b> - Grep-style search across all transcripts, with regex or literal
  *       pattern, optional filters (agent, session_id), configurable context lines, case
  *       sensitivity, inverted match, files-with-matches mode, and line numbers.
@@ -61,7 +66,8 @@ public class TranscriptSearchTool implements CliTool {
     public String description() {
         return "Grep across saved conversation transcripts from all agents. Actions: " +
                 "'list' (conversations, optionally filtered by session-ID prefix or agent), " +
-                "'read' (full transcript by exact ID or unique prefix), 'recent' (N most recent), " +
+                "'read' (paged transcript by exact ID or unique prefix), 'recent' (N most recent), " +
+                "'fulltext' (explicit indexed FTS5/BM25 search, not regex), 'rebuild_index' (rebuild disposable projection), " +
                 "and 'search' (grep-style search, or ID-prefix lookup without a pattern). " +
                 "Content search supports regex/literal patterns, agent/session filters, " +
                 "context lines (before/after/context), case sensitivity, inverted match, " +
@@ -77,7 +83,7 @@ public class TranscriptSearchTool implements CliTool {
         ObjectNode props = schema.putObject("properties");
 
         prop(props, "action", "string",
-                "Action: 'list', 'read', 'search', or 'recent'");
+                "Action: 'list', 'read', 'search', 'recent', 'fulltext', or 'rebuild_index'");
         prop(props, "session_id", "string",
                 "Session ID or literal, case-sensitive ID prefix for 'list' and 'search'. " +
                         "For 'read', an exact ID wins; a prefix must match exactly one session. " +
@@ -86,7 +92,8 @@ public class TranscriptSearchTool implements CliTool {
                 "Content pattern for 'search' (regex by default; set 'literal' to true for plain text). " +
                         "Omit when supplying 'session_id' to list matching IDs without searching content.");
         prop(props, "query", "string",
-                "Alias for 'pattern' (backward compatibility).");
+                "For 'search': alias for 'pattern' (backward compatibility). For 'fulltext': raw FTS5 query " +
+                        "(tokens, quoted phrases, prefixes, AND/OR/NOT); ranked by BM25, never interpreted as regex.");
         prop(props, "literal", "boolean",
                 "If true, treat 'pattern' as literal text, not a regex (default: false).");
         prop(props, "case_sensitive", "boolean",
@@ -100,7 +107,7 @@ public class TranscriptSearchTool implements CliTool {
         prop(props, "context", "integer",
                 "Lines of context before AND after (grep -C). If set, overrides 'before' and 'after'.");
         prop(props, "agent", "string",
-                "For 'list' and 'search', filter to conversations whose recorded agent name contains this value " +
+                "For 'list', 'search', and 'fulltext', filter to conversations whose recorded agent name contains this value " +
                         "(case-insensitive substring). Example: 'claude', 'gpt'.");
         prop(props, "max_results", "integer",
                 "Maximum content matches for 'search' (default: 50), or sessions for 'list' / " +
@@ -111,6 +118,14 @@ public class TranscriptSearchTool implements CliTool {
                 "If true, prefix each match line with its line number (default: true).");
         prop(props, "count", "integer",
                 "Number of results for 'recent' action (default: 5).");
+        prop(props, "offset", "integer",
+                "For 'read': starting line (1-based, default 1). For 'fulltext': hit offset (0-based, default 0).");
+        prop(props, "limit", "integer",
+                "For 'read': lines per page (1..2000, default 500), preserving entire long lines. " +
+                        "For 'fulltext': hits per page (1..200, default 50); metadata.nextOffset continues the page.");
+        prop(props, "project", "string", "Fulltext project directory filter: exact path or directory suffix.");
+        prop(props, "since", "string", "Fulltext: inclusive recorded session start date/time (YYYY-MM-DD or local YYYY-MM-DD HH:mm:ss).");
+        prop(props, "until", "string", "Fulltext: inclusive recorded session start date/time; a date includes that whole day.");
 
         schema.putArray("required").add("action");
         return schema;
@@ -135,14 +150,23 @@ public class TranscriptSearchTool implements CliTool {
             case "list":
                 return listConversations(params);
             case "read":
-                return readTranscript(params.path("session_id").asText(""));
+                return readTranscript(params);
+            case "fulltext":
+                return fulltext(params);
+            case "rebuild_index":
+                try {
+                    searchIndex().rebuild();
+                    return ToolResult.success("Rebuilt disposable conversation search index from transcript and catalog sources.");
+                } catch (IOException | java.sql.SQLException e) {
+                    return ToolResult.error("Error rebuilding conversation search index: " + e.getMessage());
+                }
             case "search":
                 return searchTranscripts(params);
             case "recent":
                 return recentConversations(params.path("count").asInt(5));
             default:
                 return ToolResult.error("Unknown action: " + action +
-                        ". Use 'list', 'read', 'search', or 'recent'.");
+                        ". Use 'list', 'read', 'search', 'recent', 'fulltext', or 'rebuild_index'.");
         }
     }
 
@@ -196,10 +220,18 @@ public class TranscriptSearchTool implements CliTool {
         }
     }
 
-    private ToolResult readTranscript(String sessionId) {
-        sessionId = sessionId.trim();
+    private ToolResult readTranscript(JsonNode params) {
+        String sessionId = params.path("session_id").asText("").trim();
+        int offset = params.path("offset").asInt(1);
+        int limit = params.path("limit").asInt(MAX_TRANSCRIPT_LINES);
+        if (offset < 1 || limit < 1 || limit > 2000) {
+            return ToolResult.error("read requires offset >= 1 and limit between 1 and 2000");
+        }
         if (sessionId.isEmpty()) {
             return ToolResult.error("session_id is required for 'read' action");
+        }
+        if (sessionId.contains("/") || sessionId.contains("\\") || sessionId.equals(".") || sessionId.equals("..")) {
+            return ToolResult.error("session_id must be a transcript ID, not a path");
         }
 
         if (!ChatHistory.exists(sessionId)) {
@@ -221,25 +253,33 @@ public class TranscriptSearchTool implements CliTool {
         }
 
         try {
-            ChatHistory history = new ChatHistory(sessionId);
-            String content = history.readTranscript();
-            if (content == null || content.isBlank()) {
-                return ToolResult.success("Transcript is empty for session: " + sessionId);
-            }
-
-            String[] lines = content.split("\n");
-            if (lines.length > MAX_TRANSCRIPT_LINES) {
-                StringBuilder sb = new StringBuilder();
-                for (int i = 0; i < MAX_TRANSCRIPT_LINES; i++) {
-                    sb.append(lines[i]).append("\n");
+            Path file = new ChatHistory(sessionId).getTranscriptFile();
+            StringBuilder page = new StringBuilder();
+            int total = 0, returned = 0;
+            boolean nonBlank = false;
+            try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    total++;
+                    nonBlank |= !line.isBlank();
+                    if (total >= offset && returned < limit) {
+                        page.append(line).append('\n');
+                        returned++;
+                    }
                 }
-                sb.append("\n... (truncated, ").append(lines.length - MAX_TRANSCRIPT_LINES).append(" more lines)");
-                return ToolResult.success("transcript: " + sessionId, sb.toString(),
-                        Map.of("sessionId", sessionId, "totalLines", lines.length, "truncated", true));
             }
-
-            return ToolResult.success("transcript: " + sessionId, content,
-                    Map.of("sessionId", sessionId, "totalLines", lines.length, "truncated", false));
+            if (!nonBlank) return ToolResult.success("Transcript is empty for session: " + sessionId);
+            boolean more = (long) offset + returned <= total;
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("sessionId", sessionId);
+            metadata.put("totalLines", total);
+            metadata.put("offset", offset);
+            metadata.put("returnedLines", returned);
+            metadata.put("truncated", more);
+            metadata.put("nextOffset", more ? offset + returned : null);
+            if (more) page.append("\n... (continued: read session_id=").append(sessionId)
+                    .append(" offset=").append(offset + returned).append(" limit=").append(limit).append(")\n");
+            return ToolResult.success("transcript: " + sessionId, page.toString(), metadata);
         } catch (IOException e) {
             return ToolResult.error("Error reading transcript: " + e.getMessage());
         }
@@ -403,6 +443,41 @@ public class TranscriptSearchTool implements CliTool {
             sb.append("\n... (truncated at max_results=").append(maxResults).append(")\n");
         }
         return ToolResult.success(title, sb.toString(), meta);
+    }
+
+    private ConversationSearchIndex searchIndex() {
+        return new ConversationSearchIndex(KompileHome.homeDirectory().toPath().resolve("conversations"));
+    }
+
+    private ToolResult fulltext(JsonNode params) {
+        String query = params.path("query").asText(params.path("pattern").asText(""));
+        if (params.path("literal").asBoolean(false) || params.path("invert").asBoolean(false)
+                || params.path("case_sensitive").asBoolean(false) || params.path("files_with_matches").asBoolean(false)) {
+            return ToolResult.error("fulltext uses FTS5 syntax, not grep options. Use action=search for exact regex/literal behavior.");
+        }
+        try {
+            ConversationSearchIndex.Page page = searchIndex().search(query,
+                    params.path("session_id").asText("").trim(), params.path("agent").asText("").trim(),
+                    params.path("project").asText("").trim(), params.path("since").asText("").trim(),
+                    params.path("until").asText("").trim(), params.path("offset").asInt(0),
+                    params.path("limit").asInt(params.path("max_results").asInt(DEFAULT_MAX_RESULTS)));
+            StringBuilder output = new StringBuilder("Indexed fulltext hits (BM25; lower score ranks first):\n");
+            for (ConversationSearchIndex.Hit hit : page.hits()) {
+                output.append(hit.sessionId()).append(':').append(hit.line()).append(" chunk=")
+                        .append(hit.chunk()).append(" agent=").append(hit.agent()).append(" project=")
+                        .append(hit.project()).append('\n').append(hit.snippet()).append('\n');
+            }
+            if (page.hits().isEmpty()) output.append("No fulltext matches.\n");
+            if (page.nextOffset() != null) output.append("Continue with offset=").append(page.nextOffset()).append('\n');
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("mode", "fts5"); metadata.put("matches", page.hits().size());
+            metadata.put("offset", page.offset()); metadata.put("nextOffset", page.nextOffset());
+            metadata.put("truncated", page.nextOffset() != null);
+            return ToolResult.success("transcript_search: fulltext", output.toString(), metadata);
+        } catch (IllegalArgumentException | IOException | java.sql.SQLException e) {
+            return ToolResult.error("Indexed fulltext search failed: " + e.getMessage() +
+                    ". FTS5 queries are not regex; use action=search for grep behavior.");
+        }
     }
 
     /**

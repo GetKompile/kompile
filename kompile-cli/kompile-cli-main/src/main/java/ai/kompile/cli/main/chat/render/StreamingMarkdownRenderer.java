@@ -96,6 +96,13 @@ public class StreamingMarkdownRenderer {
         }
     }
 
+    /** Side-effect-free preview for replaceable managed transcript snapshots. */
+    protected String pendingLinePreview() {
+        if (lineBuffer.isEmpty()) return "";
+        return inCodeBlock ? renderCodeLine(lineBuffer.toString(), codeLineNumber)
+                : renderInline(lineBuffer.toString());
+    }
+
     /**
      * Flush any remaining buffered content (partial line at end of stream).
      */
@@ -219,10 +226,14 @@ public class StreamingMarkdownRenderer {
     }
 
     private void printCodeLine(String line) {
-        String number = Integer.toString(codeLineNumber++);
+        printLine(renderCodeLine(line, codeLineNumber++));
+    }
+
+    private String renderCodeLine(String line, int lineNumber) {
+        String number = Integer.toString(lineNumber);
         number = " ".repeat(Math.max(0, 4 - number.length())) + number;
         String highlighted = syntaxHighlighter.highlight(line, codeBlockLang);
-        printLine(term.dim("│ " + number + " │") + " " + highlighted);
+        return term.dim("│ " + number + " │") + " " + highlighted;
     }
 
     private void closeCodeBlock() {

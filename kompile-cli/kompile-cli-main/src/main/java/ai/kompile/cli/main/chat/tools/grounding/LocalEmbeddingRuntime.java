@@ -49,13 +49,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>The child is pointed directly at {@code <project>/data/models}. It never inherits a staging
  * URL or an archive from a managed server, so model selection cannot escape the current project.</p>
  */
-final class LocalEmbeddingRuntime {
+public final class LocalEmbeddingRuntime {
     interface EmbeddingProcess {
         CompletableFuture<List<float[]>> embedBatch(List<String> texts, long timeoutMs);
 
         boolean isRunning();
 
         boolean isProcessAlive();
+
+        default Map<String, Object> deviceMemoryStatus() { return Map.of(); }
 
         void stop();
     }
@@ -80,6 +82,11 @@ final class LocalEmbeddingRuntime {
         @Override
         public boolean isProcessAlive() {
             return launcher.isProcessAlive();
+        }
+
+        @Override
+        public Map<String, Object> deviceMemoryStatus() {
+            return launcher.getDeviceMemoryStatus();
         }
 
         @Override
@@ -319,7 +326,7 @@ final class LocalEmbeddingRuntime {
      * Returns requested placement, effective ND4J backend + pid (as reported by the child itself),
      * model id, running state, and idle-shutdown policy. Never throws.
      */
-    static synchronized java.util.Map<String, Object> runtimeStatus(Path projectRoot) {
+    public static synchronized java.util.Map<String, Object> runtimeStatus(Path projectRoot) {
         java.util.Map<String, Object> status = new java.util.LinkedHashMap<>();
         LocalEmbeddingRuntime runtime;
         try {
@@ -338,11 +345,32 @@ final class LocalEmbeddingRuntime {
         status.put("requestedPlacement", runtime.requestedPlacement);
         status.put("effectiveBackend", runtime.effectiveBackend);
         status.put("pid", runtime.effectivePid);
+        status.put("deviceMemory", runtime.process.deviceMemoryStatus());
         status.put("leases", runtime.leases);
         status.put("idleShutdownMs", runtime.idleShutdownMs);
         status.put("idleMs", TimeUnit.NANOSECONDS.toMillis(
                 Math.max(0L, System.nanoTime() - runtime.lastUsedNanos)));
         return status;
+    }
+
+    /** Release only this folder's idle runtime; never stop another folder or an active lease. */
+    public static String stopIdle(Path projectRoot) throws IOException {
+        Path root = new ai.kompile.project.KompileProjectStore().findProjectRoot(projectRoot)
+                .orElse(projectRoot).toRealPath();
+        LocalEmbeddingRuntime runtime;
+        synchronized (LocalEmbeddingRuntime.class) {
+            runtime = LIVE_RUNTIMES.get(root);
+            if (runtime == null) return "No folder-local embedding runtime is running in this JVM.";
+            if (runtime.leases > 0 || runtime.activeUses > 0 || runtime.stopping)
+                return "Embeddings are busy/shared (leases=" + runtime.leases + ", active="
+                        + runtime.activeUses + "); stop refused. Retry after the work finishes.";
+            retireLocked(runtime);
+            markStoppingLocked(runtime);
+        }
+        runtime.closeInternal();
+        return runtime.process.isProcessAlive()
+                ? "Embedding stop did not finish; child remains tracked against capacity."
+                : "Idle embeddings stopped. The next folder-local query reloads the runtime.";
     }
 
     static boolean hasConfiguredEncoder(Path projectRoot, ObjectMapper mapper) throws IOException {

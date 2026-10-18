@@ -314,8 +314,9 @@ public class ServingSubprocessMain {
                 ResponseEntity<Map<String, Object>> response =
                         components.modelController().status();
                 Map<String, Object> watchdog = watchdogStatus();
-                if (watchdog != null && response.getBody() != null) {
-                    response.getBody().put("memoryWatchdog", watchdog);
+                if (response.getBody() != null) {
+                    if (watchdog != null) response.getBody().put("memoryWatchdog", watchdog);
+                    response.getBody().put("deviceMemory", SubprocessMemoryWatchdog.deviceMemoryStatus());
                 }
                 return response;
             }

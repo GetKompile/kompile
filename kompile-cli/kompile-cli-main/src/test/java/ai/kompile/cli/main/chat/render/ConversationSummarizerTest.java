@@ -116,6 +116,67 @@ class ConversationSummarizerTest {
         }
     }
 
+    @Test
+    void promptIsBoundedContinuationStateNotExhaustiveHistory() {
+        try (SummaryClient client = new SummaryClient()) {
+            new ConversationSummarizer(client).summarize(List.of(
+                    CompactionService.ConversationEntry.system("Earlier summary: retain constraints"),
+                    CompactionService.ConversationEntry.user("Latest correction " + "x".repeat(60_000))),
+                    "focus on the failed migration", "chosen-model");
+            assertTrue(client.prompt.contains("Use at most 12000 characters"));
+            assertTrue(client.prompt.contains("## Goal and Latest User Direction"));
+            assertTrue(client.prompt.contains("## Pending Work and Unresolved Failures"));
+            assertTrue(client.prompt.contains("replace superseded state"));
+            assertTrue(client.prompt.contains("saved-output paths or result handles"));
+            assertTrue(client.prompt.contains("focus on the failed migration"));
+            assertFalse(client.prompt.contains("## 6. All User Messages"));
+            assertFalse(client.prompt.contains("Every file path examined"));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {4080, 4096, 4100, 9000})
+    void savedEvidenceReferenceSurvivesToolBodyTruncation(int bodyChars) {
+        try (SummaryClient client = new SummaryClient()) {
+            new ConversationSummarizer(client).summarize(List.of(
+                    CompactionService.ConversationEntry.toolResult("bash", "call-id",
+                            "x".repeat(bodyChars) + "\n[saved to: /archive/build.log]")), null, null);
+            assertTrue(client.prompt.contains("tool result truncated for summarization"));
+            assertTrue(client.prompt.contains("[saved to: /archive/build.log]"));
+            assertFalse(client.prompt.contains("x".repeat(4097)));
+        }
+    }
+
+    @Test
+    void utilityToolCallIsNotAcceptedAsASummary() {
+        try (SummaryClient client = new SummaryClient()) {
+            client.result.toolCalls.add(new DirectLlmClient.ToolCallOutput());
+            assertTrue(summarize(client).isEmpty());
+        }
+    }
+
+    @Test
+    void oversizedSummaryIsRejectedRatherThanClipped() {
+        try (SummaryClient client = new SummaryClient()) {
+            client.result.text = "x".repeat(513);
+            ConversationSummarizer.SummaryResult result = summarize(client);
+            assertFalse(result.isSuccessful());
+            assertTrue(result.isEmpty());
+            assertEquals(client.result.text, result.getSummary(), "never publish a silently clipped summary");
+            assertEquals(200, result.getInputTokens(), "failed utility usage is still reported");
+        }
+    }
+
+    @Test
+    void truncatedSummaryIsNotUsable() throws Exception {
+        try (SummaryClient client = new SummaryClient()) {
+            var field = DirectLlmClient.StreamResult.class.getDeclaredField("truncatedDetected");
+            field.setAccessible(true);
+            field.setBoolean(client.result, true);
+            assertTrue(summarize(client).isEmpty());
+        }
+    }
+
     private static ConversationSummarizer.SummaryResult summarize(SummaryClient client) {
         return new ConversationSummarizer(client).summarize(
                 List.of(CompactionService.ConversationEntry.user("old conversation")), null, null);

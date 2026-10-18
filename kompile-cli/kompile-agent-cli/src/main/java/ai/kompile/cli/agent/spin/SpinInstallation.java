@@ -190,6 +190,15 @@ public final class SpinInstallation {
     }
 
     private static void writeLaunchers(SpinDefinition definition, Path home) throws IOException {
+        boolean nativeAgent = false;
+        if (definition.projectBacked() && !"jar".equals(definition.project().distribution().getDelivery())) {
+            try {
+                SpinDefinition.requireNative(definition.root().resolve("runtime"), "kompile-agent");
+                nativeAgent = true;
+            } catch (IOException noNative) {
+                if ("native".equals(definition.project().distribution().getDelivery())) throw noNative;
+            }
+        }
         Path bin = home.resolve("bin");
         rejectSymlinkComponents(bin, "spin launcher directory");
         Files.createDirectories(bin);
@@ -201,6 +210,25 @@ public final class SpinInstallation {
                 SPIN_ID="%s"
                 IFS= read -r SPIN_RELEASE < "$SPIN_HOME/components/$SPIN_ID/current"
                 EMBEDDED="$SPIN_HOME/components/$SPIN_ID/releases/$SPIN_RELEASE/runtime"
+
+                if [ "%s" = "true" ]; then
+                  export KOMPILE_INSTALL_DIR="$EMBEDDED" KOMPILE_DIST_HOME="$EMBEDDED"
+                  unset KOMPILE_AGENT KOMPILE_CLI
+                  if [ "%s" = "true" ] && [ -x "$EMBEDDED/bin/kompile-agent" ]; then
+                    exec "$EMBEDDED/bin/kompile-agent" spin launch --home "$SPIN_HOME" "$@"
+                  fi
+                  if [ "%s" = "true" ]; then
+                    echo "error: native spin requires its bundled native kompile-agent" >&2
+                    exit 1
+                  fi
+                  if [ -f "$EMBEDDED/lib/kompile-agent.jar" ]; then
+                    JAVA_BIN="${KOMPILE_JAVA:-java}"
+                    [ ! -x "$EMBEDDED/runtime/bin/java" ] || JAVA_BIN="$EMBEDDED/runtime/bin/java"
+                    exec "$JAVA_BIN" "-Dkompile.dist.home=$EMBEDDED" "-Djava.library.path=$EMBEDDED/bin:$EMBEDDED/lib" "-Dspring.config.additional-location=optional:file:$EMBEDDED/conf/" -jar "$EMBEDDED/lib/kompile-agent.jar" spin launch --home "$SPIN_HOME" "$@"
+                  fi
+                  echo "error: bundled kompile-agent is required; global fallback is disabled" >&2
+                  exit 1
+                fi
 
                 if [ -n "${KOMPILE_AGENT:-}" ] && [ -x "$KOMPILE_AGENT" ]; then
                   exec "$KOMPILE_AGENT" spin launch --home "$SPIN_HOME" "$@"
@@ -228,7 +256,8 @@ public final class SpinInstallation {
                 fi
                 echo "error: kompile-agent is required to launch $SPIN_ID" >&2
                 exit 1
-                """.formatted(definition.id());
+                """.formatted(definition.id(), definition.projectBacked(),
+                        nativeAgent, definition.projectBacked() && "native".equals(definition.project().distribution().getDelivery()));
         writeAtomic(unix, script);
         if (!isWindows() && !unix.toFile().setExecutable(true, false)
                 && !Files.isExecutable(unix)) {
@@ -243,6 +272,7 @@ public final class SpinInstallation {
                 set "SPIN_ID=%s"
                 set /p SPIN_RELEASE=<"%%SPIN_HOME%%\\components\\%%SPIN_ID%%\\current"
                 set "EMBEDDED=%%SPIN_HOME%%\\components\\%%SPIN_ID%%\\releases\\%%SPIN_RELEASE%%\\runtime"
+                if "%s"=="true" goto curated
                 if not "%%KOMPILE_AGENT%%"=="" goto explicit
                 if exist "%%EMBEDDED%%\\bin\\kompile-agent.exe" (
                   "%%EMBEDDED%%\\bin\\kompile-agent.exe" spin launch --home "%%SPIN_HOME%%" %%*
@@ -274,7 +304,30 @@ public final class SpinInstallation {
                 :explicit
                 "%%KOMPILE_AGENT%%" spin launch --home "%%SPIN_HOME%%" %%*
                 exit /b %%ERRORLEVEL%%
-                """.formatted(definition.id());
+                :curated
+                set "KOMPILE_INSTALL_DIR=%%EMBEDDED%%"
+                set "KOMPILE_DIST_HOME=%%EMBEDDED%%"
+                set "KOMPILE_AGENT="
+                set "KOMPILE_CLI="
+                if "%s"=="true" if exist "%%EMBEDDED%%\\bin\\kompile-agent.exe" (
+                  "%%EMBEDDED%%\\bin\\kompile-agent.exe" spin launch --home "%%SPIN_HOME%%" %%*
+                  exit /b %%ERRORLEVEL%%
+                )
+                if "%s"=="true" (
+                  echo error: native spin requires its bundled native kompile-agent 1>&2
+                  exit /b 1
+                )
+                if not exist "%%EMBEDDED%%\\lib\\kompile-agent.jar" (
+                  echo error: bundled kompile-agent is required; global fallback is disabled 1>&2
+                  exit /b 1
+                )
+                set "JAVA_BIN=%%KOMPILE_JAVA%%"
+                if "%%JAVA_BIN%%"=="" set "JAVA_BIN=java"
+                if exist "%%EMBEDDED%%\\runtime\\bin\\java.exe" set "JAVA_BIN=%%EMBEDDED%%\\runtime\\bin\\java.exe"
+                "%%JAVA_BIN%%" "-Dkompile.dist.home=%%EMBEDDED%%" "-Djava.library.path=%%EMBEDDED%%\\bin;%%EMBEDDED%%\\lib" "-Dspring.config.additional-location=optional:file:%%EMBEDDED%%\\conf/" -jar "%%EMBEDDED%%\\lib\\kompile-agent.jar" spin launch --home "%%SPIN_HOME%%" %%*
+                exit /b %%ERRORLEVEL%%
+                """.formatted(definition.id(), definition.projectBacked(),
+                        nativeAgent, definition.projectBacked() && "native".equals(definition.project().distribution().getDelivery()));
         writeAtomic(windows, cmd);
     }
 

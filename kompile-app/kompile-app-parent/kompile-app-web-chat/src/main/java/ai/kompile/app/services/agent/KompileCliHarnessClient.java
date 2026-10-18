@@ -101,6 +101,9 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     private final FolderContextResolver folderContextResolver;
     private final Map<String, ActiveRun> activeRuns = new ConcurrentHashMap<>();
     private final Map<String, HarnessReplayBuffer> replays = new ConcurrentHashMap<>();
+    private final Map<String, RunRecovery> recoveries = new ConcurrentHashMap<>();
+    // Bounded cancellation intents cover Stop racing an in-flight /stream registration.
+    private final Map<String, Long> pendingCancellations = new LinkedHashMap<>(); // guarded by activeRuns
     private final Map<String, SessionLock> sessionLocks = new LinkedHashMap<>();
     private final Map<Path, CachedCapabilities> capabilityCache = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<JsonNode>> insightProbes = new ConcurrentHashMap<>();
@@ -145,30 +148,53 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
 
     @Override
     public String executeChat(AgentChatRequest request, SseEmitter emitter) {
-        String runId = "harness-" + UUID.randomUUID();
+        String runId = request != null && request.getRunId() != null ? request.getRunId() : "harness-" + UUID.randomUUID();
         SseEventSink sink = new SseEventSink(emitter);
+        Path workDir;
         try {
             validateRequest(request);
-            resolveWorkingDirectory(request.getWorkingDirectory());
+            if (request.getRunId() != null && !isBrowserRunId(request.getRunId()))
+                throw new IllegalArgumentException("Invalid browser run id");
+            if (request.getMessageStartIndex() != null && request.getMessageStartIndex() < 0)
+                throw new IllegalArgumentException("Invalid message boundary");
+            workDir = resolveWorkingDirectory(request.getWorkingDirectory());
         } catch (Exception invalid) {
             emitStandaloneError(sink, invalid.getMessage());
             return runId;
         }
 
         HarnessReplayBuffer replay = new HarnessReplayBuffer(mapper);
-        replays.put(runId, replay);
+        if (replays.putIfAbsent(runId, replay) != null) {
+            emitStandaloneError(sink, "This run identity was already submitted; reconnect it instead");
+            return runId;
+        }
         attachReplay(replay, 0, emitter);
         ActiveRun run = new ActiveRun(runId, "", null, replay);
+        run.browserSessionId = browserSessionId(request);
+        run.workingDirectory = workDir;
+        run.agentName = effectiveSelector(request);
+        run.initialMessage = request.getMessage();
+        // Generate an absent identity once: discovery and the eventual CLI turn must agree.
+        request.setSessionId(run.browserSessionId);
         Runnable queuedTask = () -> runTurn(run, request);
         run.queuedTask = queuedTask;
-        activeRuns.put(runId, run);
+        recoveries.put(runId, new RunRecovery(runId, run.browserSessionId, workDir, run.agentName,
+                run.initialMessage, request.getMessageStartIndex(), run.createdAt));
+        boolean stoppedBeforeRegistration;
+        synchronized (activeRuns) {
+            activeRuns.put(runId, run);
+            Long until = pendingCancellations.remove(runId);
+            stoppedBeforeRegistration = until != null && until > System.currentTimeMillis();
+        }
         try { replay.send("queued", Map.of("processId", runId, "reconnectable", true)); }
         catch (IOException invalidEvent) { throw new IllegalStateException(invalidEvent); }
+        if (stoppedBeforeRegistration) { cancel(runId); return runId; }
         int timeoutSeconds = effectiveTimeoutSeconds(request.getTimeoutSeconds());
         run.timeoutTask = scheduler.schedule(
                 () -> timeout(run, timeoutSeconds),
                 timeoutSeconds + TIMEOUT_GRACE_SECONDS,
                 TimeUnit.SECONDS);
+        if (run.cancelled.get()) { cancelTimeout(run); return runId; }
         try {
             runExecutor.execute(queuedTask);
         } catch (RejectedExecutionException saturated) {
@@ -180,12 +206,26 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         return runId;
     }
 
+    private static boolean isBrowserRunId(String runId) {
+        return runId != null && runId.matches("harness-[0-9a-f]{32}");
+    }
+
     @Override
     public boolean cancel(String runId) {
-        ActiveRun run = activeRuns.get(runId);
-        if (run == null || !run.cancelled.compareAndSet(false, true)) {
-            return false;
+        ActiveRun run;
+        synchronized (activeRuns) {
+            run = activeRuns.get(runId);
+            if (run == null) {
+                HarnessReplayBuffer replay = replays.get(runId);
+                if (!isBrowserRunId(runId) || (replay != null && replay.isTerminal())) return false;
+                long now = System.currentTimeMillis();
+                pendingCancellations.values().removeIf(until -> until <= now);
+                if (pendingCancellations.size() >= 64 && !pendingCancellations.containsKey(runId)) return false;
+                pendingCancellations.put(runId, now + TimeUnit.MINUTES.toMillis(2));
+                return true;
+            }
         }
+        if (!run.cancelled.compareAndSet(false, true)) return false;
         if (run.queuedTask != null) runExecutor.remove(run.queuedTask);
         terminate(run.process);
         cancelTimeout(run);
@@ -263,6 +303,33 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         attachReplay(replay, after, emitter);
     }
 
+    @Override
+    public Map<String, Object> activeRun(String browserSessionId, String workingDirectory) {
+        if (browserSessionId == null || browserSessionId.isBlank() || browserSessionId.length() > MAX_IDENTIFIER_CHARS)
+            throw new IllegalArgumentException("A valid browser session id is required");
+        final Path directory;
+        try { directory = resolveWorkingDirectory(workingDirectory); }
+        catch (IOException invalid) { throw new IllegalArgumentException(invalid.getMessage(), invalid); }
+        // A page may miss the entire run, not just its first checkpoint. Keep the lightweight
+        // identity exactly as long as its replay, including completion while the browser was away.
+        var running = java.util.Set.copyOf(activeRuns.keySet());
+        return recoveries.values().stream()
+                .filter(run -> browserSessionId.equals(run.browserSessionId()) && directory.equals(run.directory())
+                        && replays.containsKey(run.runId()))
+                .sorted(java.util.Comparator.<RunRecovery, Boolean>comparing(run -> !running.contains(run.runId()))
+                        // Oldest active turn first; otherwise recover the latest completed turn.
+                        .thenComparingLong(run -> running.contains(run.runId()) ? run.createdAt() : -run.createdAt()))
+                .findFirst().map(run -> {
+                    Map<String, Object> result = new LinkedHashMap<>();
+                    result.put("runId", run.runId()); result.put("agentName", run.agentName());
+                    result.put("message", run.message());
+                    HarnessReplayBuffer replay = replays.get(run.runId());
+                    result.put("finished", replay == null || replay.isTerminal());
+                    if (run.messageStartIndex() != null) result.put("messageStartIndex", run.messageStartIndex());
+                    return result;
+                }).orElseGet(Map::of);
+    }
+
     private static void attachReplay(HarnessReplayBuffer replay, long after, SseEmitter emitter) {
         HarnessReplayBuffer.Connection connection = new HarnessReplayBuffer.Connection() {
             public void send(HarnessReplayBuffer.Event event) throws IOException {
@@ -293,12 +360,16 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     private void expireReplay(ActiveRun run) {
         HarnessReplayBuffer replay = replays.get(run.runId);
         if (replay == null) return;
-        try { scheduler.schedule(() -> replays.remove(run.runId, replay), FINISHED_REPLAY_RETENTION_MINUTES, TimeUnit.MINUTES); }
-        catch (RejectedExecutionException closing) { replays.remove(run.runId, replay); }
+        try { scheduler.schedule(() -> removeReplay(run.runId, replay), FINISHED_REPLAY_RETENTION_MINUTES, TimeUnit.MINUTES); }
+        catch (RejectedExecutionException closing) { removeReplay(run.runId, replay); }
         var completed = replays.entrySet().stream().filter(entry -> entry.getValue().isTerminal())
                 .sorted(java.util.Comparator.comparingLong(entry -> entry.getValue().createdAt)).toList();
         completed.stream().limit(Math.max(0, completed.size() - MAX_FINISHED_REPLAYS))
-                .forEach(entry -> replays.remove(entry.getKey(), entry.getValue()));
+                .forEach(entry -> removeReplay(entry.getKey(), entry.getValue()));
+    }
+
+    private void removeReplay(String runId, HarnessReplayBuffer replay) {
+        if (replays.remove(runId, replay)) recoveries.remove(runId);
     }
 
     private void timeout(ActiveRun run, int timeoutSeconds) {
@@ -1866,6 +1937,8 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         activeRuns.clear();
         replays.values().forEach(HarnessReplayBuffer::complete);
         replays.clear();
+        recoveries.clear();
+        synchronized (activeRuns) { pendingCancellations.clear(); }
         scheduler.shutdownNow();
         runExecutor.shutdownNow();
     }
@@ -1897,6 +1970,11 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
 
     private static final class ActiveRun {
         private final String runId;
+        private final long createdAt = System.nanoTime();
+        private String browserSessionId;
+        private Path workingDirectory;
+        private String agentName;
+        private String initialMessage;
         private volatile String sessionId;
         private volatile Process process;
         private volatile boolean controlReady;
@@ -1915,6 +1993,9 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             this.sink = sink;
         }
     }
+
+    private record RunRecovery(String runId, String browserSessionId, Path directory, String agentName,
+                               String message, Integer messageStartIndex, long createdAt) { }
 
     private record CachedCapabilities(JsonNode value, long expiresAtMs) { }
 

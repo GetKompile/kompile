@@ -405,17 +405,50 @@ class TerminalRendererTest {
     }
 
     @Test
-    void testRenderReminderSectionShowsHeaderAndEachReminder() {
-        String section = renderer.renderReminderSection(
-                "The user configured these reminders. Apply them to this prompt:\n"
-                        + "1. [project] Plan before making changes\n"
-                        + "2. [session] Run focused tests");
+    void testRenderReminderSectionIsCompactAndCardRetainsEachReminder() {
+        String content = "The user configured these reminders. Apply them to this prompt:\n"
+                + "1. [project] Plan before making changes\n"
+                + "   including this continuation\n"
+                + "2. [session] Run focused tests";
+        String section = renderer.renderReminderSection(content);
+        var block = renderer.renderReminderBlock(content);
 
         assertTrue(section.contains("REMINDERS APPLIED TO THIS PROMPT"));
-        assertTrue(section.contains("1. [project] Plan before making changes"));
-        assertTrue(section.contains("2. [session] Run focused tests"));
-        assertFalse(section.contains("The user configured"),
-                "the block narration duplicates the header and must be dropped");
+        assertTrue(section.contains("(2)"));
+        assertFalse(section.contains("Plan before making changes"));
+        assertFalse(section.contains("\n"));
+        assertTrue(block.classic().contains("/ui results"));
+        assertFalse(block.classic().contains("Run focused tests"));
+        assertTrue(block.sections().get(0).content().contains("1. [project] Plan before making changes"));
+        assertTrue(block.sections().get(0).content().contains("including this continuation"));
+        assertTrue(block.sections().get(0).content().contains("2. [session] Run focused tests"));
+        assertFalse(block.sections().get(0).content().contains("The user configured"));
+        assertNull(renderer.renderReminderBlock(null));
+        assertNull(renderer.renderReminderBlock("   "));
+        assertNotEquals(block.key(), renderer.renderReminderBlock(content).key(),
+                "each prompt must retain its own applied reminder snapshot");
+    }
+
+    @Test
+    void reminderCardsStartCollapsedAcrossPresetsAndCanBeExpanded() {
+        var block = renderer.renderReminderBlock("Kompile added an automatic session reminder. Apply it:\n"
+                + "1. [system] A session was resumed\n2. [project] Keep context");
+        for (String preset : List.of("classic", "focused", "verbose")) {
+            var config = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+            config.applyPreset(preset);
+            var sidebar = new ai.kompile.cli.main.chat.tui.ChatSidebar();
+            sidebar.upsert(block, config);
+            assertFalse(sidebar.inline(block, config).contains("Keep context"));
+            assertTrue(String.join("\n", sidebar.allRows(config, 120)).contains("▸"));
+            assertFalse(String.join("\n", sidebar.allRows(config, 120)).contains("Keep context"));
+            sidebar.toggleSelected(config);
+            sidebar.toggleSection("reminders", config);
+            assertTrue(String.join("\n", sidebar.allRows(config, 120)).contains("Keep context"));
+            sidebar.toggleSelected(config);
+            assertFalse(String.join("\n", sidebar.allRows(config, 120)).contains("Keep context"));
+            assertTrue(String.join("\n", sidebar.inspectorLines()).contains("A session was resumed"));
+            assertFalse(String.join("\n", sidebar.inspectorLines()).contains("Kompile added"));
+        }
     }
 
     // ========================================================================
@@ -477,13 +510,17 @@ class TerminalRendererTest {
     @Test
     void testRenderProviderCompactionNotice() {
         String output = renderer.renderProviderCompactionNotice("Claude Code", "auto", 150000);
-        assertTrue(output.contains("context compacted by Claude Code (auto) · 150000 tokens before"),
+        assertTrue(output.contains("Context compacted")
+                        && output.contains("Claude Code (auto) · provider context before: 150,000 tokens"),
                 output);
 
         String bare = renderer.renderProviderCompactionNotice("Claude Code", "", 0);
-        assertTrue(bare.contains("context compacted by Claude Code ───"), bare);
+        assertTrue(bare.contains("Context compacted") && bare.contains("Claude Code"), bare);
         assertFalse(bare.contains("("), bare);
-        assertFalse(bare.contains("tokens before"), bare);
+        assertFalse(bare.contains("context before"), bare);
+        assertTrue(output.contains("provider context after not reported"), output);
+        assertTrue(bare.contains("provider context after not reported"), bare);
+        assertFalse(output.contains("%") || output.contains("history estimate"), output);
     }
 
     // ========================================================================

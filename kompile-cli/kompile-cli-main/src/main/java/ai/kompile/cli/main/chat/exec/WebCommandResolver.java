@@ -155,6 +155,15 @@ public final class WebCommandResolver {
             if ("help".equals(name)) return new Resolution(Status.COMPLETED, command, ChatCommandCatalog.webHelp(), null);
             if ("skills".equals(name)) return new Resolution(Status.COMPLETED, command,
                     SkillsMarkdownGenerator.generateCompact(skills.get().all()), null);
+            if ("usage".equals(name)) {
+                if (!raw.substring(end).isBlank()) return new Resolution(Status.INVALID, command,
+                        "Usage: /usage (current provider's account allowance; /stats is session usage)", null);
+                ChatConfig config = sessionConfig(configOverride != null ? configOverride.get()
+                        : ChatConfig.loadOrFromEnv(directory), stateStore, input.sessionId(), directory);
+                var report = new ai.kompile.cli.main.chat.config.VendorUsageService().fetch(config);
+                return new Resolution(report.status() == ai.kompile.cli.main.chat.config.VendorUsageService.Status.ERROR
+                        ? Status.INVALID : Status.COMPLETED, command, report.text(), null);
+            }
             if ("model".equals(name)) {
                 return resolveModelCommand(raw.substring(Math.min(end, raw.length())),
                         command, input, stateStore, directory, configOverride,

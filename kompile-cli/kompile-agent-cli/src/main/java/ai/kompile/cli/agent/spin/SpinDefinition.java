@@ -20,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.jar.JarFile;
 import java.util.regex.Pattern;
 
 /**
@@ -87,10 +88,11 @@ public final class SpinDefinition {
     }
 
     public static SpinDefinition load(Path source) throws IOException {
-        return load(source, false);
+        return load(source, null);
     }
 
-    static SpinDefinition load(Path source, boolean embeddedRuntimeProvided) throws IOException {
+    static SpinDefinition load(Path source, Path suppliedRuntime) throws IOException {
+        boolean embeddedRuntimeProvided = suppliedRuntime != null;
         if (source == null) throw new IOException("Spin source is required");
         Path root = source.toAbsolutePath().normalize();
         if (Files.isSymbolicLink(root)
@@ -160,7 +162,7 @@ public final class SpinDefinition {
         validateToolNames(role.path("denyTools"), "role.denyTools");
 
         SpinProjectComposition project = projectBacked
-                ? SpinProjectComposition.load(root, spin.path("project")) : null;
+                ? SpinProjectComposition.load(root, spin.path("project"), suppliedRuntime) : null;
         if (projectBacked && agent.has("models") && !agent.path("models").isEmpty()) {
             throw new IOException("Project-backed spins declare models in kompile.project.json, not agent.yaml");
         }
@@ -194,22 +196,64 @@ public final class SpinDefinition {
             requireNative(runtime, "kompile-agent");
             if (needsServing) requireNative(runtime, "kompile-model-serving");
             if (project.distribution().getWeb().isEnabled()) requireNative(runtime, "kompile-chat");
-        } else if (project.distribution().getWeb().isEnabled()) {
-            throw new IOException("Project spin web delivery currently requires native executables");
+        } else {
+            requireProjectComponent(runtime, "kompile", "kompile-cli", delivery);
+            requireProjectComponent(runtime, "kompile-agent", "kompile-agent", delivery);
+            if (needsServing) requireProjectComponent(runtime, "kompile-model-serving", "kompile-model-serving", delivery);
+            if (project.distribution().getWeb().isEnabled()
+                    && requireProjectComponent(runtime, "kompile-chat", "kompile-chat", delivery)) {
+                boolean configured = false;
+                for (String name : List.of("application.properties", "application.yml", "application.yaml")) {
+                    if (!Files.exists(runtime.resolve("conf").resolve(name), LinkOption.NOFOLLOW_LINKS)) continue;
+                    Path config = SpinProjectComposition.requirePath(runtime, "conf/" + name, "JAR web configuration");
+                    if (!Files.isRegularFile(config, LinkOption.NOFOLLOW_LINKS) || Files.size(config) == 0) {
+                        throw new IOException("JAR web configuration must be a nonempty regular file: " + config);
+                    }
+                    configured = true;
+                }
+                if (!configured) throw new IOException("JAR web delivery requires runtime/conf/application.{properties,yml,yaml}");
+            }
         }
     }
 
-    private static void requireNative(Path runtime, String name) throws IOException {
+    /** Returns true for a JAR component. A script alone is not a provisioned runtime. */
+    private static boolean requireProjectComponent(Path runtime, String binary, String jarName, String delivery)
+            throws IOException {
+        if ("mixed".equals(delivery)) {
+            try {
+                requireNative(runtime, binary);
+                return false;
+            } catch (IOException noNative) {
+                // Mixed permits a packaged JVM component, not an external/global fallback.
+            }
+        }
+        Path path = SpinProjectComposition.requirePath(runtime, "lib/" + jarName + ".jar", binary + " JAR");
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Runtime JAR must be a regular file: " + path);
+        }
+        try (JarFile jar = new JarFile(path.toFile())) {
+            var manifest = jar.getManifest();
+            String main = manifest == null ? null : manifest.getMainAttributes().getValue("Main-Class");
+            var entry = main == null ? null : jar.getJarEntry(main.replace('.', '/') + ".class");
+            if (main == null || main.isBlank() || entry == null || entry.isDirectory() || entry.getSize() <= 0) {
+                throw new IOException("Runtime JAR must contain a packaged Main-Class entry: " + path);
+            }
+        }
+        return true;
+    }
+
+    static Path requireNative(Path runtime, String name) throws IOException {
         for (String filename : List.of(name, name + ".exe")) {
             Path binary = runtime.resolve("bin").resolve(filename);
             if (!Files.isRegularFile(binary, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(binary)) continue;
+            SpinProjectComposition.requirePath(runtime, "bin/" + filename, "native runtime " + name);
             try (var input = Files.newInputStream(binary)) {
                 byte[] header = input.readNBytes(4);
                 if (header.length == 4) {
                     int magic = java.nio.ByteBuffer.wrap(header).getInt();
                     if (magic == 0x7f454c46 || magic == 0xfeedface || magic == 0xfeedfacf
                             || magic == 0xcefaedfe || magic == 0xcffaedfe || magic == 0xcafebabe
-                            || magic == 0xbebafeca || (header[0] == 'M' && header[1] == 'Z')) return;
+                            || magic == 0xbebafeca || (header[0] == 'M' && header[1] == 'Z')) return binary;
                 }
             }
         }

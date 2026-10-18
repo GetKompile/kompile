@@ -31,6 +31,10 @@ public class AgentChatRequest {
     private String message;
     /** Stable browser conversation identifier; the server hashes it before CLI persistence. */
     private String sessionId;
+    /** Optional browser-generated opaque run identity, known even before the first SSE event. */
+    private String runId;
+    /** Exact visible transcript boundary before this run; never inferred from repeated prompt text. */
+    private Integer messageStartIndex;
     /** Harness persona (for example coder/crawler) or role selector prefixed with role:. */
     private String agentName;
     private boolean skipPermissions = true;

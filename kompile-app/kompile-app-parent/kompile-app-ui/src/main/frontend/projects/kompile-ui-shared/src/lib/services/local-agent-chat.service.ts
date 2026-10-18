@@ -22,6 +22,7 @@ import { BaseService } from './base.service';
 import { ChatStorageService } from './chat-storage.service';
 import { SKIP_ERROR_SNACKBAR } from './http-error.interceptor';
 import { ReasoningTrailDto } from './kb-grounding.service';
+import { ToolPresentationContext, validateToolPresentation } from './markdown-renderer.service';
 import {
   AgentProvider,
   LocalAgentSession,
@@ -38,8 +39,33 @@ import {
   createNewSession,
   ChatHistoryEntry,
   MessageAttachment,
-  ToolCallChart
+  ToolCallChart,
+  ProductDisplayTurn
 } from '../models/api-models';
+
+/** Canonical product metadata only; never mine prose, rendered rows or raw tool output. */
+export function projectProductToolPresentations(turn: ProductDisplayTurn, context: ToolPresentationContext): ToolUseEvent[] {
+  if (typeof turn.role !== 'string' || turn.role.toLowerCase() !== 'assistant'
+    || typeof turn.productTurnId !== 'string' || !/^[0-9a-f]{32}$/.test(turn.productTurnId)
+    || !Array.isArray(turn.toolPresentations) || turn.toolPresentations.length > 128) return [];
+  const calls: ToolUseEvent[] = [], seen = new Set<string>();
+  for (const item of turn.toolPresentations) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)
+      || Object.keys(item).some(key => !['callId', 'toolName', 'textOffset', 'presentation'].includes(key))
+      || typeof item.callId !== 'string' || typeof item.toolName !== 'string' || seen.has(item.callId)
+      || item.presentation?.identity?.turnId !== turn.productTurnId
+      || (item.textOffset !== undefined && (!Number.isSafeInteger(item.textOffset) || item.textOffset < 0
+        || item.textOffset > (turn.content || '').length))) continue;
+    const call: ToolUseEvent = { tool: item.toolName, toolName: item.toolName, input: '', callId: item.callId,
+      status: 'completed', ok: true, textOffset: item.textOffset,
+      detail: { displayName: '', presentation: item.presentation } };
+    const presentation = validateToolPresentation(call, context);
+    if (!presentation) continue;
+    call.detail = { displayName: '', presentation };
+    seen.add(item.callId); calls.push(call);
+  }
+  return calls;
+}
 
 /**
  * Aggregated session-configuration snapshot from GET /agents/chat/session-config.
@@ -291,6 +317,7 @@ export interface HarnessReconnectBookmark {
   turnId?: number;
   currentMessageId?: string;
   lastMessageId?: string;
+  messageStartIndex?: number;
   agent: AgentProvider;
 }
 export interface HarnessControlReply {
@@ -481,7 +508,11 @@ export class LocalAgentChatService extends BaseService {
   /** Browser session ids whose CLI transcript now holds more than the live view showed. */
   getTranscriptReloads(): Observable<string> { return this.transcriptReload$.asObservable(); }
 
+  private recoveredBookmark: HarnessReconnectBookmark | null = null;
+
   getReconnectBookmark(browserSessionId: string): HarnessReconnectBookmark | null {
+    if (this.recoveredBookmark?.browserSessionId === browserSessionId
+        && this.recoveredBookmark.expiresAt > Date.now()) return this.recoveredBookmark;
     const key = 'kompile-live-run:' + browserSessionId;
     // A closed tab loses sessionStorage, not the server's run. Keep old tab checkpoints readable.
     for (const kind of ['localStorage', 'sessionStorage'] as const) {
@@ -504,11 +535,14 @@ export class LocalAgentChatService extends BaseService {
     const value: HarnessReconnectBookmark = { runId: this.currentProcessId, browserSessionId: this.browserSessionId,
       backendUrl: this.backendUrl, expiresAt: Date.now() + 33 * 60_000, seed: session,
       messageStart: this.liveMessageStart, agent: this.liveAgent, cursor: this.lastEventId, turnId: this.liveTurnId,
-      currentMessageId: this.currentStreamingMessage?.id, lastMessageId: this.lastLiveMessage?.id };
+      currentMessageId: this.currentStreamingMessage?.id, lastMessageId: this.lastLiveMessage?.id,
+      messageStartIndex: this.visibleMessageStart };
     try {
       const json = JSON.stringify(value, (key, field) => key === 'agent' && field
         ? { name: field.name, displayName: field.displayName, agentType: field.agentType }
         : key === 'environment' ? undefined : field);
+      // Keep seed and cursor atomic even if storage is blocked; never retain the mutable live seed.
+      this.recoveredBookmark = JSON.parse(json);
       if (json.length > 1_048_576) return;
       const key = 'kompile-live-run:' + this.browserSessionId;
       try { localStorage.setItem(key, json); }
@@ -518,6 +552,7 @@ export class LocalAgentChatService extends BaseService {
   }
 
   private forgetReconnectBookmark(browserSessionId = this.browserSessionId): void {
+    if (this.recoveredBookmark?.browserSessionId === browserSessionId) this.recoveredBookmark = null;
     const key = 'kompile-live-run:' + browserSessionId;
     try { localStorage.removeItem(key); } catch { }
     try { sessionStorage.removeItem(key); } catch { }
@@ -557,6 +592,40 @@ export class LocalAgentChatService extends BaseService {
       && Array.isArray(team.gates?.approved) ? team as WorkflowTeam : null;
   }
 
+  private readonly finishedRuns = new Map<string, string>();
+  private markRunFinished(): void {
+    if (!this.currentProcessId) return;
+    this.finishedRuns.set(this.browserSessionId, this.currentProcessId);
+    try { localStorage.setItem('kompile-finished-run:' + this.browserSessionId, this.currentProcessId); } catch { }
+  }
+
+  /** Recover by chat identity, including a tab closed before its first SSE checkpoint arrived. */
+  async discoverRun(browserSessionId: string, workingDirectory?: string): Promise<HarnessReconnectBookmark | null> {
+    const params = new URLSearchParams({ sessionId: browserSessionId });
+    if (workingDirectory) params.set('workingDirectory', workingDirectory);
+    const response = await fetch(`${this.backendUrl}/agents/chat/active-run?${params}`, { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`Could not check ongoing chat activity (HTTP ${response.status})`);
+    const run = await response.json();
+    if (!run?.runId) return null;
+    let finished = this.finishedRuns.get(browserSessionId);
+    try { finished ||= localStorage.getItem('kompile-finished-run:' + browserSessionId) || undefined; } catch { }
+    if (run.finished === true && run.runId === finished) return null;
+    if (typeof run.runId !== 'string' || !run.runId.startsWith('harness-')
+        || typeof run.agentName !== 'string' || typeof run.message !== 'string')
+      throw new Error('Invalid ongoing chat activity');
+    const agent = { name: run.agentName, displayName: run.agentName } as AgentProvider;
+    const seed = createNewSession('Chat', agent);
+    const input = createUserMessage(seed.id, run.message);
+    const answer = createAssistantMessage(seed.id, agent);
+    seed.messages = [input, answer];
+    const bookmark: HarnessReconnectBookmark = { runId: run.runId, browserSessionId,
+      backendUrl: this.backendUrl, expiresAt: Date.now() + 33 * 60_000, seed, messageStart: 0,
+      cursor: 0, turnId: 0, currentMessageId: answer.id, agent,
+      messageStartIndex: Number.isSafeInteger(run.messageStartIndex) && run.messageStartIndex >= 0 ? run.messageStartIndex : undefined };
+    this.recoveredBookmark = bookmark;
+    return bookmark;
+  }
+
   async stopReconnectRun(browserSessionId: string): Promise<void> {
     const saved = this.getReconnectBookmark(browserSessionId);
     if (!saved) return;
@@ -569,11 +638,13 @@ export class LocalAgentChatService extends BaseService {
     if (this.currentAbortController) throw new Error('A run is already connected');
     const saved = this.getReconnectBookmark(browserSessionId);
     if (!saved) throw new Error('No reconnectable run saved in this tab');
-    const session = saved.seed;
+    // The live replay must not mutate the checkpoint before its cursor is saved with those deltas.
+    const session = structuredClone(saved.seed);
     this.browserSessionId = browserSessionId;
     this.reconnectSeed = session;
     this.liveAgent = saved.agent;
     this.liveMessageStart = saved.messageStart;
+    this.visibleMessageStart = saved.messageStartIndex;
     this.liveTurnId = saved.turnId || 0; this.liveTurnTexts = [];
     this.lastLiveMessage = session.messages.find(message => message.id === saved.lastMessageId) || null;
     this.lastEventId = saved.cursor || 0; this.reconnectable = true;
@@ -668,6 +739,7 @@ export class LocalAgentChatService extends BaseService {
 
   /** The run's events are gone: end the live view without an error and let the transcript fill it in. */
   private finishFromTranscript(session: LocalAgentSession): void {
+    this.markRunFinished();
     this.forgetReconnectBookmark();
     this.transcriptStale = true;
     if (this.currentStreamingMessage || this.lastLiveMessage) this.handleStreamComplete(session, {});
@@ -684,6 +756,7 @@ export class LocalAgentChatService extends BaseService {
     this.transcriptReload$.next(this.browserSessionId);
   }
   private liveMessageStart = 0;
+  private visibleMessageStart?: number;
   private liveAgent: AgentProvider | null = null;
   private lastLiveMessage: LocalAgentMessage | null = null;
   private liveMessages$ = new Subject<LocalAgentMessage[]>();
@@ -703,7 +776,7 @@ export class LocalAgentChatService extends BaseService {
 
   private startLiveTurn(session: LocalAgentSession, data: { turnId: number; source: string; text: string }): void {
     if (!Number.isSafeInteger(data.turnId) || data.turnId <= this.liveTurnId || !this.liveAgent) return;
-    if (data.turnId !== this.liveTurnId + 1) throw new Error('Missing live turn boundary');
+    if (data.turnId !== this.liveTurnId + 1 && !this.transcriptStale) throw new Error('Missing live turn boundary');
     this.thinkingBuffer = ''; // thinking is per-turn chrome; never leaks across turns
     if (data.source !== 'initial') {
       const input = createUserMessage(session.id, data.text || '');
@@ -900,6 +973,8 @@ export class LocalAgentChatService extends BaseService {
     agent: AgentProvider,
     options: {
       sessionId?: string;
+      /** Select the strict product wire format, not an authorization or profile override. */
+      managedProduct?: boolean;
       skipPermissions?: boolean;
       workingDirectory?: string;
       enableMemory?: boolean;
@@ -919,12 +994,26 @@ export class LocalAgentChatService extends BaseService {
       graphRagConversationId?: string;
       // Folder context injection
       folderId?: string;
+      // Exact visible transcript boundary before this run (used for checkpoint-free recovery).
+      messageStartIndex?: number;
       // Timeout (0 selects the server-owned five-minute default)
       timeoutSeconds?: number;
       // Inline attachments (images, text files)
       attachments?: MessageAttachment[];
     } = {}
   ): Promise<void> {
+    // Fail before changing the transcript/bookmark or fetching: product turns cannot silently
+    // discard browser-selected permissions, prompts, attachments or history.
+    if (options.managedProduct) {
+      if (options.attachments?.length) throw new Error('Managed product turns do not support attachments.');
+      if (options.skipPermissions) throw new Error('Managed product turns cannot skip permissions.');
+      if (options.systemPromptOverride !== undefined) throw new Error('Managed product turns cannot override the system prompt.');
+      if (options.includeHistory === true || options.maxHistoryMessages !== undefined)
+        throw new Error('Managed product turns cannot import browser history.');
+      if (options.enableRag || options.enableGraphRag || options.folderId !== undefined)
+        throw new Error('Managed product turns cannot override retrieval or folder context.');
+    }
+
     // Create and store user message
     const userMessage = createUserMessage(session.id, message);
     this.liveMessageStart = session.messages.length;
@@ -947,14 +1036,28 @@ export class LocalAgentChatService extends BaseService {
 
     // Build chat history if requested
     let chatHistory: ChatHistoryEntry[] | undefined;
-    if (options.includeHistory !== false) {
+    if (!options.managedProduct && options.includeHistory !== false) {
       const maxHistory = options.maxHistoryMessages || 20;
       chatHistory = this.buildChatHistory(session, maxHistory);
     }
 
-    // Build request with RAG options, folder context, and timeout
-    const request: LocalAgentChatRequest = {
+    const turnId = options.managedProduct
+      ? Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+      : undefined;
+    // Product run identity matches the server worker before the first SSE acknowledgement.
+    // It remains internal for Stop/replay; the strict product endpoint receives only turnId.
+    const request: LocalAgentChatRequest = options.managedProduct ? {
       message,
+      sessionId: options.sessionId ?? session.id,
+      turnId,
+      runId: 'harness-product-' + turnId,
+      messageStartIndex: options.messageStartIndex,
+      agentName: agent.name,
+      workingDirectory: options.workingDirectory
+    } : {
+      message,
+      runId: 'harness-' + Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''),
+      messageStartIndex: options.messageStartIndex,
       sessionId: options.sessionId ?? session.id,
       agentName: agent.name,
       skipPermissions: options.skipPermissions ?? false,
@@ -1024,17 +1127,19 @@ export class LocalAgentChatService extends BaseService {
     this.currentAbortController = owner;
     try {
       console.debug('[LocalAgentChat] Starting stream request');
-      this.currentProcessId = null;
+      this.currentProcessId = request.runId || null;
       this.lastEventId = 0;
-      this.reconnectable = false;
+      this.reconnectable = false; // Automatic retries require the server's queued acknowledgement.
       this.transcriptStale = false;
       this.browserSessionId = request.sessionId || session.id;
+      this.visibleMessageStart = request.messageStartIndex;
       this.reconnectSeed = session;
       this.closeHarnessControls();
       this.harnessActivity = null;
       this.liveTurnTexts = [];
       this.thinkingBuffer = '';
       this.liveInputHistory = [];
+      this.saveReconnectBookmark(session); // Publish identity before a navigation or Stop can race the acknowledgement.
 
       const response = await fetch(`${this.backendUrl}/agents/chat/stream`, {
         method: 'POST',
@@ -1042,7 +1147,14 @@ export class LocalAgentChatService extends BaseService {
           'Content-Type': 'application/json',
           'Accept': 'text/event-stream'
         },
-        body: JSON.stringify(request),
+        // turnId selects serialization only. The server pins and authorizes the product profile.
+        body: JSON.stringify(request.turnId !== undefined ? {
+          message: request.message,
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+          agentName: request.agentName,
+          workingDirectory: request.workingDirectory
+        } : request),
         signal: owner.signal
       });
       if (owner.signal.aborted || this.currentAbortController !== owner) return;
@@ -1251,18 +1363,13 @@ export class LocalAgentChatService extends BaseService {
 
               case 'cancelled':
                 sawTerminalEvent = true;
+                this.markRunFinished();
                 this.forgetReconnectBookmark();
                 // Process was cancelled by user
                 console.debug('[LocalAgentChat] Process cancelled:', parsed);
-                if (this.currentStreamingMessage) {
-                  this.currentStreamingMessage.streaming = false;
-                  this.currentStreamingMessage.content = this.getCurrentContent() + '\n\n[Stopped]';
-                  this.currentStreamingMessage.latencyMs = Date.now() - this.streamStartTime;
-                  this.storageService.updateSession(session);
-                }
-                this.isStreaming$.next(false);
-                this.currentStreamingMessage = null;
-                this.currentProcessId = null;
+                if (this.currentStreamingMessage) this.currentStreamingMessage.stopped = true;
+                else if (this.lastLiveMessage) this.lastLiveMessage.stopped = true;
+                this.handleStreamComplete(session, { content: this.getCurrentContent() + '\n\n[Stopped]' });
                 currentEventType = 'message'; // Reset before returning
                 return; // Exit early
 
@@ -1353,6 +1460,7 @@ export class LocalAgentChatService extends BaseService {
 
               case 'complete':
                 sawTerminalEvent = true;
+                this.markRunFinished();
                 this.forgetReconnectBookmark();
                 console.debug('[LocalAgentChat] Complete message received');
                 this.handleStreamComplete(session, parsed);
@@ -1360,6 +1468,7 @@ export class LocalAgentChatService extends BaseService {
 
               case 'error':
                 sawTerminalEvent = true;
+                this.markRunFinished();
                 this.forgetReconnectBookmark();
                 console.error('[LocalAgentChat] Error event:', parsed);
                 this.handleStreamError(session, typeof parsed === 'string' ? parsed : JSON.stringify(parsed));
@@ -1469,8 +1578,12 @@ export class LocalAgentChatService extends BaseService {
 
   /** A tool event as stored on its message; the answer length so far anchors its card. */
   private toToolCall(parsed: any): ToolUseEvent {
+    const detail = parsed.detail && typeof parsed.detail === 'object' ? { ...parsed.detail } : undefined;
+    // Even inert metadata may travel only on an explicitly successful completed tool event.
+    if (detail && (parsed.status !== 'completed' || parsed.ok !== true || detail.error)) delete detail.presentation;
     return {
       ...parsed,
+      detail,
       tool: parsed.tool ?? parsed.toolName ?? '',
       input: typeof parsed.input === 'string' ? parsed.input : parsed.input === undefined ? '' : JSON.stringify(parsed.input),
       textOffset: this.getCurrentContent().length
@@ -1487,11 +1600,11 @@ export class LocalAgentChatService extends BaseService {
     // Only harness calls are kept: other lanes echo their calls into the answer text.
     if (!message || !call.status) return;
     const calls = message.toolUses ?? [];
-    let index = -1;
-    if (call.status === 'completed') {
+    let index = call.callId ? calls.findIndex(open => open.callId === call.callId) : -1;
+    if (index >= 0 && call.status === 'started') return; // replay cannot reopen a completed card
+    if (index < 0 && call.status === 'completed' && !call.callId) {
       for (let i = calls.length - 1; i >= 0 && index < 0; i--) {
-        const open = calls[i];
-        if (open.status === 'started' && (call.callId ? open.callId === call.callId : open.tool === call.tool)) index = i;
+        if (calls[i].status === 'started' && calls[i].tool === call.tool) index = i;
       }
     }
     message.toolUses = index < 0 ? [...calls, call] : calls.map((open, i) => i !== index ? open

@@ -278,7 +278,7 @@ public sealed interface EmbeddingSubprocessMessage
 
     /**
      * Heartbeat for liveness detection.
-     * Sent at regular intervals (default every 10 seconds).
+     * Sent at regular intervals (default every 2 seconds), with optional device-memory telemetry.
      */
     record Heartbeat(
             long uptimeMs,              // Time since subprocess started
@@ -288,8 +288,16 @@ public sealed interface EmbeddingSubprocessMessage
             long heapUsedBytes,         // Current heap used
             long heapMaxBytes,          // Maximum heap
             long totalEmbeddings,       // Total embeddings processed since start
-            double avgEmbedTimeMs       // Average embedding time
-    ) implements EmbeddingSubprocessMessage {}
+            double avgEmbedTimeMs,      // Average embedding time
+            java.util.Map<String, Object> deviceMemory // Optional, backend-scoped child telemetry
+    ) implements EmbeddingSubprocessMessage {
+        /** Keep old callers and old JSON heartbeats compatible. */
+        public Heartbeat(long uptimeMs, boolean modelLoaded, String modelId, double memoryUsagePercent,
+                         long heapUsedBytes, long heapMaxBytes, long totalEmbeddings, double avgEmbedTimeMs) {
+            this(uptimeMs, modelLoaded, modelId, memoryUsagePercent, heapUsedBytes, heapMaxBytes,
+                    totalEmbeddings, avgEmbedTimeMs, null);
+        }
+    }
 
     /**
      * Log message from subprocess for real-time streaming.

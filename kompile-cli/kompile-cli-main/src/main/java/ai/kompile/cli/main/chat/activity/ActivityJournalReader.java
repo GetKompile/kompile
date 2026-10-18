@@ -4,7 +4,9 @@ import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -32,6 +34,7 @@ public final class ActivityJournalReader {
 
     public ReadResult readFrom(long offset, ActivityReadBudget budget) throws IOException {
         budget = budget == null ? ActivityReadBudget.DEFAULT : budget;
+        if (file != null) ensureSafePath(file);
         if (file == null || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
             return new ReadResult(List.of(), 0, false, Math.max(0L, offset),
                     ActivityCoverage.UNAVAILABLE, List.of());
@@ -43,40 +46,45 @@ public final class ActivityJournalReader {
         List<String> warnings = new ArrayList<>();
         int malformed = 0;
         long consumed = start;
-        long bytes = 0L;
         boolean truncated = false;
-        try (RandomAccessFile reader = new RandomAccessFile(file.toFile(), "r")) {
-            reader.seek(start);
-            String rawLine;
-            while ((rawLine = reader.readLine()) != null) {
-                long lineStart = consumed;
-                long lineBytes = reader.getFilePointer() - consumed;
-                if (bytes + lineBytes > budget.maxBytes()) {
-                    truncated = true;
-                    break;
-                }
-                bytes += lineBytes;
-                consumed = reader.getFilePointer();
-                String line = new String(rawLine.getBytes(StandardCharsets.ISO_8859_1),
-                        StandardCharsets.UTF_8);
-                if (line.isBlank()) continue;
-                if (events.size() >= budget.maxRecords()) {
-                    truncated = true;
-                    break;
-                }
+        ensureSafePath(file);
+        // Bound allocation BEFORE loading a line. readLine() may allocate an arbitrarily
+        // large malformed record before a caller's byte budget can be checked.
+        try (FileChannel reader = FileChannel.open(file, StandardOpenOption.READ,
+                LinkOption.NOFOLLOW_LINKS)) {
+            ByteBuffer buffer = ByteBuffer.allocate((int) Math.min(budget.maxBytes(), size - start));
+            reader.position(start);
+            while (buffer.hasRemaining() && reader.read(buffer) > 0) { }
+            byte[] data = buffer.array();
+            int loaded = buffer.position();
+            int begin = 0;
+            for (int i = 0; i < loaded; i++) {
+                if (data[i] != '\n') continue;
+                if (events.size() >= budget.maxRecords()) break;
+                int lineBegin = begin;
+                consumed = start + i + 1L;
+                begin = i + 1;
                 try {
-                    ActivityEvent event = mapper.readValue(line, ActivityEvent.class);
-                    if (event.identity() != null) events.add(event);
-                    else malformed++;
+                    String line = decodeUtf8(data, lineBegin, i - lineBegin);
+                    if (line.isBlank()) continue;
+                    var raw = mapper.readTree(line);
+                    if (!raw.isObject() || !raw.hasNonNull("identity") || !raw.hasNonNull("eventId"))
+                        throw new IOException("Missing event envelope");
+                    events.add(mapper.treeToValue(raw, ActivityEvent.class));
                 } catch (Exception malformedLine) {
                     malformed++;
                     if (warnings.size() < 8) warnings.add("Skipped malformed activity event");
-                    if (reader.getFilePointer() >= size && finalLineHasNoNewline(reader, size)) {
-                        truncated = true;
-                        consumed = lineStart;
-                    }
                 }
             }
+            // Unterminated final records remain unconsumed, even if currently valid JSON:
+            // the writer may still be appending to that record.
+            truncated = consumed < size;
+            if (begin < loaded && events.size() < budget.maxRecords()
+                    && loaded == size - start && data[loaded - 1] != '\n') {
+                malformed++;
+                warnings.add("Incomplete final activity record retained for retry");
+            } else if (truncated) warnings.add("Activity read budget reached; continue at nextOffset");
+            if (offset > size) warnings.add("Activity read offset reset after journal truncation");
         }
         ActivityCoverage coverage = truncated || malformed > 0
                 ? ActivityCoverage.PARTIAL : ActivityCoverage.COMPLETE;
@@ -85,16 +93,17 @@ public final class ActivityJournalReader {
                 warnings.stream().limit(16).toList());
     }
 
-    private static boolean finalLineHasNoNewline(RandomAccessFile reader, long size) {
-        if (size <= 0L) return false;
-        try {
-            long position = reader.getFilePointer();
-            reader.seek(size - 1L);
-            int last = reader.read();
-            reader.seek(position);
-            return last != '\n';
-        } catch (IOException ignored) {
-            return true;
+    static String decodeUtf8(byte[] data, int offset, int length) throws IOException {
+        return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(data, offset, length)).toString();
+    }
+
+    static void ensureSafePath(Path file) throws IOException {
+        for (Path path = file.toAbsolutePath().normalize(); path != null; path = path.getParent()) {
+            if (Files.isSymbolicLink(path))
+                throw new IOException("Activity journal path must not traverse symbolic links");
         }
     }
 

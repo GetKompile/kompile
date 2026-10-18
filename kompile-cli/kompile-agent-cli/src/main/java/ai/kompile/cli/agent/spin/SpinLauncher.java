@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /** Launches an installed spin through the ordinary Kompile chat/project commands. */
 public final class SpinLauncher {
@@ -47,18 +48,39 @@ public final class SpinLauncher {
         CommandResolution kompile = resolveKompile(current, environment);
         verifyModelRuntime(current.definition(), kompile, environment);
         Map<String, String> childEnvironment = runtimeEnvironment(
-                prepared, kompile, environment);
-        if (current.definition().projectBacked()) {
-            childEnvironment.remove("KOMPILE_CHAT_MODEL_PATH");
-            childEnvironment.remove("KOMPILE_CHAT_TOKENIZER_PATH");
-            childEnvironment.remove("KOMPILE_MODEL_SERVING_EXECUTABLE");
-            childEnvironment.remove("KOMPILE_MODEL_SERVING_JAR");
-            childEnvironment.put("KOMPILE_DIST_HOME", kompile.installRoot().toString());
-            childEnvironment.put("KOMPILE_CHAT_ADDRESS", current.definition().project().distribution().getWeb().getBind());
-        }
+                current.definition(), prepared, kompile, environment);
+        List<String> command = commandFor(current.definition(), prepared, kompile.commandPrefix(), args);
         ensureProjectInitialized(current.definition(), prepared, kompile,
                 childEnvironment);
-        List<String> command = new ArrayList<>(kompile.commandPrefix());
+
+        ProcessBuilder processBuilder = new ProcessBuilder(command).inheritIO();
+        processBuilder.directory(prepared.workspace().toFile());
+        processBuilder.environment().clear();
+        processBuilder.environment().putAll(childEnvironment);
+
+        return waitFor(processBuilder.start());
+    }
+
+    static List<String> commandFor(SpinDefinition definition, SpinWorkspace.Prepared prepared,
+                                   List<String> kompilePrefix, List<String> args) throws IOException {
+        if (definition.projectBacked() && definition.project().entrypoint() != null) {
+            rejectProductOverrides(args);
+            List<String> command = new ArrayList<>(executableCommand(definition.project().entrypoint()));
+            if (!args.isEmpty() && Set.of("chat", "web", "exec").contains(args.get(0))) {
+                if ("exec".equals(args.get(0)) && args.size() == 1) {
+                    throw new IOException(definition.commandName() + " exec requires prompt text");
+                }
+                command.addAll(args);
+            } else {
+                if (!args.isEmpty() && Set.of("project", "crawl", "spin").contains(args.get(0))) {
+                    throw new IOException("Product entrypoints support chat, web and exec, not " + args.get(0));
+                }
+                command.add(args.isEmpty() && definition.project().distribution().getWeb().isEnabled() ? "web" : "chat");
+                command.addAll(args);
+            }
+            return List.copyOf(command);
+        }
+        List<String> command = new ArrayList<>(kompilePrefix);
         if (!args.isEmpty() && "project".equals(args.get(0))) {
             command.add("project");
             command.addAll(args.subList(1, args.size()));
@@ -73,7 +95,7 @@ public final class SpinLauncher {
             List<String> chatArgs = args;
             if (!args.isEmpty() && ("chat".equals(args.get(0)) || "exec".equals(args.get(0)))) {
                 if ("exec".equals(args.get(0)) && args.size() == 1) {
-                    throw new IOException(current.definition().commandName()
+                    throw new IOException(definition.commandName()
                             + " exec requires prompt text");
                 }
                 chatArgs = args.subList(1, args.size());
@@ -88,23 +110,19 @@ public final class SpinLauncher {
             if (!hasMemoryOption(chatArgs)) {
                 command.add("--memory=false");
             }
-            if (args.isEmpty() && current.definition().projectBacked()
-                    && current.definition().project().distribution().getWeb().isEnabled()) {
+            if (args.isEmpty() && definition.projectBacked()
+                    && definition.project().distribution().getWeb().isEnabled()) {
                 command.add("--web");
                 command.add("--open-browser");
             }
             command.addAll(chatArgs);
         }
 
-        ProcessBuilder processBuilder = new ProcessBuilder(command).inheritIO();
-        processBuilder.directory(prepared.workspace().toFile());
-        processBuilder.environment().clear();
-        processBuilder.environment().putAll(childEnvironment);
-
-        return waitFor(processBuilder.start());
+        return List.copyOf(command);
     }
 
-    private static Map<String, String> runtimeEnvironment(
+    static Map<String, String> runtimeEnvironment(
+            SpinDefinition definition,
             SpinWorkspace.Prepared prepared,
             CommandResolution kompile,
             Map<String, String> environment) {
@@ -125,6 +143,16 @@ public final class SpinLauncher {
                 child.put("KOMPILE_CHAT_TOKENIZER_PATH", model.tokenizer().toString());
             }
         }
+        if (definition.projectBacked()) {
+            for (String key : List.of("KOMPILE_CLI", "KOMPILE_AGENT", "KOMPILE_CHAT_MODEL_PATH",
+                    "KOMPILE_CHAT_TOKENIZER_PATH", "KOMPILE_MODEL_SERVING_EXECUTABLE", "KOMPILE_MODEL_SERVING_JAR")) {
+                child.remove(key);
+            }
+            child.put("KOMPILE_DIST_HOME", kompile.installRoot().toString());
+            child.put("KOMPILE_CHAT_ADDRESS", definition.project().distribution().getWeb().getBind());
+            Path java = kompile.installRoot().resolve("runtime/bin/java" + (isWindows() ? ".exe" : ""));
+            if (Files.isExecutable(java)) child.put("KOMPILE_JAVA", java.toString());
+        }
         return child;
     }
 
@@ -133,8 +161,8 @@ public final class SpinLauncher {
             CommandResolution kompile,
             Map<String, String> environment) throws IOException {
         if (!definition.requiresLocalModelRuntime()) return;
-        if (validConfiguredFile(environment.get("KOMPILE_MODEL_SERVING_EXECUTABLE"))
-                || validConfiguredFile(environment.get("KOMPILE_MODEL_SERVING_JAR"))) {
+        if (!definition.projectBacked() && (validConfiguredFile(environment.get("KOMPILE_MODEL_SERVING_EXECUTABLE"))
+                || validConfiguredFile(environment.get("KOMPILE_MODEL_SERVING_JAR")))) {
             return;
         }
         if (kompile.installRoot() != null
@@ -277,6 +305,23 @@ public final class SpinLauncher {
         }
     }
 
+    /** Product adapters pin identity/policy themselves; callers may tune ports and presentation only. */
+    private static void rejectProductOverrides(List<String> arguments) throws IOException {
+        Set<String> managed = Set.of("--product-profile", "--profile", "--working-dir", "--working-directory",
+                "--workspace", "--root", "--home", "--role", "--roles", "--agent", "--mode", "--permissions", "--permission-mode",
+                "--permission", "--dangerously-skip-permissions", "--skip-permissions", "--allow-all",
+                "--yes", "--config", "--global-config", "--system-prompt", "--system-prompt-file",
+                "--web-session-worker", "--web-controls");
+        for (String argument : arguments) {
+            if ("--".equals(argument)) break;
+            String option = argument.split("=", 2)[0];
+            if (managed.contains(option) || (argument.startsWith("-") && !argument.startsWith("--")
+                    && argument.length() > 1 && "draCy".indexOf(argument.charAt(1)) >= 0)) {
+                throw new IOException(option + " is managed by the installed spin product adapter");
+            }
+        }
+    }
+
     private static boolean hasMemoryOption(List<String> arguments) {
         return arguments.stream().anyMatch(argument -> argument.equals("--memory")
                 || argument.equals("--no-memory")
@@ -292,14 +337,23 @@ public final class SpinLauncher {
         return normalized;
     }
 
-    private static CommandResolution resolveKompile(SpinInstallation.Current current,
-                                                     Map<String, String> environment)
+    static CommandResolution resolveKompile(SpinInstallation.Current current,
+                                            Map<String, String> environment)
             throws IOException {
         if (current.definition().projectBacked()) {
             Path bundled = current.release().resolve("runtime");
-            CommandResolution resolution = executableResolution(bundled, "kompile");
-            if (resolution == null && !"native".equals(current.definition().project().distribution().getDelivery())) {
-                resolution = jarResolution(bundled);
+            String delivery = current.definition().project().distribution().getDelivery();
+            CommandResolution resolution = null;
+            if (!"jar".equals(delivery)) {
+                try {
+                    Path binary = SpinDefinition.requireNative(bundled, "kompile");
+                    resolution = new CommandResolution(executableCommand(binary), bundled);
+                } catch (IOException noNative) {
+                    if ("native".equals(delivery)) throw noNative;
+                }
+            }
+            if (resolution == null && !"native".equals(delivery)) {
+                resolution = jarResolution(bundled, true);
             }
             if (resolution == null) throw new IOException("Curated spin runtime is missing; global fallback is disabled");
             return resolution;
@@ -355,13 +409,22 @@ public final class SpinLauncher {
     }
 
     private static CommandResolution jarResolution(Path root) {
+        return jarResolution(root, false);
+    }
+
+    private static CommandResolution jarResolution(Path root, boolean project) {
         if (root == null) return null;
         Path jar = root.resolve("lib/kompile-cli.jar").toAbsolutePath().normalize();
         if (!Files.isRegularFile(jar)) return null;
         Path java = root.resolve("runtime/bin/java" + (isWindows() ? ".exe" : ""));
         String javaCommand = Files.isExecutable(java) ? java.toString() : "java";
-        return new CommandResolution(List.of(javaCommand,
-                "-Dkompile.dist.home=" + root, "-jar", jar.toString()), root);
+        List<String> command = new ArrayList<>(List.of(javaCommand, "-Dkompile.dist.home=" + root));
+        if (project) {
+            command.add("-Djava.library.path=" + root.resolve("bin") + File.pathSeparator + root.resolve("lib"));
+            command.add("-Dspring.config.additional-location=optional:file:" + root.resolve("conf") + "/");
+        }
+        command.addAll(List.of("-jar", jar.toString()));
+        return new CommandResolution(List.copyOf(command), root);
     }
 
     private static Path findOnPath(String command, Map<String, String> environment) {
@@ -402,7 +465,7 @@ public final class SpinLauncher {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
-    private record CommandResolution(List<String> commandPrefix, Path installRoot) { }
+    record CommandResolution(List<String> commandPrefix, Path installRoot) { }
 
     private static final class Patterns {
         private Patterns() { }

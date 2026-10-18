@@ -47,6 +47,7 @@ import java.util.zip.DeflaterOutputStream;
 public final class NativeChatModels {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
     private static final java.util.concurrent.ConcurrentHashMap<Thread, Integer> ACTIVE_REQUESTS = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.concurrent.ConcurrentHashMap<Path, RequestClientFactory> TEST_REQUEST_CLIENTS = new java.util.concurrent.ConcurrentHashMap<>();
     private static final List<String> OPERATIONS = List.of(
             "text", "graph_extraction", "image", "pdf", "json_schema",
             "tools", "embedding", "tensor", "learning");
@@ -55,6 +56,19 @@ public final class NativeChatModels {
             "password", "secret", "clientsecret", "headers", "cookie", "cookies", "token");
 
     private NativeChatModels() { }
+
+    @FunctionalInterface
+    interface RequestClientFactory {
+        DirectLlmClient create(ChatConfig config, ObjectMapper mapper, ProviderConnectivityPolicy policy, Path root);
+    }
+
+    // Package-private, root-scoped fixture seam. Resolution and all unset production paths are unchanged.
+    static AutoCloseable withRequestClientFactoryForTest(Path root, RequestClientFactory factory) {
+        Path key = root.toAbsolutePath().normalize();
+        if (TEST_REQUEST_CLIENTS.putIfAbsent(key, java.util.Objects.requireNonNull(factory)) != null)
+            throw new IllegalStateException("Native request client fixture already installed for this project");
+        return () -> TEST_REQUEST_CLIENTS.remove(key, factory);
+    }
 
     public static String normalizeProvider(String provider) {
         if (provider == null || provider.isBlank()) return null;
@@ -135,7 +149,17 @@ public final class NativeChatModels {
 
     /** Explicit catalog lookup using native chat discovery/auth, not an inference probe or a model allowlist. */
     public static Map<String, Object> listModels(Path root, String provider) throws IOException {
+        return listModels(root, provider, false);
+    }
+
+    /** Product discovery guards the actual detached config before CLI discovery or auth. */
+    public static Map<String, Object> listModels(Path root, String provider, boolean httpOnly) throws IOException {
         ChatConfig selected = configuration(root, provider);
+        if (httpOnly) {
+            try (DirectLlmClient client = new DirectLlmClient(selected, MAPPER, root)) {
+                requireInHostHttp(client.resolveRoute(selected.getModel()).protocol());
+            }
+        }
         ModelDiscovery.Result catalog;
         try {
             catalog = selected.isClaudeCliNative()
@@ -170,6 +194,12 @@ public final class NativeChatModels {
                 + "thinking variants and catalog membership do not establish modality support.");
         // Never expose catalog messages/endpoints: they may echo credentials or remote response bodies.
         return Map.copyOf(result);
+    }
+
+    private static void requireInHostHttp(DirectLlmClient.WireProtocol protocol) throws IOException {
+        if (!Set.of(DirectLlmClient.WireProtocol.OPENAI_CHAT, DirectLlmClient.WireProtocol.OPENAI_RESPONSES,
+                DirectLlmClient.WireProtocol.ANTHROPIC_MESSAGES, DirectLlmClient.WireProtocol.PI_MESSAGES).contains(protocol))
+            throw new IOException("Product CHAT_MODEL requires an in-host HTTP route, not " + protocol);
     }
 
     /** Selection deliberately does not serialize or print its private, possibly credential-bearing config. */
@@ -306,7 +336,11 @@ public final class NativeChatModels {
             ProviderConnectivityPolicy policy = new ProviderConnectivityPolicy(
                     min(defaults.connectTimeout(), timeout), timeout, min(defaults.streamIdleTimeout(), timeout),
                     timeout, 1, defaults.initialBackoff(), defaults.maxBackoff());
-            try (DirectLlmClient client = DirectLlmClient.withConnectivityPolicy(selection.config, MAPPER, policy, root)) {
+            RequestClientFactory fixture = root == null || TEST_REQUEST_CLIENTS.isEmpty()
+                    ? null : TEST_REQUEST_CLIENTS.get(root.toAbsolutePath().normalize());
+            try (DirectLlmClient client = fixture == null
+                    ? DirectLlmClient.withConnectivityPolicy(selection.config, MAPPER, policy, root)
+                    : fixture.create(selection.config, MAPPER, policy, root)) {
                 // A pipeline stage answers from its prompt: on a CLI route, no tools or MCP servers.
                 client.runToolFree(true, "");
                 Thread worker = Thread.currentThread();
@@ -392,7 +426,14 @@ public final class NativeChatModels {
 
     public static Map<String, Object> probe(Path root, String provider, String model, String thinking,
                                             String operation, boolean live, Duration timeout) throws Exception {
+        return probe(root, provider, model, thinking, operation, live, timeout, false);
+    }
+
+    /** Guard this execution's selection, not a manager preview from an earlier config read. */
+    public static Map<String, Object> probe(Path root, String provider, String model, String thinking,
+                                            String operation, boolean live, Duration timeout, boolean httpOnly) throws Exception {
         Selection selection = resolve(root, provider, model, thinking);
+        if (httpOnly) requireInHostHttp(selection.protocol);
         String requested = operation == null ? "text" : operation;
         selection.requireSupported(requested);
         Map<String, Object> result = new LinkedHashMap<>(selection.preview());

@@ -25,8 +25,104 @@ describe('LocalAgentChatService harness transport', () => {
   });
   afterEach(() => {
     for (const store of [localStorage, sessionStorage]) {
-      for (const key of Object.keys(store)) if (key.startsWith('kompile-live-run:')) store.removeItem(key);
+      for (const key of Object.keys(store)) if (key.startsWith('kompile-live-run:') || key.startsWith('kompile-finished-run:')) store.removeItem(key);
     }
+  });
+
+  it('finds ongoing work without browser storage and restores current background activity using GET only', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const fetchSpy = spyOn(window, 'fetch').and.returnValues(
+      Promise.resolve(new Response(JSON.stringify({ runId: 'harness-found', agentName: 'coder', message: 'keep building' }))),
+      Promise.resolve(new Response(new ReadableStream<Uint8Array>({ start(value) { stream = value; } }))));
+    const saved = await service.discoverRun('browser-found', '/projects/my project');
+    expect(saved?.runId).toBe('harness-found');
+    expect(String(fetchSpy.calls.first().args[0])).toContain('workingDirectory=%2Fprojects%2Fmy+project');
+    const run = service.resumeRun('browser-found');
+    stream.enqueue(new TextEncoder().encode('event: resync\ndata: {"after":40}\n\n'
+      + 'id: 41\nevent: turn_started\ndata: {"turnId":5,"source":"user","text":"follow up"}\n\n'
+      + 'event: activity\ndata: {"backgroundable":false,"turnActive":false,"controlsOpen":true,"processes":[{"id":"build","state":"RUNNING"}],"tasks":[]}\n\n'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(service.harnessActivity?.processes[0].id).toBe('build');
+    expect(service.harnessActivity?.turnActive).toBeFalse();
+    expect(service.liveControlsReady).toBeTrue();
+    expect(service.isCurrentlyStreaming()).toBeTrue();
+    expect(String(fetchSpy.calls.mostRecent().args[0])).toContain('/events/harness-found?after=0');
+    expect(fetchSpy.calls.allArgs().every(args => !args[1]?.method)).toBeTrue();
+    stream.enqueue(new TextEncoder().encode('id: 42\nevent: complete\ndata: {"content":"done"}\n\n'));
+    stream.close(); await run;
+    expect(service.getReconnectBookmark('browser-found')).toBeNull();
+  });
+
+  it('stops the exact submitted run even before its first SSE acknowledgement', async () => {
+    let accepted!: (response: Response) => void;
+    const fetchSpy = spyOn(window, 'fetch').and.callFake((_url, init) => init?.method === 'POST' && init.body
+      ? new Promise<Response>(resolve => accepted = resolve) : Promise.resolve(new Response('{}')));
+    const run = service.sendMessage(service.createSession('stop early'), 'work', { name: 'coder' } as AgentProvider,
+      { sessionId: 'browser-stop-early' });
+    const request = JSON.parse(String(fetchSpy.calls.first().args[1]?.body));
+    expect(request.runId).toMatch(/^harness-[0-9a-f]{32}$/);
+    expect(service.getReconnectBookmark('browser-stop-early')?.runId).toBe(request.runId);
+    service.cancelStreaming();
+    expect(String(fetchSpy.calls.mostRecent().args[0])).toContain('/cancel/' + request.runId);
+    expect(fetchSpy.calls.mostRecent().args[1]?.method).toBe('POST');
+    accepted(new Response('')); await run;
+    expect(service.getReconnectBookmark('browser-stop-early')).toBeNull();
+  });
+
+  it('recovers a completed unseen run once, without repeatedly rediscovering its ending', async () => {
+    const found = { runId: 'harness-ended-away', agentName: 'coder', message: 'continue', messageStartIndex: 4, finished: true };
+    spyOn(window, 'fetch').and.returnValues(Promise.resolve(new Response(JSON.stringify(found))),
+      Promise.resolve(new Response('id: 1\nevent: complete\ndata: {"content":"finished while away"}\n\n')),
+      Promise.resolve(new Response(JSON.stringify(found))));
+    expect((await service.discoverRun('browser-ended-away'))?.messageStartIndex).toBe(4);
+    const completed: string[] = [];
+    service.getStreamingComplete().subscribe(message => completed.push(message.content));
+    await service.resumeRun('browser-ended-away');
+    expect(completed).toEqual(['finished while away']);
+    expect(await service.discoverRun('browser-ended-away')).toBeNull();
+  });
+
+  it('finishes a replayed Stop instead of leaving the returning view streaming forever', async () => {
+    spyOn(window, 'fetch').and.returnValues(
+      Promise.resolve(new Response(JSON.stringify({ runId: 'harness-stopped-away', agentName: 'coder', message: 'work', finished: true }))),
+      Promise.resolve(new Response('id: 1\nevent: cancelled\ndata: {}\n\n')));
+    await service.discoverRun('browser-stopped-away');
+    const completions: { stopped?: boolean }[] = [];
+    service.getStreamingComplete().subscribe(message => completions.push(message));
+    await service.resumeRun('browser-stopped-away');
+    expect(service.isCurrentlyStreaming()).toBeFalse();
+    expect(completions.length).toBe(1);
+    expect(completions[0].stopped).toBeTrue();
+    expect(service.getReconnectBookmark('browser-stopped-away')).toBeNull();
+  });
+
+  it('keeps a recovered checkpoint seed atomic with its cursor while replay is still running', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    spyOn(window, 'fetch').and.returnValues(
+      Promise.resolve(new Response(JSON.stringify({ runId: 'harness-atomic', agentName: 'coder', message: 'original' }))),
+      Promise.resolve(new Response(new ReadableStream<Uint8Array>({ start(value) { stream = value; } }))));
+    const checkpoint = await service.discoverRun('browser-atomic');
+    const run = service.resumeRun('browser-atomic');
+    stream.enqueue(new TextEncoder().encode('id: 1\nevent: chunk\ndata: "new delta"\n\n'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(checkpoint?.cursor).toBe(0);
+    expect(checkpoint?.seed.messages[1].content).toBe('');
+    service.detachStreaming(); stream.close(); await run;
+    expect(service.getReconnectBookmark('browser-atomic')?.cursor).toBe(1);
+    expect(service.getReconnectBookmark('browser-atomic')?.seed.messages[1].content).toBe('new delta');
+  });
+
+  it('does not invent an ongoing run when the server reports an idle chat', async () => {
+    spyOn(window, 'fetch').and.resolveTo(new Response('{}'));
+    expect(await service.discoverRun('idle-browser')).toBeNull();
+    expect(service.getReconnectBookmark('idle-browser')).toBeNull();
+  });
+
+  it('reports a failed server discovery rather than resubmitting a chat', async () => {
+    const fetchSpy = spyOn(window, 'fetch').and.resolveTo(new Response('', { status: 503 }));
+    await expectAsync(service.discoverRun('unreachable')).toBeRejectedWithError(/HTTP 503/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(service.getReconnectBookmark('unreachable')).toBeNull();
   });
 
   it('routes title metadata to its browser session without adding messages', async () => {

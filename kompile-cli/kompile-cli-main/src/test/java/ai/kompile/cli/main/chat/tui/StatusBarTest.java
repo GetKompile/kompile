@@ -10,6 +10,8 @@ import ai.kompile.utils.AnsiConstants;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.stream.IntStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -24,6 +26,33 @@ class StatusBarTest {
         // the legacy session is JVM-wide static state shared by every test here.
         ChatUiSession.current().progress().finishAll();
         ChatCompleter.setActivity(null);
+    }
+
+    @Test
+    void largeMenusStayProportionalAndKeepSelectionVisible() {
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("status-menu-budget")) {
+            StatusBar bar = new StatusBar(new BackgroundTaskManager(), processes, null, new TerminalRenderer(true));
+            List<StatusBar.MenuItem> items = IntStream.range(0, 100)
+                    .mapToObj(i -> new StatusBar.MenuItem("id-" + i, "PROCESS-" + i, "running", i == 99)).toList();
+            bar.setMenuItems(items, "menu instructions");
+            for (int height : List.of(16, 24, 40, 80)) {
+                VirtualTerminal screen = new VirtualTerminal(height, 80);
+                screen.feed("\033[1;1HTOP HEADER");
+                screen.feed(bar.render(height, 80));
+                assertTrue(screen.getRow(0).contains("TOP HEADER"), screen::screenDump);
+                assertTrue(screen.screenDump().contains("PROCESS-99"), screen::screenDump);
+                assertTrue(screen.screenDump().contains("more"), screen::screenDump);
+                int firstFooterRow = height - StatusBar.STATUS_HEIGHT - height / 6;
+                for (int row = 1; row < firstFooterRow; row++) assertTrue(screen.getRow(row).isBlank(), screen::screenDump);
+            }
+            VirtualTerminal singleRow = new VirtualTerminal(16, 80);
+            singleRow.feed(bar.render(16, 80, 1));
+            assertTrue(singleRow.getRow(15).contains("PROCESS-99"), singleRow::screenDump);
+            assertFalse(singleRow.screenDump().contains("menu instructions"), singleRow::screenDump);
+            VirtualTerminal zeroRows = new VirtualTerminal(16, 80);
+            zeroRows.feed(bar.render(16, 80, 0));
+            assertFalse(zeroRows.screenDump().contains("PROCESS-"), zeroRows::screenDump);
+        }
     }
 
     @Test

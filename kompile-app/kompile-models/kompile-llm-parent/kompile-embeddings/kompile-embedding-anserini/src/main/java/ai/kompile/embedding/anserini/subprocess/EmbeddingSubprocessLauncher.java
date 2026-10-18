@@ -112,6 +112,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     /** Set when the child died and this launcher will not restart it; a successful start() clears it. */
     private final AtomicBoolean laneUnavailable = new AtomicBoolean(false);
     private final AtomicLong lastHeartbeat = new AtomicLong(0);
+    private volatile Map<String, Object> deviceMemoryStatus = Map.of();
     private volatile String currentModelId;
     private volatile int currentDimensions = -1;
     private volatile String encoderType = "UNKNOWN";
@@ -3014,6 +3015,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 currentModelId = heartbeat.modelId();
             }
             totalEmbeddingsProcessed = heartbeat.totalEmbeddings();
+            deviceMemoryStatus = heartbeat.deviceMemory() == null ? Map.of() : heartbeat.deviceMemory();
             if (heartbeatCallback != null) {
                 heartbeatCallback.accept(heartbeat);
             }
@@ -3560,6 +3562,16 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
      */
     public String getLastCrashReason() {
         return lastCrashReason;
+    }
+
+    /** Latest child-reported snapshot; old/restarted children never inherit the previous PID's memory. */
+    public Map<String, Object> getDeviceMemoryStatus() {
+        Process child = process;
+        Map<String, Object> snapshot = deviceMemoryStatus;
+        Object reportedPid = snapshot.get("pid");
+        if (child == null || !child.isAlive() || !(reportedPid instanceof Number pid)
+                || pid.longValue() != child.pid()) return Map.of();
+        return snapshot;
     }
 
     /**

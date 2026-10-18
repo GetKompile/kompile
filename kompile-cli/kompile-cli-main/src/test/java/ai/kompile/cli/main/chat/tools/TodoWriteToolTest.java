@@ -107,16 +107,15 @@ class TodoWriteToolTest {
     }
 
     @Test
-    void testAddTaskInvalidPriorityDefaultsToMedium() throws Exception {
+    void testAddTaskInvalidPriorityIsRejected() throws Exception {
         ObjectNode params = om.createObjectNode();
         params.put("action", "add");
         params.put("subject", "Some task");
         params.put("priority", "urgent");
 
-        tool.execute(params, context);
-
-        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workDir);
-        assertEquals("medium", todos.get(0).priority);
+        assertTrue(tool.execute(params, context).isError());
+        assertTrue(TodoWriteTool.getTodos(sessionId, workDir).isEmpty());
+        assertFalse(Files.exists(TodoWriteTool.sessionTodoPath(sessionId)));
     }
 
     @Test
@@ -423,6 +422,221 @@ class TodoWriteToolTest {
         assertEquals("high", persisted.path("priority").asText());
         assertFalse(Files.exists(workDir.resolve(".kompile").resolve("memory")
                 .resolve("project-todos.json.md")));
+    }
+
+    private void seedGuardedList() throws Exception {
+        ToolResult result = tool.execute(om.readTree("""
+                {"action":"set","todos":[
+                  {"id":"first","subject":"Keep first","description":"Important details","status":"in_progress","priority":"high"},
+                  {"id":"second","subject":"Keep second","status":"completed"}]}
+                """), context);
+        assertFalse(result.isError(), result.getOutput());
+    }
+
+    private ToolResult assertRejectedUnchanged(JsonNode request) throws Exception {
+        Path file = TodoWriteTool.sessionTodoPath(sessionId);
+        byte[] before = Files.readAllBytes(file);
+        JsonNode tasks = om.valueToTree(TodoWriteTool.getTodos(sessionId, workDir));
+        ToolResult result = tool.execute(request, context);
+        assertTrue(result.isError(), String.valueOf(request));
+        assertTrue(result.getOutput().contains("No tasks were changed"), result.getOutput());
+        assertTrue(result.getOutput().contains("todoread"), result.getOutput());
+        assertFalse(result.getMetadata().containsKey(TodoWriteTool.TASKS_METADATA));
+        assertArrayEquals(before, Files.readAllBytes(file), String.valueOf(request));
+        assertEquals(tasks, om.valueToTree(TodoWriteTool.getTodos(sessionId, workDir)));
+        return result;
+    }
+
+    @Test
+    void setCannotClearOrDropEvenCompletedTasks() throws Exception {
+        seedGuardedList();
+        for (String json : List.of(
+                "{\"action\":\"set\",\"todos\":[]}",
+                "{\"action\":\"set\",\"todos\":[{\"id\":\"first\",\"subject\":\"Keep first\"}]}",
+                "{\"action\":\"set\",\"todos\":[\"Unrelated new plan\"]}",
+                "{\"action\":\"set\",\"todos\":[{\"subject\":\"New plan\"}]}")) {
+            assertRejectedUnchanged(om.readTree(json));
+        }
+    }
+
+    @Test
+    void malformedSetItemsRejectWholeCallNotJustBadItems() throws Exception {
+        seedGuardedList();
+        for (String malformed : List.of("null", "42", "true", "[]", "{}", "\" \"",
+                "{\"subject\":null}", "{\"subject\":\" \"}", "{\"subject\":3}",
+                "{\"subject\":\"Bad\",\"status\":\"done\"}",
+                "{\"subject\":\"Bad\",\"priority\":\"urgent\"}",
+                "{\"subject\":\"Bad\",\"id\":1}",
+                "{\"subject\":\"Bad\",\"task_id\":\"first\"}",
+                "{\"subject\":\"Bad\",\"content\":\"Conflicting\"}")) {
+            ObjectNode request = om.createObjectNode().put("action", "set");
+            request.set("todos", om.readTree("""
+                    [{"id":"first","subject":"Would change first"},{"id":"second","subject":"Keep second"}]
+                    """));
+            ((ArrayNode) request.get("todos")).add(om.readTree(malformed));
+            assertRejectedUnchanged(request);
+        }
+    }
+
+    @Test
+    void duplicateAndInventedSetIdsAreRejected() throws Exception {
+        seedGuardedList();
+        for (String id : List.of("first", "invented")) {
+            ObjectNode request = om.createObjectNode().put("action", "set");
+            ArrayNode tasks = request.putArray("todos");
+            tasks.addObject().put("id", "first").put("subject", "First");
+            tasks.addObject().put("id", "second").put("subject", "Second");
+            tasks.addObject().put("id", id).put("subject", "Extra");
+            assertRejectedUnchanged(request);
+        }
+    }
+
+    @Test
+    void invalidMutationsDoNotPartiallyApplyValidFields() throws Exception {
+        seedGuardedList();
+        for (String json : List.of(
+                "null", "[]", "{}", "{\"action\":false}",
+                "{\"action\":\"set\"}", "{\"action\":\"set\",\"todos\":{}}",
+                "{\"action\":\"update\",\"task_id\":\"first\"}",
+                "{\"action\":\"update\",\"task_id\":\"first\",\"subject\":\"Renamed\",\"status\":\"done\"}",
+                "{\"action\":\"update\",\"task_id\":\"first\",\"status\":\"completed\",\"priority\":\"urgent\"}",
+                "{\"action\":\"update\",\"task_id\":\"first\",\"subject\":null}",
+                "{\"action\":\"update\",\"task_id\":\"first\",\"subject\":\" \"}",
+                "{\"action\":\"update\",\"task_id\":1,\"status\":\"completed\"}",
+                "{\"action\":\"update\",\"id\":\"first\",\"status\":\"completed\"}",
+                "{\"action\":\"update\",\"task_id\":\"first\",\"status\":\"completed\",\"todos\":[]}",
+                "{\"action\":\"add\",\"subject\":\"New task\",\"task_id\":\"invented\"}",
+                "{\"action\":\"add\",\"subject\":\"New task\",\"status\":\"done\"}",
+                "{\"action\":\"add\",\"subject\":true}",
+                "{\"action\":\"delete\",\"task_id\":\"first\",\"todos\":[]}",
+                "{\"action\":\"delete\",\"task_id\":\" \"}",
+                "{\"action\":\"add\",\"subject\":\"New task\",\"session_id\":null}")) {
+            assertRejectedUnchanged(om.readTree(json));
+        }
+    }
+
+    @Test
+    void inventedTaskAndSessionIdsCannotTouchRealList() throws Exception {
+        seedGuardedList();
+        assertRejectedUnchanged(om.readTree("""
+                {"action":"update","task_id":"invented","status":"completed"}
+                """));
+        assertRejectedUnchanged(om.readTree("{\"action\":\"delete\",\"task_id\":\"invented\"}"));
+        assertRejectedUnchanged(om.readTree("""
+                {"action":"set","session_id":"invented-session","todos":["Wrong list"]}
+                """));
+        assertFalse(Files.exists(TodoWriteTool.sessionTodoPath("invented-session")));
+    }
+
+    @Test
+    void realTranscriptWithoutSnapshotCanReceiveItsFirstTask() throws Exception {
+        seedGuardedList();
+        String historicalId = "real-historical-chat";
+        Path transcript = new ai.kompile.cli.main.chat.ChatHistory(historicalId).getTranscriptFile();
+        Files.writeString(transcript, "Existing conversation");
+        assertFalse(Files.exists(TodoWriteTool.sessionTodoPath(historicalId)));
+        ObjectNode add = om.createObjectNode().put("action", "add").put("session_id", historicalId)
+                .put("subject", "First historical task");
+        ToolResult result = tool.execute(add, context);
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals("First historical task", TodoWriteTool.getTodos(historicalId, workDir).get(0).subject);
+        assertEquals(2, TodoWriteTool.getTodos(sessionId, workDir).size());
+    }
+
+    @Test
+    void pathLikeIdsCannotUseOutsideFilesAsEvidenceOfARealTranscript() throws Exception {
+        seedGuardedList();
+        Files.writeString(workDir.resolve("outside.txt"), "Not a transcript");
+        for (String id : List.of("../../outside", "..\\outside", "bad\0id")) {
+            ObjectNode add = om.createObjectNode().put("action", "add").put("session_id", id)
+                    .put("subject", "Must not create a list");
+            assertRejectedUnchanged(add);
+            assertFalse(Files.exists(TodoWriteTool.sessionTodoPath(id)));
+        }
+    }
+
+    @Test
+    void safeSetRetainsIdsAndOmittedDetailsWhileAppendingGeneratedIds() throws Exception {
+        seedGuardedList();
+        ToolResult result = tool.execute(om.readTree("""
+                {"action":"set","todos":[
+                  {"id":"first","content":"Updated first"},
+                  {"id":"second","subject":"Keep second"},
+                  {"subject":"Append without invented ID"},"Also append"]}
+                """), context);
+        assertFalse(result.isError(), result.getOutput());
+        List<TodoWriteTool.TodoItem> tasks = TodoWriteTool.getTodos(sessionId, workDir);
+        assertEquals(4, tasks.size());
+        assertEquals(4, tasks.stream().map(item -> item.id).distinct().count());
+        assertEquals("Updated first", tasks.get(0).subject);
+        assertEquals("Important details", tasks.get(0).description);
+        assertEquals("in_progress", tasks.get(0).status);
+        assertEquals("high", tasks.get(0).priority);
+        assertEquals("completed", tasks.get(1).status);
+    }
+
+    @Test
+    void initialSetReservesExplicitIdsBeforeAssigningNewOnes() throws Exception {
+        ToolResult result = tool.execute(om.readTree("""
+                {"action":"set","todos":["Generated",{"id":"1","subject":"Explicit"},
+                  {"id":"2147483647","subject":"Large numeric ID"}]}
+                """), context);
+        assertFalse(result.isError(), result.getOutput());
+        var tasks = TodoWriteTool.getTodos(sessionId, workDir);
+        assertEquals("2147483648", tasks.get(0).id);
+        assertEquals(3, tasks.stream().map(item -> item.id).distinct().count());
+    }
+
+    @Test
+    void malformedInitialSetDoesNotCreateSnapshot() throws Exception {
+        ToolResult result = tool.execute(om.readTree("""
+                {"action":"set","todos":[{"id":"1","subject":"Valid"},{"id":"1","subject":"Duplicate"}]}
+                """), context);
+        assertTrue(result.isError());
+        assertFalse(Files.exists(TodoWriteTool.sessionTodoPath(sessionId)));
+    }
+
+    @Test
+    void corruptPersistedStateCannotBeOverwritten() throws Exception {
+        seedGuardedList();
+        Path file = TodoWriteTool.sessionTodoPath(sessionId);
+        for (String corrupt : List.of("not json", "", "null", "{}", "{\"todos\":[{}]}",
+                "{\"todos\":[{\"id\":\"1\",\"subject\":\"A\"},{\"id\":\"1\",\"subject\":\"B\"}]}")) {
+            Files.writeString(file, corrupt);
+            ToolResult result = tool.execute(om.readTree("{\"action\":\"add\",\"subject\":\"Do not overwrite\"}"), context);
+            assertTrue(result.isError(), corrupt);
+            assertEquals(corrupt, Files.readString(file));
+        }
+    }
+
+    @Test
+    void staleFullSnapshotCannotDropAConcurrentAppend() throws Exception {
+        seedGuardedList();
+        ObjectNode stale = om.createObjectNode().put("action", "set");
+        stale.set("todos", om.readTree(Files.readString(TodoWriteTool.sessionTodoPath(sessionId))).get("todos"));
+        assertFalse(tool.execute(om.readTree("{\"action\":\"add\",\"subject\":\"Concurrent addition\"}"), context).isError());
+        assertRejectedUnchanged(stale);
+    }
+
+    @Test
+    void explicitEmptyDescriptionAndDeleteRemainSupported() throws Exception {
+        seedGuardedList();
+        assertFalse(tool.execute(om.readTree("""
+                {"action":"update","task_id":"first","task_description":""}
+                """), context).isError());
+        assertEquals("", TodoWriteTool.getTodos(sessionId, workDir).get(0).description);
+        assertFalse(tool.execute(om.readTree("{\"action\":\"delete\",\"task_id\":\"second\"}"), context).isError());
+        assertEquals(1, TodoWriteTool.getTodos(sessionId, workDir).size());
+    }
+
+    @Test
+    void schemaAndHintsAdvertiseGuardrails() {
+        JsonNode schema = tool.parameterSchema();
+        assertFalse(schema.path("additionalProperties").asBoolean(true));
+        assertEquals(4, schema.path("properties").path("action").path("enum").size());
+        assertTrue(schema.path("properties").path("todos").has("items"));
+        assertTrue(tool.description().contains("never invent"));
+        assertTrue(tool.compactHint().contains("retain all existing IDs"));
     }
 
     @Test

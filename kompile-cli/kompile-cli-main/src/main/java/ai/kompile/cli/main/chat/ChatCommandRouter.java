@@ -116,6 +116,7 @@ public class ChatCommandRouter {
     private final List<ChatRepl.PendingAttachment> pendingAttachments;
     private final ReminderManager reminderManager;
     private String serverCustomSystemPrompt;
+    private ResourceMonitorCommands resourceMonitor;
 
     // Mutable state that the router can modify via ChatRepl accessors
     // (these are updated by individual handlers and ChatRepl reads them back)
@@ -202,6 +203,10 @@ public class ChatCommandRouter {
                 System.out.println(repl.configureResources(rest));
                 return true;
 
+            case "/resource-monitor":
+                resourceMonitorCommand(rest);
+                return true;
+
             case "/help":
                 printHelp();
                 return true;
@@ -251,12 +256,31 @@ public class ChatCommandRouter {
                 return true;
 
             case "/status":
-                printStatus();
+                if ("context".equalsIgnoreCase(rest.strip())) {
+                    // Compact, read-only inventory: do not run model capability/status probes.
+                    Map<String, String> inventory = agenticLoop == null
+                            ? Map.of("Context inventory", "Local loop unavailable; provider-owned context unattributed")
+                            : agenticLoop.contextInventory();
+                    System.out.println(ascii.panel("Context inventory", ascii.keyValueList(inventory),
+                            AsciiRenderer.ROUNDED, "blue"));
+                } else {
+                    printStatus();
+                }
                 return true;
 
             case "/dashboard":
-                System.out.println(renderer.cyan("  "
-                        + repl.handleDashboardCommand(rest.trim())));
+            case "/dashboard-summary":
+            case "/dashboard-tools":
+            case "/dashboard-judge":
+            case "/dashboard-tests":
+            case "/dashboard-crawl":
+            case "/dashboard-graph":
+            case "/dashboard-tokens":
+            case "/dashboard-tasks":
+            case "/dashboard-processes":
+            case "/dashboard-timeline":
+            case "/timeline":
+                dashboardCommand(cmd, rest);
                 return true;
 
             case "/title":
@@ -269,6 +293,10 @@ public class ChatCommandRouter {
                 } else {
                     showHistory();
                 }
+                return true;
+
+            case "/redraw":
+                if (repl.getTui() != null) repl.getTui().requestFullRedraw();
                 return true;
 
             case "/clear":
@@ -472,6 +500,9 @@ public class ChatCommandRouter {
                 return true;
 
             // Process management & status bar commands
+            case "/ui":
+                repl.handleUiCommand(rest.trim());
+                return true;
             case "/activity":
                 if (!repl.handleProjectActivityCommand(rest.trim())) {
                     showProcessPanel();
@@ -504,6 +535,16 @@ public class ChatCommandRouter {
 
             case "/auto-dequeue":
                 queueManager.toggleAutoDequeue();
+                return true;
+
+            case "/diffs":
+                new ChatDiffsCommand(renderer).show(rest, sessionId, System.out::println);
+                return true;
+
+            case "/usage":
+                System.out.println(rest.isBlank()
+                        ? new ai.kompile.cli.main.chat.config.VendorUsageService().fetch(repl.getChatConfig()).text()
+                        : "Usage: /usage (current provider's account allowance; /stats is session usage)");
                 return true;
 
             case "/stats":
@@ -926,7 +967,10 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/reset-all")).append("          Restart every active CLI chat session\n");
             body.append("  ").append(renderer.cyan("/restart")).append("            Alias for /reset\n");
             body.append("  ").append(renderer.cyan("/title [text]")).append("       Show or change the session title\n");
-            body.append("  ").append(renderer.cyan("/dashboard [cmd]")).append("   Refresh/show/hide the project dashboard\n");
+            body.append("  ").append(renderer.cyan("/dashboard [cmd]")).append("   Session summary + report discovery; refresh/show/hide/status\n");
+            body.append("  ").append(renderer.cyan("/dashboard-* [filters]")).append(" tools/judge/tests/crawl/graph/tokens/tasks/processes\n");
+            body.append("  ").append(renderer.cyan("/timeline [filters]")).append("  Session activity timeline (alias: /dashboard-timeline)\n");
+            body.append("  ").append(renderer.cyan("/timeline next|inspect:ID|follow|stop")).append("  Page, inspect, or follow retained events\n");
             body.append("  ").append(renderer.cyan("/judge")).append(" [cmd]         Judge control, policy, direction, and global switch\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Message Queue"))).append("\n");
@@ -954,6 +998,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
             body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
             body.append("  ").append(renderer.cyan("/activity agents")).append("     Open live project-agent activity\n");
+            body.append("  ").append(renderer.cyan("/resource-monitor")).append("     Live per-chat CPU/RSS/GPU and managed subprocess controls\n");
             body.append("  ").append(renderer.cyan("/resources help")).append("     Configure resource rules and preview admission classes\n");
             body.append("  ").append(renderer.cyan("/processes")).append("          Show processes, monitors & subagents panel\n");
             body.append("  ").append(renderer.cyan("/process-kill <id>")).append("  Kill a running process\n");
@@ -996,8 +1041,12 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Configure automatic model-aware compaction\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
+            body.append("  ").append(renderer.cyan("/usage")).append("              Vendor account credits, allowances and resets\n");
             body.append("  ").append(renderer.cyan("/stats [tools …]")).append("    Session stats; tool tokens + session/call drill-down\n");
+            body.append("  ").append(renderer.cyan("/diffs [count]")).append("     Recent session diffs, newest first (default 20; 1–100)\n");
             body.append("  ").append(renderer.cyan("/copy")).append("              Copy latest assistant response\n");
+            body.append("  ").append(renderer.cyan("/ui")).append("                 Display wizard: layout, sidebar and inline content\n");
+            body.append("  ").append(renderer.cyan("/redraw")).append("             Repaint the TUI without clearing the conversation\n");
             body.append("  ").append(renderer.cyan("/help")).append("               This help message\n");
             body.append("  ").append(renderer.cyan("/quit")).append("               Exit the chat");
         } else {
@@ -1024,6 +1073,7 @@ public class ChatCommandRouter {
             body.append(renderer.bold(renderer.cyan("Session & History"))).append("\n");
             body.append("  ").append(renderer.cyan("/history")).append("            Server-side conversation history\n");
             body.append("  ").append(renderer.cyan("/transcript")).append("         Local transcript file\n");
+            body.append("  ").append(renderer.cyan("/diffs [count]")).append("     Recent session diffs, newest first (default 20; 1–100)\n");
             body.append("  ").append(renderer.cyan("/copy")).append("              Copy latest assistant response\n");
             body.append("  ").append(renderer.cyan("/conversations")).append("      List all saved conversations\n");
             body.append("  ").append(renderer.cyan("/clear")).append("              Start a new conversation in this process\n");
@@ -1035,7 +1085,10 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/config")).append("             Show/update session config\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
             body.append("  ").append(renderer.cyan("/title [text]")).append("       Show or change the session title\n");
-            body.append("  ").append(renderer.cyan("/dashboard [cmd]")).append("   Refresh/show/hide the project dashboard\n");
+            body.append("  ").append(renderer.cyan("/dashboard [cmd]")).append("   Session summary + report discovery; refresh/show/hide/status\n");
+            body.append("  ").append(renderer.cyan("/dashboard-* [filters]")).append(" tools/judge/tests/crawl/graph/tokens/tasks/processes\n");
+            body.append("  ").append(renderer.cyan("/timeline [filters]")).append("  Session activity timeline (alias: /dashboard-timeline)\n");
+            body.append("  ").append(renderer.cyan("/timeline next|inspect:ID|follow|stop")).append("  Page, inspect, or follow retained events\n");
             body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add/clear; 'interval <n|off>' sets cadence\n");
             body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders; optional interval override\n");
             body.append("  ").append(renderer.cyan("/continue [on|off]")).append("  Auto-reply to agent questions; /continue help for options\n");
@@ -1074,6 +1127,8 @@ public class ChatCommandRouter {
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
             body.append("  ").append(renderer.cyan("/status")).append("             Connection and session info\n");
+            body.append("  ").append(renderer.cyan("/ui")).append("                 Display wizard: layout, sidebar and inline content\n");
+            body.append("  ").append(renderer.cyan("/redraw")).append("             Repaint the TUI without clearing the conversation\n");
             body.append("  ").append(renderer.cyan("/help")).append("               This help message\n");
             body.append("  ").append(renderer.cyan("/quit")).append("               Exit the chat");
             body.append("\n");
@@ -1102,6 +1157,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
             body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
             body.append("  ").append(renderer.cyan("/activity agents")).append("     Open live project-agent activity\n");
+            body.append("  ").append(renderer.cyan("/resource-monitor")).append("     Live per-chat CPU/RSS/GPU and managed subprocess controls\n");
             body.append("  ").append(renderer.cyan("/resources help")).append("     Configure resource rules and preview admission classes\n");
             body.append("  ").append(renderer.cyan("/processes")).append("          Show processes, monitors & subagents panel\n");
             body.append("  ").append(renderer.cyan("/process-kill <id>")).append("  Kill a running process\n");
@@ -1549,6 +1605,8 @@ public class ChatCommandRouter {
                 + (status.sessionOverride() ? " (session override)" : ""));
         System.out.println("  Skills:     " + (status.requiredSkills().isEmpty()
                 ? renderer.dim("none") : String.join(", ", status.requiredSkills())));
+        System.out.println("  Memories:   " + (status.requiredMemories().isEmpty()
+                ? renderer.dim("none") : String.join(", ", status.requiredMemories())));
         System.out.println("  Plan gate:  " + (status.requirePlanBeforeMutation()
                 ? "todowrite add/set required before mutation" : "disabled"));
         System.out.println("  Corrections: " + status.maxCorrections());
@@ -1982,6 +2040,118 @@ public class ChatCommandRouter {
         return args;
     }
 
+    /** Slash reports execute read-only owners directly, never a model or the generic tool renderer. */
+    private void dashboardCommand(String command, String arguments) {
+        try {
+            if (command.equals("/timeline") || command.equals("/dashboard-timeline")) {
+                repl.printDashboardTimeline(arguments);
+                return;
+            }
+            DashboardCommands.Request request = DashboardCommands.parse(command, arguments);
+            if (request.control() != null) {
+                System.out.println(renderer.cyan("  " + repl.handleDashboardCommand(request.control())));
+                return;
+            }
+            if (request.topic().equals("summary")) System.out.println(DashboardCommands.DISCOVERY);
+            ToolContext context = new ToolContext(sessionId, chatAgent(), permissionService,
+                    repl.getWorkingDirectory(), toolRegistry);
+            if (request.topic().equals("processes")) {
+                context.checkPermission("read", "Read dashboard processes");
+                System.out.println(DashboardCommands.present(request,
+                        "Coverage: /processes owner snapshot; running work and source-limited recent completions, not historical paging.\n"
+                                + statusBar.renderProcessPanel()));
+                return;
+            }
+            String toolName = request.topic().equals("tasks") ? "todoread" : "insights";
+            CliTool tool = toolRegistry == null ? null : toolRegistry.get(toolName);
+            if (tool == null || (toolName.equals("insights") && !(tool instanceof InsightsTool))) {
+                System.out.println("Dashboard report unavailable: " + toolName + " is not registered in this session.");
+                return;
+            }
+            ObjectNode args = request.topic().equals("tasks") ? objectMapper.createObjectNode()
+                    : request.insightsArguments(objectMapper);
+            if (request.topic().equals("tasks") && request.sessionId() != null) {
+                args.put("session_id", request.sessionId());
+            }
+            ToolResult result;
+            TerminalRenderer.SpinnerHandle spinner = renderer.startSpinner("dashboard-" + request.topic());
+            try {
+                result = tool.execute(args, context); // Owner performs the permission check and parent-session scoping.
+            } finally {
+                spinner.stop();
+            }
+            String coverage = request.topic().equals("tasks") && result.getMetadata().containsKey("total")
+                    ? "Coverage: " + result.getMetadata().get("total") + " tasks; pending "
+                            + result.getMetadata().get("pending") + ", in progress " + result.getMetadata().get("inProgress")
+                            + ", completed " + result.getMetadata().get("completed") + " (owner counts, before display limits).\n"
+                    : "";
+            System.out.println(DashboardCommands.present(request,
+                    coverage + (result.isError() ? "Report unavailable: " : "") + result.getOutput()));
+            repl.onDirectToolComplete(toolName, args.toString(), result);
+        } catch (ToolExecutionException failure) {
+            System.out.println(failure.isPermissionDenied()
+                    ? renderer.renderToolCallDenied("dashboard", failure.getMessage())
+                    : renderer.red("Dashboard report error: " + failure.getMessage()));
+        } catch (Exception failure) {
+            System.out.println(renderer.red("Dashboard: " + failure.getMessage()));
+        }
+    }
+
+    private void resourceMonitorCommand(String arguments) {
+        try {
+            ToolContext context = new ToolContext(sessionId, chatAgent(), permissionService,
+                    repl.getWorkingDirectory(), toolRegistry);
+            context.checkPermission("read", "Read live chat resource usage");
+            if (resourceMonitor == null) {
+                var tui = repl.getTui();
+                var sampler = new ChatResourceSampler(repl.getWorkingDirectory(), sessionId, processManager);
+                resourceMonitor = new ResourceMonitorCommands(sampler::sample, new ResourceMonitorCommands.View() {
+                    private boolean firstUpdate;
+                    public boolean available() { return tui.isStarted(); }
+                    public boolean selected() { return ResourceMonitorCommands.VIEW_KEY.equals(tui.getContentViewKey()); }
+                    public void show(String content) {
+                        firstUpdate = true;
+                        tui.showActivityView(ResourceMonitorCommands.VIEW_KEY, ResourceMonitorCommands.TITLE, content);
+                        tui.scrollToTop();
+                    }
+                    public void update(String content) {
+                        tui.updateActivityView(ResourceMonitorCommands.VIEW_KEY, ResourceMonitorCommands.TITLE, content);
+                        if (firstUpdate) { tui.scrollToTop(); firstUpdate = false; }
+                    }
+                    public void hide() { tui.showMainView(); }
+                }, (action, id) -> {
+                    ToolContext mutation = new ToolContext(sessionId, chatAgent(), permissionService,
+                            repl.getWorkingDirectory(), toolRegistry);
+                    if (action.equals("embeddings")) {
+                        mutation.checkPermission("subprocess_watchdog", "Stop idle folder embeddings");
+                        return ai.kompile.cli.main.chat.tools.grounding.LocalEmbeddingRuntime.stopIdle(repl.getWorkingDirectory());
+                    }
+                    if (id.startsWith("watchdog:")) {
+                        mutation.checkPermission("subprocess_watchdog", "Kill an explicitly selected local managed subprocess");
+                        boolean killed = ai.kompile.cli.main.project.LocalSubprocessWatchdog.get()
+                                .kill(id.substring("watchdog:".length()), "Confirmed /resource-monitor kill");
+                        return killed ? "Managed subprocess stop requested: " + id : "No live local managed subprocess: " + id;
+                    }
+                    mutation.checkPermission("process", "Kill an explicitly selected chat-owned process");
+                    return processManager.kill(id) ? "Process stop requested: " + id
+                            : "Process is not running, not found, or owned by another session: " + id;
+                });
+            }
+            String result = resourceMonitor.command(arguments);
+            if (!result.isBlank()) System.out.println(result);
+        } catch (Exception failure) {
+            System.out.println(renderer.red("Resource monitor: " + failure.getMessage()));
+        }
+    }
+
+    /** REPL teardown closes only explicitly opened report/follow resources. */
+    public void closeDashboardReports() {
+        if (resourceMonitor != null) {
+            resourceMonitor.close();
+            resourceMonitor = null;
+        }
+    }
+
     private void invokeLocalTool(String rest) {
         if (rest.isBlank()) {
             System.out.println("Usage: /tool <tool_name> [json_arguments]");
@@ -2281,6 +2451,7 @@ public class ChatCommandRouter {
         System.out.println(renderer.green("  ✓ Image attached: ") + renderer.cyan(filePath.getFileName().toString()));
         System.out.println(renderer.dim("    Type: " + mime + ", Size: " + formatFileSize(filePath)));
         System.out.println(renderer.dim("    Will be included with your next message."));
+        if (repl != null) repl.previewAttachedImage(filePath);
     }
 
     private void handleAttachFile(String pathStr) {
@@ -2307,6 +2478,7 @@ public class ChatCommandRouter {
         System.out.println(renderer.green("  ✓ " + typeLabel + " attached: ") + renderer.cyan(filePath.getFileName().toString()));
         System.out.println(renderer.dim("    Type: " + mime + ", Size: " + formatFileSize(filePath)));
         System.out.println(renderer.dim("    Will be included with your next message."));
+        if (isImage && repl != null) repl.previewAttachedImage(filePath);
     }
 
     private void showPendingAttachments() {
@@ -2748,6 +2920,7 @@ public class ChatCommandRouter {
             }
             statusMap.put("Session", sessionId);
             statusMap.put("Local agent", renderer.cyan(repl.getLocalAgentName()));
+            statusMap.putAll(agenticLoop.contextInventory());
             if (!pendingAttachments.isEmpty()) {
                 statusMap.put("Attachments", renderer.yellow(pendingAttachments.size() + " pending"));
             }
@@ -2908,6 +3081,15 @@ public class ChatCommandRouter {
     }
 
     private void runCompactOnTurnThread(String focusInstruction) {
+        String requested = focusInstruction == null ? "" : focusInstruction.strip();
+        if (requested.equals("reviewed") || requested.startsWith("reviewed ")) {
+            try {
+                ChatCompleter.printAbove(agenticLoop.reviewedCompact(requested.substring("reviewed".length()).strip()));
+            } catch (Exception failure) {
+                ChatCompleter.printAbove(renderer.yellow("  Reviewed retirement refused: " + failure.getMessage()));
+            }
+            return;
+        }
         // Runs on the compact worker while the REPL prompt is live. All rendering
         // goes through CompactionProgressIndicator: one replaceable transcript
         // block in the managed TUI (animated in place, never inside the input

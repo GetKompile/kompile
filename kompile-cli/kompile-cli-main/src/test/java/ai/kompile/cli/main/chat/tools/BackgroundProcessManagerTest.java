@@ -542,6 +542,8 @@ class BackgroundProcessManagerTest {
             String firstId = first.getMetadata().get("processId").toString();
             String secondId = second.getMetadata().get("processId").toString();
             assertNotEquals(firstId, secondId);
+            assertEquals(Boolean.TRUE, first.getMetadata().get("backgrounded"));
+            assertEquals(Boolean.TRUE, second.getMetadata().get("backgrounded"));
             assertEquals(Boolean.TRUE, first.getMetadata().get("monitored"));
             assertEquals(Boolean.TRUE, second.getMetadata().get("monitored"));
             assertEquals(Boolean.TRUE, first.getMetadata().get("monitorForced"),
@@ -1211,6 +1213,26 @@ class BackgroundProcessManagerTest {
             assertEquals(List.of(entry.getId() + ": [MCP] first", entry.getId() + ": [MCP] second"), seen);
             assertEquals("[MCP] first\n[MCP] second", local.readOutput(entry.getId(), 10));
             assertTrue(entry.isRunning(), "output must not end the entry");
+        }
+
+        @Test
+        void virtualTranscriptChunksKeepModelWordsTogetherAndNotifyTheViewer() throws IOException {
+            List<String> seen = new CopyOnWriteArrayList<>();
+            local.addOutputListener((entry, chunk) -> seen.add(chunk));
+            ProcessEntry entry = local.registerVirtual(ProcessKind.COMMAND, "claude local_agent", "Child", Map.of());
+            assertTrue(local.appendVirtualOutput(entry.getId(), "Assistant:"));
+            assertTrue(local.appendVirtualOutputChunk(entry.getId(), "Hello "));
+            assertTrue(local.appendVirtualOutputChunk(entry.getId(), "world"));
+            assertEquals("Assistant:\nHello world", Files.readString(entry.getOutputFile()));
+            assertEquals(List.of("Assistant:", "Hello ", "world"), seen);
+            assertEquals("Assistant:\nHello world", local.readOutput(entry.getId(), 10));
+            assertTrue(local.complete(entry.getId()));
+            assertFalse(local.appendVirtualOutputChunk(entry.getId(), "late"));
+            assertFalse(local.appendVirtualOutputChunk(null, "missing"));
+            assertFalse(local.appendVirtualOutputChunk("missing", "missing"));
+            local.close();
+            assertFalse(local.appendVirtualOutputChunk(entry.getId(), "closed"));
+            assertEquals("Assistant:\nHello world", Files.readString(entry.getOutputFile()));
         }
 
         @Test

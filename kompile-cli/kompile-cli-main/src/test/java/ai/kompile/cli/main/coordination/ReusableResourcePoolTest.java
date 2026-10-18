@@ -29,6 +29,26 @@ class ReusableResourcePoolTest {
     }
 
     @Test
+    void monitoringSnapshotDoesNotAcquireOrKeepIdleResourcesWarm() throws Exception {
+        var pool = pool(150, 1);
+        assertTrue(pool.resourcesSnapshot().isEmpty());
+        AtomicInteger creates = new AtomicInteger();
+        TestResource runtime;
+        try (var lease = pool.acquire("model", () -> resource(creates), 1000)) {
+            runtime = lease.resource();
+            assertEquals(List.of(runtime), pool.resourcesSnapshot());
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (!runtime.closed && System.nanoTime() < deadline) {
+            pool.resourcesSnapshot(); // Repeated monitoring must NOT update lastUsedNanos.
+            Thread.sleep(10);
+        }
+        assertTrue(runtime.closed);
+        assertTrue(pool.resourcesSnapshot().isEmpty());
+        assertEquals(1, creates.get());
+    }
+
+    @Test
     void sequentialLeasesReuseOneWarmResource() throws Exception {
         AtomicInteger creates = new AtomicInteger();
         ReusableResourcePool<String, TestResource> pool = pool(60_000, 1);

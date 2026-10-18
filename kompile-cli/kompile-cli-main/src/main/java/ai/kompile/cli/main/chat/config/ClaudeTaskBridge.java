@@ -75,7 +75,62 @@ final class ClaudeTaskBridge {
             progress(progress);
         } else if (event instanceof ClaudeCliStreamParser.TaskEnded ended) {
             end(ended);
+        } else if (event instanceof ClaudeCliStreamParser.SubagentEvent child) {
+            transcript(source, child);
         }
+    }
+
+    /** Child content belongs to its task row, never the parent chat or MCP log. */
+    private void transcript(Object source, ClaudeCliStreamParser.SubagentEvent child) {
+        for (Row row : rows.values()) {
+            if (row.source != source || !child.toolUseId().equals(row.metadata.get("tool_use_id"))) continue;
+            String id = row.id();
+            if (id == null) return;
+            ClaudeCliStreamParser.Event event = child.event();
+            if (event instanceof ClaudeCliStreamParser.Text text) {
+                stream(row, "Assistant", text.text());
+            } else if (event instanceof ClaudeCliStreamParser.Thinking thinking) {
+                stream(row, "Thinking", thinking.text());
+            } else {
+                finishStream(row);
+                String detail = "";
+                if (event instanceof ClaudeCliStreamParser.UserText user) {
+                    detail = "User:\n" + user.text();
+                } else if (event instanceof ClaudeCliStreamParser.ToolStart tool) {
+                    detail = "Tool [" + tool.callId() + "]: " + tool.name();
+                } else if (event instanceof ClaudeCliStreamParser.ToolInput input) {
+                    detail = "Input: " + input.input();
+                } else if (event instanceof ClaudeCliStreamParser.ToolOutput output) {
+                    detail = "Output [" + output.callId() + "]:\n" + output.output();
+                } else if (event instanceof ClaudeCliStreamParser.ToolComplete complete) {
+                    detail = "Result [" + complete.callId() + "]" + (complete.error() ? " (error)" : "")
+                            + ":\n" + complete.output();
+                } else if (event instanceof ClaudeCliStreamParser.Notice notice) {
+                    detail = notice.text();
+                } else if (event instanceof ClaudeCliStreamParser.ApiError error) {
+                    detail = "Error: " + error.text();
+                }
+                if (!detail.isEmpty()) processes.appendVirtualOutput(id, detail);
+            }
+            return;
+        }
+    }
+
+    private void stream(Row row, String kind, String text) {
+        if (text.isEmpty()) return;
+        if (!kind.equals(row.streamKind)) {
+            finishStream(row);
+            processes.appendVirtualOutput(row.id(), kind + ":");
+            row.streamKind = kind;
+        }
+        processes.appendVirtualOutputChunk(row.id(), text);
+        row.streamHasNewline = text.endsWith("\n");
+    }
+
+    private void finishStream(Row row) {
+        if (row.streamKind.isEmpty()) return;
+        if (!row.streamHasNewline) processes.appendVirtualOutputChunk(row.id(), "\n");
+        row.streamKind = "";
     }
 
     /** Add a line of Claude Code's diagnostics to its log row. */
@@ -149,6 +204,7 @@ final class ClaudeTaskBridge {
         String line = progress.summary().isBlank() ? progress.lastToolName() : progress.summary();
         if (!line.isBlank() && !line.equals(row.lastLine)) {
             row.lastLine = line;
+            finishStream(row);
             processes.appendVirtualOutput(id, line);
         }
     }
@@ -159,6 +215,7 @@ final class ClaudeTaskBridge {
         String line = "Claude Code reports the task " + ended.status()
                 + (ended.summary().isBlank() ? "" : ": " + ended.summary());
         row.end(id -> {
+            finishStream(row);
             processes.appendVirtualOutput(id, line);
             switch (ended.status()) {
                 case "completed" -> processes.complete(id);
@@ -175,6 +232,7 @@ final class ClaudeTaskBridge {
         for (Row row : rows.values()) {
             if ((source == null || row.source == source) && rows.remove(row.taskId, row)) {
                 row.end(id -> {
+                    finishStream(row);
                     processes.appendVirtualOutput(id, line);
                     processes.fail(id, -1);
                 });
@@ -235,6 +293,8 @@ final class ClaudeTaskBridge {
         final Object source;
         final Map<String, String> metadata;
         volatile String lastLine = "";
+        String streamKind = "";             // output-reader thread only
+        boolean streamHasNewline;
         private String id;                // guarded by this
         private Consumer<String> ending;  // guarded by this
 

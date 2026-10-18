@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.harness;
 
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
+import ai.kompile.cli.main.chat.enforcer.JudgeBookkeeping;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,6 +54,8 @@ public class JudgeLlmEvaluator {
               1 = Fundamentally wrong or hallucinated
 
             completeness (always required):
+              Consider the supplied default task bookkeeping requirements; clear omissions should
+              lower completeness and receive specific task-update feedback. Unknown state is not proof.
               5 = Addressed every aspect of the task
               3 = Covered main points, missed details
               1 = Barely started or completely off-topic
@@ -80,7 +83,9 @@ public class JudgeLlmEvaluator {
             You are the in-process quality judge for Kompile's main chat REPL.
             Review a proposed MCP tool call before it executes. Judge only whether the call
             is relevant to the user's request, consistent with the assistant's stated path,
-            and structurally reasonable. Permission and enforcer policy are separate gates.
+            and structurally reasonable. Also watch the supplied default task bookkeeping
+            requirements when there is concrete evidence that relevant task statuses are stale.
+            Allow task reads/updates that repair bookkeeping. Permission and enforcer policy are separate gates.
 
             Prefer ALLOW unless there is a clear problem. Use BLOCK for an irrelevant,
             contradictory, malformed, or unjustified call. Use REWRITE only when corrected
@@ -279,6 +284,7 @@ public class JudgeLlmEvaluator {
         }
 
         StringBuilder prompt = new StringBuilder();
+        JudgeBookkeeping.append(prompt, JudgeBookkeeping.currentTaskState());
         prompt.append("[USER REQUEST]\n")
                 .append(bounded(userPrompt, MAX_TOOL_CONTEXT_FOR_JUDGE))
                 .append("\n[END USER REQUEST]\n\n");
@@ -425,6 +431,7 @@ public class JudgeLlmEvaluator {
 
     private String buildUserPrompt(TurnMetrics metrics, String taskType, String agentName) {
         StringBuilder prompt = new StringBuilder();
+        JudgeBookkeeping.append(prompt, JudgeBookkeeping.taskState(metrics.getSessionId(), null));
 
         String taskPrompt = metrics.getTaskPrompt();
         if (taskPrompt != null && !taskPrompt.isBlank()) {

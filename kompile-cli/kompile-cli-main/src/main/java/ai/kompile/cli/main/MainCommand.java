@@ -125,6 +125,7 @@ import java.util.concurrent.Callable;
                 CloudCommand.class,
                 StatusCommand.class,
                 SyncCommand.class,
+                ai.kompile.cli.main.sync.PeerCommand.class,
                 TelemetryCommand.class,
                 DoctorCommand.class
         },

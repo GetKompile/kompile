@@ -60,6 +60,8 @@ final class OpenCodeServeClient implements AutoCloseable {
         void onToolComplete(String callId, String name, String output,
                             int exitCode, boolean error);
         void onTokenUsage(long input, long output, long cacheRead, long cacheCreation);
+        /** Full input of the latest request, not the sum of this turn's billing deltas. */
+        default void onContextUsage(long inputTokens) { }
         /**
          * OpenCode started {@code steps} more model requests in the turn's agent
          * loop (its {@code step-start} parts); calls add up.
@@ -349,7 +351,11 @@ final class OpenCodeServeClient implements AutoCloseable {
         private final Set<String> completedCalls = new HashSet<>();
         private final Set<String> startedSteps = new HashSet<>();
         private final Map<String, long[]> reportedUsage = new HashMap<>();
+        private String latestUsageMessage;
+        private long latestUsageCreated;
         private final AtomicBoolean degraded = new AtomicBoolean(false);
+        private final ai.kompile.cli.main.chat.tools.ProviderTestCapture testCapture =
+                new ai.kompile.cli.main.chat.tools.ProviderTestCapture(workingDirectory);
         private volatile InputStream eventStream;
         private volatile boolean stopped;
 
@@ -367,6 +373,7 @@ final class OpenCodeServeClient implements AutoCloseable {
 
         synchronized void stop() {
             stopped = true;
+            testCapture.close();
             try {
                 InputStream stream = eventStream;
                 if (stream != null) stream.close();
@@ -443,12 +450,11 @@ final class OpenCodeServeClient implements AutoCloseable {
         }
 
         private void handlePartUpdated(JsonNode part) {
-            if (activity == null) return;
             String type = part.path("type").asText("");
             if ("step-start".equals(type)) {
                 // One part per model request of the turn; a part may be updated again.
                 String stepId = part.path("id").asText("");
-                if (!stepId.isEmpty() && startedSteps.add(stepId)) activity.onSteps(1);
+                if (!stepId.isEmpty() && startedSteps.add(stepId) && activity != null) activity.onSteps(1);
                 return;
             }
             if (!"tool".equals(type)) return;
@@ -458,6 +464,7 @@ final class OpenCodeServeClient implements AutoCloseable {
             JsonNode state = part.path("state");
             String status = state.path("status").asText("");
             if ("pending".equals(status) || "running".equals(status)) {
+                testCapture.start(callId, tool, state.path("input").toString());
                 if (startedCalls.add(callId)) {
                     JsonNode input = state.path("input");
                     String inputText;
@@ -467,14 +474,15 @@ final class OpenCodeServeClient implements AutoCloseable {
                     } catch (IOException e) {
                         inputText = String.valueOf(input);
                     }
-                    activity.onToolStart(callId, tool, inputText);
+                    if (activity != null) activity.onToolStart(callId, tool, inputText);
                 }
             } else if ("completed".equals(status) || "error".equals(status)) {
                 if (completedCalls.add(callId)) {
                     String outputText = state.path("output").asText("");
                     int exit = state.path("metadata").path("exit").asInt(0);
                     boolean error = "error".equals(status) || exit != 0;
-                    activity.onToolComplete(callId, tool, outputText, exit, error);
+                    testCapture.complete(callId, outputText, error ? 1 : exit, false);
+                    if (activity != null) activity.onToolComplete(callId, tool, outputText, exit, error);
                 }
             }
         }
@@ -494,6 +502,12 @@ final class OpenCodeServeClient implements AutoCloseable {
                     Math.max(0, tokens.path("cache").path("write").asLong(0))};
             String messageId = info.path("id").asText("");
             // Legacy frames without identity cannot safely be merged with another request.
+            boolean newMessage = !messageId.isBlank() && !reportedUsage.containsKey(messageId);
+            long created = info.path("time").path("created").asLong(0);
+            if (newMessage && (latestUsageMessage == null || created == 0 || created >= latestUsageCreated)) {
+                latestUsageMessage = messageId;
+                latestUsageCreated = created;
+            }
             long[] previous = messageId.isBlank() ? new long[4]
                     : reportedUsage.computeIfAbsent(messageId, key -> new long[4]);
             long[] delta = new long[4];
@@ -504,6 +518,13 @@ final class OpenCodeServeClient implements AutoCloseable {
                 changed |= delta[i] > 0;
             }
             if (changed) activity.onTokenUsage(delta[0], delta[1], delta[2], delta[3]);
+            if (messageId.isBlank() || messageId.equals(latestUsageMessage)) {
+                long input = previous[0];
+                for (int index : new int[]{2, 3}) {
+                    input = Long.MAX_VALUE - input < previous[index] ? Long.MAX_VALUE : input + previous[index];
+                }
+                if (input > 0) activity.onContextUsage(input);
+            }
         }
     }
 

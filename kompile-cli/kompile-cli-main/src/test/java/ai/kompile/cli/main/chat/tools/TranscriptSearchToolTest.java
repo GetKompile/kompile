@@ -33,6 +33,14 @@ class TranscriptSearchToolTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        // TemporaryUserHome is class-scoped; each method needs a fresh corpus, otherwise
+        // ChatHistory appends the fixture again and search counts depend on test order.
+        Path corpus = KompileHome.homeDirectory().toPath().resolve("conversations");
+        if (Files.exists(corpus)) {
+            try (var files = Files.walk(corpus)) {
+                for (Path file : files.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(file);
+            }
+        }
         PermissionService permissions = new PermissionService();
         permissions.setUserOverride("transcript_search", PermissionService.PermissionLevel.ALLOW);
         context = new ToolContext("test", AgentConfig.builder("tester")
@@ -181,6 +189,77 @@ class TranscriptSearchToolTest {
     @Test
     void invalidContentRegexStillReturnsError() throws Exception {
         assertTrue(execute(params("search", "abc123").put("pattern", "[")).isError());
+    }
+
+    @Test
+    void readContinuationResumesBeyond500AndNeverShortensLongLines() throws Exception {
+        Path file = KompileHome.homeDirectory().toPath().resolve("conversations/paged.txt");
+        String longLine = "long-" + "x".repeat(12000) + "-complete";
+        StringBuilder content = new StringBuilder();
+        for (int line = 1; line <= 620; line++) {
+            content.append(line == 550 ? longLine : "line-" + line).append('\n');
+        }
+        Files.writeString(file, content);
+        ToolResult first = execute(params("read", "paged"));
+        assertEquals(500, first.getMetadata().get("returnedLines"));
+        assertEquals(501, first.getMetadata().get("nextOffset"));
+        assertEquals(620, first.getMetadata().get("totalLines"));
+        assertTrue(first.getOutput().contains("line-500\n"));
+        assertFalse(first.getOutput().contains("line-501\n"));
+        ToolResult next = execute(params("read", "paged").put("offset", 501).put("limit", 120));
+        assertEquals(120, next.getMetadata().get("returnedLines"));
+        assertNull(next.getMetadata().get("nextOffset"));
+        assertEquals(false, next.getMetadata().get("truncated"));
+        assertTrue(next.getOutput().contains(longLine + "\n"));
+        assertTrue(next.getOutput().endsWith("line-620\n"));
+    }
+
+    @Test
+    void readValidatesPageBoundsAndRefusesPaths() throws Exception {
+        assertTrue(execute(params("read", "abc123-one").put("offset", 0)).isError());
+        assertTrue(execute(params("read", "abc123-one").put("limit", 2001)).isError());
+        assertTrue(execute(params("read", "../other")).isError());
+    }
+
+    @Test
+    void fulltextIsExplicitAndReturnsBoundedContinuationAndCombinedFilters() throws Exception {
+        ToolResult first = execute(params("fulltext", "abc123").put("query", "failure").put("limit", 1));
+        assertFalse(first.isError());
+        assertEquals("fts5", first.getMetadata().get("mode"));
+        assertEquals(1, first.getMetadata().get("matches"));
+        assertEquals(1, first.getMetadata().get("nextOffset"));
+        assertTrue(first.getOutput().contains("[failure]"));
+        ToolResult second = execute(params("fulltext", "abc123").put("query", "failure")
+                .put("limit", 1).put("offset", 1));
+        assertFalse(second.isError());
+        assertNull(second.getMetadata().get("nextOffset"));
+        assertNotEquals(first.getOutput().split("\n")[1], second.getOutput().split("\n")[1]);
+        ToolResult filtered = execute(params("fulltext", "abc123").put("query", "failure")
+                .put("agent", "CODEX").put("project", workingDirectory.toString()));
+        assertEquals(1, filtered.getMetadata().get("matches"));
+        assertTrue(filtered.getOutput().contains("abc123-one"));
+        assertFalse(filtered.getOutput().contains("abc123-two"));
+    }
+
+    @Test
+    void indexedFtsNeverSilentlyChangesRegexOrLiteralSearch() throws Exception {
+        ToolResult exact = execute(params("search", "abc123-one").put("pattern", "fail.*first").put("context", 0));
+        assertFalse(exact.isError());
+        assertEquals(1, exact.getMetadata().get("matches"));
+        ToolResult literal = execute(params("search", "abc123-one").put("pattern", "fail.*first").put("literal", true));
+        assertEquals(0, literal.getMetadata().get("matches"));
+        assertTrue(execute(params("fulltext", "abc123-one").put("query", "fail.*first")).isError());
+        assertTrue(execute(params("fulltext", "abc123-one").put("query", "failure").put("literal", true)).isError());
+        assertTrue(execute(params("fulltext", "abc123-one").put("query", "failure").put("invert", true)).isError());
+    }
+
+    @Test
+    void explicitRebuildDoesNotModifySourceTranscripts() throws Exception {
+        Path file = KompileHome.homeDirectory().toPath().resolve("conversations/abc123-one.txt");
+        String original = Files.readString(file);
+        assertFalse(execute(params("rebuild_index", "")).isError());
+        assertEquals(original, Files.readString(file));
+        assertEquals(1, execute(params("fulltext", "abc123-one").put("query", "failure")).getMetadata().get("matches"));
     }
 
     @Test

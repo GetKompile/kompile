@@ -28,6 +28,7 @@ import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessEntry;
 import org.jline.terminal.Terminal;
+import org.jline.utils.AttributedString;
 
 import java.io.PrintStream;
 import java.time.Duration;
@@ -653,44 +654,61 @@ public class StatusBar {
      * This is intentionally bounded by terminal rows and visible columns.
      */
     public String render(int height, int width) {
+        int requested = menuItems.size() + (menuMessage.isEmpty() ? 0 : 1);
+        return render(height, width, Math.min(requested, Math.max(0, height / 6)));
+    }
+
+    /** Owner-supplied menu budget keeps activity updates out of transcript/input rows. */
+    public String render(int height, int width, int menuBudget) {
         if (!canDraw(height, width)) return "";
         List<MenuItem> items = this.menuItems;
         String msg = this.menuMessage;
-        int availableMenuRows = Math.max(0, height - STATUS_HEIGHT);
-        int requestedMenuRows = items.size() + (msg.isEmpty() ? 0 : 1);
-        int menuRows = Math.min(requestedMenuRows, availableMenuRows);
+        int menuRows = Math.min(Math.max(0, menuBudget), Math.max(0, height - STATUS_HEIGHT));
         int totalRows = STATUS_HEIGHT + menuRows;
         int sepRow = Math.max(1, height - totalRows + 1);
         int contentRow = sepRow + 1;
         StringBuilder frame = new StringBuilder();
 
         frame.append(ESC).append(sepRow).append(";1H").append(ESC).append("2K")
-                .append(DIM).append(HORIZONTAL_LINE.repeat(Math.min(safeDrawWidth(width), 200)))
+                .append(DIM).append(HORIZONTAL_LINE.repeat(safeDrawWidth(width)))
                 .append(RESET);
         frame.append(ESC).append(contentRow).append(";1H").append(ESC).append("2K")
                 .append(buildStatusContent(width));
 
         int menuRow = contentRow + 1;
         int drawWidth = safeDrawWidth(width);
-        for (MenuItem item : items) {
-            if (menuRow > height) break;
+        for (int row = menuRow; row <= height; row++) {
+            frame.append(ESC).append(row).append(";1H").append(ESC).append("2K");
+        }
+        // One-row allocations show an item rather than spending the only row
+        // on instructions. Keep keyboard selection visible after a resize.
+        boolean showMessage = !msg.isEmpty() && (menuRows > 1 || items.isEmpty());
+        int itemRows = Math.max(0, menuRows - (showMessage ? 1 : 0));
+        int selected = -1;
+        for (int i = 0; i < items.size(); i++) {
+            if (items.get(i).selected()) { selected = i; break; }
+        }
+        int start = selected < itemRows ? 0 : selected - itemRows + 1;
+        int end = Math.min(items.size(), start + itemRows);
+        int hidden = items.size() - (end - start);
+        for (int i = start; i < end; i++) {
+            MenuItem item = items.get(i);
             frame.append(ESC).append(menuRow).append(";1H").append(ESC).append("2K");
             String line = "  " + item.label();
             if (item.status() != null && !item.status().isEmpty()) {
                 line += DIM + " " + item.status() + RESET;
             }
-            String truncated = AnsiConstants.stripAnsi(line);
-            if (truncated.length() > drawWidth) {
-                truncated = truncated.substring(0, Math.max(0, drawWidth));
-            }
+            String overflow = hidden > 0 && i == end - 1 ? " · +" + hidden + " more" : "";
+            int overflowWidth = AttributedString.fromAnsi(overflow).columnLength();
+            String truncated = clipRow(line, Math.max(0, drawWidth - overflowWidth))
+                    + clipRow(overflow, drawWidth);
             frame.append(item.selected() ? INVERSE : "").append(truncated)
                     .append(item.selected() ? RESET : "");
             menuRow++;
         }
-        if (!msg.isEmpty() && menuRow <= height) {
+        if (showMessage && menuRow <= height) {
             frame.append(ESC).append(menuRow).append(";1H").append(ESC).append("2K");
-            String truncated = msg.length() > drawWidth
-                    ? msg.substring(0, Math.max(0, drawWidth)) : msg;
+            String truncated = clipRow(msg, drawWidth);
             frame.append(DIM).append(truncated).append(RESET);
         }
         return frame.toString();
@@ -881,15 +899,16 @@ public class StatusBar {
             return INVERSE + " " + RESET;
         }
         int innerWidth = Math.max(0, drawWidth - 2);
-        int visibleLen = AnsiConstants.stripAnsi(joined).length();
-        if (visibleLen > innerWidth) {
-            String plain = AnsiConstants.stripAnsi(joined);
-            joined = plain.substring(0, innerWidth);
-            visibleLen = joined.length();
-        }
+        joined = clipRow(joined, innerWidth);
+        int visibleLen = AttributedString.fromAnsi(joined).columnLength();
         int padding = Math.max(0, drawWidth - visibleLen - 2);
 
         return INVERSE + " " + joined + " ".repeat(padding + 1) + RESET;
+    }
+
+    private static String clipRow(String text, int columns) {
+        AttributedString row = TerminalRowText.fromAnsi(text);
+        return row.columnSubSequence(0, Math.min(columns, row.columnLength())).toAnsi();
     }
 
     static int safeDrawWidth(int terminalWidth) {

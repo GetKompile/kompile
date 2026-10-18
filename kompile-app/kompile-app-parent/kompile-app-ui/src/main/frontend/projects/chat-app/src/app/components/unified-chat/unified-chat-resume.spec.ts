@@ -13,7 +13,7 @@ describe('Unified chat resume after sleep', () => {
     (component as any).agentChatService = { getReconnectBookmark: () => bookmark,
       detachStreaming: jasmine.createSpy('detach'), cancelStreaming: jasmine.createSpy('cancel') };
     (component as any).activeStreamingSubs = [];
-    (component as any).cdr = jasmine.createSpyObj('cdr', ['reattach']);
+    (component as any).cdr = jasmine.createSpyObj('cdr', ['reattach', 'markForCheck']);
     (component as any).currentSession = { id: 'chat-1', messages: [] };
     reconnect = spyOn(component, 'reconnectCurrentRun');
   });
@@ -45,6 +45,17 @@ describe('Unified chat resume after sleep', () => {
     expect((component as any).workspaceTranscriptLoading).toBeTrue();
   });
 
+  it('reloads a cached workspace page after a run finishes while no checkpoint is available', () => {
+    bookmark = null;
+    (component as any).workspaceChat = { id: 'chat-1', name: 'Chat' };
+    component.isStreaming = true;
+    component.detachRunView();
+    const refresh = spyOn(component, 'refreshWorkspaceTranscript');
+    component.resumeSavedRun();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
   it('never falls back to cancellation when a view is destroyed', () => {
     (component as any).unregisterSessionConfigOpener = () => {};
     (component as any).subscriptions = [];
@@ -55,6 +66,66 @@ describe('Unified chat resume after sleep', () => {
     component.ngOnDestroy();
     expect((component as any).agentChatService.detachStreaming).toHaveBeenCalledTimes(1);
     expect((component as any).agentChatService.cancelStreaming).not.toHaveBeenCalled();
+  });
+
+  it('recovers a run from the server when the browser checkpoint is gone', async () => {
+    bookmark = null;
+    const saved = { runId: 'harness-found', messageStart: 0, messageStartIndex: 2, seed: { messages: [{ content: 'build it' }] } };
+    const discover = jasmine.createSpy('discover').and.callFake(async () => { bookmark = saved; return saved; });
+    (component as any).agentChatService.discoverRun = discover;
+    spyOn<any>(component, 'agentWorkingDirectory').and.returnValue('/project');
+    component.messages = [{ role: 'user', content: 'older' }, { role: 'assistant', content: 'old reply' },
+      { role: 'user', content: 'build it' }, { role: 'assistant', content: 'first result' },
+      { role: 'user', content: 'build it' }] as any; // repeated text is not the run boundary
+    component.resumeSavedRun();
+    component.resumeSavedRun(); // repeated pageshow/visibility events share one discovery
+    expect(component.lifecycleBusy).toBeTrue();
+    await Promise.resolve(); await Promise.resolve();
+    expect(discover).toHaveBeenCalledOnceWith('chat-1', '/project');
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect((component.currentSession as any).harnessRunStartIndex).toBe(2);
+    expect(component.lifecycleBusy).toBeFalse();
+  });
+
+  it('ignores a discovery that finishes after its view left', async () => {
+    bookmark = null;
+    let found!: (value: any) => void;
+    (component as any).agentChatService.discoverRun = () => new Promise(resolve => { found = resolve; });
+    spyOn<any>(component, 'agentWorkingDirectory').and.returnValue('/project');
+    component.resumeSavedRun();
+    component.detachRunView();
+    found({ runId: 'harness-too-late' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(component.lifecycleBusy).toBeFalse();
+  });
+
+  it('can discover again on pageshow without a late lookup releasing the new busy state', async () => {
+    bookmark = null;
+    const replies: ((value: any) => void)[] = [];
+    (component as any).agentChatService.discoverRun = () => new Promise(resolve => replies.push(resolve));
+    spyOn<any>(component, 'agentWorkingDirectory').and.returnValue('/project');
+    component.resumeSavedRun();
+    component.detachRunView();
+    component.resumeSavedRun();
+    expect(replies.length).toBe(2);
+    replies[0](null);
+    await Promise.resolve(); await Promise.resolve();
+    expect(component.lifecycleBusy).toBeTrue();
+    replies[1](null);
+    await Promise.resolve(); await Promise.resolve();
+    expect(component.lifecycleBusy).toBeFalse();
+  });
+
+  it('releases the busy state after a failed discovery and shows the failure', async () => {
+    bookmark = null;
+    (component as any).agentChatService.discoverRun = () => Promise.reject(new Error('Network down'));
+    spyOn<any>(component, 'agentWorkingDirectory').and.returnValue('/project');
+    component.resumeSavedRun();
+    await Promise.resolve(); await Promise.resolve();
+    expect(component.lifecycleBusy).toBeFalse();
+    expect(component.harnessControlMessage).toBe('Network down');
+    expect(reconnect).not.toHaveBeenCalled();
   });
 
   it('leaves a live, busy or finished run alone', () => {

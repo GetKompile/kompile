@@ -329,6 +329,9 @@ public final class SharedProcessMirror implements AutoCloseable {
     private static Map<String, String> metadata(ProcessCoordEntry entry) {
         Map<String, String> metadata = new HashMap<>();
         metadata.put("ownerSessionId", safe(entry.getSessionId()));
+        // The browser is project-wide; transcript cards must retain the narrower
+        // chat ownership established when the owner's MCP session registered.
+        metadata.put("parentSessionId", safe(entry.getParentSessionId()));
         metadata.put("sharedProcessId", safe(entry.getProcessId()));
         if (entry.getAgentName() != null && !entry.getAgentName().isBlank()) {
             metadata.put("ownerAgent", entry.getAgentName());

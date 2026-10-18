@@ -307,6 +307,7 @@ public class ProcessManagementTool implements CliTool {
 
             return ToolResult.success("launched " + entry.getId(), output,
                     Map.of("processId", entry.getId(), "pid", entry.getPid(),
+                            "backgrounded", true,
                             "monitored", true, "monitorEnforced", true,
                             "monitorForced", monitorForced));
 

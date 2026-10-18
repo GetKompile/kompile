@@ -62,6 +62,24 @@ class MilestoneInsightsTest {
         return MilestoneInsights.result(milestone, ZoneOffset.UTC);
     }
 
+    @Test
+    void neutralObservedRunsDoNotPollutePassFailTrendsButRemainVisibleInPanel() throws IOException {
+        Path files = projectStore().resolve(TestMilestoneReader.MILESTONES_DIR);
+        write(files.resolve("12345678.json"), "{'id':'12345678','module':'core','passing':true,'timestamp':'2026-10-01T10:00:00Z'}");
+        write(files.resolve("12345679.json"), "{'id':'12345679','module':'core','source':'harness','outcome':'timed_out','timestamp':'2026-10-02T10:00:00Z'}");
+        modified(files.resolve("12345678.json"), "2026-10-01T10:00:00Z");
+        modified(files.resolve("12345679.json"), "2026-10-02T10:00:00Z");
+        var source = new MilestoneInsights(projectStore(), null, CONFIG);
+        assertTrue(source.panelLine(panelQuery()).text().contains("TIMED_OUT"));
+        InsightReport report = ask(source, "overview");
+        assertTrue(report.getText().contains("excluded from pass/fail trends"));
+        long passing = 0, failing = 0;
+        for (var value : ai.kompile.cli.common.util.JsonUtils.standardMapper().readTree(series(report.getChart(), "passing"))) passing += value.asLong();
+        for (var value : ai.kompile.cli.common.util.JsonUtils.standardMapper().readTree(series(report.getChart(), "failing"))) failing += value.asLong();
+        assertEquals(1, passing);
+        assertEquals(0, failing);
+    }
+
     private Path projectStore() {
         return tempDir.resolve("project");
     }

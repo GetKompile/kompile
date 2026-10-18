@@ -7,9 +7,11 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatSessionContext;
+import ai.kompile.cli.main.chat.ClaudeTranscriptLink;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.ProcessManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tools.ToolResultReferenceCache;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
 import ai.kompile.utils.HashUtils;
@@ -84,8 +86,9 @@ import java.util.function.Consumer;
  * the instructions the running process started with, and the summary may drop
  * an update, so instructions that differ from those are sent again.</p>
  *
- * <p><b>Auth belongs to Claude Code.</b> The CLI owns the login and Kompile
- * never sees it. Selection verifies it with {@code claude auth status}
+     * <p><b>Auth belongs to Claude Code.</b> The CLI owns the login and this
+     * transport never reads it (the separate /usage lookup is read-only).
+     * Selection verifies it with {@code claude auth status}
  * ({@link LiveModelDiscovery#claudeCodeLogin()}); a login that expires later
  * is caught here: the failure output of a dead turn is matched against known
  * authentication signatures and raised as {@link ClaudeCliAuthenticationException}
@@ -102,6 +105,8 @@ import java.util.function.Consumer;
 final class ClaudeCliClient implements AutoCloseable {
 
     interface ActivityListener {
+        /** This message reached Claude; its restoration remains even if the turn later fails. */
+        default void onTurnAccepted(DirectLlmClient.ClaudeNativeSession session) { }
         void onToolStart(String callId, String name, String input);
         default void onToolInput(String callId, String name, String input) { }
         default void onToolOutput(String callId, String name, String output) { }
@@ -121,8 +126,8 @@ final class ClaudeCliClient implements AutoCloseable {
          */
         void onTokenUsage(long input, long output, long cacheRead, long cacheCreation);
         /**
-         * The input size of the turn's last request, reported at the end of the
-         * turn when known. {@link #onTokenUsage} adds up every request, so only
+         * The latest main-thread request's input size, reported while the turn
+         * runs and at its end when known. {@link #onTokenUsage} adds up every request, so only
          * this describes the context the session holds.
          */
         default void onContextUsage(long contextTokens) { }
@@ -138,6 +143,9 @@ final class ClaudeCliClient implements AutoCloseable {
          */
         default void onSteps(int steps) { }
         default void onNotice(String text) { }
+        default void onCompactionStarted() { }
+        /** A harmless abort/no-op, not a context-overflow failure. */
+        default void onCompactionSkipped(String detail) { }
         /**
          * Claude Code compacted the session it owns. {@code trigger} is
          * {@code auto} or {@code manual}, empty when not reported;
@@ -289,10 +297,31 @@ final class ClaudeCliClient implements AutoCloseable {
     private final AtomicLong followUpIds = new AtomicLong();
 
     private String sessionId;
+    private ClaudeTranscriptLink transcriptLink;
+    private String transcriptOwner;
+
+    synchronized void setTranscriptSessionId(String owner) {
+        if (mode.oneShot() || Objects.equals(owner, transcriptOwner)) return;
+        transcriptOwner = owner;
+        transcriptLink = owner == null ? null : new ClaudeTranscriptLink(owner);
+    }
+
+    private void publishTranscript() {
+        ClaudeTranscriptLink link;
+        String id;
+        synchronized (this) {
+            link = transcriptLink;
+            id = sessionId;
+        }
+        if (link != null) link.publish(id);
+    }
     /** False until the first turn has created the native session. */
     private boolean sessionStarted;
     /** Digest of the instructions the native session holds; null until a turn delivers them. */
     private String deliveredInstructionsDigest;
+    /** Exact acknowledged memory body for this live process; never persisted or inferred from summaries. */
+    private String deliveredMemorySnapshot;
+    private long memoryReceiptGeneration;
     /** Compactions of the session so far; a turn that saw one did not deliver its instructions. */
     private long compactions;
     /** MCP config the chat's launches pass with {@code --mcp-config}; deleted on close. */
@@ -482,6 +511,8 @@ final class ClaudeCliClient implements AutoCloseable {
             sessionId = nativeSessionId;
             sessionStarted = true;
             deliveredInstructionsDigest = instructionsDigest;
+            deliveredMemorySnapshot = null;
+            memoryReceiptGeneration++;
         }
         retire(retired);
     }
@@ -495,6 +526,8 @@ final class ClaudeCliClient implements AutoCloseable {
             sessionId = null;
             sessionStarted = false;
             deliveredInstructionsDigest = null;
+            deliveredMemorySnapshot = null;
+            memoryReceiptGeneration++;
         }
         retire(retired);
     }
@@ -625,6 +658,7 @@ final class ClaudeCliClient implements AutoCloseable {
             String updatedInstructions;
             long compactionsBefore;
             synchronized (this) {
+                compactionsBefore = compactions;
                 if (sessionId == null) {
                     sessionId = UUID.randomUUID().toString();
                 }
@@ -636,7 +670,6 @@ final class ClaudeCliClient implements AutoCloseable {
                 // began, so instructions that changed since then ride in this message once.
                 updatedInstructions = sessionStarted && !instructions.isEmpty()
                         && !instructionsDigest.equals(deliveredInstructionsDigest) ? instructions : "";
-                compactionsBefore = compactions;
             }
             Cli running = liveCli(model, effort, fastMode, instructions);
             // Drained first so a refusal from an applyIdleSettings call earlier,
@@ -645,11 +678,20 @@ final class ClaudeCliClient implements AutoCloseable {
             List<SettingChange> settings = takeIdleAppliedSettings();
             settings.addAll(running.applySettings(model,
                     turnEffort(running, model, effort), fastMode));
+            String snapshot = MemoryContextProjection.persistentSnapshot(userMessage);
+            String projectedMessage;
+            long receiptGeneration;
+            synchronized (this) {
+                receiptGeneration = memoryReceiptGeneration;
+                projectedMessage = MemoryContextProjection.withoutPersistentSnapshot(
+                        userMessage, deliveredMemorySnapshot);
+            }
             Turn turn = new Turn(UUID.randomUUID().toString(), null, running);
-            running.submit(turn, composeTurn(userMessage, updatedInstructions, restoredConversation),
+            running.submit(turn, composeTurn(projectedMessage, updatedInstructions, restoredConversation),
                     attachments);
             TurnOutcome outcome = consume(turn, output, activityListener, settings);
-            return finishTurn(turn, outcome, activityListener, instructionsDigest, compactionsBefore);
+            return finishTurn(turn, outcome, activityListener, instructionsDigest, compactionsBefore,
+                    snapshot, receiptGeneration);
         }
     }
 
@@ -860,6 +902,9 @@ final class ClaudeCliClient implements AutoCloseable {
         synchronized (this) {
             if (!closed) {
                 cli = started;
+                // Resume may have compacted while this process was absent. Re-establish the receipt.
+                deliveredMemorySnapshot = null;
+                memoryReceiptGeneration++;
                 return started;
             }
         }
@@ -973,7 +1018,8 @@ final class ClaudeCliClient implements AutoCloseable {
      * @param compactionsBefore  the session's compactions when the turn began
      */
     private String finishTurn(Turn turn, TurnOutcome outcome, ActivityListener activityListener,
-                              String instructionsDigest, long compactionsBefore) throws Exception {
+                              String instructionsDigest, long compactionsBefore, String memorySnapshot,
+                              long receiptGeneration) throws Exception {
         String text = outcome.streamed.toString();
         if (!outcome.refusal.isBlank() && text.isBlank() && !outcome.providerSideEffectsObserved) {
             // Claude Code refused the turn before any model request (an unknown
@@ -990,9 +1036,15 @@ final class ClaudeCliClient implements AutoCloseable {
                 sessionStarted = true;
                 if (compactions == compactionsBefore) {
                     deliveredInstructionsDigest = instructionsDigest;
+                    if (cli == turn.source && memorySnapshot != null
+                            && memoryReceiptGeneration == receiptGeneration) {
+                        deliveredMemorySnapshot = memorySnapshot;
+                    }
                 }
             }
+            if (activityListener != null) activityListener.onTurnAccepted(nativeSession());
         }
+        publishTranscript();
         throwIfStopped(outcome);
         if (!outcome.failure.isBlank()) {
             throw new TurnFailedException(outcome.failure + diagnosticSuffix());
@@ -1050,7 +1102,7 @@ final class ClaudeCliClient implements AutoCloseable {
         long deadline = 0;
         boolean stopped = false;
         turn.source.openInjection(turn);
-        try {
+        try (var capture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(workingDirectory)) {
             while (true) {
                 Object item;
                 try {
@@ -1064,6 +1116,7 @@ final class ClaudeCliClient implements AutoCloseable {
                     break;
                 }
                 if (item instanceof ClaudeCliStreamParser.Event event) {
+                    captureTestEvent(event, capture, outcome.cancelled);
                     if (outcome.cancelled) {
                         // An interrupted turn's output is not shown, but the tokens it
                         // used count; its result ends it.
@@ -1110,6 +1163,15 @@ final class ClaudeCliClient implements AutoCloseable {
             turn.source.release(turn);
         }
         return outcome;
+    }
+
+    private static void captureTestEvent(ClaudeCliStreamParser.Event event,
+                                         ai.kompile.cli.main.chat.tools.ProviderTestCapture capture, boolean cancelled) {
+        if (event instanceof ClaudeCliStreamParser.ToolStart start) capture.start(start.callId(), start.name(), start.input());
+        else if (event instanceof ClaudeCliStreamParser.ToolInput input) capture.start(input.callId(), input.name(), input.input());
+        else if (event instanceof ClaudeCliStreamParser.ToolComplete complete)
+            capture.complete(complete.callId(), complete.output(), complete.error() ? Integer.valueOf(1) : null, cancelled);
+        else if (event instanceof ClaudeCliStreamParser.SubagentEvent child) captureTestEvent(child.event(), capture, cancelled);
     }
 
     /**
@@ -1189,6 +1251,10 @@ final class ClaudeCliClient implements AutoCloseable {
             // Kept as the failure detail for a result that names none.
             // Kompile reports a failed turn once, so it is not a notice too.
             outcome.apiError = apiError.text();
+        } else if (event instanceof ClaudeCliStreamParser.CompactionStarted) {
+            if (activityListener != null) activityListener.onCompactionStarted();
+        } else if (event instanceof ClaudeCliStreamParser.CompactionSkipped skipped) {
+            if (activityListener != null) activityListener.onCompactionSkipped(skipped.detail());
         } else if (event instanceof ClaudeCliStreamParser.Compacted compacted) {
             if (activityListener != null) {
                 activityListener.onCompacted(compacted.trigger(), compacted.preTokens());
@@ -1247,7 +1313,16 @@ final class ClaudeCliClient implements AutoCloseable {
                                     ActivityListener activityListener, Cli source) {
         ClaudeCliStreamParser.TokenCounts added = ClaudeCliStreamParser.TokenCounts.ZERO;
         if (event instanceof ClaudeCliStreamParser.RequestUsage usage) {
-            if (source != null) added = source.usageLedger.request(usage);
+            if (source != null) {
+                added = source.usageLedger.request(usage);
+                // Merge snapshots before displaying input: a later frame can omit
+                // cached counts. Never substitute cumulative billing for occupancy.
+                long input = source.usageLedger.requestInputTokens(usage);
+                if (activityListener != null && input > 0 && (usage.usage().input() > 0
+                        || usage.usage().cacheRead() > 0 || usage.usage().cacheCreation() > 0)) {
+                    activityListener.onContextUsage(input);
+                }
+            }
         } else if (event instanceof ClaudeCliStreamParser.TurnComplete complete) {
             added = source != null ? source.usageLedger.result(complete) : complete.usage();
         }
@@ -1371,6 +1446,8 @@ final class ClaudeCliClient implements AutoCloseable {
     private synchronized void adoptCompaction(Cli source) {
         if (cli == source) {
             deliveredInstructionsDigest = source.launchDigest;
+            deliveredMemorySnapshot = null;
+            memoryReceiptGeneration++;
             compactions++;
         }
     }
@@ -1925,6 +2002,7 @@ final class ClaudeCliClient implements AutoCloseable {
         private ClaudeCliStreamParser parser = new ClaudeCliStreamParser(usageSequence);
         /** The tokens the process's turns reported, so each counts once. */
         private final ClaudeCliUsageLedger usageLedger;
+        private final ClaudeNativeToolOutputPolicy outputPolicy;
 
         Cli(Process process, Path instructionsFile, String launchDigest,
             String model, String effort, boolean fastMode, boolean resumed) {
@@ -1933,6 +2011,10 @@ final class ClaudeCliClient implements AutoCloseable {
             this.launchDigest = launchDigest;
             this.resumed = resumed;
             this.usageLedger = new ClaudeCliUsageLedger(resumed);
+            // Only bound output where the injected Kompile server provides durable fetch_result recovery.
+            this.outputPolicy = !mode.toolFree() && injectedSettingsFile != null
+                    && Boolean.parseBoolean(System.getProperty("kompile.chat.claude.boundNativeOutput", "true"))
+                    ? new ClaudeNativeToolOutputPolicy(mapper, new ToolResultReferenceCache()) : null;
             this.input = new BufferedWriter(new OutputStreamWriter(
                     process.getOutputStream(), StandardCharsets.UTF_8));
             this.model = normalized(model);
@@ -1950,7 +2032,15 @@ final class ClaudeCliClient implements AutoCloseable {
             }
             // With this affordance an interrupt ends the turn but spares the
             // background tasks; each task is stopped on its own (stop_task).
-            initialized = control("initialize", request -> request.put("perTaskStopAffordance", true));
+            initialized = control("initialize", request -> {
+                request.put("perTaskStopAffordance", true);
+                if (outputPolicy != null) {
+                    // SDK hookCallbackIds register a host callback; no settings-file mutation or shell hook.
+                    request.putObject("hooks").putArray("PostToolUse").addObject()
+                            .put("matcher", ClaudeNativeToolOutputPolicy.MATCHER)
+                            .putArray("hookCallbackIds").add(ClaudeNativeToolOutputPolicy.CALLBACK_ID);
+                }
+            });
             return this;
         }
 
@@ -2279,15 +2369,24 @@ final class ClaudeCliClient implements AutoCloseable {
                 return true;
             }
             if ("control_request".equals(type)) {
-                // A host's permission prompts and hooks, which this route never
-                // registers. Answering keeps Claude Code from waiting on one.
+                // Only our registered output hook is handled; permission prompts and
+                // unknown hooks retain their previous explicit error response.
                 ObjectNode reply = mapper.createObjectNode();
                 reply.put("type", "control_response");
                 ObjectNode response = reply.putObject("response");
-                response.put("subtype", "error");
                 response.put("request_id", node.path("request_id").asText(""));
-                response.put("error", "Kompile does not handle "
-                        + node.path("request").path("subtype").asText("such") + " requests");
+                JsonNode request = node.path("request");
+                if (outputPolicy != null && "hook_callback".equals(request.path("subtype").asText())
+                        && ClaudeNativeToolOutputPolicy.CALLBACK_ID.equals(request.path("callback_id").asText())) {
+                    String ownerSession;
+                    synchronized (ClaudeCliClient.this) { ownerSession = transcriptOwner; }
+                    response.put("subtype", "success");
+                    response.set("response", outputPolicy.project(request.path("input"), ownerSession));
+                } else {
+                    response.put("subtype", "error");
+                    response.put("error", "Kompile does not handle "
+                            + request.path("subtype").asText("such") + " requests");
+                }
                 try {
                     write(reply);
                 } catch (IOException ignored) {
@@ -2302,6 +2401,7 @@ final class ClaudeCliClient implements AutoCloseable {
         private void route(ClaudeCliStreamParser.Event event) {
             if (event instanceof ClaudeCliStreamParser.SessionInit init) {
                 adoptSessionId(this, init.sessionId());
+                publishTranscript();
                 return;
             }
             if (event instanceof ClaudeCliStreamParser.Compacted) {
@@ -2312,7 +2412,8 @@ final class ClaudeCliClient implements AutoCloseable {
             if (event instanceof ClaudeCliStreamParser.TaskStarted
                     || event instanceof ClaudeCliStreamParser.TaskProgress
                     || event instanceof ClaudeCliStreamParser.TaskEnded
-                    || event instanceof ClaudeCliStreamParser.BackgroundTasks) {
+                    || event instanceof ClaudeCliStreamParser.BackgroundTasks
+                    || event instanceof ClaudeCliStreamParser.SubagentEvent) {
                 noteTask(event);
                 ClaudeTaskBridge bridge = currentBridge();
                 if (bridge != null) bridge.onEvent(this, event);
@@ -2349,7 +2450,7 @@ final class ClaudeCliClient implements AutoCloseable {
                     unowned.clear();
                     owner = null;
                     // Each turn begins with its own init; the next one decodes afresh.
-                    parser = new ClaudeCliStreamParser(usageSequence);
+                    parser = parser.nextTurn();
                 } else if (isContent(event)) {
                     if (owner == null) {
                         // Output no message asked for: a turn Claude Code started by

@@ -8,6 +8,16 @@
     "verifiedAt": "2026-08-20",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
   },
+  "fastMode": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://openrouter.ai/docs/guides/features/service-tiers",
+      "verifiedAt": "2026-10-14",
+      "notice": "Requests OpenRouter's priority/fast tier at higher cost. Model and endpoint availability are provider-owned; an unavailable tier is reported by the API, not blocked by a client model list."
+    },
+    "onRequest": {"service_tier": "priority"},
+    "offRequest": {"service_tier": "default"}
+  },
   "structuredOutput": {
     "metadataSource": "DOCUMENTED_FALLBACK",
     "source": {

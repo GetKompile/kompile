@@ -59,6 +59,56 @@ import java.util.function.IntSupplier;
  */
 final class StandardChatActivityPanel {
 
+    /** Existing activity sources adapted into display-only cards; no new execution state. */
+    List<ai.kompile.cli.main.chat.render.ChatDisplayBlock> resultDisplayBlocks() {
+        List<ai.kompile.cli.main.chat.render.ChatDisplayBlock> result = new ArrayList<>();
+        for (ActivityItem item : activityItems()) {
+            if (item.kind() != ActivityKind.PROCESS && item.kind() != ActivityKind.MONITOR && item.kind() != ActivityKind.TASK) continue;
+            if (item.kind() == ActivityKind.PROCESS) {
+                ProcessEntry entry = processManager.get(item.id());
+                if (entry == null) continue;
+                // MCP injection and Claude stderr are diagnostic logs, not work results.
+                // Keep them in the process browser, never automatic transcript cards.
+                if (entry.getKind() == ProcessKind.MCP) continue;
+                // Shared rows are intentionally browsable across sessions, but
+                // must not automatically copy another chat's logs into this one.
+                String sessionId = processManager.getSessionId();
+                if (entry.getKind() == ProcessKind.SHARED && (sessionId == null || sessionId.isBlank()
+                        || !sessionId.equals(entry.getMetadata().get("parentSessionId")))) continue;
+                String taskType = entry.getMetadata().getOrDefault("task_type", "");
+                if ("subagent".equals(entry.getMetadata().get("kind"))
+                        || ("claude-code".equals(entry.getMetadata().get("source"))
+                        && (taskType.equals("agent") || taskType.endsWith("_agent")))) {
+                    String notice = subagentLaunchNotice(item.id(), entry.getCommand());
+                    result.add(new ai.kompile.cli.main.chat.render.ChatDisplayBlock(item.key(), "subagent", "",
+                            toolRenderer.magenta(notice), notice, List.of(),
+                            entry.getState() == BackgroundProcessManager.ProcessState.FAILED, item.active()));
+                    if (result.size() >= 32) break;
+                    continue;
+                }
+            }
+            ActivityView view = activityView(item);
+            result.add(new ai.kompile.cli.main.chat.render.ChatDisplayBlock(item.key(), "process", "",
+                    toolRenderer.bold(toolRenderer.cyan(item.label())) + toolRenderer.dim(" · " + item.status()), "",
+                    List.of(new ai.kompile.cli.main.chat.render.ChatDisplayBlock.Section("output", "output", "Output / details", view.content(), view.content())),
+                    item.status().contains("failed"), item.active()));
+            if (result.size() >= 32) break;
+        }
+        return List.copyOf(result);
+    }
+
+    ai.kompile.cli.main.chat.render.ChatDisplayBlock subagentDisplayBlock(String id) {
+        SubagentEntry entry = findSubagent(id);
+        if (entry == null) return null;
+        String notice = inlineSubagentTranscript(id);
+        // No transcript section: even Verbose/output overrides must leave child
+        // output in the explicitly opened process browser, not the parent chat.
+        return new ai.kompile.cli.main.chat.render.ChatDisplayBlock("subagent:" + id, "subagent", "",
+                toolRenderer.magenta(notice), notice, List.of(),
+                entry.getStatus() != null && entry.getStatus().contains("failed"), entry.isActive());
+    }
+
+
     enum ActivityKind {
         MAIN("main"),
         PROJECT("project"),
@@ -100,9 +150,7 @@ final class StandardChatActivityPanel {
     static final String MAIN_KEY = "main";
     static final String PROJECT_ACTIVITY_KEY = "project:agents";
     private static final int MAX_RETAINED_TOOL_ACTIVITIES = 64;
-    /** One-line steps shown in the collapsed inline block (the rest collapse into a count). */
-    private static final int MAX_INLINE_SUBAGENT_STEPS = 3;
-    private static final int MAX_INLINE_STEP_CHARS = 160;
+    private static final int MAX_SUBAGENT_LAUNCH_LABEL_CHARS = 160;
 
     private final BackgroundTaskManager taskManager;
     private final BackgroundProcessManager processManager;
@@ -224,70 +272,31 @@ final class StandardChatActivityPanel {
         refresh();
     }
 
-    /**
-     * Build the replaceable main-transcript block for one subagent. The selected
-     * activity view remains the full transcript; the main window only shows a
-     * collapsed header plus the last few one-line steps — the equivalent of a
-     * compact task block. Raw tool output and streamed model text stay in the
-     * inspectable transcript (↓ then Enter) instead of flooding the main window.
-     */
+    /** Launch notice only; live status, steps and output belong to the browser below. */
     String inlineSubagentTranscript(String id) {
         SubagentEntry entry = findSubagent(id);
         if (entry == null) return "";
 
-        String description = entry.getDescription();
-        String status = entry.getStatus();
-        if (status == null || status.isBlank()) {
-            status = entry.isActive() ? "running" : "completed";
+        String label = entry.getType();
+        if (entry.getDescription() != null && !entry.getDescription().isBlank()) {
+            label += " — " + entry.getDescription();
         }
+        StringBuilder notice = new StringBuilder(subagentLaunchNotice(entry.getId(), label));
+        if (entry.isActive() && taskManager.isCurrentTaskBackgroundable()) {
+            notice.append(" · Ctrl+B background this invocation");
+        }
+        if (entry.isActive() && isCurrentTurnBackgrounded()) {
+            notice.append(" · Backgrounded; output continues in the subagent row below");
+        }
+        return notice.toString();
+    }
 
-        boolean backgrounded = isCurrentTurnBackgrounded();
-        List<String> steps = entry.getRecentSummaries();
-        StringBuilder block = new StringBuilder()
-                .append("  ◉ Subagent [").append(entry.getId()).append("] ")
-                .append(entry.getType());
-        if (description != null && !description.isBlank()) {
-            block.append(" — ").append(description);
-        }
-        int total = entry.getTotalSteps();
-        block.append("\n  ").append(entry.getElapsed());
-        if (total > 0) {
-            block.append(" · ").append(total).append(total == 1 ? " step" : " steps");
-        }
-        if (taskManager.isCurrentTaskBackgroundable()) {
-            block.append(" · Ctrl+B background this invocation");
-        }
-        block.append(" · ↓ then Delete to stop or Enter to inspect");
-        if (backgrounded) {
-            block.append("\n  ◐ Backgrounded · output continues in the subagent row below")
-                    .append(" · ↓ selects it; Enter opens it; then type a follow-up · Delete to stop");
-            return block.toString();
-        }
-
-        int shown = Math.min(steps.size(), MAX_INLINE_SUBAGENT_STEPS);
-        int hidden = Math.max(0, total - shown);
-        if (hidden > 0) {
-            block.append("\n  … +").append(hidden).append(" earlier step").append(hidden == 1 ? "" : "s");
-        }
-
-        boolean active = entry.isActive();
-        if (steps.isEmpty()) {
-            // No discrete steps yet (starting/thinking/connecting): show the live
-            // status as the running row so the block never reads as idle.
-            block.append("\n  ").append(active ? "⟳ " : "⎿ ").append(status.strip());
-            return block.toString();
-        }
-        int first = steps.size() - shown;
-        for (int i = first; i < steps.size(); i++) {
-            String step = steps.get(i);
-            // The runners append " …" to the in-flight call summary and " ✓ "/" ✗ "
-            // to finished ones; a trailing ellipsis alone is not evidence of running.
-            boolean runningStep = active && i == steps.size() - 1
-                    && step.endsWith(" …") && !step.contains(" ✓ ") && !step.contains(" ✗ ");
-            block.append("\n  ").append(runningStep ? "⟳ " : "⎿ ")
-                    .append(StringUtils.truncateEllipsis(step, MAX_INLINE_STEP_CHARS));
-        }
-        return block.toString();
+    private static String subagentLaunchNotice(String id, String label) {
+        String heading = StringUtils.truncateEllipsis(
+                TerminalRenderer.printableToolOutput(label).replaceAll("\\s+", " ").strip(),
+                MAX_SUBAGENT_LAUNCH_LABEL_CHARS);
+        return "  ◉ Launched subagent [" + id + "] " + heading
+                + "\n  ↓ select in process browser below · Enter to inspect · Delete to stop";
     }
 
     boolean isCurrentTurnBackgrounded() {
@@ -753,7 +762,12 @@ final class StandardChatActivityPanel {
     }
 
     void refresh() {
-        int panelRows = Math.max(1, reservedRowSupplier.getAsInt());
+        int panelRows = Math.max(0, reservedRowSupplier.getAsInt());
+        if (panelRows == 0) {
+            currentMenuItems = List.of();
+            statusBar.setMenuItems(List.of(), "");
+            return;
+        }
         List<ChatCompleter.CompletionItem> completions = completionItems;
         if (!completions.isEmpty()) {
             renderCompletions(completions, panelRows);
@@ -763,7 +777,8 @@ final class StandardChatActivityPanel {
         List<ActivityItem> items = activityItems();
         normalizeSelection(items);
 
-        int itemRows = Math.max(0, panelRows - 1);
+        boolean showHint = panelRows > 1;
+        int itemRows = panelRows - (showHint ? 1 : 0);
         List<ActivityItem> visibleItems = visibleItems(items, itemRows);
 
         List<StatusBar.MenuItem> menu = new ArrayList<>(itemRows);
@@ -779,6 +794,9 @@ final class StandardChatActivityPanel {
                             + item.kind().label() + " " + item.label();
                 }
                 String status = item.status() + (item.killable() ? " · Del stop" : "");
+                if (!showHint && items.size() > visibleItems.size()) {
+                    status += " · +" + (items.size() - visibleItems.size()) + " more";
+                }
                 menu.add(new StatusBar.MenuItem(
                         item.key(), label, status,
                         focused && item.key().equals(selectedKey)));
@@ -824,7 +842,7 @@ final class StandardChatActivityPanel {
         }
 
         currentMenuItems = List.copyOf(menu);
-        statusBar.setMenuItems(menu, hint);
+        statusBar.setMenuItems(menu, showHint ? hint : "");
     }
 
     private void renderCompletions(

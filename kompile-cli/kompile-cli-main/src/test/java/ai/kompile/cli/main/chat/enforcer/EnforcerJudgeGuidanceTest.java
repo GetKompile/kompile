@@ -59,6 +59,91 @@ class EnforcerJudgeGuidanceTest {
     private static final String RULES = "never print secrets";
 
     @Test
+    void selectedWorkflowMemoryReachesEveryReviewAndIsFrozenForChildren() throws Exception {
+        RecordingBackend backend = new RecordingBackend();
+        EnforcerJudge judge = new EnforcerJudge(backend, new com.fasterxml.jackson.databind.ObjectMapper());
+        String complete = "rule\n".repeat(2200) + "WORKFLOW_MEMORY_TAIL";
+        AtomicReference<String> snapshot = new AtomicReference<>(complete);
+        judge.setWorkflowMemorySupplier(snapshot::get);
+        EnforcerPolicy policy = new EnforcerPolicy(RULES, 2, false);
+        judge.evaluate("Release", "Working", policy, 1);
+        judge.evaluatePartialOutput("Release", "Working", policy);
+        backend.nextResponse = "{\"action\":\"ALLOW\",\"reason\":\"ok\"}";
+        judge.evaluateToolCall("todowrite", "{\"action\":\"add\",\"subject\":\"release\"}", policy);
+        assertEquals(3, backend.userPrompts.size(), "selected workflow rules also govern routine tools");
+        for (String prompt : backend.userPrompts) {
+            assertTrue(prompt.contains("[ACTIVE WORKFLOW MEMORY CONSTRAINTS]"));
+            assertTrue(prompt.contains(complete), "required policy must not be truncated at 8000 chars");
+            assertTrue(prompt.contains("Other retrieved memory is advisory"));
+        }
+        var captured = judge.captureForChild();
+        snapshot.set("NEW_WORKFLOW_MEMORY");
+        backend.nextResponse = "{\"compliant\":true,\"stop\":false}";
+        captured.evaluate("Child", "Working", policy, 1);
+        assertTrue(backend.userPrompts.get(3).contains(complete));
+        assertFalse(backend.userPrompts.get(3).contains("NEW_WORKFLOW_MEMORY"));
+        judge.evaluate("Next turn", "Working", policy, 1);
+        assertTrue(backend.userPrompts.get(4).contains("NEW_WORKFLOW_MEMORY"));
+        judge.setWorkflowMemorySupplier(null);
+        judge.evaluate("Normal turn", "Working", policy, 1);
+        assertFalse(backend.userPrompts.get(5).contains("[ACTIVE WORKFLOW MEMORY CONSTRAINTS]"));
+    }
+
+    @Test
+    void bookkeepingIsEnforcedByDefaultAcrossReviewModesWithLiveEvidence() throws Exception {
+        RecordingBackend backend = new RecordingBackend();
+        EnforcerJudge judge = new EnforcerJudge(backend,
+                new com.fasterxml.jackson.databind.ObjectMapper());
+        AtomicReference<String> tasks = new AtomicReference<>("task 1: Implement fix — in_progress");
+        judge.setTaskStateSupplier(tasks::get);
+        EnforcerPolicy policy = new EnforcerPolicy(RULES, 2, false);
+
+        judge.evaluate("Implement and test", "Done", policy, 1);
+        judge.evaluatePartialOutput("Implement and test", "Working", policy);
+        backend.nextResponse = "{\"action\":\"ALLOW\",\"reason\":\"ok\"}";
+        judge.evaluateToolCall("write", "{\"file_path\":\"src/x\"}", policy);
+        for (String prompt : backend.userPrompts) {
+            assertTrue(prompt.contains("[DEFAULT TASK BOOKKEEPING]"));
+            assertTrue(prompt.contains("task 1: Implement fix — in_progress"));
+            assertTrue(prompt.contains("not just a prose checklist"));
+            assertTrue(prompt.contains("simple questions or atomic actions"));
+            assertTrue(prompt.contains("unrelated older tasks"));
+            assertTrue(prompt.contains("never use stop=true for them"));
+            assertTrue(prompt.contains("Explicit user instructions can waive"));
+        }
+
+        tasks.set("task 1: Implement fix — completed");
+        backend.nextResponse = "{\"compliant\":true,\"stop\":false}";
+        judge.evaluate("Implement and test", "Done", policy, 2);
+        assertTrue(backend.userPrompts.get(3).contains("task 1: Implement fix — completed"));
+        int calls = backend.userPrompts.size();
+        assertTrue(judge.evaluateToolCall("todowrite",
+                "{\"action\":\"update\",\"task_id\":\"1\",\"status\":\"completed\"}", policy).isAllowed());
+        assertEquals(calls, backend.userPrompts.size(), "repair bookkeeping keeps its deterministic fast path");
+    }
+
+    @Test
+    void capturedChildrenDoNotReadParentTaskState() throws Exception {
+        RecordingBackend backend = new RecordingBackend();
+        EnforcerJudge judge = new EnforcerJudge(backend,
+                new com.fasterxml.jackson.databind.ObjectMapper());
+        judge.setTaskStateSupplier(() -> "PARENT_PRIVATE_TASK");
+        judge.captureForChild().evaluate("Child work", "Done", new EnforcerPolicy(RULES, 2, false), 1);
+        assertTrue(backend.userPrompts.get(0).contains("[DEFAULT TASK BOOKKEEPING]"));
+        assertFalse(backend.userPrompts.get(0).contains("PARENT_PRIVATE_TASK"));
+    }
+
+    @Test
+    void taskStateSupplierFailureDoesNotFailReview() throws Exception {
+        RecordingBackend backend = new RecordingBackend();
+        EnforcerJudge judge = new EnforcerJudge(backend,
+                new com.fasterxml.jackson.databind.ObjectMapper());
+        judge.setTaskStateSupplier(() -> { throw new IllegalStateException("storage unavailable"); });
+        assertTrue(judge.evaluate("Question", "Answer", new EnforcerPolicy(RULES, 2, false), 1).isCompliant());
+        assertTrue(backend.userPrompts.get(0).contains("do not infer a violation from a storage failure"));
+    }
+
+    @Test
     void userGuidanceIsInjectedIntoTurnAndToolPrompts() throws Exception {
         RecordingBackend backend = new RecordingBackend();
         EnforcerJudge judge = new EnforcerJudge(backend,

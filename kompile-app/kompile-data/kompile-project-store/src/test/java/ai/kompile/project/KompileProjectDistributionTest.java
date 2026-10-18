@@ -77,6 +77,23 @@ class KompileProjectDistributionTest {
     }
 
     @Test
+    void optionalReleaseEntrypointRoundTripsWithoutInventingProductConfiguration() throws Exception {
+        KompileProjectManifest project = readProject("{\"delivery\":\"jar\",\"entrypoint\":\"components/product/bin/product\"}");
+        assertEquals("components/product/bin/product", project.getDistribution().getEntrypoint());
+        assertRoundTrip(project);
+        assertNull(readProject("{}").getDistribution().getEntrypoint());
+        assertNull(readProject("{\"entrypoint\":null}").getDistribution().getEntrypoint());
+        assertFalse(mapper.valueToTree(readProject("{}")).path("distribution").has("entrypoint"));
+        for (String path : List.of("", " ", ".", "../escape", "components/../escape", "/absolute",
+                "C:/absolute", "C:relative", "components\\product", "components/./product", "components//product", "components/product/", "bad\u0000path")) {
+            assertInvalid("{\"entrypoint\":" + mapper.valueToTree(path) + "}");
+        }
+        for (String value : List.of("true", "123", "[]", "{}")) {
+            assertInvalid("{\"entrypoint\":" + value + "}");
+        }
+    }
+
+    @Test
     void typedRequirementsAndOverridesRoundTripWithoutBackendCapabilityWhitelist() throws Exception {
         KompileProjectManifest project = readProject("""
                 {

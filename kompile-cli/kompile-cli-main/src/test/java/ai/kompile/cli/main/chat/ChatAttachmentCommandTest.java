@@ -127,10 +127,26 @@ class ChatAttachmentCommandTest {
         return path;
     }
 
-    private ChatCommandRouter router() {
+    @Test
+    void acceptedImagesRequestOptionalPreviewButTextFilesDoNot() throws IOException {
+        ChatRepl repl = mock(ChatRepl.class);
+        Path image = Files.write(tempDir.resolve("preview.png"), new byte[]{1, 2, 3});
+        Path text = Files.writeString(tempDir.resolve("notes.txt"), "notes");
+        ChatCommandRouter router = router(repl);
+        router.handleSlashCommand("/image " + image);
+        router.handleSlashCommand("/file " + image);
+        router.handleSlashCommand("/file " + text);
+        org.mockito.Mockito.verify(repl, org.mockito.Mockito.times(2)).previewAttachedImage(image);
+        org.mockito.Mockito.verify(repl, org.mockito.Mockito.never()).previewAttachedImage(text);
+        assertEquals(3, pending.size());
+    }
+
+    private ChatCommandRouter router() { return router(null); }
+
+    private ChatCommandRouter router(ChatRepl repl) {
         TerminalRenderer renderer = new TerminalRenderer();
         return new ChatCommandRouter(
-                null, null, null, null,
+                repl, null, null, null,
                 null, null, "attachment-session", true,
                 null, null, renderer, new AsciiRenderer(renderer),
                 null, null, null, null, null, null, null, null, null,

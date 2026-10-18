@@ -23,13 +23,18 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
+import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 /**
- * Lightweight in-memory cache for large tool outputs, enabling the
+ * Durable result references with a bounded legacy in-memory cache, enabling the
  * reference-handle pattern described in MCP resource references research.
  *
  * <p>When a tool output exceeds a character threshold, the full content is
@@ -45,30 +50,69 @@ import java.util.regex.PatternSyntaxException;
  */
 public class ToolResultReferenceCache {
 
-    /** Default character threshold above which results are cached (~16K chars ≈ 4K tokens): large
-     *  enough that ordinary reads/greps still return inline, so caching fires only on genuinely
-     *  large output that would otherwise flood the context window. */
+    /** Legacy/direct-store threshold. Production MCP delivery also applies its configured
+     * soft character allowance; character counts are not exact model-token measurements. */
     public static final int DEFAULT_CACHE_THRESHOLD_CHARS = 16000;
     /** A fetch must not bypass the output guard and refill the model's context. */
     public static final int MAX_FETCH_CHARS = 16000;
 
-    /** Default TTL for cached entries (15 minutes). */
+    /** Default idle TTL for legacy in-memory entries (15 minutes), not durable files. */
     private static final long DEFAULT_TTL_MS = 15 * 60 * 1000L;
 
     /** Maximum entries before LRU eviction. */
     private static final int MAX_ENTRIES = 500;
 
-    private final ConcurrentHashMap<String, CacheEntry> cache = new ConcurrentHashMap<>();
+    public static final long DEFAULT_MEMORY_BYTE_CAP = 8 * 1024 * 1024L;
+    private final LinkedHashMap<String, CacheEntry> cache = new LinkedHashMap<>(16, .75f, true);
+    private final Map<String, Long> weights = new LinkedHashMap<>();
+    private long retainedBytes;
+    private final long memoryByteCap;
+    private final DurableToolResultStore durableStore;
+    private final LongSupplier clock;
     private final int thresholdChars;
     private final long ttlMs;
+    private volatile ToolOutputBudget outputBudget;
 
     public ToolResultReferenceCache() {
-        this(DEFAULT_CACHE_THRESHOLD_CHARS, DEFAULT_TTL_MS);
+        this(Path.of(System.getProperty("user.dir")));
     }
 
+    public ToolResultReferenceCache(Path workingDirectory) {
+        this(DEFAULT_CACHE_THRESHOLD_CHARS, DEFAULT_TTL_MS, DEFAULT_MEMORY_BYTE_CAP,
+                new DurableToolResultStore(KompileHome.homeDirectory().toPath().resolve("conversations")),
+                System::currentTimeMillis);
+        configureOutputBudget(workingDirectory);
+    }
+
+    /** Socket initialization resolves its client's working directory before registering tools. */
+    public void configureOutputBudget(Path workingDirectory) {
+        outputBudget = ToolOutputBudget.load(workingDirectory, clock);
+    }
+
+    ToolOutputBudget.Reservation reserveFetch(String owner) {
+        return outputBudget.reserve(owner, true);
+    }
+
+    /** Compatibility/test constructor: ephemeral only, never writes to the real Kompile home. */
     public ToolResultReferenceCache(int thresholdChars, long ttlMs) {
+        this(thresholdChars, ttlMs, DEFAULT_MEMORY_BYTE_CAP, null, System::currentTimeMillis);
+    }
+
+    ToolResultReferenceCache(int thresholdChars, long ttlMs, long memoryByteCap,
+                             DurableToolResultStore durableStore, LongSupplier clock) {
+        if (ttlMs < 0 || memoryByteCap < 0) throw new IllegalArgumentException("Negative cache bound");
         this.thresholdChars = thresholdChars;
         this.ttlMs = ttlMs;
+        this.memoryByteCap = memoryByteCap;
+        this.durableStore = durableStore;
+        this.clock = clock;
+        this.outputBudget = new ToolOutputBudget(ToolOutputBudget.Settings.legacy(), clock);
+    }
+
+    ToolResultReferenceCache(int thresholdChars, long ttlMs, ToolOutputBudget.Settings settings,
+                             LongSupplier clock) {
+        this(thresholdChars, ttlMs, DEFAULT_MEMORY_BYTE_CAP, null, clock);
+        this.outputBudget = new ToolOutputBudget(settings, clock);
     }
 
     /**
@@ -80,9 +124,37 @@ public class ToolResultReferenceCache {
      * @return the reference handle (UUID string)
      */
     public String store(String toolName, String output, Map<String, Object> metadata) {
+        return store(null, toolName, output, metadata);
+    }
+
+    private synchronized String store(String ownerSession, String toolName, String output,
+                                      Map<String, Object> metadata) {
+        if (durableStore != null) {
+            try {
+                return durableStore.store(ownerSession, toolName, output, metadata);
+            } catch (IOException failure) {
+                throw new UncheckedIOException("Cannot persist full tool result", failure);
+            }
+        }
+        evictIfNeeded();
+        // Normalize metadata rather than retaining arbitrary caller-owned object graphs.
+        Map<String, Object> snapshot;
+        long weight;
+        try {
+            String json = JsonUtils.standardMapper().writeValueAsString(metadata == null ? Map.of() : metadata);
+            snapshot = (Map<String, Object>) immutableJson(JsonUtils.standardMapper().readValue(json, Map.class));
+            weight = 1024L + 2L * output.length() + 2L * (toolName == null ? 0 : toolName.length())
+                    + 32L * json.length(); // conservative allowance for decoded metadata objects
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
+        if (weight > memoryByteCap) throw new IllegalStateException("Full result exceeds ephemeral cache byte cap");
         String id = UUID.randomUUID().toString().substring(0, 8);
-        long expiresAt = System.currentTimeMillis() + ttlMs;
-        cache.put(id, new CacheEntry(toolName, output, metadata, expiresAt));
+        while (cache.containsKey(id)) id = UUID.randomUUID().toString().substring(0, 8);
+        long expiresAt = clock.getAsLong() + ttlMs;
+        cache.put(id, new CacheEntry(toolName, output, snapshot, expiresAt));
+        weights.put(id, weight);
+        retainedBytes += weight;
         evictIfNeeded();
         return id;
     }
@@ -106,50 +178,121 @@ public class ToolResultReferenceCache {
      */
     public ToolResult storeAndSummarize(String toolName, String title, String output,
                                          Map<String, Object> metadata) {
-        String handle = store(toolName, output, metadata);
+        return storeAndSummarize(null, toolName, title, output, metadata);
+    }
+
+    /** Bound model-facing output without changing error status or re-caching explicit fetches. */
+    public ToolResult prepareForDelivery(String ownerSession, String toolName, ToolResult result) {
+        // Fetch tools reserve and account their own shared page allowance before slicing.
+        if (result == null || "fetch_result".equals(toolName) || "fetch_result_batch".equals(toolName)) return result;
+        try (var reservation = outputBudget.reserve(ownerSession, false)) {
+            ToolResult delivered = result;
+            if (result.getOutput() != null && (shouldCache(result.getOutput())
+                    || result.getOutput().length() > reservation.limit())) {
+                delivered = storeAndSummarize(ownerSession, toolName, result.getTitle(),
+                        result.getOutput(), result.getMetadata(), result.isError(), reservation.limit());
+            }
+            reservation.complete(delivered.getOutput() == null ? 0 : delivered.getOutput().length());
+            return delivered;
+        }
+    }
+
+    /** Owner is the host-resolved invocation session; null uses the documented MCP fallback. */
+    public ToolResult storeAndSummarize(String ownerSession, String toolName, String title,
+                                        String output, Map<String, Object> metadata) {
+        return storeAndSummarize(ownerSession, toolName, title, output, metadata, false);
+    }
+
+    private ToolResult storeAndSummarize(String ownerSession, String toolName, String title,
+                                         String output, Map<String, Object> metadata, boolean error) {
+        return storeAndSummarize(ownerSession, toolName, title, output, metadata, error, MAX_FETCH_CHARS);
+    }
+
+    private ToolResult storeAndSummarize(String ownerSession, String toolName, String title,
+                                         String output, Map<String, Object> metadata, boolean error, int previewLimit) {
+        final String handle;
+        try {
+            handle = store(ownerSession, toolName, output, metadata);
+        } catch (RuntimeException failure) {
+            // Never substitute a bogus handle or silently discard full output on I/O failure.
+            LinkedHashMap<String, Object> failedMeta = new LinkedHashMap<>();
+            if (metadata != null) failedMeta.putAll(metadata);
+            failedMeta.remove("result_id");
+            failedMeta.put("cached", false);
+            failedMeta.put("durable", false);
+            failedMeta.put("resultCacheError", failure.getMessage() == null
+                    ? failure.getClass().getSimpleName() : failure.getMessage());
+            return new ToolResult(title,
+                    "[Result cache failed; full output returned inline, no handle issued: "
+                            + failedMeta.get("resultCacheError") + "]\n" + output, failedMeta, error);
+        }
+        boolean durable = DurableToolResultStore.isDurableHandle(handle);
 
         // Generate a compact summary
         int totalChars = output.length();
-        int totalLines = (int) output.lines().count();
+        int totalLines = 0;
+        for (int i = 0; i < output.length(); i++) {
+            char c = output.charAt(i);
+            if (c == '\n' || c == '\r') {
+                totalLines++;
+                if (c == '\r' && i + 1 < output.length() && output.charAt(i + 1) == '\n') i++;
+            }
+        }
+        if (!output.isEmpty() && output.charAt(output.length() - 1) != '\n'
+                && output.charAt(output.length() - 1) != '\r') totalLines++;
 
         StringBuilder summary = new StringBuilder();
         summary.append("[Full result cached as ref:").append(handle).append(" — ")
                 .append(totalChars).append(" chars, ").append(totalLines).append(" lines. ")
-                .append("Normal, not an error: large outputs are held out of context so they don't flood it.]\n");
-        summary.append("[READ it with fetch_result(result_id=\"").append(handle)
+                .append(error ? "Tool failed; full diagnostic output is cached for retrieval.]\n"
+                        : "Normal, not an error: large outputs are held out of context so they don't flood it.]\n");
+        summary.append("[Fetch only needed evidence with fetch_result(result_id=\"").append(handle)
                 .append("\", offset=<1-based line>, limit=<lines>) — or pattern=<regex> to return only the ")
                 .append("matching lines (like grep over the result) so you pull just what you need. Do NOT ")
                 .append("re-run the tool or fall back to bash to avoid this — the result already exists; ")
-                .append("re-run only for a genuinely narrower query. Expires ~15 min.]\n\n");
+                .append("re-run only for a genuinely narrower query. ")
+                .append(durable ? "Durable until the owning conversation is removed.]\n\n"
+                        : "Expires after idle cache TTL.]\n\n");
         summary.append("Preview: first & last lines (use pattern= to find the rest)\n");
-        summary.append(buildPreview(output));
+        String preview = buildPreview(output);
+        int previewChars = Math.max(0, previewLimit - summary.length());
+        int end = Math.min(preview.length(), previewChars);
+        if (end > 0 && Character.isHighSurrogate(preview.charAt(end - 1))) end--;
+        summary.append(preview, 0, end);
 
         LinkedHashMap<String, Object> meta = new LinkedHashMap<>();
         if (metadata != null) meta.putAll(metadata);
         meta.put("result_id", handle);
         meta.put("cached", true);
+        meta.put("durable", durable);
         meta.put("totalChars", totalChars);
         meta.put("totalLines", totalLines);
 
-        return ToolResult.success(title, summary.toString(), meta);
+        return new ToolResult(title, summary.toString(), meta, error);
     }
 
     /**
      * Retrieve the full cached content by handle.
      *
      * @param id the reference handle
-     * @return the full content, or empty if expired/unknown
+     * @return legacy full content, or a small durable entry; large durable entries require getSlice
      */
-    public Optional<CacheEntry> get(String id) {
+    public synchronized Optional<CacheEntry> get(String id) {
         if (id == null) return Optional.empty();
         if (id.startsWith("ref:")) id = id.substring(4);
+        if (DurableToolResultStore.isDurableHandle(id) && durableStore != null) {
+            try {
+                return Optional.of(durableStore.getSmallEntry(id, MAX_FETCH_CHARS));
+            } catch (IOException failure) {
+                throw new UncheckedIOException("Use getSlice for large durable results; read failed", failure);
+            }
+        }
+        evictIfNeeded();
         CacheEntry entry = cache.get(id);
         if (entry == null) return Optional.empty();
-        if (entry.expiresAt < System.currentTimeMillis()) {
-            cache.remove(id);
-            return Optional.empty();
-        }
-        return Optional.of(entry);
+        CacheEntry refreshed = new CacheEntry(entry.toolName, entry.output, entry.metadata, clock.getAsLong() + ttlMs);
+        cache.put(id, refreshed);
+        return Optional.of(refreshed);
     }
 
     /**
@@ -182,6 +325,16 @@ public class ToolResultReferenceCache {
     /** Character offset continues a long line; maxChars also bounds each batch share. */
     ToolResult getSlice(String id, int offset, int limit, String pattern,
                         int characterOffset, int maxChars) {
+        String bare = id != null && id.startsWith("ref:") ? id.substring(4) : id;
+        if (DurableToolResultStore.isDurableHandle(bare)) {
+            if (durableStore == null) return ToolResult.error("Durable result storage is not configured");
+            try {
+                return durableStore.getSlice(bare, offset, limit, pattern, characterOffset, maxChars);
+            } catch (IOException | RuntimeException failure) {
+                return ToolResult.error("Cannot read durable result: " + failure.getMessage()
+                        + ". It may be missing, removed with its conversation, or unsafe; no TTL expiry is assumed.");
+            }
+        }
         Optional<CacheEntry> entry = get(id);
         if (entry.isEmpty()) {
             return ToolResult.error("Result '" + id + "' not found or expired. Reference handles "
@@ -285,8 +438,14 @@ public class ToolResultReferenceCache {
     }
 
     /** Number of live entries. */
-    public int size() {
+    public synchronized int size() {
+        evictIfNeeded();
         return cache.size();
+    }
+
+    public synchronized long retainedBytes() {
+        evictIfNeeded();
+        return retainedBytes;
     }
 
     // ── Private helpers ──────────────────────────────────────────────────
@@ -297,24 +456,29 @@ public class ToolResultReferenceCache {
      * raw character prefix that may be entirely boilerplate. Long lines are clipped.
      */
     private String buildPreview(String output) {
-        String[] lines = output.split("\n", -1);
-        int head = Math.min(10, lines.length);
+        // Bound temporary allocations too: do not split the entire incoming payload for a preview.
+        int total = 1;
+        for (int i = 0; i < output.length(); i++) if (output.charAt(i) == '\n') total++;
+        int head = Math.min(10, total);
+        int tailStart = Math.max(head, total - 4);
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < head; i++) {
-            sb.append(clip(lines[i])).append("\n");
-        }
-        int tailStart = Math.max(head, lines.length - 4);
-        if (tailStart > head) {
-            sb.append("… (").append(tailStart - head).append(" lines omitted — use offset/limit or pattern=) …\n");
-            for (int i = tailStart; i < lines.length; i++) {
-                sb.append(clip(lines[i])).append("\n");
+        int start = 0;
+        for (int line = 0; line < total; line++) {
+            int end = output.indexOf('\n', start);
+            if (end < 0) end = output.length();
+            if (line == head && tailStart > head) {
+                sb.append("… (").append(tailStart - head).append(" lines omitted — use offset/limit or pattern=) …\n");
             }
+            if (line < head || line >= tailStart) {
+                int stop = Math.min(end, start + 200);
+                if (stop < end && stop > start && Character.isHighSurrogate(output.charAt(stop - 1))) stop--;
+                sb.append(output, start, stop);
+                if (stop < end) sb.append('…');
+                sb.append('\n');
+            }
+            start = end + 1;
         }
         return sb.toString().stripTrailing();
-    }
-
-    private static String clip(String line) {
-        return line.length() <= 200 ? line : line.substring(0, 200) + "…";
     }
 
     /**
@@ -333,23 +497,36 @@ public class ToolResultReferenceCache {
         }
     }
 
-    private void evictIfNeeded() {
-        // Evict expired entries first
-        long now = System.currentTimeMillis();
-        cache.entrySet().removeIf(e -> e.getValue().expiresAt < now);
+    /** Do not let callers mutate a returned metadata map into an unaccounted object graph. */
+    private static Object immutableJson(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            map.forEach((key, item) -> copy.put((String) key, immutableJson(item)));
+            return java.util.Collections.unmodifiableMap(copy);
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(immutableJson(item));
+            return java.util.Collections.unmodifiableList(copy);
+        }
+        return value;
+    }
 
-        // If still over max, evict oldest
-        while (cache.size() > MAX_ENTRIES) {
-            String oldest = null;
-            long oldestExpiry = Long.MAX_VALUE;
-            for (Map.Entry<String, CacheEntry> e : cache.entrySet()) {
-                if (e.getValue().expiresAt < oldestExpiry) {
-                    oldestExpiry = e.getValue().expiresAt;
-                    oldest = e.getKey();
-                }
+    private void evictIfNeeded() {
+        // Lazy idle expiry: no scheduler/thread per cache; idle resident data is byte bounded.
+        long now = clock.getAsLong();
+        var iterator = cache.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            if (entry.getValue().expiresAt < now) {
+                retainedBytes -= weights.remove(entry.getKey());
+                iterator.remove();
             }
-            if (oldest != null) cache.remove(oldest);
-            else break;
+        }
+        while (cache.size() > MAX_ENTRIES || retainedBytes > memoryByteCap) {
+            String oldest = cache.keySet().iterator().next();
+            cache.remove(oldest);
+            retainedBytes -= weights.remove(oldest);
         }
     }
 

@@ -74,7 +74,18 @@ public final class ToolCallJson {
             }
             if (text != null) addRun(runs, text.toString(), runFile);
         }
+        ObjectNode presentation = ai.kompile.cli.main.chat.mcp.McpBundleToolLoader.presentation(result);
+        if (presentation != null) detail.set("presentation", presentation);
         return detail;
+    }
+
+    /** Bind only at the completion callback, where actual session/turn/call identity is known. */
+    public static void identify(ObjectNode detail, String sessionId, String turnId, String callId) {
+        if (detail == null || !detail.has("presentation")) return;
+        ObjectNode presentation = ai.kompile.cli.common.chat.ToolPresentationV1.identify(
+                detail.get("presentation"), sessionId, turnId, callId);
+        detail.remove("presentation");
+        if (presentation != null) detail.set("presentation", presentation);
     }
 
     /**
