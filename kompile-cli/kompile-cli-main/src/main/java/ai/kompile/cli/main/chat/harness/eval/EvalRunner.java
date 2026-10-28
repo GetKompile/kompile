@@ -371,6 +371,7 @@ public class EvalRunner {
                     null, mapper, toolRegistry, permissionService,
                     agentRegistry, workDir, directClient, processManager);
             loop.configureConversationSession(sessionId);
+            loop.setCoordinationManager(coordinationManager);
 
             // Execute with timeout
             ExecutorService executor = Executors.newSingleThreadExecutor();

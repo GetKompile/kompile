@@ -6,6 +6,7 @@ import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.ForegroundRequestProgress;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.harness.LoopDetector;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
@@ -117,9 +118,9 @@ class AgenticChatLoopTokenAccountingTest {
             loop.setSessionMetrics(metrics);
             loop.setForegroundProgress(progress);
             var stream = AgenticChatLoop.class.getDeclaredMethod("streamDirectTurn",
-                    String.class, String.class, ArrayNode.class, List.class, String.class, List.class);
+                    String.class, String.class, ArrayNode.class, List.class, String.class, List.class, LoopDetector.class);
             stream.setAccessible(true);
-            stream.invoke(loop, "hello", "system", null, null, null, List.of());
+            stream.invoke(loop, "hello", "system", null, null, null, List.of(), new LoopDetector());
             assertEquals(10, metrics.getInputTokens());
             assertEquals(1, metrics.getOutputTokens(), "retain the provider's reported lower bound");
             assertTrue(progress.snapshot().tokens() >= 100, progress.snapshot().toString());
@@ -169,9 +170,9 @@ class AgenticChatLoopTokenAccountingTest {
             loop.configureConversationSession("live-context");
             loop.setSessionMetrics(metrics);
             var stream = AgenticChatLoop.class.getDeclaredMethod("streamDirectTurn",
-                    String.class, String.class, ArrayNode.class, List.class, String.class, List.class);
+                    String.class, String.class, ArrayNode.class, List.class, String.class, List.class, LoopDetector.class);
             stream.setAccessible(true);
-            stream.invoke(loop, "hello", "system", null, null, null, List.of());
+            stream.invoke(loop, "hello", "system", null, null, null, List.of(), new LoopDetector());
             assertEquals("20,000/100,000 20% last input", metrics.contextTokenSummary(),
                     "cancelling does not turn last input into cumulative billing");
             assertEquals(310_200, metrics.getTotalTokens());

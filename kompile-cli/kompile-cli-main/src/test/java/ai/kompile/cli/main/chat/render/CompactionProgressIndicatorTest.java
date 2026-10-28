@@ -207,6 +207,7 @@ class CompactionProgressIndicatorTest {
             assertTrue(active.running());
             assertTrue(active.classic().contains("Compacting context"));
             assertTrue(active.classic().contains("Claude Code is summarizing its session"));
+            assertTrue(active.classic().contains("provider context size not reported"));
             assertFalse(active.classic().contains("history estimate") || active.classic().contains("0 entries"));
             indicator.completeProvider("auto", 180_000);
             ChatDisplayBlock done = blocks.get("compact:native");
@@ -220,6 +221,33 @@ class CompactionProgressIndicatorTest {
             assertTrue(fallback.isEmpty());
         } finally {
             indicator.abandonIfActive("test ended");
+        }
+    }
+
+    @Test
+    void nativeCompactionShowsLastMeasuredInputOnManagedAndFallbackSurfaces() {
+        for (boolean managed : List.of(true, false)) {
+            Map<String, ChatDisplayBlock> blocks = new ConcurrentHashMap<>();
+            List<String> fallback = new ArrayList<>();
+            ChatCompleter.setDisplayBlockOutput(block -> {
+                blocks.put(block.key(), block);
+                return managed;
+            });
+            CompactionProgressIndicator indicator = CompactionProgressIndicator.startProvider(
+                    "compact:measured", plainRenderer, "Claude Code", 175_000,
+                    fallback::add, null);
+            try {
+                String active = managed ? blocks.get("compact:measured").classic() : fallback.get(0);
+                assertTrue(active.contains("last reported input: 175,000 tokens"), active);
+                assertFalse(active.contains("size not reported") || active.contains("history estimate"), active);
+                indicator.completeProvider("auto", 180_000);
+                String done = managed ? blocks.get("compact:measured").classic() : fallback.get(1);
+                assertTrue(done.contains("provider context before: 180,000 tokens"), done);
+                assertTrue(done.contains("provider context after not reported"), done);
+                assertEquals(managed ? 0 : 2, fallback.size());
+            } finally {
+                indicator.abandonIfActive("test ended");
+            }
         }
     }
 

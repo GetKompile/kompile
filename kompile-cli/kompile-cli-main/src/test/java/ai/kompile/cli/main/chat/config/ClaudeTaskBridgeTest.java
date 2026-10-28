@@ -67,6 +67,39 @@ class ClaudeTaskBridgeTest {
     }
 
     @Test
+    void childModelAndLiveUsageSurviveProgressSnapshotsAndCompletion() {
+        bridge.onEvent(PROCESS, started("task-1"));
+        bridge.onEvent(PROCESS, started("task-2"));
+        var parser = new ClaudeCliStreamParser();
+        for (String line : List.of(
+                """
+                {"type":"stream_event","parent_tool_use_id":"toolu_task-1","event":{"type":"message_start","message":{"id":"child-1","model":"claude-haiku-child","usage":{"input_tokens":100,"cache_read_input_tokens":20}}}}""",
+                """
+                {"type":"stream_event","parent_tool_use_id":"toolu_task-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"123456789"}}}""")) {
+            parser.parse(line).forEach(event -> bridge.onEvent(PROCESS, event));
+        }
+        ProcessEntry row = row("task-1");
+        assertEquals("claude-haiku-child", row.getMetadata().get("model"));
+        assertEquals("100", row.getMetadata().get("input_tokens"));
+        assertEquals("20", row.getMetadata().get("cache_read_tokens"));
+        assertEquals("3", row.getMetadata().get("stream_output_tokens"));
+        assertFalse(row("task-2").getMetadata().containsKey("model"), "siblings remain isolated");
+        String delta = """
+                {"type":"stream_event","parent_tool_use_id":"toolu_task-1","event":{"type":"message_delta","usage":{"output_tokens":7}}}""";
+        parser.parse(delta).forEach(event -> bridge.onEvent(PROCESS, event));
+        parser.parse(delta).forEach(event -> bridge.onEvent(PROCESS, event));
+        assertEquals("7", row.getMetadata().get("output_tokens"), "repeated snapshots are not additive");
+        assertEquals("0", row.getMetadata().get("stream_output_tokens"));
+        bridge.onEvent(PROCESS, new ClaudeCliStreamParser.TaskProgress("task-1", "", "Read", "", 150, 3, 900));
+        bridge.onEvent(PROCESS, new ClaudeCliStreamParser.TaskProgress("task-1", "", "", "next", 0, 0, 0));
+        assertEquals("150", row.getMetadata().get("total_tokens"), "partial progress cannot erase prior totals");
+        assertEquals("claude-haiku-child", row.getMetadata().get("model"));
+        bridge.onEvent(PROCESS, new ClaudeCliStreamParser.TaskEnded("task-1", "completed", "done"));
+        assertEquals("100", row.getMetadata().get("input_tokens"));
+        assertEquals("7", row.getMetadata().get("output_tokens"));
+    }
+
+    @Test
     void aStartedTaskBecomesAKillableRowThatDescribesIt() throws Exception {
         bridge.onEvent(PROCESS, started("task-1"));
 
@@ -144,6 +177,16 @@ class ClaudeTaskBridgeTest {
         bridge.onEvent(OTHER_PROCESS, new ClaudeCliStreamParser.SubagentEvent("toolu_task-2",
                 new ClaudeCliStreamParser.Text("foreign")));
         assertFalse(Files.readString(row("task-2").getOutputFile()).contains("foreign"));
+        var renderer = new ai.kompile.cli.main.chat.render.TerminalRenderer(true);
+        var blocks = row("task-1").transcriptBlocks(renderer);
+        assertEquals(List.of("user", "thinking", "assistant", "tool", "assistant"),
+                blocks.stream().map(ai.kompile.cli.main.chat.render.ChatDisplayBlock::kind).toList());
+        assertTrue(blocks.stream().noneMatch(ai.kompile.cli.main.chat.render.ChatDisplayBlock::running));
+        assertTrue(blocks.get(3).error());
+        assertTrue(blocks.get(3).classic().contains(renderer.renderToolCallSummary(
+                "Read", "{\"path\":\"code.java\"}", ai.kompile.cli.main.chat.tools.ToolResult.error("file contents"))));
+        assertFalse(row("task-2").transcriptBlocks(renderer).toString().contains("foreign"));
+        assertFalse(blocks.toString().contains("Other child"));
     }
 
     @Test

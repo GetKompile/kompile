@@ -55,12 +55,34 @@ public class ToolContext {
     private volatile boolean autoApproveAll = false;
     private DirectSubagentSupervision.Contract subagentSupervision;
     private boolean supervisedChild;
+    private boolean hookExecutionSuppressed = "1".equals(System.getenv("KOMPILE_HOOK_RUNNING"));
+
+    /** Host-owned recursion state; socket hosts must override the daemon JVM's inherited environment. */
+    public boolean isHookExecutionSuppressed() { return hookExecutionSuppressed; }
+    public void setHookExecutionSuppressed(boolean suppressed) { hookExecutionSuppressed = suppressed; }
     private ai.kompile.cli.main.chat.enforcer.JudgeControl judgeControl;
     private boolean judgeToolCallScoped;
     private volatile WorkflowTeamEnforcement workflow;
     private volatile String coordinationAgent;
     private volatile ProductManagedWorkTracker productManagedWork;
     private boolean managedWorkOnly;
+    /**
+     * The session's coordination manager, for tools whose guard lives in the context
+     * rather than a constructor argument (the shell tools' edit-lock gate). May be null
+     * in schema-only or legacy constructions; every production host sets it.
+     */
+    private volatile ai.kompile.cli.main.coordination.CoordinationStateManager coordinator;
+
+    /** The session's coordination manager, or null when the host did not provide one. */
+    public ai.kompile.cli.main.coordination.CoordinationStateManager getCoordinator() {
+        return coordinator;
+    }
+
+    /** Called once by the host when the session's coordinator is created. */
+    public void bindCoordinator(
+            ai.kompile.cli.main.coordination.CoordinationStateManager coordinator) {
+        this.coordinator = coordinator;
+    }
 
     /** Optional session lifecycle observer; null preserves ordinary tool behavior. */
     public void linkProductManagedWork(ProductManagedWorkTracker tracker) { productManagedWork = tracker; }
@@ -240,9 +262,11 @@ public class ToolContext {
         child.setOutputConsumer(outputConsumer);
         child.subagentSupervision = subagentSupervision;
         child.supervisedChild = supervisedChild;
+        child.hookExecutionSuppressed = hookExecutionSuppressed;
         child.bindJudgeControl(judgeControl, judgeToolCallScoped);
         child.workflow = workflow;
         child.coordinationAgent = coordinationAgent;
+        child.coordinator = coordinator;
         child.productManagedWork = productManagedWork;
         child.managedWorkOnly = managedWorkOnly;
         return child;
@@ -283,6 +307,11 @@ public class ToolContext {
     public void checkPermission(String permissionKey, String description) throws ToolExecutionException {
         if (managedWorkOnly) {
             throw new ToolExecutionException("Managed job context cannot execute generic tools", true);
+        }
+        if (supervisedChild && ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.DELEGATION_TOOLS
+                .contains(permissionKey)) {
+            throw new ToolExecutionException(
+                    ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.message(permissionKey), true);
         }
         WorkflowTeamEnforcement team = workflow;
         if (team != null) {

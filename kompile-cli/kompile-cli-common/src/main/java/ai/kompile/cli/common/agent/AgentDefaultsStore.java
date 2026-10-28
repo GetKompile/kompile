@@ -42,13 +42,13 @@ public final class AgentDefaultsStore {
     public static final String CONFIG_FILE = "agent-defaults.json";
     /**
      * Delegatable external CLI agents. Kept aligned with cli-agents.json
-     * (kompile-app-core), which registers the same six commands; launch command
+     * (kompile-app-core), which registers the same commands; launch command
      * building (SubprocessAgentRunner.buildManagedCommand), flag overrides,
      * stream parsing, MCP config injection, and resume arguments all support
      * every entry, so MCP task delegation accepts all of them.
      */
     public static final List<String> SUPPORTED_AGENTS =
-            List.of("codex", "claude", "opencode", "gemini", "qwen", "pi");
+            List.of("codex", "claude", "opencode", "gemini", "qwen", "pi", "agy");
 
     private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);

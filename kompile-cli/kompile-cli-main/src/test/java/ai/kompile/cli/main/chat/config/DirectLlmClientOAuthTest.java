@@ -595,6 +595,7 @@ class DirectLlmClientOAuthTest {
         try {
             ChatConfig config = new ChatConfig(
                     "openai", "key", "gpt-5.4", baseUrl(server));
+            config.setPromptCacheRetention("short");
             DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
             client.setOutputConsumer(ignored -> { });
 
@@ -665,6 +666,7 @@ class DirectLlmClientOAuthTest {
         try {
             ChatConfig config = new ChatConfig(
                     "openai", "key", "gpt-5.6-terra", baseUrl(server));
+            config.setPromptCacheRetention("short");
             DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
             client.setOutputConsumer(ignored -> { });
 
@@ -1152,6 +1154,7 @@ class DirectLlmClientOAuthTest {
         try {
             ChatConfig config = new ChatConfig(
                     "radius", "radius-key", "radius-model", baseUrl(server));
+            config.setPromptCacheRetention("short");
             DirectLlmClient client = new DirectLlmClient(config, mapper);
             client.setOutputConsumer(ignored -> {});
             client.setPromptCacheSessionId("radius-session-123");
@@ -1179,8 +1182,7 @@ class DirectLlmClientOAuthTest {
             JsonNode firstRequest = requestBodies.get(0);
             assertEquals("radius-model", firstRequest.path("model").asText());
             assertEquals("short", firstRequest.path("options")
-                    .path("cacheRetention").asText());
-            assertEquals("radius-session-123", firstRequest.path("options")
+                    .path("cacheRetention").asText());            assertEquals("radius-session-123", firstRequest.path("options")
                     .path("sessionId").asText());
             assertEquals("system", firstRequest.path("context").path("systemPrompt").asText());
             assertEquals("read",

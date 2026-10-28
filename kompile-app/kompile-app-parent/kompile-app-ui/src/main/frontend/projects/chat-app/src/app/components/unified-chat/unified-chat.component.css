@@ -3002,6 +3002,34 @@
   border-radius: 6px;
 }
 
+/* Identity/usage stays visible while scrolling a long child transcript, as in the CLI viewer. */
+.harness-viewer {
+  max-height: 32rem;
+  overflow: auto;
+  margin-top: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.agent-telemetry {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
+  overflow-wrap: anywhere;
+}
+
+.agent-identity, .child-block-heading { font-weight: 600; }
+.agent-usage, .agent-summary, .child-section-title { color: var(--text-secondary); }
+.agent-summary { overflow-wrap: anywhere; }
+.harness-transcript { padding: 6px 10px; }
+.child-block { margin-bottom: 10px; overflow-wrap: anywhere; }
+.child-error { border-left: 3px solid var(--status-error-text); padding-left: 8px; }
+.child-section-title { margin-top: 6px; }
+.harness-viewer .harness-output { max-height: none; }
+
 .harness-control-message {
   margin: 0 0 10px;
   font-size: 0.85em;

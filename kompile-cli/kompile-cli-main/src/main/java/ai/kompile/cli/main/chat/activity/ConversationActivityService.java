@@ -223,6 +223,13 @@ public final class ConversationActivityService {
         return recorder.record(identity, eventType, actorId, operationId, source, attributes);
     }
 
+    /** True only after the event has actually been appended to the session journal. */
+    public boolean recordConfirmed(ActivityIdentity identity, String eventType, String actorId,
+                                   String operationId, ActivitySourceRef source,
+                                   java.util.Map<String, String> attributes) {
+        return recorder.recordConfirmed(identity, eventType, actorId, operationId, source, attributes);
+    }
+
     public List<String> recordingWarnings() {
         return recorder.warnings();
     }

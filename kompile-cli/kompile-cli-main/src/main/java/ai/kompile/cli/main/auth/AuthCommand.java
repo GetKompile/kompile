@@ -52,11 +52,6 @@ public class AuthCommand implements Callable<Integer> {
     @Command(name = "login", mixinStandardHelpOptions = true,
             description = "Store an API key or complete a provider OAuth login.")
     static class LoginCommand implements Callable<Integer> {
-        static final String CLAUDE_CODE_OWNS_ANTHROPIC_OAUTH = "Anthropic OAuth / subscription sign-in belongs "
-                + "to Claude Code, so Kompile stores no credential for it: chats on that route pass straight "
-                + "through to Claude Code. Sign in with `claude auth login`; to add an Anthropic API key, run "
-                + "`kompile auth login anthropic`.";
-
         @Parameters(index = "0", arity = "0..1", paramLabel = "PROVIDER",
                 description = "Provider id, for example openai or anthropic.")
         String providerId;
@@ -82,7 +77,8 @@ public class AuthCommand implements Callable<Integer> {
         boolean oauth;
 
         @Option(names = "--method", paramLabel = "METHOD",
-                description = "OAuth method: browser or device (provider-dependent).")
+                description = "OAuth method: browser or device; for anthropic, setup-token or manual "
+                        + "(provider-dependent).")
         String oauthMethod;
 
         @Option(names = "--manual",
@@ -155,10 +151,9 @@ public class AuthCommand implements Callable<Integer> {
                 }
             }
 
-            // Anthropic's subscription login belongs to Claude Code: Kompile has no
-            // OAuth flow for it and never signs in on its behalf.
-            boolean claudeCode = useOAuth && ChatConfig.isClaudeCliNativeProvider(providerId);
-            if (useOAuth && !claudeCode) {
+            // Anthropic OAuth resolves to the claude-code setup-token flow, which
+            // stores a long-lived token for the Claude Code route.
+            if (useOAuth) {
                 providerId = oauthCredentialProviderId(registry, providerId);
                 ensureClientRegistration(registry, providerId);
             }
@@ -166,10 +161,6 @@ public class AuthCommand implements Callable<Integer> {
             try {
                 if (nativeAuth) {
                     return NativeCliAuth.login(providerId);
-                }
-                if (claudeCode) {
-                    System.err.println(CLAUDE_CODE_OWNS_ANTHROPIC_OAUTH);
-                    return 2;
                 }
                 return useOAuth
                         ? loginOAuth(manager, store, interaction, activate)
@@ -555,6 +546,16 @@ public class AuthCommand implements Callable<Integer> {
             System.out.print(message + " ");
             System.out.flush();
             return input.readLine();
+        }
+
+        @Override
+        public String secret(String message) throws java.io.IOException {
+            Console console = System.console();
+            if (console == null) {
+                return prompt(message); // piped input: nothing is echoed to mask
+            }
+            char[] value = console.readPassword("%s ", message);
+            return value == null ? null : new String(value);
         }
     }
 

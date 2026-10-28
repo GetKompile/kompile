@@ -23,6 +23,27 @@ describe('Unified chat resume after sleep', () => {
     expect(reconnect).toHaveBeenCalledTimes(1);
   });
 
+  it('waits for online before reconnecting a saved run', () => {
+    spyOnProperty(navigator, 'onLine', 'get').and.returnValue(false);
+    component.resumeSavedRun();
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it('retries a disconnected reply by reattaching without trimming the transcript or resending', () => {
+    const messages = [{ role: 'user', content: 'do it' }, { role: 'assistant', content: 'partial' }];
+    component.messages = messages as any;
+    const send = spyOn<any>(component, 'sendAgentMessage');
+    component.retryMessage(1);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(component.messages).toBe(messages as any);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the shared transport status without making it a transcript message', () => {
+    (component as any).agentChatService.connectionMessage = 'You are offline. Waiting for a connection.';
+    expect(component.harnessConnectionMessage).toContain('offline');
+  });
+
   it('detaches on pagehide and reconnects on return without cancelling or resubmitting', () => {
     component.isStreaming = true;
     component.isLoading = true;

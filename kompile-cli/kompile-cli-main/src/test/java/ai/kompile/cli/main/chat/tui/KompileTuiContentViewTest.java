@@ -16,6 +16,116 @@ import static org.junit.jupiter.api.Assertions.*;
 class KompileTuiContentViewTest {
 
     @Test
+    void queueDeliveryAndRollbackRepaintWithoutAnotherActivityEvent() throws Exception {
+        MessageQueue queue = new MessageQueue("queue-repaint-" + java.util.UUID.randomUUID());
+        List<List<String>> frames = new java.util.ArrayList<>();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("queue-repaint")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    queue, new TerminalRenderer(false)) {
+                @Override
+                public void requestRedraw() {
+                    // Capture only requested frames: no status tick, model output,
+                    // or tool completion may be needed to remove a delivered entry.
+                    frames.add(getVisibleQueueLines());
+                }
+            };
+            try {
+                // A real chat has sampled its terminal size before painting.
+                var height = KompileTui.class.getDeclaredField("terminalHeight");
+                height.setAccessible(true);
+                height.setInt(tui, 32);
+                var width = KompileTui.class.getDeclaredField("terminalWidth");
+                width.setAccessible(true);
+                width.setInt(tui, 120);
+                for (boolean specificEntry : List.of(false, true)) {
+                    var sent = queue.enqueue("message delivered at the handoff");
+                    var pending = queue.enqueue("still pending");
+                    tui.requestRedraw();
+                    int beforeDelivery = frames.size();
+
+                    var claimed = specificEntry ? queue.takeForSend(sent.getId()) : queue.dequeue();
+                    assertSame(sent, claimed);
+                    assertTrue(frames.size() > beforeDelivery,
+                            "dequeue must repaint even if the turn's final redraw already ran");
+                    String painted = String.join("\n", frames.get(frames.size() - 1));
+                    assertFalse(painted.contains(sent.getContent()), painted);
+                    assertTrue(painted.contains(pending.getContent()), painted);
+
+                    int beforeRollback = frames.size();
+                    queue.requeueFirst(claimed);
+                    assertTrue(frames.size() > beforeRollback, "a declined claim must repaint too");
+                    assertTrue(String.join("\n", frames.get(frames.size() - 1))
+                            .contains(sent.getContent()));
+                    queue.clear();
+                    assertFalse(String.join("\n", frames.get(frames.size() - 1))
+                            .contains(pending.getContent()));
+                }
+            } finally {
+                tui.stop();
+                queue.clear();
+                deleteQueueFile(queue);
+            }
+        }
+    }
+
+    @Test
+    void deliveredQueueEntryIsErasedFromThePhysicalFrameWithNoStatusTicks() throws Exception {
+        MessageQueue queue = new MessageQueue("queue-frame-" + java.util.UUID.randomUUID());
+        var sent = queue.enqueue("already delivered");
+        queue.enqueue("waiting next");
+        var output = new java.io.ByteArrayOutputStream();
+        try (var terminal = new org.jline.terminal.impl.LineDisciplineTerminal(
+                "queue-frame", "xterm", output, java.nio.charset.StandardCharsets.UTF_8);
+             BackgroundProcessManager processes = new BackgroundProcessManager("queue-frame")) {
+            terminal.setSize(new org.jline.terminal.Size(120, 32));
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    queue, new TerminalRenderer(true));
+            try {
+                tui.start(terminal);
+                tui.getStatusBar().stop(); // Delivery must not rely on its periodic refresh.
+                tui.redrawContentView();
+                awaitQueueFrame(tui, output, rows -> rows.contains(sent.getContent()));
+                assertSame(sent, queue.dequeue());
+                awaitQueueFrame(tui, output, rows -> !rows.contains(sent.getContent())
+                        && rows.contains("waiting next"));
+                queue.requeueFirst(sent);
+                awaitQueueFrame(tui, output, rows -> rows.contains(sent.getContent()));
+                assertSame(sent, queue.takeForSend(sent.getId()));
+                awaitQueueFrame(tui, output, rows -> !rows.contains(sent.getContent())
+                        && rows.contains("waiting next"));
+                queue.clear();
+                awaitQueueFrame(tui, output, String::isBlank);
+            } finally {
+                tui.stop();
+                queue.clear();
+                deleteQueueFile(queue);
+            }
+        }
+    }
+
+    private static void deleteQueueFile(MessageQueue queue) throws Exception {
+        var file = MessageQueue.class.getDeclaredField("queueFile");
+        file.setAccessible(true);
+        java.nio.file.Files.deleteIfExists((java.nio.file.Path) file.get(queue));
+    }
+
+    private static void awaitQueueFrame(KompileTui tui, java.io.ByteArrayOutputStream output,
+                                       java.util.function.Predicate<String> expected) throws Exception {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        String rows;
+        do {
+            VirtualTerminal frame = new VirtualTerminal(32, 120);
+            frame.feed(output.toString(java.nio.charset.StandardCharsets.UTF_8));
+            rows = java.util.stream.IntStream.rangeClosed(tui.queueTop(), tui.queueBottom())
+                    .mapToObj(row -> frame.getRow(row - 1))
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            if (expected.test(rows)) return;
+            Thread.sleep(10);
+        } while (System.nanoTime() < deadline);
+        assertTrue(expected.test(rows), "queue frame was not invalidated:\n" + rows);
+    }
+
+    @Test
     void unchangedTranscriptLayoutIsReusedAcrossRedrawsAndScrolls() throws Exception {
         try (BackgroundProcessManager processes = new BackgroundProcessManager("layout-cache")) {
             KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,

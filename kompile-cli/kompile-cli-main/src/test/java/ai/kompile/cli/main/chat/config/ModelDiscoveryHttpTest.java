@@ -180,14 +180,16 @@ class ModelDiscoveryHttpTest {
     @Test
     void catalogDescriptorsCoverEveryRemoteProviderWithoutModelIds() {
         assertEquals(List.of(
-                        "anthropic", "deepseek", "gemini", "github-copilot", "groq",
-                        "openai", "openrouter", "radius", "xai", "zai"),
+                        "anthropic", "deepseek", "fireworks", "gemini", "github-copilot", "groq",
+                        "openai", "openrouter", "qwen", "radius", "together", "xai", "zai"),
                 ProviderModelCatalogs.all().keySet().stream().sorted().toList());
     }
 
     @Test
     void everyRegisteredDirectProviderUsesItsDescriptorRouteAndCredentialContract() throws Exception {
-        Map<String, String> environmentVariables = Map.ofEntries(
+        // Managed-credential-only providers (qwen, fireworks, together) intentionally
+        // have a null environment variable, so this contract map must tolerate nulls.
+        Map<String, String> environmentVariables = new java.util.HashMap<>(Map.ofEntries(
                 Map.entry("openai", "OPENAI_API_KEY"),
                 Map.entry("anthropic", "ANTHROPIC_API_KEY"),
                 Map.entry("gemini", "GOOGLE_API_KEY"),
@@ -197,7 +199,10 @@ class ModelDiscoveryHttpTest {
                 Map.entry("github-copilot", "COPILOT_GITHUB_TOKEN"),
                 Map.entry("radius", "RADIUS_API_KEY"),
                 Map.entry("deepseek", "DEEPSEEK_API_KEY"),
-                Map.entry("groq", "GROQ_API_KEY"));
+                Map.entry("groq", "GROQ_API_KEY")));
+        environmentVariables.put("qwen", null);
+        environmentVariables.put("fireworks", null);
+        environmentVariables.put("together", null);
         Map<String, String> routes = Map.ofEntries(
                 Map.entry("openai", "/v1/models"),
                 Map.entry("anthropic", "/v1/models"),
@@ -208,7 +213,10 @@ class ModelDiscoveryHttpTest {
                 Map.entry("github-copilot", "/models"),
                 Map.entry("radius", "/v1/config"),
                 Map.entry("deepseek", "/v1/models"),
-                Map.entry("groq", "/v1/models"));
+                Map.entry("groq", "/v1/models"),
+                Map.entry("qwen", "/v1/models"),
+                Map.entry("fireworks", "/v1/models"),
+                Map.entry("together", "/v1/models"));
 
         List<String> requests = new ArrayList<>();
         List<String> requestAuth = new ArrayList<>();

@@ -106,6 +106,7 @@ public class DaemonClient implements Closeable {
         ObjectNode header = MAPPER.createObjectNode();
         header.put("type", type);
         header.put("workDir", workDir.toAbsolutePath().toString());
+        header.put("hookRunning", "1".equals(System.getenv("KOMPILE_HOOK_RUNNING")));
         if (profile != null && !profile.isBlank()) {
             header.put("profile", profile.trim());
         }
@@ -121,6 +122,12 @@ public class DaemonClient implements Closeable {
         String policyFile = System.getenv(EnforcerRuntimePolicy.ENV_POLICY_FILE);
         if (Boolean.parseBoolean(active) && policyFile != null && !policyFile.isBlank()) {
             header.put("enforcerPolicyFile", policyFile);
+        }
+        // A subagent's depth must survive the daemon boundary: McpSocketSession runs
+        // in the shared daemon's JVM, whose env is the daemon's, not this client's.
+        String depth = System.getenv(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.DEPTH_ENV);
+        if (depth != null && !depth.isBlank()) {
+            header.put(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.DEPTH_ENV, depth.trim());
         }
 
         try {
@@ -185,6 +192,8 @@ public class DaemonClient implements Closeable {
             List<String> command = CliProcessLauncher.commandFor(List.of(
                     "serve", "--idle-timeout", "30"));
             ProcessBuilder pb = new ProcessBuilder(command);
+            // Recursion suppression belongs to a connection, never a shared daemon lifetime.
+            pb.environment().remove("KOMPILE_HOOK_RUNNING");
 
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(
                     new File(runtimeDir, "daemon.log")));

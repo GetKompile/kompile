@@ -1913,6 +1913,20 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 padId = header.getPadTokenId();
             }
 
+            // A GGUF that declares no chat template must not get a fabricated tokenizer_config.json:
+            // a generic stand-in would silently change how every prompt is framed, and a token-only
+            // config would make the staged model look like a runnable chat model while prompts are
+            // encoded with no turn markers at all. A missing template is a capability the model
+            // lacks, not a staging failure (StagingServiceChatTemplateTest.doesNotInventATemplate).
+            // A config the model author shipped is still migrated/backfilled below.
+            if (!Files.isRegularFile(configPath) && (template == null || template.isBlank())) {
+                log.info(
+                        "Source GGUF for model {} declares no chat template; leaving {} unwritten",
+                        modelId,
+                        TextModelAssetMap.TOKENIZER_CONFIG_FILE);
+                return true;
+            }
+
             ObjectNode config = Files.isRegularFile(configPath)
                     ? requireObjectConfig(configPath)
                     : objectMapper.createObjectNode();

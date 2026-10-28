@@ -12,10 +12,12 @@ import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -58,6 +60,66 @@ class ChatMessageHandlerQueueTest {
     @Test
     void nativeClaudeBashBackgroundReleasesInput(@TempDir Path temp) throws Exception {
         verifyNativeClaudeBackground(temp, "Bash", false);
+    }
+
+    @Test
+    void nativeClaudeKompileTaskBackgroundReleasesInput(@TempDir Path temp) throws Exception {
+        verifyNativeClaudeBackground(temp, "mcp__kompile__task", false);
+    }
+
+    @Test
+    void nativeClaudeKompileBashBackgroundReleasesInput(@TempDir Path temp) throws Exception {
+        verifyNativeClaudeBackground(temp, "mcp__kompile__bash", false);
+    }
+
+    @Test
+    void nativeClaudeKompileReadStaysIneligible(@TempDir Path temp) throws Exception {
+        // A namespaced read is not blocking work: Ctrl+B must refuse it outright and
+        // never send the native background_tasks control for it.
+        FakeClaudeCode fake = new FakeClaudeCode(temp, "TOOL='mcp__kompile__read'\n" + """
+                turn() {
+                  say_init
+                  emit '{"type":"assistant","message":{"id":"agent-message","content":[{"type":"tool_use","id":"native-call","name":"mcp__kompile__read","input":{"path":"x"}}]}}'
+                  emit '{"type":"system","subtype":"task_started","task_id":"native-task","tool_use_id":"native-call","description":"Read work","task_type":"tool","is_backgrounded":false}'
+                }
+                control() {
+                  emit '{"type":"control_response","response":{"subtype":"success","request_id":"'"$1"'","response":{}}}'
+                }
+                """);
+        ChatConfig config = new ChatConfig("anthropic", null, "claude-sonnet-4-6", null);
+        config.setAuthenticationMethod("oauth");
+        config.setDefaultMemory(false);
+        ChatRepl repl = new ChatRepl(null, null, "native-ineligible-" + System.nanoTime(),
+                false, "default", false, config);
+        ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+        AgenticChatLoop loop = field(repl, "agenticLoop", AgenticChatLoop.class);
+        BackgroundProcessManager processes = field(repl, "processManager", BackgroundProcessManager.class);
+        MessageQueue queue = field(repl, "messageQueue", MessageQueue.class);
+        try {
+            fake.installBinary(repl.getDirectClient());
+            loop.setPerformanceHarness(null);
+            if (repl.isAutoDequeueEnabled()) {
+                field(repl, "queueManager", MessageQueueManager.class).toggleAutoDequeue();
+            }
+            queue.clear();
+            handler.handleChatMessage("start read work");
+            FakeClaudeCode.await("read task row", () -> processes.listAll().stream()
+                    .anyMatch(row -> "native-task".equals(row.getMetadata().get("task_id"))));
+            handler.handleChatMessage("queued during read");
+            assertEquals(1, queue.size());
+            assertFalse(handler.requestBackground(), "a namespaced read must not be Ctrl+B eligible");
+            assertFalse(loop.isBackgroundableToolPhaseActive(), "read-only MCP calls stay ineligible");
+            assertTrue(fake.controls("background_tasks").isEmpty(),
+                    "no native background control may be sent for ineligible work");
+            assertEquals(1, queue.size(), "queued input must stay durable when Ctrl+B is refused");
+        } finally {
+            handler.shutdown();
+            queue.clear();
+            repl.close();
+            processes.close();
+            ChatCompleter.setAlertOutput(null);
+            ChatCompleter.setActivity(null);
+        }
     }
 
     @Test
@@ -169,6 +231,7 @@ class ChatMessageHandlerQueueTest {
         List<String> prompts = new CopyOnWriteArrayList<>();
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             try {
                 JsonNode request = JsonUtils.standardMapper().readTree(exchange.getRequestBody());
                 JsonNode messages = request.path("messages");
@@ -226,6 +289,7 @@ class ChatMessageHandlerQueueTest {
         CountDownLatch releaseMaintenance = new CountDownLatch(1);
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             // Chat probes the optional serving status endpoint before model work.
             // It is not a resumed model request and must not consume this counter.
             if (!"/chat/completions".equals(exchange.getRequestURI().getPath())) {
@@ -293,6 +357,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             firstRequest.countDown();
             twoRequests.countDown();
             try {
@@ -392,6 +457,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String requestBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             try {
@@ -436,6 +502,21 @@ class ChatMessageHandlerQueueTest {
             repl.dispatchScheduledLoop("scheduled follow-up");
             assertEquals(1, queue.size());
             assertEquals("scheduled follow-up", queue.peek().getContent());
+            String queuedId = queue.peek().getId();
+            ChatSessionMetrics metrics = field(repl, "sessionMetrics", ChatSessionMetrics.class);
+            int queuedCount = metrics.getMessagesQueued();
+            List<String> notices = new CopyOnWriteArrayList<>();
+            ChatCompleter.setAlertOutput(notices::add);
+            try {
+                repl.dispatchScheduledLoop("scheduled follow-up");
+                repl.dispatchScheduledLoop("  scheduled follow-up\n");
+                assertEquals(List.of(queuedId), queue.getAll().stream()
+                        .map(MessageQueue.QueuedMessage::getId).toList());
+                assertEquals(queuedCount, metrics.getMessagesQueued());
+                assertTrue(notices.isEmpty(), "duplicate loop firings must be silent");
+            } finally {
+                ChatCompleter.setAlertOutput(null);
+            }
 
             releaseFirst.countDown();
             assertTrue(scheduledRequest.await(10, TimeUnit.SECONDS),
@@ -444,10 +525,54 @@ class ChatMessageHandlerQueueTest {
                     "scheduled queue owner did not release after its response");
             assertTrue(queue.isEmpty());
             assertEquals(2, requestCount.get());
+
+            repl.dispatchScheduledLoop("scheduled follow-up");
+            assertTrue(awaitCondition(() -> requestCount.get() == 3 && !repl.isLlmBusy(),
+                    5, TimeUnit.SECONDS), "a later firing must be allowed after the queue drains");
         } finally {
             releaseFirst.countDown();
             queue.clear();
             server.stop(0);
+            processes.close();
+            ChatCompleter.setActivity(null);
+        }
+    }
+
+    @Test
+    void scheduledLoopSkipsQueuedDuplicateWhileIdleIncludingEditingEntries() throws Exception {
+        String session = "scheduled-loop-pending-" + java.util.UUID.randomUUID();
+        ChatRepl repl = new ChatRepl(null, null, session, false, "default", false,
+                new ChatConfig("custom", null, "loop-test", "http://127.0.0.1:1"));
+        ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+        MessageQueue queue = field(repl, "messageQueue", MessageQueue.class);
+        ChatSessionMetrics metrics = field(repl, "sessionMetrics", ChatSessionMetrics.class);
+        BackgroundProcessManager processes = field(repl, "processManager", BackgroundProcessManager.class);
+        List<String> notices = new CopyOnWriteArrayList<>();
+        try {
+            if (repl.isAutoDequeueEnabled()) {
+                field(repl, "queueManager", MessageQueueManager.class).toggleAutoDequeue();
+            }
+            queue.clear();
+            var first = queue.enqueue("unrelated work");
+            var duplicate = queue.enqueue("scheduled follow-up");
+            List<String> ids = List.of(first.getId(), duplicate.getId());
+            ChatCompleter.setAlertOutput(notices::add);
+            for (boolean editing : new boolean[]{false, true}) {
+                if (editing) assertTrue(queue.beginEdit(duplicate.getId()));
+                repl.dispatchScheduledLoop("  scheduled follow-up\n");
+                assertFalse(repl.isLlmBusy(), "a pending loop prompt must not start a new turn");
+                assertEquals(ids, queue.getAll().stream()
+                        .map(MessageQueue.QueuedMessage::getId).toList());
+                assertEquals(0, metrics.getMessagesQueued());
+                assertTrue(notices.isEmpty(), "skipped loop firings must not announce themselves");
+            }
+            assertTrue(queue.cancelEdit(duplicate.getId()));
+            assertEquals(ids, new MessageQueue(session).getAll().stream()
+                    .map(MessageQueue.QueuedMessage::getId).toList());
+        } finally {
+            ChatCompleter.setAlertOutput(null);
+            handler.shutdown();
+            queue.clear();
             processes.close();
             ChatCompleter.setActivity(null);
         }
@@ -466,6 +591,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String requestBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             try {
@@ -543,6 +669,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String requestBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             try {
@@ -616,6 +743,7 @@ class ChatMessageHandlerQueueTest {
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.setExecutor(serverExecutor);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String requestBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             try {
@@ -696,6 +824,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String requestBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             try {
@@ -768,6 +897,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String requestBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             try {
@@ -839,6 +969,7 @@ class ChatMessageHandlerQueueTest {
         AtomicInteger requests = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             requests.incrementAndGet();
             if (request.contains("[System resource availability]") && request.contains("blocked-build")) wake.countDown();
@@ -892,6 +1023,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String requestBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             requestCount.incrementAndGet();
@@ -963,6 +1095,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             try {
                 String requestBody = new String(
                         exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
@@ -1003,6 +1136,8 @@ class ChatMessageHandlerQueueTest {
         List<String> transcript = new CopyOnWriteArrayList<>();
 
         try {
+            // Construction is intentionally quiet; the interactive REPL opens this lane at startup.
+            field(repl, "acceptingProcessWakeups", AtomicBoolean.class).set(true);
             ChatCompleter.setContentOutput(transcript::add);
             ChatCompleter.setContentRedraw(() -> { });
             handler.handleChatMessage("keep running after ctrl-b");
@@ -1029,7 +1164,10 @@ class ChatMessageHandlerQueueTest {
 
             releaseResponse.countDown();
             assertTrue(completionWakeRequest.await(10, TimeUnit.SECONDS),
-                    "a completed Ctrl+B task must initiate a follow-up agent turn");
+                    () -> "a completed Ctrl+B task must initiate a follow-up agent turn\n"
+                            + "Task state: " + task.getStatus() + "; error: " + task.getError()
+                            + "\nTask output: " + task.getOutput()
+                            + "\nTranscript: " + transcript + "\n" + activeTurnStack(handler));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (repl.isLlmBusy() && System.nanoTime() < deadline) {
                 Thread.sleep(20);
@@ -1040,11 +1178,15 @@ class ChatMessageHandlerQueueTest {
                     task.getStatus());
             assertTrue(task.getOutput().contains("background result"),
                     "detached output should remain available in the task log");
+            assertTrue(transcript.stream().anyMatch(line -> line.contains("Agent notification · Background task completion")),
+                    "the completed task's delivered wakeup must remain visible in the transcript");
             assertTrue(tasks.drainNotifications().stream()
                     .anyMatch(completed -> completed.getId().equals(task.getId())));
         } finally {
             subagentInvocation.set(false);
+            field(repl, "acceptingProcessWakeups", AtomicBoolean.class).set(false);
             releaseResponse.countDown();
+            handler.shutdown();
             server.stop(0);
             processes.close();
             ChatCompleter.setContentOutput(null);
@@ -1064,6 +1206,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             requestCount.incrementAndGet();
             String requestBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
@@ -1157,6 +1300,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String requestBody = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             byte[] body;
@@ -1270,6 +1414,7 @@ class ChatMessageHandlerQueueTest {
         AtomicInteger childCompletions = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             String delta;
             if (request.contains("[System background task completion]")) {
@@ -1364,6 +1509,7 @@ class ChatMessageHandlerQueueTest {
         AtomicReference<ToolContext> child = new AtomicReference<>();
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             String delta;
             if (request.contains("background fresh followup")) freshFollowup.countDown();
@@ -1469,6 +1615,7 @@ class ChatMessageHandlerQueueTest {
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             requestStarted.countDown();
             try {
                 releaseResponse.await(30, TimeUnit.SECONDS);
@@ -1529,6 +1676,7 @@ class ChatMessageHandlerQueueTest {
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.setExecutor(serverExecutor);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             int requestNumber = requestCount.incrementAndGet();
             try {
                 if (requestNumber == 1) {
@@ -1764,6 +1912,7 @@ class ChatMessageHandlerQueueTest {
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.setExecutor(serverExecutor);
         server.createContext("/", exchange -> {
+            if (skipUtilityRequest(exchange)) return;
             exchange.getRequestBody().readAllBytes();
             int request = requests.incrementAndGet();
             if (request == 1) {
@@ -2054,7 +2203,13 @@ class ChatMessageHandlerQueueTest {
 
     @Test
     void queuedEventsReachTheAgentTogetherInOneTurn() throws Exception {
-        try (RecordingProvider provider = new RecordingProvider()) {
+        List<ai.kompile.cli.main.chat.render.ChatDisplayBlock> notifications = new CopyOnWriteArrayList<>();
+        try (ChatUiSession ui = new ChatUiSession(); var ignored = ui.bind();
+             RecordingProvider provider = new RecordingProvider()) {
+            ChatCompleter.setDisplayBlockOutput(block -> {
+                if ("notification".equals(block.kind())) notifications.add(block);
+                return true;
+            });
             ChatRepl repl = new ChatRepl(
                     null, null, "event-batch-" + System.nanoTime(), false, "default", false,
                     new ChatConfig("custom", null, "event-batch-test", provider.url()));
@@ -2065,6 +2220,7 @@ class ChatMessageHandlerQueueTest {
                 assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
                 handler.handleExternalMessage("[System process completion] batch-one");
                 handler.handleExternalMessage("[System process completion] batch-two");
+                assertTrue(notifications.isEmpty(), "queued events have not reached the agent yet");
                 assertTrue(Files.readString(handler.pendingEventsFile()).contains("batch-two"),
                         "an event that waits for a turn is kept on disk");
 
@@ -2077,6 +2233,9 @@ class ChatMessageHandlerQueueTest {
                 assertTrue(delivery.contains("batch-two"),
                         "both events go out in one request, not one turn each");
                 assertFalse(delivery.contains("Late delivery"), "a fresh event carries no age stamp");
+                assertEquals(2, notifications.size(), "each batched event gets its own transcript entry");
+                assertTrue(notifications.get(0).summary().contains("Process completion — batch-one"));
+                assertTrue(notifications.get(1).summary().contains("Process completion — batch-two"));
                 assertFalse(Files.exists(handler.pendingEventsFile()),
                         "delivered events leave nothing to deliver again");
             } finally {
@@ -2176,8 +2335,44 @@ class ChatMessageHandlerQueueTest {
     }
 
     @Test
+    void deliveredNotificationFallsBackToTranscriptWhenViewerFails() throws Exception {
+        List<String> lines = new CopyOnWriteArrayList<>();
+        try (ChatUiSession ui = new ChatUiSession(); var ignored = ui.bind();
+             RecordingProvider provider = new RecordingProvider()) {
+            ChatCompleter.setContentOutput(lines::add);
+            ChatCompleter.setDisplayBlockOutput(block -> { throw new IllegalStateException("viewer failed"); });
+            ChatRepl repl = new ChatRepl(
+                    null, null, "event-fallback-" + System.nanoTime(), false, "default", false,
+                    new ChatConfig("custom", null, "event-fallback-test", provider.url()));
+            try {
+                repl.agenticLoop.setPerformanceHarness(null);
+                repl.messageHandler.handleExternalMessage("[System background task completion]\n"
+                        + "Background task task-123 finished with state completed.\nCaptured output:\nprivate result details");
+                assertTrue(provider.firstRequest.await(5, TimeUnit.SECONDS));
+                assertEquals(1, lines.stream().filter(line -> line.contains("Agent notification")).count());
+                assertTrue(lines.stream().anyMatch(line -> line.contains("Background task completion")
+                        && line.contains("task-123")));
+                assertFalse(lines.stream().anyMatch(line -> line.contains("private result details")),
+                        "the append-only fallback is a compact indicator, not a prompt dump");
+                assertTrue(provider.bodies.get(0).contains("private result details"),
+                        "display must not change the agent's event payload");
+            } finally {
+                provider.answerFirst();
+                repl.messageHandler.shutdown();
+                repl.processManager.close();
+            }
+        }
+    }
+
+    @Test
     void anEventThatArrivesMidTurnGoesIntoTheRunningTurn() throws Exception {
-        try (RecordingProvider provider = new RecordingProvider()) {
+        List<ai.kompile.cli.main.chat.render.ChatDisplayBlock> notifications = new CopyOnWriteArrayList<>();
+        try (ChatUiSession ui = new ChatUiSession(); var ignored = ui.bind();
+             RecordingProvider provider = new RecordingProvider()) {
+            ChatCompleter.setDisplayBlockOutput(block -> {
+                if ("notification".equals(block.kind())) notifications.add(block);
+                return true;
+            });
             ChatRepl repl = new ChatRepl(
                     null, null, "event-inject-" + System.nanoTime(), false, "default", false,
                     new ChatConfig("custom", null, "event-inject-test", provider.url()));
@@ -2203,7 +2398,11 @@ class ChatMessageHandlerQueueTest {
                 handler.handleExternalMessage("[System process completion] inject-event");
                 assertEquals(1, written.size(), "an event already in the turn is not written again");
 
+                assertTrue(notifications.isEmpty(), "a provider write is not a delivery receipt");
                 handler.injectionDelivered(ids.get(0));
+                handler.injectionDelivered(ids.get(0));
+                assertEquals(1, notifications.size(), "duplicate receipts must not duplicate the entry");
+                assertTrue(notifications.get(0).summary().contains("Process completion — inject-event"));
                 assertFalse(Files.exists(pending), "an event the turn took in is not delivered again");
 
                 provider.answerFirst();
@@ -2225,7 +2424,13 @@ class ChatMessageHandlerQueueTest {
 
     @Test
     void anEventTheRunningTurnDidNotTakeGoesOutAfterIt() throws Exception {
-        try (RecordingProvider provider = new RecordingProvider()) {
+        List<ai.kompile.cli.main.chat.render.ChatDisplayBlock> notifications = new CopyOnWriteArrayList<>();
+        try (ChatUiSession ui = new ChatUiSession(); var ignored = ui.bind();
+             RecordingProvider provider = new RecordingProvider()) {
+            ChatCompleter.setDisplayBlockOutput(block -> {
+                if ("notification".equals(block.kind())) notifications.add(block);
+                return true;
+            });
             ChatRepl repl = new ChatRepl(
                     null, null, "event-requeue-" + System.nanoTime(), false, "default", false,
                     new ChatConfig("custom", null, "event-requeue-test", provider.url()));
@@ -2245,6 +2450,7 @@ class ChatMessageHandlerQueueTest {
                 handler.handleExternalMessage("[System process completion] dropped-event");
                 // The provider ends the turn without reading the event.
                 handler.injectionDropped(ids.get(0));
+                assertTrue(notifications.isEmpty(), "unread events must not appear as received");
 
                 // An event the provider cannot take in waits, with the dropped one ahead of it.
                 writable.set(false);
@@ -2261,6 +2467,9 @@ class ChatMessageHandlerQueueTest {
                 String delivery = provider.bodies.stream().skip(1)
                         .filter(body -> body.contains("refused-event")).findFirst().orElseThrow();
                 assertTrue(delivery.contains("dropped-event"), "both go out in the turn after it");
+                assertEquals(2, notifications.size(), "retried events appear only when accepted");
+                assertTrue(notifications.get(0).summary().contains("dropped-event"));
+                assertTrue(notifications.get(1).summary().contains("refused-event"));
                 assertFalse(Files.exists(handler.pendingEventsFile()),
                         "delivered events leave nothing to deliver again");
             } finally {
@@ -2271,9 +2480,23 @@ class ChatMessageHandlerQueueTest {
         }
     }
 
+    /** Keep model-limit probes and independent title generation out of queue-turn fixtures. */
+    private static boolean skipUtilityRequest(HttpExchange exchange) throws IOException {
+        byte[] body = exchange.getRequestBody().readAllBytes();
+        if (!"POST".equals(exchange.getRequestMethod())
+                || new String(body, StandardCharsets.UTF_8).contains(ChatTitleGenerator.SYSTEM_PROMPT)) {
+            exchange.sendResponseHeaders(404, -1);
+            exchange.close();
+            return true;
+        }
+        // Hand the original body back to handlers that parse it or block on a turn.
+        exchange.setStreams(new ByteArrayInputStream(body), null);
+        return false;
+    }
+
     /**
      * A model endpoint that holds its first model request until answered or closed
-     * and answers the rest with "ok". Probes are not model requests.
+     * and answers the rest with "ok". Probes and title requests are not model requests.
      */
     private static final class RecordingProvider implements AutoCloseable {
         final CountDownLatch firstRequest = new CountDownLatch(1);
@@ -2287,14 +2510,7 @@ class ChatMessageHandlerQueueTest {
             server = HttpServer.create(new InetSocketAddress(0), 0);
             server.setExecutor(executor);
             server.createContext("/", exchange -> {
-                if (!"POST".equals(exchange.getRequestMethod())) {
-                    // A turn first asks a local endpoint for its model's limits
-                    // (ModelContextResolver, GET /api/llm/status). Held, that probe
-                    // only times out after 2s and the model request goes unheld.
-                    exchange.sendResponseHeaders(404, -1);
-                    exchange.close();
-                    return;
-                }
+                if (skipUtilityRequest(exchange)) return;
                 String requestBody = new String(
                         exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 int requestNumber = requests.incrementAndGet();

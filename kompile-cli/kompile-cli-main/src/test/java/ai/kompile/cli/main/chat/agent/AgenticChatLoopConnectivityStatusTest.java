@@ -4,6 +4,7 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatCompleter;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.harness.LoopDetector;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -76,14 +77,14 @@ class AgenticChatLoopConnectivityStatusTest {
         AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
                 new PermissionService(), new AgentRegistry(), directory, client, null);
         var method = AgenticChatLoop.class.getDeclaredMethod("streamDirectTurn", String.class,
-                String.class, ArrayNode.class, List.class, String.class, List.class);
+                String.class, ArrayNode.class, List.class, String.class, List.class, LoopDetector.class);
         method.setAccessible(true);
         if (outcome.equals("exception")) {
             InvocationTargetException error = assertThrows(InvocationTargetException.class,
-                    () -> method.invoke(loop, "hello", "", mapper.createArrayNode(), null, null, null));
+                    () -> method.invoke(loop, "hello", "", mapper.createArrayNode(), null, null, null, new LoopDetector()));
             assertInstanceOf(IllegalStateException.class, error.getCause());
         } else {
-            method.invoke(loop, "hello", "", mapper.createArrayNode(), null, null, null);
+            method.invoke(loop, "hello", "", mapper.createArrayNode(), null, null, null, new LoopDetector());
         }
         assertFalse(String.valueOf(ChatCompleter.getActivity()).startsWith("Reconnecting"), outcome);
         assertTrue(output.stream().noneMatch(line -> line.contains("test disconnect")),

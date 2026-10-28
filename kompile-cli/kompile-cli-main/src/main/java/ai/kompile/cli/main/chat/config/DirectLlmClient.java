@@ -282,6 +282,11 @@ public class DirectLlmClient implements AutoCloseable {
         this.cancellationCheck = cancellationCheck;
     }
 
+    /** Snapshot for harness scopes which augment, then restore, caller cancellation. */
+    public java.util.function.BooleanSupplier getCancellationCheck() {
+        return cancellationCheck;
+    }
+
     protected boolean isCancelled() {
         java.util.function.BooleanSupplier check = cancellationCheck;
         try {
@@ -580,66 +585,99 @@ public class DirectLlmClient implements AutoCloseable {
             boolean authenticationRefreshAttempted = false;
             OAuthProviderFlow.RequestAuth retryAuth = null;
             StreamResult previousAttempts = null;
-            while (true) {
-                StreamResult result = streamAttempt(
-                        route, userMessage, systemPrompt, toolDefs, toolResults,
-                        effectiveModel, requestAttachments, retryAuth);
-                // A replay-safe failure can still report billed input (for example
-                // message_start followed by EOF). Keep that usage, not its context.
-                mergePreviousAttemptUsage(result, previousAttempts);
-                previousAttempts = result;
-                finishGenerationOutcome(result);
-                if (result.authenticationFailure) {
-                    if (isCancelled() || Thread.currentThread().isInterrupted()) {
-                        result.cancelled = true;
-                        result.authenticationFailure = false;
+            // HTTP routes stage accepted tool results in history, including on a
+            // length cutoff. Replays must submit them once, not append duplicates.
+            List<ObjectNode> historyBeforeTurn = new ArrayList<>(conversationHistory);
+            List<ObjectNode> acceptedTruncatedHistory = null;
+            try {
+                while (true) {
+                    StreamResult result = streamAttempt(
+                            route, userMessage, systemPrompt, toolDefs, toolResults,
+                            effectiveModel, requestAttachments, retryAuth);
+                    // A replay-safe failure can still report billed input (for example
+                    // message_start followed by EOF). Keep that usage, not its context.
+                    mergePreviousAttemptUsage(result, previousAttempts);
+                    previousAttempts = result;
+                    finishGenerationOutcome(result);
+                    if (result.authenticationFailure) {
+                        if (isCancelled() || Thread.currentThread().isInterrupted()) {
+                            result.cancelled = true;
+                            result.authenticationFailure = false;
+                            result.rejectedAuth = null;
+                            return result;
+                        }
+                        OAuthProviderFlow.RequestAuth rejectedAuth = result.rejectedAuth;
                         result.rejectedAuth = null;
+                        try {
+                            if (!authenticationRefreshAttempted && result.isReplaySafe() && rejectedAuth != null) {
+                                authenticationRefreshAttempted = true;
+                                retryAuth = config.refreshRequestAuthAfterUnauthorized(rejectedAuth);
+                                if (retryAuth != null) continue;
+                            }
+                        } catch (ChatConfig.AuthenticationException e) {
+                            return finishCredentialFailure(result, e);
+                        }
+                        return finishAuthenticationFailure(result);
+                    }
+                    boolean truncated = result.failureKind == FailureKind.TRUNCATED;
+                    if (truncated) {
+                        // Cancellation can bypass the parser's terminal cleanup.
+                        result.toolCalls.clear();
+                        if (!result.cancelled && acceptedTruncatedHistory == null) {
+                            acceptedTruncatedHistory = new ArrayList<>(conversationHistory);
+                        }
+                    }
+                    if (!result.retryableConnectivityFailure && !truncated) {
                         return result;
                     }
-                    OAuthProviderFlow.RequestAuth rejectedAuth = result.rejectedAuth;
-                    result.rejectedAuth = null;
-                    try {
-                        if (!authenticationRefreshAttempted && result.isReplaySafe() && rejectedAuth != null) {
-                            authenticationRefreshAttempted = true;
-                            retryAuth = config.refreshRequestAuthAfterUnauthorized(rejectedAuth);
-                            if (retryAuth != null) continue;
-                        }
-                    } catch (ChatConfig.AuthenticationException e) {
-                        return finishCredentialFailure(result, e);
+                    if (result.cancelled || isCancelled()) {
+                        result.cancelled = true;
+                        return result;
                     }
-                    return finishAuthenticationFailure(result);
-                }
-                if (!result.retryableConnectivityFailure) {
-                    return result;
-                }
 
-                boolean replaySafe = result.isReplaySafe();
-                if (!replaySafe || connectivityAttempt == connectivityPolicy.maxAttempts()) {
-                    return finishConnectivityFailure(result, replaySafe);
-                }
+                    // A cutoff may have streamed text/tool arguments, but the calls
+                    // were discarded and never executed. Only provider-side effects
+                    // make regenerating this response unsafe.
+                    boolean replaySafe = truncated
+                            ? !result.providerSideEffectsObserved : result.isReplaySafe();
+                    if (!replaySafe || connectivityAttempt >= connectivityPolicy.maxAttempts()) {
+                        return truncated ? finishTruncatedFailure(result)
+                                : finishConnectivityFailure(result, replaySafe);
+                    }
+                    if (truncated) {
+                        conversationHistory.clear();
+                        conversationHistory.addAll(historyBeforeTurn);
+                    }
 
-                Duration delay = connectivityPolicy.retryDelay(
-                        connectivityAttempt, result.connectivityHeaders);
-                emitConnectivityEvent(new ConnectivityEvent(
-                        config.getProvider(), connectivityAttempt + 1,
-                        connectivityPolicy.maxAttempts(),
-                        delay, result.connectivityFailure));
-                if (!waitForRetry(delay)) {
-                    result.cancelled = true;
-                    result.retryableConnectivityFailure = false;
-                    return result;
+                    Duration delay = connectivityPolicy.retryDelay(
+                            connectivityAttempt, result.connectivityHeaders);
+                    emitConnectivityEvent(new ConnectivityEvent(
+                            config.getProvider(), connectivityAttempt + 1,
+                            connectivityPolicy.maxAttempts(),
+                            delay, truncated
+                                    ? "provider response was truncated; retrying the request (incomplete tool calls discarded)"
+                                    : result.connectivityFailure));
+                    if (!waitForRetry(delay)) {
+                        result.cancelled = true;
+                        result.retryableConnectivityFailure = false;
+                        return result;
+                    }
+                    if (route.protocol() == WireProtocol.OPENCODE) {
+                        resetOpenCodeClient();
+                    }
+                    // ClaudeCliClient restarts an exited process with --resume itself.
+                    // Keep the transport's session receipt across connectivity retries;
+                    // resetting it would discard valid native context and replay history.
+                    connectivityAttempt++;
                 }
-                if (route.protocol() == WireProtocol.OPENCODE) {
-                    resetOpenCodeClient();
+            } finally {
+                // Retrying must not lose an executed tool's accepted output when
+                // recovery is cancelled or a later request fails before acceptance.
+                if (acceptedTruncatedHistory != null && previousAttempts != null
+                        && (previousAttempts.failed || previousAttempts.cancelled)) {
+                    conversationHistory.clear();
+                    conversationHistory.addAll(acceptedTruncatedHistory);
                 }
-                // A running Claude Code process keeps its session and the tasks it
-                // started, so only a process that has exited is replaced.
-                ClaudeCliClient claude = claudeServeClient;
-                if (route.protocol() == WireProtocol.CLAUDE_CLI
-                        && (claude == null || !claude.processAlive())) {
-                    resetClaudeClient();
-                }
-                connectivityAttempt++;
             }
         }
     }
@@ -1580,12 +1618,13 @@ public class DirectLlmClient implements AutoCloseable {
                 text = sendClaudeTurn(client, effectiveModel, systemPrompt, userMessage,
                         attachments, result, streamed);
             } catch (ClaudeCliClient.TurnNotStartedException e) {
-                // A session Claude Code no longer has (or never finished creating)
-                // fails before the turn begins. Nothing reached the provider, so
-                // continue in a new session that carries the earlier conversation.
-                // Claude Code exits when it cannot resume a session; a process
-                // still running holds the session, and its tasks, so it is kept.
-                if (!resumed || e instanceof ClaudeCliClient.ClaudeCliAuthenticationException
+                // Recreate only a confirmed missing native session, not every
+                // startup/model/network error. Those failures say nothing about
+                // the saved context and must not silently discard it.
+                String diagnostic = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
+                boolean missingSession = diagnostic.contains("no conversation found with session id")
+                        || diagnostic.contains("no session found with session id");
+                if (!resumed || !missingSession || e instanceof ClaudeCliClient.ClaudeCliAuthenticationException
                         || isCancelled() || Thread.currentThread().isInterrupted()
                         || client.processAlive()) {
                     throw e;
@@ -1624,7 +1663,9 @@ public class DirectLlmClient implements AutoCloseable {
             boolean overflowBeforeOutput = overflow
                     && e instanceof ClaudeCliClient.TurnFailedException
                     && !result.providerSideEffectsObserved && streamed.length() == 0;
-            if (!overflowBeforeOutput) {
+            boolean terminalRejectionBeforeOutput = e instanceof ClaudeCliClient.TurnFailedException terminal
+                    && terminal.replaySafe && !result.providerSideEffectsObserved && streamed.length() == 0;
+            if (!overflowBeforeOutput && !terminalRejectionBeforeOutput) {
                 // The turn ran, so the native session may hold partial provider-side
                 // state; keep the result non-replayable.
                 result.providerSideEffectsObserved = true;
@@ -1869,8 +1910,9 @@ public class DirectLlmClient implements AutoCloseable {
     /**
      * The limits Claude Code reported enforcing on its last turn with this model,
      * or null before it reported any or off its route. Claude Code applies its own
-     * settings, such as a disabled 1M window or a context cap, which the model
-     * catalogs cannot see.
+     * settings, such as a disabled 1M window, which the model catalogs cannot
+     * see. This is model capacity, not its separately configured auto-compact
+     * window; use contextBudgetLimits for the working budget.
      */
     public ModelContextResolver.ModelLimits claudeReportedLimits(String modelOverride) {
         ClaudeModelLimits reported = claudeModelLimits;
@@ -1879,6 +1921,47 @@ public class DirectLlmClient implements AutoCloseable {
         }
         String model = modelOverride != null && !modelOverride.isBlank() ? modelOverride : config.getModel();
         return Objects.equals(reported.model(), model) ? reported.limits() : null;
+    }
+
+    /** Resolve the working budget, retaining raw native model limits separately for persistence. */
+    public ModelContextResolver.ModelLimits contextBudgetLimits(ModelContextResolver resolver, String modelOverride) {
+        var reported = claudeReportedLimits(modelOverride);
+        var limits = resolver.resolveLimits(config, modelOverride, reported);
+        if (resolveRoute(modelOverride).protocol() != WireProtocol.CLAUDE_CLI) return limits;
+        int window = reported != null && reported.contextWindow() > 0
+                ? Math.min(limits.contextWindow(), reported.contextWindow()) : limits.contextWindow();
+        return new ModelContextResolver.ModelLimits(claudeContextPolicy(modelOverride).budgetWindow(window),
+                limits.maxOutputTokens());
+    }
+
+    public boolean claudeHasConfiguredCompactWindow(String modelOverride) {
+        if (resolveRoute(modelOverride).protocol() != WireProtocol.CLAUDE_CLI) return false;
+        var policy = claudeContextPolicy(modelOverride);
+        return policy.autoCompactEnabled() && policy.autoCompactWindow() > 0;
+    }
+
+    /** This is configuration, not a claimed exact trigger or measured provider occupancy. */
+    public String claudeCompactionPolicyDescription(String modelOverride) {
+        var policy = claudeContextPolicy(modelOverride);
+        String window = policy.autoCompactWindow() > 0
+                ? String.format(java.util.Locale.ROOT, "%,d tokens (capped at the model limit)", policy.autoCompactWindow())
+                : "native default";
+        return "Claude Code auto-compaction: " + (policy.autoCompactEnabled() ? "enabled" : "disabled")
+                + " in local Claude settings; configured window: " + window
+                + ". Trigger/headroom are native-managed, not Kompile's threshold."
+                + " Last request input and native pre-compaction tokens are different measurements.";
+    }
+
+    private ClaudeContextPolicy claudeContextPolicy(String modelOverride) {
+        String model = modelOverride != null && !modelOverride.isBlank() ? modelOverride : config.getModel();
+        return ClaudeContextPolicy.read(workingDirectory, model);
+    }
+
+    /** Restore a validated native-session report before the next Claude process starts. */
+    public void restoreClaudeReportedLimits(String model, ModelContextResolver.ModelLimits limits) {
+        if (limits == null || limits.contextWindow() <= 0
+                || resolveRoute(model).protocol() != WireProtocol.CLAUDE_CLI) return;
+        claudeModelLimits = new ClaudeModelLimits(model, limits);
     }
 
     /**
@@ -1921,6 +2004,7 @@ public class DirectLlmClient implements AutoCloseable {
                 client = claudeServeClient;
                 if (client == null) {
                     client = new ClaudeCliClient(workingDirectory, null, claudeBinaryOverride, claudeMode);
+                    client.setSetupToken(config::resolveClaudeCodeToken);
                     client.setTaskProcesses(claudeTaskProcesses);
                     client.setFollowUpListener(followUpMarkers(claudeFollowUpListener));
                     client.setInjectionListener(claudeInjectionListener);
@@ -5869,6 +5953,13 @@ public class DirectLlmClient implements AutoCloseable {
             finishCredentialFailure(result, credentialFailure);
             return;
         }
+        if (failure instanceof ClaudeCliClient.TurnFailedException terminal
+                && terminal.failureKind != FailureKind.NONE) {
+            String detail = formatExceptionMessage(failure);
+            appendProviderFailure(result, 0, detail, prefix + detail + "]", false);
+            result.failureKind = terminal.failureKind;
+            return;
+        }
         if (failure instanceof OpenCodeServeClient.TurnNotStartedException turnNotStarted) {
             // Pre-turn transport failure: the provider never received the prompt and
             // its session holds no new state, so the connectivity loop may replay it.
@@ -5966,9 +6057,19 @@ public class DirectLlmClient implements AutoCloseable {
         result.failureStatusCode = status;
         result.failureMessage = ProviderResponseFailure.message(kind);
         result.toolCalls.clear();
+        // The outer retry loop owns truncation recovery. Do not render a terminal
+        // failure (or put it into model history) for an attempt that can recover.
+        if (kind == FailureKind.TRUNCATED) return;
         String rendered = (result.text.isEmpty() ? "" : "\n") + result.failureMessage;
         result.text += rendered;
         printStreamingChunk(rendered);
+    }
+
+    private StreamResult finishTruncatedFailure(StreamResult result) {
+        String rendered = (result.text.isEmpty() ? "" : "\n") + result.failureMessage;
+        result.text += rendered;
+        printStreamingChunk(rendered);
+        return result;
     }
 
     private void recordAuthenticationFailure(
@@ -6278,9 +6379,19 @@ public class DirectLlmClient implements AutoCloseable {
             return failed && failureKind == FailureKind.CONTEXT_OVERFLOW;
         }
 
+        /**
+         * True when replaying this turn cannot duplicate provider work, so a
+         * failover to another model is safe.
+         *
+         * <p>{@code text} is deliberately NOT consulted: a terminal outcome
+         * appends its own explanation message into {@code text} (see
+         * {@link #recordTerminalOutcome}), so a rejection that produced nothing
+         * was indistinguishable from a half-streamed answer and no quota
+         * switch could ever qualify. {@code responseStarted} already records
+         * whether the provider wrote anything before that message was added.</p>
+         */
         public boolean isReplaySafe() {
-            return !responseStarted && !providerSideEffectsObserved
-                    && toolCalls.isEmpty() && (text.isEmpty() || isContextOverflow());
+            return !responseStarted && !providerSideEffectsObserved && toolCalls.isEmpty();
         }
 
         public boolean canRetryAfterContextOverflow() {

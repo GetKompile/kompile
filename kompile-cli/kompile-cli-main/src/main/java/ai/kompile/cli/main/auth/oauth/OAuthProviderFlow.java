@@ -141,5 +141,25 @@ public interface OAuthProviderFlow {
                 Integer expiresInSeconds);
 
         String prompt(String message) throws IOException;
+
+        /** Prompt for a secret value. Implementations that can mask the input do. */
+        default String secret(String message) throws IOException {
+            return prompt(message);
+        }
+
+        /**
+         * Run an interactive child process that reads the user's terminal until it
+         * exits. Implementations that own a line reader take the terminal back
+         * afterwards (see {@link TerminalHandoff}).
+         */
+        default <T> T withTerminal(TerminalTask<T> task) throws IOException, InterruptedException {
+            return task.run();
+        }
+    }
+
+    /** Work that runs while an interactive child process owns the terminal. */
+    @FunctionalInterface
+    interface TerminalTask<T> {
+        T run() throws IOException, InterruptedException;
     }
 }

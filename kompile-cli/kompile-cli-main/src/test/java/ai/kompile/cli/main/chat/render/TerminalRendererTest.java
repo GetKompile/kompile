@@ -430,6 +430,55 @@ class TerminalRendererTest {
     }
 
     @Test
+    void agentNotificationsShowTheirTypeAndRetainSafeDetails() {
+        for (String type : List.of("Process completion", "Background task completion",
+                "Subagent completion", "Resource availability")) {
+            String content = "[System " + type.toLowerCase(java.util.Locale.ROOT) + "]\n"
+                    + "proc-001 finished\nDescription: test build\nFull result\033[2J\007";
+            var block = renderer.renderAgentNotificationBlock(content);
+            assertEquals("notification", block.kind());
+            assertTrue(block.summary().contains("Agent notification · " + type), block.summary());
+            assertTrue(block.summary().contains("proc-001 finished"), block.summary());
+            assertFalse(block.summary().contains("Full result"));
+            assertTrue(block.sections().get(0).content().contains("Description: test build\nFull result"));
+            assertFalse(block.sections().get(0).content().contains("\033"));
+            assertFalse(block.sections().get(0).content().contains("\007"));
+            assertFalse(block.running());
+            assertNotEquals(block.key(), renderer.renderAgentNotificationBlock(content).key());
+        }
+        assertNull(renderer.renderAgentNotificationBlock(null));
+        assertNull(renderer.renderAgentNotificationBlock("   "));
+        assertTrue(renderer.renderAgentNotificationBlock("[System   ]\nhello").summary().contains("System event"));
+        assertTrue(renderer.renderAgentNotificationBlock("[System future event] inline detail")
+                .summary().contains("Future event — inline detail"));
+        var unknown = renderer.renderAgentNotificationBlock("An untyped event");
+        assertTrue(unknown.summary().contains("System event — An untyped event"));
+        var longEvent = renderer.renderAgentNotificationBlock("[System process completion]\n" + "x".repeat(1000));
+        assertTrue(longEvent.summary().length() < 240, longEvent.summary());
+        assertTrue(longEvent.summary().endsWith("…"));
+        assertTrue(longEvent.sections().get(0).content().endsWith("x".repeat(1000)));
+    }
+
+    @Test
+    void notificationCardsStayCompactAcrossPresetsAndExpandToTheirPayload() {
+        var block = renderer.renderAgentNotificationBlock("<todo-status source=\"harness\">\n"
+                + "8 tool calls since your todo list was last updated.\n[in_progress] #1 Validate changes\n</todo-status>");
+        assertTrue(block.summary().contains("Agent notification · Todo status"));
+        for (String preset : List.of("classic", "focused", "verbose")) {
+            var config = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+            config.set("preset", preset);
+            assertEquals("summary", config.policy("notification", null).inline());
+            var sidebar = new ai.kompile.cli.main.chat.tui.ChatSidebar();
+            sidebar.upsert(block, config);
+            assertTrue(String.join("\n", sidebar.allRows(config, 120)).contains("Todo status"));
+            assertFalse(String.join("\n", sidebar.allRows(config, 120)).contains("Validate changes"));
+            sidebar.toggleSelected(config);
+            sidebar.toggleSection("notification", config);
+            assertTrue(String.join("\n", sidebar.allRows(config, 120)).contains("Validate changes"));
+        }
+    }
+
+    @Test
     void reminderCardsStartCollapsedAcrossPresetsAndCanBeExpanded() {
         var block = renderer.renderReminderBlock("Kompile added an automatic session reminder. Apply it:\n"
                 + "1. [system] A session was resumed\n2. [project] Keep context");

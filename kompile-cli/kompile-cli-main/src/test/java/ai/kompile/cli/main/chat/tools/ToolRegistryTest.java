@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -174,6 +175,40 @@ class ToolRegistryTest {
                 directToolNames(activated));
         assertFalse(directToolNames(activated).contains("knowledge_graph"),
                 "activating crawl must not leak the graph catalog");
+    }
+
+    @Test
+    void everyBuiltInSubagentCanDiscoverToolsAndUseWorkflowTracking() {
+        for (String id : Set.of("read", "code_search", "websearch", "todowrite", "todoread",
+                "todo_apply_batch", "edit", "skill_manager")) registry.register(namedTool(id));
+        registry.register(new ActivateToolsTool(registry.getDynamicToolManager()));
+        for (AgentConfig agent : new AgentRegistry().getSubagents()) {
+            assertTrue(directToolNames(registry.buildProgressiveDirectToolDefinitions(agent))
+                    .contains("activate_tools"), agent.getName());
+            registry.getDynamicToolManager().activateGroup("workflow");
+            assertTrue(directToolNames(registry.buildProgressiveDirectToolDefinitions(agent))
+                    .containsAll(List.of("todowrite", "todoread", "todo_apply_batch")), agent.getName());
+            if (!agent.getEnabledTools().contains("*")) {
+                assertFalse(directToolNames(registry.buildDirectToolDefinitions(agent)).contains("edit"),
+                        agent.getName());
+                assertFalse(directToolNames(registry.buildDirectToolDefinitions(agent)).contains("skill_manager"),
+                        "mixed-action skill mutation tools must not leak to " + agent.getName());
+            }
+        }
+    }
+
+    @Test
+    void customRoleCanActivateOnlyItsAllowedTools() {
+        for (String id : Set.of("read", "code_search", "todoread", "todowrite", "edit", "task"))
+            registry.register(namedTool(id));
+        registry.register(new ActivateToolsTool(registry.getDynamicToolManager()));
+        AgentConfig role = AgentConfig.builder("custom-read-only")
+                .enabledTools(Set.of("read", "code_search", "todoread")).build();
+        assertTrue(directToolNames(registry.buildProgressiveDirectToolDefinitions(role)).contains("activate_tools"));
+        registry.getDynamicToolManager().activateGroup("code");
+        registry.getDynamicToolManager().activateGroup("workflow");
+        assertEquals(Set.of("read", "code_search", "todoread", "activate_tools"),
+                Set.copyOf(directToolNames(registry.buildProgressiveDirectToolDefinitions(role))));
     }
 
     @Test

@@ -222,6 +222,8 @@ class StagingServiceChatTemplateTest {
         writeKvUInt32(out, "tokenizer.ggml.bos_token_id", tokens.indexOf("<|startoftext|>"));
         writeKvUInt32(out, "tokenizer.ggml.eos_token_id", tokens.indexOf("<|im_end|>"));
         if (chatTemplate != null) {
+            // Declares exactly the 5 KV pairs announced above: the untemplated fixture is a
+            // valid, well-formed header — not a corrupt one the reader recovers from by error.
             writeKvString(out, "tokenizer.chat_template", chatTemplate);
         }
         return out.toByteArray();

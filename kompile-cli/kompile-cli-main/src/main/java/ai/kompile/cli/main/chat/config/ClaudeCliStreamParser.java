@@ -37,6 +37,7 @@ final class ClaudeCliStreamParser {
     record Text(String text) implements Event { }
     record Thinking(String text) implements Event { }
     record SubagentEvent(String toolUseId, Event event) implements Event { }
+    record SubagentModel(String model) implements Event { }
     record UserText(String text) implements Event { }
     /** Transient provider phase; never assistant text or a transcript notice. */
     record Activity(String label) implements Event { }
@@ -209,6 +210,8 @@ final class ClaudeCliStreamParser {
     private String mainModel = "";
     // Input size of the latest main-thread request; a compaction resets it.
     private long requestContextTokens;
+    private String contextRequestId = "";
+    private TokenCounts contextRequestUsage = TokenCounts.ZERO;
     // Main-thread requests of the current turn: new message ids since the last result.
     // num_turns is not used: a process that keeps its session may report it cumulatively.
     private int turnRequests;
@@ -278,10 +281,15 @@ final class ClaudeCliStreamParser {
         com.fasterxml.jackson.databind.node.ObjectNode frame = node.deepCopy();
         frame.remove("parent_tool_use_id");
         List<Event> events = new ArrayList<>();
+        JsonNode message = "stream_event".equals(node.path("type").asText())
+                ? node.path("event").path("message") : node.path("message");
+        String model = message.path("model").asText("");
+        if (!model.isBlank() && !"<synthetic>".equals(model)) {
+            events.add(new SubagentEvent(parent, new SubagentModel(model)));
+        }
         // Preserve the existing usage ledger: only child aggregates report usage
         // to the parent, never their stream counters or context size.
         if ("assistant".equals(node.path("type").asText())) {
-            JsonNode message = node.path("message");
             events.addAll(requestUsage(message.path("id").asText(""), false, message.path("usage")));
         }
         if ("user".equals(node.path("type").asText())) {
@@ -299,7 +307,8 @@ final class ClaudeCliStreamParser {
         for (Event event : child.parseNode(frame)) {
             if (event instanceof Text || event instanceof Thinking || event instanceof ToolStart
                     || event instanceof ToolInput || event instanceof ToolOutput || event instanceof ToolComplete
-                    || event instanceof Notice || event instanceof ApiError) {
+                    || event instanceof Notice || event instanceof ApiError || event instanceof RequestUsage
+                    || event instanceof ToolInputDelta) {
                 events.add(new SubagentEvent(parent, event));
             }
         }
@@ -354,6 +363,8 @@ final class ClaudeCliStreamParser {
                 if (!mainThread(node)) yield List.of();
                 // Requests before the boundary measured the context it replaced.
                 requestContextTokens = 0;
+                contextRequestId = "";
+                contextRequestUsage = TokenCounts.ZERO;
                 yield List.of(parseCompactBoundary(node));
             }
             case "notification" -> notice(node.path("text"));
@@ -477,7 +488,7 @@ final class ClaudeCliStreamParser {
         String type = event.path("type").asText();
         if ("message_start".equals(type)) {
             JsonNode message = event.path("message");
-            recordRequestUsage(message.path("usage"));
+            recordRequestUsage(message.path("id").asText(""), message.path("usage"));
             String startedMessageId = message.path("id").asText("");
             if (!startedMessageId.isBlank() && !startedMessageId.equals(messageId)) turnRequests++;
             messageId = startedMessageId;
@@ -549,7 +560,7 @@ final class ClaudeCliStreamParser {
         JsonNode message = node.path("message");
         boolean mainThread = mainThread(node);
         // Aggregates repeat their request's usage; older CLIs stream no message_start.
-        if (mainThread) recordRequestUsage(message.path("usage"));
+        if (mainThread) recordRequestUsage(message.path("id").asText(""), message.path("usage"));
         if (apiErrorMessage(node)) {
             // A subagent's failed request does not end the turn; it is only a notice.
             String text = contentText(message.path("content")).strip();
@@ -738,11 +749,16 @@ final class ClaudeCliStreamParser {
      * the cached prefix, so the request read input plus cache reads plus cache
      * writes. Usage without any input (synthetic messages) is not a measurement.
      */
-    private void recordRequestUsage(JsonNode usage) {
+    private void recordRequestUsage(String requestId, JsonNode usage) {
         if (!usage.isObject()) return;
-        long total = Math.max(0L, usage.path("input_tokens").asLong(0L))
-                + Math.max(0L, usage.path("cache_read_input_tokens").asLong(0L))
-                + Math.max(0L, usage.path("cache_creation_input_tokens").asLong(0L));
+        TokenCounts reported = TokenCounts.of(usage);
+        // Aggregates may omit cached counts already reported at message_start.
+        // Merge only snapshots of the SAME request; a new request can be smaller.
+        contextRequestUsage = !requestId.isBlank() && requestId.equals(contextRequestId)
+                ? contextRequestUsage.max(reported) : reported;
+        contextRequestId = requestId;
+        long total = contextRequestUsage.input() + contextRequestUsage.cacheRead()
+                + contextRequestUsage.cacheCreation();
         if (total > 0) requestContextTokens = total;
     }
 

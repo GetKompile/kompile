@@ -209,11 +209,38 @@ public class ToolCallIndex {
                                        String projectDirectory,
                                        SortField sortField, SortDirection sortDir,
                                        int limit) {
+        return search(query, toolName, sessionId, category, agentName, projectDirectory, sortField, sortDir, limit, 0);
+    }
+
+    public List<ToolCallRecord> search(String query, String toolName, String sessionId,
+                                       String category, String agentName, String projectDirectory,
+                                       SortField sortField, SortDirection sortDir, int limit, int offset) {
         try {
             return searchIndex().catalogSearch(query, toolName, sessionId, category, agentName,
-                    projectDirectory, sortField, sortDir, limit);
+                    projectDirectory, sortField, sortDir, limit, offset);
         } catch (IOException | java.sql.SQLException e) {
             throw new IllegalStateException("Cannot query rebuildable tool-call search index", e);
+        }
+    }
+
+    public Map<String, List<ToolCallRecord>> groupedSearch(String groupBy, String query, String toolName,
+            String sessionId, String category, String agent, String project,
+            SortField sortField, SortDirection sortDir, int limitPerGroup) {
+        try {
+            List<ToolCallRecord> rows = searchIndex().catalogGrouped(query, toolName, sessionId,
+                    category, agent, project, sortField, sortDir, limitPerGroup, groupBy);
+            return rows.stream().collect(Collectors.groupingBy(row -> {
+                String key = switch (groupBy) {
+                    case "category" -> row.getCategory();
+                    case "project" -> row.getProjectDirectory();
+                    case "agent" -> row.getAgentName();
+                    case "tool" -> row.getToolName();
+                    default -> throw new IllegalArgumentException("Unsupported group_by: " + groupBy);
+                };
+                return key == null ? "category".equals(groupBy) ? "general" : "(unknown)" : key;
+            }, LinkedHashMap::new, Collectors.toList()));
+        } catch (IOException | java.sql.SQLException e) {
+            throw new IllegalStateException("Cannot query grouped tool-call search index", e);
         }
     }
 

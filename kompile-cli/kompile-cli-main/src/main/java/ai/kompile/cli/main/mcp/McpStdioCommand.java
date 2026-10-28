@@ -21,6 +21,7 @@ import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.SubagentDelegationGuard;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard;
 import ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor;
@@ -95,6 +96,7 @@ import ai.kompile.cli.main.chat.tools.SkillManagerTool;
 import ai.kompile.cli.main.chat.tools.SubprocessWatchdogTool;
 import ai.kompile.cli.main.chat.tools.TestMilestoneTool;
 import ai.kompile.cli.main.chat.tools.IncidentTool;
+import ai.kompile.cli.main.chat.tools.TodoApplyBatchTool;
 import ai.kompile.cli.main.chat.tools.TodoReadTool;
 import ai.kompile.cli.main.chat.tools.TodoWriteTool;
 import ai.kompile.cli.main.chat.tools.ToolCallCatalogTool;
@@ -143,6 +145,7 @@ import ai.kompile.cli.mcp.stdio.McpSessionTracker;
 import ai.kompile.cli.mcp.stdio.McpStderrLogger;
 import ai.kompile.cli.mcp.stdio.McpToolAuditLogger;
 import ai.kompile.cli.mcp.stdio.McpToolProgressLogger;
+import ai.kompile.cli.mcp.stdio.ResolveModelTool;
 import ai.kompile.cli.mcp.stdio.StdioHarnessTool;
 import ai.kompile.cli.mcp.stdio.StdioMultiTaskTool;
 import ai.kompile.cli.mcp.stdio.StdioQuorumTaskTool;
@@ -234,7 +237,7 @@ public class McpStdioCommand implements Callable<Integer> {
                 "read", "read_batch", "file_context", "file_note", "write", "edit", "edit_batch",
                 "grep", "grep_batch", "glob", "list", "bash",
                 "explore", "fetch_result", "fetch_result_batch", "patch", "edit_patch",
-                "todowrite", "todoread", "memory", "incident",
+                "todowrite", "todoread", "todo_apply_batch", "memory", "incident",
                 "webfetch", "websearch", "mcp_tool_search", "mcp_tool_call"
         )));
 
@@ -274,7 +277,7 @@ public class McpStdioCommand implements Callable<Integer> {
     /** Centralized progress logger — writes all tool activity to the project-scoped {@code <.kompile>/logs/mcp-activity.log}. */
     private volatile McpToolProgressLogger progressLogger;
 
-    /** Async executor — runs tools in background when _background=true, supports polling. */
+    /** Async executor — delegation backgrounds by default; other tools opt in with _background=true. */
     private volatile AsyncToolExecutor asyncExecutor;
 
     /** Structured audit logger — writes MCP tool calls to the shared tool-call catalog. */
@@ -451,6 +454,11 @@ public class McpStdioCommand implements Callable<Integer> {
     public Integer call() {
         Path wd = workDir != null ? Paths.get(workDir) : Paths.get(System.getProperty("user.dir"));
         transcriptId = resolveTranscriptId(transcriptId);
+        // Adopt the spawning chat's transcript identity: capture, attribution, and
+        // grandchild-MCP generation read TranscriptLogScope.currentTranscriptId(),
+        // which otherwise returns null inside this process. No log scope is opened
+        // here; the property is only the documented fallback identity.
+        System.setProperty(ai.kompile.cli.main.chat.TranscriptLogScope.TRANSCRIPT_ID_PROPERTY, transcriptId);
 
         // Redirect stderr to a log file for the entire MCP stdio session so warnings,
         // auto-detect messages, and skill-loading errors do not pollute the client's UI.
@@ -836,6 +844,8 @@ public class McpStdioCommand implements Callable<Integer> {
                     Map<String, String> compactHints = new LinkedHashMap<>();
                     for (ToolDef td : tools.values()) {
                         if (!activeIds.contains(td.name())) continue;
+                        if (SubagentDelegationGuard.blocks(td.name())) continue;
+                        if (SubagentDelegationGuard.EXTENDED_DELEGATION_TOOLS.contains(td.name())) continue;
                         var toolObj = rawDefs.addObject();
                         toolObj.put("name", td.name());
                         toolObj.put("description", td.description());
@@ -933,7 +943,29 @@ public class McpStdioCommand implements Callable<Integer> {
                     Map<String, Object> effectiveArgMap = new LinkedHashMap<>(originalArgMap);
 
                     ToolDef td = tools.get(toolName);
-                    if (td == null) {
+                    if (SubagentDelegationGuard.blocks(toolName)
+                            || SubagentDelegationGuard.EXTENDED_DELEGATION_TOOLS.contains(toolName)
+                            && SubagentDelegationGuard.isSubagent()) {
+                        ObjectNode callResult = om.createObjectNode();
+                        callResult.putArray("content").addObject().put("type", "text")
+                                .put("text", ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.message(toolName));
+                        callResult.put("isError", true);
+                        result.set("result", callResult);
+                        if (sessionTracker != null) sessionTracker.recordToolCall(toolName, true, 0);
+                        if (auditLogger != null) {
+                            auditLogger.recordDecision(toolName, originalArgMap, null,
+                                    "subagent_delegation_blocked", "nested delegation", true, 0);
+                        }
+                        if (usageAccounting != null && usageCtx != null) {
+                            usageAccounting.finalizeCall(usageCtx,
+                                    ai.kompile.cli.main.chat.tools.ToolResult.error(
+                                            ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.message(toolName)),
+                                    null,
+                                    ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.UNKNOWN_TOOL,
+                                    ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.DELIVERED,
+                                    true, System.currentTimeMillis());
+                        }
+                    } else if (td == null) {
                         ObjectNode callResult = om.createObjectNode();
                         callResult.putArray("content").addObject().put("type", "text").put("text", "Unknown tool: " + toolName);
                         callResult.put("isError", true);
@@ -1037,13 +1069,18 @@ public class McpStdioCommand implements Callable<Integer> {
 
                         Map<String, Object> argMap = new LinkedHashMap<>(effectiveArgMap);
 
-                        // Background execution is explicit. In particular, delegation tools
-                        // must keep their original MCP call open by default so the parent model
-                        // receives normal exits and failures (including quota exhaustion) as the
-                        // tool result. An implicitly detached call can only be recovered by polling,
-                        // which cannot wake a parent model that already ended its turn.
-                        boolean background = argMap != null
-                                && Boolean.TRUE.equals(argMap.remove("_background"));
+                        // Single and parallel delegation background by default. Other tools
+                        // remain synchronous unless they opt in through _background. The legacy
+                        // override takes precedence; background=false keeps delegation's call open.
+                        Object backgroundRequest = argMap.remove("_background");
+                        if ("task".equals(toolName) || "multi_task".equals(toolName)
+                                || "subagent_resume".equals(toolName) && "resume".equals(argMap.get("action"))) {
+                            Object delegationBackground = argMap.remove("background");
+                            if (backgroundRequest == null) {
+                                backgroundRequest = delegationBackground == null ? Boolean.TRUE : delegationBackground;
+                            }
+                        }
+                        boolean background = Boolean.TRUE.equals(backgroundRequest);
 
                         if (background && asyncExecutor != null) {
                             final Map<String, Object> finalArgs = argMap;
@@ -1095,7 +1132,7 @@ public class McpStdioCommand implements Callable<Integer> {
                                     }
                                     throw e;
                                 }
-                            });
+                            }, this::publishBackgroundTaskMonitor, this::notifyBackgroundTaskCompletion);
 
                             ObjectNode callResult = om.createObjectNode();
                             var content = callResult.putArray("content");
@@ -1107,8 +1144,9 @@ public class McpStdioCommand implements Callable<Integer> {
                             textObj.put("text", "Tool '" + toolName + "' running in background.\n\n"
                                     + dispatchPlan
                                     + "**Task ID**: `" + taskId + "`\n"
-                                    + "**Poll**: Call `poll` tool with `task_id=\"" + taskId + "\"`\n"
-                                    + "**Log**: `tail -f " + (progressLogger != null ? progressLogger.getLogFile() : LogPaths.logsDirectory().toPath().resolve("mcp-activity.log")) + "`");
+                                    + "**Monitor**: Completion notification installed automatically. Do not poll status or logs.\n"
+                                    + "If this result is needed, call `poll` with `action=\"monitor\", task_id=\"" + taskId + "\"`.\n"
+                                    + "**Log**: " + (progressLogger != null ? progressLogger.getLogFile() : LogPaths.logsDirectory().toPath().resolve("mcp-activity.log")));
                             callResult.put("isError", false);
                             result.set("result", callResult);
                             // Background ACK payload is FINAL for this response: measure it,
@@ -1667,7 +1705,7 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new WriteTool(coordinator), om, wd);
         registerCliTool(tools, new EditTool(coordinator), om, wd);
         registerCliTool(tools, new EditBatchTool(coordinator), om, wd);
-        registerCliTool(tools, new PatchTool(), om, wd);
+        registerCliTool(tools, new PatchTool(coordinator), om, wd);
         registerCliTool(tools, new EditPatchTool(coordinator), om, wd);
 
         // ── Search tools ───────────────────────────────────────────────────
@@ -1702,6 +1740,7 @@ public class McpStdioCommand implements Callable<Integer> {
 
         // ── Workflow tools ─────────────────────────────────────────────────
         registerCliTool(tools, new TodoWriteTool(), om, wd);
+        registerCliTool(tools, new TodoApplyBatchTool(), om, wd);
         registerCliTool(tools, new TodoReadTool(), om, wd);
 
         // ── Knowledge & memory tools ───────────────────────────────────────
@@ -1717,6 +1756,7 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new ProjectConfigTool(), om, wd);
         registerCliTool(tools, new EnforcerConfigTool(), om, wd);
         registerCliTool(tools, new JudgeControlTool(), om, wd);
+        registerCliTool(tools, new ai.kompile.cli.main.chat.tools.HooksTool(), om, wd);
 
         // ── Custom MCP servers ────────────────────────────────────────────
         // Keep the provider-facing schema small: custom server tools are
@@ -1838,10 +1878,12 @@ public class McpStdioCommand implements Callable<Integer> {
         var quorumTool = new StdioQuorumTaskTool(agentRegistry, subagentRunner, om, wd);
         tools.put(quorumTool.id(), new ToolDef(quorumTool.id(), quorumTool.description(), quorumTool.parameterSchema(),
             McpToolAnnotations.DELEGATION,
-            args -> { try { return quorumTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
+            args -> { try { return quorumTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }, quorumTool.compactHint()));
 
         var multiTool = new StdioMultiTaskTool(agentRegistry, subagentRunner, om, wd, roleManager, coordinator);
-        registerTaskTools(tools, taskTool, multiTool, () -> ctx(wd));
+        registerTaskTools(tools, taskTool, multiTool, new ResolveModelTool(om, wd), () -> ctx(wd));
+        registerCliTool(tools, new ai.kompile.cli.mcp.stdio.StdioSubagentResumeTool(taskTool, om,
+                new ai.kompile.cli.main.chat.agent.SubagentResumeService(om)), om, wd);
 
         var rmTool = new RoleManagerTool(roleManager, om);
         tools.put(rmTool.id(), new ToolDef(rmTool.id(), rmTool.description(), rmTool.parameterSchema(),
@@ -1881,14 +1923,17 @@ public class McpStdioCommand implements Callable<Integer> {
             pollProps.putObject("task_id").put("type", "string")
                     .put("description", "Task ID to check (returned from _background calls). Omit to list all active tasks.");
             pollProps.putObject("action").put("type", "string")
-                    .put("description", "Action: 'status' (default), 'list' (all tasks), 'log' (recent log lines)");
+                    .put("description", "Action: 'monitor' (held completion wait), 'status' (finished result only), 'list' (all tasks), 'log' (diagnostics)");
+            pollProps.putObject("timeout_seconds").put("type", "integer")
+                    .put("description", "Monitor hold timeout in seconds (default 300, max 300). A timeout does not cancel the task.");
             pollProps.putObject("lines").put("type", "integer")
                     .put("description", "Number of recent log lines to return (default 30, max 200). Used with action='log'.");
 
             tools.put("poll", new ToolDef("poll",
-                    "Check status of background tool executions or view the MCP activity log. " +
-                    "Any tool can be run in background by adding _background=true to its arguments. " +
-                    "Use this tool to poll for results or view real-time progress from the log file.",
+                    "Monitor background tool completion or retrieve a finished result. " +
+                    "Every background launch installs a one-shot completion notification. " +
+                    "Use action=monitor with task_id when a result is needed; running status polling is blocked. " +
+                    "Live transcripts belong in the activity monitor, not inline chat.",
                     pollSchema,
                     McpToolAnnotations.READ_ONLY,
                     args -> {
@@ -1920,6 +1965,9 @@ public class McpStdioCommand implements Callable<Integer> {
             }
         }
 
+        // Wrap the final map, including special delegation/custom tools. Invocation still
+        // happens only after the transport's existing gateway and enforcer checks.
+        tools.replaceAll((name, definition) -> withHooks(definition, () -> ctx(wd)));
         System.err.println("[MCP] buildToolMap total: " + (System.currentTimeMillis() - t0) + "ms (" + tools.size() + " tools)");
         return tools;
     }
@@ -1931,6 +1979,10 @@ public class McpStdioCommand implements Callable<Integer> {
 
         switch (action) {
             case "log" -> {
+                if (asyncExecutor != null && !asyncExecutor.getActiveTasks().isEmpty()) {
+                    return ToolResult.error("Live background transcripts belong in the activity monitor. "
+                            + "Use poll action=monitor task_id=<id> for completion; do not poll logs.");
+                }
                 // Return recent lines from the activity log
                 int lines = 30;
                 if (args != null && args.get("lines") != null) {
@@ -1985,6 +2037,23 @@ public class McpStdioCommand implements Callable<Integer> {
                         return ToolResult.error(
                                 "Unknown task ID: " + taskId + ". Use action='list' to see all tasks.");
                     }
+                    if ("running".equals(status.status())) {
+                        if (!"monitor".equals(action)) {
+                            return ToolResult.error("Background task " + taskId + " is monitored. "
+                                    + "Do not poll status or transcripts; use poll action=monitor task_id=" + taskId
+                                    + " for a held completion wait, or continue other work.");
+                        }
+                        long seconds = args.get("timeout_seconds") == null ? 300
+                                : Long.parseLong(String.valueOf(args.get("timeout_seconds")));
+                        status = asyncExecutor.awaitCompletion(taskId, Math.max(1, Math.min(300, seconds)) * 1000);
+                        if (status != null && "running".equals(status.status())) {
+                            return ToolResult.success("monitor waiting " + taskId,
+                                    "Completion monitor is still active. Continue other work or resume "
+                                            + "the held wait with poll action=monitor task_id=" + taskId,
+                                    Map.of("taskId", taskId, "status", "waiting"));
+                        }
+                    }
+                    if (status == null) return ToolResult.error("Task expired: " + taskId);
                     if (status.result() != null) {
                         // Task completed — return the full result
                         var tr = status.result();
@@ -2011,16 +2080,63 @@ public class McpStdioCommand implements Callable<Integer> {
                     return ToolResult.success("poll: status",
                             "No active background tasks.");
                 }
-                StringBuilder sb = new StringBuilder();
-                sb.append("Active background tasks (").append(active.size()).append("):\n\n");
-                for (var t : active) {
-                    sb.append("- `").append(t.taskId()).append("` ").append(t.toolName())
-                            .append(" — running for ").append(t.elapsedMs()).append("ms\n");
-                }
-                sb.append("\nPoll a specific task with: poll task_id=\"<id>\"");
-                return ToolResult.success("poll: status", sb.toString());
+                return ToolResult.error("Background work is already monitored. Use action=list to discover IDs, "
+                        + "then poll action=monitor task_id=<id> for a held wait; do not poll status.");
             }
         }
+    }
+
+    private Path backgroundTaskOutputFile(String taskId) throws IOException {
+        Path directory = progressLogger != null ? progressLogger.getLogFile().getParent()
+                : transcriptMcpLogDirectory(toolContextSessionId(transcriptId));
+        return directory.resolve(taskId + ".log");
+    }
+
+    /** Reuse the existing cross-JVM process monitor to wake a Kompile parent chat. */
+    private void publishBackgroundTaskMonitor(AsyncToolExecutor.TaskStatus task) {
+        if (coordinator == null) return;
+        try {
+            Path output = backgroundTaskOutputFile(task.taskId());
+            coordinator.publishProcess(task.taskId(), task.toolName(), "Background " + task.toolName(),
+                    -1L, "RUNNING", output.toString(), detectOwningAgent(), null, "background-task",
+                    java.time.Instant.now(), null, null);
+            coordinator.updateProcessMonitor(task.taskId(), true,
+                    "Retrieve the final task result with poll action=monitor task_id=" + task.taskId());
+        } catch (IOException failure) {
+            System.err.println("MCP task monitor publication failed: " + failure.getMessage());
+        }
+    }
+
+    /** A terminal event, not a progress token tied to an already-returned RPC. */
+    private void notifyBackgroundTaskCompletion(AsyncToolExecutor.TaskStatus task) {
+        if (coordinator != null) {
+            try {
+                Path output = backgroundTaskOutputFile(task.taskId());
+                Files.createDirectories(output.getParent());
+                Files.writeString(output, task.result() == null ? task.resultSummary()
+                        : java.util.Objects.toString(task.result().getOutput(), ""), StandardCharsets.UTF_8);
+            } catch (IOException failure) {
+                System.err.println("MCP task result log failed: " + failure.getMessage());
+            } finally {
+                // Publish completion only after the final log is available to the activity view.
+                coordinator.updateProcessState(task.taskId(), "failed".equals(task.status()) ? "FAILED" : "COMPLETED",
+                        java.time.Instant.now(), "failed".equals(task.status()) ? 1 : 0);
+            }
+        }
+        if (mcpOut == null || om == null) return;
+        ObjectNode params = om.createObjectNode();
+        params.put("level", "info");
+        params.put("logger", "kompile.tasks");
+        ObjectNode data = params.putObject("data");
+        data.put("event", "task_completed");
+        data.put("task_id", task.taskId());
+        data.put("tool", task.toolName());
+        data.put("status", task.status());
+        data.put("elapsed_ms", task.elapsedMs());
+        data.put("message", "Background task " + task.taskId() + " finished: " + task.status()
+                + ". Retrieve its final result with poll action=monitor task_id=" + task.taskId());
+        // Completion is mandatory even when diagnostic logging is filtered.
+        sendNotification("notifications/message", params);
     }
 
     /** Build a standard MCP call result from a ToolResult. */
@@ -2055,6 +2171,13 @@ public class McpStdioCommand implements Callable<Integer> {
     static void registerTaskTools(Map<String, ToolDef> tools, StdioTaskTool taskTool,
                                   StdioMultiTaskTool multiTool,
                                   java.util.function.Supplier<ToolContext> context) {
+        registerTaskTools(tools, taskTool, multiTool, null, context);
+    }
+
+    static void registerTaskTools(Map<String, ToolDef> tools, StdioTaskTool taskTool,
+                                  StdioMultiTaskTool multiTool,
+                                  ResolveModelTool resolveModelTool,
+                                  java.util.function.Supplier<ToolContext> context) {
         tools.put(taskTool.id(), new ToolDef(taskTool.id(), taskTool.description(), taskTool.parameterSchema(),
                 McpToolAnnotations.DELEGATION,
                 args -> { try { return taskTool.execute(args, context.get()); } catch (Exception e) { return ToolResult.error(e.getMessage()); } },
@@ -2063,6 +2186,13 @@ public class McpStdioCommand implements Callable<Integer> {
                 McpToolAnnotations.DELEGATION,
                 args -> { try { return multiTool.execute(args, context.get()); } catch (Exception e) { return ToolResult.error(e.getMessage()); } },
                 multiTool.compactHint()));
+        if (resolveModelTool != null) {
+            tools.put(resolveModelTool.id(), new ToolDef(resolveModelTool.id(),
+                    resolveModelTool.description(), resolveModelTool.parameterSchema(),
+                    resolveModelTool.mcpAnnotations(),
+                    args -> { try { return resolveModelTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } },
+                    resolveModelTool.compactHint()));
+        }
     }
 
     /** Register a standalone CliTool (no special constructor deps) into the MCP tool map. */
@@ -2083,6 +2213,19 @@ public class McpStdioCommand implements Callable<Integer> {
             },
             executable.compactHint()
         ));
+    }
+
+    static ToolDef withHooks(ToolDef definition, java.util.function.Supplier<ToolContext> context) {
+        return new ToolDef(definition.name(), definition.description(), definition.schema(),
+                definition.annotations(), args -> {
+                    try {
+                        return ai.kompile.cli.main.chat.hooks.HookExecutor.execute(definition.name(),
+                                JsonUtils.standardMapper().valueToTree(args), context.get(),
+                                input -> definition.executor().apply(args));
+                    } catch (ai.kompile.cli.main.chat.tools.ToolExecutionException e) {
+                        return ToolResult.error(e.getMessage());
+                    }
+                }, definition.compactHint());
     }
 
     record ToolDef(String name, String description, JsonNode schema,
@@ -2122,6 +2265,7 @@ public class McpStdioCommand implements Callable<Integer> {
                     loggerRef.toolProgress("ctx-output", "tool", line);
                 }
             });
+            if (SubagentDelegationGuard.isSubagent()) ctx.markSupervisedChild();
             CTX.set(ctx);
         }
         ctx.bindJudgeControl(mcpJudgeControl(), true);

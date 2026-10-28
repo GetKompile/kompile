@@ -263,6 +263,36 @@ class TranscriptSearchToolTest {
     }
 
     @Test
+    void regexSearchPagesMatchesWithoutRepeatingOrClaimingMoreAtExactEnd() throws Exception {
+        transcript("paging", "coder", "needle-one\nneedle-two\nneedle-three\nneedle-four");
+        ObjectNode params = params("search", "paging").put("pattern", "needle-")
+                .put("max_results", 2).put("context", 0);
+        ToolResult first = execute(params);
+        assertEquals(2, first.getMetadata().get("matches"));
+        assertEquals(2, first.getMetadata().get("nextOffset"));
+        assertTrue(first.getOutput().contains("needle-one"));
+        assertFalse(first.getOutput().contains("needle-three"));
+        ToolResult second = execute(params.put("offset", 2));
+        assertEquals(2, second.getMetadata().get("matches"));
+        assertEquals(false, second.getMetadata().get("truncated"));
+        assertNull(second.getMetadata().get("nextOffset"));
+        assertFalse(second.getOutput().contains("needle-one"));
+        assertTrue(second.getOutput().contains("needle-four"));
+        assertTrue(execute(params.put("offset", -1)).isError());
+    }
+
+    @Test
+    void regexSearchContinuesAcrossSessionsAndFilesWithMatchesMode() throws Exception {
+        var params = params("search", "abc123").put("pattern", "failure").put("context", 0)
+                .put("max_results", 1).put("files_with_matches", true);
+        ToolResult first = execute(params);
+        ToolResult second = execute(params.put("offset", 1));
+        assertEquals(1, first.getMetadata().get("nextOffset"));
+        assertEquals(false, second.getMetadata().get("truncated"));
+        assertNotEquals(first.getOutput().split("  ")[0], second.getOutput().split("  ")[0]);
+    }
+
+    @Test
     void schemaDocumentsPrefixLookupAndUniqueRead() {
         String idDescription = tool.parameterSchema().path("properties").path("session_id")
                 .path("description").asText();

@@ -151,6 +151,22 @@ final class ProviderResponseFailure {
                 : DirectLlmClient.FailureKind.NONE;
     }
 
+    /** Only for a native transport's terminal error event, never assistant/tool prose. */
+    static DirectLlmClient.FailureKind classifyNativeError(String detail) {
+        DirectLlmClient.FailureKind structured = classify(0, detail);
+        if (structured != DirectLlmClient.FailureKind.NONE) return structured;
+        String text = detail == null ? "" : detail.toLowerCase(java.util.Locale.ROOT);
+        if (text.contains("usage limit") || text.contains("usage_limit_reached")
+                || text.contains("hit your limit") || text.contains("weekly limit")
+                || text.contains("weekly usage") || text.contains("quota exhausted")
+                || text.contains("insufficient_quota") || text.contains("credit balance")) {
+            return DirectLlmClient.FailureKind.QUOTA_EXHAUSTED;
+        }
+        if (text.contains("rate limit") || text.contains("rate_limit_error")
+                || text.contains("too many requests")) return DirectLlmClient.FailureKind.RATE_LIMITED;
+        return DirectLlmClient.FailureKind.NONE;
+    }
+
     /** Optional 401 diagnostics: bounded in bytes AND total time, never printed or retained. */
     static String authenticationBody(InputStream input) {
         if (input == null) return "";

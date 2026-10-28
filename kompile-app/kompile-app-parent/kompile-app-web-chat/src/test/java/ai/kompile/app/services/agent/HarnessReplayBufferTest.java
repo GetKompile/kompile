@@ -3,18 +3,111 @@ package ai.kompile.app.services.agent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class HarnessReplayBufferTest {
     static class Connection implements HarnessReplayBuffer.Connection {
-        final List<HarnessReplayBuffer.Event> events = new ArrayList<>();
+        final List<HarnessReplayBuffer.Event> events = new java.util.concurrent.CopyOnWriteArrayList<>();
         boolean completed;
         public void send(HarnessReplayBuffer.Event event) throws IOException { events.add(event); }
         public void complete() { completed = true; }
     }
+    @Test void heartbeatIsOutOfBandAndStopsWhenItsSubscriberDetaches() throws Exception {
+        var buffer = new HarnessReplayBuffer(new ObjectMapper(), 1024, 2, 10);
+        var received = new java.util.concurrent.LinkedBlockingQueue<HarnessReplayBuffer.Event>();
+        var view = new Connection() {
+            public void send(HarnessReplayBuffer.Event event) { received.add(event); }
+        };
+        buffer.attach(0, view);
+        var heartbeat = received.poll(2, java.util.concurrent.TimeUnit.SECONDS);
+        assertNotNull(heartbeat);
+        assertEquals("heartbeat", heartbeat.name());
+        assertEquals(0, heartbeat.id());
+        assertTrue(heartbeat.data().isObject());
+        buffer.detach(view);
+        received.clear();
+        assertNull(received.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS));
+        // It neither consumes the bounded replay window nor changes its cursor.
+        buffer.send("chunk", "answer");
+        buffer.complete();
+        var replay = new Connection(); buffer.attach(0, replay);
+        assertEquals(List.of("chunk"), replay.events.stream().map(HarnessReplayBuffer.Event::name).toList());
+        assertEquals(1, replay.events.get(0).id());
+    }
+
+    @Test void heartbeatFollowsReplacementAndStopsAfterCompletion() throws Exception {
+        var buffer = new HarnessReplayBuffer(new ObjectMapper(), 1024, 2, 10);
+        var oldEvents = new java.util.concurrent.LinkedBlockingQueue<HarnessReplayBuffer.Event>();
+        var newEvents = new java.util.concurrent.LinkedBlockingQueue<HarnessReplayBuffer.Event>();
+        var old = new Connection() { public void send(HarnessReplayBuffer.Event event) { oldEvents.add(event); } };
+        var next = new Connection() { public void send(HarnessReplayBuffer.Event event) { newEvents.add(event); } };
+        buffer.attach(0, old);
+        assertNotNull(oldEvents.poll(2, java.util.concurrent.TimeUnit.SECONDS));
+        buffer.attach(0, next);
+        buffer.detach(old); // A stale callback must not stop the replacement's heartbeat.
+        oldEvents.clear();
+        assertNotNull(newEvents.poll(2, java.util.concurrent.TimeUnit.SECONDS));
+        assertNull(oldEvents.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS));
+        buffer.complete();
+        newEvents.clear();
+        assertNull(newEvents.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS));
+        assertTrue(next.completed);
+    }
+
+    @Test void failedHeartbeatDetachesOnlyTheSocketAndStopsItsTimer() throws Exception {
+        var buffer = new HarnessReplayBuffer(new ObjectMapper(), 1024, 2, 10);
+        var calls = new java.util.concurrent.LinkedBlockingQueue<String>();
+        var broken = new Connection() {
+            public void send(HarnessReplayBuffer.Event event) throws IOException {
+                calls.add(event.name()); throw new IOException("dead socket");
+            }
+        };
+        buffer.attach(0, broken);
+        assertEquals("heartbeat", calls.poll(2, java.util.concurrent.TimeUnit.SECONDS));
+        assertNull(calls.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS));
+        assertFalse(buffer.isTerminal());
+        buffer.send("chunk", "work continues"); buffer.complete();
+        var replay = new Connection(); buffer.attach(0, replay);
+        assertEquals("work continues", replay.events.get(0).data().asText());
+    }
+
+    @Test void blockedHeartbeatDoesNotHoldTheReplayMonitorOrDetachANewerSubscriber() throws Exception {
+        var buffer = new HarnessReplayBuffer(new ObjectMapper(), 1024, 2, 10);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var exited = new java.util.concurrent.CountDownLatch(1);
+        var old = new Connection() {
+            public void send(HarnessReplayBuffer.Event event) throws IOException {
+                if (!event.name().equals("heartbeat")) { super.send(event); return; }
+                entered.countDown();
+                // Model a non-interruptible socket write; replacement must not await this probe.
+                boolean interrupted = false;
+                try {
+                    while (true) {
+                        try { release.await(); break; }
+                        catch (InterruptedException ignored) { interrupted = true; }
+                    }
+                    throw new IOException("old socket failed after replacement");
+                } finally { if (interrupted) Thread.currentThread().interrupt(); exited.countDown(); }
+            }
+        };
+        buffer.attach(0, old);
+        assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS));
+        var next = new Connection();
+        try {
+            assertTimeoutPreemptively(java.time.Duration.ofSeconds(1), () -> {
+                buffer.attach(0, next);
+                buffer.send("chunk", "still publishing");
+            });
+        } finally { release.countDown(); }
+        assertTrue(exited.await(2, java.util.concurrent.TimeUnit.SECONDS));
+        buffer.send("complete", Map.of("content", "done")); buffer.complete();
+        assertTrue(next.events.stream().anyMatch(event -> event.name().equals("complete")));
+        assertTrue(next.completed);
+    }
+
     @Test void disconnectedSocketDoesNotDiscardWorkAndReplayHasNoGap() throws Exception {
         var buffer = new HarnessReplayBuffer(new ObjectMapper());
         var dead = new Connection() {

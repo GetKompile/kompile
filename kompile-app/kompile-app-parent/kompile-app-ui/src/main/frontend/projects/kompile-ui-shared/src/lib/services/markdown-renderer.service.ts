@@ -400,7 +400,8 @@ export class MarkdownRendererService {
    */
   renderToolCall(call: ToolUseEvent, streaming: boolean, context?: ToolPresentationContext): ToolCallView {
     const completed = call.status === 'completed';
-    const detail = completed ? call.detail : undefined;
+    // Native subprocesses also publish bounded detail snapshots while a tool is running.
+    const detail = call.detail;
     return {
       name: detail?.displayName || MarkdownRendererService.prettifyToolName(call.toolName || call.tool || ''),
       state: completed ? (call.ok === false ? 'failed' : 'ok') : (streaming ? 'running' : 'stopped'),
@@ -415,7 +416,7 @@ export class MarkdownRendererService {
         html: this.sanitizeAndTrust(section.diff === true ? this.diffHtml(section) : this.highlightRuns(section)),
         note: section.note
       })),
-      chart: detail?.chart,
+      chart: completed ? detail?.chart : undefined,
       presentation: validateToolPresentation(call, context)
     };
   }

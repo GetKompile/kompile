@@ -73,8 +73,8 @@ public class DynamicToolManager {
                         "graph_search", "graph_reasoning_query")));
 
         GROUPS.put("workflow", new ToolGroup("workflow",
-                "Todo tracking, project/enforcer configuration, archives, side panels, and ambient capture",
-                Set.of("todowrite", "todoread", "project_config", "enforcer_config", "judge_control",
+                "Todo tracking, hooks, project/enforcer configuration, archives, side panels, and ambient capture",
+                Set.of("todowrite", "todoread", "todo_apply_batch", "project_config", "enforcer_config", "judge_control", "hooks",
                         "config_archive", "side_panel", "dictation", "ambient_garden", "incident")));
 
         GROUPS.put("web", new ToolGroup("web",
@@ -92,7 +92,7 @@ public class DynamicToolManager {
 
         GROUPS.put("delegation", new ToolGroup("delegation",
                 "Subagents, parallel/quorum tasks, roles, and skills",
-                Set.of("task", "multi_task", "quorum_task", "role_manager", "skill_manager")));
+                Set.of("task", "multi_task", "quorum_task", "subagent_resume", "resolve_model", "role_manager", "skill_manager")));
 
         GROUPS.put("history", new ToolGroup("history",
                 "Conversation search, import/resume, prior tool-call lookup, and judge/tool/test/crawl/graph insights",

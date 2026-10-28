@@ -62,8 +62,9 @@ public class ChatSessionMetrics {
 
     // Last measured request input is NOT cumulative session usage. Unknown after
     // compaction/model changes until a new request reports its input (including cache).
-    private record ContextUsage(String model, long input, int window, boolean provisionalWindow) { }
-    private volatile ContextUsage contextUsage = new ContextUsage(null, -1, 0, false);
+    private record ContextUsage(String model, long input, int window, boolean provisionalWindow,
+                                boolean compactionWindow) { }
+    private volatile ContextUsage contextUsage = new ContextUsage(null, -1, 0, false, false);
 
     // Estimated tokens (chars/4 fallback)
     private final AtomicLong estimatedInputChars = new AtomicLong(0);
@@ -217,9 +218,14 @@ public class ChatSessionMetrics {
 
     /** Native CLI settings can cap a catalog window; mark it provisional until reported. */
     public synchronized void recordContextWindow(String model, int window, boolean provisional) {
+        recordContextWindow(model, window, provisional, false);
+    }
+
+    public synchronized void recordContextWindow(String model, int window, boolean provisional, boolean compactionWindow) {
         ContextUsage previous = contextUsage;
         ContextUsage next = new ContextUsage(model,
-                Objects.equals(model, previous.model()) ? previous.input() : -1, Math.max(0, window), provisional);
+                Objects.equals(model, previous.model()) ? previous.input() : -1, Math.max(0, window), provisional,
+                compactionWindow);
         if (!next.equals(previous)) {
             contextUsage = next;
             fireChange();
@@ -230,7 +236,7 @@ public class ChatSessionMetrics {
     public synchronized void recordContextInputTokens(long input) {
         ContextUsage previous = contextUsage;
         ContextUsage next = new ContextUsage(previous.model(), input > 0 ? input : -1,
-                previous.window(), previous.provisionalWindow());
+                previous.window(), previous.provisionalWindow(), previous.compactionWindow());
         if (!next.equals(previous)) {
             contextUsage = next;
             fireChange();
@@ -245,12 +251,13 @@ public class ChatSessionMetrics {
         String percent = context.input() < 0 ? ""
                 : String.format(Locale.ROOT, " %.0f%%", context.input() * 100.0 / context.window());
         return used + "/" + (context.provisionalWindow() ? "~" : "")
-                + formatNumber(context.window()) + percent + " last input";
+                + formatNumber(context.window()) + percent + " last input"
+                + (context.compactionWindow() ? " · compact window" : "");
     }
 
     private void invalidateContextUsage() {
         ContextUsage previous = contextUsage;
-        contextUsage = new ContextUsage(previous.model(), -1, previous.window(), previous.provisionalWindow());
+        contextUsage = new ContextUsage(previous.model(), -1, previous.window(), previous.provisionalWindow(), previous.compactionWindow());
     }
 
     // ========================================================================

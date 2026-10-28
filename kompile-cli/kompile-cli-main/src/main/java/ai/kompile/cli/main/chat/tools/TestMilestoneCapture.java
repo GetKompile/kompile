@@ -1,7 +1,6 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.insights.TestMilestoneReader;
-import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatRepl.TimelineLifecycle;
 import ai.kompile.cli.main.chat.TranscriptLogScope;
 
@@ -20,6 +19,8 @@ public final class TestMilestoneCapture implements AutoCloseable {
     private final Map<String, Object> revision;
     private final String executionId;
     private final String session;
+    /** Non-null when the observed command ran inside a delegated subagent (task/multi_task/agent call). */
+    private final String origin;
     private final String module;
     private final Instant started;
     private final Consumer<String> warning;
@@ -29,10 +30,16 @@ public final class TestMilestoneCapture implements AutoCloseable {
 
     private TestMilestoneCapture(String command, Path root, TestCaptureConfig config, TestRunDetector.Plan plan,
                                  String session, String executionId, Consumer<String> warning) {
+        this(command, root, config, plan, session, executionId, null, warning);
+    }
+
+    private TestMilestoneCapture(String command, Path root, TestCaptureConfig config, TestRunDetector.Plan plan,
+                                 String session, String executionId, String origin, Consumer<String> warning) {
         this.root = root;
         this.plan = plan;
         this.session = session;
         this.executionId = executionId;
+        this.origin = origin == null || origin.isBlank() ? null : origin.trim();
         this.warning = warning;
         started = Instant.now();
         detector = new TestRunDetector(config, plan, command);
@@ -53,16 +60,38 @@ public final class TestMilestoneCapture implements AutoCloseable {
 
     public static TestMilestoneCapture start(String command, Path directory, String session, String executionId,
                                              Consumer<String> warning) {
-        Consumer<String> sink = warning == null ? text -> System.err.println("Warning: " + text) : warning;
+        return start(command, directory, session, executionId, null, warning);
+    }
+
+    /** Overload tagging the milestone with the delegated execution surface that observed it. */
+    public static TestMilestoneCapture start(String command, Path directory, String session, String executionId,
+                                             String origin, Consumer<String> warning) {
+        String transcript = TranscriptLogScope.currentTranscriptId();
+        String owner = transcript == null || transcript.isBlank() ? session : transcript;
+        Consumer<String> diagnostics = warning == null ? text -> System.err.println("Warning: " + text) : warning;
+        Consumer<String> sink = text -> {
+            publishCaptureFailure(owner, executionId, directory, text);
+            diagnostics.accept(text);
+        };
         try {
             Path root = TestCaptureConfig.root(directory);
-            TestCaptureConfig config = TestCaptureConfig.load(root, sink);
+            List<String> configurationWarnings = new ArrayList<>();
+            TestCaptureConfig config = TestCaptureConfig.load(root, configurationWarnings::add);
+            if (!configurationWarnings.isEmpty()) {
+                TestRunDetector.Plan intended = TestRunDetector.plan(command, directory, TestCaptureConfig.defaults());
+                // A broken observer must not turn pwd, compilation, or an arbitrary script into
+                // a failed command. Only an explicit test invocation warrants capture enforcement.
+                boolean testInvocation = intended != null && intended.explicit() && !intended.suppressed();
+                for (String message : configurationWarnings) {
+                    if (testInvocation) sink.accept(message);
+                    else System.err.println("Warning: " + message);
+                }
+            }
             TestRunDetector.Plan plan = TestRunDetector.plan(command, directory, config);
             if (plan == null || plan.suppressed()) return null;
-            String transcript = TranscriptLogScope.currentTranscriptId();
             return new TestMilestoneCapture(command, root, config, plan,
-                    transcript == null || transcript.isBlank() ? session : transcript,
-                    executionId == null ? UUID.randomUUID().toString() : executionId, sink);
+                    owner,
+                    executionId == null ? UUID.randomUUID().toString() : executionId, origin, sink);
         } catch (RuntimeException e) {
             sink.accept("Automatic test capture could not start: " + e.getMessage());
             return null;
@@ -102,6 +131,7 @@ public final class TestMilestoneCapture implements AutoCloseable {
             milestone.put("id", id);
             milestone.put("source", "harness");
             milestone.put("executionId", executionId);
+            if (origin != null) milestone.put("origin", origin);
             milestone.put("framework", result.framework());
             milestone.put("outcome", timedOut ? "timed_out" : result.outcome());
             if (result.passing() != null && !timedOut && !aborted) milestone.put("passing", result.passing());
@@ -125,8 +155,7 @@ public final class TestMilestoneCapture implements AutoCloseable {
             milestone.put("notes", "Automatically observed " + result.framework() + " execution: " + milestone.get("outcome"));
             TimelineLifecycle.ProducerContext producer = session == null || session.isBlank() ? null
                     : TimelineLifecycle.producer(session, session, root);
-            TestMilestoneStore.save(root, milestone, producer);
-            recordTranscriptNotice(milestone);
+            TestMilestoneStore.save(root, milestone, producer, warning);
             return id;
         } catch (Exception e) {
             warning.accept("Automatic test milestone could not be saved: " + e.getMessage());
@@ -136,18 +165,14 @@ public final class TestMilestoneCapture implements AutoCloseable {
         }
     }
 
-    private void recordTranscriptNotice(Map<String, Object> milestone) {
+    private static void publishCaptureFailure(String session, String executionId, Path directory, String message) {
         if (session == null || session.isBlank()) return;
-        StringBuilder notice = new StringBuilder("Automatic test milestone recorded:");
-        for (String key : List.of("id", "outcome", "module", "framework", "countUnit",
-                "totalTests", "passed", "failed", "errors", "skipped", "basis")) {
-            if (milestone.get(key) != null) notice.append(' ').append(key).append('=').append(milestone.get(key));
-        }
         try {
-            ChatHistory.recordSystemEvent(session, notice.toString());
-        } catch (Exception e) {
-            warning.accept("Automatic test milestone " + milestone.get("id")
-                    + " was saved, but its transcript notice could not be written: " + e.getMessage());
+            TimelineLifecycle.producer(session, session, directory).record("test.milestone.capture_failed",
+                    executionId == null ? "capture" : executionId, Map.of("message", message));
+            ai.kompile.cli.main.chat.ChatHistory.recordSystemEvent(session, "Test milestone capture warning: " + message);
+        } catch (Exception ignored) {
+            // The original warning still reaches the command result / diagnostic stream.
         }
     }
 

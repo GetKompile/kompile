@@ -48,6 +48,17 @@ class ChatSessionMetricsTest {
     }
 
     @Test
+    void nativeCompactWindowIsLabelledAndSurvivesUsageAndCompactionUpdates() {
+        metrics.recordContextWindow("claude", 256_000, false, true);
+        metrics.recordContextInputTokens(197_000);
+        assertEquals("197,000/256,000 77% last input · compact window", metrics.contextTokenSummary());
+        metrics.recordProviderCompaction();
+        assertEquals("?/256,000 last input · compact window", metrics.contextTokenSummary());
+        metrics.recordContextWindow("openai", 1_000_000);
+        assertEquals("?/1,000,000 last input", metrics.contextTokenSummary());
+    }
+
+    @Test
     void contextIsLatestInputNotAccumulatedBillingAndCompactionInvalidatesIt() {
         metrics.recordContextWindow("claude", 200_000);
         assertEquals("?/200,000 last input", metrics.contextTokenSummary());

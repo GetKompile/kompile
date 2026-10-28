@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetSocketAddress;
@@ -781,6 +782,305 @@ class DirectLlmClientConnectivityTest {
             assertTrue(result.failed);
             assertTrue(events.isEmpty());
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"openai", "anthropic", "openai-codex"})
+    void truncatedToolTurnReconnectsWithoutDuplicateHistoryOrIncompleteCalls(String provider)
+            throws Exception {
+        List<com.fasterxml.jackson.databind.JsonNode> requests = new ArrayList<>();
+        ObjectMapper mapper = new ObjectMapper();
+        TestServer fixture = startServer("/", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, requests.size() == 1
+                    ? truncatedResponse(provider) : protocolCompletion(provider, "recovered"));
+        });
+        try (fixture; DirectLlmClient client = protocolClient(provider, fixture, FAST_POLICY)) {
+            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            StringBuilder output = new StringBuilder();
+            client.setConnectivityEventConsumer(events::add);
+            client.setOutputConsumer(output::append);
+            client.addToHistory("user", "run a tool");
+            client.addReplayedToolCall("lookup", "prior-call", "{}");
+
+            var result = client.streamChat(null, "system", null, List.of(
+                    new DirectLlmClient.ToolCallResultInput(
+                            "prior-call", "lookup", "submitted-result", false)));
+
+            assertFalse(result.failed, result.text);
+            assertEquals("recovered", result.text);
+            assertTrue(result.toolCalls.isEmpty(), "cutoff tools must never reach the agent loop");
+            assertEquals(2, requests.size());
+            String input = "openai-codex".equals(provider) ? "input" : "messages";
+            assertEquals(requests.get(0).path(input), requests.get(1).path(input),
+                    "retry must replay the input without duplicate tool results or partial output");
+            assertEquals(1, events.size());
+            assertEquals(2, events.get(0).attempt());
+            assertTrue(events.get(0).reason().contains("truncated"));
+            assertFalse(output.toString().contains("No incomplete tool calls were executed"),
+                    "a recovered cutoff must not render the terminal failure");
+
+            client.streamChat("next turn", "system", null, null);
+            String nextInput = requests.get(2).path(input).toString();
+            assertEquals(1, nextInput.split("submitted-result", -1).length - 1);
+            assertFalse(nextInput.contains("cutoff-call"));
+            assertFalse(nextInput.contains("partial answer"));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"openai", "anthropic", "openai-codex"})
+    void repeatedTruncationIsBoundedAndLeavesChatReusable(String provider) throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        TestServer fixture = startServer("/", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respondSse(exchange, calls.incrementAndGet() <= FAST_POLICY.maxAttempts()
+                    ? truncatedResponse(provider) : protocolCompletion(provider, "next turn works"));
+        });
+        try (fixture; DirectLlmClient client = protocolClient(provider, fixture, FAST_POLICY)) {
+            StringBuilder output = new StringBuilder();
+            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            client.setOutputConsumer(output::append);
+            client.setConnectivityEventConsumer(events::add);
+            var result = client.streamChat("hello", "system", null, null);
+
+            assertTrue(result.failed);
+            assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind);
+            assertTrue(result.toolCalls.isEmpty());
+            assertEquals(FAST_POLICY.maxAttempts(), calls.get());
+            assertEquals(FAST_POLICY.maxAttempts() - 1, events.size());
+            assertEquals(1, output.toString().split("No incomplete tool calls were executed", -1).length - 1,
+                    "only exhaustion should print the terminal diagnostic");
+            assertTrue(result.text.contains("partial answer"));
+            assertTrue(result.text.contains("No incomplete tool calls were executed"));
+
+            var next = client.streamChat("another request", "system", null, null);
+            assertFalse(next.failed);
+            assertEquals("next turn works", next.text);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"openai", "anthropic", "openai-codex"})
+    void truncationBackoffRemainsCancellable(String provider) throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        TestServer fixture = startServer("/", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            calls.incrementAndGet();
+            respondSse(exchange, truncatedResponse(provider));
+        });
+        try (fixture; DirectLlmClient client = protocolClient(provider, fixture, FAST_POLICY)) {
+            var cancel = new java.util.concurrent.atomic.AtomicBoolean();
+            client.setCancelSignal(cancel);
+            client.setOutputConsumer(ignored -> { });
+            client.setConnectivityEventConsumer(event -> cancel.set(true));
+
+            var result = client.streamChat("hello", "system", null, null);
+
+            assertTrue(result.cancelled);
+            assertTrue(result.toolCalls.isEmpty());
+            assertEquals(1, calls.get(), "cancellation must prevent the reconnect request");
+            assertFalse(result.text.contains("No incomplete tool calls were executed"));
+        }
+    }
+
+    @Test
+    void truncationAndConnectivityFailuresShareOneBudgetAndAccountForBilledUsage() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        TestServer fixture = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            int attempt = calls.incrementAndGet();
+            if (attempt == 1) {
+                respondSse(exchange, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n"
+                        + "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n"
+                        + "data: [DONE]\n\n");
+            } else if (attempt == 2) {
+                respond(exchange, 503, "unavailable");
+            } else {
+                respondSse(exchange, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],"
+                        + "\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":3}}\n\n"
+                        + "data: [DONE]\n\n");
+            }
+        });
+        try (fixture; DirectLlmClient client = client(fixture)) {
+            client.setOutputConsumer(ignored -> { });
+            var result = client.streamChat("hello", "system", null, null);
+
+            assertFalse(result.failed);
+            assertEquals("done", result.text);
+            assertEquals(FAST_POLICY.maxAttempts(), calls.get());
+            assertEquals(30, result.inputTokens);
+            assertEquals(5, result.outputTokens);
+            assertEquals(20, result.contextInputTokens(), "billed retries are not added to live context");
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"openai,cancel", "anthropic,cancel", "openai-codex,cancel",
+            "openai,401", "anthropic,401", "openai-codex,401",
+            "openai,503", "anthropic,503", "openai-codex,503"})
+    void interruptedRecoveryRetainsAcceptedToolResults(String provider, String failure) throws Exception {
+        List<com.fasterxml.jackson.databind.JsonNode> requests = new ArrayList<>();
+        ObjectMapper mapper = new ObjectMapper();
+        var failRecovery = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var cancel = new java.util.concurrent.atomic.AtomicBoolean();
+        TestServer fixture = startServer("/", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            if (requests.size() == 1) respondSse(exchange, truncatedResponse(provider));
+            else if (failRecovery.get()) respond(exchange, Integer.parseInt(failure), "{}");
+            else respondSse(exchange, protocolCompletion(provider, "next turn works"));
+        });
+        try (fixture; DirectLlmClient client = protocolClient(provider, fixture, FAST_POLICY)) {
+            client.setOutputConsumer(ignored -> { });
+            client.setCancelSignal(cancel);
+            client.setConnectivityEventConsumer(event -> {
+                if ("cancel".equals(failure)) cancel.set(true);
+            });
+            client.addToHistory("user", "run a tool");
+            client.addReplayedToolCall("lookup", "prior-call", "{}");
+            var result = client.streamChat(null, "system", null, List.of(
+                    new DirectLlmClient.ToolCallResultInput(
+                            "prior-call", "lookup", "accepted-tool-result", false)));
+            assertTrue(result.failed || result.cancelled);
+            assertTrue(result.toolCalls.isEmpty());
+            assertEquals(switch (failure) {
+                case "cancel" -> 1;
+                case "401" -> 2;
+                default -> FAST_POLICY.maxAttempts();
+            }, requests.size());
+
+            failRecovery.set(false);
+            cancel.set(false);
+            assertFalse(client.streamChat("next", "system", null, null).failed);
+            String input = "openai-codex".equals(provider) ? "input" : "messages";
+            String nextInput = requests.get(requests.size() - 1).path(input).toString();
+            assertEquals(1, nextInput.split("accepted-tool-result", -1).length - 1,
+                    "a failed retry must not lose the already-executed tool output");
+            assertFalse(nextInput.contains("cutoff-call"));
+        }
+    }
+
+    @Test
+    void cancelledTruncatedRetryDoesNotReplaceAcceptedHistory() throws Exception {
+        List<com.fasterxml.jackson.databind.JsonNode> requests = new ArrayList<>();
+        ObjectMapper mapper = new ObjectMapper();
+        var cancel = new java.util.concurrent.atomic.AtomicBoolean();
+        TestServer fixture = startServer(exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, switch (requests.size()) {
+                case 1 -> truncatedResponse("openai");
+                case 2 -> truncatedResponse("openai").replace("partial answer", "cancel-this-retry");
+                default -> completion("next turn works");
+            });
+        });
+        try (fixture; DirectLlmClient client = client(fixture)) {
+            client.setCancelSignal(cancel);
+            client.setOutputConsumer(chunk -> {
+                if (chunk.contains("cancel-this-retry")) cancel.set(true);
+            });
+            client.addToHistory("user", "run a tool");
+            client.addReplayedToolCall("lookup", "prior-call", "{}");
+            var result = client.streamChat(null, "system", null, List.of(
+                    new DirectLlmClient.ToolCallResultInput(
+                            "prior-call", "lookup", "accepted-tool-result", false)));
+
+            assertTrue(result.cancelled);
+            assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind,
+                    "the cancelled retry must already have recorded its length cutoff");
+            assertEquals(2, requests.size());
+            assertTrue(result.toolCalls.isEmpty());
+            cancel.set(false);
+            assertFalse(client.streamChat("next", "system", null, null).failed);
+            assertEquals(1, requests.get(2).path("messages").toString()
+                    .split("accepted-tool-result", -1).length - 1,
+                    "a cancelled second cutoff must not overwrite the first accepted history");
+        }
+    }
+
+    @Test
+    void recoveredToolCallCanCompleteTheOngoingChat() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        List<String> requests = new ArrayList<>();
+        TestServer fixture = startServer(exchange -> {
+            requests.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            switch (calls.incrementAndGet()) {
+                case 1 -> respondSse(exchange, truncatedResponse("openai"));
+                case 2 -> respondSse(exchange,
+                        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"complete-call\","
+                                + "\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"key\\\":\\\"value\\\"}\"}}]},"
+                                + "\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n");
+                default -> respondSse(exchange, completion("finished the task"));
+            }
+        });
+        try (fixture; DirectLlmClient client = client(fixture)) {
+            client.setOutputConsumer(ignored -> { });
+            var toolTurn = client.streamChat("look it up", "system", null, null);
+            assertFalse(toolTurn.failed);
+            assertEquals(1, toolTurn.toolCalls.size());
+            var call = toolTurn.toolCalls.get(0);
+            assertEquals("complete-call", call.id);
+            assertEquals("value", call.arguments.path("key").asText());
+
+            var answer = client.streamChat(null, "system", null, List.of(
+                    new DirectLlmClient.ToolCallResultInput(call.id, call.name, "found", false)));
+            assertFalse(answer.failed);
+            assertEquals("finished the task", answer.text);
+            assertEquals(3, calls.get());
+            assertTrue(requests.get(2).contains("complete-call"));
+            assertFalse(requests.get(2).contains("cutoff-call"));
+        }
+    }
+
+    @Test
+    void singleAttemptPolicyDoesNotReconnectOnTruncation() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        TestServer fixture = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            calls.incrementAndGet();
+            respondSse(exchange, truncatedResponse("openai"));
+        });
+        try (fixture; DirectLlmClient client = protocolClient(
+                "openai", fixture, FAST_POLICY.withMaxAttempts(1))) {
+            client.setOutputConsumer(ignored -> { });
+            var result = client.streamChat("hello", "system", null, null);
+            assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind);
+            assertEquals(1, calls.get());
+        }
+    }
+
+    private static DirectLlmClient protocolClient(String provider, TestServer server,
+                                                  ProviderConnectivityPolicy policy) {
+        return new DirectLlmClient(new ChatConfig(
+                provider, "test-key", "test-model", server.baseUrl()), new ObjectMapper(), policy);
+    }
+
+    private static String truncatedResponse(String provider) {
+        return switch (provider) {
+            case "anthropic" -> "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\","
+                    + "\"id\":\"cutoff-call\",\"name\":\"lookup\"}}\n\n"
+                    + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\"}}\n\n"
+                    + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial answer\"}}\n\n"
+                    + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n";
+            case "openai-codex" -> "data: {\"type\":\"response.output_item.added\",\"output_index\":0,"
+                    + "\"item\":{\"type\":\"function_call\",\"id\":\"fc_cutoff\",\"call_id\":\"cutoff-call\","
+                    + "\"name\":\"lookup\",\"arguments\":\"{\"}}\n\n"
+                    + "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial answer\"}\n\n"
+                    + "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n";
+            default -> "data: {\"choices\":[{\"delta\":{\"content\":\"partial answer\",\"tool_calls\":[{\"index\":0,"
+                    + "\"id\":\"cutoff-call\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\"}}]},\"finish_reason\":\"length\"}]}\n\n"
+                    + "data: [DONE]\n\n";
+        };
+    }
+
+    private static String protocolCompletion(String provider, String text) {
+        return switch (provider) {
+            case "anthropic" -> "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\""
+                    + text + "\"}}\n\n"
+                    + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+                    + "data: {\"type\":\"message_stop\"}\n\n";
+            case "openai-codex" -> responsesCompletion(text);
+            default -> completion(text);
+        };
     }
 
     private static DirectLlmClient client(TestServer server) {

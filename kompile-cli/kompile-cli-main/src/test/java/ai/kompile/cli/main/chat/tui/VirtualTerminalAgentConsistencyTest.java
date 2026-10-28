@@ -21,7 +21,6 @@ import static org.junit.jupiter.api.Assertions.*;
  * - codex-cli:    24x80,  tui-scrape
  * - gemini-cli:   50x200, stream-json
  * - opencode-cli: 24x80,  tui-scrape
- * - qwen-cli:     50x200, stream-json
  * - pi-cli:       50x200, stream-json
  */
 class VirtualTerminalAgentConsistencyTest {
@@ -36,7 +35,6 @@ class VirtualTerminalAgentConsistencyTest {
                 Arguments.of("codex-cli",    24,   80),
                 Arguments.of("gemini-cli",   50,  200),
                 Arguments.of("opencode-cli", 24,   80),
-                Arguments.of("qwen-cli",     50,  200),
                 Arguments.of("pi-cli",       50,  200)
         );
     }
@@ -52,7 +50,6 @@ class VirtualTerminalAgentConsistencyTest {
         return Stream.of(
                 Arguments.of("claude-cli",  50,  200),
                 Arguments.of("gemini-cli",  50,  200),
-                Arguments.of("qwen-cli",    50,  200),
                 Arguments.of("pi-cli",      50,  200)
         );
     }

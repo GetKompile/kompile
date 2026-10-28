@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -27,6 +28,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.regex.Pattern;
 
 /**
  * Backing store and decision engine for the {@code /continue} chat command.
@@ -37,6 +39,13 @@ import java.util.concurrent.ConcurrentMap;
  * is never left waiting on a question the user already pre-answered. Matching
  * is a case-insensitive substring test of the finished response against the
  * configured trigger keywords.</p>
+ *
+ * <p>A second lane covers the opposite stall: a turn that stops without asking,
+ * leaving work it just promised ("Let me do that now.") or filed as outstanding
+ * ("Remaining gap: ..."). {@link ContinueDetector} reports that evidence from the
+ * turn's closing text, and it is consulted only when no keyword matched, so the
+ * keyword list stays the user's explicit override. Both lanes obey the same
+ * interaction, plan-mode and budget gates.</p>
  *
  * <p>Configuration is project-global and persists in
  * {@code .kompile/chat-continue.json}: the enable switch, the reply text, and
@@ -74,15 +83,57 @@ public final class ContinueManager {
             "y/n",
             "reply yes",
             "type yes",
-            "need your approval");
+            "need your approval",
+            // Announced actions rather than questions: the agent says it will act and
+            // then stops. These are keywords — not left to ContinueDetector — so they
+            // fire wherever the phrase appears, including mid-report, where the
+            // closing-only detector stays silent by design.
+            "let me do",
+            "let me",
+            "let's",
+            "i'll",
+            "i will");
+
+    /**
+     * Shipped keywords broad enough to also match a closing courtesy. "let me know" /
+     * "I'll let you know" close a turn politely and expect no reply, so those phrasings
+     * are skipped for these keywords only — a user-supplied "let me know" is honoured.
+     */
+    private static final Set<String> DEFAULT_COURTESY_KEYWORDS =
+            Set.of("let me", "let's", "i'll", "i will");
+
+    /** Closing courtesies that must not trigger an announced-action keyword. */
+    private static final Pattern CLOSING_COURTESY = Pattern.compile(
+            "\\b(?:let me know|let me hear|let(?:'s| us) leave it"
+                    + "|(?:i'll|i will) let you know|(?:i'll|i will) leave it)\\b");
 
     /**
      * Result of scanning one finished assistant turn. {@code fire} requests an
      * automatic reply; {@code notice} is a one-shot warning (budget exhausted)
-     * that must be surfaced even when the reply does not fire.
+     * that must be surfaced even when the reply does not fire. {@code detectors}
+     * and {@code evidence} name the stall the turn ended on when a detector, not a
+     * keyword, decided the turn.
      */
-    public record Decision(boolean fire, String reply, String notice) {
-        public static final Decision NONE = new Decision(false, null, null);
+    public record Decision(boolean fire, String reply, String notice,
+                           List<ContinueDetector.Kind> detectors, String evidence) {
+
+        public static final Decision NONE = new Decision(false, null, null, List.of(), null);
+
+        public Decision(boolean fire, String reply, String notice) {
+            this(fire, reply, notice, List.of(), null);
+        }
+
+        /** What triggered this decision, for notices and the chat log. */
+        public String describe() {
+            if (!detectors.isEmpty()) {
+                String labels = detectors.stream().map(ContinueDetector.Kind::label)
+                        .reduce((a, b) -> a + " + " + b).orElse("");
+                return evidence == null || evidence.isBlank()
+                        ? "detected " + labels
+                        : "detected " + labels + ": \"" + evidence + "\"";
+            }
+            return fire ? "keyword" : "no trigger";
+        }
     }
 
     private record Snapshot(Boolean enabled, String reply, List<String> keywords) {
@@ -150,15 +201,15 @@ public final class ContinueManager {
             }
             List<String> keywords = snapshot.keywords().isEmpty()
                     ? DEFAULT_KEYWORDS : snapshot.keywords();
-            String matched = null;
-            String haystack = response.toLowerCase(Locale.ROOT);
-            for (String keyword : keywords) {
-                if (!keyword.isEmpty() && haystack.contains(keyword)) {
-                    matched = keyword;
-                    break;
-                }
-            }
-            if (matched == null) {
+            // The courtesies are honoured for the shipped keyword set only; a user's own
+            // keywords are taken literally (see matchKeyword).
+            String matched = matchKeyword(response);
+            // Keyword hits keep their existing meaning; the detectors only speak
+            // when no configured keyword matched, so a user who disabled a keyword
+            // is not overridden from the detector lane.
+            List<ContinueDetector.Hit> hits = matched == null
+                    ? ContinueDetector.detect(response) : List.of();
+            if (matched == null && hits.isEmpty()) {
                 return Decision.NONE;
             }
             if (consecutiveAutoReplies >= MAX_CONSECUTIVE_AUTO_REPLIES) {
@@ -172,7 +223,11 @@ public final class ContinueManager {
             }
             String reply = snapshot.reply() == null || snapshot.reply().isBlank()
                     ? DEFAULT_REPLY : snapshot.reply();
-            return new Decision(true, reply, null);
+            List<ContinueDetector.Kind> kinds = hits.stream()
+                    .map(ContinueDetector.Hit::kind).toList();
+            String evidence = hits.isEmpty() ? null
+                    : hits.get(0).evidence();
+            return new Decision(true, reply, null, kinds, evidence);
         }
     }
 
@@ -206,16 +261,41 @@ public final class ContinueManager {
         }
     }
 
-    /** The first keyword contained in {@code response} (case-insensitive), or null. */
+    /**
+     * The first keyword contained in {@code response} (case-insensitive), or null.
+     *
+     * <p>Matching is longest-keyword-first: "let me know" (a user keyword) wins over the
+     * shipped "let me", and "let me do" wins over "let me". Without that precedence a
+     * broad short keyword would hide every longer one that contains it.</p>
+     */
     public String matchKeyword(String response) {
+        return matchKeyword(response, false);
+    }
+
+    /**
+     * @param rawText when true the response is the detector-lane text being
+     *                matched verbatim, so a shipping courtesy is not treated as a
+     *                closing courtesy; keeps the keyword lane's own precedence intact
+     */
+    public String matchKeyword(String response, boolean rawText) {
         if (response == null || response.isBlank()) {
             return null;
         }
         String haystack = response.toLowerCase(Locale.ROOT);
-        for (String keyword : effectiveKeywords()) {
-            if (!keyword.isEmpty() && haystack.contains(keyword)) {
-                return keyword;
+        List<String> keywords = effectiveKeywords().stream()
+                .filter(keyword -> !keyword.isEmpty())
+                .sorted(Comparator.comparingInt(String::length).reversed())
+                .toList();
+        for (String keyword : keywords) {
+            if (!haystack.contains(keyword)) {
+                continue;
             }
+            // A configured courtesy ("let me know") is the user's own word: honour it.
+            if (!rawText && DEFAULT_COURTESY_KEYWORDS.contains(keyword)
+                    && CLOSING_COURTESY.matcher(haystack).find()) {
+                continue;
+            }
+            return keyword;
         }
         return null;
     }
@@ -231,6 +311,11 @@ public final class ContinueManager {
         Snapshot snapshot = snapshotQuietly();
         return snapshot.reply() == null || snapshot.reply().isBlank()
                 ? DEFAULT_REPLY : snapshot.reply();
+    }
+
+    /** True when the active keyword set came from the user, not the defaults. */
+    private boolean isCustomKeywordSet() {
+        return !snapshotQuietly().keywords().isEmpty();
     }
 
     /** Effective keyword list: explicit overrides, otherwise the defaults. */
@@ -410,6 +495,10 @@ public final class ContinueManager {
             out.append("Consecutive auto-replies: ").append(consecutiveAutoReplies)
                     .append('/').append(MAX_CONSECUTIVE_AUTO_REPLIES).append(" budget\n");
         }
+        out.append("Stall detectors: ")
+                .append(ContinueDetector.enabled()
+                        ? "on (promised action, reported gap)" : "off")
+                .append(" — -D").append(ContinueDetector.ENABLE_PROPERTY).append("=false\n");
         out.append("Keywords (").append(keywords.size())
                 .append(defaults ? ", defaults" : ", customized").append("):");
         for (int i = 0; i < keywords.size(); i++) {
@@ -422,6 +511,29 @@ public final class ContinueManager {
     public String usage() {
         return "Usage: /continue [on|off] | list | add|remove <keywords> | reply <text> | "
                 + "reset | test <text> | <reply text>";
+    }
+
+    /** Command name for the trigger-focused view of the same settings. */
+    public static final String TRIGGER_COMMAND = "/continue-trigger";
+
+    /**
+     * Trigger-focused entry point. Bare shows the trigger list and trigger grammar;
+     * every subcommand delegates to {@link #handleCommand} so both commands read and
+     * write the one project-global config and share matching semantics exactly.
+     */
+    public String triggerCommand(String arguments) {
+        String input = arguments == null ? "" : arguments.strip();
+        if (input.isEmpty()) {
+            return formatKeywords() + "\n" + triggerUsage();
+        }
+        return handleCommand(input);
+    }
+
+    public String triggerUsage() {
+        return "Usage: " + TRIGGER_COMMAND + " [list] | add|remove <keywords> | reset | "
+                + "test <text> | on|off | reply <text>\n"
+                + "Triggers fire the same auto-reply as /continue and persist in "
+                + ".kompile/chat-continue.json (project-global).";
     }
 
     private String formatKeywords() {
@@ -452,11 +564,18 @@ public final class ContinueManager {
 
     private String describeMatch(String text) {
         String matched = matchKeyword(text);
-        if (matched == null) {
-            return "No keyword match — a turn ending with this text would NOT be auto-replied.";
+        if (matched != null) {
+            return "Matched \"" + matched + "\" — a turn ending with this text WOULD be auto-replied"
+                    + " with: " + reply();
         }
-        return "Matched \"" + matched + "\" — a turn ending with this text WOULD be auto-replied"
-                + " with: " + reply();
+        List<ContinueDetector.Hit> hits = ContinueDetector.detect(text);
+        if (hits.isEmpty()) {
+            return "No keyword or detector match — a turn ending with this text would NOT be auto-replied.";
+        }
+        String triggers = hits.stream().map(ContinueDetector.Hit::describe)
+                .reduce((a, b) -> a + "; " + b).orElse("");
+        return "No keyword, but " + triggers + " — a turn ending with this text WOULD be"
+                + " auto-replied with: " + reply();
     }
 
     // ── Storage ──────────────────────────────────────────────────────────────

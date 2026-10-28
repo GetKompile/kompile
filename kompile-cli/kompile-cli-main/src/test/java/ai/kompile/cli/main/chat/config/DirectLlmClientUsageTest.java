@@ -124,8 +124,10 @@ class DirectLlmClientUsageTest {
                 UsageListener listener = listen(client);
                 var result = client.streamChat("hi", "system", null, null);
                 assertTrue(result.failed);
-                assertUsage(result, 40, 20, 60, 0);
-                assertEquals(List.of(new Usage(40, 20, 60, 0)), listener.events);
+                int attempts = "length".equals(reason) ? FAST_POLICY.maxAttempts() : 1;
+                assertUsage(result, 40L * attempts, 20L * attempts, 60L * attempts, 0);
+                assertEquals(java.util.Collections.nCopies(attempts, new Usage(40, 20, 60, 0)), listener.events);
+                assertEquals(100, result.contextInputTokens(), "only the final request occupies context");
             }
         }
     }
@@ -148,8 +150,10 @@ class DirectLlmClientUsageTest {
                     UsageListener listener = listen(client);
                     var result = client.streamChat("hi", "system", null, null);
                     assertEquals(!"completed".equals(status), result.failed, provider + status);
-                    assertUsage(result, 30, 20, 60, 10);
-                    assertEquals(List.of(new Usage(30, 20, 60, 10)), listener.events);
+                    int attempts = "incomplete".equals(status) ? FAST_POLICY.maxAttempts() : 1;
+                    assertUsage(result, 30L * attempts, 20L * attempts, 60L * attempts, 10L * attempts);
+                    assertEquals(java.util.Collections.nCopies(attempts, new Usage(30, 20, 60, 10)), listener.events);
+                    assertEquals(100, result.contextInputTokens(), "only the final request occupies context");
                 }
             }
         }

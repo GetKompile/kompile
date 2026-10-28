@@ -77,8 +77,43 @@ export function processDetailRows(process: HarnessActivityEntry): { label: strin
   if (started) rows.push({ label: 'Started', value: started });
   const ended = clockTime(process.endedAt);
   if (ended) rows.push({ label: 'Ended', value: ended });
+  if (process.durationMs !== undefined && process.durationMs !== null) {
+    const duration = formatProcessDuration(process.durationMs);
+    if (duration) rows.push({ label: 'Elapsed', value: duration });
+  }
   if (process.exitCode !== undefined && process.exitCode !== null) rows.push({ label: 'Exit code', value: String(process.exitCode) });
   if (process.logFile) rows.push({ label: 'Log', value: process.logFile });
   for (const [key, value] of Object.entries(process.details || {})) rows.push({ label: key, value });
   return rows;
+}
+
+/** Child-only route and usage; never fill missing identity/counts with the parent's values. */
+export function harnessAgentIdentity(entry: HarnessActivityEntry): string {
+  const metadata = entry.details || {};
+  const vendor = metadata['vendor'] || metadata['provider'] || (metadata['source'] === 'claude-code' ? 'anthropic' : '?');
+  return `${vendor} / ${metadata['model'] || '?'}`;
+}
+
+export function harnessAgentUsage(entry: HarnessActivityEntry): string {
+  const metadata = entry.details || {};
+  let usage = `↑${metadata['input_tokens'] || '?'} in · ↓${metadata['output_tokens'] || '?'} out`;
+  if (!metadata['input_tokens'] && metadata['total_tokens']) usage = `Σ${metadata['total_tokens']} total (provider)`;
+  const streaming = metadata['stream_output_tokens'];
+  if (streaming && streaming !== '0') usage += ` · ~${streaming} streaming out (estimated)`;
+  return usage;
+}
+
+/** Also recognize native/MCP mirrored children, whose telemetry lives on a process row. */
+export function isHarnessAgent(entry: HarnessActivityEntry): boolean {
+  const metadata = entry.details || {};
+  return metadata['kind'] === 'subagent'
+    || (metadata['source'] === 'claude-code' && (metadata['task_type'] === 'agent' || !!metadata['task_type']?.endsWith('_agent')));
+}
+
+export function harnessAgentDetails(entry: HarnessActivityEntry): { label: string; value: string }[] {
+  const labels: Record<string, string> = { authentication: 'Authentication', thinking: 'Thinking', source: 'Source',
+    cache_read_tokens: 'Cache read tokens', cache_creation_tokens: 'Cache write tokens', total_tokens: 'Total tokens (provider)',
+    tool_uses: 'Tool uses', context_tokens: 'Last input tokens' };
+  return processDetailRows(entry).filter(row => !['vendor', 'provider', 'model', 'input_tokens', 'output_tokens', 'stream_output_tokens'].includes(row.label))
+    .map(row => ({ ...row, label: labels[row.label] || row.label }));
 }

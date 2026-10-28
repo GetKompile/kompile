@@ -113,8 +113,17 @@ public final class CompactionProgressIndicator implements CompactionProgress {
                                                             String provider,
                                                             Consumer<String> appendOnlySink,
                                                             Consumer<String> activitySetter) {
+        return startProvider(blockKey, renderer, provider, 0, appendOnlySink, activitySetter);
+    }
+
+    /** Last measured request input is useful context, not an exact live compaction size. */
+    public static CompactionProgressIndicator startProvider(String blockKey, TerminalRenderer renderer,
+                                                            String provider, long lastInputTokens,
+                                                            Consumer<String> appendOnlySink,
+                                                            Consumer<String> activitySetter) {
         CompactionProgressIndicator indicator = new CompactionProgressIndicator(
-                blockKey, renderer, 0, 0, appendOnlySink, activitySetter, DEFAULT_TICK_MILLIS, provider);
+                blockKey, renderer, 0, lastInputTokens,
+                appendOnlySink, activitySetter, DEFAULT_TICK_MILLIS, provider);
         indicator.phase = provider + " is summarizing its session";
         indicator.begin();
         return indicator;
@@ -219,8 +228,9 @@ public final class CompactionProgressIndicator implements CompactionProgress {
             String block = provider == null
                     ? renderActiveFrame(renderer, phase, frame, entriesBefore, tokensBefore,
                             elapsed(System.nanoTime()))
-                    : renderFrame(renderer, phase, frame, "provider context size not reported",
-                            elapsed(System.nanoTime()));
+                    : renderFrame(renderer, phase, frame, tokensBefore > 0
+                            ? "last reported input: " + formatTokens(tokensBefore) + " tokens"
+                            : "provider context size not reported", elapsed(System.nanoTime()));
             // Serialize frames with terminal publication: no late tick may revive a finished block.
             boolean stillManaged = publishBlock(block, true, false);
             if (!stillManaged && !fallbackAnnounced && appendOnlySink != null) {

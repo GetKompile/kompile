@@ -109,7 +109,8 @@ public class SubprocessAgentRunner {
 
     // Subprocess state
     private volatile Process activeProcess;
-    private volatile Thread waitingThread;
+    private Thread waitingThread;
+    private final Object waitingThreadLock = new Object();
     private final AtomicBoolean cancelSignal = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final Object lifecycleLock = new Object();
@@ -164,6 +165,9 @@ public class SubprocessAgentRunner {
     private volatile String modelOverride;
     private volatile String thinkingOverride;
 
+    /** Non-null when this runner executes a delegated agent call; tags its test milestones. */
+    private volatile String testCaptureOrigin;
+
     // Skills injection (loaded lazily on first injectSkills() call)
     private SkillsInjection skillsInjection;
 
@@ -184,7 +188,7 @@ public class SubprocessAgentRunner {
                                   TerminalRenderer renderer, AsciiRenderer ascii) {
         this.agent = agent;
         this.workingDir = workingDir;
-        parser.enableTestCapture(Path.of(workingDir));
+        parser.enableTestCapture(Path.of(workingDir), testCaptureOrigin);
         this.skipPermissions = skipPermissions;
         this.injectTools = injectTools;
         this.kompileUrl = kompileUrl;
@@ -197,6 +201,12 @@ public class SubprocessAgentRunner {
 
     public void setInputProvider(Function<String, String> inputProvider) {
         this.inputProvider = inputProvider;
+    }
+
+    /** Attribute every test milestone this runner observes to a delegated agent call (e.g. subagent). */
+    public void setTestCaptureOrigin(String origin) {
+        this.testCaptureOrigin = origin == null || origin.isBlank() ? null : origin.trim();
+        parser.enableTestCapture(Path.of(workingDir), testCaptureOrigin);
     }
 
     /**
@@ -263,7 +273,8 @@ public class SubprocessAgentRunner {
     public String getNativeSessionId() { return agentSessionId; }
 
     public static boolean supportsHeadless(String framework) {
-        return framework != null && Set.of("claude", "codex", "gemini", "qwen", "opencode", "pi")
+        return framework != null && Set.of("claude", "codex", "gemini", "qwen", "opencode", "pi",
+                        "agy", "antigravity")
                 .contains(framework.toLowerCase(Locale.ROOT));
     }
 
@@ -617,9 +628,10 @@ public class SubprocessAgentRunner {
         if (p != null && p.isAlive()) {
             killProcess(p);
         }
-        Thread wt = waitingThread;
-        if (wt != null) {
-            wt.interrupt();
+        synchronized (waitingThreadLock) {
+            // No process teardown under this lock: only atomic interrupt delivery
+            // versus retirement, so a recycled executor thread cannot be targeted.
+            if (waitingThread != null) waitingThread.interrupt();
         }
     }
 
@@ -821,7 +833,7 @@ public class SubprocessAgentRunner {
             outputReader.setDaemon(true);
             outputReader.start();
 
-            waitingThread = Thread.currentThread();
+            synchronized (waitingThreadLock) { waitingThread = Thread.currentThread(); }
 
             try {
                 while (!process.waitFor(200, TimeUnit.MILLISECONDS)) {
@@ -837,7 +849,7 @@ public class SubprocessAgentRunner {
             } catch (InterruptedException e) {
                 killProcess(process);
             } finally {
-                waitingThread = null;
+                synchronized (waitingThreadLock) { waitingThread = null; }
                 Thread.interrupted();
             }
 
@@ -1771,6 +1783,31 @@ public class SubprocessAgentRunner {
         List<String> command = buildManagedCommand(agent, binary, message, canResume,
                 agentSessionId, skipPermissions, resolvedWorkingDir, systemPromptManager,
                 selection.model(), selection.thinking());
+        // Claude Code's built-in Task/Agent tools and Qwen's native `agent` tool bypass the
+        // kompile MCP server, so a child (depth >= 1) must have them disallowed on the command line.
+        // A claude delegate whose launch carries Kompile's MCP server also loses the native
+        // Bash/PowerShell tools, so its process work routes through mcp__kompile__process
+        // (panel rows, durable output capture, wake-on-exit). Both guards share ONE flag.
+        String agentLower = agent == null ? "" : agent.toLowerCase(Locale.ROOT);
+        if (!requiresManagedOneShot(agent)) {
+            boolean injected = injectedSettingsFile != null || managedLaunchConfig != null;
+            if (agentLower.contains("claude")) {
+                List<String> disallowed = new ArrayList<>();
+                if (SubagentDelegationGuard.depth(
+                        extraEnvironment.get(SubagentDelegationGuard.DEPTH_ENV)) >= 1) {
+                    disallowed.addAll(SubagentDelegationGuard.CLAUDE_DISALLOWED);
+                }
+                disallowed.addAll(SubagentDelegationGuard.nativeShellGuard(injected));
+                if (!disallowed.isEmpty()) {
+                    command = prependGlobalOptions(command, List.of("--disallowedTools="
+                            + String.join(",", disallowed)));
+                }
+            } else if (agentLower.contains("qwen")
+                    && SubagentDelegationGuard.depth(
+                            extraEnvironment.get(SubagentDelegationGuard.DEPTH_ENV)) >= 1) {
+                command = prependGlobalOptions(command, List.of("--exclude-tools", "agent"));
+            }
+        }
         // DeepSeek Harness has no verified command-line MCP override contract.
         return requiresManagedOneShot(agent)
                 ? command
@@ -1825,6 +1862,21 @@ public class SubprocessAgentRunner {
             cmd.add("--profile");
             cmd.add("headless");
             cmd.add(message);
+        } else if (name.contains("agy") || name.contains("antigravity")) {
+            // Antigravity managed headless: `-p <message> --output-format stream-json`.
+            // Agy's usage/status metadata is cumulative per session, and each turn's
+            // text rides the result envelope — see PassthroughStreamParser.parseAgyLine.
+            cmd.addAll(AgentLaunchDefaults.commandArguments(
+                    agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
+            cmd.add("-p");
+            cmd.add(message);
+            cmd.add("--output-format");
+            cmd.add("stream-json");
+            AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
+            if (firstMessageSent && agentSessionId != null) {
+                cmd.add("--conversation");
+                cmd.add(agentSessionId);
+            }
         } else if (name.contains("claude")) {
             cmd.addAll(AgentLaunchDefaults.commandArguments(
                     agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
@@ -1996,11 +2048,14 @@ public class SubprocessAgentRunner {
         return agentLower.contains("claude")
                 || agentLower.contains("gemini") || agentLower.contains("qwen")
                 || agentLower.contains("codex") || agentLower.contains("pi")
-                || agentLower.contains("opencode");
+                || agentLower.contains("opencode")
+                || agentLower.contains("agy") || agentLower.contains("antigravity");
     }
 
     private List<PassthroughStreamParser.PassthroughEvent> parseAgentLineMulti(String agentLower, String line) {
-        if (agentLower.contains("claude")) {
+        if (agentLower.contains("agy") || agentLower.contains("antigravity")) {
+            return parser.parseAgyLineMulti(line);
+        } else if (agentLower.contains("claude")) {
             return parser.parseClaudeLineMulti(line);
         } else if (agentLower.contains("gemini") || agentLower.contains("qwen")) {
             PassthroughStreamParser.PassthroughEvent e = parser.parseGeminiLine(line);

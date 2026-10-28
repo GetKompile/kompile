@@ -107,7 +107,7 @@ describe('LocalAgentChatService harness transport', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(checkpoint?.cursor).toBe(0);
     expect(checkpoint?.seed.messages[1].content).toBe('');
-    service.detachStreaming(); stream.close(); await run;
+    service.detachStreaming(); await run; // Detach now actively closes the browser reader.
     expect(service.getReconnectBookmark('browser-atomic')?.cursor).toBe(1);
     expect(service.getReconnectBookmark('browser-atomic')?.seed.messages[1].content).toBe('new delta');
   });
@@ -192,6 +192,172 @@ describe('LocalAgentChatService harness transport', () => {
     expect(service.getReconnectBookmark('replay-browser')).toBeNull();
   });
 
+  describe('unreliable browser connections', () => {
+    const event = (id: number, name: string, data: unknown) => `id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+    const response = (text: string) => new Response(new TextEncoder().encode(text));
+    const pause = () => new Promise(resolve => setTimeout(resolve, 0));
+    let stream: ReadableStreamDefaultController<Uint8Array>;
+    let fetchSpy: jasmine.Spy;
+    let online: boolean;
+    let oldIdle: number;
+    let oldConnect: number;
+    beforeEach(() => {
+      online = true;
+      spyOnProperty(navigator, 'onLine', 'get').and.callFake(() => online);
+      oldIdle = (LocalAgentChatService as any).STREAM_IDLE_MS;
+      oldConnect = (LocalAgentChatService as any).CONNECT_TIMEOUT_MS;
+      (LocalAgentChatService as any).STREAM_IDLE_MS = 100;
+      (LocalAgentChatService as any).CONNECT_TIMEOUT_MS = 100;
+      fetchSpy = spyOn(window, 'fetch');
+    });
+    afterEach(() => {
+      service.detachStreaming();
+      (LocalAgentChatService as any).STREAM_IDLE_MS = oldIdle;
+      (LocalAgentChatService as any).CONNECT_TIMEOUT_MS = oldConnect;
+    });
+    function start(): { session: LocalAgentSession; run: Promise<void> } {
+      const session = service.createSession('network');
+      const run = service.sendMessage(session, 'do it once', { name: 'coder' } as AgentProvider, { sessionId: 'network-browser' });
+      return { session, run };
+    }
+    function open() {
+      return new Response(new ReadableStream<Uint8Array>({ start(value) { stream = value; } }));
+    }
+    function finish(text = 'partial done') {
+      return response(event(3, 'chunk', ' done') + event(4, 'complete', { content: text }));
+    }
+    const prefix = event(1, 'queued', { processId: 'harness-network', reconnectable: true }) + event(2, 'chunk', 'partial');
+
+    it('recovers a POST response lost before acknowledgement by looking up its exact run, never resending', async () => {
+      fetchSpy.and.callFake((_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return Promise.reject(new TypeError('Failed to fetch'));
+        return Promise.resolve(response(event(1, 'queued', { processId: JSON.parse(fetchSpy.calls.first().args[1].body).runId, reconnectable: true })
+          + event(2, 'complete', { content: 'done' })));
+      });
+      const { run } = start();
+      await run;
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      const submitted = JSON.parse(fetchSpy.calls.first().args[1].body);
+      expect(String(fetchSpy.calls.mostRecent().args[0])).toContain(`/events/${submitted.runId}?after=0`);
+      expect(fetchSpy.calls.mostRecent().args[1]?.method).toBeUndefined();
+    });
+
+    it('keeps an unconfirmed run resumable instead of pretending it completed when replay is missing', async () => {
+      fetchSpy.and.returnValues(Promise.reject(new TypeError('Failed to fetch')), Promise.resolve(new Response('', { status: 404 })));
+      const errors: string[] = [];
+      service.getStreamingError().subscribe(error => errors.push(error));
+      const { run } = start();
+      await run;
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(service.getReconnectBookmark('network-browser')).not.toBeNull();
+      expect(errors[0]).toContain('not confirmed');
+    });
+
+    it('detects offline without waiting for TCP failure and resumes from the cursor when online', async () => {
+      fetchSpy.and.returnValues(Promise.resolve(open()), Promise.resolve(finish()));
+      const { session, run } = start();
+      stream.enqueue(new TextEncoder().encode(prefix)); await pause();
+      service.liveControlsReady = true;
+      online = false; window.dispatchEvent(new Event('offline')); await pause();
+      expect(service.liveControlsReady).toBeFalse();
+      expect((service as any).connectionMessage).toContain('offline');
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(service.getReconnectBookmark('network-browser')?.cursor).toBe(2);
+      online = true; window.dispatchEvent(new Event('online'));
+      await run;
+      expect(String(fetchSpy.calls.mostRecent().args[0])).toContain('/events/harness-network?after=2');
+      expect(session.messages.map(message => message.content)).toEqual(['do it once', 'partial done']);
+      expect((service as any).connectionMessage).toBe('');
+    });
+
+    it('replays a silently stalled socket even when the browser still reports online', async () => {
+      fetchSpy.and.returnValues(Promise.resolve(open()), Promise.resolve(finish()));
+      const { session, run } = start();
+      stream.enqueue(new TextEncoder().encode(prefix));
+      await run;
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(session.messages[1].content).toBe('partial done');
+    });
+
+    it('treats SSE heartbeat comments as proof of connectivity, not missing model output', async () => {
+      fetchSpy.and.resolveTo(open());
+      const { run } = start();
+      stream.enqueue(new TextEncoder().encode(prefix));
+      for (let i = 0; i < 4; i++) {
+        await new Promise(resolve => setTimeout(resolve, 40));
+        stream.enqueue(new TextEncoder().encode(': heartbeat\n\n'));
+      }
+      stream.enqueue(new TextEncoder().encode(event(3, 'complete', { content: 'partial' }))); stream.close();
+      await run;
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('bounds a stalled request before headers arrive and uses GET-only recovery', async () => {
+      fetchSpy.and.callFake((_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return new Promise((_resolve, reject) =>
+          init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
+        return Promise.resolve(response(event(1, 'complete', { content: 'done' })));
+      });
+      const { run } = start(); await run;
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(fetchSpy.calls.mostRecent().args[1]?.method).toBeUndefined();
+    });
+
+    it('retains a manually resumable checkpoint when the bounded automatic retry budget is exhausted', async () => {
+      const oldBudget = (LocalAgentChatService as any).MAX_RECONNECT_ATTEMPTS;
+      (LocalAgentChatService as any).MAX_RECONNECT_ATTEMPTS = 2;
+      const errors: string[] = []; const completions: unknown[] = [];
+      service.getStreamingError().subscribe(error => errors.push(error));
+      service.getStreamingComplete().subscribe(value => completions.push(value));
+      fetchSpy.and.callFake((_url: string, init?: RequestInit) => init?.method === 'POST'
+        ? Promise.resolve(response(prefix)) : Promise.reject(new TypeError('Network dropped')));
+      try {
+        const { run } = start(); await run;
+        expect(fetchSpy).toHaveBeenCalledTimes(3); // One submission, two GETs, no duplicate work.
+        expect(errors[0]).toContain('Reconnect the saved run');
+        expect(completions).toEqual([]);
+        expect(service.getReconnectBookmark('network-browser')?.cursor).toBe(2);
+        fetchSpy.and.resolveTo(finish());
+        await service.resumeRun('network-browser');
+        expect(fetchSpy.calls.mostRecent().args[1]?.method).toBeUndefined();
+        expect(completions.length).toBe(1);
+      } finally { (LocalAgentChatService as any).MAX_RECONNECT_ATTEMPTS = oldBudget; }
+    });
+
+    it('does not issue another retry if the network drops during backoff', async () => {
+      fetchSpy.and.returnValues(Promise.resolve(response(prefix)), Promise.reject(new TypeError('Bad connection')),
+        Promise.resolve(finish()));
+      const { run } = start(); await pause();
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      online = false; window.dispatchEvent(new Event('offline'));
+      await new Promise(resolve => setTimeout(resolve, 550));
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      online = true; window.dispatchEvent(new Event('online'));
+      await run;
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps heartbeat events out of the transcript and replay cursor', async () => {
+      fetchSpy.and.returnValues(Promise.resolve(response(prefix + 'event: heartbeat\ndata: {}\n\n')),
+        Promise.resolve(finish()));
+      const { session, run } = start(); await run;
+      expect(String(fetchSpy.calls.mostRecent().args[0])).toContain('?after=2');
+      expect(session.messages[1].content).toBe('partial done');
+    });
+
+    it('does not let offline events or retry timers revive an explicitly detached view', async () => {
+      fetchSpy.and.resolveTo(open());
+      const { run } = start();
+      stream.enqueue(new TextEncoder().encode(prefix)); await pause();
+      online = false; window.dispatchEvent(new Event('offline')); await pause();
+      service.detachStreaming(); await run;
+      online = true; window.dispatchEvent(new Event('online'));
+      await new Promise(resolve => setTimeout(resolve, 120));
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect((service as any).connectionMessage).toBe('');
+    });
+  });
+
   it('reattaches from a tab bookmark using GET only and preserves system turn attribution', async () => {
     const event = (id: number, name: string, data: unknown) => `id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
     let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -203,7 +369,7 @@ describe('LocalAgentChatService harness transport', () => {
       + event(2, 'turn_started', { turnId: 1, source: 'initial', text: '' }) + event(3, 'chunk', 'partial');
     controller.enqueue(new TextEncoder().encode(prefix));
     await new Promise(resolve => setTimeout(resolve, 0));
-    service.detachStreaming(); controller.close(); await run;
+    service.detachStreaming(); await run; // Detach now actively closes the browser reader.
     const checkpoint = service.getReconnectBookmark('reload-browser');
     expect(checkpoint).not.toBeNull();
     fetchSpy.calls.reset();
@@ -243,7 +409,7 @@ describe('LocalAgentChatService harness transport', () => {
       const errors: string[] = [];
       service.getStreamingError().subscribe(error => errors.push(error));
       const signal = fetchSpy.calls.first().args[1].signal as AbortSignal;
-      service.detachStreaming(); controller.close(); await run;
+      service.detachStreaming(); await run; // Detach now actively closes the browser reader.
       expect(signal.aborted).toBeTrue();
       expect(fetchSpy).toHaveBeenCalledTimes(1); // no cancel request
       const checkpoint = service.getReconnectBookmark(sessionId)!;
@@ -276,14 +442,14 @@ describe('LocalAgentChatService harness transport', () => {
     });
 
     it('keeps legacy tab checkpoints readable', async () => {
-      service.detachStreaming(); controller.close(); await run;
+      service.detachStreaming(); await run; // Detach now actively closes the browser reader.
       sessionStorage.setItem(key, localStorage.getItem(key)!);
       localStorage.removeItem(key);
       expect(service.getReconnectBookmark(sessionId)?.runId).toBe('harness-leave');
     });
 
     it('still cancels work and clears all checkpoints when Stop is explicitly requested', async () => {
-      service.detachStreaming(); controller.close(); await run;
+      service.detachStreaming(); await run; // Detach now actively closes the browser reader.
       sessionStorage.setItem(key, localStorage.getItem(key)!);
       fetchSpy.and.resolveTo(new Response('{}', { status: 200 }));
       await service.stopReconnectRun(sessionId);
@@ -298,7 +464,7 @@ describe('LocalAgentChatService harness transport', () => {
       fetchSpy.and.resolveTo(new Response('{"accepted":true}', { status: 202 }));
       const reply = service.sendHarnessControl('input', undefined, 'follow up').catch(error => error);
       await new Promise(resolve => setTimeout(resolve, 0));
-      service.detachStreaming(); controller.close(); await run;
+      service.detachStreaming(); await run; // Detach now actively closes the browser reader.
       const error = await reply;
       expect(error).not.toBeInstanceOf(HarnessRunClosedError);
       expect(error.message).toContain('outcome unknown');
@@ -332,7 +498,7 @@ describe('LocalAgentChatService harness transport', () => {
         { name: 'coder', displayName: 'Coder' } as AgentProvider, { sessionId: browserSessionId });
       controller.enqueue(new TextEncoder().encode(prefix));
       await new Promise(resolve => setTimeout(resolve, 0));
-      service.detachStreaming(); controller.close(); await run;
+      service.detachStreaming(); await run; // Detach now actively closes the browser reader.
       expect(service.getReconnectBookmark(browserSessionId)).not.toBeNull();
       fetchSpy.calls.reset();
     }
@@ -709,6 +875,31 @@ describe('LocalAgentChatService harness transport', () => {
     // Answered and deferred commands never reach the model; a queued one waits with typed input.
     expect(service.liveInputHistory).toEqual(['/review src']);
     await finish('done');
+  });
+
+  it('updates native output on the running card without text echo, duplicate cards or replay reopening', async () => {
+    const session = service.createSession('native-output');
+    const { emit, finish } = openRun(session, 'build');
+    emit('start', { processId: 'native-run' });
+    emit('chunk', 'Building.');
+    emit('tool_use', { callId: 'native-1', toolName: 'bash', input: '{"command":"build"}', status: 'started' });
+    const detail = { displayName: 'Bash', sections: [{ label: 'output', runs: [{ text: 'compiling' }] }] };
+    emit('tool_output', { callId: 'native-1', toolName: 'bash', status: 'started', detail });
+    emit('tool_output', { callId: 'missing', toolName: 'bash', status: 'started', detail });
+    await settle();
+    const message = session.messages[1];
+    expect(message.content).toBe('Building.');
+    expect(message.toolUses?.length).toBe(1);
+    expect(message.toolUses?.[0]).toEqual(jasmine.objectContaining({ status: 'started', textOffset: 9, input: '{"command":"build"}', detail }));
+    const completed = { displayName: 'Bash', error: 'exit 1', sections: [{ label: 'output', runs: [{ text: 'build failed' }] }] };
+    emit('tool_result', { callId: 'native-1', toolName: 'bash', status: 'completed', ok: false, durationMs: 15, detail: completed });
+    emit('tool_output', { callId: 'native-1', toolName: 'bash', status: 'started', detail });
+    emit('tool_use', { callId: 'native-1', toolName: 'bash', status: 'started' });
+    await settle();
+    expect(message.toolUses?.length).toBe(1);
+    expect(message.toolUses?.[0]).toEqual(jasmine.objectContaining({ status: 'completed', ok: false, durationMs: 15, textOffset: 9, detail: completed }));
+    await finish('Building.');
+    expect(message.toolUses?.[0].detail).toEqual(completed);
   });
 
   it('records harness tool calls where they ran and merges each completion into its call', async () => {

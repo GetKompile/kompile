@@ -1,19 +1,8 @@
 /*
- *   Copyright 2025 Kompile Inc.
+ * Copyright 2025 Kompile Inc.
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed under the Apache License, Version 2.0.
  */
-
 package ai.kompile.cli.common.chat.sources.adapters;
 
 import ai.kompile.cli.common.chat.sources.ChatAdapterSupport;
@@ -23,25 +12,36 @@ import ai.kompile.cli.common.chat.sources.ChatTurn;
 import ai.kompile.cli.common.chat.sources.SourceInfo;
 import com.fasterxml.jackson.databind.JsonNode;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
+/**
+ * Reads Antigravity CLI ({@code agy}) session state from
+ * {@code ~/.gemini/antigravity-cli}.
+ * <p>
+ * Layout (verified on an installed CLI): {@code conversations/&lt;uuid&gt;.db} files hold
+ * the real transcripts as protobuf blobs inside SQLite — opaque without Antigravity's
+ * own protos. The readable projection lives in {@code cache/conversation_metadata.json}
+ * (per-conversation summary, step count, workspace URI, timestamps) and
+ * {@code cache/last_conversations.json} (workspace → most recent conversation id).
+ * This adapter serves listings and resume targets from that cache and reports turns
+ * as unavailable rather than fabricating content it cannot read.
+ */
 public class AgyAdapter implements ChatSourceAdapter {
 
     public static final String ID = "agy";
 
-    private static final Pattern SESSION_NAME = Pattern.compile(
-            "^session-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-(.+)\\.(json|jsonl)$");
+    private static final String UNAVAILABLE_TURNS =
+            "agy stores turns in an opaque protobuf SQLite conversation store; "
+                    + "resume with `agy --conversation <id>`.";
 
     @Override
     public String id() {
@@ -53,39 +53,52 @@ public class AgyAdapter implements ChatSourceAdapter {
         return "Antigravity CLI";
     }
 
+    /** Root of the CLI's state: {@code ~/.gemini/antigravity-cli}. */
     protected Path rootDir() {
-        return ChatAdapterSupport.userHome().resolve(".agy").resolve("tmp");
+        return ChatAdapterSupport.userHome().resolve(".gemini").resolve("antigravity-cli");
+    }
+
+    protected Path metadataCache() {
+        return rootDir().resolve("cache").resolve("conversation_metadata.json");
+    }
+
+    protected Path lastConversations() {
+        return rootDir().resolve("cache").resolve("last_conversations.json");
     }
 
     @Override
     public SourceInfo discover() {
-        Path root = rootDir();
-        if (!Files.isDirectory(root)) {
-            return SourceInfo.unavailable(id(), displayName(), root.toString(), "directory missing");
+        Path metadata = metadataCache();
+        if (!Files.isRegularFile(metadata)) {
+            return SourceInfo.unavailable(id(), displayName(), rootDir().toString(),
+                    "no conversation metadata cache (is the agy CLI installed and used?)");
         }
-        int count = countChatFiles(root);
-        return SourceInfo.available(id(), displayName(), root.toString(), count);
+        int count = readConversationMetadata().size();
+        return SourceInfo.available(id(), displayName(), rootDir().toString(), count);
     }
 
     @Override
     public List<ChatSessionSummary> list() throws IOException {
-        Path root = rootDir();
-        if (!Files.isDirectory(root)) return Collections.emptyList();
+        Map<String, JsonNode> conversations = readConversationMetadata();
+        Map<String, String> lastByWorkspace = readLastConversations();
         List<ChatSessionSummary> out = new ArrayList<>();
-        try (Stream<Path> stream = Files.walk(root)) {
-            stream.filter(Files::isRegularFile)
-                    .filter(AgyAdapter::isChatFile)
-                    .forEach(path -> {
-                        String id = extractId(path.getFileName().toString());
-                        if (id == null) id = path.getFileName().toString();
-                        int turns = 0;
-                        try {
-                            turns = readFile(path).size();
-                        } catch (IOException ignore) {
-                        }
-                        out.add(new ChatSessionSummary(id, id(),
-                                "(agy)", id(), turns, ChatAdapterSupport.lastModified(path)));
-                    });
+        for (Map.Entry<String, JsonNode> entry : conversations.entrySet()) {
+            String id = entry.getKey();
+            JsonNode summary = entry.getValue().path("summary");
+            String workspace = summary.path("WorkspaceUri").asText("");
+            Path workspacePath = workspaceToPath(workspace);
+            String workspacePathText = workspacePath == null ? null : workspacePath.toString();
+            String title = firstText(summary, "Title", "Preview");
+            if (title == null || title.isBlank()) {
+                title = "(agy) " + id;
+            }
+            int steps = entry.getValue().path("stepCount").asInt(
+                    summary.path("StepCount").asInt(0));
+            long updated = updatedAtMillis(entry.getValue(), summary);
+            if (updated == 0L) {
+                updated = conversationDbModified(id);
+            }
+            out.add(new ChatSessionSummary(id, id(), title, id(), steps, updated, workspacePathText));
         }
         out.sort((a, b) -> Long.compare(b.lastModifiedMillis(), a.lastModifiedMillis()));
         return out;
@@ -93,137 +106,140 @@ public class AgyAdapter implements ChatSourceAdapter {
 
     @Override
     public List<ChatTurn> readTurns(String sessionId) throws IOException {
-        Optional<Path> match = findFile(sessionId);
-        if (match.isEmpty()) return Collections.emptyList();
-        return readFile(match.get());
+        // Transcripts are protobuf blobs in conversations/<id>.db; without Antigravity's
+        // protos there is no honest way to project them into turns.
+        return Collections.emptyList();
     }
 
     @Override
     public Optional<Path> resolveWorkingDirectory(String sessionId) throws IOException {
-        Optional<Path> match = findFile(sessionId);
-        if (match.isEmpty()) return Optional.empty();
-        Path file = match.get();
-        if (file.getFileName().toString().endsWith(".jsonl")) return Optional.empty();
-        try {
-            JsonNode root = ChatAdapterSupport.MAPPER.readTree(file.toFile());
-            String dir = root.path("workingDirectory").asText("");
-            if (!dir.isBlank()) return Optional.of(Path.of(dir).toAbsolutePath().normalize());
-        } catch (Exception ignore) {
-        }
-        return Optional.empty();
-    }
-
-    protected Optional<Path> findFile(String sessionId) throws IOException {
-        Path root = rootDir();
-        if (!Files.isDirectory(root)) return Optional.empty();
-        try (Stream<Path> stream = Files.walk(root)) {
-            return stream.filter(Files::isRegularFile)
-                    .filter(AgyAdapter::isChatFile)
-                    .filter(p -> matchesSession(p, sessionId))
-                    .findFirst();
-        }
-    }
-
-    private static boolean matchesSession(Path p, String sessionId) {
-        String name = p.getFileName().toString();
-        if (name.equals(sessionId) || name.equals(sessionId + ".json")
-                || name.equals(sessionId + ".jsonl")) return true;
-        String extracted = extractId(name);
-        if (sessionId.equals(extracted)) return true;
-        if (extracted != null && (sessionId.startsWith(extracted) || extracted.startsWith(sessionId))) {
-            return true;
-        }
-        return matchesStoredSessionId(p, sessionId);
-    }
-
-    private static boolean matchesStoredSessionId(Path file, String sessionId) {
-        String name = file.getFileName().toString();
-        try {
-            if (name.endsWith(".jsonl")) {
-                try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        if (line.isBlank()) continue;
-                        JsonNode node = ChatAdapterSupport.MAPPER.readTree(line);
-                        String stored = node.path("sessionId").asText("");
-                        if (!stored.isEmpty() && idsMatch(stored, sessionId)) return true;
-                        if (node.path("type").asText("").equalsIgnoreCase("session_meta")) break;
-                    }
+        Map<String, JsonNode> conversations = readConversationMetadata();
+        JsonNode entry = conversations.get(sessionId);
+        if (entry == null) {
+            // Accept prefix matches — callers often hold a shortened id
+            for (Map.Entry<String, JsonNode> candidate : conversations.entrySet()) {
+                if (candidate.getKey().startsWith(sessionId)
+                        || sessionId.startsWith(candidate.getKey())) {
+                    entry = candidate.getValue();
+                    break;
                 }
-                return false;
             }
-            JsonNode root = ChatAdapterSupport.MAPPER.readTree(file.toFile());
-            String stored = root.path("sessionId").asText("");
-            return !stored.isEmpty() && idsMatch(stored, sessionId);
+        }
+        if (entry == null) {
+            return Optional.empty();
+        }
+        String workspace = entry.path("summary").path("WorkspaceUri").asText("");
+        Path path = workspaceToPath(workspace);
+        return path != null ? Optional.of(path) : Optional.empty();
+    }
+
+    // ── Cache readers ─────────────────────────────────────────────────────
+
+    private Map<String, JsonNode> readConversationMetadata() {
+        Path metadata = metadataCache();
+        if (!Files.isRegularFile(metadata)) {
+            return Collections.emptyMap();
+        }
+        try {
+            JsonNode root = ChatAdapterSupport.MAPPER.readTree(metadata.toFile());
+            JsonNode conversations = root.path("conversations");
+            if (!conversations.isObject()) {
+                return Collections.emptyMap();
+            }
+            Map<String, JsonNode> out = new LinkedHashMap<>();
+            conversations.fields().forEachRemaining(field -> out.put(field.getKey(), field.getValue()));
+            return out;
         } catch (Exception e) {
-            return false;
+            return Collections.emptyMap();
         }
     }
 
-    private static boolean idsMatch(String stored, String requested) {
-        return stored.equals(requested) || stored.startsWith(requested) || requested.startsWith(stored);
+    private Map<String, String> readLastConversations() {
+        Path last = lastConversations();
+        if (!Files.isRegularFile(last)) {
+            return Collections.emptyMap();
+        }
+        try {
+            JsonNode root = ChatAdapterSupport.MAPPER.readTree(last.toFile());
+            Map<String, String> out = new LinkedHashMap<>();
+            root.fields().forEachRemaining(field -> out.put(field.getKey(), field.getValue().asText()));
+            return out;
+        } catch (Exception e) {
+            return Collections.emptyMap();
+        }
     }
 
-    private static List<ChatTurn> readFile(Path file) throws IOException {
-        String name = file.getFileName().toString();
-        if (name.endsWith(".jsonl")) return readJsonl(file);
-        return readJson(file);
+    /** {@code file:///home/user/project} → {@code /home/user/project}; null when not a file URI. */
+    private static Path workspaceToPath(String workspaceUri) {
+        if (workspaceUri == null || workspaceUri.isBlank()) {
+            return null;
+        }
+        String value = workspaceUri;
+        if (value.startsWith("file://")) {
+            value = value.substring("file://".length());
+        }
+        if (value.isBlank()) {
+            return null;
+        }
+        try {
+            return Path.of(value).toAbsolutePath().normalize();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
-    private static List<ChatTurn> readJson(Path file) throws IOException {
-        JsonNode root = ChatAdapterSupport.MAPPER.readTree(file.toFile());
-        JsonNode messages = root.isArray() ? root : root.path("messages");
-        List<ChatTurn> out = new ArrayList<>();
-        if (messages.isArray()) {
-            for (JsonNode msg : messages) {
-                String role = ChatAdapterSupport.extractRole(msg);
-                String content = ChatAdapterSupport.extractContent(msg);
-                if (role != null && content != null && !content.isBlank()) {
-                    out.add(new ChatTurn(role, content));
+    private static String firstText(JsonNode node, String... fields) {
+        for (String field : fields) {
+            String value = node.path(field).asText("");
+            if (!value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static long updatedAtMillis(JsonNode entry, JsonNode summary) {
+        for (JsonNode holder : List.of(summary, entry)) {
+            for (String field : List.of("UpdatedAt", "UpdatedAtMillis", "LastModified")) {
+                JsonNode value = holder.path(field);
+                if (value.isMissingNode()) {
+                    continue;
+                }
+                if (value.canConvertToLong()) {
+                    long raw = value.asLong();
+                    // Heuristic: seconds vs millis — agy writes second-precision epochs
+                    return raw < 100_000_000_000L ? raw * 1000L : raw;
                 }
             }
         }
-        return out;
+        // Fall back to the conversation .db file's mtime
+        return 0L;
     }
 
-    private static List<ChatTurn> readJsonl(Path file) throws IOException {
-        List<ChatTurn> out = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.isBlank()) continue;
-                try {
-                    JsonNode node = ChatAdapterSupport.MAPPER.readTree(line);
-                    if (node.path("type").asText("").equalsIgnoreCase("session_meta")) continue;
-                    String role = ChatAdapterSupport.extractRole(node);
-                    String content = ChatAdapterSupport.extractContent(node);
-                    if (role != null && content != null && !content.isBlank()) {
-                        out.add(new ChatTurn(role, content));
-                    }
-                } catch (Exception ignore) {
-                }
-            }
-        }
-        return out;
+    /**
+     * Antigravity's authentication actions handled by {@code NativeCliAuth}; the adapter
+     * only documents the resume surface.
+     */
+
+    /** The conversation database's modification time, or 0 when the db is absent. */
+    private long conversationDbModified(String sessionId) {
+        Path db = rootDir().resolve("conversations").resolve(sessionId + ".db");
+        return Files.isRegularFile(db) ? ChatAdapterSupport.lastModified(db) : 0L;
     }
 
-    private static boolean isChatFile(Path p) {
-        String parent = p.getParent() == null ? "" : p.getParent().getFileName().toString();
-        String name = p.getFileName().toString();
-        if (!"chats".equals(parent)) return false;
-        return name.endsWith(".json") || name.endsWith(".jsonl");
+    /** Why live turns cannot be read, for callers that surface adapter limitations. */
+    public static String turnsUnavailableReason() {
+        return UNAVAILABLE_TURNS;
     }
 
-    private static String extractId(String fileName) {
-        Matcher m = SESSION_NAME.matcher(fileName);
-        return m.matches() ? m.group(1) : null;
-    }
+    // ── Unused legacy hooks kept for adapter-contract compatibility ──────
 
-    private static int countChatFiles(Path root) {
-        try (Stream<Path> stream = Files.walk(root)) {
-            return (int) stream.filter(Files::isRegularFile).filter(AgyAdapter::isChatFile).count();
-        } catch (IOException ignore) {
-            return 0;
+    @SuppressWarnings("unused")
+    private static long lastModifiedOf(Path file) {
+        try {
+            return Files.readAttributes(file, BasicFileAttributes.class).lastModifiedTime().toMillis();
+        } catch (IOException e) {
+            return 0L;
         }
     }
 }

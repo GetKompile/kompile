@@ -450,6 +450,7 @@ class ProductSessionRuntimeTest {
                 } finally { finished.countDown(); }
             }
         };
+        tools.register(tool); // Normal dispatch enforces registry policy before invoking a delegate.
         var executor = Executors.newSingleThreadExecutor();
         try {
             Future<ToolResult> owner = executor.submit(() -> invokeTool(loop, tool,

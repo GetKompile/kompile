@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.config.KompileToolGuidance;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.ManagedBlockOwnership;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
@@ -45,6 +46,7 @@ public final class ProjectChatContext {
     private final List<Path> agentsMdFiles;
     private final SkillRegistry skillRegistry;
     private final String skillsContent;
+    private final boolean workspaceInstructions;
 
     private ProjectChatContext(Path workingDirectory, SkillRegistry skillRegistry) {
         this(workingDirectory, skillRegistry, true);
@@ -53,6 +55,7 @@ public final class ProjectChatContext {
     private ProjectChatContext(Path workingDirectory, SkillRegistry skillRegistry, boolean workspaceInstructions) {
         this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
         this.skillRegistry = skillRegistry;
+        this.workspaceInstructions = workspaceInstructions;
         if (!workspaceInstructions) {
             this.agentsMdContent = "";
             this.claudeAgentsMdContent = "";
@@ -118,11 +121,11 @@ public final class ProjectChatContext {
 
     /** Native Claude also loads CLAUDE.md imports; don't append the same AGENTS.md twice. */
     public String renderSystemPrompt(boolean nativeClaude) {
-        StringBuilder prompt = new StringBuilder();
+        StringBuilder prompt = new StringBuilder(workspaceInstructions ? KompileToolGuidance.PROMPT : "");
         String projectInstructions = stripLeakedManagedBlocks(
                 nativeClaude ? claudeAgentsMdContent : agentsMdContent);
         if (!projectInstructions.isBlank()) {
-            prompt.append("# Project Instructions (from AGENTS.md)\n\n")
+            prompt.append("\n\n# Project Instructions (from AGENTS.md)\n\n")
                     .append(projectInstructions);
         }
         String skillsPrompt = renderSkillsPrompt();

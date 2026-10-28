@@ -94,6 +94,7 @@ public class TerminalRenderer {
             Map.entry("multi_task", "▸"),
             Map.entry("quorum_task", "▸"),
             Map.entry("todowrite", "▸"),
+            Map.entry("todo_apply_batch", "▸"),
             Map.entry("todoread", "▸"),
             Map.entry("exit_plan_mode", "▸"),
             Map.entry("code_search", "▸"),
@@ -148,6 +149,7 @@ public class TerminalRenderer {
             Map.entry("browser", new String[]{"url"}),
             Map.entry("process", new String[]{"action", "process_id", "description", "command"}),
             Map.entry("todowrite", new String[]{"action", "subject", "task_id", "status"}),
+            Map.entry("todo_apply_batch", new String[]{"operations"}),
             Map.entry("todoread", new String[]{"action"}),
             Map.entry("edit_coordinator", new String[]{"action", "file_path", "process_id", "agent_name"})
     );
@@ -223,6 +225,15 @@ public class TerminalRenderer {
         return renderToolCallComplete(toolName, rawInput, result, true);
     }
 
+    /** Background transcripts are inspected in the activity monitor, not the parent chat. */
+    public static boolean isMonitoredActivityTool(String toolName) {
+        return switch (stripMcpPrefix(toolName)) {
+            case "process", "poll", "task", "agent", "taskoutput", "task_output",
+                    "multi_task", "quorum_task", "subagent_resume" -> true;
+            default -> false;
+        };
+    }
+
     /** Render only the stable completion row for a managed live tool block. */
     public String renderToolCallSummary(String toolName, String rawInput, ToolResult result) {
         return renderToolCallComplete(toolName, rawInput, result, false);
@@ -251,7 +262,9 @@ public class TerminalRenderer {
             sb.append(" ").append(dim("· " + row.preview()));
         }
 
-        if (includeDetail) {
+        if (isMonitoredActivityTool(toolName)) {
+            sb.append(dim(" · /activity"));
+        } else if (includeDetail) {
             String detail = renderToolResultDetail(toolName, rawInput, result);
             if (!detail.isBlank()) {
                 sb.append("\n").append(detail);
@@ -280,7 +293,7 @@ public class TerminalRenderer {
                                          boolean outputShownLive) {
         if (result == null || outputShownLive) return "";
         List<TodoWriteTool.TodoItem> todos = todoItems(toolName, rawInput, result);
-        if (todos != null) return renderTodoList(todos);
+        if (todos != null) return renderTodoResult(todos, result);
 
         StringBuilder detail = new StringBuilder();
         for (DetailSection section : toolResultDetailSections(toolName, rawInput, result)) {
@@ -334,7 +347,7 @@ public class TerminalRenderer {
         // Output preview for command/search tools, or when nothing else summarizes the result.
         String preview = null;
         String output = result.getOutput();
-        if (!outputShownLive && output != null && !output.isEmpty()
+        if (!outputShownLive && !isMonitoredActivityTool(toolName) && output != null && !output.isEmpty()
                 && todoItems(toolName, rawInput, result) == null
                 && (shouldShowPreview(cleanName, meta)
                     || ((title == null || title.isBlank()) && meta.isEmpty()))) {
@@ -372,6 +385,14 @@ public class TerminalRenderer {
         if (result == null) return List.of();
         String cleanName = stripMcpPrefix(toolName);
         List<DetailSection> sections = new ArrayList<>(2);
+        List<TodoWriteTool.TodoItem> todos = todoItems(toolName, rawInput, result);
+        if (todos != null) {
+            // Stream-json clients get the same task list and progress as the terminal, not raw JSON.
+            addBoundedSection(sections, "tasks",
+                    List.of(new TerminalRenderer(false).renderTodoResult(todos, result).split("\\R", -1)),
+                    false, null, false, false);
+            return sections;
+        }
         List<String> changeLines = renderEditDiffLines(toolName, rawInput);
         if (!changeLines.isEmpty()) {
             addBoundedSection(sections, "diff", changeLines, true, null, false, false);
@@ -463,7 +484,7 @@ public class TerminalRenderer {
         }
         List<TodoWriteTool.TodoItem> todos = todoItems(toolName, rawInput, result);
         if (todos != null) {
-            String formatted = ChatDisplayBlock.boundedStyledText(renderTodoList(todos), maxChars);
+            String formatted = ChatDisplayBlock.boundedStyledText(renderTodoResult(todos, result), maxChars);
             return List.of(new ChatDisplayBlock.Section("todos", "todos", "Tasks",
                     printableToolOutput(formatted), formatted));
         }
@@ -704,6 +725,35 @@ public class TerminalRenderer {
         return summary.isEmpty() ? "" : summary + " " + dim("— /reminder list · /reminder-global list");
     }
 
+    /** Summarize a delivered agent event while retaining its payload for /ui results. */
+    public ChatDisplayBlock renderAgentNotificationBlock(String notification) {
+        String content = printableToolOutput(notification).strip();
+        if (content.isEmpty()) return null;
+        String type = "System event";
+        String body = content;
+        if (content.startsWith("[System ")) {
+            int end = content.indexOf(']');
+            if (end > 8) {
+                String label = content.substring(8, end).strip();
+                if (!label.isEmpty()) type = Character.toUpperCase(label.charAt(0)) + label.substring(1);
+                body = content.substring(end + 1).strip();
+            }
+        } else if (content.startsWith("<todo-status")) {
+            type = "Todo status";
+            int end = content.indexOf('>');
+            if (end >= 0) body = content.substring(end + 1).strip();
+        }
+        String detail = body.lines().map(String::strip).filter(line -> !line.isEmpty())
+                .findFirst().orElse("");
+        if (detail.length() > 160) detail = detail.substring(0, 159) + "…";
+        String summary = "  " + bold(cyan("↳ Agent notification · " + type))
+                + (detail.isEmpty() ? "" : " " + dim("— " + detail));
+        return new ChatDisplayBlock("notification:" + java.util.UUID.randomUUID(), "notification", "",
+                summary, summary + " " + dim("— /ui results"),
+                List.of(new ChatDisplayBlock.Section("notification", "notification", type, content)),
+                false, false);
+    }
+
     /** Retain the exact applied reminders for expansion without flooding the transcript. */
     public ChatDisplayBlock renderReminderBlock(String reminderContent) {
         List<String> lines = reminderLines(reminderContent);
@@ -777,7 +827,7 @@ public class TerminalRenderer {
 
         List<TodoWriteTool.TodoItem> todos = todoItems(toolName, rawInput, result);
         if (todos != null) {
-            return detailed.append('\n').append(renderTodoList(todos)
+            return detailed.append('\n').append(renderTodoResult(todos, result)
                     .replace("\n", "\n  │  ")).toString();
         }
         List<String> changeLines = renderEditDiffLines(toolName, rawInput);
@@ -977,7 +1027,15 @@ public class TerminalRenderer {
 
     public static boolean isTodoTool(String toolName) {
         String name = stripMcpPrefix(toolName).replace("_", "");
-        return "todowrite".equals(name) || "todoread".equals(name);
+        return "todowrite".equals(name) || "todoread".equals(name) || "todoapplybatch".equals(name);
+    }
+
+    /** First present textual field among the aliases, else null (timestamp aliases vary by source). */
+    private static String firstTextual(JsonNode node, String... fields) {
+        for (String field : fields) {
+            if (node.hasNonNull(field)) return node.get(field).asText();
+        }
+        return null;
     }
 
     /** Result snapshots take precedence over arguments (which may describe pre-update state). */
@@ -996,7 +1054,7 @@ public class TerminalRenderer {
         if (tasks == null && stripMcpPrefix(toolName).replace("_", "").equals("todowrite")) {
             try { tasks = JSON.readTree(rawInput).get("todos"); } catch (Exception ignored) { }
         }
-        if (tasks != null && tasks.isArray()) {
+            if (tasks != null && tasks.isArray()) {
             List<TodoWriteTool.TodoItem> items = new ArrayList<>();
             for (JsonNode task : tasks) {
                 String subject = task.isTextual() ? task.asText()
@@ -1004,9 +1062,15 @@ public class TerminalRenderer {
                 if (subject.isBlank()) continue;
                 String status = task.path("status").asText("pending");
                 if (!Set.of("pending", "in_progress", "completed", "cancelled").contains(status)) status = "pending";
-                items.add(new TodoWriteTool.TodoItem(task.path("id").asText(String.valueOf(items.size() + 1)),
+                TodoWriteTool.TodoItem item = new TodoWriteTool.TodoItem(
+                        task.path("id").asText(String.valueOf(items.size() + 1)),
                         subject, task.path("description").asText(task.path("task_description").asText("")),
-                        status, task.path("priority").asText("medium")));
+                        status, task.path("priority").asText("medium"));
+                // Snapshots serialize field names camelCase; persisted files use snake_case.
+                item.createdAt = firstTextual(task, "createdAt", "created_at");
+                item.updatedAt = firstTextual(task, "updatedAt", "updated_at");
+                item.updatedBy = firstTextual(task, "updatedBy", "updated_by");
+                items.add(item);
             }
             return items;
         }
@@ -1034,6 +1098,24 @@ public class TerminalRenderer {
             if (!items.isEmpty()) return items;
         }
         return null; // Unknown payloads and errors must remain visible, never masquerade as an empty list.
+    }
+
+    /** Keep page/continuation information when the specialized task renderer replaces raw output. */
+    private String renderTodoResult(List<TodoWriteTool.TodoItem> todos, ToolResult result) {
+        Map<String, Object> metadata = result.getMetadata();
+        if (!(metadata.get("matched") instanceof Number matched)
+                || !(metadata.get("total") instanceof Number total)
+                || !(metadata.get("offset") instanceof Number offset)) return renderTodoList(todos);
+        int count = todos.size();
+        if (count == total.intValue() && offset.intValue() == 0) return renderTodoList(todos);
+        String rendered = count == 0 ? dim("  No tasks on this page") : renderTodoList(todos);
+        String range = count == 0 ? "0" : (offset.intValue() + 1) + "-" + (offset.intValue() + count);
+        String summary = "Showing " + range + " of " + matched.intValue() + " matching (" + total.intValue() + " total).";
+        if (Boolean.TRUE.equals(metadata.get("hasMore"))) {
+            summary += " More: offset=" + metadata.get("nextOffset") + " limit=" + metadata.get("limit")
+                    + " (keep the same filters/sort).";
+        }
+        return rendered + "\n" + dim("  " + summary);
     }
 
     /**
@@ -1128,6 +1210,9 @@ public class TerminalRenderer {
         if (current) {
             sb.append(" ").append(bold(yellow("[current]")));
         }
+        if ("harness".equals(item.updatedBy)) {
+            sb.append(" ").append(dim("[auto]"));
+        }
 
         // Show priority if not medium (default)
         if (item.priority != null && !"medium".equals(item.priority)) {
@@ -1135,11 +1220,41 @@ public class TerminalRenderer {
             sb.append(" ").append(priorityLabel);
         }
 
+        String timing = todoTiming(item);
+        if (!timing.isEmpty()) {
+            sb.append(" ").append(dim(timing));
+        }
+
         if (item.description != null && !item.description.isEmpty()) {
             sb.append("\n    ").append(dim(truncatePreview(printableToolOutput(item.description), 80)));
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Compact created/updated stamp: "created 07-06 14:03" plus "upd 07-07 09:12"
+     * when the item was changed after creation. Empty when the item has no timestamps.
+     */
+    private String todoTiming(TodoWriteTool.TodoItem item) {
+        String created = shortStamp(item.createdAt);
+        String updated = shortStamp(item.updatedAt);
+        if (created.isEmpty()) return "";
+        if (!updated.isEmpty() && !updated.equals(created)) {
+            return "created " + created + " · upd " + updated;
+        }
+        return "created " + created;
+    }
+
+    /** "MM-dd HH:mm" from an ISO-8601 instant; falls back to printable text if unparsable. */
+    private static String shortStamp(String isoInstant) {
+        if (isoInstant == null || isoInstant.isBlank()) return "";
+        try {
+            return java.time.ZonedDateTime.parse(isoInstant)
+                    .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"));
+        } catch (Exception ignored) {
+            return printableToolOutput(isoInstant);
+        }
     }
 
     /**

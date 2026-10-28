@@ -55,13 +55,15 @@ public class DiffIndexController {
             @RequestParam(required = false) String until,
             @RequestParam(required = false) Integer limit,
             @RequestParam(required = false) String sortBy,
-            @RequestParam(required = false) String sortDir) {
+            @RequestParam(required = false) String sortDir,
+            @RequestParam(required = false) Integer offset,
+            @RequestParam(required = false) String sessionId) {
         if (diffIndexService == null) {
             return ResponseEntity.ok(List.of());
         }
         return ResponseEntity.ok(diffIndexService.search(
                 agent, projectDirectory, filePath, contentQuery, source, since, until,
-                limit, sortBy, sortDir));
+                limit, sortBy, sortDir, offset, sessionId));
     }
 
     @GetMapping("/entries/{id}")

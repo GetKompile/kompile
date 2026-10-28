@@ -17,6 +17,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@ai.kompile.cli.main.chat.testing.TemporaryUserHome
 class MilestoneTimelineLifecycleTest {
     @TempDir Path root;
     private final ObjectMapper mapper = JsonUtils.standardMapper();
@@ -55,6 +56,66 @@ class MilestoneTimelineLifecycleTest {
             assertEquals("passed", event.attributes().get("outcome"));
             assertEquals("recorder-not-test-process", event.attributes().get("attribution"));
         }
+    }
+
+    @Test void aTransientDeliveryFailureRetriesOnlyTheJournalEvent() throws Exception {
+        ActivityStorage storage = new ActivityStorage(root.resolve("conversations"));
+        var service = org.mockito.Mockito.spy(new ConversationActivityService(storage, List.of()));
+        org.mockito.Mockito.doReturn(false).doCallRealMethod().when(service).recordConfirmed(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("test.milestone.recorded"),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyMap());
+        try (TimelineLifecycle runtime = new TimelineLifecycle(service, "retry-owner", root, false)) {
+            ToolResult result = new TestMilestoneTool().execute(request("record"), context("retry-owner"));
+            assertFalse(result.isError());
+            assertFalse(result.getMetadata().containsKey("testMilestoneWarnings"));
+            String id = result.getMetadata().get("id").toString();
+            org.mockito.Mockito.verify(service, org.mockito.Mockito.times(2)).recordConfirmed(
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("test.milestone.recorded"),
+                    org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(id),
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyMap());
+            assertEquals(1, new ActivityJournalReader(storage.eventsPath(runtime.identity()))
+                    .read(ActivityReadBudget.DEFAULT).events().stream()
+                    .filter(event -> event.eventType().equals("test.milestone.recorded") && event.operationId().equals(id)).count());
+            assertEquals(1, ai.kompile.cli.insights.TestMilestoneReader.readAll(
+                    root.resolve(".kompile/test-milestones/milestones")).size());
+        }
+    }
+
+    @Test void contendedJournalIsReportedWithoutLosingOrDuplicatingTheSavedMilestone() throws Exception {
+        ActivityStorage storage = new ActivityStorage(root.resolve("conversations"));
+        var service = new ConversationActivityService(storage, List.of());
+        var history = new ai.kompile.cli.main.chat.ChatHistory("contended-owner");
+        history.open(null, "coder", false, root);
+        history.logUserMessage("Run tests");
+        try (TimelineLifecycle runtime = new TimelineLifecycle(service, "contended-owner", root, false)) {
+            Path journal = storage.eventsPath(runtime.identity());
+            Path lockFile = journal.resolveSibling(journal.getFileName() + ".lock");
+            ToolResult result;
+            try (var channel = java.nio.channels.FileChannel.open(lockFile, java.nio.file.StandardOpenOption.WRITE);
+                 var lock = channel.lock()) {
+                result = new TestMilestoneTool().execute(request("record"), context("contended-owner"));
+                assertFalse(result.isError(), "The milestone itself was saved; do not request a duplicate record");
+                assertNotNull(result.getMetadata().get("testMilestoneWarnings"));
+                assertTrue(result.getOutput().contains("live harness delivery could not be recorded after retry"));
+                assertEquals(2, service.recordingWarnings().stream()
+                        .filter(text -> text.contains("bounded journal-lock wait")).count());
+                assertTrue(new ActivityJournalReader(journal).read(ActivityReadBudget.DEFAULT).events().stream()
+                        .noneMatch(event -> event.eventType().equals("test.milestone.recorded")));
+            }
+            String id = result.getMetadata().get("id").toString();
+            assertTrue(history.readTranscript().contains("Test milestone " + id
+                    + " was saved, but live harness delivery could not be recorded"));
+            Path milestoneFile = root.resolve(".kompile/test-milestones/milestones/" + id + ".json");
+            assertTrue(Files.isRegularFile(milestoneFile));
+            // Once contention clears, retry delivery of the same saved run, not the tests/save.
+            assertTrue(TimelineLifecycle.producer("contended-owner", "contended-owner", root)
+                    .recordSavedConfirmed("test.milestone.recorded", id, milestoneFile, root,
+                            java.util.Map.of("outcome", "passed")));
+            assertEquals(1, new ActivityJournalReader(journal).read(ActivityReadBudget.DEFAULT).events().stream()
+                    .filter(event -> event.eventType().equals("test.milestone.recorded") && event.operationId().equals(id)).count());
+            assertEquals(1, ai.kompile.cli.insights.TestMilestoneReader.readAll(milestoneFile.getParent()).size());
+        } finally { history.close(); }
     }
 
     @Test void failedWriteDoesNotRecordMilestoneEvidence() throws Exception {

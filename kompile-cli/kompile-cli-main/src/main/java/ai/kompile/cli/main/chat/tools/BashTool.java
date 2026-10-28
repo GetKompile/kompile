@@ -224,6 +224,25 @@ public class BashTool implements CliTool {
             return ToolResult.error(mandate.getCorrectionPrompt());
         }
 
+        // Edit-coordination enforcement: a shell file-write (redirect, tee, in-place edit,
+        // rm/mv) must not bypass the coordinator locks the native edit tools honour. The
+        // bound context coordinator wins; the registry's edit_coordinator tool is the
+        // fallback for hosts that construct contexts without bindCoordinator.
+        ai.kompile.cli.main.coordination.CoordinationStateManager lockCoordinator =
+                context.getCoordinator();
+        if (lockCoordinator == null
+                && context.getToolRegistry() != null
+                && context.getToolRegistry().get("edit_coordinator")
+                        instanceof EditCoordinatorTool coordTool) {
+            lockCoordinator = coordToolCoordinator(coordTool);
+        }
+        String lockRefusal = ShellEditLockGate.checkCommand(
+                lockCoordinator, EditCoordinatorTool.lockOwner(null, context),
+                command, context.getWorkingDirectory());
+        if (lockRefusal != null) {
+            return ToolResult.error(lockRefusal);
+        }
+
         timeout = Math.min(timeout, MAX_TIMEOUT_SECONDS);
 
         // Classify the command and check the appropriate permission
@@ -250,8 +269,11 @@ public class BashTool implements CliTool {
 
         // Observe the raw stream even in MCP/headless mode; the returned output is bounded.
         List<String> captureWarnings = new java.util.concurrent.CopyOnWriteArrayList<>();
+        // A supervised child context marks native subagent work (kompile.task / multi_task
+        // / quorum_task delegation), so its milestones are attributed to that delegation.
+        String captureOrigin = context.isSupervisedChild() ? "subagent" : null;
         TestMilestoneCapture capture = TestMilestoneCapture.start(command, workDir,
-                context.getSessionId(), UUID.randomUUID().toString(), warning -> {
+                context.getSessionId(), UUID.randomUUID().toString(), captureOrigin, warning -> {
                     if (captureWarnings.size() < 16) captureWarnings.add(warning);
                     if (liveOutput != null) liveOutput.accept("Warning: " + warning);
                     else System.err.println("Warning: " + warning); // Never corrupt MCP stdout.
@@ -296,7 +318,17 @@ public class BashTool implements CliTool {
             return new ToolResult("exit " + result.getExitCode(), outputStr, meta, true);
         }
 
+        if (!captureWarnings.isEmpty()) {
+            return new ToolResult("exit 0; test milestone capture requires attention", outputStr
+                    + "\nTest milestone capture failed or is incomplete: " + String.join("; ", captureWarnings), meta, true);
+        }
         return ToolResult.success("exit 0", outputStr, meta);
+    }
+
+    /** The coordinator behind a registered edit_coordinator tool, via its public accessor. */
+    private static ai.kompile.cli.main.coordination.CoordinationStateManager
+            coordToolCoordinator(EditCoordinatorTool tool) {
+        return tool == null ? null : tool.coordinator();
     }
 
     // --- Command classification ---

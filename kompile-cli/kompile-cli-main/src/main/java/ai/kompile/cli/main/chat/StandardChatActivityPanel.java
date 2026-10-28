@@ -25,8 +25,11 @@ import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessKind;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessMonitor;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.config.ChatUiConfig;
+import ai.kompile.cli.main.chat.tui.ChatSidebar;
 import ai.kompile.cli.main.chat.tui.StatusBar;
 import ai.kompile.cli.main.chat.tui.StatusBar.SubagentEntry;
+import ai.kompile.utils.AnsiConstants;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.utils.StringUtils;
 
@@ -156,7 +159,13 @@ final class StandardChatActivityPanel {
     private final BackgroundProcessManager processManager;
     private final StatusBar statusBar;
     private final IntSupplier reservedRowSupplier;
-    private final TerminalRenderer toolRenderer = new TerminalRenderer();
+    private final TerminalRenderer toolRenderer;
+    private final ChatSidebar transcriptProjection;
+    private Supplier<ChatUiConfig> transcriptUiConfig = ChatUiConfig::classic;
+
+    void setTranscriptUiConfig(Supplier<ChatUiConfig> config) {
+        transcriptUiConfig = config;
+    }
 
     private volatile boolean focused;
     private volatile String selectedKey = "";
@@ -189,6 +198,7 @@ final class StandardChatActivityPanel {
         private final Instant startedAt;
         private volatile Instant updatedAt;
         private volatile ToolResult result;
+        private volatile String output = "";
         private volatile String status;
         private volatile boolean active;
 
@@ -209,14 +219,27 @@ final class StandardChatActivityPanel {
             BackgroundProcessManager processManager,
             StatusBar statusBar,
             IntSupplier reservedRowSupplier) {
+        this(taskManager, processManager, statusBar, reservedRowSupplier, new TerminalRenderer());
+    }
+
+    StandardChatActivityPanel(BackgroundTaskManager taskManager, BackgroundProcessManager processManager,
+            StatusBar statusBar, IntSupplier reservedRowSupplier, TerminalRenderer renderer) {
         this(taskManager, processManager, statusBar, reservedRowSupplier, Instant::now,
                 (millis, callback) -> CompletableFuture.delayedExecutor(millis, TimeUnit.MILLISECONDS)
-                        .execute(callback));
+                        .execute(callback), renderer);
     }
 
     StandardChatActivityPanel(BackgroundTaskManager taskManager, BackgroundProcessManager processManager,
             StatusBar statusBar, IntSupplier reservedRowSupplier, Supplier<Instant> now,
             BiConsumer<Long, Runnable> expiryScheduler) {
+        this(taskManager, processManager, statusBar, reservedRowSupplier, now, expiryScheduler, new TerminalRenderer());
+    }
+
+    private StandardChatActivityPanel(BackgroundTaskManager taskManager, BackgroundProcessManager processManager,
+            StatusBar statusBar, IntSupplier reservedRowSupplier, Supplier<Instant> now,
+            BiConsumer<Long, Runnable> expiryScheduler, TerminalRenderer renderer) {
+        this.toolRenderer = renderer;
+        this.transcriptProjection = new ChatSidebar(renderer);
         this.taskManager = taskManager;
         this.processManager = processManager;
         this.statusBar = statusBar;
@@ -330,6 +353,21 @@ final class StandardChatActivityPanel {
         ToolActivity activity = toolActivity(callId, toolName, rawInput);
         activity.rawInput = rawInput == null ? "" : rawInput;
         activity.updatedAt = now.get();
+        refresh();
+    }
+
+    /** Retain deltas for the explicitly opened activity, not the parent chat. */
+    void recordToolOutput(String callId, String toolName, String rawInput, String output) {
+        if (output == null || output.isEmpty()) return;
+        ToolActivity activity = toolActivity(callId, toolName, rawInput);
+        synchronized (toolActivityLock) {
+            if (!activity.active) return; // Late output must not reopen a finished call.
+            String combined = activity.output + output;
+            int limit = ai.kompile.cli.main.chat.render.ChatDisplayBlock.MAX_SECTION_CHARS;
+            activity.output = combined.length() <= limit ? combined
+                    : "… (older tool output omitted)\n" + combined.substring(combined.length() - limit);
+            activity.updatedAt = now.get();
+        }
         refresh();
     }
 
@@ -992,6 +1030,17 @@ final class StandardChatActivityPanel {
                 return activityView(item);
             }
         }
+        // A background invocation disappears from the menu once its child owns
+        // the activity row. Keep an already-open task view attached to that child.
+        if (viewedKey.startsWith("task:") && !subagentTargetForKey(viewedKey).isBlank()) {
+            String id = viewedKey.substring("task:".length());
+            BackgroundTask task = taskManager.getTask(id);
+            if (task != null) {
+                return activityView(new ActivityItem(viewedKey, id, ActivityKind.TASK,
+                        truncate(task.getDescription(), 64), task.getStatus().name().toLowerCase(Locale.ROOT),
+                        true, false, task.getStartedAt(), MAIN_KEY, 1));
+            }
+        }
         if (viewedKey.startsWith("process:")) {
             String id = viewedKey.substring("process:".length());
             ProcessEntry process = processManager.get(id);
@@ -1025,6 +1074,7 @@ final class StandardChatActivityPanel {
                         PROJECT_ACTIVITY_KEY, project.title(), project.content(), false);
             }
         }
+        String title = item.kind().label() + " [" + item.id() + "] · " + item.label();
         StringBuilder details = new StringBuilder();
         details.append("  kind: ").append(item.kind().label())
                 .append(" · status: ").append(item.status()).append("\n");
@@ -1041,11 +1091,24 @@ final class StandardChatActivityPanel {
         } else if (item.kind() == ActivityKind.PROCESS) {
             ProcessEntry process = processManager.get(item.id());
             if (process != null) {
-                // The log IS the view. The streaming output fills the body so
-                // opening a row means reading the live log, not staring at its
-                // file path; metadata collapses into a footer beneath it.
-                details.append("\n").append(processManager.readOutput(item.id(), 2000))
-                        .append("\n");
+                // Typed children use the main transcript projection; ordinary
+                // processes still show their log verbatim, never parsed as chat.
+                Map<String, String> metadata = process.getMetadata();
+                if ("subagent".equals(metadata.get("kind")) || isClaudeSubagent(metadata)) {
+                    appendSubagentMetadata(details, metadata,
+                            FormatUtils.formatDuration(process.getDuration()));
+                    title = subagentTitle(metadata, title);
+                }
+                var blocks = process.transcriptBlocks(toolRenderer);
+                if (blocks.isEmpty()) {
+                    details.append("\n").append(processManager.readOutput(item.id(), 2000)).append("\n");
+                } else {
+                    ChatUiConfig config = transcriptUiConfig.get();
+                    for (var block : blocks) {
+                        String display = transcriptProjection.inline(block, config);
+                        if (!display.isBlank()) details.append("\n").append(display).append("\n");
+                    }
+                }
                 details.append("\n  command: ").append(process.getCommand()).append("\n");
                 details.append("  pid: ").append(process.getPid());
                 if (process.getOutputFile() != null) {
@@ -1078,8 +1141,10 @@ final class StandardChatActivityPanel {
             }
         } else if (item.kind() == ActivityKind.SUBAGENT) {
             SubagentEntry subagent = findSubagent(item.id());
-            if (subagent != null && !subagent.getTranscript().isBlank()) {
-                details.append("\n").append(subagent.getTranscript());
+            if (subagent != null) {
+                appendSubagentMetadata(details, subagent.getMetadata(), subagent.getElapsed());
+                title = subagentTitle(subagent.getMetadata(), title);
+                if (!subagent.getTranscript().isBlank()) details.append("\n").append(subagent.getTranscript());
             }
         } else if (item.kind() == ActivityKind.TOOL) {
             ToolActivity activity;
@@ -1091,6 +1156,9 @@ final class StandardChatActivityPanel {
                         TerminalRenderer.stripMcpPrefix(activity.toolName), activity.rawInput, 500);
                 if (!input.isBlank()) {
                     details.append("  action: ").append(input).append("\n");
+                }
+                if (!activity.output.isEmpty()) {
+                    details.append("\n").append(TerminalRenderer.printableToolOutput(activity.output)).append("\n");
                 }
                 if (activity.result != null) {
                     if (activity.result.getTitle() != null && !activity.result.getTitle().isBlank()) {
@@ -1113,6 +1181,12 @@ final class StandardChatActivityPanel {
                 String subagentId = subagentTargetForKey(item.key());
                 if (!subagentId.isBlank()) {
                     details.append("  follow-ups: subagent ").append(subagentId).append("\n");
+                    SubagentEntry child = findSubagent(subagentId);
+                    if (child != null) {
+                        appendSubagentMetadata(details, child.getMetadata(), child.getElapsed());
+                        title = subagentTitle(child.getMetadata(), title);
+                        if (!child.getTranscript().isBlank()) details.append("\n").append(child.getTranscript()).append("\n");
+                    }
                 }
                 if (task.getError() != null) {
                     details.append("  error: ").append(task.getError().getMessage()).append("\n");
@@ -1125,9 +1199,68 @@ final class StandardChatActivityPanel {
 
         return new ActivityView(
                 item.key(),
-                item.kind().label() + " [" + item.id() + "] · " + item.label(),
+                title,
                 details.toString().stripTrailing(),
                 false);
+    }
+
+    private static boolean isClaudeSubagent(Map<String, String> metadata) {
+        String type = metadata.getOrDefault("task_type", "");
+        return "claude-code".equals(metadata.get("source"))
+                && (type.equals("agent") || type.endsWith("_agent"));
+    }
+
+    private static String subagentVendor(Map<String, String> metadata) {
+        return metadata.getOrDefault("vendor", metadata.getOrDefault("provider",
+                "claude-code".equals(metadata.get("source")) ? "anthropic" : "?"));
+    }
+
+    /** The TUI pins the title, so live identity/usage cannot scroll out with a long child transcript. */
+    private static String subagentTitle(Map<String, String> metadata, String title) {
+        String identity = StringUtils.truncate(cleanMetadata(subagentVendor(metadata)), 12) + "/"
+                + StringUtils.truncate(metadataValue(metadata, "model"), 24);
+        String usage = "↑" + metadataValue(metadata, "input_tokens")
+                + " ↓" + metadataValue(metadata, "output_tokens");
+        if (!metadata.getOrDefault("stream_output_tokens", "0").equals("0")) {
+            usage += " ~" + metadataValue(metadata, "stream_output_tokens") + " est.";
+        } else if (!metadata.containsKey("input_tokens") && metadata.containsKey("total_tokens")) {
+            usage = "Σ" + metadataValue(metadata, "total_tokens");
+        }
+        return identity + " · " + usage + " · " + title;
+    }
+
+    private static void appendSubagentMetadata(StringBuilder details, Map<String, String> metadata, String elapsed) {
+        String vendor = subagentVendor(metadata);
+        details.append("  model: ").append(metadataValue(metadata, "model"))
+                .append(" · vendor: ").append(cleanMetadata(vendor)).append("\n");
+        for (String key : List.of("authentication", "thinking", "source")) {
+            if (metadata.containsKey(key)) details.append("  ").append(key).append(": ")
+                    .append(metadataValue(metadata, key)).append("\n");
+        }
+        details.append("  tokens: ").append(metadataValue(metadata, "input_tokens")).append(" in · ")
+                .append(metadataValue(metadata, "output_tokens")).append(" out");
+        if (metadata.containsKey("cache_read_tokens")) details.append(" · ")
+                .append(metadataValue(metadata, "cache_read_tokens")).append(" cache read · ")
+                .append(metadataValue(metadata, "cache_creation_tokens")).append(" cache write");
+        if (metadata.containsKey("total_tokens")) details.append(" · ")
+                .append(metadataValue(metadata, "total_tokens")).append(" total (provider)");
+        String streaming = metadata.getOrDefault("stream_output_tokens", "0");
+        if (!streaming.equals("0")) details.append(" · streaming ~")
+                .append(cleanMetadata(streaming)).append(" out (estimated)");
+        details.append("\n  elapsed: ").append(elapsed);
+        if (metadata.containsKey("tool_uses")) details.append(" · tools: ")
+                .append(metadataValue(metadata, "tool_uses"));
+        if (metadata.containsKey("context_tokens")) details.append(" · last input: ")
+                .append(metadataValue(metadata, "context_tokens"));
+        details.append("\n");
+    }
+
+    private static String metadataValue(Map<String, String> metadata, String key) {
+        return cleanMetadata(metadata.getOrDefault(key, "?"));
+    }
+
+    private static String cleanMetadata(String value) {
+        return AnsiConstants.stripAnsi(value).replaceAll("[\\p{Cntrl}]", " ").strip();
     }
 
     private SubagentEntry findSubagent(String id) {

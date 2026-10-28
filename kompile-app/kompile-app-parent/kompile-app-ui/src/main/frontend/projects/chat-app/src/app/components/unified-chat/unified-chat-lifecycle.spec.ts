@@ -40,6 +40,8 @@ describe('Browser conversation lifecycle', () => {
     component.newChat();
   });
   afterEach(() => {
+    service.detachStreaming();
+    for (const store of [localStorage, sessionStorage]) store.removeItem('kompile-live-run:' + workspaceId);
     (component as any).cleanupStreaming();
     (component as any).unsubscribeStreamingSubs();
     http.verify();
@@ -75,7 +77,7 @@ describe('Browser conversation lifecycle', () => {
         processes: [{ id: 'build', state: 'RUNNING', kind: 'command' }], tasks: [] }, 3)));
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(component.activityIndicator.label).toBe('Running 1 process');
-    component.detachRunView(); first.close();
+    component.detachRunView(); // Detachment actively closes the browser reader.
     await new Promise(resolve => setTimeout(resolve, 0));
     component.resumeSavedRun();
     returned.enqueue(new TextEncoder().encode(event('activity', { backgroundable: false, turnActive: false, controlsOpen: true,
@@ -87,7 +89,7 @@ describe('Browser conversation lifecycle', () => {
     expect(String(fetchSpy.calls.mostRecent().args[0])).toContain('/events/harness-workspace-away?after=3');
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     expect(fetchSpy.calls.allArgs().every(args => !args[1]?.method)).toBeTrue();
-    component.detachRunView(); returned.close();
+    component.detachRunView();
     await new Promise(resolve => setTimeout(resolve, 0));
     localStorage.removeItem('kompile-live-run:' + workspaceId);
   });

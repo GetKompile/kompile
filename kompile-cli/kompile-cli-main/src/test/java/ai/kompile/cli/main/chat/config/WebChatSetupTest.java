@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.chat.exec.ChatSessionStateStore;
@@ -46,6 +47,24 @@ class WebChatSetupTest {
         assertEquals("work", selected.getCredentialName());
         assertEquals("https://example.test/v1", selected.getBaseUrl());
         assertEquals("saved-secret", selected.getApiKey());
+    }
+    @Test void claudeCodeRouteSelectsNamedSetupTokensOrClaudeCodesOwnLogin() throws Exception {
+        liveModels("claude-opus-5-5");
+        CredentialStore.create().put("claude-code", "work", ManagedCredential.oauth("sk-ant-oat01-work-token", "",
+                System.currentTimeMillis() + java.util.concurrent.TimeUnit.DAYS.toMillis(365)), true);
+        var ownLogin = JsonUtils.standardMapper().createObjectNode().put("mode", "standard").put("runtime", "direct")
+                .put("vendor", "anthropic").put("authMethod", "native");
+        var onOwnLogin = WebChatSetup.selection(directory, ownLogin, false);
+        assertTrue(onOwnLogin.isClaudeCliNative());
+        assertNull(onOwnLogin.resolveClaudeCodeToken(), "Claude Code's own login gets no token");
+
+        // Picking a stored setup token pins it by name and puts the route on OAuth.
+        var pinned = WebChatSetup.selection(directory, ownLogin.deepCopy().put("credentialName", "work"), false);
+        assertEquals("oauth", pinned.getAuthenticationMethod());
+        assertEquals("work", pinned.getCredentialName());
+        assertEquals("sk-ant-oat01-work-token", pinned.resolveClaudeCodeToken());
+        assertThrows(IllegalArgumentException.class, () -> WebChatSetup.selection(directory,
+                ownLogin.deepCopy().put("credentialName", "missing"), false));
     }
     @Test void changingVendorDoesNotCarryProjectModelOrCredential() throws Exception {
         var config = new ChatConfig("openai", null, "project-model", "https://example.test/v1");

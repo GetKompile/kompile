@@ -14,26 +14,27 @@ public final class ChatCommandCatalog {
     public record Entry(String name, WebSupport webSupport) { }
 
     private static final Set<String> NAMES = Set.of(
-            "quit", "exit", "resources", "resource-monitor", "help", "auth", "setup", "provider", "tools", "subagents",
-            "local-tools", "tool", "local-tool", "status", "dashboard", "title", "history", "diffs", "clear", "redraw",
+            "quit", "exit", "resources", "resource-monitor", "help", "auth", "setup", "provider", "tools", "subagents", "subagent-config",
+            "btw", "local-tools", "tool", "local-tool", "status", "dashboard", "title", "history", "diffs", "clear", "redraw",
             "dashboard-summary", "dashboard-tools", "dashboard-judge", "dashboard-tests", "dashboard-crawl",
             "dashboard-graph", "dashboard-tokens", "dashboard-tasks", "dashboard-processes", "dashboard-timeline", "timeline",
             "restart", "reset", "reset-all", "compact", "auto-compact", "rag", "agents", "local-agents",
             "agent", "local-agent", "config", "sessions", "ask", "agent-chat", "crawl", "conversations",
             "transcript", "copy", "memory", "recall", "reminder", "reminder-global", "continue",
-            "permissions", "todos",
+            "continue-trigger", "hooks",
+            "permissions", "todos", "todos-ongoing", "todos-completed", "todos-canceled", "test-milestones",
             "plan", "queue", "queues", "queue-send", "queue-send-all", "queue-remove", "queue-edit",
             "queue-move", "queue-clear", "queue-status", "loop", "loop-global", "jobs", "jobs-remove",
             "jobs-clear", "activity", "processes", "process-kill", "process-output", "process-status",
             "process-monitors", "statusbar", "auto-dequeue", "stats", "usage", "passthrough", "resume", "resume-all", "mode", "menu",
             "skills", "roles", "role", "model", "thinking", "fast", "ultracode", "mcp", "enforce", "enforcer", "judge", "judge-global",
-            "direction", "forward", "image", "file", "attach", "attachments");
-    private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar", "resource-monitor", "redraw");
+            "direction", "deflection", "forward", "image", "file", "attach", "attachments");
+    private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar", "resource-monitor", "redraw", "btw", "subagent-config");
     private static final Set<String> LIVE = Arrays.stream((
             "clear restart reset reset-all compact auto-compact rag agent local-agent role fast ultracode mcp title "
             + "memory permissions plan queue queues queue-send queue-send-all queue-remove queue-edit queue-move "
             + "queue-clear queue-status loop loop-global jobs jobs-remove jobs-clear auto-dequeue passthrough "
-            + "resume resume-all mode enforce enforcer judge judge-global direction forward image file attach attachments "
+            + "resume resume-all mode enforce enforcer judge judge-global direction deflection forward image file attach attachments "
             + "activity processes process-kill process-output process-status process-monitors")
             .split(" ")).collect(Collectors.toUnmodifiableSet());
     /**
@@ -55,7 +56,8 @@ public final class ChatCommandCatalog {
         if ("help".equals(name) || "usage".equals(name) || "skills".equals(name) || "model".equals(name)
                 || "role".equals(name) || "thinking".equals(name) || "fast".equals(name) || "ultracode".equals(name)
                 || "reminder".equals(name) || "reminder-global".equals(name)
-                || "continue".equals(name) || "judge".equals(name) || "judge-global".equals(name)
+                || "continue".equals(name) || "continue-trigger".equals(name)
+                || "judge".equals(name) || "judge-global".equals(name)
                 || "loop".equals(name) || "loop-global".equals(name)
                 || "queue".equals(name) || "queues".equals(name)
                 || "queue-remove".equals(name) || "queue-edit".equals(name)
@@ -92,6 +94,9 @@ public final class ChatCommandCatalog {
                 + "\n/continue is fully supported over web input: the auto-reply configuration is "
                 + "project-global file-backed state, so on/off/keywords/reply edits persist for the "
                 + "interactive CLI too; the firing itself stays a live-session behavior."
+                + "\n/continue-trigger is the trigger-focused view of that same configuration: "
+                + "list/add/remove/reset/test/on/off/reply persist to the same project-global file "
+                + "and fire the same auto-reply as /continue."
                 + "\n/judge and /judge-global support the durable controls over web input: the "
                 + "global master switch (harness config) and per-session guidance (\"/judge "
                 + "feedback <text>\") persist in the same files the live CLI reads; live-session "

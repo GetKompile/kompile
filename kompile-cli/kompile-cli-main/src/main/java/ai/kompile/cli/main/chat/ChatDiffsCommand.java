@@ -89,6 +89,7 @@ final class ChatDiffsCommand {
             int end = tail.lastIndexOf('\n');
             int first = bounded ? tail.indexOf('\n') + 1 : 0;
             String newestActivity = null;
+            String projectDirectory = null;
             while (end >= first && calls.size() < count) {
                 int previous = tail.lastIndexOf('\n', end - 1);
                 int begin = Math.max(first, previous + 1);
@@ -96,6 +97,9 @@ final class ChatDiffsCommand {
                     JsonNode call = JsonUtils.standardMapper().readTree(tail.substring(begin, end));
                     boolean thisSession = call != null
                             && sessionId.equals(call.path("sessionId").asText());
+                    if (thisSession && projectDirectory == null) {
+                        projectDirectory = call.path("projectDirectory").asText(null);
+                    }
                     if (thisSession && !call.path("isError").asBoolean()
                             && EDIT_TOOLS.contains(toolName(call.path("toolName").asText()))) {
                         calls.add(call);
@@ -132,7 +136,7 @@ final class ChatDiffsCommand {
             }
             if (bounded) output.accept("Only the most recent " + maxTailBytes
                     + " bytes of this session's tool calls were inspected.");
-            appendNewerEditsInOtherSessions(file, calls, newestActivity, output);
+            appendNewerEditsInOtherSessions(file, calls, newestActivity, projectDirectory, output);
         } catch (IOException | IllegalArgumentException e) {
             output.accept("Could not load recent diffs: " + e.getMessage());
         }
@@ -154,12 +158,16 @@ final class ChatDiffsCommand {
      * newest edits from the freshest sibling journals, labeled, instead of stale-looking output.
      */
     private void appendNewerEditsInOtherSessions(Path ownFile, List<JsonNode> ownCalls,
-                                                 String ownNewestActivity, Consumer<String> output) {
-        String newestOwnEdit = ownCalls.isEmpty() ? null
-                : ownCalls.get(0).path("timestamp").asText(null);
-        boolean ownJournalLooksStale = newestOwnEdit == null
-                || (ownNewestActivity != null && ownNewestActivity.compareTo(newestOwnEdit) > 0);
-        if (!ownJournalLooksStale) return;
+                                                 String ownNewestActivity, String projectDirectory,
+                                                 Consumer<String> output) {
+        Instant newestOwnEdit = ownCalls.isEmpty() ? null
+                : parseInstant(ownCalls.get(0).path("timestamp").asText(null));
+        Instant newestActivity = parseInstant(ownNewestActivity);
+        boolean ownJournalLooksStale = ownCalls.isEmpty()
+                || (newestOwnEdit != null && newestActivity != null && newestActivity.isAfter(newestOwnEdit));
+        // Never guess a project for legacy records: sibling journals span all projects.
+        if (!ownJournalLooksStale || projectDirectory == null || projectDirectory.isBlank()) return;
+        Instant cutoff = newestOwnEdit == null ? Instant.MIN : newestOwnEdit;
         try (var stream = Files.list(toolCallsDirectory)) {
             List<Path> siblings = stream
                     .filter(p -> !p.equals(ownFile))
@@ -178,28 +186,22 @@ final class ChatDiffsCommand {
                     .toList();
             List<JsonNode> found = new ArrayList<>();
             for (Path sibling : siblings) {
-                JsonNode edit = newestEditIn(sibling);
+                JsonNode edit = newestEditIn(sibling, projectDirectory, cutoff);
                 if (edit != null) found.add(edit);
                 if (found.size() >= 5) break;
             }
             found.sort(java.util.Comparator.comparing(
-                    (JsonNode n) -> n.path("timestamp").asText("")).reversed());
-            if (found.isEmpty()) {
-                output.accept(renderer.dim("\nNo edits recorded by any recent session either — edits made"
-                        + " by your agent's native tools do not pass through kompile."));
-                return;
-            }
+                    (JsonNode n) -> parseInstant(n.path("timestamp").asText(null))).reversed());
+            if (found.isEmpty()) return;
             output.accept(renderer.dim("\nNewer edit activity recorded in other recent sessions"
                     + " (this session's newest edit is older than its newest activity):"));
             for (JsonNode edit : found) {
                 boolean lockOnly = isRegisterEditCall(edit);
-                String agent = lockOnly
-                        ? edit.path("agentName").asText("unknown")
-                        : TerminalRenderer.printableToolOutput(edit.path("agentName").asText("unknown"));
+                String agent = TerminalRenderer.printableToolOutput(edit.path("agentName").asText("unknown"));
                 output.accept(renderer.dim("  " + localTimestamp(edit.path("timestamp").asText(null))
                         + "  " + (lockOnly ? "edit lock" : TerminalRenderer.printableToolOutput(edit.path("toolName").asText()))
-                        + "  " + firstEditPath(edit)
-                        + "  [session " + shortSessionId(edit.path("sessionId").asText())
+                        + "  " + TerminalRenderer.printableToolOutput(firstEditPath(edit))
+                        + "  [session " + TerminalRenderer.printableToolOutput(shortSessionId(edit.path("sessionId").asText()))
                         + ", agent " + agent
                         + (lockOnly ? " — native edit, diff not captured" : "")
                         + "]"));
@@ -210,7 +212,7 @@ final class ChatDiffsCommand {
     }
 
     /** Newest non-error edit record in one journal file, read from the tail. */
-    private JsonNode newestEditIn(Path file) {
+    private JsonNode newestEditIn(Path file, String projectDirectory, Instant cutoff) {
         try (var channel = Files.newByteChannel(file, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
             long size = channel.size();
             long start = Math.max(0, size - MAX_TAIL_BYTES);
@@ -226,7 +228,10 @@ final class ChatDiffsCommand {
                 int begin = Math.max(first, previous + 1);
                 try {
                     JsonNode call = JsonUtils.standardMapper().readTree(tail.substring(begin, end));
-                    if (call != null && !call.path("isError").asBoolean()
+                    Instant timestamp = call == null ? null : parseInstant(call.path("timestamp").asText(null));
+                    if (call != null && timestamp != null && timestamp.isAfter(cutoff)
+                            && sameProject(projectDirectory, call.path("projectDirectory").asText(null))
+                            && !call.path("isError").asBoolean()
                             && (EDIT_TOOLS.contains(toolName(call.path("toolName").asText()))
                             || isRegisterEditCall(call))) {
                         return call;
@@ -248,17 +253,33 @@ final class ChatDiffsCommand {
      * journaled like any other tool call, with the target path and agent name.
      */
     private static boolean isRegisterEditCall(JsonNode call) {
-        if (!"edit_coordinator".equals(call.path("toolName").asText())) return false;
-        JsonNode input = call.path("toolInput");
-        if (input.isTextual()) {
-            try {
-                input = JsonUtils.standardMapper().readTree(input.asText());
-            } catch (IOException e) {
-                return false;
-            }
+        if (!"edit_coordinator".equals(toolName(call.path("toolName").asText()))) return false;
+        try {
+            String action = recordedInput(call).path("action").asText();
+            return "register_edit".equals(action) || "register_edits".equals(action);
+        } catch (IOException ignored) {
+            return false;
         }
-        String action = input.path("action").asText();
-        return "register_edit".equals(action) || "register_edits".equals(action);
+    }
+
+    private static JsonNode recordedInput(JsonNode call) throws IOException {
+        JsonNode input = call.path("toolInput");
+        if (input.isTextual()) input = JsonUtils.standardMapper().readTree(input.asText());
+        if (input == null) return JsonUtils.standardMapper().createObjectNode();
+        if (input.has("effectiveArguments")) input = input.get("effectiveArguments");
+        else if (input.has("arguments")) input = input.get("arguments");
+        return input;
+    }
+
+    private static Instant parseInstant(String value) {
+        try { return value == null ? null : Instant.parse(value); }
+        catch (java.time.format.DateTimeParseException ignored) { return null; }
+    }
+
+    private static boolean sameProject(String expected, String actual) {
+        if (actual == null || actual.isBlank()) return false;
+        try { return Path.of(expected).toAbsolutePath().normalize().equals(Path.of(actual).toAbsolutePath().normalize()); }
+        catch (java.nio.file.InvalidPathException ignored) { return false; }
     }
 
     private static long safeLastModified(Path file) {
@@ -271,13 +292,11 @@ final class ChatDiffsCommand {
 
     /** First path-ish argument of an edit record, for the one-line cross-session listing. */
     private static String firstEditPath(JsonNode edit) {
-        JsonNode input = edit.path("toolInput");
-        if (input.isTextual()) {
-            try {
-                input = JsonUtils.standardMapper().readTree(input.asText());
-            } catch (IOException e) {
-                return "(unparsed arguments)";
-            }
+        JsonNode input;
+        try {
+            input = recordedInput(edit);
+        } catch (IOException e) {
+            return "(unparsed arguments)";
         }
         for (String key : List.of("file_path", "path", "notebook_path")) {
             if (input.path(key).isTextual()) return input.get(key).asText();
@@ -314,7 +333,7 @@ final class ChatDiffsCommand {
                     .withZone(ZoneId.systemDefault())
                     .format(Instant.parse(rawTimestamp));
         } catch (DateTimeParseException badTimestamp) {
-            return rawTimestamp;
+            return TerminalRenderer.printableToolOutput(rawTimestamp);
         }
     }
 

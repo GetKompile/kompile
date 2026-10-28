@@ -380,7 +380,7 @@ public class VlmExecutionService {
             preprocessed.close();
             return embedding;
         } finally {
-            tempFile.delete();
+            deleteTempImage(tempFile);
         }
     }
 
@@ -461,9 +461,7 @@ public class VlmExecutionService {
             boolean doSample = false;
 
             // Preprocess image through the model's preprocessor
-            INDArray preprocessedImage = vlmModel.preprocessImage(
-                bufferedImageToFile(image)
-            );
+            INDArray preprocessedImage = preprocessImage(image);
 
             // Generate using VLM's own pipeline (handles vision encoder → embedding merge → decode)
             GenerationResult genResult = vlmModel.generateWithMetrics(
@@ -526,7 +524,7 @@ public class VlmExecutionService {
 
             // OCR is done via VLM generation with OCR prompt
             if (vlmModel != null && "ready".equals(modelStatus)) {
-                INDArray preprocessed = vlmModel.preprocessImage(bufferedImageToFile(image));
+                INDArray preprocessed = preprocessImage(image);
                 String ocrPrompt = "Recognize all text in this image.";
                 String ocrText = vlmModel.generate(preprocessed, ocrPrompt);
                 long elapsed = System.currentTimeMillis() - startTime;
@@ -978,9 +976,34 @@ public class VlmExecutionService {
      */
     private File bufferedImageToFile(BufferedImage image) throws IOException {
         File tempFile = File.createTempFile("vlm-input-", ".png");
-        tempFile.deleteOnExit();
-        ImageIO.write(image, "png", tempFile);
-        return tempFile;
+        boolean written = false;
+        try {
+            if (!ImageIO.write(image, "png", tempFile)) {
+                throw new IOException("No PNG writer available");
+            }
+            written = true;
+            return tempFile;
+        } finally {
+            if (!written) {
+                deleteTempImage(tempFile);
+            }
+        }
+    }
+
+    private INDArray preprocessImage(BufferedImage image) throws IOException {
+        File tempFile = bufferedImageToFile(image);
+        try {
+            return vlmModel.preprocessImage(tempFile);
+        } finally {
+            deleteTempImage(tempFile);
+        }
+    }
+
+    private void deleteTempImage(File tempFile) {
+        if (!tempFile.delete() && tempFile.exists()) {
+            tempFile.deleteOnExit();
+            log.warn("Failed to delete VLM image staging file {}", tempFile);
+        }
     }
 
     private String convertDocTagsToMarkdownBasic(String docTags) {

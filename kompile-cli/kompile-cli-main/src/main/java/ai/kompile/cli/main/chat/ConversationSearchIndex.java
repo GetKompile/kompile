@@ -397,21 +397,43 @@ public final class ConversationSearchIndex {
                                               String agent, String project, ToolCallIndex.SortField field,
                                               ToolCallIndex.SortDirection direction, int limit)
             throws SQLException, IOException {
-        return catalogQuery(query, tool, session, category, agent, project, field, direction, limit, null);
+        return catalogSearch(query, tool, session, category, agent, project, field, direction, limit, 0);
+    }
+
+    public List<ToolCallRecord> catalogSearch(String query, String tool, String session, String category,
+                                              String agent, String project, ToolCallIndex.SortField field,
+                                              ToolCallIndex.SortDirection direction, int limit, int offset)
+            throws SQLException, IOException {
+        if (offset < 0) throw new IllegalArgumentException("offset must be non-negative");
+        return catalogQuery(query, tool, session, category, agent, project, field, direction, limit, null, offset);
     }
 
     public List<ToolCallRecord> catalogGrouped(String query, String tool, String session, String category,
                                                String agent, String project, ToolCallIndex.SortField field,
                                                ToolCallIndex.SortDirection direction, int limit, boolean byProject)
             throws SQLException, IOException {
-        String partition = byProject ? "coalesce(project,'(unknown)')" : "coalesce(category,'general')";
+        return catalogGrouped(query, tool, session, category, agent, project, field, direction,
+                limit, byProject ? "project" : "category");
+    }
+
+    public List<ToolCallRecord> catalogGrouped(String query, String tool, String session, String category,
+                                               String agent, String project, ToolCallIndex.SortField field,
+                                               ToolCallIndex.SortDirection direction, int limit, String groupBy)
+            throws SQLException, IOException {
+        String partition = switch (groupBy) {
+            case "project" -> "coalesce(project,'(unknown)')";
+            case "category" -> "coalesce(category,'general')";
+            case "agent" -> "coalesce(agent,'(unknown)')";
+            case "tool" -> "coalesce(tool,'(unknown)')";
+            default -> throw new IllegalArgumentException("group_by must be category, project, agent, or tool");
+        };
         return catalogQuery(query, tool, session, category, agent, project, field, direction,
-                limit > 0 ? limit : Integer.MAX_VALUE, partition);
+                limit > 0 ? limit : Integer.MAX_VALUE, partition, 0);
     }
 
     private List<ToolCallRecord> catalogQuery(String query, String tool, String session, String category,
                                              String agent, String project, ToolCallIndex.SortField field,
-                                             ToolCallIndex.SortDirection direction, int limit, String partition)
+                                             ToolCallIndex.SortDirection direction, int limit, String partition, int offset)
             throws SQLException, IOException {
         syncToolCalls();
         String source = session == null ? COMBINED : "tool-calls/" + session + ".jsonl";
@@ -440,10 +462,11 @@ public final class ConversationSearchIndex {
                 (direction == ToolCallIndex.SortDirection.ASC ? " ASC" : " DESC") + ",ordinal ASC";
         args.add(limit > 0 ? limit : 100);
         String sql = partition == null
-                ? "SELECT json FROM catalog_calls" + where + " ORDER BY " + order + " LIMIT ?"
+                ? "SELECT json FROM catalog_calls" + where + " ORDER BY " + order + " LIMIT ? OFFSET ?"
                 : "SELECT json FROM (SELECT catalog_calls.*,row_number() OVER (PARTITION BY " + partition
                     + " ORDER BY " + order + ") AS group_rank FROM catalog_calls" + where
                     + ") WHERE group_rank<=? ORDER BY " + order;
+        if (partition == null) args.add(offset);
         List<ToolCallRecord> result = new ArrayList<>();
         try (Connection c = open(true); PreparedStatement p = c.prepareStatement(sql)) {
             bind(p, args);

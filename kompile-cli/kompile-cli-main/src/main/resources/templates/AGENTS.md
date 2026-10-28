@@ -57,6 +57,17 @@ Code navigation: for definitions, symbols, callers/implementors and change impac
 4. For multi-step tasks, ALWAYS use `todowrite` to create and maintain a task list.
 5. For spawning subagents, ALWAYS use `task`, `multi_task`, or `quorum_task` — never raw subprocess commands.
 6. Before starting a multi-step task, EVALUATE whether parts can be delegated in parallel.
+7. Delegation model ids AUTO-ROUTE the provider for `agent=kompile`: `claude-*` runs on
+   anthropic, `gpt-*` on openai/codex, `glm-*` on zai — you do not need `provider=` for
+   first-party families. If a dispatch errors with "hosted by several configured providers",
+   pass `provider=<id>` to pick one, or call `resolve_model` (action=`families` for the
+   routing table, `models` + `provider=` + `query=` for a provider's live catalog) first.
+   Kompile-managed MCP dispatch is `task(agent="kompile", provider="anthropic", model="...",
+   authentication_method="oauth")` for Claude Code login; `api-key` selects the separate
+   Anthropic HTTP API. Model-only switches to Anthropic default to the login route;
+   same-provider requests inherit the existing auth choice. An external vendor `Agent`
+   tool is not a substitute for Kompile dispatch. Check dispatch `provider`, `auth`, and
+   `transport` in the task result/log; a 401 is an error, never a request to change accounts.
 
 ## COMPLIANCE
 

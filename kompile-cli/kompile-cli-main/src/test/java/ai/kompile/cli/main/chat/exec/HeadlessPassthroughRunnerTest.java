@@ -182,6 +182,54 @@ class HeadlessPassthroughRunnerTest {
         assertEquals("original-id", runner.loadNativeId(chat.id(), directory, "codex"));
     }
 
+    @Test void nativeToolsStreamBoundedCardsAndCompleteWithTheTerminalDetail() throws Exception {
+        for (String framework : List.of("codex", "pi")) {
+            var events = new ArrayList<HeadlessRunEvent>();
+            var runner = new HeadlessPassthroughRunner(directory.resolve("native"), (agent, cwd, config, skip) -> new Stub(agent, cwd) {
+                @Override public NativeResult runHeadless(String prompt, long timeout, Consumer<PassthroughStreamParser.PassthroughEvent> sink) {
+                    sink.accept(new PassthroughStreamParser.SessionInit("native-id"));
+                    sink.accept(new PassthroughStreamParser.ToolUse("bash", "{\"command\":\"build\"}"));
+                    sink.accept(new PassthroughStreamParser.ToolOutput("compiling\n"));
+                    sink.accept(new PassthroughStreamParser.ToolOutput("pi".equals(agent) ? "compiling\nlinking\n" : "linking\n"));
+                    sink.accept(new PassthroughStreamParser.ToolComplete("bash", "failed", 1, false));
+                    sink.accept(new PassthroughStreamParser.ToolUse("read", "{\"file_path\":\"App.java\"}"));
+                    sink.accept(new PassthroughStreamParser.ToolComplete("read", "class App {}", 0, false));
+                    sink.accept(new PassthroughStreamParser.ToolUse("bash", "{\"command\":\"verbose\"}"));
+                    sink.accept(new PassthroughStreamParser.ToolOutput("x".repeat(100_000)));
+                    sink.accept(new PassthroughStreamParser.TurnComplete(1000, 0.02, 2, 20, 10, 5, 0));
+                    return new NativeResult(0, null, "native-id");
+                }
+            });
+            assertEquals(0, runner.run(options(UUID.randomUUID().toString(), false, config(framework), events)).exitCode());
+            var live = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.TOOL_OUTPUT).toList();
+            assertEquals(3, live.size());
+            assertEquals("native-1", live.get(0).callId());
+            var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            var wire = mapper.readTree(ExecJsonEvents.event(mapper, live.get(0)));
+            assertEquals("tool_output", wire.path("type").asText());
+            assertEquals("native-1", wire.path("call_id").asText());
+            assertEquals(live.get(0).data(), wire.path("detail"));
+            assertEquals("compiling\nlinking", live.get(1).data().path("sections").path(0).path("runs").path(0).path("text").asText());
+            assertTrue(live.get(2).data().toString().length() < 5000);
+            assertTrue(live.get(2).data().path("sections").path(0).has("note"));
+            var done = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.TOOL_COMPLETED).toList();
+            assertFalse(done.get(0).ok(), "nonzero native exit must fail even without explicit error flag");
+            assertTrue(done.get(0).durationMs() >= 0);
+            assertEquals("compiling\nlinking\nfailed", done.get(0).data().path("sections").path(0).path("runs").path(0).path("text").asText());
+            assertEquals("read", done.get(1).toolName());
+            assertEquals("App.java", done.get(1).data().path("sections").path(0).path("runs").path(0).path("file").asText());
+            assertFalse(events.stream().anyMatch(e -> e.type() == HeadlessRunEvent.Type.ASSISTANT_DELTA));
+            var started = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.TOOL_STARTED).findFirst().orElseThrow();
+            assertEquals("Bash", started.data().path("displayName").asText());
+            assertTrue(started.data().path("action").asText().contains("build"));
+            var stats = mapper.readTree(events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.STATS).findFirst().orElseThrow().text());
+            assertEquals(1000, stats.path("durationMs").asLong());
+            assertEquals(0.02, stats.path("costUsd").asDouble());
+            assertEquals(2, stats.path("numTurns").asInt());
+            assertEquals(10, stats.path("tokenMetrics").path("tokensPerSecond").asDouble());
+        }
+    }
+
     @Test void streamsTypedEventsPinsNativeIdAndRestoresExactly() throws Exception {
         String session = UUID.randomUUID().toString();
         var events = new ArrayList<HeadlessRunEvent>();

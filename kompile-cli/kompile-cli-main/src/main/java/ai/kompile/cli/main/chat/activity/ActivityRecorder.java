@@ -44,16 +44,30 @@ public final class ActivityRecorder {
                                               String actorId, String operationId,
                                               ActivitySourceRef source,
                                               java.util.Map<String, String> attributes) {
+        ActivityEvent event = event(identity, eventType, actorId, operationId, source, attributes);
+        append(event);
+        return event;
+    }
+
+    /** A receipt for producers whose delivery cannot be treated as best-effort. */
+    public synchronized boolean recordConfirmed(ActivityIdentity identity, String eventType,
+                                                 String actorId, String operationId,
+                                                 ActivitySourceRef source,
+                                                 java.util.Map<String, String> attributes) {
+        return append(event(identity, eventType, actorId, operationId, source, attributes));
+    }
+
+    private ActivityEvent event(ActivityIdentity identity, String eventType, String actorId,
+                                String operationId, ActivitySourceRef source,
+                                java.util.Map<String, String> attributes) {
         if (identity == null) {
             warn("Activity recording skipped because identity is missing");
             return null;
         }
-        ActivityEvent event = new ActivityEvent(ActivityEvent.CURRENT_SCHEMA_VERSION,
+        return new ActivityEvent(ActivityEvent.CURRENT_SCHEMA_VERSION,
                 UUID.randomUUID().toString(), identity, identity.runId(), actorId,
                 identity.parentActorId(), 0L, clock.instant(),
                 eventType, operationId, List.of(), source, attributes);
-        append(event);
-        return event;
     }
 
     public synchronized boolean append(ActivityEvent event) {

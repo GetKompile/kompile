@@ -61,6 +61,10 @@ final class TestCaptureConfig {
         return cwd;
     }
 
+    static TestCaptureConfig defaults() {
+        return new TestCaptureConfig(JsonUtils.standardMapper().createObjectNode());
+    }
+
     static TestCaptureConfig load(Path root, Consumer<String> warning) {
         try {
             return new TestCaptureConfig(effective(root));

@@ -47,7 +47,14 @@ public class StdioQuorumTaskTool {
             "to compare, vote on, or synthesize into a consensus.\n\n" +
             "Each agent runs independently with the same prompt. Results are returned together " +
             "so you can identify agreement/disagreement across agents.\n\n" +
+            "agent=kompile (alias general) runs Kompile's own agent: the model id auto-routes its provider " +
+            "(claude-* to anthropic, gpt-* to openai/codex, glm-* to zai); ambiguous multi-host families error " +
+            "naming candidates — pass provider= or call resolve_model first. " +
             "Available agents: codex, claude, opencode, gemini, qwen, pi.";
+    }
+
+    public String compactHint() {
+        return "Same prompt in parallel: agents=[kompile,kompile], provider/model/authentication_method. Anthropic oauth=Claude login; api-key=HTTP API. resolve_model discovers routes. Vendor Agent is separate.";
     }
 
     public JsonNode parameterSchema() {
@@ -74,7 +81,14 @@ public class StdioQuorumTaskTool {
 
         var model = props.putObject("model");
         model.put("type", "string");
-        model.put("description", "Optional model override for every instance. When omitted, each agent resolves the selected role, project, user, then provider native default.");
+        model.put("description", "Optional model override for every instance. When omitted, each agent resolves the selected role, project, user, then provider native default. For agent=kompile the id auto-routes the provider (claude-* to anthropic, ...); ambiguous multi-host families error listing candidates.");
+
+        props.putObject("authentication_method").put("type", "string").put("description",
+                "Auth route for Kompile-native instances: oauth/native uses Claude Code login for anthropic; api-key uses its separate API.")
+                .putArray("enum").add("oauth").add("native").add("api-key");
+        var provider = props.putObject("provider");
+        provider.put("type", "string");
+        provider.put("description", "Optional Kompile chat provider override for instances running on agent=kompile/general (e.g. anthropic, openai, zai). Selects the provider's own auth route. Anthropic defaults to Claude Code login; authentication_method=api-key selects its separate HTTP API. Use resolve_model for exact provider/model/auth arguments.");
 
         var thinking = props.putObject("thinking");
         thinking.put("type", "string");
@@ -96,6 +110,8 @@ public class StdioQuorumTaskTool {
         String roleName = (String) arguments.get("role");
         String model = (String) arguments.get("model");
         String thinking = (String) arguments.get("thinking");
+        String provider = (String) arguments.get("provider");
+        String authenticationMethod = (String) arguments.get("authentication_method");
 
         if (prompt == null || prompt.isEmpty()) {
             return ToolResult.error("prompt is required");
@@ -134,7 +150,7 @@ public class StdioQuorumTaskTool {
             int instance = seenByAgent.merge(agentName, 1, Integer::sum);
             String label = totalByAgent.get(agentName) > 1 ? agentName + "#" + instance : agentName;
             futures.add(new AgentFuture(label,
-                executor.submit(() -> runAgent(agentName, prompt, roleName, model, thinking, desc))));
+                executor.submit(() -> runAgent(agentName, prompt, roleName, model, thinking, provider, authenticationMethod, desc))));
         }
 
         // Collect results — full output goes to file, summary to tool result
@@ -209,7 +225,7 @@ public class StdioQuorumTaskTool {
     }
 
     private AgentResult runAgent(String agentName, String prompt, String roleName,
-                                 String model, String thinking, String desc) {
+                                 String model, String thinking, String provider, String authenticationMethod, String desc) {
         try {
             AgentConfig agentConfig = AgentConfig.builder(agentName)
                 .displayName(agentName.substring(0, 1).toUpperCase() + agentName.substring(1))
@@ -218,6 +234,8 @@ public class StdioQuorumTaskTool {
                 .roleName(roleName)
                 .modelOverride(model)
                 .thinkingOverride(thinking)
+                .providerOverride(provider)
+                .authenticationMethodOverride(authenticationMethod)
                 .build();
 
             String result = subagentRunner.forkForSubagent().runSubagent(agentConfig, prompt);

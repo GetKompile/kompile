@@ -75,12 +75,12 @@ class OAuthProviderFlowsTest {
     }
 
     @Test
-    void anthropicOauthBelongsToClaudeCodeWhileItsApiKeyStaysManaged() {
-        // Claude Code owns Anthropic's subscription login: no Kompile OAuth flow
-        // exists for it, so no managed-OAuth path can pick up the anthropic id.
+    void anthropicOauthIsTheClaudeCodeSetupTokenWhileItsApiKeyStaysManaged() {
+        // Anthropic's OAuth is the Claude Code setup-token flow, stored under its own
+        // claude-code provider, so the anthropic id stays the API-key route's alone.
         OAuthProviderRegistry registry = new OAuthProviderRegistry();
         assertTrue(registry.find("anthropic").isEmpty());
-        assertTrue(registry.oauthProviderForVendor("anthropic").isEmpty());
+        assertEquals(ClaudeCodeOAuthFlow.PROVIDER_ID, registry.oauthProviderForVendor("anthropic").orElseThrow());
         assertFalse(registry.isOAuthOnly("anthropic"));
         // The API-key route is unchanged.
         assertTrue(registry.supportsApiKey("anthropic"));

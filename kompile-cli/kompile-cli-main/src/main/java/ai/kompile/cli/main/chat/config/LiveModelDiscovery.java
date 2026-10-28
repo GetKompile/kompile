@@ -158,26 +158,61 @@ public final class LiveModelDiscovery {
     }
 
     /**
+     * Parse Antigravity's {@code agy models} listing: one model per line as
+     * {@code slug\tDisplay Label} (verified against the installed CLI, e.g.
+     * {@code gemini-3.8-flash-high\tGemini 3.8 Flash (High)}). The slug is the
+     * {@code --model} value; the label annotates the picker. Slugs carry no
+     * {@code provider/} prefix, so the generic {@link #parseNativeOutput} line
+     * match never fires for them — this parser owns agy's format.
+     */
+    static List<Model> parseAgyModelsOutput(String output) {
+        Map<String, ModelBuilder> models = new LinkedHashMap<>();
+        for (String line : output == null ? new String[0] : output.split("\\R")) {
+            String value = line.trim();
+            if (value.isEmpty() || value.startsWith("Fetching")) {
+                continue;
+            }
+            int tab = value.indexOf('\t');
+            if (tab <= 0) {
+                continue;
+            }
+            String slug = value.substring(0, tab).trim();
+            String label = value.substring(tab + 1).trim();
+            if (slug.isEmpty() || slug.contains(" ")) {
+                continue;
+            }
+            ModelBuilder model = models.computeIfAbsent(slug, ModelBuilder::new);
+            if (!label.isEmpty()) {
+                model.addVariant(slug, label);
+            }
+        }
+        return models.values().stream()
+                .map(ModelBuilder::build)
+                .toList();
+    }
+
+    /**
      * Claude Code's own model catalog for the Claude Code route: the rows its
      * model picker shows, each {@code value} exactly what {@code --model}
      * accepts, with the effort levels Claude Code reports for that model.
      * Flow: `claude auth status` gate first (not logged in → null +
      * authNotice); logged in → the stream-json {@code initialize} handshake
      * (the Agent SDK's supportedModels()). The handshake sends no user
-     * message, so no model turn runs, and Claude Code resolves its own login:
-     * Kompile never reads or uses Claude Code's credentials.
+     * message, so no model turn runs. Kompile never reads Claude Code's own
+     * credentials.
      */
     static List<Model> discoverClaudeCliModels() {
-        return discoverClaudeCliModels(null, null);
+        return discoverClaudeCliModels(null, null, null);
     }
 
     /**
-     * Same as {@link #discoverClaudeCliModels()} with two optional sinks:
-     * {@code authNotice} fires only when `claude auth status` says logged out;
-     * {@code listingError} fires when Claude Code is logged in but its catalog
-     * could not be read (Claude Code's own error text when it gave one).
+     * Same as {@link #discoverClaudeCliModels()}, run as a chat whose selected
+     * Claude Code credential has {@code setupToken} (null: Claude Code's own
+     * login), with two optional sinks: {@code authNotice} fires only when the
+     * route is logged out; {@code listingError} fires when it is logged in but
+     * the catalog could not be read (Claude Code's own error text when it gave one).
      */
-    static List<Model> discoverClaudeCliModels(Consumer<String> authNotice,
+    static List<Model> discoverClaudeCliModels(String setupToken, Consumer<String> authNotice,
             Consumer<String> listingError) {
         String binary = claudeBinary();
         if (binary == null) {
@@ -186,14 +221,14 @@ public final class LiveModelDiscovery {
             }
             return List.of();
         }
-        if (!claudeCodeLogin().loggedIn()) {
+        if (!claudeCodeLogin(setupToken).loggedIn()) {
             if (authNotice != null) {
                 authNotice.accept("claude is not logged in.");
             }
             return null;
         }
         ClaudeCatalog catalog = parseClaudeInitializeResponse(
-                runCaptured(claudeCatalogCommand(binary), CLAUDE_INITIALIZE_REQUEST));
+                runCaptured(claudeCatalogCommand(binary), CLAUDE_INITIALIZE_REQUEST, setupToken));
         if (catalog.models().isEmpty() && listingError != null) {
             listingError.accept(catalog.error());
         }
@@ -288,10 +323,26 @@ public final class LiveModelDiscovery {
      */
     public record ClaudeCodeLogin(boolean loggedIn, String authMethod, String subscriptionType,
                                   boolean apiKeyEnvironmentIgnored) {
+        /** authMethod value when the route runs on the chat's selected stored setup token. */
+        public static final String MANAGED_AUTH_METHOD = "Kompile-managed setup token";
+
+        /** The route runs on a stored claude-code credential, not the CLI's own login. */
+        public boolean managed() {
+            return MANAGED_AUTH_METHOD.equals(authMethod);
+        }
+
         /** One user-facing line stating exactly which login the Claude Code route uses. */
         public String describe() {
             if (!loggedIn) {
-                return "Claude Code is not logged in on this machine. Run `claude auth login` in a terminal.";
+                return "Claude Code is not logged in on this machine. Run `claude auth login` "
+                        + "in a terminal, or use /auth (Anthropic → OAuth) to sign in with a "
+                        + "setup token and select it.";
+            }
+            if (managed()) {
+                return "Claude Code runs on the selected " + authMethod
+                        + ", set as CLAUDE_CODE_OAUTH_TOKEN on this chat's claude process."
+                        + (apiKeyEnvironmentIgnored
+                        ? " ANTHROPIC_API_KEY is ignored here; it belongs to the Anthropic API-key route." : "");
             }
             List<String> details = new ArrayList<>();
             if (authMethod != null && !authMethod.isBlank()) details.add(authMethod);
@@ -299,7 +350,7 @@ public final class LiveModelDiscovery {
                 details.add(subscriptionType + " subscription");
             }
             return "Claude Code login verified" + (details.isEmpty() ? "" : " (" + String.join(", ", details) + ")")
-                    + " — Kompile stores no credential for this route."
+                    + " — no setup token is selected, so Claude Code uses its own login."
                     + (apiKeyEnvironmentIgnored
                     ? " ANTHROPIC_API_KEY is ignored here; it belongs to the Anthropic API-key route." : "");
         }
@@ -308,18 +359,34 @@ public final class LiveModelDiscovery {
     private static final Supplier<ClaudeCodeLogin> CLAUDE_AUTH_STATUS =
             () -> {
                 String binary = claudeBinary();
-                return parseClaudeAuthStatus(binary == null ? "" : runCaptured(List.of(binary, "auth", "status")),
+                return parseClaudeAuthStatus(
+                        binary == null ? "" : runCaptured(List.of(binary, "auth", "status")),
                         hasText(System.getenv("ANTHROPIC_API_KEY")));
             };
 
     private static volatile Supplier<ClaudeCodeLogin> claudeCodeLoginProbe = CLAUDE_AUTH_STATUS;
 
-    /** Run `claude auth status` for the Claude Code route. Never reads Claude Code's credential files. */
+    /** Claude Code's own login, as `claude auth status` reports it. */
     public static ClaudeCodeLogin claudeCodeLogin() {
+        return claudeCodeLogin(null);
+    }
+
+    /**
+     * Login state of a Claude Code route whose selected credential has
+     * {@code setupToken} ({@link ChatConfig#resolveClaudeCodeToken()}). Claude Code
+     * prefers CLAUDE_CODE_OAUTH_TOKEN over its own login, so a selected token is
+     * the login in use; with none, `claude auth status` reports Claude Code's own
+     * login. Never reads Claude Code's credential files.
+     */
+    public static ClaudeCodeLogin claudeCodeLogin(String setupToken) {
+        if (setupToken != null) {
+            return new ClaudeCodeLogin(true, ClaudeCodeLogin.MANAGED_AUTH_METHOD, null,
+                    hasText(System.getenv("ANTHROPIC_API_KEY")));
+        }
         return claudeCodeLoginProbe.get();
     }
 
-    /** Test seam: replace the `claude auth status` probe; null restores the real one. */
+    /** Test seam: replace the ambient `claude auth status` probe; null restores the real one. */
     public static void useClaudeCodeLoginProbe(Supplier<ClaudeCodeLogin> probe) {
         claudeCodeLoginProbe = probe == null ? CLAUDE_AUTH_STATUS : probe;
     }
@@ -361,23 +428,24 @@ public final class LiveModelDiscovery {
 
     /** Run one command to completion with stdin on the null device, capturing merged stdout+stderr. */
     private static String runCaptured(List<String> command) {
-        return runCaptured(command, null);
+        return runCaptured(command, null, null);
     }
 
     /**
      * Run one command to completion, capturing merged stdout+stderr. When
-     * {@code input} is given it is written to stdin, which is then closed.
-     * A timeout or spawn failure comes back as its reason, so callers can show
-     * why a probe produced nothing.
+     * {@code input} is given it is written to stdin, which is then closed. A
+     * {@code setupToken} is set as the process's CLAUDE_CODE_OAUTH_TOKEN, as the
+     * chat's own claude process gets it. A timeout or spawn failure comes back as
+     * its reason, so callers can show why a probe produced nothing.
      */
-    private static String runCaptured(List<String> command, String input) {
+    private static String runCaptured(List<String> command, String input, String setupToken) {
         Process process = null;
         ExecutorService readerExecutor = null;
         Future<String> outputTask = null;
         try {
-            ProcessBuilder builder = ClaudeCliClient.withoutApiKeyEnvironment(
+            ProcessBuilder builder = ClaudeCliClient.withSetupToken(ClaudeCliClient.withoutApiKeyEnvironment(
                             NativeCliProcess.processBuilder(List.copyOf(command), null))
-                    .redirectErrorStream(true);
+                    .redirectErrorStream(true), setupToken);
             if (input != null) {
                 builder.redirectInput(ProcessBuilder.Redirect.PIPE);
             }
@@ -491,7 +559,13 @@ public final class LiveModelDiscovery {
             }
             if (process.exitValue() != 0) return List.of();
             String retainedOutput = outputTask.get(2, TimeUnit.SECONDS);
-            return outputOverflow.get() ? List.of() : parseNativeOutput(retainedOutput);
+            if (outputOverflow.get()) return List.of();
+            String command = agent.getCommand() == null ? "" : agent.getCommand().toLowerCase(Locale.ROOT);
+            String name = agent.getName() == null ? "" : agent.getName().toLowerCase(Locale.ROOT);
+            if (command.contains("agy") || name.contains("agy") || command.contains("antigravity")) {
+                return parseAgyModelsOutput(retainedOutput);
+            }
+            return parseNativeOutput(retainedOutput);
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();

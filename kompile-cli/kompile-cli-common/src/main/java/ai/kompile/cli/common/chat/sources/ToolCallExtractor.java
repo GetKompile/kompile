@@ -31,6 +31,8 @@ import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.Optional;
 import java.util.stream.Stream;
 
@@ -51,8 +53,16 @@ public class ToolCallExtractor {
             String toolInput,
             boolean isError,
             String agentName,
-            String projectDirectory
-    ) {}
+            String projectDirectory,
+            String timestamp,
+            String callId,
+            String transcriptId
+    ) {
+        public ExtractedToolCall(String toolName, String toolInput, boolean isError,
+                                 String agentName, String projectDirectory) {
+            this(toolName, toolInput, isError, agentName, projectDirectory, null, null, null);
+        }
+    }
 
     /** Result of extracting from one session. */
     public record ExtractionResult(
@@ -65,52 +75,88 @@ public class ToolCallExtractor {
     // ── Claude ──────────────────────────────────────────────────────────────
 
     public static ExtractionResult extractClaude(Path jsonlFile, String sessionId) throws IOException {
-        List<ExtractedToolCall> calls = new ArrayList<>();
+        jsonlFile = jsonlFile.toAbsolutePath().normalize();
+        List<Path> transcripts = new ArrayList<>();
+        transcripts.add(jsonlFile);
+        String basename = jsonlFile.getFileName().toString().replaceFirst("\\.jsonl$", "");
+        addClaudeTranscripts(transcripts, jsonlFile.resolveSibling(basename).resolve("subagents"), ".jsonl");
+        // Older Claude workers only persist their transcript in the task output directory.
+        // Derive both project and owner from the resolved parent, never scan all of /tmp.
+        try {
+            Object uid = Files.getAttribute(jsonlFile, "unix:uid");
+            Path tasks = Path.of(System.getProperty("java.io.tmpdir"), "claude-" + uid)
+                    .resolve(jsonlFile.getParent().getFileName()).resolve(basename).resolve("tasks");
+            addClaudeTranscripts(transcripts, tasks, ".output");
+        } catch (IOException | UnsupportedOperationException ignored) {
+            // Non-Unix providers still have the durable subagents directory.
+        }
+        return extractClaudeTranscripts(transcripts, sessionId);
+    }
+
+    private static void addClaudeTranscripts(List<Path> transcripts, Path directory, String suffix)
+            throws IOException {
+        if (!Files.isDirectory(directory)) return;
+        try (Stream<Path> files = Files.list(directory)) {
+            files.filter(p -> p.getFileName().toString().endsWith(suffix))
+                    .filter(Files::isRegularFile).sorted().forEach(transcripts::add);
+        }
+    }
+
+    static ExtractionResult extractClaudeTranscripts(List<Path> transcripts, String sessionId)
+            throws IOException {
+        var calls = new LinkedHashMap<String, ExtractedToolCall>();
+        var errors = new HashSet<String>();
+        var visited = new HashSet<Path>();
         String workDir = null;
-
-        try (BufferedReader reader = Files.newBufferedReader(jsonlFile, StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.isBlank()) continue;
-                try {
-                    JsonNode node = MAPPER.readTree(line);
-
-                    // Resolve cwd from first line that has it
-                    if (workDir == null) {
-                        JsonNode cwd = node.path("cwd");
-                        if (cwd.isTextual()) workDir = cwd.asText();
-                    }
-
-                    String type = node.path("type").asText("");
-                    if ("assistant".equals(type)) {
-                        JsonNode content = node.path("message").path("content");
-                        if (content.isArray()) {
-                            for (JsonNode block : content) {
-                                if ("tool_use".equals(block.path("type").asText(""))) {
-                                    String toolName = block.path("name").asText("unknown");
-                                    JsonNode input = block.path("input");
-                                    String inputStr = input.isMissingNode() ? "{}" : input.toString();
-                                    String agent = "claude-code";
-                                    if ("Agent".equals(toolName)) {
-                                        String sub = input.path("subagent_type").asText("unknown");
-                                        toolName = "Agent:" + sub;
-                                    }
-                                    calls.add(new ExtractedToolCall(toolName, inputStr, false, agent, null));
-                                }
-                            }
+        for (Path transcript : transcripts) {
+            if (!visited.add(transcript.toRealPath())) continue;
+            String transcriptId = transcript.getFileName().toString().replaceFirst("\\.(jsonl|output)$", "");
+            try (BufferedReader reader = Files.newBufferedReader(transcript, StandardCharsets.UTF_8)) {
+                String line;
+                int lineNumber = 0;
+                while ((line = reader.readLine()) != null) {
+                    lineNumber++;
+                    if (line.isBlank()) continue;
+                    try {
+                        JsonNode node = MAPPER.readTree(line);
+                        if (workDir == null && node.path("cwd").isTextual()) {
+                            workDir = node.path("cwd").asText();
                         }
+                        JsonNode content = node.path("message").path("content");
+                        if (!content.isArray()) continue;
+                        int blockNumber = 0;
+                        for (JsonNode block : content) {
+                            blockNumber++;
+                            if ("tool_result".equals(block.path("type").asText())
+                                    && block.path("is_error").asBoolean()) {
+                                errors.add(block.path("tool_use_id").asText());
+                            }
+                            if (!"assistant".equals(node.path("type").asText())
+                                    && !"assistant".equals(node.path("message").path("role").asText())) continue;
+                            if (!"tool_use".equals(block.path("type").asText())) continue;
+                            String toolName = block.path("name").asText("unknown");
+                            JsonNode input = block.path("input");
+                            String callId = block.path("id").asText(transcriptId + ":" + lineNumber + ":" + blockNumber);
+                            if ("Agent".equals(toolName)) {
+                                toolName = "Agent:" + input.path("subagent_type").asText("unknown");
+                            }
+                            calls.putIfAbsent(callId, new ExtractedToolCall(toolName,
+                                    input.isMissingNode() ? "{}" : input.toString(), false,
+                                    "claude-code", node.path("cwd").asText(null),
+                                    node.path("timestamp").asText(null), callId, transcriptId));
+                        }
+                    } catch (Exception ignored) {
+                        // A live final partial line or non-JSON task status is not a transcript record.
                     }
-                } catch (Exception ignore) {}
+                }
             }
         }
-        // Set projectDirectory on all calls
         String wd = workDir;
-        if (wd != null) {
-            calls = calls.stream()
-                    .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, c.isError, c.agentName, wd))
-                    .toList();
-        }
-        return new ExtractionResult(sessionId, "claude-code", workDir, calls);
+        List<ExtractedToolCall> result = calls.values().stream()
+                .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, errors.contains(c.callId),
+                        c.agentName, c.projectDirectory == null ? wd : c.projectDirectory,
+                        c.timestamp, c.callId, c.transcriptId)).toList();
+        return new ExtractionResult(sessionId, "claude-code", wd, result);
     }
 
     // ── Pi ──────────────────────────────────────────────────────────────────
@@ -172,7 +218,8 @@ public class ToolCallExtractor {
         String wd = workDir;
         if (wd != null) {
             calls = calls.stream()
-                    .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, c.isError, c.agentName, wd))
+                    .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, c.isError, c.agentName, wd,
+                            c.timestamp, c.callId, c.transcriptId))
                     .toList();
         }
         return new ExtractionResult(sessionId, "pi", workDir, calls);
@@ -203,14 +250,16 @@ public class ToolCallExtractor {
                         if ("function_call".equals(pType)) {
                             calls.add(new ExtractedToolCall(
                                     payload.path("name").asText("unknown"),
-                                    payload.path("arguments").toString(),
-                                    false, "codex", null));
+                                    codexInput(payload),
+                                    false, "codex", null, node.path("timestamp").asText(null),
+                                    payload.path("call_id").asText(null), sessionId));
                         } else if ("custom_tool_call".equals(pType)) {
                             boolean err = "error".equalsIgnoreCase(payload.path("status").asText(""));
                             calls.add(new ExtractedToolCall(
                                     payload.path("name").asText("unknown"),
-                                    payload.path("arguments").toString(),
-                                    err, "codex", null));
+                                    codexInput(payload),
+                                    err, "codex", null, node.path("timestamp").asText(null),
+                                    payload.path("call_id").asText(null), sessionId));
                         }
                     }
                 } catch (Exception ignore) {}
@@ -219,10 +268,20 @@ public class ToolCallExtractor {
         String wd = workDir;
         if (wd != null) {
             calls = calls.stream()
-                    .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, c.isError, c.agentName, wd))
+                    .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, c.isError, c.agentName, wd,
+                            c.timestamp, c.callId, c.transcriptId))
                     .toList();
         }
         return new ExtractionResult(sessionId, "codex", workDir, calls);
+    }
+
+    private static String codexInput(JsonNode payload) {
+        JsonNode args = payload.has("arguments") ? payload.path("arguments") : payload.path("input");
+        String value = args.isTextual() ? args.asText() : args.toString();
+        if (payload.path("name").asText().endsWith("apply_patch") && !value.startsWith("{")) {
+            return MAPPER.createObjectNode().put("patch", value).toString();
+        }
+        return value;
     }
 
     // ── Qwen ────────────────────────────────────────────────────────────────
@@ -264,7 +323,8 @@ public class ToolCallExtractor {
         String wd = workDir;
         if (wd != null) {
             calls = calls.stream()
-                    .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, c.isError, c.agentName, wd))
+                    .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, c.isError, c.agentName, wd,
+                            c.timestamp, c.callId, c.transcriptId))
                     .toList();
         }
         return new ExtractionResult(sessionId, "qwen", workDir, calls);
@@ -356,7 +416,8 @@ public class ToolCallExtractor {
         String wd = workDir;
         if (wd != null) {
             calls = calls.stream()
-                    .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, c.isError, c.agentName, wd))
+                    .map(c -> new ExtractedToolCall(c.toolName, c.toolInput, c.isError, c.agentName, wd,
+                            c.timestamp, c.callId, c.transcriptId))
                     .toList();
         }
         return new ExtractionResult(sessionId, "gemini", workDir, calls);
@@ -699,6 +760,34 @@ public class ToolCallExtractor {
      * Tool calls appear as {@code [tool:name]} lines in the assistant's output.
      */
     public static ExtractionResult extractKompile(Path txtFile, String sessionId) throws IOException {
+        // Text transcripts generally contain tool labels, not the complete JSON input.
+        // Prefer the session's structured journal; never read the global combined catalog.
+        String stem = txtFile.getFileName().toString().replaceFirst("\\.txt$", "");
+        Path journal = txtFile.resolveSibling("tool-calls").resolve(stem + ".jsonl");
+        if (Files.isRegularFile(journal)) {
+            List<ExtractedToolCall> recorded = new ArrayList<>();
+            String directory = null;
+            try (BufferedReader reader = Files.newBufferedReader(journal, StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    try {
+                        JsonNode call = MAPPER.readTree(line);
+                        if (!sessionId.equals(call.path("sessionId").asText()) || !call.has("toolName")) continue;
+                        String project = call.path("projectDirectory").asText(null);
+                        if (directory == null) directory = project;
+                        JsonNode input = call.path("toolInput");
+                        recorded.add(new ExtractedToolCall(call.path("toolName").asText(),
+                                input.isTextual() ? input.asText() : input.toString(),
+                                call.path("isError").asBoolean(call.path("error").asBoolean(false)),
+                                call.path("agentName").asText("kompile"), project,
+                                call.path("timestamp").asText(null), call.path("id").asText(null), sessionId));
+                    } catch (Exception ignored) {
+                        // Ignore a live partial final journal record.
+                    }
+                }
+            }
+            if (!recorded.isEmpty()) return new ExtractionResult(sessionId, "kompile", directory, recorded);
+        }
         List<ExtractedToolCall> calls = new ArrayList<>();
         String workDir = null;
 

@@ -4,11 +4,15 @@ import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.core.llm.CliModelCatalog;
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Base64;
@@ -19,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -251,9 +256,30 @@ class SetupWizardRuntimeTest {
                 SetupWizard.authMethodLabel("openai", SetupWizard.AuthMethod.OAUTH));
     }
 
+    /** Scripted answers over a dumb terminal, for pages drawn by the shared credential menu. */
+    private static org.jline.reader.LineReader terminalReader(Terminal terminal, String... answers)
+            throws java.io.IOException {
+        ArrayDeque<String> input = new ArrayDeque<>(List.of(answers));
+        return new org.jline.reader.impl.LineReaderImpl(terminal) {
+            @Override public String readLine(String prompt) {
+                if (input.isEmpty()) throw new org.jline.reader.EndOfFileException();
+                return input.removeFirst();
+            }
+
+            @Override public String readLine(String prompt, Character mask) {
+                return readLine(prompt);
+            }
+        };
+    }
+
+    private static Terminal dumbTerminal() throws java.io.IOException {
+        return TerminalBuilder.builder().system(false).dumb(true)
+                .streams(new ByteArrayInputStream(new byte[0]), new ByteArrayOutputStream()).build();
+    }
+
     @Test
     @ResourceLock(Resources.SYSTEM_PROPERTIES)
-    void anthropicOauthPassesTheChatThroughToClaudeCodeWithoutAuthenticating(@TempDir Path home) throws Exception {
+    void anthropicOauthDefaultsToClaudeCodesOwnLoginWithoutCheckingIt(@TempDir Path home) throws Exception {
         String previousHome = System.getProperty("user.home");
         System.setProperty("user.home", home.toString());
         AtomicInteger loginChecks = new AtomicInteger();
@@ -261,13 +287,15 @@ class SetupWizardRuntimeTest {
             loginChecks.incrementAndGet();
             return new LiveModelDiscovery.ClaudeCodeLogin(false, null, null, false);
         });
-        try {
+        try (Terminal terminal = dumbTerminal()) {
+            SetupWizard.AuthenticationSelection ownLogin =
+                    new SetupWizard.AuthenticationSelection("anthropic", SetupWizard.AuthMethod.NATIVE, null);
             for (SetupWizard.AuthMethod method : List.of(SetupWizard.AuthMethod.OAUTH, SetupWizard.AuthMethod.NATIVE)) {
-                SetupWizard.AuthenticationSelection passThrough =
-                        new SetupWizard.AuthenticationSelection("anthropic", method, null);
-                // A reader without answers fails any prompt: no credential menu, no sign-in.
-                assertEquals(passThrough, SetupWizard.authenticateSession(reader(), "anthropic", method));
-                assertEquals(passThrough, SetupWizard.authenticate(reader(), "anthropic", method));
+                // Enter keeps the default, Claude Code's own login: nothing is stored or signed in.
+                assertEquals(ownLogin, SetupWizard.authenticateSession(
+                        terminalReader(terminal, ""), "anthropic", method));
+                assertEquals(ownLogin, SetupWizard.authenticate(
+                        terminalReader(terminal, ""), "anthropic", method));
             }
             // Claude Code's login shows up when its models are listed; choosing the route never checks or drives it.
             assertEquals(0, loginChecks.get());
@@ -276,6 +304,59 @@ class SetupWizardRuntimeTest {
             LiveModelDiscovery.useClaudeCodeLoginProbe(null);
             System.setProperty("user.home", previousHome);
         }
+    }
+
+    @Test
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void anthropicOauthStoresAndSelectsNamedSetupTokensLikeAnyVendor(@TempDir Path home) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", home.toString());
+        String first = "sk-ant-oat01-" + "FirstToken_-0123456789".repeat(4) + "AA";
+        String second = "sk-ant-oat01-" + "SecondToken-9876543210".repeat(4) + "AA";
+        try (Terminal terminal = dumbTerminal()) {
+            CredentialStore store = CredentialStore.create();
+            // No tokens: 1 sign in, 2 own login. Sign-in methods: 1 claude setup-token, 2 paste.
+            // The paste keeps the terminal's line break.
+            SetupWizard.AuthenticationSelection pinned = SetupWizard.authenticateSession(terminalReader(terminal,
+                    "1", "2", first.substring(0, 80) + "\n" + first.substring(80)),
+                    "anthropic", SetupWizard.AuthMethod.OAUTH);
+            assertEquals("anthropic", pinned.provider());
+            assertEquals(SetupWizard.AuthMethod.OAUTH, pinned.authMethod());
+            String firstName = pinned.credentialName();
+            assertNotNull(firstName, "the session pins the new token by name");
+            assertEquals(first, store.read("claude-code", firstName).getAccess());
+
+            // One token: 1 token, 2 sign in, 3 own login. A session's new token does not change the global one.
+            String secondName = SetupWizard.authenticateSession(terminalReader(terminal, "2", "2", second),
+                    "anthropic", SetupWizard.AuthMethod.OAUTH).credentialName();
+            assertEquals(second, store.read("claude-code", secondName).getAccess());
+            assertEquals(firstName, store.activeCredentialName("claude-code"));
+
+            // A session picks a stored token by name.
+            assertEquals(new SetupWizard.AuthenticationSelection("anthropic", SetupWizard.AuthMethod.OAUTH, null, firstName),
+                    SetupWizard.authenticateSession(terminalReader(terminal, row(store, firstName)),
+                            "anthropic", SetupWizard.AuthMethod.OAUTH));
+
+            // Global scope makes the picked token the active one, as for any vendor.
+            assertEquals(new SetupWizard.AuthenticationSelection("anthropic", SetupWizard.AuthMethod.OAUTH, null),
+                    SetupWizard.authenticate(terminalReader(terminal, row(store, secondName)),
+                            "anthropic", SetupWizard.AuthMethod.OAUTH));
+            assertEquals(secondName, store.activeCredentialName("claude-code"));
+
+            // Two tokens: 4 is Claude Code's own login; the stored tokens stay available.
+            assertEquals(new SetupWizard.AuthenticationSelection("anthropic", SetupWizard.AuthMethod.NATIVE, null),
+                    SetupWizard.authenticateSession(terminalReader(terminal, "4"),
+                            "anthropic", SetupWizard.AuthMethod.OAUTH));
+            assertEquals(2, store.list("claude-code").size());
+        } finally {
+            System.setProperty("user.home", previousHome);
+        }
+    }
+
+    /** The 1-based menu row of a stored setup token. */
+    private static String row(CredentialStore store, String name) throws java.io.IOException {
+        return Integer.toString(store.list("claude-code").stream()
+                .map(CredentialStore.CredentialInfo::credentialName).toList().indexOf(name) + 1);
     }
 
     @Test

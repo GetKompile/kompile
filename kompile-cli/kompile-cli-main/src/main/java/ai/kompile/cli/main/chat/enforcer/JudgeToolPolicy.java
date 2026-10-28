@@ -36,7 +36,7 @@ import java.util.stream.Collectors;
  */
 public final class JudgeToolPolicy {
 
-    private static final Set<String> ROUTINE_SESSION_TOOLS = Set.of("todoread", "todowrite");
+    private static final Set<String> ROUTINE_SESSION_TOOLS = Set.of("todoread", "todowrite", "todo_apply_batch");
     private static final Set<String> EXPLICIT_TOOL_RULE_PREFIXES = Set.of(
             "BAN_TOOL:", "STOP_TOOL:", "BAN_CMD:", "BAN_CMD_REGEX:", "STOP_CMD:");
     /**
@@ -45,7 +45,7 @@ public final class JudgeToolPolicy {
      * planning advice, one named tool such as "the glob tool") cannot.
      */
     private static final Pattern ROUTINE_TOOL_REMINDER = Pattern.compile(
-            "todo(?:read|write)|\\bto-?dos?\\b|\\b(?:to do|task)[- ]?lists?\\b"
+            "todo(?:read|write|_apply_batch)|\\bto-?dos?\\b|\\b(?:to do|task)[- ]?lists?\\b"
                     + "|\\btools\\b|\\btool[- ](?:calls?|use|usage)\\b|\\b(?:any|every|no)\\s+tool\\b",
             Pattern.CASE_INSENSITIVE);
 

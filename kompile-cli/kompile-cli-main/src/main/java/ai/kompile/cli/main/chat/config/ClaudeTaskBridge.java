@@ -5,6 +5,7 @@
  */
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.chat.render.SubagentTranscript;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessKind;
 import ai.kompile.utils.AnsiConstants;
@@ -87,6 +88,25 @@ final class ClaudeTaskBridge {
             String id = row.id();
             if (id == null) return;
             ClaudeCliStreamParser.Event event = child.event();
+            if (event instanceof ClaudeCliStreamParser.SubagentModel model) {
+                row.telemetry.put("model", model.model());
+                publishMetadata(row);
+                return;
+            }
+            if (event instanceof ClaudeCliStreamParser.RequestUsage usage) {
+                if (!usage.requestId().equals(row.requestId)) {
+                    row.telemetry.beginRequest();
+                    row.requestId = usage.requestId();
+                }
+                var added = row.usage.request(usage);
+                row.telemetry.usage(added.input(), added.output(), added.cacheRead(), added.cacheCreation());
+                row.telemetry.put("context_tokens", Long.toString(row.usage.requestInputTokens(usage)));
+                publishMetadata(row);
+                return;
+            }
+            if (event instanceof ClaudeCliStreamParser.ToolStart) row.telemetry.tool();
+            if (event instanceof ClaudeCliStreamParser.ToolInputDelta delta) row.telemetry.stream(delta.delta());
+            present(row.transcript, event);
             if (event instanceof ClaudeCliStreamParser.Text text) {
                 stream(row, "Assistant", text.text());
             } else if (event instanceof ClaudeCliStreamParser.Thinking thinking) {
@@ -112,12 +132,28 @@ final class ClaudeTaskBridge {
                 }
                 if (!detail.isEmpty()) processes.appendVirtualOutput(id, detail);
             }
+            processes.updateVirtual(row.id(), null, metadata(row),
+                    !(event instanceof ClaudeCliStreamParser.Text || event instanceof ClaudeCliStreamParser.Thinking));
             return;
         }
     }
 
+    /** Preserve roles/tool identity before formatting; never interpret the raw log. */
+    private static void present(SubagentTranscript transcript, ClaudeCliStreamParser.Event event) {
+        if (event instanceof ClaudeCliStreamParser.Text text) transcript.text("assistant", text.text());
+        else if (event instanceof ClaudeCliStreamParser.Thinking thinking) transcript.text("thinking", thinking.text());
+        else if (event instanceof ClaudeCliStreamParser.UserText user) transcript.message("user", user.text());
+        else if (event instanceof ClaudeCliStreamParser.ToolStart tool) transcript.toolStart(tool.callId(), tool.name(), tool.input());
+        else if (event instanceof ClaudeCliStreamParser.ToolInput input) transcript.toolInput(input.callId(), input.input());
+        else if (event instanceof ClaudeCliStreamParser.ToolOutput output) transcript.toolOutput(output.callId(), output.output());
+        else if (event instanceof ClaudeCliStreamParser.ToolComplete complete) transcript.toolComplete(complete.callId(), complete.output(), complete.error());
+        else if (event instanceof ClaudeCliStreamParser.Notice notice) transcript.message("metadata", notice.text());
+        else if (event instanceof ClaudeCliStreamParser.ApiError error) transcript.message("error", error.text());
+    }
+
     private void stream(Row row, String kind, String text) {
         if (text.isEmpty()) return;
+        row.telemetry.stream(text);
         if (!kind.equals(row.streamKind)) {
             finishStream(row);
             processes.appendVirtualOutput(row.id(), kind + ":");
@@ -187,6 +223,7 @@ final class ClaudeTaskBridge {
                 row.metadata, () -> killed(row)).getId();
         processes.appendVirtualOutput(id, "Claude Code started " + (type.isBlank() ? "" : type + " ")
                 + "task " + row.taskId + (description.isBlank() ? "" : ": " + description));
+        processes.setVirtualTranscript(id, row.transcript);
         row.registered(id);
     }
 
@@ -194,11 +231,11 @@ final class ClaudeTaskBridge {
         Row row = rows.get(progress.taskId());
         String id = row == null ? null : row.id();
         if (id == null) return;
-        Map<String, String> metadata = new LinkedHashMap<>(row.metadata);
-        putIfSet(metadata, "last_tool", progress.lastToolName());
-        if (progress.toolUses() > 0) metadata.put("tool_uses", Long.toString(progress.toolUses()));
-        if (progress.totalTokens() > 0) metadata.put("total_tokens", Long.toString(progress.totalTokens()));
-        if (progress.durationMs() > 0) metadata.put("duration_ms", Long.toString(progress.durationMs()));
+        row.telemetry.put("last_tool", progress.lastToolName());
+        if (progress.toolUses() > 0) row.telemetry.put("tool_uses", Long.toString(progress.toolUses()));
+        if (progress.totalTokens() > 0) row.telemetry.put("total_tokens", Long.toString(progress.totalTokens()));
+        if (progress.durationMs() > 0) row.telemetry.put("duration_ms", Long.toString(progress.durationMs()));
+        Map<String, String> metadata = metadata(row);
         processes.updateVirtual(id,
                 progress.description().isBlank() ? null : "Claude: " + progress.description(), metadata);
         String line = progress.summary().isBlank() ? progress.lastToolName() : progress.summary();
@@ -215,6 +252,7 @@ final class ClaudeTaskBridge {
         String line = "Claude Code reports the task " + ended.status()
                 + (ended.summary().isBlank() ? "" : ": " + ended.summary());
         row.end(id -> {
+            row.transcript.finish();
             finishStream(row);
             processes.appendVirtualOutput(id, line);
             switch (ended.status()) {
@@ -232,6 +270,7 @@ final class ClaudeTaskBridge {
         for (Row row : rows.values()) {
             if ((source == null || row.source == source) && rows.remove(row.taskId, row)) {
                 row.end(id -> {
+                    row.transcript.finish();
                     finishStream(row);
                     processes.appendVirtualOutput(id, line);
                     processes.fail(id, -1);
@@ -243,6 +282,7 @@ final class ClaudeTaskBridge {
     /** The row was killed in the panel: the task is Claude Code's to stop. */
     private void killed(Row row) {
         if (rows.remove(row.taskId, row)) {
+            row.transcript.finish();
             CompletableFuture.runAsync(() -> stopTask.accept(row.taskId));
         }
     }
@@ -280,6 +320,16 @@ final class ClaudeTaskBridge {
         return Map.copyOf(metadata);
     }
 
+    private Map<String, String> metadata(Row row) {
+        Map<String, String> metadata = new LinkedHashMap<>(row.metadata);
+        metadata.putAll(row.telemetry.snapshot());
+        return metadata;
+    }
+
+    private void publishMetadata(Row row) {
+        processes.updateVirtual(row.id(), null, metadata(row));
+    }
+
     private static void putIfSet(Map<String, String> metadata, String key, String value) {
         if (value != null && !value.isBlank()) metadata.put(key, value);
     }
@@ -292,6 +342,10 @@ final class ClaudeTaskBridge {
         final String taskId;
         final Object source;
         final Map<String, String> metadata;
+        final SubagentTranscript transcript = new SubagentTranscript();
+        final ai.kompile.cli.main.chat.SubagentTelemetry telemetry = new ai.kompile.cli.main.chat.SubagentTelemetry();
+        final ClaudeCliUsageLedger usage = new ClaudeCliUsageLedger(false);
+        String requestId = "";
         volatile String lastLine = "";
         String streamKind = "";             // output-reader thread only
         boolean streamHasNewline;

@@ -687,6 +687,48 @@ class AgenticChatLoopContextOverflowRecoveryTest {
     }
 
     @Test
+    void restoredOpenCodeSessionWaitsForUsageInsteadOfCompactingThePortableLedger() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("opencode", null, "test/model", null);
+        config.setContextWindowTokens(128_000);
+        config.setDefaultMemory(false);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "restored-opencode-" + UUID.randomUUID();
+        seedHistoryOfTokens(loop, session, 160_000);
+        ScriptedClient resumedClient = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop resumed = newLoop(mapper, resumedClient, new ToolRegistry(mapper));
+        resumed.configureConversationSession(session);
+
+        assertEquals("done", resumed.chat("continue", session, "coder", "default", false));
+        assertEquals("done", resumed.chat("continue again", session, "coder", "default", false));
+
+        assertEquals(0, resumed.lastReportedInputTokens(), "native occupancy remains unknown, not full");
+        assertEquals(0, resumedClient.summaryCalls, "the portable ledger is not the native context");
+        assertEquals(0, resumedClient.nativeCompactionCalls);
+        assertTrue(ledgerOf(resumed).snapshot().checkpoint() == null);
+    }
+
+    @Test
+    void openCodeSessionStillCompactsMeasuredPressure() throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ChatConfig config = new ChatConfig("opencode", null, "test/model", null);
+        config.setContextWindowTokens(128_000);
+        config.setDefaultMemory(false);
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.SUCCESS, config);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "measured-opencode-" + UUID.randomUUID();
+        seedHistoryOfTokens(loop, session, 160_000);
+        setUsageAnchor(loop, 120_000, 160_000);
+
+        assertEquals("done", loop.chat("continue", session, "coder", "default", false));
+
+        assertEquals(1, client.nativeCompactionCalls, "measured pressure still uses native compaction");
+        assertEquals(1, client.summaryCalls, "unsupported native compaction still falls back to summary");
+        assertTrue(ledgerOf(loop).snapshot().checkpoint() != null);
+    }
+
+    @Test
     void nativeCheckpointRepairStillCompactsMeasuredPressure() throws Exception {
         ObjectMapper mapper = JsonUtils.standardMapper();
         ChatConfig config = new ChatConfig("openai-codex", "test-key", "gpt-6-astra", "http://unused.invalid");

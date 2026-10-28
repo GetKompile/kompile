@@ -31,16 +31,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.BooleanSupplier;
-import java.util.function.Consumer;
 
 /**
  * CLI tool for managing background processes. Allows the agent to launch
@@ -63,10 +60,10 @@ import java.util.function.Consumer;
 public class ProcessManagementTool implements CliTool {
 
     private static final int DEFAULT_TAIL_LINES = 50;
-    private static final int DEFAULT_STREAM_SECONDS = 5;
-    private static final int MAX_STREAM_SECONDS = 30;
-    private static final int MAX_STREAM_OUTPUT_CHARS = 30_000;
-    private static final int MAX_STREAM_LINE_CHARS = 4_000;
+    private static final List<String> LIST_STATUSES = List.of("all", "running", "completed", "failed", "killed");
+    private static final List<String> LIST_SORT_KEYS = List.of("id", "start_time", "state", "kind", "description", "duration", "owner");
+    private static final List<String> LIST_KINDS = List.of("all", "command", "judge", "enforcer", "shared", "mcp");
+    private static final List<String> LIST_SCOPES = List.of("all", "local", "shared");
 
     private final BackgroundProcessManager processManager;
     private final CoordinationStateManager coordinator;
@@ -95,8 +92,9 @@ public class ProcessManagementTool implements CliTool {
                 "to edit_coordinator when coordination is available, so other agents can see running builds. " +
                 "Shell content reads/writes require dedicated file or memory tools. Filesystem administration " +
                 "(rm, mv, mkdir, chmod) is risk-classified and subject to permissions and judge policy. " +
-                "Actions: list (show local and shared WIP processes), launch (start a background command), " +
-                "kill (stop a local process by ID), output (live tail snapshot), stream (follow output briefly), " +
+                "Actions: list (search/filter/sort/page local and shared processes via query/status/scope/kind, " +
+                "sort_by/sort_dir and offset/limit; compact 20-row pages, max 100; include_details adds log previews), launch (start a background command), " +
+                "kill (stop a local process by ID), output (diagnostic snapshot), stream (register a completion monitor; never waits or emits live logs), " +
                 "status (detailed info plus recent output), monitor (wake this agent when one local process exits), " +
                 "unmonitor (cancel a monitor), monitors (list active monitors), resource_status (system-pressure " +
                 "auto-kill telemetry, momentum and last kill; configure via /resources monitor), cleanup (remove old local entries).";
@@ -143,8 +141,11 @@ public class ProcessManagementTool implements CliTool {
 
         ObjectNode followSeconds = props.putObject("follow_seconds");
         followSeconds.put("type", "integer");
-        followSeconds.put("description", "For stream action, seconds to follow a running output file (default: 5, max: 30)");
+        followSeconds.put("description", "Legacy compatibility option; ignored. Running processes use completion monitors instead of following output.");
 
+        ListQuery.addSchema(props, LIST_STATUSES, LIST_SORT_KEYS, "start_time", "desc");
+        ListQuery.enumSchema(props, "scope", LIST_SCOPES, "all", "List only local processes, shared processes (including mirrors), or both.");
+        ListQuery.enumSchema(props, "kind", LIST_KINDS, "all", "List process kind. Shared coordination rows and mirrored rows use shared.");
         schema.putArray("required").add("action");
         return schema;
     }
@@ -164,7 +165,7 @@ public class ProcessManagementTool implements CliTool {
 
         switch (action) {
             case "list":
-                return executeList();
+                return executeList(params);
             case "launch":
                 return executeLaunch(params, context);
             case "kill":
@@ -191,78 +192,84 @@ public class ProcessManagementTool implements CliTool {
         }
     }
 
-    private ToolResult executeList() {
-        List<BackgroundProcessManager.ProcessEntry> all = processManager.listAll();
-        List<ProcessCoordEntry> shared = sharedProcessEntries(all);
-        if (all.isEmpty() && shared.isEmpty()) {
-            return ToolResult.success("No tracked processes");
+    private record ListedProcess(String id, String owner, String ownerSession, String sourceId,
+                                 String kind, long pid, String state, Instant startTime, Duration duration,
+                                 Integer exitCode, String command, String description, Path outputFile,
+                                 Map<String, String> metadata, boolean shared) { }
+
+    private ToolResult executeList(JsonNode params) {
+        final ListQuery query;
+        final String scope;
+        final String kind;
+        try {
+            query = ListQuery.parse(params, LIST_STATUSES, LIST_SORT_KEYS, "start_time", "desc");
+            scope = ListQuery.choice(params, "scope", LIST_SCOPES, "all");
+            kind = ListQuery.choice(params, "kind", LIST_KINDS, "all");
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error(e.getMessage());
         }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append(String.format("%-12s %-10s %-9s %-8s %-10s %-12s %-6s %s\n",
-                "ID", "OWNER", "KIND", "PID", "STATE", "DURATION", "EXIT", "COMMAND"));
-        sb.append("-".repeat(110)).append("\n");
-
-        for (BackgroundProcessManager.ProcessEntry entry : all) {
+        List<BackgroundProcessManager.ProcessEntry> local = processManager.listAll();
+        List<ListedProcess> all = new ArrayList<>();
+        for (BackgroundProcessManager.ProcessEntry entry : local) {
             syncProcessState(entry);
-            String duration = formatDuration(entry.getDuration());
-            String exitStr = entry.getExitCode() != null ? String.valueOf(entry.getExitCode()) : "-";
-            String cmd = StringUtils.truncateToLength(entry.getCommand(), 40);
-            String pidStr = entry.getPid() > 0 ? String.valueOf(entry.getPid()) : "-";
-            // A SHARED row mirrors another session's process: name its owner, not "local".
-            String owner = entry.getKind() != BackgroundProcessManager.ProcessKind.SHARED ? "local"
-                    : StringUtils.truncateToLength(firstNonBlank(entry.getMetadata().get("ownerAgent"),
-                    entry.getMetadata().get("ownerSessionId"), "shared"), 10);
-            sb.append(String.format("%-12s %-10s %-9s %-8s %-10s %-12s %-6s %s\n",
-                    entry.getId(),
-                    owner,
-                    entry.getKind().label(),
-                    pidStr,
-                    entry.getState(),
-                    duration,
-                    exitStr,
-                    cmd));
-
-            if (entry.getDescription() != null && !entry.getDescription().isEmpty()
-                    && !entry.getDescription().equals(entry.getCommand())) {
-                sb.append(String.format("%-12s %s\n", "", "  -> " + entry.getDescription()));
-            }
-            appendRecentOutputSummary(sb, entry.getId(), entry.getOutputFile(), 2);
-            if (!entry.getMetadata().isEmpty()) {
-                sb.append(String.format("%-12s %s\n", "", "  -> " + formatMetadata(entry.getMetadata())));
+            boolean shared = entry.getKind() == BackgroundProcessManager.ProcessKind.SHARED;
+            Map<String, String> metadata = entry.getMetadata();
+            String owner = shared ? firstNonBlank(metadata.get("ownerAgent"), metadata.get("ownerSessionId"), "shared") : "local";
+            all.add(new ListedProcess(entry.getId(), owner,
+                    shared ? firstNonBlank(metadata.get("ownerSessionId")) : firstNonBlank(processManager.getSessionId()),
+                    firstNonBlank(metadata.get("sharedProcessId"), entry.getId()), entry.getKind().label(),
+                    entry.getPid(), entry.getState().name(), entry.getStartTime(), entry.getDuration(),
+                    entry.getExitCode(), entry.getCommand(), entry.getDescription(), entry.getOutputFile(), metadata, shared));
+        }
+        for (ProcessCoordEntry entry : sharedProcessEntries(local)) {
+            String ownerSession = firstNonBlank(entry.getSessionId());
+            String id = ownerSession.isBlank() ? entry.getProcessId() : ownerSession + "/" + entry.getProcessId();
+            all.add(new ListedProcess(id, firstNonBlank(entry.getAgentName(), ownerSession, "shared"), ownerSession,
+                    entry.getProcessId(), "shared", entry.getPid(), firstNonBlank(entry.getState(), "RUNNING").toUpperCase(Locale.ROOT),
+                    entry.getStartedAt(), entry.getDuration(), entry.getExitCode(), entry.getCommand(),
+                    entry.getDescription(), pathOrNull(entry.getOutputFile()), Map.of(), true));
+        }
+        List<ListedProcess> matches = new ArrayList<>(all.stream()
+                .filter(row -> scope.equals("all") || scope.equals(row.shared() ? "shared" : "local"))
+                .filter(row -> kind.equals("all") || kind.equals(row.kind()))
+                .filter(row -> query.status().equals("all") || (query.status().equals("running")
+                        ? isRunningState(row.state()) : query.status().equalsIgnoreCase(row.state())))
+                .filter(row -> query.matches(row.id(), row.sourceId(), row.owner(), row.ownerSession(), row.command(), row.description()))
+                .toList());
+        Comparator<ListedProcess> comparator = switch (query.sortBy()) {
+            case "id" -> Comparator.comparing(ListedProcess::id);
+            case "state" -> Comparator.comparing(ListedProcess::state);
+            case "kind" -> Comparator.comparing(ListedProcess::kind);
+            case "description" -> Comparator.comparing(row -> firstNonBlank(row.description(), row.command()), String.CASE_INSENSITIVE_ORDER);
+            case "duration" -> Comparator.comparing(ListedProcess::duration);
+            case "owner" -> Comparator.comparing(ListedProcess::owner, String.CASE_INSENSITIVE_ORDER);
+            default -> Comparator.comparing(ListedProcess::startTime, Comparator.nullsFirst(Comparator.naturalOrder()));
+        };
+        if (query.sortDir().equals("desc")) comparator = comparator.reversed();
+        matches.sort(comparator.thenComparing(ListedProcess::ownerSession).thenComparing(ListedProcess::id));
+        List<ListedProcess> page = query.page(matches);
+        StringBuilder sb = new StringBuilder();
+        if (all.isEmpty()) sb.append("No tracked processes\n");
+        else if (matches.isEmpty()) sb.append("No processes match the filters.\n");
+        if (!page.isEmpty()) sb.append(String.format("%-12s %-10s %-9s %-8s %-10s %-12s %-6s %s\n",
+                "ID", "OWNER", "KIND", "PID", "STATE", "DURATION", "EXIT", "DESCRIPTION / COMMAND"));
+        for (ListedProcess row : page) {
+            sb.append(String.format("%-12s %-10s %-9s %-8s %-10s %-12s %-6s %s\n", row.id(),
+                    StringUtils.truncateToLength(row.owner(), 10), row.kind(), row.pid() > 0 ? row.pid() : "-",
+                    row.state(), formatDuration(row.duration()), row.exitCode() != null ? row.exitCode() : "-",
+                    StringUtils.truncateToLength(firstNonBlank(row.description(), row.command()), 100)));
+            if (query.includeDetails()) {
+                sb.append("  command: ").append(row.command()).append("\n");
+                sb.append("  description: ").append(firstNonBlank(row.description())).append("\n");
+                appendRecentOutputSummary(sb, row.id(), row.outputFile(), 2);
+                if (!row.metadata().isEmpty()) sb.append("  ").append(formatMetadata(row.metadata())).append("\n");
             }
         }
-
-        for (ProcessCoordEntry entry : shared) {
-            String duration = formatDuration(entry.getDuration());
-            String pidStr = entry.getPid() > 0 ? String.valueOf(entry.getPid()) : "-";
-            String owner = StringUtils.truncateToLength(firstNonBlank(entry.getAgentName(), entry.getSessionId(), "shared"), 10);
-            sb.append(String.format("%-12s %-10s %-9s %-8s %-10s %-12s %-6s %s\n",
-                    entry.getProcessId(),
-                    owner,
-                    "shared",
-                    pidStr,
-                    firstNonBlank(entry.getState(), "RUNNING"),
-                    duration,
-                    "-",
-                    StringUtils.truncateToLength(entry.getCommand(), 40)));
-            if (entry.getDescription() != null && !entry.getDescription().isBlank()) {
-                sb.append(String.format("%-12s %s\n", "", "  -> " + entry.getDescription()));
-            }
-            appendRecentOutputSummary(sb, entry.getProcessId(), pathOrNull(entry.getOutputFile()), 2);
-        }
-
-        long localRunning = all.stream().filter(BackgroundProcessManager.ProcessEntry::isRunning).count();
-        long sharedRunning = shared.stream().filter(e -> isRunningState(e.getState())).count();
-        int total = all.size() + shared.size();
-        long running = localRunning + sharedRunning;
-        sb.append("\n").append(total).append(" total, ").append(running).append(" running");
-        if (!shared.isEmpty()) {
-            sb.append(" (").append(shared.size()).append(" shared)");
-        }
-
-        return ToolResult.success("processes", sb.toString(),
-                Map.of("total", total, "running", running, "shared", shared.size()));
+        sb.append(query.summary(all.size(), matches.size(), page.size()));
+        Map<String, Object> metadata = query.metadata(all.size(), matches.size(), page.size());
+        metadata.put("running", all.stream().filter(row -> isRunningState(row.state())).count());
+        metadata.put("shared", (int) all.stream().filter(ListedProcess::shared).count());
+        return ToolResult.success("processes", sb.toString(), metadata);
     }
 
     private ToolResult executeLaunch(JsonNode params, ToolContext context) throws ToolExecutionException {
@@ -276,6 +283,16 @@ public class ProcessManagementTool implements CliTool {
         EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateCommand(id(), command);
         if (mandate != null) {
             return ToolResult.error(mandate.getCorrectionPrompt());
+        }
+
+        // Edit-coordination enforcement: a backgrounded shell file-write must not bypass
+        // the coordinator locks the native edit tools honour.
+        String lockRefusal = ShellEditLockGate.checkCommand(
+                coordinator != null ? coordinator : context.getCoordinator(),
+                EditCoordinatorTool.lockOwner(null, context),
+                command, context.getWorkingDirectory());
+        if (lockRefusal != null) {
+            return ToolResult.error(lockRefusal);
         }
 
         // Require permission for launching processes
@@ -395,55 +412,23 @@ public class ProcessManagementTool implements CliTool {
             return ToolResult.error("process_id is required for stream action");
         }
 
-        int tailLines = normalizeTailLines(params.path("tail_lines").asInt(DEFAULT_TAIL_LINES));
-        int followSeconds = params.path("follow_seconds").asInt(DEFAULT_STREAM_SECONDS);
-        if (followSeconds < 0) followSeconds = 0;
-        if (followSeconds > MAX_STREAM_SECONDS) followSeconds = MAX_STREAM_SECONDS;
-        Consumer<String> liveOutput = context == null ? null : context.getOutputConsumer();
-        BooleanSupplier abortProbe = context == null
-                ? () -> Thread.currentThread().isInterrupted()
-                : context::isAborted;
-
+        if (context != null && context.isAborted()) {
+            return ToolResult.error("Process stream cancelled");
+        }
         BackgroundProcessManager.ProcessEntry local = processManager.get(processId);
         if (local != null) {
             syncProcessState(local);
-            String liveHeader = localOutputHeader(local, "stream followed " + followSeconds + "s");
-            emitBlock(liveOutput, liveHeader);
-            String output = followOutput(local.getOutputFile(), tailLines, followSeconds,
-                    () -> {
-                        syncProcessState(local);
-                        return local.isRunning();
-                    }, abortProbe, liveOutput);
-            String resultHeader = localOutputHeader(
-                    local, "stream followed " + followSeconds + "s");
-            return ToolResult.success("stream " + processId,
-                    resultHeader + output,
-                    Map.of("processId", processId, "state", local.getState().name(),
-                            "tailLines", tailLines, "followSeconds", followSeconds,
-                            ToolResult.OUTPUT_STREAMED_METADATA, liveOutput != null,
-                            "scope", "local"));
+            if (!local.isRunning()) return executeOutput(params);
+            // Streaming was a blocking polling loop and leaked logs into Main.
+            // Waiting is always owned by a one-shot monitor, not an agent turn.
+            return executeMonitor(params);
         }
-
         ProcessCoordEntry shared = findSharedProcess(processId);
-        if (shared == null) {
-            return ToolResult.error("Process not found: " + processId);
-        }
-        Path outputFile = pathOrNull(shared.getOutputFile());
-        String liveHeader = sharedOutputHeader(shared, "stream followed " + followSeconds + "s");
-        emitBlock(liveOutput, liveHeader);
-        String output = followOutput(outputFile, tailLines, followSeconds,
-                () -> isSharedProcessRunning(shared), abortProbe, liveOutput);
-        ProcessCoordEntry latest = findSharedProcess(firstNonBlank(shared.getSessionId(), "") + "/" + shared.getProcessId());
-        if (latest == null) latest = shared;
-        String resultHeader = sharedOutputHeader(
-                latest, "stream followed " + followSeconds + "s");
-        return ToolResult.success("stream " + latest.getProcessId(),
-                resultHeader + output,
-                Map.of("processId", latest.getProcessId(),
-                        "state", firstNonBlank(latest.getState(), "RUNNING"),
-                        "tailLines", tailLines, "followSeconds", followSeconds,
-                        ToolResult.OUTPUT_STREAMED_METADATA, liveOutput != null,
-                        "scope", "shared"));
+        if (shared == null) return ToolResult.error("Process not found: " + processId);
+        if (!isSharedProcessRunning(shared)) return executeOutput(params);
+        return ToolResult.error("Process " + processId + " belongs to another session. "
+                + "Inspect its live activity view; its owning session must monitor completion. "
+                + "Do not poll or stream its transcript.");
     }
 
     private ToolResult executeStatus(JsonNode params) {
@@ -527,9 +512,11 @@ public class ProcessManagementTool implements CliTool {
             return ToolResult.error("Process " + processId + " is already " + entry.getState()
                     + "; no monitor was created");
         }
-        String message = params.path("monitor_message").asText("");
+        BackgroundProcessManager.ProcessMonitor existing = processManager.getMonitor(processId);
+        String message = params.path("monitor_message").asText(existing == null ? "" : existing.message());
         BackgroundProcessManager.ProcessMonitor monitor =
-                processManager.monitor(processId, message);
+                existing != null && existing.message().equals(message) ? existing
+                        : processManager.monitor(processId, message);
         if (monitor == null) {
             return ToolResult.error("Process " + processId
                     + " cannot be monitored or exited during registration");
@@ -702,168 +689,6 @@ public class ProcessManagementTool implements CliTool {
         return Math.min(tailLines, 2_000);
     }
 
-    private static String followOutput(Path outputFile, int tailLines, int followSeconds,
-                                       BooleanSupplier runningProbe,
-                                       BooleanSupplier abortProbe,
-                                       Consumer<String> liveOutput) {
-        FollowBuffer buffer = new FollowBuffer(tailLines + 2);
-        long observedLines = 0;
-        try {
-            BackgroundProcessManager.TailResult initial = BackgroundProcessManager.tailOutputFile(outputFile, tailLines);
-            appendTailResult(buffer, initial, liveOutput);
-            observedLines = initial.omittedLines() + initial.lines().size();
-        } catch (IOException e) {
-            String error = "Error reading output: " + e.getMessage();
-            buffer.add(error);
-            emitLine(liveOutput, error);
-        }
-
-        Instant deadline = Instant.now().plusSeconds(followSeconds);
-        while (followSeconds > 0 && !abortProbe.getAsBoolean()
-                && runningProbe.getAsBoolean() && Instant.now().isBefore(deadline)) {
-            try {
-                Thread.sleep(500);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-            try {
-                LinesAfterResult after = readLinesAfter(outputFile, observedLines, Math.max(200, tailLines * 4));
-                observedLines = after.totalLines();
-                appendLinesAfterResult(buffer, after, liveOutput);
-            } catch (IOException e) {
-                String error = "Error reading output: " + e.getMessage();
-                buffer.add(error);
-                emitLine(liveOutput, error);
-                break;
-            }
-        }
-
-        if (buffer.isEmpty()) {
-            String empty = outputFile == null || !Files.exists(outputFile)
-                    ? "(no output captured yet)" : "(no output)";
-            buffer.add(empty);
-            emitLine(liveOutput, empty);
-        }
-        buffer.add("---");
-        emitLine(liveOutput, "---");
-        String status = abortProbe.getAsBoolean()
-                ? "stream status: cancelled"
-                : runningProbe.getAsBoolean()
-                        ? "stream status: process still running"
-                        : "stream status: process no longer running";
-        buffer.add(status);
-        emitLine(liveOutput, status);
-        return buffer.render();
-    }
-
-    private static void appendTailResult(FollowBuffer buffer, BackgroundProcessManager.TailResult tail,
-                                         Consumer<String> liveOutput) {
-        if (tail == null || tail.lines().isEmpty()) return;
-        if (tail.omittedLines() > 0) {
-            String omitted = "... (" + tail.omittedLines() + " earlier lines omitted)";
-            buffer.add(omitted);
-            emitLine(liveOutput, omitted);
-        }
-        for (String line : tail.lines()) {
-            buffer.add(line);
-            emitLine(liveOutput, line);
-        }
-    }
-
-    private static void appendLinesAfterResult(FollowBuffer buffer, LinesAfterResult after,
-                                               Consumer<String> liveOutput) {
-        if (after == null || after.lines().isEmpty()) return;
-        if (after.omittedNewLines() > 0) {
-            String omitted = "... (" + after.omittedNewLines() + " new lines omitted)";
-            buffer.add(omitted);
-            emitLine(liveOutput, omitted);
-        }
-        for (String line : after.lines()) {
-            buffer.add(line);
-            emitLine(liveOutput, line);
-        }
-    }
-
-    private static void emitBlock(Consumer<String> output, String block) {
-        if (output == null || block == null || block.isEmpty()) return;
-        for (String line : block.stripTrailing().split("\\R", -1)) {
-            emitLine(output, line);
-        }
-    }
-
-    private static void emitLine(Consumer<String> output, String line) {
-        if (output == null) return;
-        try {
-            output.accept(line == null ? "" : line);
-        } catch (RuntimeException ignored) {
-            // A detached TUI/log sink must not terminate process following.
-        }
-    }
-
-    private static final class FollowBuffer {
-        private final int maxLines;
-        private final ArrayDeque<String> lines = new ArrayDeque<>();
-        private int chars;
-        private long omittedLines;
-
-        private FollowBuffer(int maxLines) {
-            this.maxLines = Math.max(3, maxLines);
-        }
-
-        private void add(String value) {
-            String line = value == null ? "" : value;
-            if (line.length() > MAX_STREAM_LINE_CHARS) {
-                line = line.substring(0, MAX_STREAM_LINE_CHARS - 1) + "…";
-            }
-            lines.addLast(line);
-            chars += line.length();
-            while (lines.size() > maxLines || chars > MAX_STREAM_OUTPUT_CHARS) {
-                chars -= lines.removeFirst().length();
-                omittedLines++;
-            }
-        }
-
-        private boolean isEmpty() {
-            return lines.isEmpty();
-        }
-
-        private String render() {
-            StringBuilder output = new StringBuilder(chars + lines.size() + 64);
-            if (omittedLines > 0) {
-                appendWithNewline(output,
-                        "... (" + omittedLines + " streamed lines omitted)");
-            }
-            for (String line : lines) appendWithNewline(output, line);
-            return output.toString().stripTrailing();
-        }
-    }
-
-    private static LinesAfterResult readLinesAfter(Path file, long skipLines, int maxLines) throws IOException {
-        if (file == null || !Files.exists(file)) {
-            return new LinesAfterResult(List.of(), 0, 0);
-        }
-        List<String> result = new ArrayList<>();
-        long totalLines = 0;
-        long newLines = 0;
-        try (java.util.stream.Stream<String> lines = Files.lines(file)) {
-            Iterator<String> iterator = lines.iterator();
-            while (iterator.hasNext()) {
-                totalLines++;
-                String line = iterator.next();
-                if (totalLines <= skipLines) continue;
-                newLines++;
-                result.add(line);
-                while (result.size() > maxLines) {
-                    result.remove(0);
-                }
-            }
-        }
-        return new LinesAfterResult(result, totalLines, Math.max(0, newLines - result.size()));
-    }
-
-    private record LinesAfterResult(List<String> lines, long totalLines, long omittedNewLines) {}
-
     private static String localOutputHeader(BackgroundProcessManager.ProcessEntry entry, String label) {
         String pidText = entry.getPid() > 0 ? "PID " + entry.getPid() : "no pid";
         return String.format("[%s] %s | %s | %s | %s | %s\n---\n",
@@ -899,13 +724,6 @@ public class ProcessManagementTool implements CliTool {
         for (String line : output.split("\\R", -1)) {
             sb.append("  ").append(line).append("\n");
         }
-    }
-
-    private static void appendWithNewline(StringBuilder sb, String line) {
-        if (sb.length() > 0 && sb.charAt(sb.length() - 1) != '\n') {
-            sb.append('\n');
-        }
-        sb.append(line).append('\n');
     }
 
     private static Path pathOrNull(String value) {

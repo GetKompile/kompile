@@ -53,6 +53,11 @@ public class EditCoordinatorTool implements CliTool {
         this.coordinator = coordinator;
     }
 
+    /** The coordinator this tool mediates (shell gate fallback, releaseAgentLocks). */
+    public CoordinationStateManager coordinator() {
+        return coordinator;
+    }
+
     @Override
     public String id() { return "edit_coordinator"; }
 
@@ -560,21 +565,42 @@ public class EditCoordinatorTool implements CliTool {
     }
 
     /**
-     * Pre-write guard of an edit-tool call (edit, write, edit_batch, edit_patch) under an
-     * agent identity: renews the agent's leases and re-verifies its locks on {@code paths}
-     * in one coordinator critical section (see
-     * {@link CoordinationStateManager#guardAgentEdit}). Must run after every validation,
-     * permission prompt and read check, immediately BEFORE the write.
+     * Pre-write guard of an edit-tool call (edit, write, edit_batch, edit_patch, patch),
+     * dispatched by the coordinator's {@link EditEnforcement} mode:
+     * <ul>
+     *   <li>OFF — null, no coordination work at all;</li>
+     *   <li>ADVISORY — as historically: an agent identity still gets the pre-write
+     *       {@link CoordinationStateManager#guardAgentEdit}; a session-level caller gets
+     *       null and the tools' post-write warnings stay advisory;</li>
+     *   <li>ENFORCE — every caller is arbitrated BEFORE the write: agent identity via
+     *       {@code guardAgentEdit}, session semantics via
+     *       {@link CoordinationStateManager#guardSessionEdit} (live foreign locks refuse;
+     *       the session's lock is auto-acquired on the target).</li>
+     * </ul>
+     * Must run after every validation, permission prompt and read check, immediately
+     * BEFORE the write.
      *
-     * @return null for a caller without identity or without a coordinator (session
-     *         semantics: nothing to renew or verify); otherwise the guard outcome
+     * @return null when the write may proceed with no further coordination outcome;
+     *         otherwise the guard outcome for the caller to interpret (busy -> fail the
+     *         whole call; CONFLICT paths -> refuse those files)
      */
     static AgentEditGuard guardEdit(CoordinationStateManager coordinator, String agent,
                                     Collection<Path> paths) {
-        if (coordinator == null || agent == null) return null;
+        if (coordinator == null) return null;
+        switch (coordinator.getEditEnforcement()) {
+            case OFF:
+                return null;
+            case ADVISORY:
+                if (agent == null) return null;
+                break;
+            case ENFORCE:
+                break;
+        }
         List<String> absolute = new ArrayList<>();
         for (Path path : paths) absolute.add(path.toAbsolutePath().toString());
-        return coordinator.guardAgentEdit(agent, absolute);
+        return agent != null
+                ? coordinator.guardAgentEdit(agent, absolute)
+                : coordinator.guardSessionEdit(absolute);
     }
 
     /**
@@ -587,6 +613,18 @@ public class EditCoordinatorTool implements CliTool {
         if (guard == null) return null;
         if (guard.isBusy()) return guard.busyMessage();
         return guard.conflictMessage(path.toAbsolutePath().toString());
+    }
+
+    /**
+     * True when this coordinator's mode makes the tools' post-write lock warnings
+     * meaningful: {@link EditEnforcement#ADVISORY} only. In ENFORCE the same warning text
+     * was already a pre-write refusal (and a free file is now auto-locked), so appending
+     * "coordinate before further edits" after a successful write would be noise; in OFF
+     * there is no coordinator ledger to consult.
+     */
+    static boolean advisoryWarningsApply(CoordinationStateManager coordinator) {
+        return coordinator != null
+                && coordinator.getEditEnforcement() == EditEnforcement.ADVISORY;
     }
 
     /** The optional {@code agent_name} property every edit tool's schema carries. */

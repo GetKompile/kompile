@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.exec;
 
+import ai.kompile.cli.main.chat.BoundedLoopManager;
 import ai.kompile.cli.main.chat.ChatCommandCatalog;
 import ai.kompile.cli.main.chat.ContinueManager;
 import ai.kompile.cli.main.chat.MessageQueue;
@@ -191,8 +192,17 @@ public final class WebCommandResolver {
                         raw.substring(Math.min(end, raw.length())),
                         command, input, stateStore, directory);
             }
+            if ("loop-bounded".equals(name)) {
+                return resolveBoundedLoopCommand(
+                        raw.substring(Math.min(end, raw.length())),
+                        command, directory);
+            }
             if ("continue".equals(name)) {
                 return resolveContinueCommand(
+                        raw.substring(Math.min(end, raw.length())), command, directory);
+            }
+            if ("continue-trigger".equals(name)) {
+                return resolveContinueTriggerCommand(
                         raw.substring(Math.min(end, raw.length())), command, directory);
             }
             if ("judge".equals(name) || "judge-global".equals(name)) {
@@ -528,7 +538,13 @@ public final class WebCommandResolver {
         // settings, drop cross-provider secrets and base URL.
         ChatConfig candidate = WebModelCatalog.vendorCandidate(config, wireProvider, modelPart);
         if (candidate.isClaudeCliNative()) {
-            LiveModelDiscovery.ClaudeCodeLogin login = LiveModelDiscovery.claudeCodeLogin();
+            LiveModelDiscovery.ClaudeCodeLogin login;
+            try {
+                login = LiveModelDiscovery.claudeCodeLogin(candidate.resolveClaudeCodeToken());
+            } catch (ChatConfig.AuthenticationException unusable) {
+                return VendorSwitch.refused(new Resolution(Status.INVALID, command, unusable.getMessage()
+                        + " The current provider/model is still active.", null));
+            }
             if (!login.loggedIn()) {
                 return VendorSwitch.refused(new Resolution(Status.INVALID, command,
                         login.describe() + " To use an Anthropic API key instead, configure Anthropic's "
@@ -699,6 +715,22 @@ public final class WebCommandResolver {
         String rest = stripQuotes(argumentRegion == null ? "" : argumentRegion.strip());
         String text = manager.handleCommand(rest);
         ObjectNode data = continueSnapshot(manager);
+        return new Resolution(Status.INTERACTION_REQUIRED, command, text, null, data);
+    }
+
+    /**
+     * Web {@code /continue-trigger}: the trigger-focused view of the same project-global
+     * config. Delegates to {@link ContinueManager#triggerCommand} so the web dialog and
+     * the CLI edit one store and report one set of triggers.
+     */
+    private static Resolution resolveContinueTriggerCommand(
+            String argumentRegion, String command, Path directory) {
+        Path workDir = directory == null ? Path.of(".") : directory;
+        ContinueManager manager = new ContinueManager(JsonUtils.standardMapper(), workDir);
+        String rest = stripQuotes(argumentRegion == null ? "" : argumentRegion.strip());
+        String text = manager.triggerCommand(rest);
+        ObjectNode data = continueSnapshot(manager);
+        data.put("menu", "continue-trigger");
         return new Resolution(Status.INTERACTION_REQUIRED, command, text, null, data);
     }
 
@@ -1593,6 +1625,136 @@ public final class WebCommandResolver {
         node.put("status", loop.getStatus().name());
         node.put("interval", loop.getFormattedInterval());
         node.put("fireCount", loop.getFireCount());
+        return node;
+    }
+
+    // ========================================================================
+    // Web /loop-bounded: the same session-scoped persisted state the
+    // interactive CLI reads (BoundedLoopManager.stateFileForSession), so web
+    // edits land in the same bounded loop set a resumed chat loads. "run"
+    // needs a live process to fire into and reports that honestly.
+    // ========================================================================
+
+    private static Resolution resolveBoundedLoopCommand(String rest, String command, Path workDir) {
+        // Session-scoped only, mirroring the CLI's per-conversation manager; the
+        // "unknown-session" placeholder matches resolveLoopCommand's session scope.
+        java.nio.file.Path stateFile = BoundedLoopManager.stateFileForSession("unknown-session");
+        BoundedLoopManager loops = new BoundedLoopManager(prompt -> {
+            throw new IllegalStateException(
+                    "Bounded loop firing requires a live chat process; "
+                            + "this manager only persists edits");
+        }, loop -> { }, stateFile);
+        try {
+            String operation = rest.isEmpty() ? "list"
+                    : rest.split("\\s+", 2)[0].toLowerCase(Locale.ROOT);
+            String argument = rest.contains(" ") ? rest.split("\\s+", 2)[1].strip() : "";
+            ObjectNode data = JsonUtils.standardMapper().createObjectNode();
+            data.put("menu", "bounded-loops");
+            data.put("scope", "session");
+            ArrayNode entries = data.putArray("boundedLoops");
+            String message;
+            switch (operation) {
+                case "list", "status", "" -> {
+                    for (BoundedLoopManager.BoundedLoop loop : loops.list()) {
+                        entries.add(boundedLoopSnapshot(loop));
+                    }
+                    message = loops.list().isEmpty()
+                            ? "No bounded loops."
+                            : "Bounded loops: " + loops.list().size();
+                }
+                case "add" -> {
+                    BoundedLoopManager.BoundedLoop loop = createBoundedLoop(loops, argument);
+                    if (loop == null) {
+                        return new Resolution(Status.INVALID, command,
+                                "Usage: /loop-bounded add <5m|2h30m> <10|1h> <prompt> "
+                                        + "(bound: a number = fire count, a duration = total "
+                                        + "run time; minimum interval 5s). No loop was created.",
+                                null);
+                    }
+                    entries.add(boundedLoopSnapshot(loop));
+                    message = "Bounded loop [" + loop.getId() + "] every "
+                            + loop.getFormattedInterval() + " "
+                            + loop.getFormattedBound() + " — " + loop.getPrompt();
+                }
+                case "clear" -> {
+                    int cleared = loops.clear();
+                    message = "Cleared " + cleared + " bounded loop"
+                            + (cleared == 1 ? "." : "s.");
+                }
+                case "pause", "resume", "remove", "delete", "stop" -> {
+                    if (argument.isBlank()) {
+                        return new Resolution(Status.INVALID, command,
+                                "Usage: /loop-bounded " + operation + " <id>", null);
+                    }
+                    boolean changed = switch (operation) {
+                        case "pause" -> loops.pause(argument);
+                        case "resume" -> loops.resume(argument);
+                        default -> loops.remove(argument);
+                    };
+                    if (!changed) {
+                        return new Resolution(Status.INVALID, command,
+                                "Bounded loop not found: " + argument, null);
+                    }
+                    for (BoundedLoopManager.BoundedLoop loop : loops.list()) {
+                        entries.add(boundedLoopSnapshot(loop));
+                    }
+                    message = "Bounded loop " + operation + "d: " + argument;
+                }
+                case "run", "now" -> {
+                    return new Resolution(Status.LIVE_SESSION_REQUIRED, command,
+                            "Running a bounded loop now injects its prompt into a live chat "
+                                    + "process; web command runs have no live process to fire "
+                                    + "into. The loop stays scheduled and fires on its normal "
+                                    + "cadence in the interactive CLI.", null);
+                }
+                default -> {
+                    // Shorthand: /loop-bounded 5m 10 prompt
+                    BoundedLoopManager.BoundedLoop loop = createBoundedLoop(loops, rest);
+                    if (loop == null) {
+                        return new Resolution(Status.INVALID, command,
+                                "Usage: /loop-bounded [add] <5m|2h30m> <10|1h> <prompt> | "
+                                        + "list | clear | pause <id> | resume <id> | remove <id>.",
+                                null);
+                    }
+                    entries.add(boundedLoopSnapshot(loop));
+                    message = "Bounded loop [" + loop.getId() + "] every "
+                            + loop.getFormattedInterval() + " "
+                            + loop.getFormattedBound() + " — " + loop.getPrompt();
+                }
+            }
+            return new Resolution(Status.INTERACTION_REQUIRED, command, message, null, data);
+        } finally {
+            loops.shutdown();
+        }
+    }
+
+    /** "<interval> <bound> <prompt>" split for add and shorthand paths. */
+    private static BoundedLoopManager.BoundedLoop createBoundedLoop(
+            BoundedLoopManager loops, String argument) {
+        String[] parts = argument.split("\\s+", 3);
+        if (parts.length < 3 || parts[2].isBlank()) return null;
+        return loops.create(parts[0], parts[1], parts[2].strip());
+    }
+
+    private static ObjectNode boundedLoopSnapshot(BoundedLoopManager.BoundedLoop loop) {
+        ObjectNode node = JsonUtils.standardMapper().createObjectNode();
+        node.put("id", loop.getId());
+        node.put("interval", loop.getInterval());
+        node.put("prompt", loop.getPrompt());
+        node.put("status", loop.getStatus().name());
+        node.put("boundType", loop.getBoundType().name());
+        if (loop.getBoundType() == BoundedLoopManager.BoundedLoop.BoundType.COUNT) {
+            node.put("boundCount", loop.getBoundCount());
+        } else {
+            node.put("durationMs", loop.getDurationMs());
+        }
+        node.put("intervalFormatted", loop.getFormattedInterval());
+        node.put("bound", loop.getFormattedBound());
+        node.put("remaining", loop.getFormattedRemaining());
+        node.put("fireCount", loop.getFireCount());
+        if (loop.getCompletionReason() != null) {
+            node.put("completionReason", loop.getCompletionReason());
+        }
         return node;
     }
 

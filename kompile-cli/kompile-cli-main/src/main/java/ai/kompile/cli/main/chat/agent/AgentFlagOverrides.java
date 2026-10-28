@@ -174,6 +174,11 @@ public final class AgentFlagOverrides {
         if (name.contains("gemini")) {
             return "gemini";
         }
+        // Antigravity before pi/antigravity-in-pi ambiguity: "agy" never overlaps
+        // the other command names, and "antigravity" is its display-name alias.
+        if (name.contains("agy") || name.contains("antigravity")) {
+            return "agy";
+        }
         if (name.contains("pi")) {
             return "pi";
         }
@@ -183,7 +188,7 @@ public final class AgentFlagOverrides {
     private static List<String> defaultFlags(String agentKey, FlagSet flagSet) {
         return switch (flagSet) {
             case PERMISSION_BYPASS -> switch (agentKey) {
-                case "claude", "opencode" -> List.of("--dangerously-skip-permissions");
+                case "claude", "opencode", "agy" -> List.of("--dangerously-skip-permissions");
                 case "codex" -> List.of("--dangerously-bypass-approvals-and-sandbox");
                 case "qwen", "gemini" -> List.of("--yolo");
                 case "pi" -> Collections.emptyList(); // pi is non-interactive in -p mode, no bypass needed
@@ -192,7 +197,7 @@ public final class AgentFlagOverrides {
             // Interactive TUI launch: same as run-mode EXCEPT opencode (auto-approves in the TUI;
             // --dangerously-skip-permissions is only valid on `opencode run` and breaks the TUI).
             case INTERACTIVE_PERMISSION_BYPASS -> switch (agentKey) {
-                case "claude" -> List.of("--dangerously-skip-permissions");
+                case "claude", "agy" -> List.of("--dangerously-skip-permissions");
                 case "codex" -> List.of("--dangerously-bypass-approvals-and-sandbox");
                 case "qwen", "gemini" -> List.of("--yolo");
                 default -> Collections.emptyList(); // opencode / pi / unknown: no flag

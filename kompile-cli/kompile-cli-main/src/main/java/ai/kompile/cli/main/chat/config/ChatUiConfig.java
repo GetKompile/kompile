@@ -122,6 +122,7 @@ public final class ChatUiConfig {
             putPolicy(content, kind, "focused".equals(preset) ? "none" : "full", "classic".equals(preset) ? "off" : "collapsed");
         }
         putPolicy(content, "reminders", "summary", "collapsed");
+        putPolicy(content, "notification", "summary", "collapsed");
         putPolicy(content, "error", "classic".equals(preset) ? "full" : "summary", "classic".equals(preset) ? "off" : "expanded");
         return root;
     }
@@ -244,7 +245,7 @@ public final class ChatUiConfig {
         lines.add("Sidebar: " + getSidebarWidthPercent() + "% · minimum chat " + getMinChatColumns() + " columns · wrap " + isSidebarWrap());
         lines.add("Sections: " + String.join(", ", getSidebarSections()) + " · follow " + getSidebarFollow());
         lines.add("Retention: " + getSidebarMaxItems() + " completed cards · " + getSidebarMaxChars() + " presentation characters");
-        for (String kind : List.of("assistant", "thinking", "tool", "error", "process", "subagent", "todos", "sources", "custom", "reminders")) {
+        for (String kind : List.of("assistant", "thinking", "tool", "error", "process", "subagent", "todos", "sources", "custom", "reminders", "notification")) {
             Policy p = policy(kind, null);
             lines.add(kind + ": inline=" + p.inline() + ", sidebar=" + p.sidebar());
         }

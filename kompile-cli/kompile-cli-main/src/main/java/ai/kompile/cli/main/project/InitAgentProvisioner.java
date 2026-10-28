@@ -60,13 +60,13 @@ public final class InitAgentProvisioner {
 
     private static final ObjectMapper OM = JsonUtils.standardMapper();
 
-    // Six commands from cli-agents.json — in canonical order.
+    // Five commands from cli-agents.json — in canonical order. Qwen Code is gone;
+    // 'qwen' is now a direct cloud chat provider (QwenChatProvider).
     private static final List<AgentSpec> KNOWN_AGENTS = List.of(
             new AgentSpec("claude",   "claude-cli",  "https://claude.ai/code",   true),
             new AgentSpec("codex",    "codex-cli",   "https://github.com/openai/codex", false),
             new AgentSpec("gemini",   "gemini-cli",  "https://github.com/google-gemini/gemini-cli", false),
             new AgentSpec("opencode", "opencode-cli","https://opencode.ai",       false),
-            new AgentSpec("qwen",     "qwen-cli",    "https://github.com/QwenLM/qwen-code", false),
             new AgentSpec("pi",       "pi-cli",      "https://github.com/getcursor/cursor-api", false)
     );
 

@@ -158,7 +158,7 @@ public class ToolRegistryFactory {
         registry.register(new WriteTool(coordinationManager));
         registry.register(new EditTool(coordinationManager));
         registry.register(new EditBatchTool(coordinationManager));
-        registry.register(new PatchTool());
+        registry.register(new PatchTool(coordinationManager));
         registry.register(new EditPatchTool(coordinationManager));
 
         // Search tools
@@ -185,6 +185,7 @@ public class ToolRegistryFactory {
 
         // Workflow and TUI tools
         registry.register(new TodoWriteTool());
+        registry.register(new TodoApplyBatchTool());
         registry.register(new TodoReadTool());
         registry.register(new SidePanelTool(new SidePanelManager()));
         registry.register(new ActivateToolsTool(registry.getDynamicToolManager()));
@@ -192,6 +193,7 @@ public class ToolRegistryFactory {
         registry.register(new ProjectConfigTool());
         registry.register(new EnforcerConfigTool());
         registry.register(new JudgeControlTool());
+        registry.register(new HooksTool());
         registry.register(new PeerTool(coordinationManager));
         registry.register(new TestMilestoneTool());
         registry.register(new IncidentTool());
@@ -288,6 +290,30 @@ public class ToolRegistryFactory {
                     baseUrl, registry, permissionService, objectMapper, renderer);
         }
         registry.register(new TaskTool(agentRegistry, subagentRunner, roleManager));
+        var resumeService = new ai.kompile.cli.main.chat.agent.SubagentResumeService(objectMapper);
+        var cliResumeRunner = new ai.kompile.cli.mcp.stdio.DirectSubagentRunnerStdio(resolvedWorkingDirectory, roleManager);
+        cliResumeRunner.setProcessTracking(processManager, coordinationManager);
+        var cliResume = new ai.kompile.cli.mcp.stdio.StdioSubagentResumeTool(
+                new ai.kompile.cli.mcp.stdio.StdioTaskTool(agentRegistry, cliResumeRunner, objectMapper, roleManager, resolvedWorkingDirectory),
+                objectMapper, resumeService);
+        var nativeResume = SubagentResumeTool.chatExecutor(agentRegistry, subagentRunner, roleManager);
+        registry.register(new SubagentResumeTool(objectMapper, resumeService, (metadata, params, context) -> {
+            String target = params.path("agent").asText("");
+            if (isLocalMode && (target.isEmpty() || "kompile".equalsIgnoreCase(target) || "general".equalsIgnoreCase(target))) {
+                var nativeParams = params.deepCopy();
+                ((com.fasterxml.jackson.databind.node.ObjectNode) nativeParams).remove("agent");
+                if (!target.isEmpty() && !nativeParams.hasNonNull("agent_type") && !nativeParams.hasNonNull("role")) {
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) nativeParams).put("agent_type", "general");
+                }
+                return nativeResume.resume(metadata, nativeParams, context);
+            }
+            SubagentResumeTool.checkCliPermissionCeiling(context);
+            var cliParams = params.deepCopy();
+            ((com.fasterxml.jackson.databind.node.ObjectNode) cliParams).put("background", false);
+            return cliResume.execute(cliParams, context);
+        }));
+        registry.register(new ai.kompile.cli.mcp.stdio.ResolveModelTool(objectMapper, resolvedWorkingDirectory,
+                () -> chatConfig != null ? chatConfig : ChatConfig.loadOrFromEnv(resolvedWorkingDirectory)));
         registry.setSubagentRunner(subagentRunner);
 
         // Evaluation tool

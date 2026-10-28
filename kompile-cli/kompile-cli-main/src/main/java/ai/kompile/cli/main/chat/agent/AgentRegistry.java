@@ -79,7 +79,7 @@ public class AgentRegistry {
                         "ask_graph_assert", "ask_graph_explain", "ask_graph_explain_fused",
                         "ask_graph_synthesize", "ask_graph_verify", "ask_graph_claim",
                         "transcript_search", "rag_search",
-                        "todowrite", "todoread", "exit_plan_mode"))
+                        "todowrite", "todoread", "todo_apply_batch", "exit_plan_mode"))
                 .canSpawnSubagents(false)
                 .build());
 
@@ -106,7 +106,7 @@ public class AgentRegistry {
                 .description("Read-only architecture and planning agent")
                 .systemPrompt(PLANNER_SYSTEM_PROMPT)
                 .enabledTools(Set.of("read", "grep", "glob", "list", "bash", "webfetch", "websearch",
-                        "task", "todowrite", "todoread", "transcript_search", "rag_search",
+                        "task", "todowrite", "todoread", "todo_apply_batch", "transcript_search", "rag_search",
                         "graph_search", "code_search", "file_context", "process", "exit_plan_mode"))
                 .permissionOverrides(Map.of(
                         "edit", PermissionService.PermissionLevel.DENY,
@@ -182,7 +182,7 @@ public class AgentRegistry {
                 .systemPrompt(ARCHITECT_PROMPT)
                 .modelHint("default")
                 .enabledTools(Set.of("read", "grep", "glob", "list", "bash", "webfetch", "websearch",
-                        "todowrite", "todoread", "transcript_search", "rag_search", "graph_search",
+                        "todowrite", "todoread", "todo_apply_batch", "transcript_search", "rag_search", "graph_search",
                         "code_search", "file_context"))
                 .isSubagent(true)
                 .permissionOverrides(EXPLORE_PERMISSION_OVERRIDES)
@@ -195,7 +195,7 @@ public class AgentRegistry {
                 .systemPrompt(RESEARCHER_PROMPT)
                 .modelHint("fast")
                 .enabledTools(Set.of("webfetch", "websearch", "read", "grep", "glob", "list",
-                        "rag_search", "graph_search"))
+                        "rag_search", "graph_search", "todowrite", "todoread", "todo_apply_batch"))
                 .isSubagent(true)
                 .permissionOverrides(EXPLORE_PERMISSION_OVERRIDES)
                 .build());
@@ -318,7 +318,8 @@ public class AgentRegistry {
     // allow-list is the only boundary.
     private static final Set<String> READ_ONLY_EXPLORE_TOOLS = Set.of(
             "read", "grep", "glob", "list", "bash", "webfetch", "websearch",
-            "transcript_search", "rag_search", "graph_search", "code_search", "file_context");
+            "transcript_search", "rag_search", "graph_search", "code_search", "file_context",
+            "todowrite", "todoread", "todo_apply_batch");
 
     private static final Map<String, PermissionService.PermissionLevel> EXPLORE_PERMISSION_OVERRIDES = Map.of(
             "edit", PermissionService.PermissionLevel.DENY,

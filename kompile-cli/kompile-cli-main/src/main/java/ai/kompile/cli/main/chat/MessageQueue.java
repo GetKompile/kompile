@@ -115,6 +115,27 @@ public class MessageQueue {
     private final String sessionId;
     private final Path queueFile;
     private final ObjectMapper objectMapper;
+    private volatile Runnable changeListener;
+
+    /**
+     * Installs the owning view's invalidation callback. It must only schedule a
+     * redraw, not paint synchronously: mutations hold the queue monitor.
+     */
+    public void setChangeListener(Runnable listener) {
+        this.changeListener = listener;
+    }
+
+    private void notifyChange() {
+        Runnable listener = changeListener;
+        if (listener == null) return;
+        try {
+            listener.run();
+        } catch (RuntimeException e) {
+            // A disposed/failed view must not turn a successful dequeue into a
+            // failed dispatch or restore input that has already been sent.
+            System.err.println("Warning: Failed to refresh message queue: " + e.getMessage());
+        }
+    }
 
     /**
      * Creates a new MessageQueue for the given session.
@@ -261,6 +282,7 @@ public class MessageQueue {
             queue.set(i, new QueuedMessage(
                     existing.getId(), existing.getContent(), existing.getCreatedAt(),
                     Instant.now(), status));
+            notifyChange();
             return true;
         }
         return false;
@@ -366,6 +388,10 @@ public class MessageQueue {
         } catch (IOException e) {
             // Silently fail - queue is in-memory primary
             System.err.println("Warning: Failed to save message queue: " + e.getMessage());
+        } finally {
+            // The live queue changed even if persistence failed. In particular,
+            // dequeue/takeForSend must not wait for later output to invalidate its preview.
+            notifyChange();
         }
     }
 

@@ -111,6 +111,206 @@ class WebHarnessControlsTest {
         }
     }
 
+    @Test void inputArrivingDuringAToolIsReceivedBeforeTheTurnFinishes() throws Exception {
+        var mapper = JsonUtils.standardMapper();
+        var stdin = new PipedInputStream();
+        var writer = new PipedOutputStream(stdin);
+        var acknowledged = new CountDownLatch(1);
+        var prompts = new CopyOnWriteArrayList<String>();
+        var accepted = new CopyOnWriteArrayList<String>();
+        var events = new CopyOnWriteArrayList<HeadlessRunEvent>();
+        var tools = new ToolRegistry(mapper);
+        tools.register(new CliTool() {
+            public String id() { return "boundary_tool"; }
+            public String description() { return "receives input while running"; }
+            public JsonNode parameterSchema() { return mapper.createObjectNode().put("type", "object"); }
+            public String permissionKey() { return "read"; }
+            public ToolResult execute(JsonNode params, ToolContext context) {
+                try {
+                    writer.write(("{\"version\":1,\"requestId\":\"steer\",\"action\":\"input\",\"text\":\"change direction\"}\n")
+                            .getBytes(StandardCharsets.UTF_8));
+                    writer.flush();
+                    assertTrue(acknowledged.await(2, TimeUnit.SECONDS));
+                    return ToolResult.success("tool finished");
+                } catch (Exception e) { throw new AssertionError(e); }
+            }
+        });
+        var client = new ai.kompile.cli.main.chat.config.DirectLlmClient(
+                new ai.kompile.cli.main.chat.config.ChatConfig("custom", null, "boundary-test", "http://unused.invalid"), mapper) {
+            @Override public StreamResult streamChat(String message, String system,
+                    com.fasterxml.jackson.databind.node.ArrayNode definitions,
+                    List<ToolCallResultInput> results, String model, List<AttachmentInput> attachments) {
+                prompts.add(message);
+                var response = new StreamResult();
+                if (prompts.size() == 1) {
+                    var call = new ToolCallOutput();
+                    call.id = "boundary-call";
+                    call.name = "boundary_tool";
+                    call.arguments = mapper.createObjectNode();
+                    response.toolCalls.add(call);
+                } else {
+                    assertEquals("change direction", message);
+                    assertEquals(1, results.size());
+                    assertEquals("boundary-call", results.get(0).callId);
+                    assertFalse(results.get(0).isError);
+                    response.text = "steered";
+                }
+                return response;
+            }
+        };
+        var loop = new AgenticChatLoop(null, mapper, tools, new PermissionService(),
+                new AgentRegistry(), directory, client, null);
+        loop.setPerformanceHarness(null);
+        try (writer; var processes = new BackgroundProcessManager("boundary-input", directory);
+             var controls = new WebHarnessControls(stdin)) {
+            controls.setBoundaryInputListener(accepted::add);
+            String result = controls.run(loop, processes, "boundary-session", "start", 4000,
+                    new AtomicBoolean(), prompt -> loop.chat(prompt, "boundary-session", "coder", "default", false),
+                    (action, id) -> ToolResult.success(""), event -> {
+                        events.add(event);
+                        if (event.type() == HeadlessRunEvent.Type.CONTROL) acknowledged.countDown();
+                    });
+            assertEquals("steered", result);
+            assertEquals(List.of("start", "change direction"), prompts);
+            assertEquals(List.of("change direction"), accepted);
+            assertEquals(1, events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.TURN_STARTED).count(),
+                    "the input must continue the active turn, not wait for a separate one");
+        } finally { client.close(); }
+    }
+
+    @Test void cancelledBoundaryClaimRestoresInputExactlyOnceForTurnEndFallback() throws Exception {
+        var loop = mock(AgenticChatLoop.class);
+        var supplier = new AtomicReference<Supplier<AgenticChatLoop.QueuedInput>>();
+        doAnswer(invocation -> { supplier.set(invocation.getArgument(0)); return null; })
+                .when(loop).setQueuedMessageSupplier(any());
+        var acknowledged = new CountDownLatch(1);
+        var restored = new CountDownLatch(1);
+        var cancelled = new AtomicBoolean();
+        var prompts = new ArrayList<String>();
+        String input = "{\"version\":1,\"requestId\":\"next\",\"action\":\"input\",\"text\":\"next\"}\n";
+        try (var processes = new BackgroundProcessManager("boundary-restore", directory);
+             var controls = new WebHarnessControls(bytes(input))) {
+            controls.run(loop, processes, "restore", "first", 4000, cancelled, prompt -> {
+                prompts.add(prompt);
+                if (prompt.equals("first")) {
+                    assertTrue(acknowledged.await(2, TimeUnit.SECONDS));
+                    var claim = supplier.get().get();
+                    assertNotNull(claim);
+                    assertEquals("next", claim.content());
+                    cancelled.set(true);
+                    assertFalse(claim.accept());
+                    claim.restore();
+                    claim.restore();
+                    cancelled.set(false);
+                    restored.countDown();
+                }
+                return "done";
+            }, (action, id) -> ToolResult.success(""), event -> {
+                if (event.type() == HeadlessRunEvent.Type.CONTROL) {
+                    acknowledged.countDown();
+                    try { assertTrue(restored.await(2, TimeUnit.SECONDS)); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+                }
+            });
+            assertEquals(List.of("first", "next"), prompts);
+            assertNull(supplier.get(), "the closed run must uninstall its queue supplier");
+        }
+    }
+
+    @Test void nativeInputArrivesAfterAToolResultWithoutAnyFinalProviderResult() throws Exception {
+        var mapper = JsonUtils.standardMapper();
+        var fake = new ai.kompile.cli.main.chat.config.FakeClaudeCode(directory, """
+                turn() {
+                  say_init
+                  if [ "$1" = 1 ]; then
+                    emit '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"tool1","name":"Read","input":{"path":"x"}}]}}'
+                    while [ ! -e "$DIR/complete" ]; do sleep 0.01; done
+                    emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool1","content":"done"}]}}'
+                  else
+                    say_text "steered native reply"
+                    say_result
+                  fi
+                }
+                """);
+        var config = new ai.kompile.cli.main.chat.config.ChatConfig("anthropic", null, "claude-sonnet-4-6", null);
+        config.setAuthenticationMethod("oauth");
+        config.setDefaultMemory(false);
+        var client = new ai.kompile.cli.main.chat.config.DirectLlmClient(config, mapper);
+        fake.installBinary(client);
+        var loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper), new PermissionService(),
+                new AgentRegistry(), directory, client, null);
+        loop.setPerformanceHarness(null);
+        var accepted = new CopyOnWriteArrayList<String>();
+        var turns = new CopyOnWriteArrayList<String>();
+        String input = "{\"version\":1,\"requestId\":\"native-live\",\"action\":\"input\",\"text\":\"next\"}\n";
+        try (client; var processes = new BackgroundProcessManager("native-live-boundary", directory);
+             var controls = new WebHarnessControls(bytes(input))) {
+            controls.setBoundaryInputListener(accepted::add);
+            client.setClaudeInjectionListener(new ai.kompile.cli.main.chat.config.DirectLlmClient.ClaudeInjectionListener() {
+                public void delivered(String id) { controls.nativeInputDelivered(id); }
+                public void dropped(String id) { controls.nativeInputDropped(id); }
+            });
+            loop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
+                public void onToolStart(String id, String name, String args) { }
+                public void onToolComplete(String id, String name, String args, ToolResult result) {
+                    controls.nativeToolCompleted(client::injectIntoClaudeTurn);
+                }
+            });
+            String result = controls.run(loop, processes, "native-live", "start", 4000,
+                    new AtomicBoolean(), prompt -> {
+                        turns.add(prompt);
+                        return loop.chat(prompt, "native-live", "coder", "default", false);
+                    }, (action, id) -> ToolResult.success(""), event -> {
+                        if (event.type() == HeadlessRunEvent.Type.CONTROL) {
+                            try { Files.writeString(fake.path("complete"), "complete"); }
+                            catch (IOException e) { throw new AssertionError(e); }
+                        }
+                    });
+            assertEquals("steered native reply", result);
+            assertEquals(List.of("next"), accepted);
+            assertEquals(List.of("start"), turns, "native input must not wait for a separate harness turn");
+            assertEquals(2, fake.messages().size());
+            assertEquals("next", fake.messages().get(1));
+        }
+    }
+
+    @Test void nativeToolBoundaryRestoresUnreadInputAndAcceptsReceiptOnlyOnce() throws Exception {
+        var acknowledged = new CountDownLatch(1);
+        var settled = new CountDownLatch(1);
+        var cancelled = new AtomicBoolean();
+        var accepted = new CopyOnWriteArrayList<String>();
+        var ids = new ArrayList<String>();
+        var prompts = new ArrayList<String>();
+        String input = "{\"version\":1,\"requestId\":\"native\",\"action\":\"input\",\"text\":\"next\"}\n";
+        try (var processes = new BackgroundProcessManager("native-boundary", directory);
+             var controls = new WebHarnessControls(bytes(input))) {
+            controls.setBoundaryInputListener(accepted::add);
+            controls.run(mock(AgenticChatLoop.class), processes, "native", "first", 4000, cancelled, prompt -> {
+                prompts.add(prompt);
+                assertTrue(acknowledged.await(2, TimeUnit.SECONDS));
+                controls.nativeToolCompleted((id, text) -> false);
+                controls.nativeToolCompleted((id, text) -> { ids.add(id); return true; });
+                controls.nativeToolCompleted((id, text) -> { fail("one native delivery at a time"); return false; });
+                controls.nativeInputDropped(ids.get(0));
+                controls.nativeToolCompleted((id, text) -> { ids.add(id); return true; });
+                cancelled.set(true);
+                controls.nativeInputDelivered(ids.get(1));
+                controls.nativeInputDelivered(ids.get(1));
+                cancelled.set(false);
+                settled.countDown();
+                return "done";
+            }, (action, id) -> ToolResult.success(""), event -> {
+                if (event.type() == HeadlessRunEvent.Type.CONTROL) {
+                    acknowledged.countDown();
+                    try { assertTrue(settled.await(2, TimeUnit.SECONDS)); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+                }
+            });
+            assertEquals(List.of("next"), accepted, "a native receipt wins a racing cancel, without duplicate delivery");
+            assertEquals(List.of("first"), prompts, "native receipt must consume the queued input within the active turn");
+        }
+    }
+
     @Test void fastExitRetainsOutputAndWakesParentBeforeFinalResult() throws Exception {
         var prompts = new ArrayList<String>();
         var events = new ArrayList<HeadlessRunEvent>();
@@ -201,6 +401,8 @@ class WebHarnessControlsTest {
         var detached = new CountDownLatch(1);
         var completed = new CompletableFuture<ToolResult>();
         CliTool tool = mock(CliTool.class);
+        when(tool.id()).thenReturn("task");
+        registry.register(tool); // the worker executes through registry hooks, not the argument directly
         when(tool.execute(any(), any())).thenAnswer(call -> { entered.countDown(); assertTrue(release.await(3, TimeUnit.SECONDS)); return ToolResult.success("retained-result"); });
         var eligible = AgenticChatLoop.class.getDeclaredMethod("setBackgroundableToolPhase", boolean.class);
         eligible.setAccessible(true);
@@ -574,6 +776,11 @@ class WebHarnessControlsTest {
                 calls.add(prompt);
                 if (prompt.equals("initial")) {
                     lifecycle.get().onSubagentStart("child", "coder", "retained child");
+                    lifecycle.get().onSubagentMetadata("foreign", Map.of("model", "must-not-create-a-child"));
+                    lifecycle.get().onSubagentMetadata("child", Map.of("model", "child-model", "vendor", "anthropic",
+                            "authentication", "oauth", "stream_output_tokens", "8"));
+                    lifecycle.get().onSubagentMetadata("child", Map.of("input_tokens", "120", "output_tokens", "42",
+                            "stream_output_tokens", "0", "context_tokens", "100"));
                     lifecycle.get().onSubagentStatus("child", "completed");
                     lifecycle.get().onSubagentEnd("child");
                     String valid = "{\"version\":1,\"requestId\":\"r2\",\"action\":\"subagent_input\",\"targetId\":\"child\",\"text\":\"follow up\"}\n";
@@ -598,7 +805,18 @@ class WebHarnessControlsTest {
             verify(runner).sendMessage("child", "follow up");
             verify(loop, never()).cancelActiveTurn();
             assertEquals(1, events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.CONTROL && !e.data().path("ok").asBoolean()).count());
-            assertTrue(events.get(events.size() - 1).data().path("subagents").get(0).path("canSend").asBoolean());
+            var children = events.get(events.size() - 1).data().path("subagents");
+            assertEquals(1, children.size(), "foreign metadata cannot create a visible/control target");
+            var child = children.get(0);
+            assertTrue(child.path("canSend").asBoolean());
+            assertEquals("child-model", child.path("details").path("model").asText());
+            assertEquals("anthropic", child.path("details").path("vendor").asText());
+            assertEquals("oauth", child.path("details").path("authentication").asText());
+            assertEquals("120", child.path("details").path("input_tokens").asText());
+            assertEquals("42", child.path("details").path("output_tokens").asText());
+            assertEquals("0", child.path("details").path("stream_output_tokens").asText());
+            assertEquals("100", child.path("details").path("context_tokens").asText());
+            assertTrue(child.has("startedAt") && child.has("endedAt") && child.has("durationMs"));
             verify(runner).setLifecycleListener(null);
             verify(runner).setAsyncCompletionListener(null);
         } finally { writer.close(); }
@@ -665,6 +883,62 @@ class WebHarnessControlsTest {
     private static JsonNode process(JsonNode activity, String id) {
         for (JsonNode p : activity.path("processes")) if (p.path("id").asText().equals(id)) return p;
         return null;
+    }
+
+    @Test void typedNativeChildTranscriptAndTelemetryRemainVisibleAfterCompletion() throws Exception {
+        var events = new CopyOnWriteArrayList<HeadlessRunEvent>();
+        var shown = new CountDownLatch(1);
+        var child = new AtomicReference<BackgroundProcessManager.ProcessEntry>();
+        try (var processes = new BackgroundProcessManager("typed-web-child", directory);
+             var controls = new WebHarnessControls(new ProcessStdin())) {
+            controls.run(mock(AgenticChatLoop.class), processes, "s", "first", 4000, new AtomicBoolean(), prompt -> {
+                var entry = processes.registerVirtual(BackgroundProcessManager.ProcessKind.COMMAND, "claude", "native child",
+                        Map.of("kind", "subagent", "source", "claude-code", "model", "child-model", "input_tokens", "100"));
+                child.set(entry);
+                var transcript = new ai.kompile.cli.main.chat.render.SubagentTranscript();
+                transcript.message("thinking", "Check carefully");
+                transcript.message("assistant", "**Child answer**\n" + "x".repeat(33_000));
+                transcript.toolStart("call-1", "bash", "{\"command\":\"test\"}");
+                transcript.toolOutput("call-1", "\033[31mlive output\033[0m");
+                assertTrue(processes.setVirtualTranscript(entry.getId(), transcript));
+                assertTrue(shown.await(2, TimeUnit.SECONDS), "running typed child snapshot must reach the browser");
+                transcript.toolComplete("call-1", "failure detail", true);
+                transcript.finish();
+                processes.complete(entry.getId());
+                return "parent answer only";
+            }, (action, id) -> ToolResult.success("raw log"), event -> {
+                events.add(event);
+                if (event.type() == HeadlessRunEvent.Type.ACTIVITY && child.get() != null) {
+                    var item = process(event.data(), child.get().getId());
+                    if (item != null && item.path("transcript").size() == 3) shown.countDown();
+                }
+            });
+            var activity = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.ACTIVITY).map(HeadlessRunEvent::data).toList();
+            var last = process(activity.get(activity.size() - 1), child.get().getId());
+            assertNotNull(last, "completed native child must remain inspectable in Recent");
+            assertEquals("COMPLETED", last.path("state").asText());
+            assertEquals("child-model", last.path("details").path("model").asText());
+            var blocks = last.path("transcript");
+            assertEquals("thinking", blocks.get(0).path("kind").asText());
+            assertEquals("**Child answer**\n" + "x".repeat(33_000), blocks.get(1).path("sections").get(0).path("content").asText(),
+                    "typed sections retain the CLI viewer's 128k budget, not the 32k raw log tail");
+            assertTrue(blocks.get(2).path("error").asBoolean());
+            assertFalse(blocks.get(2).path("running").asBoolean());
+            assertTrue(blocks.toString().contains("failure detail"));
+            assertFalse(blocks.toString().contains("\\u001B"), "browser sections must not carry terminal control sequences");
+            assertFalse(blocks.toString().contains("formattedContent"), "terminal styling is not web HTML");
+            var deniedEvents = new ArrayList<HeadlessRunEvent>();
+            try (var denied = new WebHarnessControls(new ProcessStdin())) {
+                denied.run(mock(AgenticChatLoop.class), processes, "s", "next", 4000, new AtomicBoolean(),
+                        prompt -> "done", (action, id) -> ToolResult.error("policy denied"), deniedEvents::add);
+            }
+            var deniedActivity = deniedEvents.stream().filter(e -> e.type() == HeadlessRunEvent.Type.ACTIVITY)
+                    .map(HeadlessRunEvent::data).reduce((a, b) -> b).orElseThrow();
+            var deniedChild = process(deniedActivity, child.get().getId());
+            assertNotNull(deniedChild);
+            assertFalse(deniedChild.has("transcript"), "typed presentation must not bypass process output policy");
+            assertFalse(deniedChild.has("output"));
+        }
     }
 
     @Test void aWakeUpCancelledFromTheBrowserLetsTheProcessFinishWithoutATurn() throws Exception {

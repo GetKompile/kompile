@@ -21,7 +21,11 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mockConstruction;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class ChatCommandRoutingTest {
 
@@ -190,6 +194,61 @@ class ChatCommandRoutingTest {
         assertNotEquals(firstTranscriptUuid, finalTranscriptUuid);
         assertEquals(finalTranscriptUuid, UUID.fromString(finalTranscriptUuid).toString());
         assertEquals(List.of(true, false), resumeFlags);
+    }
+
+    @Test
+    void clearKeepsTheActiveProviderModelAndAuthAcrossRepeatedClears() throws Exception {
+        ChatConfig launch = new ChatConfig("openai", "launch-key", "launch-model", "http://launch");
+        launch.setAuthenticationMethod("api-key");
+        ChatConfig selected = new ChatConfig("anthropic", null, "selected-model", "http://selected");
+        selected.setAuthenticationMethod("native");
+        selected.setCredentialName("selected-account");
+        selected.setThinking("high");
+        ChatConfig later = new ChatConfig("openai", "later-key", "later-model", "http://later");
+        later.setAuthenticationMethod("api-key");
+        later.setCredentialName("later-account");
+        later.setApiKey("later-key");
+        later.setThinking("low");
+        List<ChatConfig> configs = new ArrayList<>();
+        List<String> transcripts = new ArrayList<>();
+        List<ChatConfig> selections = List.of(selected, later);
+        ChatCommand command = new ChatCommand();
+        new CommandLine(command).parseArgs("--session-id", ChatCommand.newTranscriptUuid());
+
+        try (var repls = mockConstruction(ChatRepl.class, (repl, context) -> {
+            configs.add((ChatConfig) context.arguments().get(6));
+            transcripts.add((String) context.arguments().get(2));
+            int index = context.getCount() - 1;
+            when(repl.isNewConversationRequested()).thenReturn(index < selections.size());
+            if (index < selections.size()) {
+                when(repl.getChatConfig()).thenReturn(selections.get(index));
+            }
+        })) {
+            var run = ChatCommand.class.getDeclaredMethod(
+                    "runLocalLlmMode", ChatConfig.class, boolean.class, String.class);
+            run.setAccessible(true);
+            assertEquals(0, run.invoke(command, launch, true, null));
+            assertEquals(3, repls.constructed().size());
+            for (ChatRepl repl : repls.constructed()) {
+                verify(repl).run();
+                verify(repl).close();
+            }
+        }
+
+        assertEquals(3, transcripts.stream().distinct().count(), "clear must create fresh transcripts");
+        assertEquals("launch-model", launch.getModel(), "do not mutate the launch profile");
+        for (int i = 0; i < selections.size(); i++) {
+            ChatConfig expected = selections.get(i);
+            ChatConfig actual = configs.get(i + 1);
+            assertNotSame(expected, actual);
+            assertEquals(expected.getProvider(), actual.getProvider());
+            assertEquals(expected.getModel(), actual.getModel());
+            assertEquals(expected.getBaseUrl(), actual.getBaseUrl());
+            assertEquals(expected.getAuthenticationMethod(), actual.getAuthenticationMethod());
+            assertEquals(expected.getCredentialName(), actual.getCredentialName());
+            assertEquals(expected.getThinking(), actual.getThinking());
+        }
+        assertEquals("later-key", configs.get(2).getApiKey(), "keep in-memory credentials, not just saved JSON");
     }
 
     @Test
@@ -789,6 +848,35 @@ class ChatCommandRoutingTest {
                 IllegalArgumentException.class,
                 () -> invalid.applyCommandLineOverrides(config));
         assertTrue(failure.getMessage().contains("none, short, or long"));
+    }
+
+    @Test
+    void cacheRetentionEnvironmentValuesNormalizeToThePiVocabulary() {
+        // Pi vocabulary and TTL spellings normalize onto the shared policy wire values.
+        assertEquals("long", ChatCommand.normalizeCacheRetentionEnv("long"));
+        assertEquals("long", ChatCommand.normalizeCacheRetentionEnv("1h"));
+        assertEquals("long", ChatCommand.normalizeCacheRetentionEnv("24h"));
+        assertEquals("long", ChatCommand.normalizeCacheRetentionEnv(" LONG "));
+        assertEquals("none", ChatCommand.normalizeCacheRetentionEnv("off"));
+        assertEquals("short", ChatCommand.normalizeCacheRetentionEnv("short"));
+        // Unknown values fall back to the short default instead of failing startup.
+        assertEquals("short", ChatCommand.normalizeCacheRetentionEnv("forever"));
+        // Unset or blank means "no pin": the persisted config wins.
+        assertNull(ChatCommand.normalizeCacheRetentionEnv(null));
+        assertNull(ChatCommand.normalizeCacheRetentionEnv("   "));
+    }
+
+    @Test
+    void envOnlyRetentionStillMatchesTheFlagResult() {
+        ChatConfig flagConfig = new ChatConfig("anthropic", null, "claude-sonnet-4-5", null);
+        parse("--prompt-cache-retention", "long").applyCommandLineOverrides(flagConfig);
+
+        ChatConfig envConfig = new ChatConfig("anthropic", null, "claude-sonnet-4-5", null);
+        String fromEnv = ChatCommand.normalizeCacheRetentionEnv("1h");
+        if (fromEnv != null) envConfig.setPromptCacheRetention(fromEnv);
+
+        assertEquals(flagConfig.getPromptCacheRetention(), envConfig.getPromptCacheRetention());
+        assertEquals("long", envConfig.getPromptCacheRetention());
     }
 
     @Test

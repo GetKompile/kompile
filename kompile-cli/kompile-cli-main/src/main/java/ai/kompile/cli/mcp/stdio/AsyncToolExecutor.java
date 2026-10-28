@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Executes MCP tool calls in the background, allowing long-running operations
- * to return immediately with a task ID that can be polled for status/results.
+ * to return immediately with a task ID and a one-shot completion monitor.
  *
  * <p>Works at the MCP dispatch level — any tool can be made async by passing
  * {@code _background: true} in the tool arguments. No per-tool changes needed.</p>
@@ -37,6 +37,7 @@ public class AsyncToolExecutor {
     private static final long RESULT_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
     private final ExecutorService pool;
+    private final ScheduledExecutorService cleanup;
     private final ConcurrentHashMap<String, BackgroundTask> tasks = new ConcurrentHashMap<>();
     private final AtomicInteger taskCounter = new AtomicInteger(0);
     private final McpToolProgressLogger logger;
@@ -50,7 +51,7 @@ public class AsyncToolExecutor {
         });
 
         // Periodic cleanup of stale completed tasks
-        ScheduledExecutorService cleanup = Executors.newSingleThreadScheduledExecutor(r -> {
+        cleanup = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "mcp-async-cleanup");
             t.setDaemon(true);
             return t;
@@ -63,19 +64,38 @@ public class AsyncToolExecutor {
      *
      * @param toolName the tool being called
      * @param callable the actual tool execution
-     * @return a task ID for polling
+     * @return a task ID for a held completion wait or final result retrieval
      */
     public String submit(String toolName, Callable<ToolResult> callable) {
-        String taskId = "bg-" + toolName + "-" + System.currentTimeMillis();
+        return submit(toolName, callable, null);
+    }
+
+    /** Install the one-shot completion monitor before the worker can finish. */
+    public String submit(String toolName, Callable<ToolResult> callable,
+                         java.util.function.Consumer<TaskStatus> completionMonitor) {
+        return submit(toolName, callable, null, completionMonitor);
+    }
+
+    public String submit(String toolName, Callable<ToolResult> callable,
+                         java.util.function.Consumer<TaskStatus> onStarted,
+                         java.util.function.Consumer<TaskStatus> completionMonitor) {
+        String taskId = "bg-" + toolName.replaceAll("[^A-Za-z0-9._-]", "_") + "-" + System.currentTimeMillis()
+                + "-" + taskCounter.incrementAndGet();
         BackgroundTask task = new BackgroundTask(taskId, toolName);
         tasks.put(taskId, task);
+        if (onStarted != null) {
+            try {
+                onStarted.accept(task.toStatus());
+            } catch (RuntimeException observerFailure) {
+                System.err.println("MCP task monitor publication failed: " + observerFailure.getMessage());
+            }
+        }
 
         pool.submit(() -> {
-            String callId = logger != null
-                    ? logger.toolStart(toolName, Map.of("_background", "true"))
-                    : null;
+            String callId = null;
             long start = System.currentTimeMillis();
             try {
+                callId = logger != null ? logger.toolStart(toolName, Map.of("_background", "true")) : null;
                 ToolResult result = callable.call();
                 long elapsed = System.currentTimeMillis() - start;
                 task.complete(result, elapsed);
@@ -83,11 +103,20 @@ public class AsyncToolExecutor {
                     logger.toolComplete(callId, toolName, elapsed,
                             McpToolProgressLogger.summarizeResult(result));
                 }
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 long elapsed = System.currentTimeMillis() - start;
                 task.fail(e.getMessage(), elapsed);
                 if (logger != null && callId != null) {
                     logger.toolError(callId, toolName, elapsed, e.getMessage());
+                }
+            } finally {
+                task.finished.complete(null);
+                if (completionMonitor != null) {
+                    try {
+                        completionMonitor.accept(task.toStatus());
+                    } catch (RuntimeException observerFailure) {
+                        System.err.println("MCP task completion notification failed: " + observerFailure.getMessage());
+                    }
                 }
             }
         });
@@ -99,6 +128,20 @@ public class AsyncToolExecutor {
     public TaskStatus getStatus(String taskId) {
         BackgroundTask task = tasks.get(taskId);
         if (task == null) return null;
+        return task.toStatus();
+    }
+
+    /** Held monitor wait: no model-driven status polling or transcript snapshots. */
+    public TaskStatus awaitCompletion(String taskId, long timeoutMs) throws InterruptedException {
+        BackgroundTask task = tasks.get(taskId);
+        if (task == null) return null;
+        try {
+            task.finished.get(Math.max(1, Math.min(timeoutMs, 300_000)), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException ignored) {
+            // The monitor stays installed; a later held wait can resume it.
+        } catch (ExecutionException impossible) {
+            throw new IllegalStateException(impossible);
+        }
         return task.toStatus();
     }
 
@@ -126,6 +169,7 @@ public class AsyncToolExecutor {
     /** Shutdown the executor. */
     public void shutdown() {
         pool.shutdownNow();
+        cleanup.shutdownNow();
     }
 
     private void cleanupStale() {
@@ -153,6 +197,7 @@ public class AsyncToolExecutor {
     private static class BackgroundTask {
         final String taskId;
         final String toolName;
+        final CompletableFuture<Void> finished = new CompletableFuture<>();
         final long startedAt;
         volatile Status status = Status.RUNNING;
         volatile ToolResult result;
@@ -170,29 +215,32 @@ public class AsyncToolExecutor {
             this.result = result;
             this.durationMs = durationMs;
             this.completedAt = System.currentTimeMillis();
-            this.status = Status.COMPLETED;
+            this.status = result != null && result.isError() ? Status.FAILED : Status.COMPLETED;
         }
 
         void fail(String error, long durationMs) {
             this.error = error;
+            this.result = ToolResult.error(error == null ? "Background task failed" : error);
             this.durationMs = durationMs;
             this.completedAt = System.currentTimeMillis();
             this.status = Status.FAILED;
         }
 
         TaskStatus toStatus() {
-            long elapsed = status == Status.RUNNING
+            Status snapshot = status;
+            long elapsed = snapshot == Status.RUNNING
                     ? System.currentTimeMillis() - startedAt
                     : durationMs;
-            String summary = switch (status) {
+            String summary = switch (snapshot) {
                 case RUNNING -> "running for " + elapsed + "ms";
                 case COMPLETED -> result != null
                         ? McpToolProgressLogger.summarizeResult(result)
                         : "completed";
-                case FAILED -> "failed: " + error;
+                case FAILED -> "failed: " + (error != null ? error
+                        : result != null ? McpToolProgressLogger.summarizeResult(result) : "unknown error");
             };
-            return new TaskStatus(taskId, toolName, status.name().toLowerCase(),
-                    elapsed, summary, status == Status.COMPLETED ? result : null);
+            return new TaskStatus(taskId, toolName, snapshot.name().toLowerCase(Locale.ROOT),
+                    elapsed, summary, snapshot == Status.RUNNING ? null : result);
         }
     }
 }

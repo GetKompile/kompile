@@ -45,6 +45,7 @@ class DirectSubagentRunnerCancellationTest {
             exchange.sendResponseHeaders(200, 0);
             exchange.getResponseBody().write((
                     "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n"
+                            + "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":7}}\n\n"
                             + "data: [DONE]\n\n").getBytes(StandardCharsets.UTF_8));
             exchange.close();
         });
@@ -71,10 +72,14 @@ class DirectSubagentRunnerCancellationTest {
                     permissions, directory, tools);
             parent.setOutputConsumer(ignored -> {});
             AtomicReference<String> childId = new AtomicReference<>();
+            List<java.util.Map<String, String>> metadata = new CopyOnWriteArrayList<>();
             CountDownLatch childCompletedTwice = new CountDownLatch(2);
             runner.setLifecycleListener(new SubagentRunner.LifecycleListener() {
                 @Override public void onSubagentStart(String id, String type, String description) {
                     childId.compareAndSet(null, id);
+                }
+                @Override public void onSubagentMetadata(String id, java.util.Map<String, String> snapshot) {
+                    if (id.equals(childId.get())) metadata.add(snapshot);
                 }
                 @Override public void onSubagentEnd(String id) {
                     childCompletedTwice.countDown();
@@ -83,6 +88,11 @@ class DirectSubagentRunnerCancellationTest {
             assertTrue(runner.runSubagent(AgentConfig.builder("architect").isSubagent(true)
                     .systemPrompt("Read-only audit").modelOverride("gpt-5.6-luna")
                     .thinkingOverride("xhigh").build(), "Audit boundaries", parent).contains("done"));
+            assertEquals("gpt-5.6-luna", metadata.get(0).get("model"));
+            assertEquals("custom", metadata.get(0).get("vendor"));
+            assertEquals("xhigh", metadata.get(0).get("thinking"));
+            assertTrue(metadata.stream().anyMatch(snapshot -> "1".equals(snapshot.get("stream_output_tokens"))),
+                    "streaming usage is visible before the run ends");
             assertEquals("parent-model", config.getModel());
             assertEquals("low", config.getThinking());
             // Parent switches must not change an already retained child's settings.
@@ -90,6 +100,10 @@ class DirectSubagentRunnerCancellationTest {
             config.setThinking("medium");
             assertTrue(runner.sendMessage(childId.get(), "Continue the audit"));
             assertTrue(childCompletedTwice.await(5, TimeUnit.SECONDS));
+            var lastMetadata = metadata.get(metadata.size() - 1);
+            assertEquals("200", lastMetadata.get("input_tokens"), "retained child usage is cumulative");
+            assertEquals("14", lastMetadata.get("output_tokens"));
+            assertEquals("gpt-5.6-luna", lastMetadata.get("model"), "parent switches cannot relabel a child");
             runner.runSubagent(AgentConfig.builder("sibling").isSubagent(true).build(), "New task", parent);
             assertEquals(3, requests.size());
             for (int index = 0; index < 2; index++) {
@@ -184,16 +198,26 @@ class DirectSubagentRunnerCancellationTest {
         }
     }
 
-    @Test
-    void followUpUsesTheRetainedChildConversationAfterItsFirstResponse() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    @Timeout(15)
+    void followUpUsesTheRetainedChildConversationAndAlwaysNotifies(boolean cancelFollowUp) throws Exception {
         List<String> requests = new CopyOnWriteArrayList<>();
         AtomicInteger requestCount = new AtomicInteger();
         CountDownLatch secondRequest = new CountDownLatch(1);
+        CountDownLatch releaseSecond = new CountDownLatch(1);
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/chat/completions", exchange -> {
             int index = requestCount.incrementAndGet();
             requests.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
-            if (index == 2) secondRequest.countDown();
+            if (index == 2) {
+                secondRequest.countDown();
+                try {
+                    releaseSecond.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             String content = index == 1 ? "initial child response" : "continued child response";
             exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
             exchange.sendResponseHeaders(200, 0);
@@ -251,15 +275,20 @@ class DirectSubagentRunnerCancellationTest {
 
             assertTrue(runner.sendMessage(id, "continue the crawl"));
             assertTrue(secondRequest.await(5, TimeUnit.SECONDS));
+            if (cancelFollowUp) assertTrue(runner.cancel(id));
+            releaseSecond.countDown();
             assertTrue(completedRuns.await(5, TimeUnit.SECONDS));
             assertTrue(completionDelivered.await(5, TimeUnit.SECONDS));
-            assertEquals(List.of(id + ": continued child response"), completions);
+            assertEquals(List.of(id + ": " + (cancelFollowUp
+                    ? "Subagent follow-up cancelled." : "continued child response")), completions);
             assertEquals(2, requests.size());
             assertTrue(requests.get(1).contains("continue the crawl"));
             assertTrue(requests.get(1).contains("initial child response"),
                     "the follow-up request must keep the original child history");
             assertFalse(parent.isAborted());
         } finally {
+            releaseSecond.countDown();
+            runner.close();
             server.stop(0);
         }
     }

@@ -17,6 +17,9 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
+import ai.kompile.cli.main.chat.render.SubagentTranscript;
+import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.activity.ActivityIdentity;
 import ai.kompile.cli.main.chat.activity.ActivityRecorder;
 import ai.kompile.cli.main.chat.activity.ConversationActivityService;
@@ -146,6 +149,7 @@ public class BackgroundProcessManager implements AutoCloseable {
         private final Process process;
         private final ProcessKind kind;
         private volatile Map<String, String> metadata;
+        private volatile SubagentTranscript transcript;
         /** Last observed size of a shared mirror's owner log; drives live refresh. */
         private volatile long sharedOutputSize = -1L;
         private final AtomicBoolean exitNotified = new AtomicBoolean(false);
@@ -198,6 +202,11 @@ public class BackgroundProcessManager implements AutoCloseable {
         public String getDescription() { return description; }
         public ProcessKind getKind() { return kind; }
         public Map<String, String> getMetadata() { return metadata; }
+        /** Child presentation is read only by its explicitly opened browser view. */
+        public List<ChatDisplayBlock> transcriptBlocks(TerminalRenderer renderer) {
+            SubagentTranscript current = transcript;
+            return current == null ? List.of() : current.blocks(renderer);
+        }
         public boolean isVirtual() { return process == null; }
 
         /**
@@ -785,6 +794,11 @@ public class BackgroundProcessManager implements AutoCloseable {
 
     /** Update a virtual watcher's visible state without replacing its process entry. */
     public boolean updateVirtual(String processId, String description, Map<String, String> metadata) {
+        return updateVirtual(processId, description, metadata, true);
+    }
+
+    /** Streaming owners can reuse the coalesced output refresh instead of redrawing on each delta. */
+    public boolean updateVirtual(String processId, String description, Map<String, String> metadata, boolean notify) {
         ProcessEntry entry = processes.get(processId);
         if (entry == null || !entry.isVirtual() || !entry.isRunning()) {
             return false;
@@ -795,7 +809,7 @@ public class BackgroundProcessManager implements AutoCloseable {
         if (metadata != null) {
             entry.metadata = Map.copyOf(metadata);
         }
-        fireChange();
+        if (notify) fireChange();
         return true;
     }
 
@@ -809,6 +823,19 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     public boolean appendVirtualOutput(String processId, String line) {
         return appendVirtualOutput(processId, line, true);
+    }
+
+    /** Attach typed presentation to an owned live child; never to foreign log mirrors. */
+    public boolean setVirtualTranscript(String processId, SubagentTranscript transcript) {
+        ProcessEntry entry = processId == null ? null : processes.get(processId);
+        if (entry == null || transcript == null) return false;
+        synchronized (entry) {
+            if (closed || !entry.isVirtual() || !entry.isRunning() || entry.fromHistory
+                    || entry.kind == ProcessKind.SHARED) return false;
+            entry.transcript = transcript;
+        }
+        fireChange();
+        return true;
     }
 
     /** Append streamed text without inserting a newline between model deltas. */

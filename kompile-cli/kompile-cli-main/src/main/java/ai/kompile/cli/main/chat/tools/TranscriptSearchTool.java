@@ -71,7 +71,7 @@ public class TranscriptSearchTool implements CliTool {
                 "and 'search' (grep-style search, or ID-prefix lookup without a pattern). " +
                 "Content search supports regex/literal patterns, agent/session filters, " +
                 "context lines (before/after/context), case sensitivity, inverted match, " +
-                "files-with-matches mode, line numbers, and a result cap. " +
+                "files-with-matches mode, line numbers, and offset paging of matches. " +
                 "Useful for recalling context from prior sessions after compaction.";
     }
 
@@ -119,7 +119,7 @@ public class TranscriptSearchTool implements CliTool {
         prop(props, "count", "integer",
                 "Number of results for 'recent' action (default: 5).");
         prop(props, "offset", "integer",
-                "For 'read': starting line (1-based, default 1). For 'fulltext': hit offset (0-based, default 0).");
+                "For 'read': starting line (1-based, default 1). For 'search'/'fulltext': match offset (0-based, default 0); continue with metadata.nextOffset.");
         prop(props, "limit", "integer",
                 "For 'read': lines per page (1..2000, default 500), preserving entire long lines. " +
                         "For 'fulltext': hits per page (1..200, default 50); metadata.nextOffset continues the page.");
@@ -304,6 +304,10 @@ public class TranscriptSearchTool implements CliTool {
         boolean lineNumbers = params.path("line_numbers").asBoolean(true);
         int maxResults = params.path("max_results").asInt(DEFAULT_MAX_RESULTS);
         if (maxResults <= 0) maxResults = DEFAULT_MAX_RESULTS;
+        int offset = params.path("offset").asInt(0);
+        if (offset < 0 || offset > Integer.MAX_VALUE - maxResults) {
+            return ToolResult.error("offset must be non-negative and leave room for a page");
+        }
 
         int before;
         int after;
@@ -337,6 +341,7 @@ public class TranscriptSearchTool implements CliTool {
         int scanned = 0;
         int filesMatched = 0;
         int totalMatches = 0;
+        int skippedMatches = 0;
         boolean truncated = false;
         StringBuilder sb = new StringBuilder();
 
@@ -361,18 +366,25 @@ public class TranscriptSearchTool implements CliTool {
                 if (invert) matched = !matched;
                 if (!matched) continue;
 
+                if (skippedMatches < offset) {
+                    skippedMatches++;
+                    continue;
+                }
+                if (totalMatches >= maxResults) {
+                    truncated = true;
+                    break;
+                }
                 fileMatchCount++;
                 totalMatches++;
                 int start = Math.max(0, i - before);
                 int end = Math.min(lines.length - 1, i + after);
                 matchRanges.add(new int[]{start, i, end});
-                if (totalMatches >= maxResults) {
-                    truncated = true;
-                    break;
-                }
             }
 
-            if (fileMatchCount == 0) continue;
+            if (fileMatchCount == 0) {
+                if (truncated) break outer;
+                continue;
+            }
             filesMatched++;
 
             if (filesWithMatches) {
@@ -413,10 +425,7 @@ public class TranscriptSearchTool implements CliTool {
                 sb.append("\n");
             }
 
-            if (totalMatches >= maxResults) {
-                truncated = true;
-                break outer;
-            }
+            if (truncated) break outer;
         }
 
         Map<String, Object> meta = new LinkedHashMap<>();
@@ -428,6 +437,8 @@ public class TranscriptSearchTool implements CliTool {
         meta.put("scanned", scanned);
         meta.put("filesMatched", filesMatched);
         meta.put("matches", totalMatches);
+        meta.put("offset", offset);
+        meta.put("nextOffset", truncated ? offset + totalMatches : null);
         meta.put("truncated", truncated);
 
         if (totalMatches == 0) {
@@ -440,7 +451,8 @@ public class TranscriptSearchTool implements CliTool {
 
         String title = (filesWithMatches ? "transcript_search -l: " : "transcript_search: ") + pattern;
         if (truncated) {
-            sb.append("\n... (truncated at max_results=").append(maxResults).append(")\n");
+            sb.append("\n... (truncated at max_results=").append(maxResults)
+                    .append("; continue with the same filters and offset=").append(offset + totalMatches).append(")\n");
         }
         return ToolResult.success(title, sb.toString(), meta);
     }

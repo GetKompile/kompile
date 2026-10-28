@@ -49,6 +49,70 @@ class SetupWizardCredentialPagingTest {
     }
 
     @Test
+    void modalModelPickerUsesSuppliedCatalogAndThinkingWithoutLiveNetwork() throws Exception {
+        var discovery = ModelDiscovery.Result.success(List.of(
+                new LiveModelDiscovery.Model("fixture-model", List.of("low", "high"))), List.of());
+        var route = new ChatConfig("openai", null, null, null);
+        var pages = new ArrayList<String>();
+        try (var terminal = terminal(new ByteArrayOutputStream())) {
+            var picked = SetupWizard.pickModel(reader(terminal, "1", "3"), route,
+                    (title, lines) -> pages.addAll(lines), discovery);
+            assertEquals(new SetupWizard.ModelPick("fixture-model", "high"), picked);
+            assertNull(route.getModel());
+            assertTrue(pages.stream().anyMatch(line -> line.contains("high")));
+            assertNull(SetupWizard.pickModel(reader(terminal, "cancel"), route, (t, l) -> {}, discovery));
+        }
+    }
+
+    @Test
+    void savedOnlyFailoverSelectionNeverOffersLoginOrChangesDefaultOrRevealsKeys() throws Exception {
+        var output = new ByteArrayOutputStream();
+        var pages = new ArrayList<String>();
+        try (var terminal = terminal(output)) {
+            var selected = SetupWizard.selectSavedAuthentication(reader(terminal, "n", "13"),
+                    "openai", SetupWizard.AuthMethod.API_KEY, (title, lines) -> pages.addAll(lines), "account-01");
+            assertNotNull(selected);
+            assertEquals("account-13", selected.credentialName());
+            assertEquals(SetupWizard.AuthMethod.API_KEY, selected.authMethod());
+            assertNull(selected.apiKey());
+            assertEquals("account-01", store.activeCredentialName("openai"));
+            assertFalse(String.join("\n", pages).contains("test-key-"));
+            assertFalse(String.join("\n", pages).contains("Sign in / add"));
+            int before = store.list("openai").size();
+            assertNull(SetupWizard.selectSavedAuthentication(reader(terminal, "cancel"),
+                    "openai", SetupWizard.AuthMethod.API_KEY, (t, l) -> {}, null));
+            assertEquals(before, store.list("openai").size());
+            assertNull(SetupWizard.selectSavedAuthentication(reader(terminal),
+                    "custom", SetupWizard.AuthMethod.API_KEY, (t, l) -> {}, null), "No saved credential must not open a key/login prompt");
+        }
+    }
+
+    @Test
+    void savedOnlySelectionDistinguishesSameVendorNamedAccountAuthRoutes() throws Exception {
+        store.putApiKey("anthropic", "work", "fixture-api-secret", true);
+        store.putOAuth("claude-code", "work", "fixture-oauth-secret", "", Long.MAX_VALUE, true);
+        var pages = new ArrayList<String>();
+        try (var terminal = terminal(new ByteArrayOutputStream())) {
+            var api = SetupWizard.selectSavedAuthentication(reader(terminal, "1"), "anthropic",
+                    SetupWizard.AuthMethod.API_KEY, (t, l) -> pages.addAll(l), null);
+            var oauth = SetupWizard.selectSavedAuthentication(reader(terminal, "1"), "anthropic",
+                    SetupWizard.AuthMethod.OAUTH, (t, l) -> pages.addAll(l), "work");
+            assertNotNull(api);
+            assertNotNull(oauth);
+            assertEquals("anthropic", api.provider());
+            assertEquals(api.provider(), oauth.provider());
+            assertEquals("work", api.credentialName());
+            assertEquals(api.credentialName(), oauth.credentialName());
+            assertEquals(SetupWizard.AuthMethod.API_KEY, api.authMethod());
+            assertEquals(SetupWizard.AuthMethod.OAUTH, oauth.authMethod());
+            assertNull(api.apiKey());
+            assertNull(oauth.apiKey());
+            assertFalse(String.join("\n", pages).contains("fixture-api-secret"));
+            assertFalse(String.join("\n", pages).contains("fixture-oauth-secret"));
+        }
+    }
+
+    @Test
     void pagesSessionAccountsAndCanSelectAgainAfterResume() throws Exception {
         var output = new ByteArrayOutputStream();
         try (var terminal = terminal(output)) {

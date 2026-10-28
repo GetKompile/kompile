@@ -20,9 +20,11 @@ import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.auth.CredentialMenu;
 import ai.kompile.cli.main.auth.NativeCliAuth;
+import ai.kompile.cli.main.auth.oauth.ClaudeCodeOAuthFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
+import ai.kompile.cli.main.auth.oauth.TerminalHandoff;
 import ai.kompile.cli.main.chat.ResumeAllCommand;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
@@ -111,9 +113,10 @@ public class SetupWizard {
     }
 
     /**
-     * Whether this vendor/method pair is Anthropic's Claude Code route. Claude Code
-     * owns that login, so the route never offers, stores, mints, refreshes or signs
-     * in a Kompile credential: the chat passes straight through to Claude Code.
+     * Whether this vendor/method pair is Anthropic's Claude Code route. The chat
+     * passes through to Claude Code, which runs on the long-lived setup token the
+     * chat selected (a named claude-code credential, set as CLAUDE_CODE_OAUTH_TOKEN
+     * on its claude process) or else on its own login.
      */
     public static boolean isClaudeCodeRoute(String vendor, AuthMethod method) {
         return method != null && ChatConfig.isClaudeCliNative(vendor, method.configValue());
@@ -135,13 +138,14 @@ public class SetupWizard {
      */
     public static AuthenticationSelection authenticateSession(LineReader reader, String vendor, AuthMethod method,
             BiConsumer<String, List<String>> pageRenderer, String preferredCredential) {
+        return interaction(reader, () -> authenticateSessionStep(reader, vendor, method, pageRenderer, preferredCredential));
+    }
+
+    private static AuthenticationSelection authenticateSessionStep(LineReader reader, String vendor, AuthMethod method,
+            BiConsumer<String, List<String>> pageRenderer, String preferredCredential) {
         String provider = resolveProviderForAuth(vendor, method);
         if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
-        if (isClaudeCodeRoute(vendor, method)) {
-            // No credential menu and no sign-in: Claude Code owns this login.
-            return new AuthenticationSelection(provider, method, null);
-        }
-        if (method == AuthMethod.NATIVE) {
+        if (method == AuthMethod.NATIVE && !isClaudeCodeRoute(vendor, method)) {
             // Native CLI credentials are owned by the provider CLI and are
             // machine-global; they cannot be pinned per session. Keep the CLI's
             // current login, or sign in again through the startup flow.
@@ -151,48 +155,121 @@ public class SetupWizard {
             return choice == 0 ? new AuthenticationSelection(provider, method, null)
                     : authenticate(reader, vendor, method, pageRenderer);
         }
+        return selectNamedCredential(reader, vendor, method, pageRenderer, preferredCredential, false);
+    }
+
+    /** Select an existing credential only; never starts login or changes the saved default. */
+    public static AuthenticationSelection selectSavedAuthentication(LineReader reader, String vendor, AuthMethod method,
+            BiConsumer<String, List<String>> pageRenderer, String preferredCredential) {
+        return interaction(reader, () -> {
+            String provider = resolveProviderForAuth(vendor, method);
+            if (method == AuthMethod.NONE || method == AuthMethod.NATIVE && !isClaudeCodeRoute(vendor, method)) {
+                return new AuthenticationSelection(provider, method, null);
+            }
+            return selectNamedCredential(reader, vendor, method, pageRenderer, preferredCredential, false, true);
+        });
+    }
+
+    /**
+     * The named-credential page: the route's stored credentials, then signing in
+     * to add one. A session pins the chosen credential by name; {@code global}
+     * makes it the provider's active credential instead. The Claude Code route
+     * keeps the vendor as its chat provider and lists the {@code claude-code}
+     * setup tokens, which its claude process gets as CLAUDE_CODE_OAUTH_TOKEN; it
+     * also offers Claude Code's own login, which neither checks nor drives it.
+     */
+    private static AuthenticationSelection selectNamedCredential(LineReader reader, String vendor, AuthMethod method,
+            BiConsumer<String, List<String>> pageRenderer, String preferredCredential, boolean global) {
+        return selectNamedCredential(reader, vendor, method, pageRenderer, preferredCredential, global, false);
+    }
+
+    private static AuthenticationSelection selectNamedCredential(LineReader reader, String vendor, AuthMethod method,
+            BiConsumer<String, List<String>> pageRenderer, String preferredCredential, boolean global, boolean savedOnly) {
+        String provider = resolveProviderForAuth(vendor, method);
+        boolean claudeCode = isClaudeCodeRoute(vendor, method);
+        String storeProvider = claudeCode ? ClaudeCodeOAuthFlow.PROVIDER_ID : provider;
+        AuthMethod credentialMethod = claudeCode ? AuthMethod.OAUTH : method;
         try {
             CredentialStore store = CredentialStore.create();
-            List<CredentialStore.CredentialInfo> credentials = CredentialMenu.unexpired(store.list(provider)).stream()
-                    .filter(info -> compatibleCredentials(List.of(info), method).size() == 1
-                            || method == AuthMethod.OAUTH && isLegacyOpenAiCodexCredential(store, provider, info))
+            List<CredentialStore.CredentialInfo> credentials = CredentialMenu.unexpired(store.list(storeProvider)).stream()
+                    .filter(info -> compatibleCredentials(List.of(info), credentialMethod).size() == 1
+                            || credentialMethod == AuthMethod.OAUTH
+                            && isLegacyOpenAiCodexCredential(store, storeProvider, info))
                     .toList();
             List<String> labels = new ArrayList<>(credentials.stream()
                     .map(CredentialStore.CredentialInfo::displayLabel).toList());
-            labels.add("Sign in / add another credential");
-            int defaultIndex = CredentialMenu.defaultIndex(store, provider, credentials);
+            if (!savedOnly) labels.add("Sign in / add another credential");
+            int ownLogin = -1;
+            if (claudeCode) {
+                ownLogin = labels.size();
+                labels.add("Use Claude Code's own login (`claude auth login`)");
+            }
+            int defaultIndex = CredentialMenu.defaultIndex(store, storeProvider, credentials);
             for (int i = 0; i < credentials.size(); i++) {
                 if (credentials.get(i).credentialName().equalsIgnoreCase(preferredCredential)) defaultIndex = i;
             }
-            int choice = credentials.isEmpty() && method != AuthMethod.OAUTH ? 0
-                    : CredentialMenu.select(reader, "Authentication for this session:", labels,
-                    defaultIndex, pageRenderer);
+            // Enter keeps Claude Code's own login rather than starting a sign-in.
+            if (claudeCode && (credentials.isEmpty() || method == AuthMethod.NATIVE)) defaultIndex = ownLogin;
+            if (labels.isEmpty()) {
+                if (pageRenderer != null) pageRenderer.accept("Saved authentication", List.of(
+                        "No saved credential for " + vendorLabel(vendor) + " · " + authMethodLabel(vendor, method) + ".",
+                        "Use /auth to add one, then retry. No settings have changed."));
+                return null;
+            }
+            int choice = !savedOnly && credentials.isEmpty() && credentialMethod != AuthMethod.OAUTH ? 0
+                    : CredentialMenu.select(reader, global ? "Default authentication:"
+                    : "Authentication for this session:", labels, defaultIndex, pageRenderer);
             if (choice < 0) return null;
+            if (choice == ownLogin) return new AuthenticationSelection(provider, AuthMethod.NATIVE, null);
             String name;
             if (choice < credentials.size()) {
                 name = credentials.get(choice).credentialName();
+                if (global && !store.switchCredential(storeProvider, name)) {
+                    throw new IOException("Could not switch to credential '" + name + "'");
+                }
+            } else if (credentialMethod == AuthMethod.OAUTH) {
+                String loginMethod = oauthLoginMethod(reader, storeProvider, pageRenderer);
+                if (loginMethod == null) return null;
+                ManagedCredential credential = OAuthCredentialManager.create().login(storeProvider,
+                        global ? null : "session-" + java.util.UUID.randomUUID(), global,
+                        new OAuthProviderFlow.LoginOptions(loginMethod, false, null, null),
+                        new WizardOAuthInteraction(reader));
+                name = store.credentialName(storeProvider, credential);
             } else {
                 name = "session-" + java.util.UUID.randomUUID();
-                if (method == AuthMethod.OAUTH) {
-                    ManagedCredential credential = OAuthCredentialManager.create().login(provider, name, false,
-                            new OAuthProviderFlow.LoginOptions(null, false, null, null), new WizardOAuthInteraction(reader));
-                    name = store.credentialName(provider, credential);
-                } else {
-                    String key = promptApiKey(reader, provider);
-                    if (key == null || key.isBlank()) return null;
-                    store.putApiKey(provider, name, key, false);
-                }
+                String key = promptApiKey(reader, provider);
+                if (key == null || key.isBlank()) return null;
+                store.putApiKey(provider, name, key, global);
             }
             if (name == null) throw new IOException("Cannot identify selected credential");
-            store.recordUsed(provider, name);
-            return new AuthenticationSelection(provider, method, null, name);
+            if (!savedOnly) store.recordUsed(storeProvider, name);
+            return new AuthenticationSelection(provider, credentialMethod, null, global ? null : name);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return null;
         } catch (IOException e) {
-            System.err.println("Could not select session authentication: " + e.getMessage());
+            System.err.println("Could not select " + (global ? "" : "session ") + "authentication: " + e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * How to sign in when adding an OAuth credential, asked only when the
+     * provider's flow offers more than one way, with its default preselected.
+     * Blank means the flow's default; null means the user cancelled.
+     */
+    private static String oauthLoginMethod(LineReader reader, String provider,
+            BiConsumer<String, List<String>> pageRenderer) {
+        OAuthProviderFlow flow = new OAuthProviderRegistry().find(provider).orElse(null);
+        List<OAuthProviderFlow.LoginMethod> methods = flow == null ? List.of() : flow.loginMethods();
+        if (methods.size() < 2) return "";
+        int defaultIndex = 0;
+        for (int i = 0; i < methods.size(); i++) {
+            if (methods.get(i).id().equals(flow.defaultLoginMethod())) defaultIndex = i;
+        }
+        int choice = CredentialMenu.select(reader, "Sign-in method:",
+                methods.stream().map(OAuthProviderFlow.LoginMethod::label).toList(), defaultIndex, pageRenderer);
+        return choice < 0 ? null : methods.get(choice).id();
     }
 
     /** Exact provider wire value plus the label shown in the setup wizard. */
@@ -293,6 +370,10 @@ public class SetupWizard {
 
     /** Launch-only port: 0 selects automatically; null means the picker was cancelled. */
     static Integer selectWebPort(LineReader reader, Destination destination, Integer explicitPort) {
+        return interaction(reader, () -> webPortPage(reader, destination, explicitPort));
+    }
+
+    private static Integer webPortPage(LineReader reader, Destination destination, Integer explicitPort) {
         if (destination != Destination.BROWSER) return 0;
         if (explicitPort != null) return validateWebPort(explicitPort);
         while (true) {
@@ -361,13 +442,10 @@ public class SetupWizard {
                                    boolean webHandoff, boolean offerDestination, Integer explicitWebPort) {
         ChatConfig.Scope targetScope = scope != null ? scope : ChatConfig.Scope.PROJECT;
         Path targetPath = ChatConfig.configPath(targetScope, projectRoot).toAbsolutePath().normalize();
-        ChatConfig existingConfig = targetScope == ChatConfig.Scope.GLOBAL
-                ? ChatConfig.loadGlobal()
-                : ChatConfig.loadProject(projectRoot);
         Terminal terminal = null;
         try {
             terminal = TerminalBuilder.builder().system(true).build();
-            LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
+            SetupReader reader = new SetupReader(terminal);
 
             System.out.println();
             System.out.println(BOLD + CYAN + "  ╭──────────────────────────────────────╮" + RESET);
@@ -377,6 +455,45 @@ public class SetupWizard {
             System.out.println("  " + DIM + "(Config will be saved to "
                     + targetScope.name().toLowerCase() + " " + targetPath + ")" + RESET);
             System.out.println();
+
+            return runInteractive(reader, targetScope, projectRoot, webHandoff, offerDestination, explicitWebPort);
+        } catch (Exception e) {
+            System.err.println("Setup wizard error: " + e.getMessage());
+            return null;
+        } finally {
+            if (terminal != null) {
+                try {
+                    terminal.close();
+                } catch (Exception e) {
+                    if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+                }
+            }
+        }
+    }
+
+    /** Package-visible so scripted tests exercise the same flow as the real TTY. */
+    static SetupResult runInteractive(SetupReader reader, ChatConfig.Scope scope, Path projectRoot,
+                                      boolean webHandoff, boolean offerDestination, Integer explicitWebPort)
+            throws IOException {
+        while (true) {
+            reader.restart();
+            try {
+                return runSteps(reader, scope, projectRoot, webHandoff, offerDestination, explicitWebPort);
+            } catch (BackRequested e) {
+                reader.back();
+            } catch (Cancelled e) {
+                return null;
+            }
+        }
+    }
+
+    private static SetupResult runSteps(SetupReader reader, ChatConfig.Scope targetScope, Path projectRoot,
+                                        boolean webHandoff, boolean offerDestination, Integer explicitWebPort)
+            throws IOException {
+        Path targetPath = ChatConfig.configPath(targetScope, projectRoot).toAbsolutePath().normalize();
+        ChatConfig existingConfig = targetScope == ChatConfig.Scope.GLOBAL
+                ? ChatConfig.loadGlobal() : ChatConfig.loadProject(projectRoot);
+        Terminal terminal = reader.getTerminal();
 
             // Step 1: Select chat mode — ALWAYS first
             String chatMode = selectChatMode(reader);
@@ -490,7 +607,7 @@ public class SetupWizard {
                 if (destination == null) return null;
                 Integer webPort = selectWebPort(reader, destination, explicitWebPort);
                 if (webPort == null) return null;
-                JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, selected);
+                configureJudges(reader, targetScope, projectRoot, selected);
                 selected.save(targetScope, projectRoot);
                 return new SetupResult(selected, destination, workflow.snapshot(), webPort);
             }
@@ -522,6 +639,7 @@ public class SetupWizard {
             String baseUrl = null;
             ModelDiscovery.Result selectedDiscovery = null;
             ProviderSelection providerSelection = null;
+            AuthMethod authMethod = null;
             String credentialName = null;
             String authScope = existingConfig == null ? "session" : existingConfig.getAuthenticationScope();
 
@@ -540,8 +658,10 @@ public class SetupWizard {
                 if (authentication == null) return null;
                 provider = authentication.provider();
                 apiKey = authentication.apiKey();
+                // The credential page may change the route, e.g. to Claude Code's own login.
+                authMethod = authentication.authMethod();
                 credentialName = authentication.credentialName();
-                baseUrl = baseUrlForAuth(provider, authentication.authMethod());
+                baseUrl = baseUrlForAuth(provider, authMethod);
                 if (baseUrl == null) baseUrl = promptBaseUrl(reader, provider);
                 if (existingConfig != null
                         && provider.equalsIgnoreCase(existingConfig.getProvider())
@@ -556,7 +676,7 @@ public class SetupWizard {
                     return null;
                 }
 
-                boolean claudeCliRoute = isClaudeCodeRoute(provider, providerSelection.authMethod());
+                boolean claudeCliRoute = isClaudeCodeRoute(provider, authMethod);
                 if (claudeCliRoute) {
                     // Flow: auth status → not logged in = indicator + stop;
                     // logged in → Claude Code's own catalog → pick one → pick
@@ -564,19 +684,32 @@ public class SetupWizard {
                     // --model/--effort. Rows are exactly Claude Code's (Kompile
                     // adds no pseudo-entry); the first is pre-selected. No
                     // catalog → take an id or alias as typed; claude resolves it.
+                    // Listing runs on the credential just chosen, as the chat will.
+                    ChatConfig claudeRoute = new ChatConfig(provider, null, null, baseUrl);
+                    claudeRoute.setAuthenticationScope(authScope);
+                    claudeRoute.setAuthenticationMethod(authMethod.configValue());
+                    claudeRoute.setCredentialName(credentialName);
+                    String setupToken;
+                    try {
+                        setupToken = claudeRoute.resolveClaudeCodeToken();
+                    } catch (ChatConfig.AuthenticationException e) {
+                        System.err.println("  " + e.getMessage());
+                        return null;
+                    }
                     List<LiveModelDiscovery.Model> claudeModels =
-                            LiveModelDiscovery.discoverClaudeCliModels(notice -> {
+                            interaction(reader, () -> LiveModelDiscovery.discoverClaudeCliModels(setupToken, notice -> {
                                 if (notice != null && !notice.isBlank()) {
                                     System.out.println("  → " + YELLOW + "Not logged in: "
                                             + notice + RESET);
-                                    System.out.println("  Run `claude auth login` in a terminal, then retry.");
+                                    System.out.println("  Run `claude auth login` in a terminal, or sign in"
+                                            + " with a setup token on the authentication page, then retry.");
                                 }
                             }, error -> {
                                 if (error != null && !error.isBlank()) {
                                     System.out.println("  → " + YELLOW
                                             + "Could not read the Claude model list: " + error + RESET);
                                 }
-                            });
+                            }));
                     if (claudeModels == null) {
                         return null; // not logged in — indicator already shown
                     }
@@ -640,10 +773,9 @@ public class SetupWizard {
             String selectedModel = model == null || model.isBlank() ? null : model;
             ChatConfig config = new ChatConfig(provider, apiKey, selectedModel, baseUrl);
             config.setAuthenticationScope(authScope);
+            // The route first: credential names are kept per route's credential provider.
+            if (authMethod != null) config.setAuthenticationMethod(authMethod.configValue());
             if (credentialName != null) config.setCredentialName(credentialName);
-            if (providerSelection != null) {
-                config.setAuthenticationMethod(providerSelection.authMethod().configValue());
-            }
             config.setThinking(thinking == null || thinking.isBlank() ? null : thinking);
             if ("standard".equals(chatMode) && config.supportsFastMode()) {
                 System.out.println(YELLOW + "  " + config.fastModeCapabilities().notice() + RESET);
@@ -680,7 +812,14 @@ public class SetupWizard {
             Integer webPort = selectWebPort(reader, destination, explicitWebPort);
             if (webPort == null) return null;
             if (!saveProjectProfile(reader, projectRoot, config)) return null;
-            JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, config);
+            configureJudges(reader, targetScope, projectRoot, config);
+            if (reader.pendingProfile != null) {
+                if (ChatProfiles.save(projectRoot, reader.pendingProfile, reader.replaceProfile)) {
+                    System.out.println("  Profile saved to " + ChatProfiles.path(projectRoot));
+                } else {
+                    System.err.println("  Profile was created by another session; not replacing it.");
+                }
+            }
 
             SetupResult result = new SetupResult(config, destination, workflow.snapshot(), webPort);
             if (saveConfiguration(config, destination, targetScope, projectRoot)) {
@@ -725,19 +864,6 @@ public class SetupWizard {
             }
 
             return result;
-
-        } catch (Exception e) {
-            System.err.println("Setup wizard error: " + e.getMessage());
-            return null;
-        } finally {
-            if (terminal != null) {
-                try {
-                    terminal.close();
-                } catch (Exception e) {
-                    if (e instanceof InterruptedException) Thread.currentThread().interrupt();
-                }
-            }
-        }
     }
 
     /** A skipped picker is distinct from cancellation and from a selected launch configuration. */
@@ -789,14 +915,16 @@ public class SetupWizard {
             if (name == null) return false;
             if (name.isBlank()) return true;
             ChatProfiles.Profile profile = ChatProfiles.capture(name, config);
-            if (!ChatProfiles.save(projectRoot, profile, false)) {
+            if (!saveOrStageProfile(reader, projectRoot, profile, false)) {
                 Boolean replace = profileYesNo(reader,
                         "Replace existing " + profile.vendor() + " / " + profile.mode() + " / " + name + "?");
                 if (replace == null) return false;
                 if (!replace) return true;
-                ChatProfiles.save(projectRoot, profile, true);
+                saveOrStageProfile(reader, projectRoot, profile, true);
             }
-            System.out.println("  Profile saved to " + ChatProfiles.path(projectRoot));
+            if (!(reader instanceof SetupReader)) {
+                System.out.println("  Profile saved to " + ChatProfiles.path(projectRoot));
+            }
         } catch (org.jline.reader.UserInterruptException | org.jline.reader.EndOfFileException e) {
             return false;
         } catch (IOException | IllegalArgumentException e) {
@@ -805,8 +933,39 @@ public class SetupWizard {
         return true;
     }
 
+    /** Do not persist a profile for choices the user can still undo. */
+    private static boolean saveOrStageProfile(LineReader reader, Path root, ChatProfiles.Profile profile,
+                                               boolean replace) throws IOException {
+        if (!(reader instanceof SetupReader setup)) return ChatProfiles.save(root, profile, replace);
+        if (!replace && ChatProfiles.list(root, profile.mode()).stream().anyMatch(existing ->
+                existing.vendor().equals(profile.vendor()) && existing.name().equals(profile.name()))) return false;
+        setup.pendingProfile = profile;
+        setup.replaceProfile = replace;
+        return true;
+    }
+
+    private static void configureJudges(LineReader reader, ChatConfig.Scope scope, Path root, ChatConfig config)
+            throws IOException {
+        try {
+            interaction(reader, () -> {
+                try {
+                    JudgeDefaultsWizard.configure(reader, scope, root, config);
+                    return true;
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
+        } catch (UncheckedIOException e) {
+            throw e.getCause();
+        }
+    }
+
     /** Strict yes/no with an explicit cancellation result; EOF must never mean consent. */
     private static Boolean profileYesNo(LineReader reader, String question) {
+        if (reader instanceof SetupReader) {
+            int choice = selectNumberedWithDefault(reader, question, List.of("Yes", "No"), "No");
+            return choice < 0 ? null : choice == 0;
+        }
         while (true) {
             String input;
             try {
@@ -852,6 +1011,10 @@ public class SetupWizard {
      * null when unknown) and the project's saved chat profiles.
      */
     public static WorkflowSelection chooseWorkflow(LineReader reader, Path projectRoot, ChatConfig lead) {
+        return interaction(reader, () -> chooseWorkflowStep(reader, projectRoot, lead));
+    }
+
+    private static WorkflowSelection chooseWorkflowStep(LineReader reader, Path projectRoot, ChatConfig lead) {
         try {
             if (reader == null) {
                 try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
@@ -969,6 +1132,46 @@ public class SetupWizard {
         return new ModelPick(selection.model(), thinking.isBlank() ? null : thinking);
     }
 
+    /** Modal variant of the model/thinking picker, using the same discovery and capability rules. */
+    public static ModelPick pickModel(LineReader reader, ChatConfig route,
+            BiConsumer<String, List<String>> pageRenderer) {
+        if (pageRenderer == null) return pickModel(reader, route);
+        String provider = route.getProvider();
+        ModelDiscovery.Result discovery = modelDiscovery(provider, null, route);
+        if (ModelCatalogSelection.transientFailure(discovery)) discovery = refreshModelDiscovery(provider, null, route);
+        return pickModel(reader, route, pageRenderer, discovery);
+    }
+
+    static ModelPick pickModel(LineReader reader, ChatConfig route,
+            BiConsumer<String, List<String>> pageRenderer, ModelDiscovery.Result discovery) {
+        String provider = route.getProvider();
+        if (ModelCatalogSelection.authenticationBlocked(discovery)) {
+            throw new IllegalArgumentException("Saved authentication is unavailable. Use /auth, then retry.");
+        }
+        List<String> models = modelOptions(discovery, route.getModel());
+        if (models.isEmpty()) models = ModelCatalogSelection.listForPicker(discovery, provider).models();
+        String model;
+        if (models.isEmpty()) {
+            pageRenderer.accept("Fallback model", List.of("No catalog is available. Enter an exact model id, or cancel."));
+            model = reader.readLine("Model id (blank cancels): ");
+            if (model == null || model.isBlank() || model.equalsIgnoreCase("cancel")) return null;
+            model = ModelCatalogSelection.resolvePickerInput(model.strip(), List.of());
+            if (model == null) throw new IllegalArgumentException("Enter a model id, not a menu number.");
+        } else {
+            int selected = CredentialMenu.select(reader, "Fallback model", models, models.indexOf(route.getModel()), pageRenderer);
+            if (selected < 0) return null;
+            model = models.get(selected);
+        }
+        List<ThinkingOption> options = thinkingOptions(provider, model, null, route, discovery);
+        String thinking = null;
+        if (options.size() > 1) {
+            int selected = CredentialMenu.select(reader, "Fallback thinking", options.stream().map(ThinkingOption::label).toList(), pageRenderer);
+            if (selected < 0) return null;
+            thinking = options.get(selected).value();
+        }
+        return new ModelPick(model, thinking == null || thinking.isBlank() ? null : thinking);
+    }
+
     /** The model ids a CLI agent's own catalog lists; empty when it has none. */
     public static List<String> agentModelIds(String agent) {
         return LiveModelDiscovery.discoverNative(agent).stream().map(LiveModelDiscovery.Model::id).toList();
@@ -979,7 +1182,7 @@ public class SetupWizard {
         if (customize == null) return false;
         if (!customize) return true;
         String agent = config.getPassthroughAgent();
-        List<LiveModelDiscovery.Model> models = LiveModelDiscovery.discoverNative(agent);
+        List<LiveModelDiscovery.Model> models = interaction(reader, () -> LiveModelDiscovery.discoverNative(agent));
         if (!models.isEmpty()) {
             List<String> options = new ArrayList<>();
             options.add("Keep agent defaults");
@@ -1007,6 +1210,111 @@ public class SetupWizard {
         return true;
     }
 
+    /** Only full setup owns a history; /model, /auth and other shared pickers keep their contracts. */
+    static class SetupReader extends org.jline.reader.impl.LineReaderImpl {
+        private record Choice(Object value, boolean prompted) {}
+        private final List<Choice> choices = new ArrayList<>();
+        private int cursor;
+        private int nesting;
+        private int reads;
+        private NavigationRequested requested;
+        private ChatProfiles.Profile pendingProfile;
+        private boolean replaceProfile;
+
+        SetupReader(Terminal terminal) throws IOException {
+            super(terminal);
+        }
+
+        void restart() {
+            cursor = 0;
+            requested = null;
+            pendingProfile = null;
+        }
+
+        boolean canBack() {
+            return choices.stream().anyMatch(Choice::prompted);
+        }
+
+        void back() {
+            int previous = choices.size() - 1;
+            while (previous >= 0 && !choices.get(previous).prompted()) previous--;
+            choices.subList(Math.max(0, previous), choices.size()).clear();
+        }
+
+        // Retain completed results, not just keystrokes: rewinding a later page must
+        // not repeat authentication, downloads, or other completed external actions.
+        // A changed answer discards the entire dependent suffix before it runs again.
+        @SuppressWarnings("unchecked")
+        <T> T interaction(java.util.function.Supplier<T> action) {
+            if (nesting > 0) return action.get();
+            if (cursor < choices.size()) return (T) choices.get(cursor++).value();
+            int before = reads;
+            nesting++;
+            try {
+                T value = action.get();
+                // Some shared credential prompts catch RuntimeException as cancel.
+                // Preserve navigation even when such a prompt consumed the signal.
+                if (requested != null) throw requested;
+                choices.add(new Choice(value, reads > before));
+                cursor++;
+                return value;
+            } finally {
+                nesting--;
+            }
+        }
+
+        @Override public String readLine(String prompt) {
+            return navigableRead(prompt, this::readInput);
+        }
+
+        /** Masked secrets (a pasted setup token) keep back/cancel navigation. */
+        @Override public String readLine(String prompt, Character mask) {
+            return mask == null ? readLine(prompt) : navigableRead(prompt, p -> super.readLine(p, mask));
+        }
+
+        private String navigableRead(String prompt, java.util.function.UnaryOperator<String> read) {
+            return interaction(() -> {
+                String input;
+                // The shared paged credential picker uses a bare > prompt rather
+                // than numberedPage; its normal choices start at one as well.
+                boolean credentialBack = canBack() && prompt.startsWith(">");
+                if (credentialBack) System.out.println("   0  Back");
+                try {
+                    input = read.apply(prompt + (canBack() ? "(back to go back) " : ""));
+                } catch (UserInterruptException | EndOfFileException e) {
+                    throw request(new Cancelled());
+                }
+                reads++;
+                if (input == null) throw request(new Cancelled());
+                String command = input.trim().toLowerCase(java.util.Locale.ROOT);
+                if (command.equals("back") || (credentialBack && command.equals("0"))) {
+                    if (canBack()) throw request(new BackRequested());
+                    throw request(new Cancelled());
+                }
+                if (List.of("q", "quit", "cancel").contains(command)) throw request(new Cancelled());
+                return input;
+            });
+        }
+
+        private NavigationRequested request(NavigationRequested navigation) {
+            requested = navigation;
+            return navigation;
+        }
+
+        /** Test seam below the actual navigation logic, not a mock of the wizard. */
+        protected String readInput(String prompt) {
+            return super.readLine(prompt);
+        }
+    }
+
+    private abstract static class NavigationRequested extends RuntimeException {}
+    private static final class BackRequested extends NavigationRequested {}
+    private static final class Cancelled extends NavigationRequested {}
+
+    private static <T> T interaction(LineReader reader, java.util.function.Supplier<T> action) {
+        return reader instanceof SetupReader setup ? setup.interaction(action) : action.get();
+    }
+
     // ── Selection helpers ───────────────────────────────────────────────────
 
     /**
@@ -1026,12 +1334,21 @@ public class SetupWizard {
      */
     static int selectNumberedWithDefault(
             LineReader reader, String title, List<String> items, String defaultItem) {
+        return interaction(reader, () -> numberedPage(reader, title, items, defaultItem));
+    }
+
+    private static int numberedPage(LineReader reader, String title, List<String> items, String defaultItem) {
+        boolean canBack = reader instanceof SetupReader setup && setup.canBack();
         int defaultIndex = defaultItem == null ? -1 : items.indexOf(defaultItem);
         System.out.println(BOLD + "  " + title + RESET);
         System.out.println();
         for (int i = 0; i < items.size(); i++) {
             String marker = i == defaultIndex ? YELLOW + "  (default)" + RESET : "";
             System.out.printf("  " + CYAN + "%2d" + RESET + "  %s%s%n", i + 1, items.get(i), marker);
+        }
+        if (canBack) System.out.println("  " + CYAN + " 0" + RESET + "  Back");
+        if (reader instanceof SetupReader) {
+            System.out.printf("  " + CYAN + "%2d" + RESET + "  Cancel%n", items.size() + 1);
         }
         System.out.println();
 
@@ -1040,12 +1357,19 @@ public class SetupWizard {
             try {
                 input = reader.readLine("  Choice (1-" + items.size()
                         + (defaultIndex >= 0 ? ", Enter = default" : "")
+                        + (canBack ? ", 0 = Back" : "")
                         + ", or Ctrl+C to cancel): ");
+            } catch (NavigationRequested e) {
+                throw e;
             } catch (Exception e) {
                 return -1;
             }
             if (input == null) return -1;
             String trimmed = input.trim();
+            if (canBack && trimmed.equals("0")) throw new BackRequested();
+            if (reader instanceof SetupReader && trimmed.equals(Integer.toString(items.size() + 1))) {
+                throw new Cancelled();
+            }
             if (trimmed.isEmpty() && defaultIndex >= 0) {
                 return defaultIndex;
             }
@@ -1226,8 +1550,8 @@ public class SetupWizard {
             throw new IllegalArgumentException("Vendor is required");
         }
         if (isClaudeCodeRoute(vendor, authMethod)) {
-            // Claude Code route (claude -p stream-json turns): no Kompile OAuth flow
-            // or stored credential backs it; the chat passes through to Claude Code.
+            // Claude Code route (claude -p stream-json turns): the config keeps the
+            // vendor; its setup tokens are named claude-code credentials.
             return vendor;
         }
         return switch (authMethod) {
@@ -1364,7 +1688,7 @@ public class SetupWizard {
             return ModelDiscoveryHttp.refreshResult(provider, transientApiKey, baseUrl);
         }
         if (sameProvider && config.isClaudeCliNative()) {
-            return ModelDiscoveryHttp.discoverClaudeCliResult();
+            return ModelDiscoveryHttp.discoverClaudeCliResult(config);
         }
         if (sameProvider) {
             try {
@@ -1498,6 +1822,11 @@ public class SetupWizard {
     public static AuthenticationSelection authenticate(
             LineReader reader, String vendor, AuthMethod authMethod,
             BiConsumer<String, List<String>> pageRenderer) {
+        return interaction(reader, () -> authenticateStep(reader, vendor, authMethod, pageRenderer));
+    }
+
+    private static AuthenticationSelection authenticateStep(LineReader reader, String vendor, AuthMethod authMethod,
+            BiConsumer<String, List<String>> pageRenderer) {
         if (vendor == null || vendor.isBlank() || authMethod == null) {
             return null;
         }
@@ -1512,8 +1841,7 @@ public class SetupWizard {
             return new AuthenticationSelection(provider, authMethod, null);
         }
         if (isClaudeCodeRoute(vendor, authMethod)) {
-            // No credential menu and no sign-in: Claude Code owns this login.
-            return new AuthenticationSelection(provider, authMethod, null);
+            return selectNamedCredential(reader, vendor, authMethod, pageRenderer, null, true);
         }
         if (authMethod == AuthMethod.NATIVE) {
             int exitCode = NativeCliAuth.login(provider);
@@ -1538,7 +1866,7 @@ public class SetupWizard {
                         + vendorLabel(vendor) + RESET);
                 return new AuthenticationSelection(provider, authMethod, null);
             }
-            return loginWithOAuth(reader, provider)
+            return loginWithOAuth(reader, provider, pageRenderer)
                     ? new AuthenticationSelection(provider, authMethod, null)
                     : null;
         }
@@ -1652,8 +1980,8 @@ public class SetupWizard {
         if (ChatConfig.isClaudeCliNativeProvider(vendor)) {
             // One vendor, two auth routes (mirrors the OpenAI pattern):
             // OAuth / subscription through Claude Code and direct API-key HTTP.
-            // Kompile never manages or signs in the Claude Code credential; the
-            // OAuth route passes the chat straight through to Claude Code.
+            // The OAuth route passes the chat through to Claude Code, on a stored
+            // setup token or Claude Code's own login.
             return List.of(AuthMethod.OAUTH, AuthMethod.API_KEY);
         }
         if (NativeCliAuth.isSupported(vendor)) {
@@ -1884,6 +2212,11 @@ public class SetupWizard {
 
     static ModelSelection selectModel(
             LineReader reader, String provider, String transientApiKey, ChatConfig config) {
+        return interaction(reader, () -> selectModelStep(reader, provider, transientApiKey, config));
+    }
+
+    private static ModelSelection selectModelStep(
+            LineReader reader, String provider, String transientApiKey, ChatConfig config) {
         ModelDiscovery.Result discovery = modelDiscovery(provider, transientApiKey, config);
         if (ModelCatalogSelection.authenticationBlocked(discovery)) {
             System.err.println("  " + ModelCatalogSelection.authenticationNotice(discovery, provider));
@@ -2031,6 +2364,8 @@ public class SetupWizard {
             String input = reader.readLine(promptText);
             if (input == null || input.trim().isEmpty()) return null;
             return input.trim();
+        } catch (NavigationRequested e) {
+            throw e;
         } catch (Exception e) {
             return null;
         }
@@ -2152,11 +2487,14 @@ public class SetupWizard {
         }
     }
 
-    private static boolean loginWithOAuth(LineReader reader, String provider) {
+    private static boolean loginWithOAuth(LineReader reader, String provider,
+            BiConsumer<String, List<String>> pageRenderer) {
         try {
+            String loginMethod = oauthLoginMethod(reader, provider, pageRenderer);
+            if (loginMethod == null) return false;
             OAuthCredentialManager.create().login(
                     provider,
-                    new OAuthProviderFlow.LoginOptions(null, false, null, null),
+                    new OAuthProviderFlow.LoginOptions(loginMethod, false, null, null),
                     new WizardOAuthInteraction(reader));
             System.out.println(GREEN + "  ✓ OAuth credential saved for " + provider + RESET);
             return true;
@@ -2212,6 +2550,8 @@ public class SetupWizard {
     private static String promptWithDefault(LineReader reader, String promptText, String defaultValue) {
         try {
             return valueOrDefault(reader.readLine(promptText), defaultValue);
+        } catch (NavigationRequested e) {
+            throw e;
         } catch (Exception e) {
             return null;
         }
@@ -2292,9 +2632,27 @@ public class SetupWizard {
         public String prompt(String message) throws IOException {
             try {
                 return reader.readLine("  " + message + " ");
+            } catch (NavigationRequested e) {
+                throw e;
             } catch (RuntimeException e) {
                 throw new IOException("Could not read OAuth input", e);
             }
+        }
+
+        @Override
+        public String secret(String message) throws IOException {
+            try {
+                return reader.readLine("  " + message + " ", '*');
+            } catch (NavigationRequested e) {
+                throw e;
+            } catch (RuntimeException e) {
+                throw new IOException("Could not read OAuth input", e);
+            }
+        }
+
+        @Override
+        public <T> T withTerminal(OAuthProviderFlow.TerminalTask<T> task) throws IOException, InterruptedException {
+            return TerminalHandoff.run(reader.getTerminal(), task);
         }
     }
 }

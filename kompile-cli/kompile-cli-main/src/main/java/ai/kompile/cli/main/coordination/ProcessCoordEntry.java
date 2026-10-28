@@ -52,6 +52,10 @@ public class ProcessCoordEntry {
     @JsonProperty("resourceClass")
     private String resourceClass;
 
+    /** Display-only child telemetry; absent in older coordination snapshots. */
+    @JsonProperty("metadata")
+    private java.util.Map<String, String> metadata = java.util.Map.of();
+
     @JsonProperty("command")
     private String command;
 

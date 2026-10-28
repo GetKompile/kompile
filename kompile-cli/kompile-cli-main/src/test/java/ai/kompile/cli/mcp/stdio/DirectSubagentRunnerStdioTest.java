@@ -23,6 +23,7 @@ import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.common.util.JsonUtils;
 import java.nio.file.Files;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.config.KompileToolGuidance;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -173,6 +174,17 @@ class DirectSubagentRunnerStdioTest {
     }
 
     @Test
+    void everyCliProviderGetsToolGuidanceAndInjectionWithoutAParentPromptManager() throws Exception {
+        for (String provider : List.of("claude", "codex", "gemini", "qwen", "opencode", "pi")) {
+            ManagedTestRunner runner = new ManagedTestRunner(tempDir);
+            runner.runSubagent(AgentConfig.builder(provider).build(), "inspect available capabilities");
+            assertTrue(runner.fake.message.startsWith(KompileToolGuidance.PROMPT), provider);
+            assertTrue(runner.fake.message.endsWith("inspect available capabilities"), provider);
+            assertTrue(runner.fake.injectMcpToolsCalled, provider);
+        }
+    }
+
+    @Test
     void runSubagentUsesManagedRunnerAndCapturesOutput() throws Exception {
         ManagedTestRunner runner = new ManagedTestRunner(tempDir);
         runner.setExtraEnvironment(Map.of("KOMPILE_TEST_FORK_ENV", "forked-value"));
@@ -188,7 +200,7 @@ class DirectSubagentRunnerStdioTest {
         assertTrue(fake.injectMcpTools, "top-level delegated agents should receive MCP tool injection");
         assertTrue(fake.injectMcpToolsCalled, "MCP tool injection should be performed by the managed runner");
         assertTrue(fake.cleanupCalled, "managed runner cleanup should restore injected tools/skills");
-        assertEquals("inspect managed tools", fake.message);
+        assertEquals(KompileToolGuidance.PROMPT + "\n\ninspect managed tools", fake.message);
         assertEquals("1", fake.extraEnvironment.get("KOMPILE_SUBAGENT_DEPTH"));
         assertEquals("codex", fake.extraEnvironment.get("KOMPILE_AGENT_NAME"));
         assertEquals("forked-value", fake.extraEnvironment.get("KOMPILE_TEST_FORK_ENV"));
@@ -284,6 +296,8 @@ class DirectSubagentRunnerStdioTest {
 
         assertTrue(result.contains("managed-output"));
         assertEquals("forked-value", fork.fake.extraEnvironment.get("KOMPILE_TEST_FORK_ENV"));
+        assertTrue(fork.fake.message.startsWith(KompileToolGuidance.PROMPT));
+        assertTrue(fork.fake.injectMcpToolsCalled);
     }
 
     @Test
@@ -308,6 +322,8 @@ class DirectSubagentRunnerStdioTest {
         assertFalse(runner.fake.extraEnvironment.containsKey("KOMPILE_SUBAGENT_CAN_SPAWN"));
         assertFalse(runner.fake.extraEnvironment.containsKey("KOMPILE_SUBAGENT_TOOL_ALLOWLIST"));
         assertTrue(runner.fake.message.contains("Return one plan."));
+        assertTrue(runner.fake.message.startsWith(KompileToolGuidance.PROMPT));
+        assertTrue(runner.fake.injectMcpToolsCalled);
         assertTrue(result.contains("policy=FULL_ACCESS"));
     }
 

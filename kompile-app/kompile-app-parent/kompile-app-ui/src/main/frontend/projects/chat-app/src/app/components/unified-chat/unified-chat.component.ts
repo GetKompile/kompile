@@ -26,7 +26,7 @@ import { ConfirmDialogComponent, ConfirmDialogData } from '@shared/components/co
 import { CommandConfigDialogComponent, CommandConfigDialogData } from '../command-config-dialog/command-config-dialog.component';
 import { ChatModelSelectorComponent } from '../chat-model-selector/chat-model-selector.component';
 import { ChatActivity, chatActivity, IDLE_CHAT_ACTIVITY } from '../chat-activity-indicator/chat-activity-indicator.component';
-import { groupHarnessProcesses, HarnessProcessGroup, HarnessProcessView } from './harness-processes';
+import { groupHarnessProcesses, HarnessProcessGroup, HarnessProcessView, harnessAgentIdentity, harnessAgentUsage, harnessAgentDetails, isHarnessAgent } from './harness-processes';
 import { ChatHostContext, ChatHostEvent, ChatHostEventDetail, snapshotChatHostContext } from './chat-host-context';
 export type { ChatHostContext, ChatHostEvent } from './chat-host-context';
 
@@ -1121,7 +1121,6 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       'claude-cli': 'claude-code',
       'codex-cli': 'codex',
       'opencode-cli': 'opencode',
-      'qwen-cli': 'qwen',
       'gemini-cli': 'gemini',
       'pi-cli': 'pi',
       'kompile': 'kompile'
@@ -1551,6 +1550,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   // ═══════════════════════════════════════════════════════════════════════════════
 
   trackHarnessEntry(_index: number, entry: { id: string }): string { return entry.id; }
+  get harnessConnectionMessage(): string { return this.agentChatService.connectionMessage || ''; }
   get reconnectBookmark() {
     const saved = this.currentSession ? this.agentChatService.getReconnectBookmark?.(this.currentSession.id) : null;
     if (this.managedEmbedding && saved && (saved.browserSessionId !== this.hostContext!.chat.id
@@ -1594,6 +1594,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
   @HostListener('document:visibilitychange')
   resumeSavedRun(): void {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
     if (this.harnessViewDestroyed || this.isStreaming || this.lifecycleBusy || this.transcriptReadOnly) return;
     if (this.reconnectBookmark) { this.transcriptAfterAbsence = false; this.reconnectCurrentRun(); return; }
     if (this.transcriptAfterAbsence && this.sessionChat) {
@@ -1679,6 +1680,16 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
       this.processGroupsFor = { activity, groups, summary: parts.join(' · ') };
     }
     return this.processGroupsFor;
+  }
+  readonly harnessAgentIdentity = harnessAgentIdentity;
+  readonly harnessAgentUsage = harnessAgentUsage;
+  readonly harnessAgentDetails = harnessAgentDetails;
+  readonly isHarnessAgent = isHarnessAgent;
+  trackTranscriptBlock(_index: number, block: { key: string }): string { return block.key; }
+  trackTranscriptSection(_index: number, section: { id: string }): string { return section.id; }
+  /** Reuse the main transcript's sanitized markdown and bounded cache for child prose only. */
+  renderHarnessMarkdown(id: string, content: string): SafeHtml {
+    return this.getRenderedMarkdown({ id: `harness:${id}`, content } as UnifiedMessage);
   }
   trackProcessGroup(_index: number, group: HarnessProcessGroup): string { return group.key; }
   trackProcessView(_index: number, view: HarnessProcessView): string { return view.id; }
@@ -2202,7 +2213,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
 
       this.unsubscribeStreamingSubs();
       // Failure/transport loss alone is not idle. Ask the server instead of unlocking domain reads speculatively.
-      if (this.managedEmbedding && typeof this.agentChatService.discoverRun === 'function') void this.discoverCurrentRun();
+      if (this.managedEmbedding && !this.reconnectBookmark
+          && typeof this.agentChatService.discoverRun === 'function') void this.discoverCurrentRun();
     });
 
     // Store subs so cancelStreaming() can clean them up
@@ -2325,6 +2337,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
    */
   retryMessage(messageIndex: number): void {
     if (this.lifecycleBusy || this.transcriptReadOnly) return;
+    // A network error can leave work running. Retry must reattach, not trim history and resubmit it.
+    if (this.reconnectBookmark) { this.reconnectCurrentRun(); return; }
 
     // Find the preceding user message
     let userIdx = messageIndex - 1;

@@ -622,6 +622,18 @@ public class TestMilestoneTool implements CliTool {
     // ═══════════════════════════════════════════════════════════════════════
 
     private ToolResult doRecord(JsonNode params, Path workDir, boolean passing, ToolContext context) throws IOException {
+        long counted = 0;
+        for (String key : List.of("total_tests", "passed", "failed", "skipped")) {
+            if (!params.has(key)) continue;
+            JsonNode count = params.get(key);
+            if (!count.isIntegralNumber() || !count.canConvertToInt() || count.asInt() < 0)
+                return ToolResult.error(key + " must be a non-negative integer");
+            if (!key.equals("total_tests")) counted += count.asInt();
+        }
+        if (params.has("total_tests") && counted > params.path("total_tests").asInt())
+            return ToolResult.error("Test counts exceed total_tests");
+        if (passing && params.path("failed").asInt() > 0)
+            return ToolResult.error("A passing milestone cannot contain failed tests; use action=fail");
         Path msDir = milestonesDir(workDir);
         Files.createDirectories(msDir);
         // Auto-init config if not present
@@ -641,6 +653,9 @@ public class TestMilestoneTool implements CliTool {
         milestone.put("commitMessage", git.commitMessage);
         milestone.put("commitAuthor", git.commitAuthor);
         milestone.put("passing", passing);
+        milestone.put("source", "manual");
+        milestone.put("basis", "agent-reported");
+        milestone.put("outcome", passing ? "passed" : "failed");
 
         if (module != null) milestone.put("module", module);
         if (params.has("total_tests")) milestone.put("totalTests", params.get("total_tests").asInt());
@@ -650,7 +665,8 @@ public class TestMilestoneTool implements CliTool {
         if (notes != null) milestone.put("notes", notes);
         if (tags != null) milestone.put("tags", tags);
         milestone.put("timestamp", Instant.now().toString());
-        TestMilestoneStore.save(workDir, milestone, milestoneProducer(context));
+        List<String> deliveryWarnings = new ArrayList<>();
+        TestMilestoneStore.save(workDir, milestone, milestoneProducer(context), deliveryWarnings::add);
 
         String status = passing ? "WORKING" : "FAILING";
         StringBuilder sb = new StringBuilder();
@@ -679,8 +695,12 @@ public class TestMilestoneTool implements CliTool {
             if (targetCheck != null) sb.append("\n").append(targetCheck);
         }
 
-        return ToolResult.success("Milestone recorded", sb.toString(),
-                Map.of("id", id, "passing", passing));
+        Map<String, Object> metadata = new LinkedHashMap<>(Map.of("id", id, "passing", passing));
+        if (!deliveryWarnings.isEmpty()) {
+            deliveryWarnings.forEach(text -> sb.append("\nWarning: ").append(text));
+            metadata.put("testMilestoneWarnings", List.copyOf(deliveryWarnings));
+        }
+        return ToolResult.success("Milestone recorded", sb.toString(), metadata);
     }
 
     private static TimelineLifecycle.ProducerContext milestoneProducer(ToolContext context) {

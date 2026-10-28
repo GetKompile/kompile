@@ -99,7 +99,8 @@ class ClaudeCliProviderToolTtyTest {
                     new PermissionService(), new AgentRegistry(), home, client, null);
             String session = "claude-provider-tool-" + UUID.randomUUID();
             loop.configureConversationSession(session);
-            // Same bottom-panel feed as ChatRepl.
+            var liveOutput = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            // Same bottom-panel feed as ChatRepl, plus the headless/web output tap.
             loop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
                 @Override
                 public void onToolStart(String callId, String toolName, String rawInput) {
@@ -109,6 +110,11 @@ class ClaudeCliProviderToolTtyTest {
                 @Override
                 public void onToolInput(String callId, String toolName, String rawInput) {
                     panel.updateToolInput(callId, toolName, rawInput);
+                }
+
+                @Override
+                public void onToolOutput(String callId, String toolName, String rawInput, String output) {
+                    liveOutput.add(callId + "|" + toolName + "|" + rawInput + "|" + output);
                 }
 
                 @Override
@@ -148,6 +154,13 @@ class ClaudeCliProviderToolTtyTest {
                             .anyMatch(row -> invalidTask ? row.contains("Task")
                                     : row.contains("Read") && row.contains("NOTES.md")));
             assertFalse(turn.isDone(), "the tool must still be running for this check");
+            String toolName = invalidTask ? "mcp__kompile__task" : "mcp__kompile__read";
+            client.getProviderActivityListener().onToolOutput("toolu_mcp_read_1", toolName, "live tool progress");
+            assertEquals(1, liveOutput.size(), "provider output must reach the transport listener before completion");
+            assertTrue(liveOutput.get(0).startsWith("toolu_mcp_read_1|" + toolName + "|"));
+            assertTrue(liveOutput.get(0).contains(invalidTask ? "invalid task" : "NOTES.md"),
+                    "the output snapshot carries the latest streamed tool arguments");
+            assertTrue(liveOutput.get(0).endsWith("|live tool progress"));
 
             Files.createFile(release);
             String response = turn.get(10, TimeUnit.SECONDS);

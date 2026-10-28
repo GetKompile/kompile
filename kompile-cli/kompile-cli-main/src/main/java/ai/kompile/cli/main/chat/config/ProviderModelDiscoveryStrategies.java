@@ -75,4 +75,16 @@ final class ProviderModelDiscoveryStrategies {
     static ModelDiscovery.Strategy groq() {
         return ProviderModelCatalogs.strategy("groq");
     }
+
+    static ModelDiscovery.Strategy qwen() {
+        return ProviderModelCatalogs.strategy("qwen");
+    }
+
+    static ModelDiscovery.Strategy fireworks() {
+        return ProviderModelCatalogs.strategy("fireworks");
+    }
+
+    static ModelDiscovery.Strategy together() {
+        return ProviderModelCatalogs.strategy("together");
+    }
 }

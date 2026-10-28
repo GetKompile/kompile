@@ -36,17 +36,26 @@ public class StdioMultiTaskTool {
     private final ObjectMapper objectMapper;
     private final Path workDir;
     private final RoleManager roleManager;
+    private final long batchTimeoutNanos;
 
     public StdioMultiTaskTool(AgentRegistry agentRegistry,
                               DirectSubagentRunnerStdio subagentRunner,
                               ObjectMapper objectMapper,
                               Path workDir,
                               RoleManager roleManager) {
+        this(agentRegistry, subagentRunner, objectMapper, workDir, roleManager, TimeUnit.MINUTES.toNanos(10));
+    }
+
+    // Test seam: retain the production ten-minute batch budget without ten-minute tests.
+    StdioMultiTaskTool(AgentRegistry agentRegistry, DirectSubagentRunnerStdio subagentRunner,
+                      ObjectMapper objectMapper, Path workDir, RoleManager roleManager, long batchTimeoutNanos) {
+        if (batchTimeoutNanos <= 0) throw new IllegalArgumentException("Batch timeout must be positive");
         this.agentRegistry = agentRegistry;
         this.subagentRunner = subagentRunner;
         this.objectMapper = objectMapper;
         this.workDir = workDir;
         this.roleManager = roleManager;
+        this.batchTimeoutNanos = batchTimeoutNanos;
     }
 
     /**
@@ -67,6 +76,7 @@ public class StdioMultiTaskTool {
 
     public String description() {
         return "Run 2+ independent subtasks in one parallel batch instead of serial task calls. " +
+            "Background by default; set background=false to wait for all results. Completion is monitored automatically; if needed, use poll action=monitor, never status polling. " +
             "Submit all ready, independent work together before waiting for results. " +
             "This is the default for separate investigations, reviews of existing code, or edits to disjoint files; " +
             "a task need not be complex to benefit from batching.\n\n" +
@@ -75,9 +85,12 @@ public class StdioMultiTaskTool {
             "(such as reviewing a change that has not been made), edits to the same files, or resource-conflicting builds/tests. " +
             "Run dependent phases sequentially, batching independent work within each phase. Use task for one delegation.\n\n" +
             "Set each subtask's agent=kompile (alias general) for Kompile's own agent, configured chat provider and stored credentials. " +
-            "model/thinking override that native run. codex (default), claude, opencode, gemini, qwen, pi instead launch external CLIs using their CLI authentication. " +
-            "Subtasks may set their own agent, role, model, and thinking; " +
-            "different roles do not require serial dispatch. Top-level role/model/thinking provide defaults. " +
+            "model/thinking/provider override that native run; the model id auto-routes the provider (claude-* to anthropic, " +
+            "gpt-* to openai/codex, glm-* to zai), and a multi-host family without its owner configured errors naming " +
+            "candidates — set provider= per subtask or top-level, or call resolve_model first. " +
+            "codex (default), claude, opencode, gemini, qwen, pi instead launch external CLIs using their CLI authentication. " +
+            "Subtasks may set their own agent, role, model, thinking, and provider; " +
+            "different roles do not require serial dispatch. Top-level role/model/thinking/provider provide defaults. " +
             "agent_count defaults to 1 per subtask; increase it only to duplicate that subtask's prompt, not to enable parallelism. " +
             "Unlike quorum_task (same prompt for independent judgments), multi_task assigns distinct work.\n\n" +
             "In a workflow team, give each subtask a purpose (or a team role) and no agent or model: the team picks " +
@@ -92,7 +105,7 @@ public class StdioMultiTaskTool {
 
     /** Preserve the batching contract when MCP parameter descriptions are stripped. */
     public String compactHint() {
-        return "Run 2+ independent subtasks in parallel, not serial task calls. subtasks[{name,prompt,agent?,role?,model?,thinking?}]: kompile/general=Kompile chat/auth; codex/claude/etc=CLI auth. agent_count=1.";
+        return "2+ independent subtasks, not serial task calls. Background by default; background=false waits. agent=kompile; provider/model/authentication_method. Anthropic oauth=Claude login. resolve_model.";
     }
 
     public JsonNode parameterSchema() {
@@ -148,6 +161,13 @@ public class StdioMultiTaskTool {
         subModel.put("type", "string");
         subModel.put("description", "Optional model for this subtask. Precedence: subtask value, top-level value, role default, project default, user default, provider native default.");
 
+        itemProps.putObject("authentication_method").put("type", "string").put("description",
+                "Override this subtask's auth route: oauth/native uses Claude Code login for anthropic; api-key uses its separate API.")
+                .putArray("enum").add("oauth").add("native").add("api-key");
+        var subProvider = itemProps.putObject("provider");
+        subProvider.put("type", "string");
+        subProvider.put("description", "Optional Kompile chat provider override for this subtask when it runs on agent=kompile/general (e.g. anthropic, openai, zai). Precedence: subtask value, top-level value, configured route.");
+
         var subThinking = itemProps.putObject("thinking");
         subThinking.put("type", "string");
         subThinking.put("description", "Optional thinking/effort override for this subtask. Maps to Codex effort, Claude effort, or OpenCode variant.");
@@ -168,6 +188,13 @@ public class StdioMultiTaskTool {
         model.put("type", "string");
         model.put("description", "Optional default model override for subtasks that do not specify their own model. It overrides role/project/user defaults.");
 
+        props.putObject("authentication_method").put("type", "string").put("description",
+                "Default auth route for Kompile-native subtasks: oauth/native uses Claude Code login for anthropic; api-key uses its separate API.")
+                .putArray("enum").add("oauth").add("native").add("api-key");
+        var provider = props.putObject("provider");
+        provider.put("type", "string");
+        provider.put("description", "Optional default Kompile chat provider override for subtasks running on agent=kompile/general that do not specify their own provider (e.g. anthropic, openai, zai). Switches the route before the model resolves.");
+
         var thinking = props.putObject("thinking");
         thinking.put("type", "string");
         thinking.put("description", "Optional default thinking/effort override for subtasks that do not specify their own. It overrides role/project/user defaults.");
@@ -179,6 +206,9 @@ public class StdioMultiTaskTool {
         agentCount.put("minimum", 1);
         agentCount.put("maximum", 5);
 
+        props.putObject("background").put("type", "boolean").put("default", true).put("description",
+                "Background by default so the parent continues immediately. Set false to wait for all results. "
+                        + "Automatic completion notification; use poll action=monitor for a held wait, not status polling. Default: true.");
         schema.putArray("required").add("description").add("subtasks");
         return schema;
     }
@@ -195,6 +225,7 @@ public class StdioMultiTaskTool {
         String defaultRole = (String) arguments.get("role");
         String defaultModel = (String) arguments.get("model");
         String defaultThinking = (String) arguments.get("thinking");
+        String defaultProvider = (String) arguments.get("provider");
 
         int defaultAgentCount = 1;
         Object agentCountObj = arguments.get("agent_count");
@@ -236,6 +267,10 @@ public class StdioMultiTaskTool {
         // subtasks launch from this, never from the selectors in their arguments.
         List<StdioTaskTool.ParticipantLaunch> launches = new ArrayList<>(Collections.nCopies(subtasks.size(), null));
         if (workflow != null) {
+            if (arguments.containsKey("provider") || arguments.containsKey("authentication_method")
+                    || subtasks.stream().anyMatch(st -> st.containsKey("provider") || st.containsKey("authentication_method"))) {
+                return ToolResult.error("The workflow owns provider and authentication_method; change its participant binding instead.");
+            }
             WorkflowTeamEnforcement.ToolDecision toolDecision = workflow.evaluateToolUse("multi_task");
             if (!toolDecision.allowed()) {
                 return ToolResult.error(toolDecision.reason());
@@ -288,9 +323,11 @@ public class StdioMultiTaskTool {
             int count = resolveAgentCount(st, defaultAgentCount);
             plans.add(launch != null
                     ? new SubtaskLaunch(List.of(launch.agent()), count, launch.role(), launch.model(),
-                            launch.thinking(), launch.participant())
+                            launch.thinking(), null, null, launch.participant())
                     : new SubtaskLaunch(resolveAgentTypes(st), count, (String) st.getOrDefault("role", defaultRole),
-                            resolveModel(st, defaultModel), resolveThinking(st, defaultThinking), null));
+                            resolveModel(st, defaultModel), resolveThinking(st, defaultThinking),
+                            resolveProvider(st, defaultProvider),
+                            (String) st.getOrDefault("authentication_method", arguments.get("authentication_method")), null));
         }
 
         System.err.println("\u001B[32m  ⟳ Multi-task: " + desc + " (" + subtasks.size() + " subtasks)\u001B[0m");
@@ -316,8 +353,14 @@ public class StdioMultiTaskTool {
         for (SubtaskLaunch plan : plans) {
             totalInstances += plan.agents().size() * plan.count();
         }
-        ExecutorService executor = Executors.newFixedThreadPool(totalInstances);
+        ExecutorService executor = Executors.newFixedThreadPool(totalInstances, runnable -> {
+            Thread worker = new Thread(runnable, "mcp-multi-task-worker");
+            worker.setDaemon(true);
+            return worker;
+        });
+        CompletionService<SubtaskResult> completions = new ExecutorCompletionService<>(executor);
         List<SubtaskFuture> futures = new ArrayList<>();
+        long deadline = System.nanoTime() + batchTimeoutNanos;
 
         try {
         for (int i = 0; i < subtasks.size(); i++) {
@@ -331,8 +374,10 @@ public class StdioMultiTaskTool {
             int taskAgentCount = plan.count();
 
             if (prompt.isEmpty()) {
-                futures.add(new SubtaskFuture(name, agentTypes.get(0), model, thinking, plan.participant(), 1, 0,
-                    CompletableFuture.completedFuture(SubtaskResult.failed("(empty prompt)"))));
+                futures.add(new SubtaskFuture(name, agentTypes.get(0), model, thinking, plan.provider(),
+                    plan.participant(), 1, 0,
+                    CompletableFuture.completedFuture(SubtaskResult.failed("(empty prompt)")),
+                    new java.util.concurrent.atomic.AtomicBoolean()));
                 continue;
             }
 
@@ -354,15 +399,43 @@ public class StdioMultiTaskTool {
                     } else {
                         instanceName = name + "/" + agentType + "#" + (instanceIdx + 1);
                     }
-                    futures.add(new SubtaskFuture(instanceName, agentType, model, thinking, plan.participant(),
-                        totalPerSubtask, instanceIdx,
-                        CompletableFuture.supplyAsync(() -> runSubtask(fName, fPrompt, fAgent, plan.role(),
-                                model, thinking, plan.participant(), context), executor)));
+                    var stop = new java.util.concurrent.atomic.AtomicBoolean();
+                    futures.add(new SubtaskFuture(instanceName, agentType, model, thinking, plan.provider(),
+                        plan.participant(), totalPerSubtask, instanceIdx,
+                        completions.submit(() -> runSubtask(fName, fPrompt, fAgent, plan.role(),
+                                model, thinking, plan.provider(), plan.authenticationMethod(), plan.participant(), context, stop)), stop));
                 }
             }
         }
 
-        // Collect results
+        // Observe completion order, not submission order. One batch deadline prevents
+        // N stalled children each consuming a fresh ten-minute wait.
+        Map<Future<SubtaskResult>, SubtaskFuture> pending = new IdentityHashMap<>();
+        for (SubtaskFuture sf : futures) {
+            if (sf.future.isDone()) sf.result = completedResult(sf.future);
+            else pending.put(sf.future, sf);
+        }
+        while (!pending.isEmpty() && (context == null || !context.isAborted())) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) break;
+            Future<SubtaskResult> done = completions.poll(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(100)), TimeUnit.NANOSECONDS);
+            if (done == null) continue;
+            SubtaskFuture sf = pending.remove(done);
+            if (sf != null) {
+                sf.result = completedResult(done);
+                System.err.println("  [multi_task] " + sf.name + ": " + sf.result.outcome);
+            }
+        }
+        for (SubtaskFuture sf : futures) {
+            if (sf.result != null) continue;
+            if (sf.future.isDone()) sf.result = completedResult(sf.future);
+            else {
+                sf.result = SubtaskResult.timedOut("Batch deadline reached; child cancellation requested.");
+                sf.cancel();
+            }
+        }
+
+        // Render the accepted outcomes in stable input order.
         StringBuilder fullOutput = new StringBuilder();
         fullOutput.append("# Multi-Task Results: ").append(desc).append("\n\n");
         fullOutput.append("**Subtasks:** ").append(subtasks.size()).append("\n\n");
@@ -377,7 +450,7 @@ public class StdioMultiTaskTool {
             fullOutput.append("## ").append(sf.name).append(" (").append(launchLabel(sf)).append(")\n\n");
 
             try {
-                SubtaskResult result = sf.future.get(10, TimeUnit.MINUTES);
+                SubtaskResult result = sf.result;
                 switch (result.outcome) {
                     case COMPLETED -> {
                         succeeded++;
@@ -402,11 +475,6 @@ public class StdioMultiTaskTool {
                             .append(truncateForSummary(result.output, 100)).append("\n");
                     }
                 }
-            } catch (TimeoutException e) {
-                // The outer 10-min future timed out — the agent process itself is still running.
-                timedOut++;
-                fullOutput.append("**Timed out** after 10 minutes (outer gate).\n\n");
-                summaryOutput.append("- **").append(sf.name).append("** (").append(sf.agent).append("): TIMED OUT (outer 10m)\n");
             } catch (Exception e) {
                 failed++;
                 fullOutput.append("**Error:** ").append(e.getMessage()).append("\n\n");
@@ -453,7 +521,7 @@ public class StdioMultiTaskTool {
         List<String> succeededNames = new ArrayList<>();
         for (SubtaskFuture sf : futures) {
             try {
-                if (sf.future.isDone() && sf.future.get().isSuccess()) {
+                if (sf.result != null && sf.result.isSuccess()) {
                     succeededNames.add(sf.name);
                 }
             } catch (Exception ignored) {}
@@ -467,8 +535,23 @@ public class StdioMultiTaskTool {
                    "failed", failed,
                    "resultFile", resultFile.toAbsolutePath().toString(),
                    "succeededSubtasks", String.join(",", succeededNames)), succeeded == 0);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return ToolResult.error("Multi-task cancelled; active child cancellation requested");
         } finally {
+            for (SubtaskFuture sf : futures) if (!sf.future.isDone()) sf.cancel();
             executor.shutdownNow();
+        }
+    }
+
+    private static SubtaskResult completedResult(Future<SubtaskResult> future) throws InterruptedException {
+        try {
+            return future.get();
+        } catch (CancellationException cancelled) {
+            return SubtaskResult.failed("Task cancelled");
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause() == null ? failed : failed.getCause();
+            return SubtaskResult.failed(cause.getMessage());
         }
     }
 
@@ -508,6 +591,11 @@ public class StdioMultiTaskTool {
     private static String resolveThinking(Map<String, Object> subtask, String defaultThinking) {
         Object value = subtask.get("thinking");
         return value instanceof String && !((String) value).isBlank() ? (String) value : defaultThinking;
+    }
+
+    private static String resolveProvider(Map<String, Object> subtask, String defaultProvider) {
+        Object value = subtask.get("provider");
+        return value instanceof String && !((String) value).isBlank() ? (String) value : defaultProvider;
     }
 
     private static String displayModel(String model) {
@@ -552,6 +640,7 @@ public class StdioMultiTaskTool {
         }
         String defaultModel = (String) arguments.get("model");
         String defaultThinking = (String) arguments.get("thinking");
+        String defaultProvider = (String) arguments.get("provider");
         String defaultRole = (String) arguments.get("role");
         // In a workflow the team, not these arguments, picks each subtask's participant and launch.
         String workflowName = WorkflowSessionContext.inheritableEnvironment()
@@ -594,8 +683,9 @@ public class StdioMultiTaskTool {
     }
 
     private SubtaskResult runSubtask(String name, String prompt, String requestedAgent, String roleName,
-                                       String model, String thinking, String participant, ToolContext context) {
-        if (context != null && context.isAborted()) return SubtaskResult.failed("Task cancelled");
+                                       String model, String thinking, String provider, String authenticationMethod, String participant,
+                                       ToolContext context, java.util.concurrent.atomic.AtomicBoolean stop) {
+        if (stop.get() || (context != null && context.isAborted())) return SubtaskResult.failed("Task cancelled");
         // A single-provider dispatch surfaces provider failures instead of silently cascading.
         List<String> agentsToTry = List.of(requestedAgent);
 
@@ -608,11 +698,13 @@ public class StdioMultiTaskTool {
                     .roleName(roleName)
                     .modelOverride(model)
                     .thinkingOverride(thinking)
+                    .providerOverride(provider)
+                    .authenticationMethodOverride(authenticationMethod)
                     .workflowParticipant(participant)
                     .build();
 
                 String result = StdioTaskTool.runWithCancellation(
-                        subagentRunner.forkForSubagent(), agentConfig, prompt, context);
+                        subagentRunner.forkForSubagent(), agentConfig, prompt, context, stop::get);
                 if (StdioTaskTool.isAgentMissing(result)) {
                     continue;
                 }
@@ -704,28 +796,39 @@ public class StdioMultiTaskTool {
 
     /** What one subtask launches: each agent {@code count} times, on this role, model, and thinking. */
     private record SubtaskLaunch(List<String> agents, int count, String role, String model, String thinking,
-                                 String participant) {}
+                                 String provider, String authenticationMethod, String participant) {}
 
     private static class SubtaskFuture {
         final String name;
         final String agent;
         final String model;
         final String thinking;
+        final String provider;
         final String participant;
         final int totalInstances;
         final int instanceIndex;
         final Future<SubtaskResult> future;
+        final java.util.concurrent.atomic.AtomicBoolean stop;
+        SubtaskResult result;
 
-        SubtaskFuture(String name, String agent, String model, String thinking, String participant,
-                      int totalInstances, int instanceIndex, Future<SubtaskResult> future) {
+        void cancel() {
+            stop.set(true);
+            future.cancel(true); // FutureTask interrupts the worker; its watcher cancels only its own runner.
+        }
+
+        SubtaskFuture(String name, String agent, String model, String thinking, String provider,
+                      String participant, int totalInstances, int instanceIndex, Future<SubtaskResult> future,
+                      java.util.concurrent.atomic.AtomicBoolean stop) {
             this.name = name;
             this.agent = agent;
             this.model = model;
             this.thinking = thinking;
+            this.provider = provider;
             this.participant = participant;
             this.totalInstances = totalInstances;
             this.instanceIndex = instanceIndex;
             this.future = future;
+            this.stop = stop;
         }
     }
 }

@@ -58,7 +58,7 @@ public final class WorkflowController {
     private static final int MAX_IDENTICAL_TOOL_FAILURES = 2;
     private static final Set<String> NON_MUTATING_SESSION_TOOLS = Set.of(
             "activate_tools", "edit_coordinator", "exit_plan_mode", "side_panel",
-            "sessions", "todoread", "todowrite");
+            "sessions", "todoread", "todowrite", "todo_apply_batch");
     private static final Set<String> READ_ONLY_SKILL_ACTIONS = Set.of(
             "list_skills", "get_skill", "generate_markdown", "expand_template",
             "scan_provider_skills");
@@ -97,7 +97,7 @@ public final class WorkflowController {
     private static final Set<String> NON_ARTIFACT_MUTATION_TOOLS = Set.of(
             "activate_tools", "browser", "channel", "edit_coordinator", "exit_plan_mode", "process",
             "role_manager", "sessions", "side_panel", "skill_manager", "task",
-            "todoread", "todowrite", "incident");
+            "todoread", "todowrite", "todo_apply_batch", "incident");
     private static final Pattern TODO_ID = Pattern.compile("Added task #([^:]+):");
     private static final Pattern CHECKPOINT_BEFORE_FIRST = Pattern.compile(
             "\\b(list|design|research|investigate|analy[sz]e|review|plan)\\b.{0,40}\\bfirst\\b");
@@ -265,6 +265,32 @@ public final class WorkflowController {
         WorkflowPolicy loaded = WorkflowPolicy.from(config);
         configuredPolicy = loaded;
         sessionOverride = null;
+        if (todoAutopilot != null) {
+            todoAutopilot.configure(config == null || config.isTodoAutopilotEnabled(),
+                    config == null ? 0 : config.getTodoAutopilotReminderEveryToolCalls());
+        }
+    }
+
+    /** Harness auto-start knob, wired from project config through reload(). */
+    private volatile ai.kompile.cli.main.chat.workflow.TodoAutopilot todoAutopilot;
+
+    public synchronized void setTodoAutopilot(ai.kompile.cli.main.chat.workflow.TodoAutopilot autopilot) {
+        this.todoAutopilot = autopilot;
+        // Construction loaded the project policy before an autopilot was attached.
+        // Apply that configuration now as well as on later explicit reloads.
+        reload();
+    }
+
+    /**
+     * Ask the autopilot whether the harness should start the first pending task now.
+     * Consulted once per turn, from the loop, after a plan exists.
+     */
+    public boolean shouldAutoStartFirstTask() {
+        ai.kompile.cli.main.chat.workflow.TodoAutopilot autopilot = todoAutopilot;
+        if (autopilot == null || !autopilot.isEnabled()) return false;
+        TurnState turn = activeTurn.get();
+        if (turn == null) return false;
+        return autopilot.shouldAutoStartFirst(turn.planRecorded, true);
     }
 
     public synchronized void setSessionMode(WorkflowPolicy.Mode mode,
@@ -497,12 +523,13 @@ public final class WorkflowController {
         turn.pendingCorrectionReason = null;
         turn.pendingCorrectionPrompt = null;
 
-        if ("todowrite".equals(normalized) && establishesPlan(arguments)) {
+        boolean todoWrite = "todowrite".equals(normalized) || "todo_apply_batch".equals(normalized);
+        if (todoWrite && establishesPlan(arguments)) {
             turn.planRecorded = true;
             turn.blockedMutation = false;
             turn.advance(Phase.PLANNED);
         }
-        if ("todowrite".equals(normalized)) {
+        if (todoWrite) {
             updateTodoState(turn, arguments, result);
         }
         if (isCoordinationCheck(normalized, arguments)
@@ -1006,6 +1033,17 @@ public final class WorkflowController {
     private static void updateTodoState(
             TurnState turn, JsonNode arguments, ToolResult result) {
         if (arguments == null) return;
+        if (arguments.has("operations")) {
+            // The saved snapshot is authoritative for generated IDs and ordered deletes/updates.
+            Object snapshot = result.getMetadata().get(ai.kompile.cli.main.chat.tools.TodoWriteTool.TASKS_METADATA);
+            if (snapshot instanceof JsonNode todos && todos.isArray()) {
+                turn.todos.clear();
+                for (JsonNode todo : todos) {
+                    turn.todos.put(todo.path("id").asText(), todo.path("status").asText());
+                }
+            }
+            return;
+        }
         String action = action(arguments);
         if ("set".equals(action)) {
             turn.todos.clear();
@@ -1206,6 +1244,12 @@ public final class WorkflowController {
 
     private static boolean establishesPlan(JsonNode arguments) {
         if (arguments == null) return false;
+        if (arguments.path("operations").isArray()) {
+            for (JsonNode operation : arguments.path("operations")) {
+                if (establishesPlan(operation)) return true;
+            }
+            return false;
+        }
         String action = arguments.path("action").asText("").toLowerCase(Locale.ROOT);
         if ("add".equals(action)) {
             return !arguments.path("subject").asText("").isBlank();

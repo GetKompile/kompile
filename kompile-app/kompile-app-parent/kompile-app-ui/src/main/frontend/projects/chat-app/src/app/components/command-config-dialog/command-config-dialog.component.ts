@@ -879,7 +879,7 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
       else this.loops = data;
     }
     if (data.menu === 'queue') this.queue = data;
-    if (data.menu === 'continue') this.continueMenu = data;
+    if (data.menu === 'continue' || data.menu === 'continue-trigger') this.continueMenu = data;
     if (data.menu === 'judge') this.judgeMenu = data;
   }
 }

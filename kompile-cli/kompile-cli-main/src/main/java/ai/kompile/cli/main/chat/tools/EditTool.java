@@ -185,11 +185,14 @@ public class EditTool implements CliTool {
 
     /**
      * Advisory multi-agent warning for a caller WITHOUT agent identity when another session
-     * holds an edit lock on this file (session semantics). A call with an agent identity was
-     * already guarded before the write and never needs the warning.
+     * holds an edit lock on this file (session semantics). Advisory mode only: in ENFORCE
+     * the pre-write guard already refused a live conflicting lock and auto-locks a free
+     * target, so a warning after a successful write would be noise; a call with an agent
+     * identity was guarded before the write in every mode and never needs the warning.
      */
     private String conflictWarning(Path path, String agent) {
         if (coordinationManager == null || agent != null) return null;
+        if (!EditCoordinatorTool.advisoryWarningsApply(coordinationManager)) return null;
         EditLockEntry conflict = coordinationManager.findConflictingLock(
                 path.toAbsolutePath().toString(), agent);
         if (conflict == null) return null;

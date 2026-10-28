@@ -158,6 +158,30 @@ class DirectLlmClientClaudeCompactionTest {
         }
     }
 
+    @Test
+    void configuredNativeWindowBoundsBudgetWithoutChangingReportedModelCapacity() throws Exception {
+        java.nio.file.Files.createDirectories(home.resolve(".claude"));
+        java.nio.file.Files.writeString(home.resolve(".claude/settings.json"), """
+                {"env":{"CLAUDE_CODE_AUTO_COMPACT_WINDOW":"256000","CLAUDE_CODE_DISABLE_1M_CONTEXT":"0"}}
+                """);
+        try (DirectLlmClient client = client()) {
+            var resolver = new ModelContextResolver(uri -> { throw new AssertionError("no HTTP"); });
+            client.restoreClaudeReportedLimits("claude-opus-5-5", new ModelContextResolver.ModelLimits(1_000_000, 32_000));
+            assertEquals(256_000, client.contextBudgetLimits(resolver, null).contextWindow());
+            assertEquals(1_000_000, client.claudeReportedLimits(null).contextWindow(), "raw model capacity stays distinct");
+            assertTrue(client.claudeHasConfiguredCompactWindow(null));
+            assertTrue(client.claudeCompactionPolicyDescription(null).contains("256,000"));
+            client.getChatConfig().setContextWindowTokens(900_000);
+            assertEquals(256_000, client.contextBudgetLimits(resolver, null).contextWindow(), "Kompile cannot lift the native window");
+            client.getChatConfig().setContextWindowTokens(100_000);
+            assertEquals(100_000, client.contextBudgetLimits(resolver, null).contextWindow(), "a smaller safety budget remains valid");
+            client.getChatConfig().setAuthenticationMethod("api_key");
+            client.getChatConfig().setContextWindowTokens(900_000);
+            assertEquals(900_000, client.contextBudgetLimits(resolver, null).contextWindow(), "API routes ignore Claude Code settings");
+            assertFalse(client.claudeHasConfiguredCompactWindow(null));
+        }
+    }
+
     private DirectLlmClient client() {
         ChatConfig config = new ChatConfig("anthropic", null, "claude-opus-5-5", null);
         config.setAuthenticationMethod("oauth");

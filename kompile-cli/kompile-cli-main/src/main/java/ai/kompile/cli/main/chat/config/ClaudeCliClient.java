@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.auth.oauth.ClaudeCodeOAuthFlow;
 import ai.kompile.cli.main.chat.ChatSessionContext;
 import ai.kompile.cli.main.chat.ClaudeTranscriptLink;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
@@ -50,6 +51,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Native Claude Code transport for the standalone Kompile Chat provider.
@@ -57,7 +59,7 @@ import java.util.function.Consumer;
  * <p>Follows the same provider-adapter pattern as {@link OpenCodeServeClient}:
  * one persistent native session per chat, served by one long-lived
  * {@code claude -p --input-format stream-json --output-format stream-json
- * --verbose --include-partial-messages --replay-user-messages
+ * --verbose --include-partial-messages --forward-subagent-text --replay-user-messages
  * (--session-id|--resume) <id>} process. Its input stays open: each message is
  * written to it as a stream-json user message, and the message's turn ends at
  * its {@code result} event. stdout is parsed line-by-line through
@@ -86,9 +88,12 @@ import java.util.function.Consumer;
  * the instructions the running process started with, and the summary may drop
  * an update, so instructions that differ from those are sent again.</p>
  *
-     * <p><b>Auth belongs to Claude Code.</b> The CLI owns the login and this
-     * transport never reads it (the separate /usage lookup is read-only).
-     * Selection verifies it with {@code claude auth status}
+ * <p><b>Auth.</b> Turns run on the setup token of the Claude Code credential the
+ * chat selected, set as CLAUDE_CODE_OAUTH_TOKEN for its process only
+ * ({@link #setSetupToken}, {@link #withSetupToken}); a process started on another
+ * token is replaced by one that resumes the session. With no credential selected
+ * turns run on Claude Code's own login, which this transport never reads (the
+ * separate /usage lookup is read-only). Selection reports which one applies
  * ({@link LiveModelDiscovery#claudeCodeLogin()}); a login that expires later
  * is caught here: the failure output of a dead turn is matched against known
  * authentication signatures and raised as {@link ClaudeCliAuthenticationException}
@@ -197,8 +202,17 @@ final class ClaudeCliClient implements AutoCloseable {
 
     /** The CLI began responding, but the stream ended or reported an error. */
     static final class TurnFailedException extends IllegalStateException {
+        final DirectLlmClient.FailureKind failureKind;
+        final boolean replaySafe;
+
         TurnFailedException(String message) {
+            this(message, DirectLlmClient.FailureKind.NONE, false);
+        }
+
+        TurnFailedException(String message, DirectLlmClient.FailureKind failureKind, boolean replaySafe) {
             super(message);
+            this.failureKind = failureKind;
+            this.replaySafe = replaySafe;
         }
     }
 
@@ -220,6 +234,53 @@ final class ClaudeCliClient implements AutoCloseable {
 
         Mode {
             preferredEffort = preferredEffort == null ? "" : preferredEffort.strip();
+        }
+
+        /**
+         * The launch flags a subagent harness needs beyond this mode's own:
+         * Claude Code's native sub-agent tools are disallowed so a delegated
+         * chat cannot spawn agents of its own. Empty above depth 0. The depth
+         * is passed in so tests can exercise both branches without touching
+         * process environment. Both guards merge into ONE --disallowedTools
+         * flag: a second flag would be a second rule source, and Claude Code
+         * resolves conflicting sources by precedence rather than union.
+         */
+        List<String> subagentGuardArguments() {
+            return subagentGuardArguments(System.getenv(
+                    ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.DEPTH_ENV));
+        }
+
+        List<String> subagentGuardArguments(boolean kompileServerInjected) {
+            return subagentGuardArguments(System.getenv(
+                    ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.DEPTH_ENV),
+                    kompileServerInjected);
+        }
+
+        List<String> subagentGuardArguments(String depthValue) {
+            return subagentGuardArguments(depthValue, false);
+        }
+
+        List<String> subagentGuardArguments(String depthValue, boolean kompileServerInjected) {
+            List<String> tools = guardedTools(depthValue, kompileServerInjected);
+            return tools.isEmpty()
+                    ? List.of()
+                    : List.of("--disallowedTools", String.join(",", tools));
+        }
+
+        /** Every tool this launch removes from Claude Code's context. */
+        List<String> guardedTools(String depthValue, boolean kompileServerInjected) {
+            if (toolFree) {
+                // A tool-free judge runs with --tools "" and no MCP server:
+                // there is nothing to guard and nothing to route through.
+                return List.of();
+            }
+            List<String> tools = new ArrayList<>();
+            if (ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.depth(depthValue) >= 1) {
+                tools.addAll(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.CLAUDE_DISALLOWED);
+            }
+            tools.addAll(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.nativeShellGuard(
+                    kompileServerInjected));
+            return tools;
         }
     }
 
@@ -339,6 +400,8 @@ final class ClaudeCliClient implements AutoCloseable {
     private DirectLlmClient.ClaudeInjectionListener injectionListener;
     /** Returns true once the running turn is cancelled; null when nothing can cancel it. */
     private volatile BooleanSupplier cancellationCheck;
+    /** The selected credential's setup token, read as each turn starts; null runs on Claude Code's own login. */
+    private volatile Supplier<String> setupToken = () -> null;
     private volatile boolean closed;
     /**
      * Stops the live session's process tree and deletes its instructions file if
@@ -411,6 +474,15 @@ final class ClaudeCliClient implements AutoCloseable {
      */
     void setCancellationCheck(BooleanSupplier check) {
         cancellationCheck = check;
+    }
+
+    /**
+     * Where each turn reads the setup token of the chat's selected Claude Code
+     * credential. A turn whose token differs from the running process's starts a
+     * process that resumes the session on the new one.
+     */
+    void setSetupToken(Supplier<String> token) {
+        setupToken = token == null ? () -> null : token;
     }
 
     /**
@@ -721,7 +793,9 @@ final class ClaudeCliClient implements AutoCloseable {
             TurnOutcome outcome = consume(turn, output, activityListener, takeIdleAppliedSettings());
             throwIfStopped(outcome);
             if (!outcome.failure.isBlank()) {
-                throw new TurnFailedException(outcome.failure + diagnosticSuffix());
+                throw new TurnFailedException(outcome.failure + diagnosticSuffix(),
+                    ProviderResponseFailure.classifyNativeError(outcome.failure),
+                    outcome.streamed.isEmpty() && !outcome.providerSideEffectsObserved);
             }
             if (!outcome.completed) {
                 throw new TurnFailedException("Claude CLI stream ended before its terminal result event"
@@ -886,19 +960,24 @@ final class ClaudeCliClient implements AutoCloseable {
         return true;
     }
 
-    /** The session's running process; a new one resumes the session when there is none. */
+    /**
+     * The session's running process; a new one resumes the session when there is
+     * none, or when the selected credential's setup token changed since it started.
+     */
     private Cli liveCli(String model, String effort, boolean fastMode, String instructions) {
+        String token = selectedSetupToken();
+        String credential = token == null ? null : HashUtils.sha256Hex(token);
         Cli current;
         synchronized (this) {
             current = cli;
         }
-        if (current != null && current.alive()) {
+        if (current != null && current.alive() && Objects.equals(current.credential, credential)) {
             return current;
         }
         // An exited process's end is reported before a new one starts, so it cannot
         // fail the new process's task rows.
         retire(current);
-        Cli started = startCli(model, effort, fastMode, instructions);
+        Cli started = startCli(model, effort, fastMode, instructions, token);
         synchronized (this) {
             if (!closed) {
                 cli = started;
@@ -912,8 +991,21 @@ final class ClaudeCliClient implements AutoCloseable {
         throw new TurnNotStartedException("Claude CLI chat transport is closed");
     }
 
+    /**
+     * The selected credential's setup token. A selected credential that cannot
+     * be used stops the turn before any process starts, rather than running it
+     * on some other login.
+     */
+    private String selectedSetupToken() {
+        try {
+            return setupToken.get();
+        } catch (ChatConfig.AuthenticationException e) {
+            throw new ClaudeCliAuthenticationException(e.getMessage());
+        }
+    }
+
     /** Start a Claude Code process for the session: a new session, or a resume of it. */
-    private Cli startCli(String model, String effort, boolean fastMode, String instructions) {
+    private Cli startCli(String model, String effort, boolean fastMode, String instructions, String token) {
         Path instructionsFile = null;
         if (!instructions.isEmpty()) {
             try {
@@ -947,9 +1039,12 @@ final class ClaudeCliClient implements AutoCloseable {
             // passthrough lanes, which DO require script(1) to defeat full
             // stdout buffering. A PTY would merge stderr into stdout and mask
             // the real exit code, so it is deliberately NOT used.
-            process = withParentSession(withoutApiKeyEnvironment(new ProcessBuilder(
-                    buildCommand(model, effort, fastMode, instructionsFile, resume, id, mcpConfig))
-                    .directory(workingDirectory.toFile())), panel).start();
+            process = withParentSession(withSetupToken(
+                    withoutApiKeyEnvironment(new ProcessBuilder(
+                            buildCommand(model, effort, fastMode, instructionsFile, resume, id, mcpConfig))
+                            .directory(workingDirectory.toFile())),
+                    token),
+                    panel).start();
         } catch (IOException e) {
             deleteQuietly(instructionsFile);
             // Binary missing or unspawnable: the prompt never reached a provider.
@@ -957,7 +1052,7 @@ final class ClaudeCliClient implements AutoCloseable {
                     "Could not start the '" + binaryName() + "' CLI: " + e.getMessage(), e);
         }
         return new Cli(process, instructionsFile, HashUtils.sha256Hex(instructions),
-                model, effort, fastMode, resume).start();
+                token == null ? null : HashUtils.sha256Hex(token), model, effort, fastMode, resume).start();
     }
 
     /** Stop a replaced process and wait until its end has been reported. */
@@ -1021,7 +1116,8 @@ final class ClaudeCliClient implements AutoCloseable {
                               String instructionsDigest, long compactionsBefore, String memorySnapshot,
                               long receiptGeneration) throws Exception {
         String text = outcome.streamed.toString();
-        if (!outcome.refusal.isBlank() && text.isBlank() && !outcome.providerSideEffectsObserved) {
+        if (!outcome.refusal.isBlank() && text.isBlank() && !outcome.providerSideEffectsObserved
+                && ProviderResponseFailure.classifyNativeError(outcome.failure) == DirectLlmClient.FailureKind.NONE) {
             // Claude Code refused the turn before any model request (an unknown
             // --resume session, for one): no provider saw it and no session changed.
             throwTurnFailure(turn.source.settle(2_000), outcome.refusal);
@@ -1047,7 +1143,9 @@ final class ClaudeCliClient implements AutoCloseable {
         publishTranscript();
         throwIfStopped(outcome);
         if (!outcome.failure.isBlank()) {
-            throw new TurnFailedException(outcome.failure + diagnosticSuffix());
+            throw new TurnFailedException(outcome.failure + diagnosticSuffix(),
+                    ProviderResponseFailure.classifyNativeError(outcome.failure),
+                    outcome.streamed.isEmpty() && !outcome.providerSideEffectsObserved);
         }
         if (outcome.exitCode != 0) {
             if (text.isBlank() && !outcome.providerSideEffectsObserved) {
@@ -1702,6 +1800,17 @@ final class ClaudeCliClient implements AutoCloseable {
     }
 
     /**
+     * The selected credential's setup token, as CLAUDE_CODE_OAUTH_TOKEN for this
+     * process only; it takes precedence over Claude Code's own login. With no
+     * credential selected the environment is left as it is, like another
+     * vendor's environment-variable fallback.
+     */
+    static ProcessBuilder withSetupToken(ProcessBuilder builder, String token) {
+        if (token != null) builder.environment().put(ClaudeCodeOAuthFlow.OAUTH_TOKEN_ENV, token);
+        return builder;
+    }
+
+    /**
      * Claude Code starts Kompile's MCP server with its own environment, so the
      * server registers as a child of the chat that owns the process panel. A
      * monitored process it launches for Claude then wakes that chat when it ends.
@@ -1776,6 +1885,15 @@ final class ClaudeCliClient implements AutoCloseable {
             // Kompile's server comes from the chat's own config file, not the project's
             // shared .mcp.json, whose other servers Claude Code still loads.
             cmd.addAll(McpToolInjection.launchConfigArguments(mcpConfig));
+            // Claude Code's native Bash/PowerShell are removed from the model's
+            // context when Kompile's server serves this launch: its process work
+            // routes through the kompile process tool instead (panel rows, output
+            // capture, wake-on-exit). Escape hatch:
+            // -Dkompile.chat.claude.allowNativeShell=true.
+            cmd.addAll(mode.subagentGuardArguments(mcpConfig != null));
+            // A delegated subagent's claude -p session must not spawn agents of
+            // its own: its native Task/Agent tools and the kompile delegation
+            // tools are forbidden for this process only.
         }
         if (mode.oneShot()) {
             // Nothing resumes a one-shot request's session, so it is not saved.
@@ -1792,6 +1910,9 @@ final class ClaudeCliClient implements AutoCloseable {
         cmd.add("stream-json");
         cmd.add("--verbose");
         cmd.add("--include-partial-messages");
+        // Child tools are forwarded by default, but their text/thinking requires
+        // this separate opt-in. Scoped frames go only to the child's process row.
+        cmd.add("--forward-subagent-text");
         // The echo names each message Claude Code takes in, including one folded
         // into a turn already running, so its output is matched to the message.
         cmd.add("--replay-user-messages");
@@ -1822,8 +1943,7 @@ final class ClaudeCliClient implements AutoCloseable {
         return cmd;
     }
 
-    private String binaryName() {
-        if (binaryOverride != null && !binaryOverride.isBlank()) {
+    private String binaryName() {        if (binaryOverride != null && !binaryOverride.isBlank()) {
             return binaryOverride;
         }
         AgentProvider definition = claudeDefinition();
@@ -1942,6 +2062,8 @@ final class ClaudeCliClient implements AutoCloseable {
         private final Path instructionsFile;
         /** Digest of the instructions the process started with. */
         private final String launchDigest;
+        /** Digest of the setup token the process started with; null on Claude Code's own login. */
+        private final String credential;
         /** True when the process resumes the session rather than creating it. */
         private final boolean resumed;
         private final Writer input;
@@ -2004,11 +2126,12 @@ final class ClaudeCliClient implements AutoCloseable {
         private final ClaudeCliUsageLedger usageLedger;
         private final ClaudeNativeToolOutputPolicy outputPolicy;
 
-        Cli(Process process, Path instructionsFile, String launchDigest,
+        Cli(Process process, Path instructionsFile, String launchDigest, String credential,
             String model, String effort, boolean fastMode, boolean resumed) {
             this.process = process;
             this.instructionsFile = instructionsFile;
             this.launchDigest = launchDigest;
+            this.credential = credential;
             this.resumed = resumed;
             this.usageLedger = new ClaudeCliUsageLedger(resumed);
             // Only bound output where the injected Kompile server provides durable fetch_result recovery.

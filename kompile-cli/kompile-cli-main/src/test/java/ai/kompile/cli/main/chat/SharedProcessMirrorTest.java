@@ -82,6 +82,31 @@ class SharedProcessMirrorTest {
     }
 
     @Test
+    void childTelemetryRefreshesWithoutLogGrowthAndCannotOverrideOwnership() throws Exception {
+        var owner = childOwner("mcp-telemetry", "local-chat");
+        publish("mcp-telemetry", "proc-child", "kompile", "Child task", "RUNNING", 0);
+        writeLog("unchanged output\n");
+        mirror.pollOnce();
+        int before = changes.size();
+        owner.updateProcessState("proc-child", "RUNNING", null, null, java.util.Map.of(
+                "model", "child-model", "vendor", "child-vendor", "input_tokens", "100",
+                "output_tokens", "7", "stream_output_tokens", "3",
+                "parentSessionId", "forged-parent", "ownerSessionId", "forged-owner"));
+        mirror.pollOnce();
+        var entry = sharedMirror("proc-child");
+        assertEquals("child-model", entry.getMetadata().get("model"));
+        assertEquals("child-vendor", entry.getMetadata().get("vendor"));
+        assertEquals("3", entry.getMetadata().get("stream_output_tokens"));
+        assertEquals("local-chat", entry.getMetadata().get("parentSessionId"));
+        assertEquals("mcp-telemetry", entry.getMetadata().get("ownerSessionId"));
+        assertTrue(changes.size() > before, "metadata-only updates must repaint an open viewer");
+        owner.updateProcessState("proc-child", "COMPLETED", Instant.now(), 0);
+        mirror.pollOnce();
+        assertFalse(entry.isRunning());
+        assertEquals("7", entry.getMetadata().get("output_tokens"), "terminal updates retain telemetry");
+    }
+
+    @Test
     void foreignLaunchAppearsWithLiveTailAndRefreshesOnGrowth() throws Exception {
         publish("mcp-stdio-1", "proc-001", "mvn -o test", "Maven test run", "RUNNING", 0);
         writeLog("building module 1\n");

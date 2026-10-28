@@ -171,6 +171,104 @@ class StdioTaskCancellationTest {
         }
     }
 
+    @Test
+    void closeDoesNotWaitForACancellingRunnerToExit() throws Exception {
+        ToolContext context = context();
+        CountDownLatch cancelling = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        DirectSubagentRunnerStdio runner = new DirectSubagentRunnerStdio(workDir) {
+            @Override public void cancel() {
+                cancelling.countDown();
+                boolean done = false;
+                while (!done) {
+                    try { release.await(); done = true; }
+                    catch (InterruptedException ignored) { /* simulate slow process teardown */ }
+                }
+            }
+        };
+        var watch = new StdioTaskTool.CancellationWatch(context, runner);
+        ExecutorService closer = Executors.newSingleThreadExecutor();
+        try {
+            context.abort();
+            assertTrue(cancelling.await(2, TimeUnit.SECONDS));
+            closer.submit(watch::close).get(500, TimeUnit.MILLISECONDS);
+        } finally {
+            release.countDown();
+            watch.close();
+            watch.thread.join(2000);
+            closer.shutdownNow();
+            assertTrue(closer.awaitTermination(2, TimeUnit.SECONDS));
+            assertFalse(watch.thread.isAlive());
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(8)
+    void delayedInterruptCannotReachUnrelatedWorkOnARecycledExecutorThread() throws Exception {
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch finish = new CountDownLatch(1);
+        CountDownLatch returning = new CountDownLatch(1);
+        CountDownLatch capturedInterrupt = new CountDownLatch(1);
+        CountDownLatch deliverInterrupt = new CountDownLatch(1);
+        CountDownLatch unrelatedRelease = new CountDownLatch(1);
+        var delayOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+        DirectSubagentRunnerStdio runner = new DirectSubagentRunnerStdio(workDir) {
+            @Override KompileNativeTaskRunner createNativeRunner() {
+                return new KompileNativeTaskRunner(workDir, null, null, null, null) {
+                    @Override String run(AgentConfig agent, String prompt,
+                                         java.util.concurrent.atomic.AtomicBoolean cancelled) throws Exception {
+                        running.countDown();
+                        finish.await();
+                        returning.countDown();
+                        return "done";
+                    }
+                };
+            }
+        };
+        ExecutorService executor = Executors.newSingleThreadExecutor(work -> new Thread(work) {
+            @Override public void interrupt() {
+                if (delayOnce.compareAndSet(true, false)) {
+                    capturedInterrupt.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try { deliverInterrupt.await(); break; }
+                        catch (InterruptedException ignored) { interrupted = true; }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+                super.interrupt();
+            }
+        });
+        Thread cancelling = new Thread(runner::cancel);
+        try {
+            var first = executor.submit(() -> runner.executeNativeSubagent(null, "fixture"));
+            assertTrue(running.await(2, TimeUnit.SECONDS));
+            cancelling.start();
+            assertTrue(capturedInterrupt.await(2, TimeUnit.SECONDS));
+            finish.countDown();
+            assertTrue(returning.await(2, TimeUnit.SECONDS));
+            var unrelated = executor.submit(() -> {
+                try { unrelatedRelease.await(); return Thread.currentThread().isInterrupted(); }
+                catch (InterruptedException leaked) { return true; }
+            });
+            // Retirement and interrupt delivery are atomic: the worker cannot be
+            // recycled while cancellation is paused after obtaining its target.
+            assertThrows(java.util.concurrent.TimeoutException.class, () -> first.get(100, TimeUnit.MILLISECONDS));
+            deliverInterrupt.countDown();
+            cancelling.join(2000);
+            assertEquals("done", first.get(2, TimeUnit.SECONDS));
+            unrelatedRelease.countDown();
+            assertFalse(unrelated.get(2, TimeUnit.SECONDS));
+        } finally {
+            finish.countDown();
+            deliverInterrupt.countDown();
+            unrelatedRelease.countDown();
+            cancelling.join(2000);
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
+        }
+    }
+
     private final class Factory extends DirectSubagentRunnerStdio {
         final CountDownLatch started;
         final Map<String, Child> runners = new ConcurrentHashMap<>();

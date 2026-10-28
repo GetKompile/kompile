@@ -68,9 +68,11 @@ public class ConversationExporter {
 
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
-    /** Supported export targets */
+    /** Supported export targets. Antigravity is listed for resume-token handling only:
+     * its native conversations are an opaque protobuf SQLite store, so transcript
+     * reconstruction targets the CLI's own history instead of fabricating one. */
     public static final List<String> SUPPORTED_AGENTS = List.of(
-            "kompile", "claude-code", "codex", "qwen", "opencode", "gemini", "pi"
+            "kompile", "claude-code", "codex", "qwen", "opencode", "gemini", "pi", "agy"
     );
 
     /**
@@ -140,6 +142,14 @@ public class ConversationExporter {
             case "pi":
             case "pi-cli":
                 return exportToPi(turns, effectiveSessionId, effectiveWorkingDirectory);
+            case "agy":
+            case "agy-cli":
+                // Antigravity's native conversations live in an opaque protobuf SQLite
+                // store with no documented write path; fabricating one risks a session
+                // the CLI cannot resume. Report the CLI's own continuation instead.
+                throw new IOException("The 'agy' target cannot reconstruct native sessions: "
+                        + "Antigravity stores conversations in an opaque protobuf SQLite store. "
+                        + "Resume with `agy --conversation <id>` from Antigravity's own history.");
             default:
                 throw new IOException("Unsupported agent: " + agent +
                         ". Supported: " + String.join(", ", SUPPORTED_AGENTS));

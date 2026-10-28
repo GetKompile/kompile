@@ -26,9 +26,7 @@ import ai.kompile.cli.main.chat.render.ConversationSummarizer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Model-aware context compaction for direct task subagents — the child-side
@@ -156,6 +154,28 @@ final class DirectSubagentCompactor {
                 toolName, callId, output == null ? "" : output));
     }
 
+    /** Snapshot of the committed projection, for ledger persistence. */
+    List<CompactionService.ConversationEntry> committedProjection() {
+        return List.copyOf(projection.subList(0, Math.min(committedMark, projection.size())));
+    }
+
+    /**
+     * Restore a resumed child's history: replay the projection into the client
+     * (wire-valid) and mark everything committed. Used by resume only.
+     */
+    void restore(DirectLlmClient client, String modelOverride,
+                 List<CompactionService.ConversationEntry> entries) {
+        restore(client, modelOverride, entries, false);
+    }
+
+    void restore(DirectLlmClient client, String modelOverride,
+                 List<CompactionService.ConversationEntry> entries, boolean keepNativeProcess) {
+        projection.clear();
+        projection.addAll(entries);
+        ConversationReplay.replay(client, modelOverride, entries, keepNativeProcess);
+        committedMark = projection.size();
+    }
+
     /**
      * Projected input tokens of the next request: the max of the char/4 estimate
      * (projection plus the pending outbound message) and the provider-reported
@@ -264,69 +284,13 @@ final class DirectSubagentCompactor {
     /**
      * Child variant of {@code AgenticChatLoop.rebuildDirectHistory}: protocol-
      * correct envelope replay of the compacted candidate, closing dangling tool
-     * calls with synthetic cancellation results so the wire stays valid.
+     * calls with synthetic cancellation results so the wire stays valid. Delegates
+     * to the shared {@link ConversationReplay} helper so compaction and resume
+     * replay through one implementation and cannot diverge.
      */
     private void replayCandidate(DirectLlmClient client, String modelOverride,
                                  List<CompactionService.ConversationEntry> entries) {
-        client.clearHistory();
-        Map<String, CompactionService.ConversationEntry> pendingCalls = new LinkedHashMap<>();
-        int index = 0;
-        while (index < entries.size()) {
-            CompactionService.ConversationEntry entry = entries.get(index);
-            if (entry == null || ((entry.content == null || entry.content.isBlank())
-                    && entry.type != CompactionService.EntryType.TOOL_CALL
-                    && entry.type != CompactionService.EntryType.TOOL_RESULT)) {
-                index++;
-                continue;
-            }
-            if (entry.type == CompactionService.EntryType.TOOL_CALL) {
-                List<DirectLlmClient.ReplayedToolCallInput> calls = new ArrayList<>();
-                while (index < entries.size()) {
-                    CompactionService.ConversationEntry call = entries.get(index);
-                    if (call == null || call.type != CompactionService.EntryType.TOOL_CALL) break;
-                    calls.add(new DirectLlmClient.ReplayedToolCallInput(
-                            call.toolName, call.toolCallId, call.content));
-                    if (call.toolCallId != null && !call.toolCallId.isBlank()) {
-                        pendingCalls.put(call.toolCallId, call);
-                    }
-                    index++;
-                }
-                client.addReplayedToolCalls(calls, modelOverride);
-                continue;
-            }
-            if (entry.type == CompactionService.EntryType.TOOL_RESULT) {
-                List<DirectLlmClient.ToolCallResultInput> results = new ArrayList<>();
-                while (index < entries.size()) {
-                    CompactionService.ConversationEntry result = entries.get(index);
-                    if (result == null || result.type != CompactionService.EntryType.TOOL_RESULT) break;
-                    results.add(new DirectLlmClient.ToolCallResultInput(
-                            result.toolCallId, result.toolName, result.content, false));
-                    pendingCalls.remove(result.toolCallId);
-                    index++;
-                }
-                client.addReplayedToolResults(results, modelOverride);
-                continue;
-            }
-            switch (entry.type) {
-                case SYSTEM -> {
-                    client.addToHistory("user", "[Conversation summary]\n" + entry.content);
-                    client.addToHistory("assistant",
-                            "Understood. I will continue from that conversation summary.");
-                }
-                case USER, ASSISTANT -> client.addToHistory(entry.role, entry.content);
-                case TOOL_CALL, TOOL_RESULT -> { }
-            }
-            index++;
-        }
-        if (!pendingCalls.isEmpty()) {
-            List<DirectLlmClient.ToolCallResultInput> cancellations = new ArrayList<>();
-            for (CompactionService.ConversationEntry pending : pendingCalls.values()) {
-                cancellations.add(new DirectLlmClient.ToolCallResultInput(
-                        pending.toolCallId, pending.toolName,
-                        "Tool call was cancelled before execution; no result was recorded.", true));
-            }
-            client.addReplayedToolResults(cancellations, modelOverride);
-        }
+        ConversationReplay.replay(client, modelOverride, entries);
     }
 
     record CommitResult(int tokensBefore, int tokensAfter, boolean summarizedWithModel,

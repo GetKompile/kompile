@@ -9,11 +9,18 @@ import java.util.*;
 /** Correlates native provider command events by call id. MCP execution tools capture themselves. */
 public final class ProviderTestCapture implements AutoCloseable {
     private final Path directory;
+    /** Null in an interactive chat; "subagent" when this stream is a delegated agent call. */
+    private final String origin;
     private final String identity = UUID.randomUUID().toString();
     private final Map<String, TestMilestoneCapture> pending = new HashMap<>();
     private final Set<String> completed = new LinkedHashSet<>();
 
-    public ProviderTestCapture(Path directory) { this.directory = directory; }
+    public ProviderTestCapture(Path directory) { this(directory, null); }
+
+    public ProviderTestCapture(Path directory, String origin) {
+        this.directory = directory;
+        this.origin = origin == null || origin.isBlank() ? null : origin.trim();
+    }
 
     public synchronized void start(String callId, String name, String input) {
         if (callId == null || callId.isBlank() || completed.contains(callId) || pending.containsKey(callId) || pending.size() >= 128) return;
@@ -29,7 +36,7 @@ public final class ProviderTestCapture implements AutoCloseable {
                 if (!workdir.isBlank()) cwd = directory.resolve(workdir).normalize();
             }
             TestMilestoneCapture capture = TestMilestoneCapture.start(command, cwd, null,
-                    "provider:" + identity + ":" + callId, null);
+                    "provider:" + identity + ":" + callId, origin, null);
             if (capture != null) pending.put(callId, capture);
         } catch (RuntimeException | java.io.IOException invalid) {
             System.err.println("Warning: cannot observe provider test command: " + invalid.getMessage());

@@ -163,7 +163,42 @@ class EditCoordinatorBatchTest {
 
     @Test
     void editWarnsOnForeignLockButStillApplies() throws Exception {
-        Path locked = tempDir.resolve("warn.txt");
+        // ENFORCE is the fresh-config default, so this advisory legacy behaviour is pinned
+        // in its own mode: a coordinator constructed with editCoordinationMode=advisory.
+        Path config = ai.kompile.cli.main.chat.harness.HarnessConfig.getConfigFilePath();
+        Files.createDirectories(config.getParent());
+        Files.writeString(config, "{\"editCoordinationMode\":\"advisory\"}");
+        CoordinationStateManager advisoryMine = new CoordinationStateManager(tempDir, "session-mine-adv", om);
+        try {
+            Path locked = tempDir.resolve("warn.txt");
+            Files.writeString(locked, "content\n");
+            context.recordFileRead(locked);
+            assertTrue(other.tryAcquireEditLock(
+                    locked.toAbsolutePath().toString(), "edit", "other-agent").isAcquired());
+
+            EditTool edit = new EditTool(advisoryMine);
+            ObjectNode params = om.createObjectNode();
+            params.put("file_path", "warn.txt");
+            params.put("old_string", "content");
+            params.put("new_string", "changed");
+
+            ToolResult result = edit.execute(params, context);
+
+            assertFalse(result.isError(), () -> result.getOutput());
+            assertEquals("changed\n", Files.readString(locked));
+            assertTrue(result.getOutput().contains("WARNING"));
+            assertTrue(result.getOutput().contains("other-agent"));
+        } finally {
+            advisoryMine.shutdown();
+            Files.deleteIfExists(config);
+        }
+    }
+
+    @Test
+    void editRefusesOnForeignLockByDefaultEnforcement() throws Exception {
+        // No config written: ENFORCE is the default. The same scenario as the advisory
+        // test above now refuses the write instead of warning after it.
+        Path locked = tempDir.resolve("enforced.txt");
         Files.writeString(locked, "content\n");
         context.recordFileRead(locked);
         assertTrue(other.tryAcquireEditLock(
@@ -171,16 +206,16 @@ class EditCoordinatorBatchTest {
 
         EditTool edit = new EditTool(mine);
         ObjectNode params = om.createObjectNode();
-        params.put("file_path", "warn.txt");
+        params.put("file_path", "enforced.txt");
         params.put("old_string", "content");
         params.put("new_string", "changed");
 
         ToolResult result = edit.execute(params, context);
 
-        assertFalse(result.isError(), () -> result.getOutput());
-        assertEquals("changed\n", Files.readString(locked));
-        assertTrue(result.getOutput().contains("WARNING"));
+        assertTrue(result.isError(), "ENFORCE refuses a live foreign lock");
+        assertTrue(result.getOutput().contains("CONFLICT"));
         assertTrue(result.getOutput().contains("other-agent"));
+        assertEquals("content\n", Files.readString(locked), "nothing was written");
     }
 
     @Test

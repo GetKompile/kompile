@@ -19,6 +19,7 @@ package ai.kompile.cli.main.lsp;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.EditEnforcement;
 import ai.kompile.cli.main.coordination.EditLockEntry;
 import ai.kompile.cli.main.coordination.EditLockResult;
 import org.eclipse.lsp4j.CreateFile;
@@ -234,17 +235,30 @@ public class WorkspaceEditApplier {
             // ownership verified in one coordinator critical section): a file another live
             // owner holds — including one that reclaimed this agent's expired lock — or a
             // busy coordinator aborts the whole workspace edit before anything is written.
-            EditLockEntry holder = result.getConflictEntry();
-            throw new ToolExecutionException(holder == null
-                    ? "workspace edit not applied: " + result.getConflictMessage()
-                    : "workspace edit not applied: CONFLICT: " + file + " is locked by "
-                            + holder.getAgentName() + " (session " + holder.getSessionId()
-                            + ", lock_id " + holder.getLockId() + ") via edit_coordinator; "
-                            + "nothing was written.");
+            throw workspaceRefusal(file, result);
+        }
+        if (owner == null
+                && coordinator.getEditEnforcement() == EditEnforcement.ENFORCE
+                && !result.isAcquired()) {
+            // ENFORCE session semantics: same guarantee as the edit tools' guard — a file
+            // another live owner holds, or a busy coordinator, aborts the workspace edit
+            // before anything is written. (ADVISORY stays fail-open, as historically.)
+            throw workspaceRefusal(file, result);
         }
         if (result.isAcquired() && result.getLockId() != null && !result.isAlreadyHeld()) {
             lockIds.add(result.getLockId());
         }
+    }
+
+    /** The ToolExecutionException for a refused workspace-edit lock acquire. */
+    private ToolExecutionException workspaceRefusal(Path file, EditLockResult result) {
+        EditLockEntry holder = result.getConflictEntry();
+        return new ToolExecutionException(holder == null
+                ? "workspace edit not applied: " + result.getConflictMessage()
+                : "workspace edit not applied: CONFLICT: " + file + " is locked by "
+                        + holder.getAgentName() + " (session " + holder.getSessionId()
+                        + ", lock_id " + holder.getLockId() + ") via edit_coordinator; "
+                        + "nothing was written.");
     }
 
     private void releaseLocks(List<String> lockIds) {

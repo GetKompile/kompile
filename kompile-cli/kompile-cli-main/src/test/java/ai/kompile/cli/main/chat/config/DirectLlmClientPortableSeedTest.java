@@ -244,6 +244,32 @@ class DirectLlmClientPortableSeedTest {
     }
 
     @Test
+    void aStartupErrorDoesNotDiscardAResumedSession() throws Exception {
+        try (DirectLlmClient client = client()) {
+            client.addToHistory("user", "EARLIER_QUESTION");
+            client.addToHistory("assistant", "EARLIER_ANSWER");
+            installFakeClaude(client, """
+                    startup() {
+                      if [ ! -f "$DIR/startup-failed" ]; then
+                        touch "$DIR/startup-failed"
+                        emit '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["Invalid model selection"]}'
+                        exit 1
+                      fi
+                    }
+                    """);
+            client.resumeClaudeNativeSession("saved-session", HashUtils.sha256Hex("system rules"));
+            DirectLlmClient.StreamResult refused = client.streamChat("next question", "system rules", null, null);
+            assertTrue(refused.failed, "a model/config error must surface, not silently replace the session");
+            assertEquals("saved-session", client.claudeNativeSession().sessionId());
+            assertEquals(1, fake.argv().size(), "only confirmed missing sessions may be recreated");
+            assertTurn(client.streamChat("retry question", "system rules", null, null));
+        }
+        assertEquals(2, fake.argv().size());
+        assertTrue(fake.argv().stream().allMatch(args -> args.contains("--resume saved-session")), fake.argv().toString());
+        assertFalse(prompt(1).contains(RESTORED_HEADER), prompt(1));
+    }
+
+    @Test
     void acceptedFailedTurnDoesNotRestoreTheSameHistoryAgain() throws Exception {
         try (DirectLlmClient client = client()) {
             client.addToHistory("user", "EARLIER_QUESTION");
@@ -271,10 +297,42 @@ class DirectLlmClientPortableSeedTest {
         assertEquals(1, fake.argv().size(), "the accepted session is reused");
     }
 
+    @Test
+    void reconnectRetriesTheSameNativeSessionWithoutSeedingHistory() throws Exception {
+        var policy = new ProviderConnectivityPolicy(
+                java.time.Duration.ofSeconds(1), java.time.Duration.ofSeconds(3),
+                java.time.Duration.ofMillis(100), java.time.Duration.ofSeconds(1),
+                2, java.time.Duration.ofMillis(1), java.time.Duration.ofMillis(2));
+        try (DirectLlmClient client = client(policy)) {
+            client.addToHistory("user", "EARLIER_QUESTION");
+            installFakeClaude(client, """
+                    startup() {
+                      if [ ! -f "$DIR/startup-failed" ]; then
+                        touch "$DIR/startup-failed"
+                        emit '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["connection reset"]}'
+                        exit 1
+                      fi
+                    }
+                    """);
+            client.resumeClaudeNativeSession("saved-session", HashUtils.sha256Hex("system rules"));
+            assertTurn(client.streamChat("retry question", "system rules", null, null));
+            assertEquals("saved-session", client.claudeNativeSession().sessionId());
+        }
+        assertEquals(2, fake.argv().size());
+        assertTrue(fake.argv().stream().allMatch(args -> args.contains("--resume saved-session")), fake.argv().toString());
+        assertFalse(prompt(1).contains(RESTORED_HEADER), prompt(1));
+    }
+
     private DirectLlmClient client() {
+        return client(null);
+    }
+
+    private DirectLlmClient client(ProviderConnectivityPolicy policy) {
         ChatConfig config = new ChatConfig("anthropic", null, "claude-opus-5-5", null);
         config.setAuthenticationMethod("oauth");
-        DirectLlmClient client = new DirectLlmClient(config, JsonUtils.standardMapper(), home);
+        DirectLlmClient client = policy == null
+                ? new DirectLlmClient(config, JsonUtils.standardMapper(), home)
+                : new DirectLlmClient(config, JsonUtils.standardMapper(), policy, home);
         client.setOutputConsumer(ignored -> { });
         return client;
     }
@@ -294,6 +352,7 @@ class DirectLlmClientPortableSeedTest {
      */
     private void installFakeClaude(DirectLlmClient client, String overrides) throws Exception {
         fake = new FakeClaudeCode(home.resolve("claude"), "ANSWER=done\n" + overrides);
+        fake.installBinary(client);
         Field field = DirectLlmClient.class.getDeclaredField("claudeServeClient");
         field.setAccessible(true);
         field.set(client, new ClaudeCliClient(home, null, fake.binary()));

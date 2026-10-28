@@ -81,6 +81,8 @@ public class ServerSubagentRunner implements SubagentRunner {
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicBoolean terminalClaimed = new AtomicBoolean(false);
         private final AtomicReference<java.io.InputStream> responseBody = new AtomicReference<>();
+        private final ai.kompile.cli.main.chat.SubagentTelemetry telemetry =
+                new ai.kompile.cli.main.chat.SubagentTelemetry();
         private volatile String remoteProcessId;
         private volatile Thread ownerThread;
 
@@ -118,9 +120,18 @@ public class ServerSubagentRunner implements SubagentRunner {
 
     @Override
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
+        // The server owns model selection and does not expose a verifiable model id here.
+        try (SubagentAdmission.Lease admission = SubagentAdmission.acquire("kompile", null)) {
+            return runAdmittedSubagent(agent, prompt, parentContext);
+        }
+    }
+
+    private String runAdmittedSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
         if ((agent.getModelOverride() != null && !agent.getModelOverride().isBlank())
-                || (agent.getThinkingOverride() != null && !agent.getThinkingOverride().isBlank())) {
-            throw new IllegalArgumentException("Server-backed chat task does not support model/thinking overrides. "
+                || (agent.getThinkingOverride() != null && !agent.getThinkingOverride().isBlank())
+                || (agent.getProviderOverride() != null && !agent.getProviderOverride().isBlank())
+                || (agent.getAuthenticationMethodOverride() != null && !agent.getAuthenticationMethodOverride().isBlank())) {
+            throw new IllegalArgumentException("Server-backed chat task does not support model/thinking overrides or provider/authentication_method selection. "
                     + "Use direct-model chat or the MCP task tool; no agent was launched.");
         }
         WorkflowTeamEnforcement workflow =
@@ -136,6 +147,8 @@ public class ServerSubagentRunner implements SubagentRunner {
         sessions.put(subagentId, session);
         if (lifecycleListener != null) {
             lifecycleListener.onSubagentStart(subagentId, label, StringUtils.truncate(prompt, 60));
+            session.telemetry.put("source", "kompile server");
+            lifecycleListener.onSubagentMetadata(subagentId, session.telemetry.snapshot());
         }
         emitActivity(subagentId, "connecting",
                 renderer.renderSubagentStart(label, StringUtils.truncate(prompt, 80)),
@@ -271,6 +284,9 @@ public class ServerSubagentRunner implements SubagentRunner {
                                 catch (Exception ignored) {}
                             }
                             fullResponse.append(chunk);
+                            session.telemetry.stream(chunk);
+                            if (lifecycleListener != null) lifecycleListener.onSubagentMetadata(
+                                    subagentId, session.telemetry.snapshot());
                             emitOutput(subagentId, chunk);
                             break;
 
@@ -449,6 +465,8 @@ public class ServerSubagentRunner implements SubagentRunner {
             String toolName = toolCall.path("name").asText("");
             JsonNode arguments = toolCall.path("arguments");
             String rawInput = arguments == null ? "" : arguments.toString();
+            session.telemetry.tool();
+            if (lifecycleListener != null) lifecycleListener.onSubagentMetadata(subagentId, session.telemetry.snapshot());
             String callSummary = TerminalRenderer.summarizeToolCall(toolName, rawInput, 88);
             emitActivity(subagentId, callSummary + " …",
                     renderer.renderToolCallStart(toolName, rawInput), parentContext);
@@ -477,10 +495,12 @@ public class ServerSubagentRunner implements SubagentRunner {
                     parentContext.getWorkingDirectory(),
                     toolRegistry
             );
+            subContext.markSupervisedChild();
             subContext.bindWorkflow(session.workflow);
             // Sibling subagents share the parent's coordination session; their own id
             // scopes edit-lock ownership so they arbitrate against each other.
             subContext.setCoordinationAgent(subagentId);
+            subContext.bindCoordinator(parentContext.getCoordinator());
             subContext.linkAbortCheck(
                     () -> session.cancelled.get() || parentContext.isAborted());
             subContext.setOutputConsumer(parentContext.getOutputConsumer());

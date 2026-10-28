@@ -163,7 +163,7 @@ public final class NativeChatModels {
         ModelDiscovery.Result catalog;
         try {
             catalog = selected.isClaudeCliNative()
-                    ? ModelDiscoveryHttp.discoverClaudeCliResult()
+                    ? ModelDiscoveryHttp.discoverClaudeCliResult(selected)
                     : ModelDiscoveryHttp.discoverResultWithAuth(
                             selected.getProvider(), selected.resolveRequestAuth(), selected.getBaseUrl());
         } catch (RuntimeException unavailable) {

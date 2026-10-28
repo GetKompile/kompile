@@ -199,6 +199,13 @@ public class ChatCommandRouter {
             case "/exit":
                 return false;
 
+            case "/hooks": {
+                Path workDir = Paths.get(System.getProperty("user.dir"));
+                ToolContext context = new ToolContext(sessionId, chatAgent(), permissionService, workDir, toolRegistry);
+                System.out.println(ai.kompile.cli.main.chat.hooks.HookCommands.execute(rest, context).getOutput());
+                return true;
+            }
+
             case "/resources":
                 System.out.println(repl.configureResources(rest));
                 return true;
@@ -237,6 +244,10 @@ public class ChatCommandRouter {
 
             case "/subagents":
                 listSubagents();
+                return true;
+
+            case "/subagent-config":
+                repl.handleSubagentConfigCommand(rest);
                 return true;
 
             case "/local-tools":
@@ -397,6 +408,11 @@ public class ChatCommandRouter {
                 showTranscript();
                 return true;
 
+            case "/btw":
+                BtwCommand.run(renderer, repl.getChatConfig(), chatHistory,
+                        repl.getWorkingDirectory(), rest);
+                return true;
+
             case "/copy":
                 copyLatestResponse(rest);
                 return true;
@@ -421,6 +437,15 @@ public class ChatCommandRouter {
                 }
                 return true;
 
+            case "/continue-trigger":
+                if (repl.getContinueManager() == null) {
+                    System.out.println(renderer.yellow(
+                            "  /continue-trigger is unavailable in this session."));
+                } else {
+                    System.out.println(repl.getContinueManager().triggerCommand(rest));
+                }
+                return true;
+
             case "/reminder-global":
                 printReminderResult(ReminderManager.Scope.PROJECT, rest);
                 return true;
@@ -431,6 +456,18 @@ public class ChatCommandRouter {
 
             case "/todos":
                 showTodos();
+                return true;
+
+            case "/todos-ongoing":
+                showTodosFiltered("ongoing");
+                return true;
+
+            case "/todos-completed":
+                showTodosFiltered("completed");
+                return true;
+
+            case "/todos-canceled":
+                showTodosFiltered("canceled");
                 return true;
 
             case "/plan":
@@ -486,6 +523,10 @@ public class ChatCommandRouter {
                 handleLoop(LoopScope.PROJECT, rest);
                 return true;
 
+            case "/loop-bounded":
+                handleBoundedLoop(rest);
+                return true;
+
             // Background task management commands
             case "/jobs":
                 listBackgroundTasks();
@@ -539,6 +580,11 @@ public class ChatCommandRouter {
 
             case "/diffs":
                 new ChatDiffsCommand(renderer).show(rest, sessionId, System.out::println);
+                return true;
+
+            case "/test-milestones":
+                System.out.println(new TestMilestonesCommand(repl.getWorkingDirectory())
+                        .show(rest, sessionId));
                 return true;
 
             case "/usage":
@@ -634,6 +680,10 @@ public class ChatCommandRouter {
 
             case "/direction":
                 handleJudgeCommand("direction" + (rest.isBlank() ? "" : " " + rest.trim()));
+                return true;
+
+            case "/deflection":
+                handleDeflectionCommand(rest.trim());
                 return true;
 
             case "/forward":
@@ -864,6 +914,118 @@ public class ChatCommandRouter {
     }
 
     // ========================================================================
+    // Bounded loops (/loop-bounded) — a /loop that stops by itself
+    // ========================================================================
+
+    private void handleBoundedLoop(String arguments) {
+        String input = arguments == null ? "" : arguments.strip();
+        if (input.isEmpty() || input.equalsIgnoreCase("list")
+                || input.equalsIgnoreCase("status")) {
+            listBoundedLoops();
+            return;
+        }
+
+        String[] operation = input.split("\\s+", 2);
+        String command = operation[0].toLowerCase(Locale.ROOT);
+        String rest = operation.length > 1 ? operation[1].strip() : "";
+        switch (command) {
+            case "add" -> addBoundedLoop(rest);
+            case "pause" -> updateBoundedLoop("pause", rest);
+            case "resume" -> updateBoundedLoop("resume", rest);
+            case "remove", "delete", "stop" -> updateBoundedLoop("remove", rest);
+            case "run", "now" -> updateBoundedLoop("run", rest);
+            case "clear" -> clearBoundedLoops(rest);
+            default -> addBoundedLoop(input); // shorthand: /loop-bounded 5m 10 prompt
+        }
+    }
+
+    private void addBoundedLoop(String arguments) {
+        // <interval> <bound> <prompt>; bound is a bare count ("10") or duration ("1h")
+        String[] parts = arguments.split("\\s+", 3);
+        if (parts.length < 3) {
+            printBoundedLoopUsage();
+            return;
+        }
+        String interval = parts[0];
+        String bound = parts[1];
+        String prompt = parts[2].strip();
+
+        BoundedLoopManager.BoundedLoop loop =
+                repl.getBoundedLoopManager().create(interval, bound, prompt);
+        if (loop == null) {
+            System.out.println(renderer.red("Invalid loop interval, bound, or empty prompt."));
+            printBoundedLoopUsage();
+            return;
+        }
+        System.out.println(renderer.green("✓ Bounded loop [") + loop.getId()
+                + renderer.green("] every ") + loop.getFormattedInterval()
+                + " " + loop.getFormattedBound());
+        System.out.println(renderer.dim("  " + prompt));
+        System.out.println(renderer.dim("  " + loop.getFormattedRemaining()));
+    }
+
+    private void updateBoundedLoop(String operation, String id) {
+        if (id == null || id.isBlank()) {
+            printBoundedLoopUsage();
+            return;
+        }
+        BoundedLoopManager loops = repl.getBoundedLoopManager();
+        boolean changed = switch (operation) {
+            case "pause" -> loops.pause(id);
+            case "resume" -> loops.resume(id);
+            case "remove" -> loops.remove(id);
+            case "run" -> loops.runNow(id);
+            default -> false;
+        };
+        if (changed) {
+            String label = switch (operation) {
+                case "pause" -> "paused";
+                case "resume" -> "resumed";
+                case "remove" -> "removed";
+                case "run" -> "started";
+                default -> operation;
+            };
+            System.out.println(renderer.green("✓ Bounded loop " + label + ": ") + id);
+        } else {
+            System.out.println(renderer.red("Bounded loop not found or invalid state: ") + id);
+        }
+    }
+
+    private void clearBoundedLoops(String arguments) {
+        if (arguments != null && !arguments.isBlank()) {
+            printBoundedLoopUsage();
+            return;
+        }
+        int cleared = repl.getBoundedLoopManager().clear();
+        System.out.println(renderer.green("✓ Cleared " + cleared + " bounded loop"
+                + (cleared == 1 ? "." : "s.")));
+    }
+
+    private void listBoundedLoops() {
+        List<BoundedLoopManager.BoundedLoop> loops = repl.getBoundedLoopManager().list();
+        if (loops.isEmpty()) {
+            System.out.println(renderer.dim("No bounded loops."));
+            printBoundedLoopUsage();
+            return;
+        }
+        System.out.println(ascii.sectionHeader("Bounded Loops"));
+        for (BoundedLoopManager.BoundedLoop loop : loops) {
+            System.out.println("  " + BoundedLoopManager.formatBoundedLoop(loop));
+        }
+        System.out.println(renderer.dim(
+                "  Runs only for its bound (count or duration), then stops by itself;"));
+        System.out.println(renderer.dim(
+                "  scoped to this conversation and shown with ✓ when it completes."));
+    }
+
+    private void printBoundedLoopUsage() {
+        System.out.println(renderer.dim("  /loop-bounded add <5m|2h30m> <10|1h> <prompt>"));
+        System.out.println(renderer.dim("  bound: a number = that many fires; a duration = total run time"));
+        System.out.println(renderer.dim("  /loop-bounded list | clear | pause <id> | resume <id>"
+                + " | run <id> | remove <id>"));
+    }
+
+    // ========================================================================
     // Help
     // ========================================================================
 
@@ -930,6 +1092,7 @@ public class ChatCommandRouter {
             body.append(renderer.bold(renderer.cyan("Chat"))).append("\n");
             body.append("  ").append(renderer.cyan("<text>")).append("              Send a message (agentic tool loop)\n");
             body.append("  ").append(renderer.cyan("/agent-chat <text>")).append("  Same as above (explicit)\n");
+            body.append("  ").append(renderer.cyan("/btw <question>")).append("     Side question answered outside the conversation\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Tools & Agents"))).append("\n");
             body.append("  ").append(renderer.cyan("/tools")).append("              List local CLI tools\n");
@@ -938,6 +1101,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/agents")).append("             List local agent types\n");
             body.append("  ").append(renderer.cyan("/agent")).append(" name         Switch agent type\n");
             body.append("  ").append(renderer.cyan("/model")).append(" [name]       Choose model and thinking/effort (/auth switches vendors)\n");
+            body.append("  ").append(renderer.cyan("/model ladder")).append("     Failover wizard (alias: /model failover; status is explicit)\n");
             body.append("  ").append(renderer.cyan("/thinking")).append(" [value|default|status]  Configure supported reasoning effort\n");
             if (repl.getChatConfig() != null && repl.getChatConfig().supportsFastMode()) {
                 body.append("  ").append(renderer.cyan("/fast")).append(" [on|off|status]  Toggle premium fast mode\n");
@@ -1037,6 +1201,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add/clear; 'interval <n|off>' sets cadence\n");
             body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders; optional interval override\n");
             body.append("  ").append(renderer.cyan("/continue [on|off]")).append("  Auto-reply to agent questions ('Proceed?'); configurable\n");
+            body.append("  ").append(renderer.cyan("/continue-trigger")).append("  Manage the /continue trigger keywords (same config)\n");
             body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation, freeing context\n");
             body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Configure automatic model-aware compaction\n");
             body.append("\n");
@@ -1044,7 +1209,9 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/usage")).append("              Vendor account credits, allowances and resets\n");
             body.append("  ").append(renderer.cyan("/stats [tools …]")).append("    Session stats; tool tokens + session/call drill-down\n");
             body.append("  ").append(renderer.cyan("/diffs [count]")).append("     Recent session diffs, newest first (default 20; 1–100)\n");
+            body.append("  ").append(renderer.cyan("/test-milestones")).append("   Session test milestones: auto capture + agent records\n");
             body.append("  ").append(renderer.cyan("/copy")).append("              Copy latest assistant response\n");
+            body.append("  ").append(renderer.cyan("/subagent-config")).append("     Subagent concurrency, model-ban and failover settings wizard\n");
             body.append("  ").append(renderer.cyan("/ui")).append("                 Display wizard: layout, sidebar and inline content\n");
             body.append("  ").append(renderer.cyan("/redraw")).append("             Repaint the TUI without clearing the conversation\n");
             body.append("  ").append(renderer.cyan("/help")).append("               This help message\n");
@@ -1054,6 +1221,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("<text>")).append("              Send a message (inline RAG chat)\n");
             body.append("  ").append(renderer.cyan("/ask <text>")).append("         Send via server agent with streaming\n");
             body.append("  ").append(renderer.cyan("/agent-chat <text>")).append("  Agentic tool loop (local tools)\n");
+            body.append("  ").append(renderer.cyan("/btw <question>")).append("     Side question answered outside the conversation\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Local Tools & Agents"))).append("\n");
             body.append("  ").append(renderer.cyan("/local-tools")).append("        List all local CLI tools\n");
@@ -1061,6 +1229,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/local-agents")).append("       List local agent types\n");
             body.append("  ").append(renderer.cyan("/local-agent")).append(" name   Switch local agent type\n");
             body.append("  ").append(renderer.cyan("/model")).append(" [name]       Choose model and thinking/effort (/auth switches vendors)\n");
+            body.append("  ").append(renderer.cyan("/model ladder")).append("     Failover wizard (alias: /model failover; status is explicit)\n");
             body.append("  ").append(renderer.cyan("/thinking")).append(" [value|default|status]  Configure supported reasoning effort\n");
             body.append("  ").append(renderer.cyan("/permissions")).append("        View or set tool permissions\n");
             body.append("  ").append(renderer.cyan("/todos")).append("              Show the session task list\n");
@@ -1074,6 +1243,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/history")).append("            Server-side conversation history\n");
             body.append("  ").append(renderer.cyan("/transcript")).append("         Local transcript file\n");
             body.append("  ").append(renderer.cyan("/diffs [count]")).append("     Recent session diffs, newest first (default 20; 1–100)\n");
+            body.append("  ").append(renderer.cyan("/test-milestones")).append("   Session test milestones: auto capture + agent records\n");
             body.append("  ").append(renderer.cyan("/copy")).append("              Copy latest assistant response\n");
             body.append("  ").append(renderer.cyan("/conversations")).append("      List all saved conversations\n");
             body.append("  ").append(renderer.cyan("/clear")).append("              Start a new conversation in this process\n");
@@ -1092,6 +1262,8 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add/clear; 'interval <n|off>' sets cadence\n");
             body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders; optional interval override\n");
             body.append("  ").append(renderer.cyan("/continue [on|off]")).append("  Auto-reply to agent questions; /continue help for options\n");
+            body.append("  ").append(renderer.cyan("/continue-trigger")).append("  Manage the /continue trigger keywords; same config\n");
+            body.append("  ").append(renderer.cyan("/hooks [help]")).append("  Manage project/global tool hooks; list, add, edit, enable, disable, delete\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Modes"))).append("\n");
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
@@ -1127,6 +1299,7 @@ public class ChatCommandRouter {
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
             body.append("  ").append(renderer.cyan("/status")).append("             Connection and session info\n");
+            body.append("  ").append(renderer.cyan("/subagent-config")).append("     Subagent concurrency, model-ban and failover settings wizard\n");
             body.append("  ").append(renderer.cyan("/ui")).append("                 Display wizard: layout, sidebar and inline content\n");
             body.append("  ").append(renderer.cyan("/redraw")).append("             Repaint the TUI without clearing the conversation\n");
             body.append("  ").append(renderer.cyan("/help")).append("               This help message\n");
@@ -1727,6 +1900,92 @@ public class ChatCommandRouter {
         }
     }
 
+    // ========================================================================
+    // Deflection monitor (/deflection) — deterministic ownership-mandate lane
+    // ========================================================================
+
+    private void handleDeflectionCommand(String args) {
+        var monitor = repl.getDeflectionMonitor();
+        String[] parts = args == null || args.isBlank()
+                ? new String[] {"status"} : args.trim().split("\\s+", 2);
+        String subCmd = parts[0].toLowerCase(java.util.Locale.ROOT);
+        String rest = parts.length > 1 ? parts[1].trim() : "";
+
+        if (monitor == null) {
+            // Off by default — explain exactly how to turn it on.
+            if ("help".equals(subCmd) || "usage".equals(subCmd)) {
+                printDeflectionUsage();
+                return;
+            }
+            System.out.println(renderer.yellow(
+                    "  Deflection monitoring is OFF in this session."));
+            System.out.println(renderer.dim(
+                    "  It is strictly opt-in: add \"deflectionDetection\": true to"));
+            System.out.println(renderer.dim(
+                    "  .kompile/enforcer-config.json (or /judge reload after editing)."));
+            printDeflectionUsage();
+            return;
+        }
+
+        switch (subCmd) {
+            case "status", "show" -> printDeflectionStatus(monitor);
+            case "reload" -> {
+                repl.loadDeflectionMonitor(repl.getWorkingDirectory());
+                var reloaded = repl.getDeflectionMonitor();
+                if (reloaded != null) {
+                    System.out.println(renderer.green("  Deflection monitor reloaded."));
+                } else {
+                    System.out.println(renderer.yellow(
+                            "  Deflection monitoring stayed OFF — the project config does not"));
+                    System.out.println(renderer.dim(
+                            "  enable it (\"deflectionDetection\": true)."));
+                }
+            }
+            case "help", "usage" -> printDeflectionUsage();
+            default -> {
+                System.out.println(renderer.red("Unknown /deflection subcommand: " + subCmd));
+                printDeflectionUsage();
+            }
+        }
+    }
+
+    private void printDeflectionStatus(
+            ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor monitor) {
+        var options = monitor.getOptions();
+        System.out.println();
+        System.out.println(renderer.bold("  Deflection Monitor (ownership mandate)"));
+        System.out.println("  ──────────────────────────────────────────");
+        System.out.println("  Mode:      " + renderer.cyan(options.mode()));
+        System.out.println("  Posture:   " + (options.reportOnly()
+                ? renderer.yellow("report-only (never corrects)")
+                : "enforcing (corrections + cross-turn stop)"));
+        System.out.println("  Threshold: " + options.confidenceThreshold());
+        System.out.println("  Receipts:  " + (options.requireReceipts()
+                ? "required (signal ∧ ¬evidence)"
+                : renderer.red("NOT required — phrase-only mode")));
+        System.out.println("  Corrections: " + monitor.getCorrectionsThisTurn()
+                + "/" + options.maxCorrections() + " used this turn");
+        System.out.println("  Streak:    " + monitor.getConsecutiveDeflectingTurns()
+                + " consecutive deflecting turn(s)"
+                + (options.crossTurnLimit() == 0
+                        ? " (cross-turn off)"
+                        : " / stop at " + options.crossTurnLimit()));
+        System.out.println();
+    }
+
+    private void printDeflectionUsage() {
+        System.out.println();
+        System.out.println(renderer.bold("  /deflection usage"));
+        System.out.println("  ──────────────────────────────────────────");
+        System.out.println(renderer.dim("  status   — mode, posture, threshold, counters (default)"));
+        System.out.println(renderer.dim("  reload   — re-read .kompile/enforcer-config.json"));
+        System.out.println(renderer.dim("  help     — this usage"));
+        System.out.println(renderer.dim("  Enable: \"deflectionDetection\": true in"));
+        System.out.println(renderer.dim("  .kompile/enforcer-config.json, then /deflection reload."));
+        System.out.println(renderer.dim("  See docs/architecture/enforcer-deflection-design.md."));
+        System.out.println();
+    }
+
     private void printDirectionStatus(ai.kompile.cli.main.chat.enforcer.DirectionJudge judge) {
         System.out.println();
         System.out.println(renderer.bold("  Direction Judge (goal-drift monitor)"));
@@ -2180,7 +2439,7 @@ public class ChatCommandRouter {
             ToolContext ctx = new ToolContext(sessionId, agent, permissionService, workDir, toolRegistry);
 
             TerminalRenderer.SpinnerHandle spinner = renderer.startSpinner(toolName);
-            ToolResult result = tool.execute(args, ctx);
+            ToolResult result = toolRegistry.execute(toolName, args, ctx);
             spinner.stop();
 
             System.out.println(renderer.renderToolCallComplete(toolName, argsJson, result));
@@ -2415,6 +2674,16 @@ public class ChatCommandRouter {
             return;
         }
 
+        String ladderArgs = modelLadderArguments(rest);
+        if (ladderArgs != null) {
+            handleModelLadderCommand(ladderArgs, chatConfig);
+            return;
+        }
+        if ("status".equals(rest)) {
+            showModelStatus(chatConfig);
+            return;
+        }
+
         if (rest.isEmpty()) {
             repl.openModelProviderPicker();
             return;
@@ -2422,6 +2691,205 @@ public class ChatCommandRouter {
 
         repl.applyModelSelection(rest);
     }
+
+    static String modelLadderArguments(String rest) {
+        for (String name : List.of("ladder", "failover")) {
+            if (rest.equals(name)) return "";
+            if (rest.startsWith(name) && rest.length() > name.length()
+                    && Character.isWhitespace(rest.charAt(name.length()))) return rest.substring(name.length()).trim();
+        }
+        return null;
+    }
+
+    /**
+     * Manage the session failover ladder: the ordered models this session may
+     * fall back to when the active one runs out of quota.
+     *
+     * <p>Edits persist to the most specific ladder layer the session loaded
+     * (session, else project, else global), so a project default applies
+     * everywhere while one session can override it.</p>
+     */
+    private void handleModelLadderCommand(String args, ChatConfig chatConfig) {
+        SessionModelLadder ladder;
+        try {
+            ladder = SessionModelLadder.load(repl.getSessionId(), workingDirectoryOrDot());
+        } catch (RuntimeException e) {
+            System.out.println(renderer.red("  Cannot read the model ladder: " + e.getMessage()));
+            return;
+        }
+        String[] parts = args.isBlank() ? new String[0] : args.split("\\s+");
+
+        if (parts.length == 0) {
+            repl.openModelFailoverWizard(ladder);
+            return;
+        }
+        if ("status".equals(parts[0]) || "show".equals(parts[0]) || "list".equals(parts[0])) {
+            renderLadder(ladder, chatConfig);
+            return;
+        }
+        try {
+            switch (parts[0]) {
+                case "add" -> addLadderRung(ladder, parts, chatConfig);
+                case "remove", "rm" -> {
+                    if (parts.length < 2) {
+                        System.out.println("  Usage: /model ladder remove <n>");
+                        return;
+                    }
+                    if (!ladder.removeRung(Integer.parseInt(parts[1]))) {
+                        System.out.println(renderer.yellow("  No rung " + parts[1] + "."));
+                        return;
+                    }
+                    persistLadder(ladder);
+                }
+                case "clear" -> {
+                    ladder.clearRungs();
+                    persistLadder(ladder);
+                    System.out.println(renderer.green("  ✓ Ladder cleared."));
+                }
+                case "order", "move" -> {
+                    if (parts.length < 3) {
+                        System.out.println("  Usage: /model ladder order <from> <to>");
+                        return;
+                    }
+                    if (!ladder.moveRung(Integer.parseInt(parts[1]), Integer.parseInt(parts[2]))) {
+                        System.out.println(renderer.yellow("  Rung index out of range."));
+                        return;
+                    }
+                    persistLadder(ladder);
+                }
+                case "on", "off" -> {
+                    ladder.setEnabled("on".equals(parts[0]));
+                    persistLadder(ladder);
+                    System.out.println(renderer.green("  ✓ Model failover ")
+                            + ("on".equals(parts[0]) ? "enabled" : "disabled") + ".");
+                }
+                case "ratelimit" -> {
+                    boolean on = parts.length > 1 && "on".equals(parts[1]);
+                    ladder.setFailoverOnRateLimit(on);
+                    persistLadder(ladder);
+                    System.out.println(renderer.green("  ✓ Failover on rate limit: ")
+                            + (on ? "on" : "off"));
+                }
+                default -> System.out.println("  Usage: /model ladder"
+                        + " [status|show|add <provider>/<model> [--credential NAME] [--label TEXT] [--thinking LEVEL]"
+                        + "|remove <n>|clear|order <from> <to>|on|off|ratelimit on|off]");
+            }
+        } catch (NumberFormatException e) {
+            System.out.println(renderer.yellow("  Rung indices are numbers."));
+        }
+    }
+
+    private void addLadderRung(SessionModelLadder ladder, String[] parts, ChatConfig chatConfig) {
+        if (parts.length < 2) {
+            System.out.println("  Usage: /model ladder add provider/model [--credential NAME] [--label TEXT] [--thinking LEVEL]");
+            return;
+        }
+        String spec = parts[1];
+        String provider = null;
+        String model = spec;
+        int slash = spec.indexOf('/');
+        if (slash > 0) {
+            provider = spec.substring(0, slash);
+            model = spec.substring(slash + 1);
+        }
+        String credential = null;
+        String label = null;
+        String thinking = null;
+        for (int i = 2; i < parts.length; i += 2) {
+            if (i + 1 >= parts.length) {
+                System.out.println(renderer.yellow("  Missing value for " + parts[i]));
+                return;
+            }
+            switch (parts[i]) {
+                case "--credential" -> credential = parts[i + 1];
+                case "--label" -> label = parts[i + 1];
+                case "--thinking" -> thinking = parts[i + 1];
+                default -> {
+                    System.out.println(renderer.yellow("  Unknown option: " + parts[i]));
+                    return;
+                }
+            }
+        }
+        // PROVIDERS is the union chat itself treats as "a route this installation
+        // knows": it contains the first-party routes (kompile, kompile-local,
+        // custom) that ChatProviderRegistry does not describe, plus every
+        // registered provider. Checking the registry alone rejected `custom`.
+        if (provider != null && !ChatConfig.PROVIDERS.containsKey(provider)) {
+            System.out.println(renderer.yellow("  Unknown provider: " + provider));
+            return;
+        }
+        if (credential != null && provider != null) {
+            String problem = ChatConfig.unusableCredentialReason(provider, credential);
+            if (problem != null) {
+                System.out.println(renderer.yellow("  " + problem));
+                return;
+            }
+        }
+        if (!ladder.addRung(new SessionModelLadder.ModelRung(provider, model, credential, label, thinking))) {
+            System.out.println(renderer.yellow("  That rung is already in the ladder."));
+            return;
+        }
+        persistLadder(ladder);
+        System.out.println(renderer.green("  ✓ Added ")
+                + renderer.cyan(provider == null ? model : provider + "/" + model)
+                + (label != null ? renderer.dim(" (" + label + ")") : ""));
+    }
+
+    private void persistLadder(SessionModelLadder ladder) {
+        try {
+            ladder.save();
+        } catch (Exception e) {
+            System.out.println(renderer.red("  Could not save the ladder: " + e.getMessage()));
+        }
+    }
+
+    private void renderLadder(SessionModelLadder ladder, ChatConfig chatConfig) {
+        var rungs = ladder.rungs();
+        System.out.println(renderer.bold("  Model failover ladder: ")
+                + (ladder.enabled() ? renderer.green("on") : renderer.dim("off"))
+                + renderer.dim(" · selection " + ladder.ordering().name().toLowerCase()
+                + " · max " + ladder.maxRungsPerTurn() + "/turn"
+                + " · rate-limit failover " + (ladder.failoverOnRateLimit() ? "on" : "off")));
+        if (rungs.isEmpty()) {
+            System.out.println(renderer.dim("  No rungs. Add one with"
+                    + " /model ladder add <provider>/<model>."));
+        } else {
+            String activeProvider = chatConfig.getProvider();
+            String activeCredential = chatConfig.getCredentialName();
+            for (int i = 0; i < rungs.size(); i++) {
+                SessionModelLadder.ModelRung rung = rungs.get(i);
+                long cooling = ladder.cooldownRemainingMs(
+                        rung.key(activeProvider, activeCredential));
+                System.out.println("  " + (i + 1) + ". "
+                        + renderer.cyan(ai.kompile.cli.main.chat.config.FailoverConfigWizard.describe(rung))
+                        + (cooling > 0
+                        ? renderer.yellow("  cooling down " + (cooling / 1000) + "s") : ""));
+            }
+        }
+    }
+
+    /** Show the active model and, when a failover is in effect, what it switched from. */
+    private void showModelStatus(ChatConfig chatConfig) {
+        System.out.println(renderer.bold("  Model: ") + renderer.cyan(chatConfig.getModel())
+                + renderer.dim("  (" + chatConfig.getProvider() + ")"));
+        try {
+            SessionModelLadder ladder =
+                    SessionModelLadder.load(repl.getSessionId(), workingDirectoryOrDot());
+            ladder.activeRung().ifPresent(rung -> System.out.println(
+                    renderer.yellow("  Failover active: ")
+                            + renderer.cyan(rung.describe(chatConfig.getProvider()))
+                            + renderer.dim(" — the configured primary is unchanged;"
+                            + " /model ladder to edit.")));
+            if (!ladder.history().isEmpty()) {
+                SessionModelLadder.Swap last = ladder.history().get(ladder.history().size() - 1);
+                System.out.println(renderer.dim("  Last switch: " + last.from() + " → " + last.to()
+                        + " (" + last.reason() + ")"));
+            }
+        } catch (RuntimeException ignored) {
+            // Status is advisory; a broken ladder file must not fail the command.
+        }
+    }
+
 
     // ========================================================================
     // Multimodal attachment handling (/image, /file, /attach)
@@ -2751,6 +3219,7 @@ public class ChatCommandRouter {
                 descriptions.putIfAbsent(permissionKey, description);
             }
             descriptions.putIfAbsent("external_directory", "Access paths outside the working directory");
+            descriptions.putIfAbsent("hooks", "Configure and execute automatic tool-hook shell commands");
 
             List<String> permHeaders = List.of("Permission key", "Level", "Description");
             List<List<String>> permRows = new ArrayList<>();
@@ -2815,6 +3284,39 @@ public class ChatCommandRouter {
         }
 
         System.out.println(renderer.renderTodoList(todos));
+    }
+
+    /**
+     * Filtered /todos variants. "ongoing" = pending + in_progress (open work);
+     * "completed" and "canceled" map 1:1 to those statuses.
+     */
+    private void showTodosFiltered(String filter) {
+        List<TodoWriteTool.TodoItem> todos =
+                TodoWriteTool.getTodos(sessionId, repl.getWorkingDirectory());
+        if (todos.isEmpty()) {
+            System.out.println("No tasks in the current session.");
+            return;
+        }
+
+        List<TodoWriteTool.TodoItem> filtered = switch (filter) {
+            case "ongoing" -> todos.stream()
+                    .filter(t -> "pending".equals(t.status) || "in_progress".equals(t.status))
+                    .toList();
+            case "completed" -> todos.stream()
+                    .filter(t -> "completed".equals(t.status))
+                    .toList();
+            case "canceled" -> todos.stream()
+                    .filter(t -> "cancelled".equals(t.status))
+                    .toList();
+            default -> todos;
+        };
+
+        if (filtered.isEmpty()) {
+            System.out.println(renderer.dim("No " + filter + " tasks in the current session."));
+            return;
+        }
+
+        System.out.println(renderer.renderTodoList(filtered));
     }
 
     private void togglePlanMode(String arg) {
@@ -2902,11 +3404,11 @@ public class ChatCommandRouter {
                 int ctx = agenticLoop.resolvedContextWindowTokens();
                 statusMap.put("Vision", vision.isEmpty() ? renderer.dim("unknown")
                         : vision.get() ? renderer.green("supported") : renderer.dim("not supported"));
-                statusMap.put("Context window", String.format("%,d tokens", ctx));
+                boolean claudeCodeCompacts = agenticLoop.claudeCodeCompactsSession();
+                statusMap.put(claudeCodeCompacts ? "Context budget" : "Context window", String.format("%,d tokens", ctx));
                 // Kompile's history does not describe a Claude Code session: the
                 // session holds tool output the history never sees, and Claude Code
                 // compacts it without compacting the history.
-                boolean claudeCodeCompacts = agenticLoop.claudeCodeCompactsSession();
                 long used = claudeCodeCompacts ? agenticLoop.lastReportedInputTokens()
                         : Math.max(agenticLoop.estimateConversationTokens(),
                                 agenticLoop.lastReportedInputTokens());
@@ -3211,6 +3713,15 @@ public class ChatCommandRouter {
     }
 
     private void printAutoCompactStatus(ChatConfig config) {
+        if (agenticLoop.claudeCodeCompactsSession()) {
+            ChatCompleter.printAbove(renderer.cyan("  Auto-compaction: Claude Code managed"));
+            ChatCompleter.printAbove(renderer.dim("  " + agenticLoop.claudeCompactionPolicyDescription()));
+            ChatCompleter.printAbove(renderer.dim(String.format(Locale.ROOT,
+                    "  working context budget: %,d tokens (not an exact compaction trigger)",
+                    agenticLoop.contextWindowTokens())));
+            ChatCompleter.printAbove(renderer.dim("  Kompile on/off/threshold/context/output/reserve settings do not configure claude -p."));
+            return;
+        }
         String state = agenticLoop.autoCompactEnabled() ? "enabled" : "disabled";
         ChatCompleter.printAbove(renderer.cyan("  Auto-compaction: ") + state);
         ChatCompleter.printAbove(renderer.dim("  strategy: "

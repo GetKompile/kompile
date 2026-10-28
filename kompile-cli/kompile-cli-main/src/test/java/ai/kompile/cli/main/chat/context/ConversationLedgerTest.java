@@ -143,6 +143,33 @@ class ConversationLedgerTest {
     }
 
     @Test
+    void measuredNativeContextRoundTripsWithItsVersionedReceipt() {
+        String sessionId = "ledger-native-context-" + UUID.randomUUID();
+        var ledger = new ConversationLedger(JsonUtils.standardMapper());
+        ledger.configureSession(sessionId);
+        ledger.append(CompactionService.ConversationEntry.user("request"));
+        var usage = new ConversationLedger.NativeContextUsage("claude-test", 80_000, 12, 200_000, 32_000);
+        ledger.recordNativeSession("claude-cli", "native-1", "digest", usage);
+
+        var restarted = new ConversationLedger(JsonUtils.standardMapper());
+        restarted.configureSession(sessionId);
+        assertEquals(usage, restarted.resumableNativeSession("claude-cli").contextUsage());
+        restarted.recordNativeSession("claude-cli", "replacement", "digest");
+        assertNull(restarted.resumableNativeSession("claude-cli").contextUsage(),
+                "a replacement without a measurement must not inherit the old native context");
+    }
+
+    @Test
+    void legacyNativeReceiptWithoutContextMetadataStillDeserializes() throws Exception {
+        var saved = JsonUtils.standardMapper().readValue("""
+                {"transport":"claude-cli","sessionId":"old-native","syncedVersion":2,
+                 "instructionsDigest":"digest","updatedAt":"2026-10-19T00:00:00Z"}
+                """, ConversationLedger.NativeSession.class);
+        assertEquals("old-native", saved.sessionId());
+        assertNull(saved.contextUsage(), "legacy receipts have unknown usage, not fabricated counts");
+    }
+
+    @Test
     void compactionEndsTheRecordedNativeSession() throws Exception {
         String sessionId = "ledger-native-compaction-" + UUID.randomUUID();
         Path stateFile = contextFile(sessionId);

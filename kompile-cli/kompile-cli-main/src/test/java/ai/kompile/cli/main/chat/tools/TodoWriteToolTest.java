@@ -12,6 +12,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -179,6 +181,197 @@ class TodoWriteToolTest {
         ToolResult result = tool.execute(params, context);
         assertTrue(result.isError());
         assertTrue(result.getOutput().contains("Task not found"));
+    }
+
+    @Test
+    void testAddStampsCreatedAt() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "add");
+        params.put("subject", "Timestamped task");
+        tool.execute(params, context);
+
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workDir);
+        assertEquals(1, todos.size());
+        assertNotNull(todos.get(0).createdAt, "createdAt must be set on add");
+        assertDoesNotThrow(() -> java.time.Instant.parse(todos.get(0).createdAt),
+                "createdAt must be an ISO-8601 instant");
+        // A fresh item has no mutation yet.
+        assertNull(todos.get(0).updatedAt);
+    }
+
+    @Test
+    void testUpdateStampsUpdatedAtAndPreservesCreatedAt() throws Exception {
+        ObjectNode addParams = om.createObjectNode();
+        addParams.put("action", "add");
+        addParams.put("subject", "Task to update");
+        tool.execute(addParams, context);
+        TodoWriteTool.TodoItem added = TodoWriteTool.getTodos(sessionId, workDir).get(0);
+        String createdAt = added.createdAt;
+        assertNotNull(createdAt);
+
+        ObjectNode updateParams = om.createObjectNode();
+        updateParams.put("action", "update");
+        updateParams.put("task_id", added.id);
+        updateParams.put("status", "completed");
+        tool.execute(updateParams, context);
+
+        TodoWriteTool.TodoItem updated = TodoWriteTool.getTodos(sessionId, workDir).get(0);
+        assertEquals("completed", updated.status);
+        assertEquals(createdAt, updated.createdAt, "createdAt must survive updates");
+        assertNotNull(updated.updatedAt, "updatedAt must be stamped on status change");
+        assertDoesNotThrow(() -> java.time.Instant.parse(updated.updatedAt));
+    }
+
+    @Test
+    void testSetPreservesCreatedAtForExistingTasks() throws Exception {
+        ObjectNode addParams = om.createObjectNode();
+        addParams.put("action", "add");
+        addParams.put("subject", "Original");
+        tool.execute(addParams, context);
+        TodoWriteTool.TodoItem original = TodoWriteTool.getTodos(sessionId, workDir).get(0);
+
+        // set replaces subject of the existing task but must keep its creation time
+        ObjectNode setParams = om.createObjectNode();
+        setParams.put("action", "set");
+        ArrayNode todos = setParams.putArray("todos");
+        ObjectNode item = todos.addObject();
+        item.put("id", original.id);
+        item.put("subject", "Renamed");
+        item.put("status", "completed");
+        tool.execute(setParams, context);
+
+        TodoWriteTool.TodoItem after = TodoWriteTool.getTodos(sessionId, workDir).get(0);
+        assertEquals("Renamed", after.subject);
+        assertEquals(original.createdAt, after.createdAt, "set must retain createdAt");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"update", "set", "batch"})
+    void fieldOnlyMutationsRefreshModelProvenance(String action) throws Exception {
+        for (String field : List.of("subject", "task_description", "priority", "status")) {
+            ObjectNode before = seedTimestampedTask(true);
+            String value = switch (field) {
+                case "subject" -> "Renamed";
+                case "task_description" -> ""; // Clearing a description is also a real edit.
+                case "priority" -> "high";
+                default -> "completed";
+            };
+            ToolResult result = mutateTask(action, field, value);
+            assertFalse(result.isError(), result.getOutput());
+            JsonNode persisted = om.readTree(TodoWriteTool.sessionTodoPath(sessionId).toFile())
+                    .path("todos").get(0);
+            assertEquals("model", persisted.path("updated_by").asText(), action + ": " + field);
+            String updatedAt = persisted.path("updated_at").asText();
+            assertTrue(java.time.Instant.parse(updatedAt).isAfter(
+                    java.time.Instant.parse(before.path("updated_at").asText())), action + ": " + field);
+            ObjectNode expected = before.deepCopy();
+            expected.put("task_description".equals(field) ? "description" : field, value);
+            expected.put("updated_by", "model").put("updated_at", updatedAt);
+            assertEquals(expected, persisted, action + ": " + field);
+            JsonNode snapshot = om.valueToTree(result.getMetadata().get(TodoWriteTool.TASKS_METADATA));
+            TodoWriteTool.TodoItem reloaded = TodoWriteTool.getTodos(sessionId, workDir).get(0);
+            assertEquals(om.valueToTree(reloaded), snapshot.get(0));
+            assertEquals(before.path("created_at").asText(), reloaded.createdAt);
+            assertEquals(updatedAt, reloaded.updatedAt);
+            assertEquals("model", reloaded.updatedBy);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"update", "set", "batch"})
+    void unchangedMutationsPreserveProvenance(String action) throws Exception {
+        for (boolean previouslyUpdated : List.of(false, true)) {
+            for (String field : List.of("subject", "task_description", "priority", "status")) {
+                ObjectNode before = seedTimestampedTask(previouslyUpdated);
+                String value = before.path("task_description".equals(field) ? "description" : field).asText();
+                ToolResult result = mutateTask(action, field, value);
+                assertFalse(result.isError(), result.getOutput());
+                JsonNode persisted = om.readTree(TodoWriteTool.sessionTodoPath(sessionId).toFile())
+                        .path("todos").get(0);
+                assertEquals(before, persisted, action + ": " + field + ", updated=" + previouslyUpdated);
+            }
+        }
+    }
+
+    @Test
+    void legacyUpdateBackfillsTimestampsWithoutClaimingAContentChange() throws Exception {
+        ObjectNode legacy = seedTimestampedTask(false);
+        legacy.remove("created_at");
+        persistTask(legacy);
+        ToolResult result = mutateTask("update", "subject", "Original");
+        assertFalse(result.isError(), result.getOutput());
+        TodoWriteTool.TodoItem item = TodoWriteTool.getTodos(sessionId, workDir).get(0);
+        assertDoesNotThrow(() -> java.time.Instant.parse(item.createdAt));
+        assertEquals(item.createdAt, item.updatedAt);
+        assertNull(item.updatedBy, "Backfill alone must not claim a model content change");
+    }
+
+    @Test
+    void harnessMutationSharesProvenanceAndNoopKeepsIt() throws Exception {
+        ObjectNode before = seedTimestampedTask(true);
+        var mutation = new TodoWriteTool.HarnessMutation(sessionId, TodoWriteTool.HarnessMutationKind.AUTO_START_FIRST);
+        var result = TodoWriteTool.applyHarnessMutation(mutation, workDir);
+        assertTrue(result.applied(), result.reason());
+        TodoWriteTool.TodoItem item = result.todos().get(0);
+        assertEquals("in_progress", item.status);
+        assertEquals("harness", item.updatedBy);
+        assertEquals(before.path("created_at").asText(), item.createdAt);
+        assertTrue(java.time.Instant.parse(item.updatedAt).isAfter(
+                java.time.Instant.parse(before.path("updated_at").asText())));
+        JsonNode saved = om.readTree(TodoWriteTool.sessionTodoPath(sessionId).toFile()).path("todos");
+        assertFalse(TodoWriteTool.applyHarnessMutation(mutation, workDir).applied());
+        assertEquals(saved, om.readTree(TodoWriteTool.sessionTodoPath(sessionId).toFile()).path("todos"));
+    }
+
+    private ObjectNode seedTimestampedTask(boolean previouslyUpdated) throws Exception {
+        ObjectNode item = om.createObjectNode().put("id", "1").put("subject", "Original")
+                .put("description", "Details").put("status", "pending").put("priority", "medium")
+                .put("created_at", "2000-01-01T00:00:00Z");
+        if (previouslyUpdated) item.put("updated_at", "2001-01-01T00:00:00Z").put("updated_by", "harness");
+        persistTask(item);
+        return item;
+    }
+
+    private void persistTask(ObjectNode item) throws Exception {
+        Path file = TodoWriteTool.sessionTodoPath(sessionId);
+        Files.createDirectories(file.getParent());
+        ObjectNode root = om.createObjectNode();
+        root.putArray("todos").add(item);
+        Files.writeString(file, om.writeValueAsString(root));
+    }
+
+    private ToolResult mutateTask(String action, String field, String value) throws Exception {
+        ObjectNode request = om.createObjectNode();
+        if ("set".equals(action)) {
+            request.put("action", "set");
+            ObjectNode item = request.putArray("todos").addObject().put("id", "1");
+            // Exercise the set-only content alias as well as subject updates.
+            item.put("content", "subject".equals(field) ? value : "Original");
+            if (!"subject".equals(field)) item.put(field, value);
+        } else {
+            request.put("action", "update").put("task_id", "1").put(field, value);
+        }
+        if ("batch".equals(action)) {
+            ObjectNode batch = om.createObjectNode();
+            batch.putArray("operations").add(request);
+            return tool.executeBatch(batch, context);
+        }
+        return tool.execute(request, context);
+    }
+
+    @Test
+    void testCreatedAtRoundTripsThroughPersistence() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "add");
+        params.put("subject", "Persisted task");
+        tool.execute(params, context);
+
+        // Read straight from the JSON file to confirm created_at is persisted
+        Path file = TodoWriteTool.sessionTodoPath(sessionId);
+        JsonNode root = om.readTree(file.toFile());
+        JsonNode first = root.path("todos").get(0);
+        assertTrue(first.hasNonNull("created_at"), "created_at must be persisted");
+        assertDoesNotThrow(() -> java.time.Instant.parse(first.get("created_at").asText()));
     }
 
     @Test

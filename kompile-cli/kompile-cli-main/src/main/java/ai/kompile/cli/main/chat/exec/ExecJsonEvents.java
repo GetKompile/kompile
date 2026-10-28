@@ -146,6 +146,13 @@ public final class ExecJsonEvents {
                 n.put("call_id", event.callId());
                 n.put("name", event.toolName());
                 if (!event.rawInput().isBlank()) n.put("input", event.rawInput());
+                if (event.data() != null && event.data().isObject()) n.set("detail", event.data());
+            }
+            case TOOL_OUTPUT -> {
+                n.put("type", "tool_output");
+                n.put("call_id", event.callId());
+                n.put("name", event.toolName());
+                if (event.data() != null && event.data().isObject()) n.set("detail", event.data());
             }
             case TOOL_COMPLETED -> {
                 n.put("type", "tool");

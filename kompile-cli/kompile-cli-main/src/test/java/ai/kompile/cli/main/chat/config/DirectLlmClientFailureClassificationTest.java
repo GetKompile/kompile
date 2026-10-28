@@ -323,7 +323,7 @@ class DirectLlmClientFailureClassificationTest {
             assertEquals(kind, result.failureKind, result.text);
             assertTrue(result.toolCalls.isEmpty());
             assertFalse(result.text.contains("auth login"));
-            assertEquals(1, fixture.requests.get());
+            assertEquals(kind == TRUNCATED ? POLICY.maxAttempts() : 1, fixture.requests.get());
             assertEquals(0, fixture.refreshes.get());
         }
     }

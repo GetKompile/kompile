@@ -145,7 +145,7 @@ public final class AgentLaunchDefaults {
                 arguments.add("-c");
                 arguments.add("model_reasoning_effort=\"" + escapeToml(selectedThinking) + "\"");
             }
-            case "claude" -> {
+            case "claude", "agy" -> {
                 arguments.add("--effort");
                 arguments.add(selectedThinking);
             }
@@ -176,6 +176,7 @@ public final class AgentLaunchDefaults {
             case "codex" -> List.of("resume", id);
             case "claude", "qwen", "gemini" -> List.of("--resume", id);
             case "opencode", "pi" -> List.of("--session", id);
+            case "agy" -> List.of("--conversation", id);
             default -> List.of();
         };
     }

@@ -20,6 +20,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ClaudeCliStreamParserTest {
 
     @Test
+    void sparseAggregateCannotReplaceTheCachedInputOfTheSameRequest() {
+        var parser = new ClaudeCliStreamParser();
+        parser.parse("""
+                {"type":"stream_event","event":{"type":"message_start","message":{"id":"main-1","usage":{"input_tokens":7000,"cache_read_input_tokens":190000}}}}
+                """.strip());
+        parser.parse("""
+                {"type":"assistant","message":{"id":"main-1","usage":{"input_tokens":7000,"output_tokens":23000},"content":[]}}
+                """.strip());
+        var complete = (ClaudeCliStreamParser.TurnComplete) parser.parse("""
+                {"type":"result","subtype":"success","usage":{"input_tokens":7000,"output_tokens":23000}}
+                """.strip()).get(0);
+        assertEquals(197000, complete.contextTokens(), "last input includes cache, not output or summed billing");
+        var boundary = (ClaudeCliStreamParser.Compacted) parser.parse("""
+                {"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":220000}}
+                """.strip()).get(0);
+        assertEquals(220000, boundary.preTokens(), "native pre_tokens is not the previous request's input");
+        complete = (ClaudeCliStreamParser.TurnComplete) parser.parse("""
+                {"type":"result","subtype":"success"}
+                """.strip()).get(0);
+        assertEquals(0, complete.contextTokens(), "the boundary invalidates the old measurement");
+        parser.parse("""
+                {"type":"stream_event","event":{"type":"message_start","message":{"id":"main-2","usage":{"input_tokens":4000,"cache_creation_input_tokens":8000}}}}
+                """.strip());
+        complete = (ClaudeCliStreamParser.TurnComplete) parser.parse("""
+                {"type":"result","subtype":"success"}
+                """.strip()).get(0);
+        assertEquals(12000, complete.contextTokens(), "a new request must not inherit the old cached prefix");
+    }
+
+    @Test
     void streamsTextAndThinkingOnceWhenAggregateMessageFollows() {
         ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
         List<ClaudeCliStreamParser.Event> events = new ArrayList<>();
@@ -237,7 +267,10 @@ class ClaudeCliStreamParserTest {
                 new ClaudeCliStreamParser.RequestUsage(3, "msg-1", true,
                         new ClaudeCliStreamParser.TokenCounts(0, 30, 0, 0)),
                 new ClaudeCliStreamParser.RequestUsage(4, "msg-sub", false,
-                        new ClaudeCliStreamParser.TokenCounts(900, 5, 0, 0))), events);
+                        new ClaudeCliStreamParser.TokenCounts(900, 5, 0, 0))), events.stream()
+                .filter(event -> !(event instanceof ClaudeCliStreamParser.SubagentEvent)).toList());
+        assertEquals(2, events.stream().filter(ClaudeCliStreamParser.SubagentEvent.class::isInstance).count(),
+                "child snapshots also reach the child viewer, not parent billing");
     }
 
     @Test
@@ -291,7 +324,8 @@ class ClaudeCliStreamParserTest {
         assertEquals(List.of(new ClaudeCliStreamParser.ToolInputDelta("{\"file_path\": "),
                         new ClaudeCliStreamParser.ToolInputDelta("\"/tmp/a\"}")),
                 events.stream().filter(ClaudeCliStreamParser.ToolInputDelta.class::isInstance).toList());
-        assertEquals(List.of(), parser.parse("""
+        assertEquals(List.of(new ClaudeCliStreamParser.SubagentEvent("toolu_task",
+                new ClaudeCliStreamParser.ToolInputDelta("{}"))), parser.parse("""
                 {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}},"parent_tool_use_id":"toolu_task"}"""),
                 "a subagent's stream events are not the main thread's");
     }

@@ -802,9 +802,9 @@ public class VlmDocumentPipeline implements OcrPipeline {
 
     @Override
     public List<ParsedDocument> processPdf(InputStream pdfStream, String sourceId) {
+        File tempFile = null;
         try {
-            File tempFile = File.createTempFile("vlm_", ".pdf");
-            tempFile.deleteOnExit();
+            tempFile = File.createTempFile("vlm_", ".pdf");
             java.nio.file.Files.copy(pdfStream, tempFile.toPath(),
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
 
@@ -820,6 +820,11 @@ public class VlmDocumentPipeline implements OcrPipeline {
             List<ParsedDocument> results = new ArrayList<>();
             results.add(ParsedDocument.failed(sourceId, 0, e.getMessage()));
             return results;
+        } finally {
+            if (tempFile != null && !tempFile.delete() && tempFile.exists()) {
+                tempFile.deleteOnExit();
+                logger.warn("Failed to delete VLM PDF staging file {}", tempFile);
+            }
         }
     }
 

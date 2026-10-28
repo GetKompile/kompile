@@ -23,7 +23,11 @@ class KclawCommandSecurityTest {
     @Test
     void attachesManagedBearerAndMutationProof() throws Exception {
         String originalHome = System.getProperty("user.home");
+        String originalDataDir = System.getProperty("kompile.data.dir");
         System.setProperty("user.home", tempDir.toString());
+        // The credential loader prefers <resolved-project>/config over user.home;
+        // pin the project dir to the temp home or a real repo-level token wins.
+        System.setProperty("kompile.data.dir", tempDir.toString());
         try {
             Path token = tempDir.resolve(".kompile/config/channel-admin.token");
             Files.createDirectories(token.getParent());
@@ -35,7 +39,10 @@ class KclawCommandSecurityTest {
             assertEquals(TOKEN, request.headers().firstValue(ChannelControlHeaders.TOKEN_HEADER).orElseThrow());
             assertEquals("1", request.headers().firstValue(ChannelControlHeaders.REQUEST_HEADER).orElseThrow());
         } finally {
-            System.setProperty("user.home", originalHome);
+            if (originalHome == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", originalHome);
+            if (originalDataDir == null) System.clearProperty("kompile.data.dir");
+            else System.setProperty("kompile.data.dir", originalDataDir);
         }
     }
 

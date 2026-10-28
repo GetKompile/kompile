@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.config;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.oauth.ClaudeCodeOAuthFlow;
 import ai.kompile.cli.main.auth.oauth.CredentialFailure;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
@@ -117,13 +118,15 @@ public class ChatConfig {
 
     /** Poll at request boundaries so auth login in another process reaches this chat. */
     private synchronized void applySessionSelection() throws IOException {
-        if (observedSessionSelections == null || provider == null) return;
-        String key = provider.toLowerCase(java.util.Locale.ROOT);
+        String key = credentialProvider();
+        if (observedSessionSelections == null || key == null) return;
         CredentialStore.SessionSelection selection = CredentialStore.create().sessionSelections().get(key);
         if (selection == null || selection.equals(observedSessionSelections.get(key))) return;
         credentialNames.put(key, selection.credentialName());
         apiKey = null;
-        authenticationMethod = null; // Resolve the selected account's API-key/OAuth route, not the old one.
+        // Resolve the selected account's API-key/OAuth route, not the old one. A
+        // Claude Code credential is a setup token, so that route stays its OAuth route.
+        authenticationMethod = isClaudeCliNative() ? "oauth" : null;
         // Save only this chat's configuration; never rewrite another session or its model settings.
         if (sessionSettingsPath != null) saveLoadedOrGlobal();
         observedSessionSelections.put(key, selection);
@@ -135,14 +138,25 @@ public class ChatConfig {
             throw new IllegalArgumentException("Authentication scope must be session or global");
         authenticationScope = scope;
     }
+    /**
+     * The credential-store provider whose named credentials this route selects:
+     * the Claude Code route selects {@code claude-code} setup tokens, every other
+     * route its own provider's credentials. Set the authentication method before
+     * the credential name, since the name is kept per store provider.
+     */
+    @JsonIgnore
+    public String credentialProvider() {
+        if (provider == null) return null;
+        return isClaudeCliNative() ? ClaudeCodeOAuthFlow.PROVIDER_ID : provider.toLowerCase(java.util.Locale.ROOT);
+    }
     @JsonIgnore
     public String getCredentialName() {
         return "global".equals(authenticationScope) || provider == null ? null
-                : credentialNames.get(provider.toLowerCase(java.util.Locale.ROOT));
+                : credentialNames.get(credentialProvider());
     }
     public void setCredentialName(String name) {
         if (provider == null) throw new IllegalStateException("Select a provider first");
-        String key = provider.toLowerCase(java.util.Locale.ROOT);
+        String key = credentialProvider();
         // An explicit session choice made after a broadcast wins over that broadcast.
         if (observedSessionSelections != null) {
             try {
@@ -160,10 +174,9 @@ public class ChatConfig {
 
     void pinActiveCredential(java.util.function.Function<String, String> environment) throws IOException {
         if (!"session".equals(authenticationScope) || provider == null || getCredentialName() != null
-                || "none".equalsIgnoreCase(authenticationMethod) || "native".equalsIgnoreCase(authenticationMethod)
-                || isClaudeCliNative()) return;
+                || "none".equalsIgnoreCase(authenticationMethod) || "native".equalsIgnoreCase(authenticationMethod)) return;
         CredentialStore store = CredentialStore.create();
-        String name = store.defaultCredentialName(provider);
+        String name = store.defaultCredentialName(credentialProvider());
         if (name == null && !"oauth".equalsIgnoreCase(authenticationMethod)) {
             String variable = getEnvironmentVariable(provider);
             String key = variable == null ? null : environment.apply(variable);
@@ -203,10 +216,10 @@ public class ChatConfig {
         saveLoadedOrGlobal();
     }
 
-    /** Provider cache preference: none, short, or long. Defaults to short-lived caching. */
+    /** Provider cache preference: none, short, or long. Defaults to extended (long) caching. */
     @JsonProperty
     private String promptCacheRetention =
-            ProviderPromptCacheCapabilities.Retention.SHORT.wireValue();
+            ProviderPromptCacheCapabilities.Retention.LONG.wireValue();
 
     /** Provider-neutral automatic context compaction policy. */
     @JsonProperty
@@ -364,8 +377,8 @@ public class ChatConfig {
     public OAuthProviderFlow.RequestAuth resolveRequestAuth() {
         if ("none".equalsIgnoreCase(authenticationMethod)
                 || "native".equalsIgnoreCase(authenticationMethod)
-                // The claude CLI route: the user's Claude Code login is the
-                // credential and Kompile never resolves one for it.
+                // The claude CLI route sends no HTTP request: its selected setup
+                // token is resolved by resolveClaudeCodeToken() for the claude process.
                 || isClaudeCliNative()) {
             return null;
         }
@@ -411,7 +424,36 @@ public class ChatConfig {
         return null;
     }
 
-    private static final String ANTHROPIC_ROUTE_GUIDANCE = "The Anthropic API-key route has no API key: "
+    /**
+     * The setup token of the Claude Code credential this chat selected, which the
+     * claude process gets as CLAUDE_CODE_OAUTH_TOKEN: the session's pinned
+     * credential, else the session default, else the global active one, the same
+     * order {@link #resolveRequestAuth()} uses for other vendors. Null on Claude
+     * Code's own login or when no setup token is stored. A selected credential
+     * that is gone or expired fails closed rather than falling back to another login.
+     */
+    @JsonIgnore
+    public String resolveClaudeCodeToken() {
+        if (!isClaudeCliNative() || !"oauth".equalsIgnoreCase(authenticationMethod)) return null;
+        try {
+            applySessionSelection();
+            String selectedName = getCredentialName();
+            if (selectedName == null && "session".equals(authenticationScope)) {
+                selectedName = CredentialStore.create().defaultCredentialName(ClaudeCodeOAuthFlow.PROVIDER_ID);
+            }
+            OAuthProviderFlow.RequestAuth stored = OAuthCredentialManager.create()
+                    .resolve(ClaudeCodeOAuthFlow.PROVIDER_ID, ManagedCredential.OAUTH, selectedName);
+            if (stored == null && selectedName != null) {
+                throw new AuthenticationException(provider, "Claude Code credential '" + selectedName
+                        + "' is not a setup token; choose another with /auth or sign in again");
+            }
+            return stored == null ? null : stored.token();
+        } catch (IOException e) {
+            throw new AuthenticationException(provider, e);
+        }
+    }
+
+    private static final String ANTHROPIC_ROUTE_GUIDANCE ="The Anthropic API-key route has no API key: "
             + "add one with `kompile auth login anthropic` or set ANTHROPIC_API_KEY. To use your Claude Code "
             + "login instead, choose the Claude Code route (/model, the setup wizard, or --auth oauth).";
 
@@ -515,7 +557,7 @@ public class ChatConfig {
     public List<String> getConfiguredModels(String provider) {
         boolean sameProvider = provider != null && provider.equalsIgnoreCase(this.provider);
         if (sameProvider && isClaudeCliNative()) {
-            return ModelDiscoveryHttp.discoverClaudeCliResult().models().stream()
+            return ModelDiscoveryHttp.discoverClaudeCliResult(this).models().stream()
                     .map(LiveModelDiscovery.Model::id)
                     .toList();
         }
@@ -848,9 +890,11 @@ public class ChatConfig {
      * (subscription/OAuth route). Same vendor as the direct HTTP route;
      * {@code isAnthropicFormat()} stays false here because the CLI owns the
      * credentials and the wire protocol is Claude Code stream-json, not the
-     * Anthropic Messages API. The user manages the credential with Claude Code
-     * (`claude auth login`); only the separate read-only /usage lookup reads its
-     * file-store access token, without importing or refreshing it.
+     * Anthropic Messages API. The claude process runs on the chat's selected
+     * setup token ({@link #resolveClaudeCodeToken()}, set as CLAUDE_CODE_OAUTH_TOKEN)
+     * or on Claude Code's own login; only the
+     * separate read-only /usage lookup reads that login's file-store access token,
+     * without importing or refreshing it.
      */
     @JsonIgnore
     public boolean isClaudeCliNative() {

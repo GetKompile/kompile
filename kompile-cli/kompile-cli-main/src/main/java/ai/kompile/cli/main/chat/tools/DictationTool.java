@@ -152,41 +152,55 @@ public class DictationTool implements CliTool {
     }
 
     private ToolResult recordAndTranscribe(String sttCmd, int durationSeconds, ToolContext context) {
-        String tmpWav = System.getProperty("java.io.tmpdir") + "/kompile-dictation-" + System.currentTimeMillis() + ".wav";
-
+        File recording = null;
+        Process recProc = null;
         try {
-            // Try recording with arecord first, then sox
-            String recordCmd;
+            recording = File.createTempFile("kompile-dictation-", ".wav");
+            String tmpWav = recording.getAbsolutePath();
+            List<String> recordCmd;
             if (checkCommand("arecord")) {
-                recordCmd = "arecord -f cd -t wav -d " + durationSeconds + " " + tmpWav;
+                recordCmd = List.of("arecord", "-f", "cd", "-t", "wav", "-d", String.valueOf(durationSeconds), tmpWav);
             } else if (checkCommand("sox")) {
-                recordCmd = "rec -r 16000 -c 1 " + tmpWav + " trim 0 " + durationSeconds;
+                recordCmd = List.of("rec", "-r", "16000", "-c", "1", tmpWav, "trim", "0", String.valueOf(durationSeconds));
             } else if (checkCommand("ffmpeg")) {
-                recordCmd = "ffmpeg -f pulse -i default -t " + durationSeconds + " -y " + tmpWav;
+                recordCmd = List.of("ffmpeg", "-f", "pulse", "-i", "default", "-t", String.valueOf(durationSeconds), "-y", tmpWav);
             } else {
                 return ToolResult.error("No recording tool found. Install arecord, sox, or ffmpeg.");
             }
 
-            // Record
-            Process recProc = Runtime.getRuntime().exec(new String[]{"sh", "-c", recordCmd});
+            recProc = new ProcessBuilder(recordCmd).start();
             boolean finished = recProc.waitFor(durationSeconds + 5, java.util.concurrent.TimeUnit.SECONDS);
             if (!finished) {
-                recProc.destroyForcibly();
                 return ToolResult.error("Recording timed out");
             }
+            if (recProc.exitValue() != 0) {
+                return ToolResult.error("Recording failed (exit " + recProc.exitValue() + ")");
+            }
 
-            // Transcribe
-            return transcribeFile(sttCmd, tmpWav, context);
+            ToolResult result = transcribeFile(sttCmd, tmpWav, context);
+            // Only caller-owned transcribe inputs remain available after this operation.
+            Map<String, Object> metadata = new LinkedHashMap<>(result.getMetadata());
+            metadata.remove("audio_file");
+            return new ToolResult(result.getTitle(), result.getOutput(), metadata, result.isError());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return ToolResult.error("Recording interrupted");
         } catch (Exception e) {
             return ToolResult.error("Recording failed: " + e.getMessage());
+        } finally {
+            stopProcess(recProc);
+            if (recording != null && !recording.delete() && recording.exists()) {
+                recording.deleteOnExit();
+            }
         }
     }
 
     private ToolResult transcribeFile(String sttCmd, String audioFile, ToolContext context) {
+        Process proc = null;
         try {
-            // Build transcription command
-            String fullCmd = sttCmd + " " + audioFile;
-            Process proc = Runtime.getRuntime().exec(new String[]{"sh", "-c", fullCmd});
+            // The command is configurable shell syntax; quote only the input path.
+            String fullCmd = sttCmd + " '" + audioFile.replace("'", "'\"'\"'") + "'";
+            proc = new ProcessBuilder("sh", "-c", fullCmd).start();
             boolean finished = proc.waitFor(DEFAULT_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
             if (!finished) {
                 proc.destroyForcibly();
@@ -206,8 +220,24 @@ public class DictationTool implements CliTool {
 
             return ToolResult.success("dictation: transcribed", stdout,
                 Map.of("audio_file", audioFile, "length", stdout.length()));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return ToolResult.error("Transcription interrupted");
         } catch (Exception e) {
             return ToolResult.error("Transcription failed: " + e.getMessage());
+        } finally {
+            stopProcess(proc);
+        }
+    }
+
+    private static void stopProcess(Process process) {
+        if (process == null || !process.isAlive()) return;
+        process.descendants().forEach(child -> child.destroyForcibly());
+        process.destroyForcibly();
+        try {
+            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

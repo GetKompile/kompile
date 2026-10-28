@@ -41,7 +41,7 @@ class CliAgentRegistryTest {
                 .collect(Collectors.toMap(AgentProvider::getCommand, Function.identity()));
 
         assertTrue(byCommand.keySet().containsAll(List.of(
-                "claude", "codex", "gemini", "opencode", "qwen", "pi")));
+                "claude", "codex", "gemini", "opencode", "pi")));
 
         AgentProvider codex = byCommand.get("codex");
         assertNotNull(codex);
@@ -77,7 +77,7 @@ class CliAgentRegistryTest {
         Set<String> commands = providers.stream()
                 .map(AgentProvider::getCommand)
                 .collect(Collectors.toSet());
-        assertEquals(Set.of("claude", "codex", "gemini", "opencode", "qwen", "pi"), commands);
+        assertEquals(Set.of("claude", "codex", "gemini", "opencode", "pi", "agy"), commands);
 
         List<AgentProvider> defaults = providers.stream()
                 .filter(AgentProvider::isDefault)

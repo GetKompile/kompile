@@ -24,6 +24,39 @@ class ToolCallJsonTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Test
+    void providerToolPreviewsUpdateArgumentsAndBoundAccumulatedOutput() {
+        StringBuilder output = new StringBuilder();
+        JsonNode first = HeadlessAgentRunner.runningToolDetail(mapper, "Bash", "{}", output, "compiling\n");
+        assertEquals("compiling", only(only(first.path("sections")).path("runs")).path("text").asText());
+        JsonNode updated = HeadlessAgentRunner.runningToolDetail(mapper, "Bash", "{\"command\":\"build\"}", output, "linking");
+        assertTrue(updated.path("action").asText().contains("build"));
+        assertEquals("compiling\nlinking", only(only(updated.path("sections")).path("runs")).path("text").asText());
+        JsonNode bounded = HeadlessAgentRunner.runningToolDetail(mapper, "Bash", "{}", output, "x".repeat(100_000));
+        assertEquals(65_536, output.length());
+        assertTrue(bounded.toString().length() < 5000);
+        assertTrue(only(bounded.path("sections")).has("note"));
+    }
+
+    @Test
+    void todoSnapshotsUseTheTerminalTaskListRatherThanRawJson() {
+        String tasks = "{\"todos\":[{\"id\":\"1\",\"subject\":\"Build <app>\",\"status\":\"completed\"},"
+                + "{\"id\":\"2\",\"subject\":\"Test it\",\"status\":\"in_progress\"}]}";
+        ToolResult result = ToolResult.success(tasks);
+        JsonNode section = only(ToolCallJson.detail(mapper, "mcp__kompile__todoread", "{}", result).path("sections"));
+        assertEquals("tasks", section.path("label").asText());
+        String body = only(section.path("runs")).path("text").asText();
+        assertEquals(new TerminalRenderer(false).renderToolResultDetail("mcp__kompile__todoread", "{}", result), body);
+        assertTrue(body.contains("Tasks [1/2]"));
+        assertTrue(body.contains("Build <app>"));
+        assertTrue(body.contains("Test it"));
+        assertFalse(body.contains("\"todos\""));
+        assertFalse(body.contains("\u001b"));
+        JsonNode failed = ToolCallJson.detail(mapper, "todoread", "{}", ToolResult.error("No permission"));
+        assertEquals("output", only(failed.path("sections")).path("label").asText());
+        assertEquals("No permission", failed.path("error").asText());
+    }
+
+    @Test
     void readCarriesTheTerminalRowAndOneHighlightedRun() {
         String input = "{\"file_path\":\"src/main/java/App.java\"}";
         ToolResult result = ToolResult.success("src/main/java/App.java",

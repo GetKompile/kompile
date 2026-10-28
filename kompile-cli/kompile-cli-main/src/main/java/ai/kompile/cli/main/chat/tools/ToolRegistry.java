@@ -264,6 +264,17 @@ public class ToolRegistry {
         return id != null && productAllows(id) ? tools.get(id) : null;
     }
 
+    /** Execute at the host boundary without changing tool identity or product authority. */
+    public ToolResult execute(String id, com.fasterxml.jackson.databind.JsonNode params, ToolContext context)
+            throws ToolExecutionException {
+        CliTool tool = get(id);
+        if (tool == null) return ToolResult.error("Unknown or unavailable tool: " + id);
+        // Product personas deliberately have no generic shell execution authority.
+        if (productGuards) return tool.execute(params, context);
+        return ai.kompile.cli.main.chat.hooks.HookExecutor.execute(id, params, context,
+                input -> tool.execute(input, context));
+    }
+
     public Collection<CliTool> all() {
         return Collections.unmodifiableCollection(tools.values());
     }

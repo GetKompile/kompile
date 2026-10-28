@@ -543,6 +543,7 @@ public final class HeadlessAgentRunner {
         loop.setWorkflowGlobalEnabled(
                 HarnessConfig.load(mapper).isJudgeGlobalEnabled());
         loop.configureConversationSession(opts.sessionId());
+        loop.setCoordinationManager(coordinationManager);
         if (!serverMode && !opts.attachments().isEmpty()) {
             loop.setPendingAttachments(opts.attachments());
         }
@@ -581,21 +582,45 @@ public final class HeadlessAgentRunner {
         // ── Ordered tool lifecycle events ───────────────────────────────────
         final ToolEventCounter toolCounter = new ToolEventCounter();
         Map<String, Long> toolStarts = new ConcurrentHashMap<>();
+        Map<String, StringBuilder> toolOutput = new ConcurrentHashMap<>();
         Map<String, ai.kompile.cli.common.chat.sources.ProductDisplayTurn.ToolPresentation> productPresentations = new LinkedHashMap<>();
         loop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
             @Override
             public void onToolStart(String callId, String toolName, String rawInput) {
-                toolStarts.put(callId == null ? "" : callId, System.currentTimeMillis());
-                events.publish(HeadlessRunEvent.toolStarted(opts.sessionId(), callId, toolName, rawInput));
+                String key = callId == null ? "" : callId;
+                toolStarts.put(key, System.currentTimeMillis());
+                toolOutput.put(key, new StringBuilder());
+                events.publish(HeadlessRunEvent.toolStarted(opts.sessionId(), callId, toolName, rawInput,
+                        toolDetail(mapper, toolName, rawInput, ToolResult.success(""))));
+            }
+
+            @Override
+            public void onToolInput(String callId, String toolName, String rawInput) {
+                onToolOutput(callId, toolName, rawInput, null);
+            }
+
+            @Override
+            public void onToolOutput(String callId, String toolName, String rawInput, String delta) {
+                StringBuilder output = toolOutput.get(callId == null ? "" : callId);
+                if (output == null) return; // Late progress must not reopen a completed card.
+                events.publish(HeadlessRunEvent.toolOutput(opts.sessionId(), callId, toolName,
+                        runningToolDetail(mapper, toolName, rawInput, output, delta)));
             }
 
             @Override
             public void onToolComplete(String callId, String toolName, String rawInput, ToolResult result) {
                 String key = callId == null ? "" : callId;
                 Long started = toolStarts.remove(key);
+                StringBuilder output = toolOutput.remove(key);
                 long duration = started == null ? 0 : Math.max(0, System.currentTimeMillis() - started);
                 toolCounter.inc();
-                JsonNode detail = toolDetail(mapper, toolName, rawInput, result);
+                ToolResult displayResult = result;
+                if (result != null && (result.getOutput() == null || result.getOutput().isEmpty()) && output != null) {
+                    synchronized (output) {
+                        displayResult = new ToolResult(result.getTitle(), output.toString(), result.getMetadata(), result.isError());
+                    }
+                }
+                JsonNode detail = toolDetail(mapper, toolName, rawInput, displayResult);
                 if (productSession != null && detail instanceof ObjectNode object) {
                     try {
                         String turnId = productSession.currentTurnId();
@@ -622,6 +647,10 @@ public final class HeadlessAgentRunner {
                 }
                 events.publish(HeadlessRunEvent.toolCompleted(opts.sessionId(), callId, toolName,
                         rawInput, result != null && !result.isError(), duration, detail));
+                if (webControls != null && directClient != null && runtimeConfig.isClaudeCliNative()) {
+                    webControls.nativeToolCompleted((id, prompt) -> directClient.injectIntoClaudeTurn(
+                            id, reminderManager.decorateUserTurn(prompt)));
+                }
             }
         });
         ChatSessionMetrics metrics = new EventEmittingMetrics(opts.sessionId(), events);
@@ -731,6 +760,10 @@ public final class HeadlessAgentRunner {
                     // Claude Code's MCP server then registers as this session's child, so a monitored
                     // process it launches wakes this run. Claude Code's own tasks show as panel rows.
                     directClient.setClaudeTaskProcesses(processManager);
+                    directClient.setClaudeInjectionListener(new DirectLlmClient.ClaudeInjectionListener() {
+                        public void delivered(String id) { webControls.nativeInputDelivered(id); }
+                        public void dropped(String id) { webControls.nativeInputDropped(id); }
+                    });
                 }
             }
             ProcessManagementTool processTool = webControls == null ? null
@@ -742,6 +775,8 @@ public final class HeadlessAgentRunner {
             if (webControls != null) {
                 WebChatInput initial = opts.webInput();
                 webControls.setInitialDisplay(initial.rawInput());
+                webControls.setBoundaryInputListener(prompt -> history.logUserMessage(
+                        reminderManager.previewUserTurn(prompt)));
                 // A live /command resolves as it would between runs, in the same session state.
                 webControls.setCommandResolver(raw -> WebCommandResolver.resolve(
                         new WebChatInput(WebChatInput.VERSION, raw, "", initial.sessionId()),
@@ -974,6 +1009,18 @@ public final class HeadlessAgentRunner {
 
     private static String nullToEmpty(String value) {
         return value == null ? "" : value;
+    }
+
+    /** Bounded cumulative provider-tool preview; arguments may arrive after the start event. */
+    static JsonNode runningToolDetail(ObjectMapper mapper, String toolName, String rawInput,
+                                      StringBuilder output, String delta) {
+        synchronized (output) {
+            if (delta != null && !delta.isEmpty()) {
+                int remaining = 65_536 - output.length();
+                output.append(delta, 0, Math.min(Math.max(0, remaining), delta.length()));
+            }
+            return toolDetail(mapper, toolName, rawInput, ToolResult.success(output.toString()));
+        }
     }
 
     /**

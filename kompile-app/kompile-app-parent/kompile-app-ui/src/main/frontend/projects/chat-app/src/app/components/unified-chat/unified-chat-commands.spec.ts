@@ -644,22 +644,65 @@ describe('UnifiedChat session configuration modal', () => {
     component.isStreaming = true;
     const service = TestBed.inject(LocalAgentChatService);
     service.liveControlsReady = true;
-    const child = { id: 'child-1', type: 'coder', description: 'review', state: 'thinking', running: true, canSend: true, canCancel: true };
+    const child = { id: 'child-1', type: 'coder', description: 'review', state: 'thinking', running: true, canSend: true, canCancel: true,
+      durationMs: 4200, details: { vendor: 'anthropic', model: 'child-model', authentication: 'oauth', thinking: 'high',
+        stream_output_tokens: '12', cache_read_tokens: '0', cache_creation_tokens: '0', tool_uses: '2', context_tokens: '100' } };
     service.harnessActivity = { backgroundable: false, turnActive: false, tasks: [], processes: [], subagents: [child] };
     (component as any).cdr.markForCheck(); fixture.detectChanges();
     const input = fixture.nativeElement.querySelector('[data-testid="subagent-activity"] textarea') as HTMLTextAreaElement;
     input.value = 'child follow-up';
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    service.harnessActivity = { ...service.harnessActivity, subagents: [{ ...child, output: 'updated output' }] };
+    const viewer = fixture.nativeElement.querySelector('[data-testid="subagent-activity"]');
+    expect(viewer.textContent).toContain('anthropic / child-model');
+    expect(viewer.textContent).toContain('~12 streaming out (estimated)');
+    for (const label of ['Authentication', 'oauth', 'Thinking', 'high', 'Cache read tokens', 'Tool uses', 'Last input tokens', '4.2s'])
+      expect(viewer.textContent).toContain(label);
+    const details = viewer.querySelector('.agent-telemetry details') as HTMLDetailsElement;
+    details.open = true;
+    service.harnessActivity = { ...service.harnessActivity, subagents: [{ ...child, output: 'updated output',
+      details: { ...child.details, input_tokens: '120', output_tokens: '42', stream_output_tokens: '0' } }] };
     (component as any).cdr.markForCheck(); fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('[data-testid="subagent-activity"] textarea')).toBe(input);
     expect(input.value).toBe('child follow-up');
+    expect(viewer.textContent).toContain('↑120 in · ↓42 out');
+    expect(viewer.textContent).not.toContain('streaming out (estimated)');
+    expect(viewer.querySelector('.agent-telemetry details')).toBe(details);
+    expect(details.open).toBeTrue();
     const send = spyOn(component, 'sendHarnessControl').and.resolveTo();
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     expect(send).toHaveBeenCalledWith('subagent_input', 'child-1', 'child follow-up');
     const summary = fixture.nativeElement.querySelector('[data-testid="subagent-activity"] summary');
     summary.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
     expect(send).toHaveBeenCalledWith('subagent_cancel', 'child-1');
+  });
+
+  it('renders typed native child prose, thinking and tools without parsing raw process logs as HTML', () => {
+    fixture.detectChanges();
+    const service = TestBed.inject(LocalAgentChatService);
+    service.harnessActivity = { backgroundable: false, turnActive: false, tasks: [], processes: [
+      { id: 'native-child', description: 'review', state: 'COMPLETED', details: { kind: 'subagent', vendor: 'openai', model: 'child-model',
+        input_tokens: '100', output_tokens: '20' }, transcript: [
+        { key: 'thought', kind: 'thinking', toolName: '', summary: '', error: false, running: false,
+          sections: [{ id: 'body', kind: 'thinking', title: '', content: 'Check **carefully**' }] },
+        { key: 'text', kind: 'assistant', toolName: '', summary: '', error: false, running: false,
+          sections: [{ id: 'body', kind: 'assistant', title: '', content: '**Child answer** <script>bad()</script>' }] },
+        { key: 'tool', kind: 'tool', toolName: 'bash', summary: 'bash test failed', error: true, running: false,
+          sections: [{ id: 'input', kind: 'code', title: 'Input', content: '<img src=x onerror=bad()>' },
+            { id: 'output', kind: 'text', title: 'Output', content: 'failure detail' }] }
+      ] }, { id: 'raw', description: 'build', state: 'COMPLETED', output: '**raw log** <script>bad()</script>' }
+    ] };
+    (component as any).cdr.markForCheck(); fixture.detectChanges();
+    const panel: HTMLElement = fixture.nativeElement.querySelector('[data-testid="harness-activity"]');
+    const transcript = panel.querySelector('[data-testid="child-transcript"]')!;
+    expect(transcript.querySelector('.thinking-block summary')!.textContent).toContain('Thinking');
+    expect(transcript.querySelector('[data-kind="assistant"] strong')!.textContent).toBe('Child answer');
+    expect(transcript.querySelector('.child-error')!.textContent).toContain('bash test failed');
+    expect(transcript.textContent).toContain('<img src=x onerror=bad()>');
+    expect(transcript.textContent).toContain('failure detail');
+    expect(panel.querySelector('script, img')).toBeNull();
+    expect(panel.textContent).toContain('**raw log** <script>bad()</script>');
+    expect(panel.textContent).toContain('openai / child-model');
+    expect(component.messages).toEqual([]); // child text is never injected into the parent transcript
   });
 
   function typeInput(value: string): HTMLTextAreaElement {

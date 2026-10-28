@@ -138,6 +138,14 @@ public class EnforcerConfig {
     @JsonProperty
     private int workflowMaxCorrections = 2;
 
+    /** Harness-side periodic todo reminders. On by default; projects opt out explicitly. */
+    @JsonProperty
+    private boolean todoAutopilotEnabled = true;
+
+    /** Tool calls between harness todo reminders when the autopilot is enabled. */
+    @JsonProperty
+    private int todoAutopilotReminderEveryToolCalls = 8;
+
     // ── Direction monitoring (goal-drift judge) ────────────────────────────
     // Strictly opt-in: directionMonitoring defaults to false and is never enabled
     // implicitly. When enabled, a direction judge watches whether the conversation
@@ -171,6 +179,50 @@ public class EnforcerConfig {
     /** Observe-only mode: report drift but never redirect or halt. */
     @JsonProperty
     private boolean directionReportOnly = false;
+
+    // ── Deflection monitoring (ownership mandate) ───────────────────────────
+    // Strictly opt-in: deflectionDetection defaults to false and is never enabled
+    // implicitly. When enabled, a deterministic detector flags non-ownership claims
+    // ("not my error", "out of scope") made WITHOUT receipts (executed diagnostics,
+    // artifact references, or a recorded handoff) and forces an ownership mandate.
+    // Report-only is the shipped default so the golden-corpus gate in
+    // docs/architecture/enforcer-deflection-design.md runs before enforcement.
+
+    /** Master switch, mirroring directionMonitoring. Never enabled implicitly. */
+    @JsonProperty
+    private boolean deflectionDetection = false;
+
+    /** off | pattern | semantic. "semantic" additionally enables the Tier 1/2 scorers. */
+    @JsonProperty
+    private String deflectionMode = "pattern";
+
+    /** Observe-only mode: log what would fire without correcting. Default ON. */
+    @JsonProperty
+    private boolean deflectionReportOnly = true;
+
+    /** Minimum signal strength (0..1) required before a correction is sent. */
+    @JsonProperty
+    private double deflectionConfidenceThreshold = 0.7;
+
+    /** Max in-turn deflection corrections before the turn is blocked (0..4). */
+    @JsonProperty
+    private int deflectionMaxCorrections = 2;
+
+    /** Consecutive deflecting turns before stop; 0 disables cross-turn escalation. */
+    @JsonProperty
+    private int deflectionCrossTurnLimit = 3;
+
+    /** When false, phrasing alone triggers without the receipts check (not recommended). */
+    @JsonProperty
+    private boolean deflectionRequireReceipts = true;
+
+    /** Project-specific deflection phrases/regexes merged into the Tier 0 corpus. */
+    @JsonProperty
+    private List<String> deflectionExtraPatterns = new ArrayList<>();
+
+    /** Project-specific exemptions — spans matching these never count as signals. */
+    @JsonProperty
+    private List<String> deflectionWhitelistPhrases = new ArrayList<>();
 
     // ── Semantic matching ─────────────────────────────────────────────────
 

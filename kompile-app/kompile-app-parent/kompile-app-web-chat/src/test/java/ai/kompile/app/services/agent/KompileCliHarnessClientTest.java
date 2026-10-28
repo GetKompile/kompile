@@ -1378,6 +1378,27 @@ class KompileCliHarnessClientTest {
     }
 
     @Test
+    void liveNativeOutputKeepsItsCallIdentityAndBoundsWithoutBecomingAnswerText() throws Exception {
+        String detail = "{\"displayName\":\"Bash\",\"sections\":[{\"label\":\"output\",\"runs\":[{\"text\":\"building\"}]}]}";
+        String oversized = "{\"sections\":[{\"runs\":[{\"text\":\"" + "x".repeat(70_000) + "\"}]}]}";
+        client = clientWith(new FakeProcess(String.join("\n", List.of(
+                "{\"seq\":1,\"type\":\"tool_start\",\"call_id\":\"native-1\",\"name\":\"bash\",\"input\":\"build\"}",
+                "{\"seq\":2,\"type\":\"tool_output\",\"call_id\":\"native-1\",\"name\":\"bash\",\"detail\":" + detail + "}",
+                "{\"seq\":3,\"type\":\"tool_output\",\"call_id\":\"native-1\",\"name\":\"bash\",\"detail\":" + oversized + "}",
+                "{\"seq\":4,\"type\":\"result\",\"text\":\"done\",\"exit\":0}")) + "\n", "", 0));
+        RecordingSink sink = new RecordingSink();
+        client.runTurn("native-output", request("build"), sink);
+        var output = sink.events.stream().filter(e -> e.name().equals("tool_output")).toList();
+        assertEquals(1, output.size());
+        var mapper = new ObjectMapper();
+        JsonNode call = mapper.valueToTree(output.get(0).data());
+        assertEquals("native-1", call.path("callId").asText());
+        assertEquals("started", call.path("status").asText());
+        assertEquals(mapper.readTree(detail), call.path("detail"));
+        assertTrue(sink.events.stream().noneMatch(e -> e.name().equals("chunk")));
+    }
+
+    @Test
     void toolResultsCarryTheTerminalRowAndHighlightedBody() throws Exception {
         String detail = "{\"displayName\":\"Read\",\"title\":\"src/App.java\",\"sections\":[{\"label\":\"content\","
                 + "\"runs\":[{\"text\":\"class App {}\",\"file\":\"App.java\",\"family\":\"clike\"}]}]}";

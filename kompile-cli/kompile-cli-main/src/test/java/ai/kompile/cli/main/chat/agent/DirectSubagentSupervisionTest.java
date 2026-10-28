@@ -108,6 +108,28 @@ class DirectSubagentSupervisionTest {
         } finally { first.end(); second.end(); }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"offline", "null", "fail-open", "exception"})
+    void infrastructureReviewFailuresDoNotAskChildToRepairTheReviewer(String mode) {
+        AtomicInteger reviews = new AtomicInteger();
+        EnforcerEvaluator reviewer = new EnforcerEvaluator() {
+            public boolean isAvailable() { return !"offline".equals(mode); }
+            public String describe() { return "unusable reviewer"; }
+            public EnforcerDecision evaluate(String user, String output, EnforcerPolicy policy, int attempt) {
+                reviews.incrementAndGet();
+                if ("exception".equals(mode)) throw new IllegalStateException("backend down");
+                return "null".equals(mode) ? null : EnforcerDecision.pass("failing open");
+            }
+        };
+        var child = child(contract("Inspect", false, reviewer, null), "infra-failure");
+        try {
+            assertThrows(DirectSubagentSupervision.SupervisionFailure.class,
+                    () -> child.beforeCompletion("A complete answer"),
+                    "infrastructure failure must stop immediately despite unused correction budget");
+            assertEquals("offline".equals(mode) ? 0 : 1, reviews.get());
+        } finally { child.end(); }
+    }
+
     EnforcerEvaluator evaluator(boolean available, boolean compliant) {
         return new EnforcerEvaluator() {
             public EnforcerDecision evaluate(String user, String output, EnforcerPolicy policy, int attempt) {
@@ -276,7 +298,8 @@ class DirectSubagentSupervisionTest {
         try {
             assertTrue(child.execute("read", mapper.createObjectNode(), "", context("missing-policy"))
                     .getOutput().contains("unavailable"));
-            assertTrue(child.beforeCompletion("review").contains("unavailable"));
+            assertTrue(assertThrows(DirectSubagentSupervision.SupervisionFailure.class,
+                    () -> child.beforeCompletion("review")).getMessage().contains("unavailable"));
         } finally { child.end(); }
         loop.setInlineEnforcer(evaluator(false, true), EnforcerPolicy.from("rules", 2), 2);
         loop.setInlineEnforcerEnabled(false);

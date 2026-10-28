@@ -36,7 +36,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * user-authored rules plus active reminder constraints and returns a machine-readable
  * intervention decision.
  */
-public class EnforcerJudge implements EnforcerEvaluator {
+public class EnforcerJudge implements EnforcerEvaluator, AutoCloseable {
 
     private static final int MAX_PROMPT_CHARS = 4_000;
     private static final int MAX_OUTPUT_CHARS = 8_000;
@@ -105,6 +105,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
     private volatile GuidanceSupplier workflowMemorySupplier = () -> null;
     private volatile GuidanceSupplier taskStateSupplier = JudgeBookkeeping::currentTaskState;
     private volatile boolean closed;
+    private final java.util.concurrent.atomic.AtomicBoolean closeStarted = new java.util.concurrent.atomic.AtomicBoolean();
     private final List<EnforcerConversationContext.Message> judgeChatHistory = new ArrayList<>();
 
     private record GeneratedVerdict(String response, String rawForLog, long latencyMs) { }
@@ -286,7 +287,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
         Thread warmup = new Thread(sessionContext.wrap(() -> {
             try {
                 synchronized (this) {
-                    backend.warmUp(SYSTEM_PROMPT);
+                    if (!closed) backend.warmUp(SYSTEM_PROMPT);
                 }
             } catch (Throwable t) {
                 readinessFailure = t.getMessage() == null || t.getMessage().isBlank()
@@ -588,10 +589,16 @@ public class EnforcerJudge implements EnforcerEvaluator {
         }
     }
 
-    public synchronized void close() {
+    @Override
+    public void close() {
+        if (!closeStarted.compareAndSet(false, true)) return;
         closed = true;
-        if (backend != null) {
-            backend.close();
+        // Warm-up can own this monitor while waiting for a CLI handshake. Cancel
+        // that wait before acquiring the monitor to release the owned backend.
+        Thread warmup = warmupThread;
+        if (warmup != null && warmup != Thread.currentThread()) warmup.interrupt();
+        synchronized (this) {
+            if (backend != null) backend.close();
         }
     }
 

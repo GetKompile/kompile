@@ -93,14 +93,15 @@ public class DiffIndexTool implements CliTool {
                 + "index under that project; pass scope='global' only for cross-project history. "
                 + "Actions: 'search' (content/path/project/agent/source/time "
                 + "filters plus configurable sorting), 'get' (full edit by id), 'projects', 'agents', 'sessions', "
-                + "'session' (all edits in one session), and 'stats'.";
+                + "'session' (paged edits in one session), 'stats', and 'refresh' (rescan local transcripts). "
+                + "Use offset/limit to page beyond 100 results; worker transcript IDs and edit timestamps are preserved.";
     }
 
     @Override
     public String compactHint() {
         return "Historical edit search scoped to the current directory project by default; "
                 + "use scope=global only for cross-project history. action=search supports filters plus sort_by/sort_dir; "
-                + "action=get with id returns the full old/new/unified diff.";
+                + "action=get with id returns the full old/new/unified diff. Page search/session with offset and limit; use refresh to rescan growing local transcripts.";
     }
 
     @Override
@@ -111,10 +112,10 @@ public class DiffIndexTool implements CliTool {
         ObjectNode props = schema.putObject("properties");
 
         ObjectNode action = prop(props, "action", "string",
-                "Action: search, get, projects, agents, sessions, session, or stats");
+                "Action: search, get, projects, agents, sessions, session, stats, or refresh");
         action.putArray("enum")
                 .add("search").add("get").add("projects").add("agents")
-                .add("sessions").add("session").add("stats");
+                .add("sessions").add("session").add("stats").add("refresh");
 
         ObjectNode scope = prop(props, "scope", "string",
                 "Local mode scope: project (default, current directory project) or global (cross-project user index)");
@@ -143,13 +144,15 @@ public class DiffIndexTool implements CliTool {
                 "search: asc or desc (default desc)");
         sortDir.putArray("enum").add("asc").add("desc");
         prop(props, "limit", "integer",
-                "search: maximum entries, 1-100 (default 20)");
+                "search/session: page size, 1-100 (default 20); not a total history cap");
+        prop(props, "offset", "integer",
+                "search/session: zero-based entry offset (default 0); continue with metadata.next_offset");
         prop(props, "include_content", "boolean",
                 "search/session: include full old/new/unified diff content (default false; matching snippets are still shown)");
         prop(props, "id", "string",
                 "get: diff entry id");
         prop(props, "session_id", "string",
-                "session: transcript session id");
+                "session: required transcript session id; search: optional parent session or worker transcript id");
 
         schema.putArray("required").add("action");
         return schema;
@@ -183,8 +186,11 @@ public class DiffIndexTool implements CliTool {
             case "sessions" -> getJson(API_ROOT + "/sessions", "diff_index: sessions", "sessions", scope);
             case "session" -> getSession(params, scope);
             case "stats" -> getJson(API_ROOT + "/stats", "diff_index: stats", "stats", scope);
+            case "refresh" -> backend.isLocal()
+                    ? getJson(API_ROOT + "/refresh", "diff_index: refresh", "refresh", scope)
+                    : ToolResult.error("Remote refresh requires POST /api/diff-index/reindex on the configured server.");
             default -> ToolResult.error("Unknown action: '" + action
-                    + "'. Use search, get, projects, agents, sessions, session, or stats.");
+                    + "'. Use search, get, projects, agents, sessions, session, stats, or refresh.");
         };
     }
 
@@ -192,6 +198,10 @@ public class DiffIndexTool implements CliTool {
         int limit = params.path("limit").asInt(DEFAULT_LIMIT);
         if (limit < 1 || limit > MAX_LIMIT) {
             return ToolResult.error("limit must be between 1 and " + MAX_LIMIT);
+        }
+        int offset = params.path("offset").asInt(0);
+        if (offset < 0 || offset > Integer.MAX_VALUE - MAX_LIMIT) {
+            return ToolResult.error("offset must be non-negative and leave room for a page");
         }
         String sortBy = sortBy(params);
         if (!SORT_FIELDS.contains(sortBy)) {
@@ -202,7 +212,8 @@ public class DiffIndexTool implements CliTool {
             return ToolResult.error("sort_dir must be 'asc' or 'desc'");
         }
 
-        String path = buildSearchPath(params, limit);
+        // One lookahead row distinguishes a full last page from an incomplete result set.
+        String path = buildSearchPath(params, limit + 1);
         BackendResponse response = request(path, scope);
         if (response.error() != null) {
             return ToolResult.error(response.error());
@@ -230,16 +241,7 @@ public class DiffIndexTool implements CliTool {
             return ToolResult.error("session_id is required for session");
         }
 
-        BackendResponse response = request(API_ROOT + "/sessions/" + encode(sessionId), scope);
-        if (response.error() != null) {
-            return ToolResult.error(response.error());
-        }
-        try {
-            JsonNode entries = objectMapper.readTree(response.body());
-            return formatEntries("diff_index: session " + sessionId, entries, params, scope);
-        } catch (Exception e) {
-            return ToolResult.error("Invalid diff-index session response: " + e.getMessage());
-        }
+        return search(params, scope);
     }
 
     private ToolResult getJson(String path, String title, String action, RequestScope scope) {
@@ -296,13 +298,25 @@ public class DiffIndexTool implements CliTool {
         appendQuery(path, first, "sortBy", sortBy(params));
         appendQuery(path, first, "sortDir", sortDir(params));
         appendQuery(path, first, "limit", Integer.toString(limit));
+        appendQuery(path, first, "offset", params.path("offset").asText("0"));
+        appendQuery(path, first, "sessionId", text(params, "session_id"));
         return path.toString();
     }
 
     private ToolResult formatEntries(String title, JsonNode entries, JsonNode params,
                                      RequestScope scope) {
+        Boolean indexing = entries.has("indexing") ? entries.path("indexing").asBoolean() : null;
+        if (entries.isObject() && entries.has("entries")) entries = entries.path("entries");
         if (!entries.isArray()) {
             return ToolResult.error("Diff-index response was not an array of edit entries.");
+        }
+        int limit = params.path("limit").asInt(DEFAULT_LIMIT);
+        int offset = params.path("offset").asInt(0);
+        boolean hasMore = entries.size() > limit;
+        if (hasMore) {
+            var page = objectMapper.createArrayNode();
+            for (int i = 0; i < limit; i++) page.add(entries.get(i));
+            entries = page;
         }
 
         String query = text(params, "query");
@@ -320,13 +334,14 @@ public class DiffIndexTool implements CliTool {
             out.append(".\n");
             for (int i = 0; i < entries.size(); i++) {
                 JsonNode entry = entries.get(i);
-                out.append("\n## ").append(i + 1).append(". ")
+                out.append("\n## ").append(offset + i + 1).append(". ")
                         .append(entry.path("filePath").asText("(unknown file)")).append("\n");
                 appendDetail(out, "id", entry.path("id").asText(null));
                 appendDetail(out, "project", entry.path("projectDirectory").asText(null));
                 appendDetail(out, "agent", entry.path("agent").asText(null));
                 appendDetail(out, "source", entry.path("source").asText(null));
                 appendDetail(out, "session", entry.path("sessionId").asText(null));
+                appendDetail(out, "worker transcript", entry.path("transcriptId").asText(null));
                 appendDetail(out, "timestamp", entry.path("timestamp").asText(null));
                 appendDetail(out, "tool", entry.path("toolName").asText(null));
                 appendDetail(out, "type", entry.path("diffType").asText(null));
@@ -350,8 +365,17 @@ public class DiffIndexTool implements CliTool {
             }
         }
 
+        if (hasMore) out.append("\nMore edits available. Repeat the same filters with offset=")
+                .append(offset + entries.size()).append(" and limit=").append(limit).append('.');
+        if (Boolean.TRUE.equals(indexing)) out.append("\nIndex refresh is running; results may be incomplete. Check action=stats and retry after indexing=false.");
+        out.append("\nHistory covers available transcripts only; action=refresh rescans local sessions and workers.");
         Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("action", title.contains("session") ? "session" : "search");
+        metadata.put("action", params.path("action").asText("search"));
+        metadata.put("offset", offset);
+        metadata.put("limit", limit);
+        metadata.put("has_more", hasMore);
+        if (indexing != null) metadata.put("indexing", indexing);
+        if (hasMore) metadata.put("next_offset", offset + entries.size());
         metadata.put("count", entries.size());
         if (query != null) {
             metadata.put("query", query);
@@ -511,27 +535,30 @@ public class DiffIndexTool implements CliTool {
             try {
                 ServiceState state = services.computeIfAbsent(scope.cacheKey(),
                         ignored -> new ServiceState(serviceFactory.apply(scope)));
-                ensureIndexed(state, scope);
-                DiffIndexService service = state.service;
                 URI uri = URI.create("http://stdio.local" + path);
                 String route = uri.getRawPath();
+                ensureIndexed(state, scope, (API_ROOT + "/refresh").equals(route));
+                DiffIndexService service = state.service;
                 Map<String, String> query = query(uri.getRawQuery());
                 Object value;
                 int status = 200;
                 if ((API_ROOT + "/search").equals(route)) {
-                    value = service.search(
+                    value = Map.of("entries", service.search(
                             query.get("agent"), query.get("projectDirectory"), query.get("filePath"),
                             query.get("contentQuery"), query.get("source"), query.get("since"),
                             query.get("until"), integer(query.get("limit")), query.get("sortBy"),
-                            query.get("sortDir"));
+                            query.get("sortDir"), integer(query.get("offset")), query.get("sessionId")),
+                            "indexing", state.refreshing || service.isIndexing());
                 } else if ((API_ROOT + "/projects").equals(route)) {
                     value = service.listProjects();
                 } else if ((API_ROOT + "/agents").equals(route)) {
                     value = service.listAgents();
                 } else if ((API_ROOT + "/sessions").equals(route)) {
                     value = service.listSessions();
-                } else if ((API_ROOT + "/stats").equals(route)) {
-                    value = service.getStats();
+                } else if ((API_ROOT + "/stats").equals(route) || (API_ROOT + "/refresh").equals(route)) {
+                    Map<String, Object> stats = service.getStats();
+                    stats.put("indexing", state.refreshing || service.isIndexing());
+                    value = stats;
                 } else if (route.startsWith(API_ROOT + "/entries/")) {
                     String id = decode(route.substring((API_ROOT + "/entries/").length()));
                     DiffIndexEntry entry = service.get(id);
@@ -550,19 +577,27 @@ public class DiffIndexTool implements CliTool {
             }
         }
 
-        private void ensureIndexed(ServiceState state, RequestScope scope) {
-            if (state.initialized) {
-                return;
+        private void ensureIndexed(ServiceState state, RequestScope scope, boolean force) {
+            if (!state.initialized) {
+                state.service.init();
+                state.initialized = true;
             }
-            state.service.init();
-            Runnable reindex = scope.isGlobal()
-                    ? state.service::reindexAll
-                    : () -> state.service.reindexAll(scope.projectRoot());
-            Thread refresh = new Thread(reindex,
-                    "kompile-diff-index-refresh-" + scope.cacheKey().replaceAll("[^A-Za-z0-9._-]", "-"));
+            long now = System.nanoTime();
+            if (state.refreshing || (!force && state.lastRefresh != 0
+                    && now - state.lastRefresh < Duration.ofSeconds(30).toNanos())) return;
+            state.lastRefresh = now;
+            state.refreshing = true;
+            Thread refresh = new Thread(() -> {
+                try {
+                    if (scope.isGlobal()) state.service.reindexAll();
+                    else state.service.reindexAll(scope.projectRoot());
+                } finally {
+                    state.lastRefresh = System.nanoTime();
+                    state.refreshing = false;
+                }
+            }, "kompile-diff-index-refresh-" + scope.cacheKey().replaceAll("[^A-Za-z0-9._-]", "-"));
             refresh.setDaemon(true);
             refresh.start();
-            state.initialized = true;
         }
 
         private static Map<String, String> query(String rawQuery) {
@@ -590,6 +625,8 @@ public class DiffIndexTool implements CliTool {
         private static final class ServiceState {
             private final DiffIndexService service;
             private boolean initialized;
+            private volatile long lastRefresh;
+            private volatile boolean refreshing;
 
             private ServiceState(DiffIndexService service) {
                 this.service = Objects.requireNonNull(service, "service");

@@ -42,6 +42,7 @@ public record HeadlessRunEvent(
         ASSISTANT_DELTA,
         THINKING_DELTA,
         TOOL_STARTED,
+        TOOL_OUTPUT,
         TOOL_COMPLETED,
         TOKEN_USAGE,
         COMMAND_OUTCOME,
@@ -145,8 +146,19 @@ public record HeadlessRunEvent(
 
     public static HeadlessRunEvent toolStarted(String sessionId, String callId,
                                                String toolName, String rawInput) {
+        return toolStarted(sessionId, callId, toolName, rawInput, null);
+    }
+
+    public static HeadlessRunEvent toolStarted(String sessionId, String callId,
+                                               String toolName, String rawInput, JsonNode detail) {
         return new HeadlessRunEvent(0, Type.TOOL_STARTED, sessionId, callId, toolName,
-                rawInput, "", true, 0, 0, "", Map.of());
+                rawInput, "", true, 0, 0, "", Map.of(), detail);
+    }
+
+    /** A bounded, cumulative display snapshot for a tool which is still running. */
+    public static HeadlessRunEvent toolOutput(String sessionId, String callId, String toolName, JsonNode detail) {
+        return new HeadlessRunEvent(0, Type.TOOL_OUTPUT, sessionId, callId, toolName,
+                "", "", true, 0, 0, "", Map.of(), detail);
     }
 
     public static HeadlessRunEvent toolCompleted(String sessionId, String callId,

@@ -118,22 +118,21 @@ public class ArchiveModelManager {
             throw new IOException("Embedded archive not found: " + classpathLocation);
         }
 
-        // Extract to temp directory
         Path tempArchive = Files.createTempFile("kompile-embedded-", ".karch");
-        try (InputStream is = resource.getInputStream()) {
-            Files.copy(is, tempArchive, StandardCopyOption.REPLACE_EXISTING);
-        }
-
-        loadArchiveFile(tempArchive);
-
-        // Register for cleanup on shutdown
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        try {
+            try (InputStream is = resource.getInputStream()) {
+                Files.copy(is, tempArchive, StandardCopyOption.REPLACE_EXISTING);
+            }
+            // Import is synchronous; subsequent lookups use the registry's extracted models.
+            loadArchiveFile(tempArchive);
+        } finally {
             try {
                 Files.deleteIfExists(tempArchive);
             } catch (IOException e) {
-                // Ignore
+                tempArchive.toFile().deleteOnExit();
+                log.warn("Failed to delete embedded archive staging file {}", tempArchive, e);
             }
-        }));
+        }
     }
 
     /**

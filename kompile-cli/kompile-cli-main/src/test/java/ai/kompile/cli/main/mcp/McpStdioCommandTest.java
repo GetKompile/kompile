@@ -34,6 +34,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
 import picocli.CommandLine;
@@ -55,6 +58,89 @@ import static org.junit.jupiter.api.Assertions.*;
 class McpStdioCommandTest {
 
     @Test
+    void backgroundDispatchForcesMonitorAndSendsOneTerminalNotification(@TempDir Path project) throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        McpStdioCommand command = new McpStdioCommand();
+        AsyncToolExecutor executor = prepareToolDispatch(command);
+        java.io.ByteArrayOutputStream notifications = new java.io.ByteArrayOutputStream();
+        Field out = McpStdioCommand.class.getDeclaredField("mcpOut");
+        out.setAccessible(true);
+        out.set(command, new java.io.OutputStreamWriter(notifications, java.nio.charset.StandardCharsets.UTF_8));
+        Field om = McpStdioCommand.class.getDeclaredField("om");
+        om.setAccessible(true);
+        om.set(command, mapper);
+        Field logLevel = McpStdioCommand.class.getDeclaredField("logLevel");
+        logLevel.setAccessible(true);
+        logLevel.set(command, "emergency");
+        var owner = new ai.kompile.cli.main.coordination.CoordinationStateManager(project, "mcp-task-owner", mapper);
+        owner.registerAgent("MCP tasks", "parent-chat", "kompile", 1, ProcessHandle.current().pid());
+        Field coordinator = McpStdioCommand.class.getDeclaredField("coordinator");
+        coordinator.setAccessible(true);
+        coordinator.set(command, owner);
+        Field progress = McpStdioCommand.class.getDeclaredField("progressLogger");
+        progress.setAccessible(true);
+        progress.set(command, new ai.kompile.cli.mcp.stdio.McpToolProgressLogger(project.resolve("logs")));
+        var processes = new ai.kompile.cli.main.chat.tools.BackgroundProcessManager("parent-chat", project);
+        var mirror = new ai.kompile.cli.main.chat.SharedProcessMirror(processes, owner, "parent-chat");
+        List<String> wakeups = new java.util.concurrent.CopyOnWriteArrayList<>();
+        mirror.setMonitorListener((entry, monitor) -> wakeups.add(monitor.processId()));
+        mirror.pollOnce();
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var waiter = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            JsonNode ack = invokeToolCall(command, mapper, delegationTool("task", mapper, args -> {
+                try { release.await(); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                return ToolResult.success("done", "private child result", Map.of());
+            }), Map.of());
+            String acknowledgement = ack.path("result").path("content").get(0).path("text").asText();
+            assertTrue(acknowledgement.contains("Monitor"));
+            assertFalse(acknowledgement.contains("tail -f"));
+            String id = executor.getAllTasks().get(0).taskId();
+            mirror.pollOnce();
+            assertTrue(mirror.owesWake(), "the parent must stay alive for its monitored MCP task");
+            Method poll = McpStdioCommand.class.getDeclaredMethod("executePoll", Map.class);
+            poll.setAccessible(true);
+            ToolResult denied = (ToolResult) poll.invoke(command, Map.of("task_id", id));
+            assertTrue(denied.isError());
+            assertTrue(denied.getOutput().contains("action=monitor"));
+            assertTrue(((ToolResult) poll.invoke(command, Map.of())).isError(), "ID-free status polling must also be blocked");
+            assertTrue(((ToolResult) poll.invoke(command, Map.of("action", "log"))).isError(), "logs are not a polling escape hatch");
+            var held = waiter.submit(() -> (ToolResult) poll.invoke(command,
+                    Map.of("action", "monitor", "task_id", id)));
+            assertFalse(held.isDone());
+            assertEquals(0, notifications.size());
+            release.countDown();
+            ToolResult finished = held.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertFalse(finished.isError());
+            assertTrue(finished.getOutput().contains("private child result"));
+            assertTimeoutPreemptively(Duration.ofSeconds(3), () -> {
+                while (notifications.size() == 0) Thread.sleep(5);
+            });
+            String wire = notifications.toString(java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals(1, wire.lines().count());
+            JsonNode notice = mapper.readTree(wire);
+            assertEquals("notifications/message", notice.path("method").asText());
+            assertEquals("task_completed", notice.path("params").path("data").path("event").asText());
+            assertEquals("completed", notice.path("params").path("data").path("status").asText());
+            assertFalse(wire.contains("private child result"), "completion must not dump the transcript inline");
+            mirror.pollOnce();
+            mirror.pollOnce();
+            assertEquals(List.of(id), wakeups, "a real Kompile parent must wake exactly once across JVMs");
+            assertFalse(mirror.owesWake());
+            var published = owner.queryProcesses().stream().filter(entry -> entry.getProcessId().equals(id)).findFirst().orElseThrow();
+            assertTrue(Files.readString(Path.of(published.getOutputFile())).contains("private child result"));
+        } finally {
+            release.countDown();
+            waiter.shutdownNow();
+            executor.shutdown();
+            mirror.close();
+            processes.close();
+            owner.shutdown();
+        }
+    }
+
+    @Test
     @ResourceLock("user.home")
     void stdioBoundsDiagnosticOutputOnlyWhenFetchIsAvailable(@TempDir Path home) throws Exception {
         String previousHome = System.getProperty("user.home");
@@ -69,12 +155,13 @@ class McpStdioCommandTest {
                 cacheField.setAccessible(true);
                 cacheField.set(command, cache);
                 String output = "compile failed\n" + "stack frame\n".repeat(4000);
-                var task = delegationTool(mapper, ignored -> ToolResult.error(output));
+                var task = delegationTool("task", mapper, ignored -> ToolResult.error(output));
                 Map<String, McpStdioCommand.ToolDef> tools = new LinkedHashMap<>();
                 tools.put("task", task);
                 ObjectNode request = mapper.createObjectNode();
                 request.put("id", 1).put("method", "tools/call");
-                request.putObject("params").put("name", "task").putObject("arguments");
+                request.putObject("params").put("name", "task").putObject("arguments")
+                        .put("background", false);
                 Method handle = McpStdioCommand.class.getDeclaredMethod(
                         "handleMessage", JsonNode.class, Map.class, ObjectMapper.class);
                 handle.setAccessible(true);
@@ -248,6 +335,27 @@ class McpStdioCommandTest {
     }
 
     @Test
+    void adoptedTranscriptPropertyIsTheIdentityFallbackInsideMcpProcesses() {
+        // The MCP stdio process adopts the spawning chat's transcript id through the
+        // documented property (McpStdioCommand.call). Capture attribution reads
+        // TranscriptLogScope.currentTranscriptId(), whose last fallback is that
+        // property — this asserts the mechanism the adoption relies on.
+        String previous = System.getProperty(
+                ai.kompile.cli.main.chat.TranscriptLogScope.TRANSCRIPT_ID_PROPERTY);
+        try {
+            System.setProperty(
+                    ai.kompile.cli.main.chat.TranscriptLogScope.TRANSCRIPT_ID_PROPERTY, "mcp-adopted-id");
+            assertEquals("mcp-adopted-id",
+                    ai.kompile.cli.main.chat.TranscriptLogScope.currentTranscriptId());
+        } finally {
+            if (previous == null) System.clearProperty(
+                    ai.kompile.cli.main.chat.TranscriptLogScope.TRANSCRIPT_ID_PROPERTY);
+            else System.setProperty(
+                    ai.kompile.cli.main.chat.TranscriptLogScope.TRANSCRIPT_ID_PROPERTY, previous);
+        }
+    }
+
+    @Test
     void sessionScopedToolsUseTheTranscriptIdentity() {
         assertEquals("transcript-123",
                 McpStdioCommand.toolContextSessionId(" transcript-123 "));
@@ -309,7 +417,14 @@ class McpStdioCommandTest {
         StdioTaskTool task = new StdioTaskTool(null, null, mapper, null);
         StdioMultiTaskTool multi = new StdioMultiTaskTool(null, null, mapper, workDir, null);
         Map<String, McpStdioCommand.ToolDef> tools = new LinkedHashMap<>();
-        McpStdioCommand.registerTaskTools(tools, task, multi);
+        var resolver = new ai.kompile.cli.mcp.stdio.ResolveModelTool(mapper, workDir);
+        McpStdioCommand.registerTaskTools(tools, task, multi, resolver, () -> null);
+        for (JsonNode schema : List.of(task.parameterSchema(), multi.parameterSchema())) {
+            JsonNode background = schema.path("properties").path("background");
+            assertEquals("boolean", background.path("type").asText());
+            assertTrue(background.path("default").asBoolean());
+            assertTrue(background.path("description").asText().contains("Set false to wait"));
+        }
 
         for (String level : List.of("default", "none", "moderate", "aggressive", "compact")) {
             McpStdioCommand command = new McpStdioCommand();
@@ -318,7 +433,7 @@ class McpStdioCommandTest {
             // Also exercise group activation: loading delegation must expose both choices.
             DynamicToolManager manager = new DynamicToolManager();
             tools.values().forEach(tool -> manager.register(tool.name(), tool.description(), tool.schema()));
-            assertTrue(manager.activateGroup("delegation").containsAll(List.of("task", "multi_task")));
+            assertTrue(manager.activateGroup("delegation").containsAll(List.of("task", "multi_task", "resolve_model")));
             Field dynamic = McpStdioCommand.class.getDeclaredField("dynamicToolManager");
             dynamic.setAccessible(true);
             dynamic.set(command, manager);
@@ -332,13 +447,26 @@ class McpStdioCommandTest {
                 JsonNode response = (JsonNode) handle.invoke(command, message, tools, mapper);
                 Map<String, JsonNode> listed = new LinkedHashMap<>();
                 response.path("result").path("tools").forEach(tool -> listed.put(tool.path("name").asText(), tool));
-                assertEquals(Set.of("task", "multi_task"), listed.keySet(), level);
+                assertEquals(Set.of("task", "multi_task", "resolve_model"), listed.keySet(), level);
+                JsonNode resolveSchema = listed.get("resolve_model").path("inputSchema").path("properties");
+                assertEquals("string", resolveSchema.path("authentication_method").path("type").asText());
+                assertEquals("string", resolveSchema.path("provider").path("type").asText());
                 String taskDescription = listed.get("task").path("description").asText();
                 assertTrue(taskDescription.contains("multi_task"), taskDescription);
                 assertTrue(taskDescription.contains("parallel batch"), taskDescription);
                 String multiDescription = listed.get("multi_task").path("description").asText();
                 assertTrue(multiDescription.contains("2+ independent subtasks"), multiDescription);
                 assertTrue(multiDescription.contains("serial task calls"), multiDescription);
+                for (String name : List.of("task", "multi_task")) {
+                    JsonNode tool = listed.get(name);
+                    String description = tool.path("description").asText();
+                    assertTrue(description.contains("Background by default"), description);
+                    assertTrue(description.contains("background=false"), description);
+                    assertEquals("string", tool.path("inputSchema").path("properties").path("provider").path("type").asText());
+                    assertEquals("string", tool.path("inputSchema").path("properties").path("authentication_method").path("type").asText());
+                    assertEquals("boolean", tool.path("inputSchema").path("properties")
+                            .path("background").path("type").asText(), level + ": " + name);
+                }
                 if (List.of("default", "compact", "aggressive").contains(level)) {
                     assertEquals(task.compactHint(), taskDescription);
                     assertEquals(multi.compactHint(), multiDescription);
@@ -398,10 +526,10 @@ class McpStdioCommandTest {
         JsonNode items = subtasks.path("items");
         assertEquals(mapper.valueToTree(List.of("name", "prompt")), items.path("required"));
         JsonNode properties = items.path("properties");
-        for (String field : List.of("name", "prompt", "agent", "role", "model", "thinking")) {
+        for (String field : List.of("name", "prompt", "agent", "role", "model", "thinking", "provider", "authentication_method")) {
             assertEquals("string", properties.path(field).path("type").asText(), field);
         }
-        assertEquals(mapper.valueToTree(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi", "kompile", "general")),
+        assertEquals(mapper.valueToTree(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi", "agy", "kompile", "general")),
                 properties.path("agent").path("enum"));
         assertEquals("array", properties.path("agents").path("type").asText());
         assertEquals("integer", properties.path("agent_count").path("type").asText());
@@ -450,16 +578,17 @@ class McpStdioCommandTest {
         assertFalse(callResult.has("structuredContent"));
     }
 
-    @Test
-    void delegationQuotaFailureIsReturnedToTheWaitingParentCall() throws Exception {
+    @ParameterizedTest
+    @CsvSource({"task,background", "task,_background", "multi_task,background", "multi_task,_background"})
+    void delegationQuotaFailureIsReturnedToTheWaitingParentCall(String toolName, String flag) throws Exception {
         ObjectMapper mapper = JsonUtils.standardMapper();
         McpStdioCommand command = new McpStdioCommand();
         AsyncToolExecutor backgroundExecutor = prepareToolDispatch(command);
         try {
             McpStdioCommand.ToolDef task = delegationTool(
-                    mapper, ignored -> ToolResult.error("Subagent quota exhausted"));
+                    toolName, mapper, ignored -> ToolResult.error("Subagent quota exhausted"));
 
-            JsonNode response = invokeToolCall(command, mapper, task, Map.of());
+            JsonNode response = invokeToolCall(command, mapper, task, Map.of(flag, false));
             JsonNode callResult = response.path("result");
 
             assertTrue(callResult.path("isError").asBoolean(),
@@ -471,16 +600,17 @@ class McpStdioCommandTest {
         }
     }
 
-    @Test
-    void delegationProcessExitReturnsItsResultToTheWaitingParentCall() throws Exception {
+    @ParameterizedTest
+    @CsvSource({"task,background", "task,_background", "multi_task,background", "multi_task,_background"})
+    void delegationProcessExitReturnsItsResultToTheWaitingParentCall(String toolName, String flag) throws Exception {
         ObjectMapper mapper = JsonUtils.standardMapper();
         McpStdioCommand command = new McpStdioCommand();
         AsyncToolExecutor backgroundExecutor = prepareToolDispatch(command);
         try {
             McpStdioCommand.ToolDef task = delegationTool(
-                    mapper, ignored -> ToolResult.success("child finished normally"));
+                    toolName, mapper, ignored -> ToolResult.success("child finished normally"));
 
-            JsonNode response = invokeToolCall(command, mapper, task, Map.of());
+            JsonNode response = invokeToolCall(command, mapper, task, Map.of(flag, false));
             JsonNode callResult = response.path("result");
 
             assertFalse(callResult.path("isError").asBoolean());
@@ -491,24 +621,65 @@ class McpStdioCommandTest {
         }
     }
 
-    @Test
-    void explicitBackgroundDelegationStillReturnsAPollHandle() throws Exception {
+    @ParameterizedTest
+    @CsvSource({"task,default", "task,background", "task,_background",
+            "multi_task,default", "multi_task,background", "multi_task,_background"})
+    void delegationBackgroundsByDefaultAndAcceptsExplicitOptIn(String toolName, String flag) throws Exception {
         ObjectMapper mapper = JsonUtils.standardMapper();
         McpStdioCommand command = new McpStdioCommand();
         AsyncToolExecutor backgroundExecutor = prepareToolDispatch(command);
         try {
             McpStdioCommand.ToolDef task = delegationTool(
-                    mapper, ignored -> ToolResult.success("background child finished"));
+                    toolName, mapper, ignored -> ToolResult.success("background child finished"));
 
-            JsonNode response = invokeToolCall(
-                    command, mapper, task, Map.of("_background", true));
+            JsonNode response = invokeToolCall(command, mapper, task,
+                    "default".equals(flag) ? Map.of() : Map.of(flag, true));
             JsonNode callResult = response.path("result");
             String text = callResult.path("content").path(0).path("text").asText();
 
             assertFalse(callResult.path("isError").asBoolean());
             assertTrue(text.contains("running in background"));
             assertTrue(text.contains("Task ID"));
-            assertTrue(text.contains("Poll"));
+            assertTrue(text.contains("Monitor"));
+            assertFalse(text.contains("**Poll**"));
+        } finally {
+            backgroundExecutor.shutdown();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"task", "multi_task"})
+    void legacyBackgroundOverrideTakesPrecedenceAndControlFlagsAreNotForwarded(String toolName) throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        McpStdioCommand command = new McpStdioCommand();
+        AsyncToolExecutor backgroundExecutor = prepareToolDispatch(command);
+        try {
+            McpStdioCommand.ToolDef task = delegationTool(toolName, mapper, arguments -> {
+                assertFalse(arguments.containsKey("background"));
+                assertFalse(arguments.containsKey("_background"));
+                return ToolResult.success("child finished normally");
+            });
+            JsonNode response = invokeToolCall(command, mapper, task,
+                    Map.of("background", true, "_background", false));
+            assertEquals("child finished normally",
+                    response.path("result").path("content").path(0).path("text").asText());
+        } finally {
+            backgroundExecutor.shutdown();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"read", "quorum_task"})
+    void nonDelegationToolsRemainSynchronousByDefault(String toolName) throws Exception {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        McpStdioCommand command = new McpStdioCommand();
+        AsyncToolExecutor backgroundExecutor = prepareToolDispatch(command);
+        try {
+            McpStdioCommand.ToolDef tool = delegationTool(toolName, mapper,
+                    ignored -> ToolResult.success("synchronous result"));
+            JsonNode response = invokeToolCall(command, mapper, tool, Map.of());
+            assertEquals("synchronous result",
+                    response.path("result").path("content").path(0).path("text").asText());
         } finally {
             backgroundExecutor.shutdown();
         }
@@ -665,10 +836,10 @@ class McpStdioCommandTest {
     }
 
     private static McpStdioCommand.ToolDef delegationTool(
-            ObjectMapper mapper,
+            String toolName, ObjectMapper mapper,
             java.util.function.Function<Map<String, Object>, ToolResult> executor) {
         return new McpStdioCommand.ToolDef(
-                "task", "delegation test", mapper.createObjectNode(),
+                toolName, "delegation test", mapper.createObjectNode(),
                 McpToolAnnotations.DELEGATION, executor);
     }
 
@@ -682,12 +853,12 @@ class McpStdioCommandTest {
         message.put("id", 1);
         message.put("method", "tools/call");
         ObjectNode params = message.putObject("params");
-        params.put("name", "task");
+        params.put("name", task.name());
         params.set("arguments", mapper.valueToTree(arguments));
 
         Method handle = McpStdioCommand.class.getDeclaredMethod(
                 "handleMessage", JsonNode.class, Map.class, ObjectMapper.class);
         handle.setAccessible(true);
-        return (JsonNode) handle.invoke(command, message, Map.of("task", task), mapper);
+        return (JsonNode) handle.invoke(command, message, Map.of(task.name(), task), mapper);
     }
 }

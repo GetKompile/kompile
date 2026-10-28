@@ -67,16 +67,18 @@
     "outputMode": "tui-scrape"
   },
   {
-    "name": "qwen-cli",
-    "displayName": "Qwen",
-    "command": "qwen",
-    "skipPermissionsFlag": "--yolo",
+    "name": "agy-cli",
+    "displayName": "Antigravity",
+    "command": "agy",
+    "skipPermissionsFlag": "--dangerously-skip-permissions",
     "skipPermissions": true,
     "args": [],
     "modelFlag": "--model",
+    "modelListCommand": ["agy", "models"],
     "isDefault": false,
-    "description": "Qwen Code CLI",
+    "description": "Google's Antigravity CLI; requires the agy CLI to be installed, on PATH, and authenticated/configured.",
     "mcpSupported": true,
+    "interactivePromptPattern": "^> ",
     "terminalRows": 50,
     "terminalCols": 200,
     "outputMode": "stream-json"

@@ -273,17 +273,21 @@ class ChatModelPickerTest {
     }
 
     @Test
-    void authCommandUsesTheClaudeCodeLoginWithoutACredentialPage() throws Exception {
+    void authCommandShowsTheClaudeCodeCredentialPageAndKeepsItsOwnLoginByDefault() throws Exception {
         try (Picker picker = new Picker(config("openai", "source-key", "api-key", null), models("claude-opus-5-5"))) {
+            // Enter on the credential page keeps Claude Code's own login (no token stored yet).
             picker.choose("/auth", answer("picker provider", "anthropic"), answer("picker auth", "1"),
-                    answer("picker model", "1"));
+                    answer(">", ""), answer("picker model", "1"));
             ChatConfig active = picker.repl.getChatConfig();
             assertEquals("anthropic", active.getProvider());
-            assertEquals("oauth", active.getAuthenticationMethod());
+            assertEquals("native", active.getAuthenticationMethod(), "the Claude Code route on its own login");
+            assertTrue(active.isClaudeCliNative());
+            assertNull(active.resolveClaudeCodeToken());
             assertEquals("claude-opus-5-5", active.getModel());
             assertTrue(picker.calls.isEmpty(), "the Claude Code route needs no API-key discovery");
-            picker.discovery.verify(ModelDiscoveryHttp::discoverClaudeCliResult);
-            assertTrue(store.list("anthropic").isEmpty(), "Claude Code owns authentication");
+            picker.discovery.verify(() -> ModelDiscoveryHttp.discoverClaudeCliResult(nullable(ChatConfig.class)));
+            assertTrue(store.list("anthropic").isEmpty(), "no Anthropic credential backs the Claude Code route");
+            assertTrue(store.list("claude-code").isEmpty(), "keeping Claude Code's own login stores no token");
         }
     }
 
@@ -399,7 +403,7 @@ class ChatModelPickerTest {
             assertEquals("oauth", picker.repl.getChatConfig().getAuthenticationMethod());
             assertEquals("high", picker.repl.getChatConfig().getThinking());
             assertTrue(picker.repl.getChatConfig().isUltracode());
-            picker.discovery.verify(ModelDiscoveryHttp::discoverClaudeCliResult);
+            picker.discovery.verify(() -> ModelDiscoveryHttp.discoverClaudeCliResult(nullable(ChatConfig.class)));
             assertTrue(store.list("anthropic").isEmpty(), "Claude Code owns authentication");
         }
     }
@@ -543,7 +547,7 @@ class ChatModelPickerTest {
                         calls.add(new DiscoveryCall(invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2)));
                         return result;
                     });
-            discovery.when(ModelDiscoveryHttp::discoverClaudeCliResult).thenReturn(result);
+            discovery.when(() -> ModelDiscoveryHttp.discoverClaudeCliResult(nullable(ChatConfig.class))).thenReturn(result);
             terminal = new LineDisciplineTerminal("model-picker-test", "xterm", new ByteArrayOutputStream(), StandardCharsets.UTF_8);
             terminal.setSize(new Size(120, 40));
             when(reader.getTerminal()).thenReturn(terminal);

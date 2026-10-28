@@ -1556,6 +1556,8 @@
     <div class="input-area" data-testid="input-area" [class.drag-over]="isDragOver"
       (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)"
       (drop)="onDrop($event)" (paste)="onPaste($event)">
+      <div *ngIf="isStreaming && harnessConnectionMessage" class="reconnect-run" role="status" aria-live="polite"
+        data-testid="chat-connection-status">{{ harnessConnectionMessage }}</div>
       <div *ngIf="!isStreaming && reconnectBookmark" class="reconnect-run" role="status" data-testid="reconnect-run">
         <span>A previous run can be reattached without restarting its work.</span>
         <button mat-stroked-button type="button" (click)="reconnectCurrentRun()" [disabled]="lifecycleBusy"
@@ -1607,8 +1609,13 @@
         </details>
         <details *ngFor="let child of harnessActivity.subagents; trackBy: trackHarnessEntry" data-testid="subagent-activity">
           <summary (keydown)="handleSubagentKey($event, child.id, false)"
-            title="Delete stops only this child">{{ child.type }}: {{ child.description }} — {{ child.state }}</summary>
-          <pre class="harness-output">{{ child.output }}</pre>
+            title="Delete stops only this child"><span class="process-state-icon" [attr.data-state]="child.running ? 'RUNNING' : child.state" aria-hidden="true">{{ child.running ? '●' : '○' }}</span>
+            [{{ child.id }}] {{ child.type }}: {{ child.description }} — {{ child.state }}
+            <span class="agent-summary"> · {{ harnessAgentIdentity(child) }} · {{ harnessAgentUsage(child) }}</span></summary>
+          <div class="harness-viewer">
+            <ng-container *ngTemplateOutlet="agentTelemetry; context: { $implicit: child }"></ng-container>
+            <pre class="harness-output">{{ child.output || 'No child output yet.' }}</pre>
+          </div>
           <textarea [(ngModel)]="subagentInputs[child.id]" [ngModelOptions]="{standalone: true}"
             (keydown)="handleSubagentKey($event, child.id, true)" rows="2" maxlength="32768"
             [disabled]="!liveControlsReady || !child.canSend" [attr.aria-label]="'Follow-up to ' + child.id"
@@ -1633,13 +1640,15 @@
               *ngIf="view.timing" class="process-timing"> ({{ view.timing }})</span><span
               *ngIf="view.process.exitCode !== undefined && view.process.exitCode !== null && view.process.exitCode !== 0"
               class="process-exit"> exit={{ view.process.exitCode }}</span><span
-              *ngIf="view.process.monitor" class="process-monitor-badge"> · wakes agent on exit</span></summary>
+              *ngIf="view.process.monitor" class="process-monitor-badge"> · wakes agent on exit</span><span
+              *ngIf="isHarnessAgent(view.process)" class="agent-summary"> · {{ harnessAgentIdentity(view.process) }} · {{ harnessAgentUsage(view.process) }}</span></summary>
             <code>{{ view.process.command }}</code>
             <dl *ngIf="view.details.length" class="process-details" data-testid="process-details">
               <ng-container *ngFor="let row of view.details"><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></ng-container>
             </dl>
             <div *ngIf="view.process.monitor as monitor" class="process-monitor" data-testid="process-monitor">
-              <span>Wakes the agent when it exits<span *ngIf="monitor.message">: {{ monitor.message }}</span></span>
+              <span>Wakes the agent when it exits<span *ngIf="monitor.message">: {{ monitor.message }}</span><span
+                *ngIf="monitor.armedAt"> · armed {{ monitor.armedAt | date:'medium' }}</span></span>
               <button mat-stroked-button type="button" (click)="sendHarnessControl('process_unmonitor', view.id)"
                 [disabled]="!liveControlsReady || harnessControlPending"
                 title="Stop this process waking the agent; it keeps running, as /process-monitors cancel does in the terminal">Cancel wake-up</button>
@@ -1653,11 +1662,48 @@
               (click)="view.process.state === 'RUNNING' && view.process.killable !== false && sendHarnessControl('process_kill', view.id)"
               [disabled]="!liveControlsReady || harnessControlPending || view.process.state !== 'RUNNING' || view.process.killable === false"
               [title]="view.process.killable === false ? 'Shared by ' + (view.process.owner || 'another session') + '; only its owner can stop it' : 'Stop this process, as /process-kill does in the terminal'">Stop process</button>
-            <pre *ngIf="processLogs[view.id] !== undefined; else recentOutput" class="harness-output process-log"
-              data-testid="process-log">{{ processLogs[view.id] }}</pre>
-            <ng-template #recentOutput><pre class="harness-output">{{ view.process.output }}</pre></ng-template>
+            <div class="harness-viewer">
+              <ng-container *ngIf="isHarnessAgent(view.process)">
+                <ng-container *ngTemplateOutlet="agentTelemetry; context: { $implicit: view.process }"></ng-container>
+              </ng-container>
+              <div *ngIf="view.process.transcript?.length" class="harness-transcript markdown-body" data-testid="child-transcript">
+                <section *ngFor="let block of view.process.transcript; trackBy: trackTranscriptBlock" class="child-block"
+                  [class.child-error]="block.error" [attr.data-kind]="block.kind">
+                  <div *ngIf="block.summary || block.toolName" class="child-block-heading">
+                    {{ block.summary || block.toolName }}<span *ngIf="block.running"> · running…</span><span *ngIf="block.error"> · failed</span>
+                  </div>
+                  <ng-container *ngFor="let section of block.sections; trackBy: trackTranscriptSection">
+                    <details *ngIf="section.kind === 'thinking'; else childSection" class="thinking-block">
+                      <summary>Thinking<span *ngIf="block.running">…</span></summary>
+                      <div class="md-rendered" [innerHTML]="renderHarnessMarkdown(view.id + ':' + block.key + ':' + section.id, section.content)"></div>
+                    </details>
+                    <ng-template #childSection>
+                      <div *ngIf="section.title" class="child-section-title">{{ section.title }}</div>
+                      <div *ngIf="section.kind === 'assistant'; else plainChildSection" class="md-rendered"
+                        [innerHTML]="renderHarnessMarkdown(view.id + ':' + block.key + ':' + section.id, section.content)"></div>
+                      <ng-template #plainChildSection><pre class="harness-output" [attr.data-kind]="section.kind">{{ section.content }}</pre></ng-template>
+                    </ng-template>
+                  </ng-container>
+                </section>
+              </div>
+              <pre *ngIf="processLogs[view.id] !== undefined; else recentOutput" class="harness-output process-log"
+                data-testid="process-log">{{ processLogs[view.id] }}</pre>
+              <ng-template #recentOutput><pre *ngIf="!view.process.transcript?.length" class="harness-output">{{ view.process.output || 'No process output yet.' }}</pre></ng-template>
+            </div>
           </details>
         </section>
+        <ng-template #agentTelemetry let-entry>
+          <div class="agent-telemetry" data-testid="agent-telemetry">
+            <div class="agent-identity">{{ harnessAgentIdentity(entry) }}</div>
+            <div class="agent-usage">{{ harnessAgentUsage(entry) }}</div>
+            <details>
+              <summary>Agent details</summary>
+              <dl class="process-details">
+                <ng-container *ngFor="let row of harnessAgentDetails(entry)"><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></ng-container>
+              </dl>
+            </details>
+          </div>
+        </ng-template>
         <div *ngFor="let input of liveInputHistory">Queued follow-up: {{ input }}</div>
       </details>
       <!-- This session's judge flags, tool counts, last test milestone and crawl progress, as the

@@ -21,6 +21,39 @@ import static org.junit.jupiter.api.Assertions.*;
 class TestMilestoneCaptureTest {
     @TempDir Path root;
 
+    @Test void invalidCaptureConfigDoesNotFailUnrelatedCommandsButStillFlagsExplicitTests() throws Exception {
+        configure("{\"excludeCommands\":[\"(\"]}");
+        ToolResult result = bash("pwd");
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals(0, result.getMetadata().get("exitCode"));
+        assertFalse(result.getMetadata().containsKey("testCaptureWarnings"));
+        List<String> captureFailures = new ArrayList<>();
+        assertNull(TestMilestoneCapture.start("mvn compile", root, null, null, captureFailures::add));
+        assertNull(TestMilestoneCapture.start("bash compile.sh", root, null, null, captureFailures::add));
+        assertTrue(captureFailures.isEmpty(), "Diagnostics for a non-test command are not capture failures");
+        assertNull(TestMilestoneCapture.start("pytest", root, null, null, captureFailures::add));
+        assertEquals(1, captureFailures.size());
+        assertTrue(captureFailures.get(0).contains("Automatic test capture disabled"));
+        assertTrue(milestones().isEmpty());
+    }
+
+    @Test void successfulCommandCannotSilentlyLoseItsMilestone() throws Exception {
+        Path transcript = transcript("capture-failure");
+        Files.createDirectories(root.resolve(".kompile/test-milestones"));
+        Files.writeString(root.resolve(".kompile/test-milestones/milestones"), "not a directory");
+        Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\nprintf '2 tests executed: 2 passed, 0 failed\\n'\n");
+        try (var scope = TranscriptLogScope.openIsolated("capture-failure", root, false);
+             var binding = scope.bind()) {
+            ToolResult result = bash("bash checks.sh");
+            assertTrue(result.isError(), result.getOutput());
+            assertEquals(0, result.getMetadata().get("exitCode"), "Do not rewrite the actual command exit code");
+            assertNotNull(result.getMetadata().get("testCaptureWarnings"));
+            assertFalse(result.getMetadata().containsKey("testMilestoneId"));
+        }
+        assertTrue(Files.readString(transcript).contains("Test milestone capture warning:"));
+        assertFalse(Files.readString(transcript).contains("Automatic test milestone recorded:"));
+    }
+
     @Test void foregroundAutomaticallyCapturesWithoutAnAgentToolCall() throws Exception {
         Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\n[ 2 -eq 2 ] || exit 1\nprintf '2 tests executed: 2 passed, 0 failed\\n'\n");
         ToolResult result = bash("bash checks.sh");
@@ -88,6 +121,39 @@ class TestMilestoneCaptureTest {
         assertEquals("timed_out", saved.get("outcome"));
         assertFalse(saved.containsKey("passing"));
         assertFalse(TestMilestoneReader.isConclusive(saved));
+    }
+    @Test void delegatedSubagentCapturesCarryTheSubagentOrigin() throws Exception {
+        try (var run = TestMilestoneCapture.start("pytest", root, "child-session", "child-execution", "subagent", text -> fail(text))) {
+            assertNotNull(run);
+            run.accept("2 passed in 0.1s");
+            run.finish(0, false, false, null);
+        }
+        // Directory order is unspecified; select the delegated run by the session it stamped.
+        var delegated = milestones().stream()
+                .filter(m -> "child-session".equals(m.get("sessionId"))).findFirst().orElseThrow();
+        assertEquals("subagent", delegated.get("origin"));
+        assertEquals("child-session", delegated.get("sessionId"));
+        // An untagged sibling run must not inherit the delegated origin.
+        try (var run = start("pytest")) {
+            run.accept("1 tests executed: 1 passed, 0 failed");
+            run.finish(0, false, false, null);
+        }
+        var siblings = milestones().stream()
+                .filter(m -> !"child-session".equals(m.get("sessionId"))).toList();
+        assertEquals(1, siblings.size());
+        assertFalse(siblings.get(0).containsKey("origin"));
+    }
+    @Test void supervisedChildBashTagsItsMilestonesAsSubagentWork() throws Exception {
+        Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\nprintf '3 tests executed: 3 passed, 0 failed\\n'\n");
+        var context = new ToolContext("native-child-session", null, null, root, null);
+        context.setAutoApproveAll(true);
+        context.markSupervisedChild();
+        ToolResult result = new BashTool().execute(
+                JsonUtils.standardMapper().createObjectNode().put("command", "bash checks.sh"), context);
+        assertFalse(result.isError(), result.getOutput());
+        var saved = milestones().get(0);
+        assertEquals("subagent", saved.get("origin"));
+        assertEquals("native-child-session", saved.get("sessionId"));
     }
     @Test void compileDoesNotImportAnOldPassingReport() throws Exception {
         report("<testsuite tests='2'><testcase name='a'/><testcase name='b'/></testsuite>");
@@ -287,7 +353,8 @@ class TestMilestoneCaptureTest {
             assertNull(run.finish(0, false, false, null));
         }
         assertFalse(warnings.isEmpty());
-        assertFalse(Files.readString(transcript).contains("Automatic test milestone"));
+        assertTrue(Files.readString(transcript).contains("Test milestone capture warning:"));
+        assertFalse(Files.readString(transcript).contains("Automatic test milestone recorded:"));
     }
     @Test void missingTranscriptIsNotCreatedAndUnsafeTranscriptCannotLoseSavedMilestone() throws Exception {
         Path missing = Path.of(System.getProperty("user.home"), ".kompile/conversations/no-chat.txt");

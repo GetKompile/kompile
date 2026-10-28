@@ -302,9 +302,12 @@ public final class UsageLimitAutoContinue {
     }
 
     /**
-     * Parse an explicit reset horizon from failure text: relative durations
+     * Reusable, package-visible reset-horizon parser: relative durations
      * ("try again in 45 minutes", "resets in 2h 30m") or epoch timestamps
      * ("resets at 1750000000"). Returns null when no parsable hint exists.
+     *
+     * <p>Shared with the session model ladder so a quota cooldown and the
+     * auto-continue wake always agree on when the window actually reopens.
      */
     static Duration parseResetHint(String normalized) {
         return parseResetHint(normalized, Clock.systemDefaultZone());

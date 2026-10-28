@@ -6,6 +6,8 @@ import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.DirectSubagentSupervision;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.ModelRouting;
+import ai.kompile.cli.main.chat.config.SubagentChatConfig;
 import ai.kompile.cli.main.chat.agent.ProjectChatContext;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConversationContext;
@@ -33,7 +35,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** MCP adapter for the existing native chat harness; never resolves a vendor CLI binary. */
+/** MCP adapter for Kompile's chat harness, including its provider-owned subscription transports. */
 class KompileNativeTaskRunner {
     private final Path workDir;
     private final RoleManager roles;
@@ -56,17 +58,31 @@ class KompileNativeTaskRunner {
 
     /** Keep credentials/provider project-scoped and all overrides request-local. */
     static ChatConfig configuration(ChatConfig configured, String model, String thinking) {
-        if (configured == null) {
-            throw new IllegalStateException("No Kompile chat configuration. Run kompile chat --setup in this project.");
-        }
-        ChatConfig config = configured.copy();
-        if (model != null && !model.isBlank()) {
-            String prefix = config.getProvider() + "/";
-            // Accept Kompile's provider-qualified model id without sending it on the wire.
-            config.setModel(model.startsWith(prefix) ? model.substring(prefix.length()) : model);
-        }
-        if (thinking != null && !thinking.isBlank()) config.setThinking(thinking);
-        return config;
+        return configuration(configured, null, model, thinking);
+    }
+
+    /**
+     * Apply the request's model/thinking overrides and, when given, its provider
+     * override, to a copy of the project's stored configuration.
+     *
+     * <p>Provider routing has two levers: an explicit {@code provider} argument,
+     * and auto-routing from the model id when no provider is given —
+     * {@link ModelRouting} decides whether the configured route hosts the model's
+     * family, routes to the family's first-party owner (e.g. {@code claude-*}
+     * dispatched on the Codex route goes to anthropic), or refuses with
+     * {@link ModelRouting.AmbiguousModelRouteException} when several configured
+     * routes could host it and none is the owner. Refusals surface as dispatch
+     * errors naming the candidates; dispatch never guesses between equivalent
+     * credentials.</p>
+     *
+     * <p>A provider switch never carries the old route's credential selection,
+     * base URL, or authentication method across (same rule as the REPL's
+     * {@code buildModelProviderCandidateFrom} and workflow
+     * {@code WorkflowLaunch.configFor}): the new route resolves its own stored
+     * credential at request time.</p>
+     */
+    static ChatConfig configuration(ChatConfig configured, String provider, String model, String thinking) {
+        return SubagentChatConfig.configure(configured, provider, model, thinking, null);
     }
 
     ChatConfig loadConfiguration() {
@@ -84,6 +100,7 @@ class KompileNativeTaskRunner {
 
     /** Native MCP calls have no parent chat loop from which to capture a reviewer. */
     AutoCloseable configureSupervision(ToolContext context, String prompt) throws Exception {
+        if (context.getSubagentSupervision() != null) return () -> {};
         HarnessConfig harness = loadHarnessConfig();
         EnforcerConfig enforcer = EnforcerConfig.load(workDir);
         boolean required = harness.isJudgeGlobalEnabled() && (enforcer == null
@@ -126,8 +143,17 @@ class KompileNativeTaskRunner {
     }
 
     String run(AgentConfig request, String prompt, AtomicBoolean cancelled) throws Exception {
+        return run(request, prompt, cancelled, null, null);
+    }
+
+    String resume(AgentConfig request, String sessionId, String prompt, AtomicBoolean cancelled, ToolContext parentContext) throws Exception {
+        return run(request, prompt, cancelled, sessionId, parentContext);
+    }
+
+    private String run(AgentConfig request, String prompt, AtomicBoolean cancelled, String resumeSessionId, ToolContext parentContext) throws Exception {
         if (cancelled.get()) throw new InterruptedException("Native Kompile task cancelled");
-        ChatConfig config = configuration(loadConfiguration(), request.getModelOverride(), request.getThinkingOverride());
+        ChatConfig config = SubagentChatConfig.configure(loadConfiguration(), request.getProviderOverride(),
+                request.getModelOverride(), request.getThinkingOverride(), request.getAuthenticationMethodOverride());
         if ("passthrough".equalsIgnoreCase(config.getChatMode()) || !config.isValid()) {
             throw new IllegalStateException("Incomplete Kompile chat configuration for provider '"
                     + config.getProvider() + "'. Run kompile chat --setup; no vendor CLI fallback was attempted.");
@@ -138,17 +164,26 @@ class KompileNativeTaskRunner {
         AgentConfig child = (role == null ? agents.get("general") : role.toAgentConfig()).toBuilder()
                 .isSubagent(true).canSpawnSubagents(false).roleName(request.getRoleName())
                 .modelOverride(config.getModel()).thinkingOverride(config.getThinking())
+                .providerOverride(config.getProvider()).authenticationMethodOverride(config.getAuthenticationMethod())
                 .workflowParticipant(request.getWorkflowParticipant()).build();
         PermissionService permissions = new PermissionService();
         permissions.setAutoApproveAll(true); // Same full-access contract as managed MCP delegation.
         ToolRegistry tools = createRegistry(config, agents, permissions);
         SubagentRunner runner = tools.getSubagentRunner();
         String sessionId = "kompile-task-" + UUID.randomUUID();
-        ToolContext context = new ToolContext(sessionId, child, permissions, workDir, tools);
+        ToolContext context = new ToolContext(parentContext == null ? sessionId : parentContext.getSessionId(), child, permissions, workDir, tools);
         context.linkAbortSignal(cancelled);
+        if (parentContext != null) {
+            context.linkAbortCheck(parentContext::isAborted);
+            context.setSubagentSupervision(parentContext.getSubagentSupervision());
+        }
         context.bindWorkflow(StdioTaskTool.workflowEnforcement(workDir, roles));
         String dispatch = "Dispatch: mode=kompile-native, provider=" + config.getProvider()
-                + ", model=" + config.getModel() + ", thinking=" + config.getThinking();
+                + ", model=" + config.getModel() + ", thinking=" + config.getThinking()
+                + ", auth=" + (config.getAuthenticationMethod() == null ? "provider-default" : config.getAuthenticationMethod())
+                + ", transport=" + (config.isClaudeCliNative() ? "claude-code" : "provider")
+                + (request.getProviderOverride() != null && !request.getProviderOverride().isBlank()
+                        ? ", providerOverride=" + request.getProviderOverride() : "");
         Path resultsDir = workDir.resolve(".kompile/task-results");
         Files.createDirectories(resultsDir);
         Path resultFile = resultsDir.resolve(sessionId + ".md");
@@ -169,17 +204,44 @@ class KompileNativeTaskRunner {
         });
         runner.setLifecycleListener(new SubagentRunner.LifecycleListener() {
             public void onSubagentStart(String id, String type, String description) {}
-            public void onSubagentEnd(String id) {}
-            public void onSubagentActivity(String id, String summary, String detail) { append(detail); }
-            public void onSubagentOutput(String id, String chunk) { append(chunk); }
-            private void append(String text) {
-                if (log != null && text != null) processes.appendVirtualOutput(log.getId(), text);
+            private boolean ended;
+            private boolean publicationQueued;
+            public synchronized void onSubagentEnd(String id) { ended = true; }
+            public synchronized void onSubagentMetadata(String id, Map<String, String> metadata) {
+                if (log == null) return;
+                Map<String, String> snapshot = new java.util.LinkedHashMap<>(log.getMetadata());
+                snapshot.putAll(metadata);
+                processes.updateVirtual(log.getId(), null, snapshot, false);
+                if (coordinator != null && !publicationQueued && !ended) {
+                    publicationQueued = true;
+                    java.util.concurrent.CompletableFuture.delayedExecutor(250, java.util.concurrent.TimeUnit.MILLISECONDS)
+                            .execute(() -> publishPending());
+                }
+            }
+            private synchronized void publishPending() {
+                publicationQueued = false;
+                // The terminal path flushes the final snapshot. Never resurrect a finished child.
+                if (!ended && log.isRunning()) coordinator.updateProcessState(
+                        log.getId(), "RUNNING", null, null, log.getMetadata());
+            }
+            public void onSubagentActivity(String id, String summary, String detail) {
+                if (log != null && detail != null && !detail.isBlank()) {
+                    processes.appendVirtualOutput(log.getId(), detail);
+                }
+            }
+            public void onSubagentOutput(String id, String chunk) {
+                if (log != null && chunk != null) processes.appendVirtualOutputChunk(log.getId(), chunk);
             }
         });
         boolean completed = false;
         try (AutoCloseable owned = runner instanceof AutoCloseable closeable ? closeable : () -> {};
              AutoCloseable supervision = configureSupervision(context, prompt)) {
-            String result = runner.runSubagent(child, prompt, context);
+            String result = resumeSessionId != null
+                    ? runner.resumeSubagent(child, resumeSessionId, prompt, context)
+                    : runner.runSubagent(child, prompt, context,
+                            child.getWorkflowParticipant() == null
+                                    ? ai.kompile.cli.main.chat.agent.SubagentRunOptions.resumable(null)
+                                    : ai.kompile.cli.main.chat.agent.SubagentRunOptions.DEFAULT);
             if (cancelled.get()) throw new InterruptedException("Native Kompile task cancelled");
             Files.writeString(resultFile, dispatch + "\n\n" + result, StandardCharsets.UTF_8);
             completed = true;
@@ -187,7 +249,12 @@ class KompileNativeTaskRunner {
         } catch (Exception failure) {
             completed = false;
             if (log != null) processes.appendVirtualOutput(log.getId(), "Native task failed: " + failure.getMessage());
-            throw failure;
+            if (failure instanceof InterruptedException || cancelled.get()) throw failure;
+            throw new IllegalStateException(dispatch + "\nNative task failed: " + failure.getMessage()
+                    + "\nUse resolve_model with this provider/authentication_method, then retry Kompile task with "
+                    + "agent=kompile, provider, model, and authentication_method. For anthropic, oauth/native uses "
+                    + "Claude Code login; api-key uses the separate API. Do not substitute the vendor Agent tool. "
+                    + "No account fallback was attempted.", failure);
         } finally {
             // Finish process state publication even when cancellation interrupted this worker.
             boolean interrupted = Thread.interrupted();
@@ -196,7 +263,7 @@ class KompileNativeTaskRunner {
                     if (completed) processes.complete(log.getId());
                     else processes.fail(log.getId(), -1);
                     if (coordinator != null) coordinator.updateProcessState(log.getId(), log.getState().name(),
-                            log.getEndTime(), log.getExitCode());
+                            log.getEndTime(), log.getExitCode(), log.getMetadata());
                 }
             } finally {
                 if (interrupted) Thread.currentThread().interrupt();

@@ -294,10 +294,10 @@ public class DefaultOcrPipeline implements OcrPipeline {
 
     @Override
     public List<ParsedDocument> processPdf(InputStream pdfStream, String sourceId) {
-        // Create temp file and delegate
+        // This overload owns the staging file, not the caller's stream.
+        File tempFile = null;
         try {
-            File tempFile = File.createTempFile("ocr_", ".pdf");
-            tempFile.deleteOnExit();
+            tempFile = File.createTempFile("ocr_", ".pdf");
             java.nio.file.Files.copy(pdfStream, tempFile.toPath(),
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
 
@@ -311,6 +311,11 @@ public class DefaultOcrPipeline implements OcrPipeline {
             List<ParsedDocument> results = new ArrayList<>();
             results.add(ParsedDocument.failed(sourceId, 0, e.getMessage()));
             return results;
+        } finally {
+            if (tempFile != null && !tempFile.delete() && tempFile.exists()) {
+                tempFile.deleteOnExit();
+                logger.warn("Failed to delete PDF staging file {}", tempFile);
+            }
         }
     }
 

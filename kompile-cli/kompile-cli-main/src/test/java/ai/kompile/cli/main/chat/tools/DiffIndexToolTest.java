@@ -1,6 +1,8 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.app.services.diffindex.DiffIndexEntry;
+import ai.kompile.app.services.diffindex.DiffIndexService;
+import java.util.concurrent.atomic.AtomicInteger;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -54,6 +56,8 @@ class DiffIndexToolTest {
         assertTrue(schema.path("required").toString().contains("action"));
         assertTrue(schema.path("properties").has("query"));
         assertTrue(schema.path("properties").has("file_path"));
+        assertTrue(schema.path("properties").has("offset"));
+        assertTrue(schema.path("properties").path("action").path("enum").toString().contains("refresh"));
         assertTrue(schema.path("properties").path("scope").path("enum").toString().contains("global"));
         assertTrue(schema.path("properties").has("include_content"));
         assertTrue(schema.path("properties").path("sort_by").path("enum").toString().contains("total_changes"));
@@ -105,7 +109,7 @@ class DiffIndexToolTest {
         assertTrue(backend.lastPath.contains("since=2026-08-01"));
         assertTrue(backend.lastPath.contains("sortBy=lines_added"));
         assertTrue(backend.lastPath.contains("sortDir=asc"));
-        assertTrue(backend.lastPath.contains("limit=7"));
+        assertTrue(backend.lastPath.contains("limit=8"));
         assertTrue(result.getOutput().contains("sorted by lines_added asc"));
         assertTrue(result.getOutput().contains("src/main/App.java"));
         assertTrue(result.getOutput().contains("edit-1"));
@@ -202,6 +206,7 @@ class DiffIndexToolTest {
         assertTrue(backend.lastPath.contains("sortDir=desc"));
         assertEquals("timestamp", result.getMetadata().get("sort_by"));
         assertEquals("desc", result.getMetadata().get("sort_dir"));
+        assertFalse(result.getMetadata().containsKey("indexing"), "Remote arrays do not reveal indexing state");
     }
 
     @Test
@@ -372,6 +377,76 @@ class DiffIndexToolTest {
                 System.setProperty("user.home", previousHome);
             }
         }
+    }
+
+    @Test
+    void searchPagesBeyondHundredWithLookaheadAndVisibleContinuation() throws Exception {
+        var entries = objectMapper.createArrayNode();
+        for (int i = 0; i < 101; i++) entries.addObject().put("id", "edit-" + i).put("filePath", "F" + i);
+        backend.body = entries.toString();
+        var params = objectMapper.createObjectNode().put("action", "search").put("limit", 100).put("offset", 100);
+        ToolResult result = tool.execute(params, context);
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(backend.lastPath.contains("limit=101"));
+        assertTrue(backend.lastPath.contains("offset=100"));
+        assertEquals(100, result.getMetadata().get("count"));
+        assertEquals(true, result.getMetadata().get("has_more"));
+        assertEquals(200, result.getMetadata().get("next_offset"));
+        assertTrue(result.getOutput().contains("offset=200"));
+        assertTrue(result.getOutput().contains("## 101."));
+        assertFalse(result.getOutput().contains("id: edit-100\n"));
+        backend.body = "[{\"id\":\"last\",\"filePath\":\"Last.java\"}]";
+        params.put("offset", 200);
+        result = tool.execute(params, context);
+        assertEquals(false, result.getMetadata().get("has_more"));
+        assertFalse(result.getMetadata().containsKey("next_offset"));
+    }
+
+    @Test
+    void sessionUsesPagedSearchAndAcceptsWorkerTranscriptId() throws Exception {
+        var params = objectMapper.createObjectNode().put("action", "session")
+                .put("session_id", "agent worker").put("limit", 2).put("offset", 7);
+        ToolResult result = tool.execute(params, context);
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(backend.lastPath.contains("sessionId=agent%20worker"));
+        assertTrue(backend.lastPath.contains("offset=7"));
+        assertTrue(backend.lastPath.contains("limit=3"));
+        assertEquals("session", result.getMetadata().get("action"));
+    }
+
+    @Test
+    void rejectsNegativeOffsetAndShowsInProgressIndexingWithoutFalseCompleteness() throws Exception {
+        var params = objectMapper.createObjectNode().put("action", "search").put("offset", -1);
+        assertTrue(tool.execute(params, context).isError());
+        assertNull(backend.lastPath);
+        params.put("offset", 0);
+        backend.body = "{\"entries\":[],\"indexing\":true}";
+        ToolResult result = tool.execute(params, context);
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals(true, result.getMetadata().get("indexing"));
+        assertTrue(result.getOutput().contains("results may be incomplete"));
+    }
+
+    @Test
+    void localRefreshRescansAfterStartupInsteadOfFreezingIndexForProcessLifetime() throws Exception {
+        var scans = new AtomicInteger();
+        DiffIndexService service = new DiffIndexService(workDir.resolve("refresh-index")) {
+            @Override
+            public void reindexAll(Path project) { scans.incrementAndGet(); }
+        };
+        var gateway = new DiffIndexTool.LocalBackendGateway(objectMapper, service);
+        var scope = DiffIndexTool.RequestScope.project(workDir);
+        gateway.get("/api/diff-index/stats", Duration.ofSeconds(5), scope);
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
+            while (objectMapper.readTree(gateway.get("/api/diff-index/stats",
+                    Duration.ofSeconds(5), scope).body()).path("indexing").asBoolean()) Thread.sleep(5);
+        });
+        assertEquals(1, scans.get());
+        gateway.get("/api/diff-index/refresh", Duration.ofSeconds(5), scope);
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
+            while (scans.get() < 2) Thread.sleep(5);
+        });
+        assertEquals(2, scans.get());
     }
 
     private static final class FakeBackend implements DiffIndexTool.BackendGateway {

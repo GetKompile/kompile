@@ -76,6 +76,40 @@ class AgenticChatLoopDisplayBlockTest {
     }
 
     @Test
+    void monitoredActivityKeepsChildTranscriptsOutOfTypedAndAppendOnlyChat() throws Exception {
+        try (ChatUiSession session = new ChatUiSession(); var ignored = session.bind()) {
+            Map<String, ChatDisplayBlock> cards = new LinkedHashMap<>();
+            List<String> lines = new ArrayList<>();
+            ChatCompleter.setDisplayBlockOutput(block -> { cards.put(block.key(), block); return true; });
+            ChatCompleter.setContentOutput(lines::add);
+            AgenticChatLoop loop = loop(null);
+            String transcript = "PRIVATE CHILD TRANSCRIPT\n".repeat(30);
+            for (String name : List.of("process", "task", "multi_task", "quorum_task", "poll",
+                    "mcp__kompile__task", "mcp__kompile__process", "Agent", "TaskOutput")) {
+                Object tool = toolBlock(loop, name, name, "{}");
+                ChatDisplayBlock started = cards.get(name);
+                invoke(tool, "appendOutput", String.class, transcript);
+                assertSame(started, cards.get(name), "child deltas must not repaint Main");
+                invoke(tool, "complete", ToolResult.class, ToolResult.success("done", transcript, Map.of()));
+                ChatDisplayBlock completed = cards.get(name);
+                assertFalse(completed.running());
+                assertTrue(completed.sections().isEmpty(), "no expandable child transcript in Main");
+                assertFalse(completed.classic().contains("PRIVATE CHILD TRANSCRIPT"));
+                assertTrue(completed.classic().contains("/activity"));
+            }
+            assertTrue(lines.isEmpty());
+            ChatCompleter.setDisplayBlockOutput(null);
+            ChatCompleter.setTranscriptBlockOutput(null);
+            Object fallback = toolBlock(loop, "fallback-monitor", "process", "{}");
+            invoke(fallback, "appendOutput", String.class, transcript);
+            invoke(fallback, "complete", ToolResult.class, ToolResult.success("done", transcript, Map.of()));
+            assertFalse(String.join("\n", lines).contains("PRIVATE CHILD TRANSCRIPT"));
+            assertFalse(new TerminalRenderer(false).renderToolCallComplete("task", "{}",
+                    ToolResult.success("done", transcript, Map.of())).contains("PRIVATE CHILD TRANSCRIPT"));
+        }
+    }
+
+    @Test
     void localAndProviderTodosOwnOneListCardAndLegacyFallbackUsesSameList() throws Exception {
         try (ChatUiSession session = new ChatUiSession(); var ignored = session.bind()) {
             Map<String, ChatDisplayBlock> cards = new LinkedHashMap<>();

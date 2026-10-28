@@ -195,9 +195,16 @@ public final class ConversationLedger {
      */
     public synchronized void recordNativeSession(
             String transport, String nativeSessionId, String instructionsDigest) {
+        recordNativeSession(transport, nativeSessionId, instructionsDigest, null);
+    }
+
+    /** Save measured context with the same version/session receipt, never billing totals. */
+    public synchronized void recordNativeSession(
+            String transport, String nativeSessionId, String instructionsDigest,
+            NativeContextUsage contextUsage) {
         if (transport == null || nativeSessionId == null || nativeSessionId.isBlank()) return;
         NativeSession next = new NativeSession(
-                transport, nativeSessionId, version, instructionsDigest, Instant.now());
+                transport, nativeSessionId, version, instructionsDigest, Instant.now(), contextUsage);
         if (persist(version, "native", next)) nativeSession = next;
     }
 
@@ -398,13 +405,23 @@ public final class ConversationLedger {
             CompactionCheckpoint checkpoint) {
     }
 
+    /** Last measured request input and native limits, scoped to its selected model. */
+    public record NativeContextUsage(
+            String model, long inputTokens, long historyTokens, int contextWindow, int maxOutputTokens) {
+    }
+
     /** A provider's own session and the ledger version it holds. */
     public record NativeSession(
             String transport,
             String sessionId,
             long syncedVersion,
             String instructionsDigest,
-            Instant updatedAt) {
+            Instant updatedAt,
+            NativeContextUsage contextUsage) {
+        public NativeSession(String transport, String sessionId, long syncedVersion,
+                             String instructionsDigest, Instant updatedAt) {
+            this(transport, sessionId, syncedVersion, instructionsDigest, updatedAt, null);
+        }
     }
 
     public record Snapshot(

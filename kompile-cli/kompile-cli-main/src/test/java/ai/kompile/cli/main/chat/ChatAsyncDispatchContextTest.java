@@ -281,6 +281,10 @@ class ChatAsyncDispatchContextTest {
             AtomicReference<Thread> completionThread = new AtomicReference<>();
             AtomicReference<ToolResult> terminalResult = new AtomicReference<>();
             CliTool tool = mock(CliTool.class);
+            when(tool.id()).thenReturn("task");
+            when(tool.description()).thenReturn("blocking test tool");
+            when(tool.parameterSchema()).thenReturn(mapper.createObjectNode());
+            tools.register(tool);
             when(tool.execute(any(), any())).thenAnswer(call -> {
                 executing.set(call.getArgument(1));
                 a.emit("tool-worker");
@@ -311,6 +315,13 @@ class ChatAsyncDispatchContextTest {
                     assertTrue(completed.await(5, TimeUnit.SECONDS));
                     join(completionThread.get());
                     // Retained tool output may be called by a foreign worker after completion.
+                    // The completion callback can fire before the tool worker publishes its
+                    // forked context, so wait for it instead of assuming it is already set.
+                    long workerDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (executing.get() == null && System.nanoTime() < workerDeadline) {
+                        Thread.onSpinWait();
+                    }
+                    assertNotNull(executing.get(), "tool worker never published its context");
                     executing.get().emitOutput("late output");
                     b.assertCurrent();
                 }

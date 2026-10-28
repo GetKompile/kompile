@@ -87,7 +87,7 @@ public class ToolCallCatalogTool implements CliTool {
         prop(props, "group_by", "string",
                 "Group results by field (for 'list' action): 'category', 'project', 'agent', 'tool'");
         prop(props, "limit", "integer",
-                "Maximum results to return (default 50)");
+                "Page size for search/list: 1-500 (default 50); grouped list uses a per-group limit (default 20)");
         prop(props, "source", "string",
                 "For 'index' action: provider source to index ('all', 'claude-code', 'codex', 'qwen', 'opencode', 'gemini')");
         prop(props, "reindex", "boolean",
@@ -97,7 +97,7 @@ public class ToolCallCatalogTool implements CliTool {
         prop(props, "format", "string",
                 "For 'usage' action: response format 'json' (default) or 'markdown'");
         prop(props, "offset", "integer",
-                "For 'usage' include_calls: detail rows offset (default 0)");
+                "For 'search' and ungrouped 'list': zero-based row offset (default 0); continue with metadata.next_offset. Also applies to 'usage' include_calls.");
 
         schema.putArray("required").add("action");
         return schema;
@@ -111,7 +111,15 @@ public class ToolCallCatalogTool implements CliTool {
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         String action = params.path("action").asText("").toLowerCase();
-
+        if ("search".equals(action) || "list".equals(action)) {
+            int limit = params.path("limit").asInt(50);
+            int offset = params.path("offset").asInt(0);
+            if (limit < 1 || limit > 500) return ToolResult.error("limit must be between 1 and 500");
+            if (offset < 0 || offset > Integer.MAX_VALUE - 500) return ToolResult.error("offset must be non-negative and leave room for a page");
+            if (offset > 0 && params.hasNonNull("group_by")) {
+                return ToolResult.error("offset paging applies to ungrouped list/search; filter a group and omit group_by to page its calls");
+            }
+        }
         return switch (action) {
             case "search" -> doSearch(params);
             case "list" -> doList(params);
@@ -187,9 +195,9 @@ public class ToolCallCatalogTool implements CliTool {
                 nullIfEmpty(params.path("project").asText("")),
                 parseSortField(params.path("sort_by").asText("")),
                 parseSortDir(params.path("sort_dir").asText("")),
-                params.path("limit").asInt(50));
+                params.path("limit").asInt(50) + 1, params.path("offset").asInt(0));
 
-        return formatResults("search", results, query);
+        return formatResults("search", results, query, params);
     }
 
     private ToolResult doList(JsonNode params) {
@@ -209,9 +217,9 @@ public class ToolCallCatalogTool implements CliTool {
                 nullIfEmpty(params.path("project").asText("")),
                 parseSortField(params.path("sort_by").asText("")),
                 parseSortDir(params.path("sort_dir").asText("")),
-                params.path("limit").asInt(50));
+                params.path("limit").asInt(50) + 1, params.path("offset").asInt(0));
 
-        return formatResults("list", results, null);
+        return formatResults("list", results, null, params);
     }
 
     private ToolResult doGroupedList(JsonNode params, ToolCallIndex index, String groupBy) {
@@ -219,22 +227,17 @@ public class ToolCallCatalogTool implements CliTool {
         ToolCallIndex.SortDirection sd = parseSortDir(params.path("sort_dir").asText(""));
         int limit = params.path("limit").asInt(20);
 
-        Map<String, List<ToolCallRecord>> grouped;
-        if ("project".equals(groupBy) || "proj".equals(groupBy)) {
-            grouped = index.groupByProject(null,
-                    nullIfEmpty(params.path("tool").asText("")),
-                    nullIfEmpty(params.path("session").asText("")),
-                    nullIfEmpty(params.path("category").asText("")),
-                    nullIfEmpty(params.path("agent").asText("")),
-                    sf, sd, limit);
-        } else {
-            grouped = index.groupByCategory(null,
-                    nullIfEmpty(params.path("tool").asText("")),
-                    nullIfEmpty(params.path("session").asText("")),
-                    nullIfEmpty(params.path("agent").asText("")),
-                    nullIfEmpty(params.path("project").asText("")),
-                    sf, sd, limit);
+        if ("proj".equals(groupBy)) groupBy = "project";
+        if (!Set.of("category", "project", "agent", "tool").contains(groupBy)) {
+            return ToolResult.error("group_by must be category, project, agent, or tool");
         }
+        Map<String, List<ToolCallRecord>> grouped = index.groupedSearch(groupBy,
+                nullIfEmpty(params.path("query").asText("")),
+                nullIfEmpty(params.path("tool").asText("")),
+                nullIfEmpty(params.path("session").asText("")),
+                nullIfEmpty(params.path("category").asText("")),
+                nullIfEmpty(params.path("agent").asText("")),
+                nullIfEmpty(params.path("project").asText("")), sf, sd, limit);
 
         StringBuilder sb = new StringBuilder();
         int total = grouped.values().stream().mapToInt(List::size).sum();
@@ -250,6 +253,8 @@ public class ToolCallCatalogTool implements CliTool {
             }
             sb.append("\n");
         }
+        sb.append("Rows are capped at ").append(limit)
+                .append(" per group; filter a group and omit group_by to page all its calls.\n");
         return ToolResult.success("Grouped tool calls", sb.toString());
     }
 
@@ -314,12 +319,21 @@ public class ToolCallCatalogTool implements CliTool {
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private ToolResult formatResults(String action, List<ToolCallRecord> results, String query) {
+    private ToolResult formatResults(String action, List<ToolCallRecord> results, String query, JsonNode params) {
+        int limit = params.path("limit").asInt(50);
+        int offset = params.path("offset").asInt(0);
+        boolean more = results.size() > limit;
+        if (more) results = results.subList(0, limit);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("count", results.size());
+        metadata.put("offset", offset);
+        metadata.put("has_more", more);
+        if (more) metadata.put("next_offset", offset + results.size());
         if (results.isEmpty()) {
             String msg = query != null
                     ? "No tool calls found matching: " + query
                     : "No tool calls found.";
-            return ToolResult.success(msg, msg);
+            return ToolResult.success(msg, msg, metadata);
         }
         StringBuilder sb = new StringBuilder();
         sb.append("Found ").append(results.size()).append(" tool call(s)");
@@ -328,7 +342,9 @@ public class ToolCallCatalogTool implements CliTool {
         for (ToolCallRecord r : results) {
             sb.append(formatRecord(r)).append("\n");
         }
-        return ToolResult.success(action + ": " + results.size() + " results", sb.toString());
+        if (more) sb.append("\nMore calls available; repeat the same filters with offset=")
+                .append(offset + results.size()).append(" and limit=").append(limit).append('.');
+        return ToolResult.success(action + ": " + results.size() + " results", sb.toString(), metadata);
     }
 
     private String formatRecord(ToolCallRecord r) {
@@ -343,6 +359,7 @@ public class ToolCallCatalogTool implements CliTool {
         StringBuilder sb = new StringBuilder();
         sb.append("[").append(ts != null ? ts : "?").append("] ");
         sb.append(r.getToolName()).append(" (").append(r.getCategory()).append(")");
+        sb.append(" id=").append(r.getId()).append(" session=").append(r.getSessionId());
         if (!projShort.isEmpty()) sb.append(" project=").append(projShort);
         sb.append(" agent=").append(r.getAgentName() != null ? r.getAgentName() : "?");
         if (r.getToolInputSummary() != null && !r.getToolInputSummary().isEmpty()) {

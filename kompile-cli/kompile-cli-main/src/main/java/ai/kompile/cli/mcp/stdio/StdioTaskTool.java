@@ -75,11 +75,18 @@ public class StdioTaskTool {
 
     public String description() {
         return "Delegate one task; use multi_task for 2+ independent subtasks in one parallel batch. " +
+            "Background by default; set background=false to wait for the result. Completion is monitored automatically; if needed, use poll action=monitor, never status polling. " +
             "Do not call task repeatedly and wait for each result when the work can run concurrently. " +
             "Use sequential task calls only when later work needs an earlier result, or shared files/resources require serialization.\n\n" +
             "Use agent=kompile (general is a native alias) to run Kompile's own agent on the project's configured " +
             "chat provider and stored credentials, with its own context and tools. Pass model and thinking as request-scoped overrides. " +
-            "This does not use Codex CLI login. Example: {\"agent\":\"kompile\",\"model\":\"gpt-6.1-sol\",\"thinking\":\"xhigh\"}.\n\n" +
+            "This is Kompile-managed dispatch, not the vendor Agent tool. Anthropic switches use Claude Code login by default; " +
+            "authentication_method=oauth/native selects that login, api-key selects the separate Anthropic API. " +
+            "Same-provider auth is inherited. A 401 is an error, never permission to silently change accounts. Example: {\"agent\":\"kompile\",\"model\":\"gpt-6.1-sol\",\"thinking\":\"xhigh\"}. " +
+            "The model id auto-routes the provider: claude-* runs on anthropic, gpt-* on openai/codex, glm-* on zai, etc. " +
+            "When several configured providers host that family and none is its owner (aggregators like openrouter), " +
+            "the dispatch errors naming candidates — pass provider=<id> to pick one, or call resolve_model " +
+            "(action=families or models) to see routes and live catalogs first.\n\n" +
             "External CLI agents: codex (default), claude, opencode, gemini, qwen, pi; selecting one uses that CLI's authentication, not Kompile chat credentials. Roles customize the prompt and " +
             "model defaults without disabling tools, edits, execution, or delegation.\n" +
             "In a workflow team, pass purpose (or a team role) and no agent or model: the team picks the " +
@@ -91,7 +98,7 @@ public class StdioTaskTool {
 
     /** Keep parallel-tool discovery visible in compact MCP tools/list responses. */
     public String compactHint() {
-        return "Delegate one task; 2+ independent subtasks: multi_task parallel batch, not serial task calls. agent=kompile/general: Kompile chat/auth; codex/claude/etc: CLI auth. model/thinking override.";
+        return "Delegate task: agent=kompile; provider/model/authentication_method. Anthropic oauth=Claude login. resolve_model. 2+: multi_task parallel batch. Background by default; background=false waits.";
     }
 
     public JsonNode parameterSchema() {
@@ -112,7 +119,13 @@ public class StdioTaskTool {
         SUPPORTED_AGENTS.forEach(enumValues::add);
         var model = props.putObject("model");
         model.put("type", "string");
-        model.put("description", "Optional model override. Precedence: explicit value, selected role default, project default, user default, provider native default.");
+        model.put("description", "Optional model override. Precedence: explicit value, selected role default, project default, user default, provider native default. For agent=kompile the id auto-routes the provider (claude-* to anthropic, glm-* to zai, ...); an ambiguous multi-host family errors listing candidates.");
+        props.putObject("authentication_method").put("type", "string").put("description",
+                "Auth route, not a secret: oauth/native uses Claude Code login for anthropic; api-key selects the separate API. Inherits the configured choice on the same provider. No fallback after 401.")
+                .putArray("enum").add("oauth").add("native").add("api-key");
+        var provider = props.putObject("provider");
+        provider.put("type", "string");
+        provider.put("description", "Optional Kompile chat provider override for agent=kompile/general (e.g. anthropic, openai, zai). Selects the provider's own auth route. Anthropic defaults to Claude Code login; authentication_method=api-key explicitly selects its HTTP API. Use resolve_model to get exact provider/model/auth arguments.");
         var thinking = props.putObject("thinking");
         thinking.put("type", "string");
         thinking.put("description", "Optional thinking/effort override. When omitted, exact-model/default thinking from the selected role is tried before project/user defaults. Native mapping: Codex reasoning effort, Claude effort, OpenCode variant.");
@@ -122,6 +135,9 @@ public class StdioTaskTool {
         var purpose = props.putObject("purpose");
         purpose.put("type", "string");
         purpose.put("description", "Workflow teams only: the routing purpose (e.g. implement, review). The team picks the participant, whose CLI agent, model, and thinking the task runs on.");
+        props.putObject("background").put("type", "boolean").put("default", true).put("description",
+                "Background by default so the parent continues immediately. Set false to wait for the result. "
+                        + "Automatic completion notification; use poll action=monitor for a held wait, not status polling. Default: true.");
         schema.putArray("required").add("description").add("prompt");
         return schema;
     }
@@ -131,6 +147,16 @@ public class StdioTaskTool {
     }
 
     public ToolResult execute(Map<String, Object> arguments, ToolContext context) {
+        return execute(arguments, context, null);
+    }
+
+    boolean hasWorkflow() { return workflowEnforcement(workDir, roleManager) != null; }
+
+    ToolResult resumeNative(String sessionId, Map<String, Object> arguments, ToolContext context) {
+        return execute(arguments, context, sessionId);
+    }
+
+    private ToolResult execute(Map<String, Object> arguments, ToolContext context, String resumeSessionId) {
         if (context != null && context.isAborted()) return ToolResult.error("Task cancelled");
         String desc = (String) arguments.getOrDefault("description", "");
         String prompt = (String) arguments.getOrDefault("prompt", "");
@@ -139,6 +165,8 @@ public class StdioTaskTool {
                 .toLowerCase(Locale.ROOT);
         String model = (String) arguments.get("model");
         String thinking = (String) arguments.get("thinking");
+        String provider = (String) arguments.get("provider");
+        String authenticationMethod = (String) arguments.get("authentication_method");
         String roleName = (String) arguments.get("role"); // optional
 
         if (prompt == null || prompt.isEmpty()) {
@@ -154,6 +182,9 @@ public class StdioTaskTool {
         }
         String participant = null;
         if (workflow != null) {
+            if ((provider != null && !provider.isBlank()) || (authenticationMethod != null && !authenticationMethod.isBlank())) {
+                return ToolResult.error("The workflow owns provider and authentication_method; change its participant binding instead.");
+            }
             WorkflowTeamEnforcement.ToolDecision toolDecision =
                     workflow.evaluateToolUse("task");
             if (!toolDecision.allowed()) {
@@ -199,6 +230,8 @@ public class StdioTaskTool {
             .roleName(roleName)
             .modelOverride(model)
             .thinkingOverride(thinking)
+            .providerOverride(provider)
+            .authenticationMethodOverride(authenticationMethod)
             .workflowParticipant(participant)
             .build();
 
@@ -206,7 +239,17 @@ public class StdioTaskTool {
 
         try {
             // The shared runner is a factory, never the cancellation target of a request.
-            String result = runWithCancellation(subagentRunner.forkForSubagent(), agentConfig, prompt, context);
+            DirectSubagentRunnerStdio ownedRunner = subagentRunner.forkForSubagent();
+            String result;
+            if (resumeSessionId == null) {
+                result = runWithCancellation(ownedRunner, agentConfig, prompt, context);
+            } else {
+                if (!KompileNativeTaskRunner.supports(requestedAgent)) return ToolResult.error("Native resume requires agent=kompile/general");
+                try (CancellationWatch watch = new CancellationWatch(() -> context != null && context.isAborted(), ownedRunner)) {
+                    result = ownedRunner.resumeNativeSubagent(agentConfig, resumeSessionId, prompt, context);
+                    if (context != null && context.isAborted()) throw new InterruptedException("Subagent resume cancelled");
+                }
+            }
             if (isAgentMissing(result)) {
                 return ToolResult.error(displayName + " is not available on PATH.");
             }
@@ -229,11 +272,14 @@ public class StdioTaskTool {
             }
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("agent", requestedAgent);
+            if (ownedRunner.getLastTaskId() != null) metadata.put("sessionId", ownedRunner.getLastTaskId());
             metadata.put("description", desc);
             metadata.put("mode", nativeAgent ? "kompile-native" : "managed-terminal");
             metadata.put("role", effectiveRoleName == null ? "" : effectiveRoleName);
             metadata.put("model", effectiveModel == null ? "" : effectiveModel);
             metadata.put("thinking", effectiveThinking == null ? "" : effectiveThinking);
+            metadata.put("provider", provider == null ? "" : provider);
+            metadata.put("authentication_method", authenticationMethod == null ? "" : authenticationMethod);
             metadata.put("policy", "FULL_ACCESS");
             metadata.put("fallbacksUsed", "0");
             if (workflow != null) {
@@ -260,15 +306,37 @@ public class StdioTaskTool {
         }
     }
 
+    /** Batch-local timeout cancellation must not abort the shared parent ToolContext. */
+    static String runWithCancellation(DirectSubagentRunnerStdio runner, AgentConfig agent,
+                                      String prompt, ToolContext context,
+                                      java.util.function.BooleanSupplier stop) throws Exception {
+        java.util.function.BooleanSupplier cancelled = () -> stop.getAsBoolean()
+                || (context != null && context.isAborted());
+        try (CancellationWatch watch = new CancellationWatch(cancelled, runner)) {
+            if (cancelled.getAsBoolean()) throw new InterruptedException("Task cancelled");
+            String result = runner.runSubagent(agent, prompt);
+            if (cancelled.getAsBoolean()) throw new InterruptedException("Task cancelled");
+            return result;
+        } finally {
+            // Future.cancel(true) can interrupt a worker before its watcher polls.
+            // Still signal the owning runner, without ever blocking the batch collector.
+            if (cancelled.getAsBoolean()) runner.cancel();
+        }
+    }
+
     /** One execution owns one fork and one watcher; no shared runner or global cancel state. */
     static final class CancellationWatch implements AutoCloseable {
-        private final ToolContext context;
+        private final java.util.function.BooleanSupplier cancelled;
         private final DirectSubagentRunnerStdio runner;
         final Thread thread;
-        private boolean closed;
+        private volatile boolean closed;
 
         CancellationWatch(ToolContext context, DirectSubagentRunnerStdio runner) {
-            this.context = context;
+            this(context::isAborted, runner);
+        }
+
+        CancellationWatch(java.util.function.BooleanSupplier cancelled, DirectSubagentRunnerStdio runner) {
+            this.cancelled = cancelled;
             this.runner = runner;
             thread = new Thread(() -> {
                 try {
@@ -281,16 +349,17 @@ public class StdioTaskTool {
             thread.start();
         }
 
-        private synchronized boolean checkCancellation() {
+        private boolean checkCancellation() {
             if (closed) return false;
-            // Retry while aborted: the runner resets its local flag during startup,
-            // and may publish its managed runner only after the first cancellation.
-            if (context.isAborted()) runner.cancel();
-            return true;
+            // Cancellation may block while a process exits. Never hold the watch's
+            // close monitor across it: the worker must be able to retire this watch.
+            // Retry across the managed runner's startup/reset publication race.
+            if (cancelled.getAsBoolean()) runner.cancel();
+            return !closed;
         }
 
         @Override
-        public synchronized void close() {
+        public void close() {
             closed = true;
             thread.interrupt();
         }

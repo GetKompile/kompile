@@ -38,6 +38,9 @@ public interface SubagentRunner {
         }
         default void onSubagentOutput(String id, String chunk) {
         }
+        /** Immutable display snapshot: resolved route and live child-only usage. */
+        default void onSubagentMetadata(String id, java.util.Map<String, String> metadata) {
+        }
         void onSubagentEnd(String id);
     }
 
@@ -52,6 +55,23 @@ public interface SubagentRunner {
      * @throws Exception if the subagent fails
      */
     String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception;
+
+    /**
+     * Run a subagent with explicit run options (resumability, name). The default
+     * ignores the options and delegates to {@link #runSubagent(AgentConfig, String,
+     * ToolContext)} — implementations that do not support resumability keep their
+     * exact current behavior, which is correct because resumability is opt-in.
+     */
+    default String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext,
+                               SubagentRunOptions options) throws Exception {
+        return runSubagent(agent, prompt, parentContext);
+    }
+
+    /** Continue a durable child with the supplied target agent, regardless of its original route. */
+    default String resumeSubagent(AgentConfig agent, String sessionId, String prompt,
+                                  ToolContext parentContext) throws Exception {
+        throw new UnsupportedOperationException("This subagent runtime does not support durable resume");
+    }
 
     /**
      * Set a lifecycle listener for subagent start/status/end events.

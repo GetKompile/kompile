@@ -54,6 +54,7 @@ public final class MultiChatSessionHost implements AutoCloseable {
         boolean submit(String line) throws Exception;
         boolean ownsInput();
         boolean replacementRequested();
+        default ChatConfig replacementConfig() { return null; }
         void message(String text) throws Exception;
         default void diagnostic(String text) throws Exception { message(text); }
         void finish(boolean normal, IOException failure) throws Exception;
@@ -63,6 +64,9 @@ public final class MultiChatSessionHost implements AutoCloseable {
     @FunctionalInterface
     interface SessionFactory {
         Session create(String id, boolean resume) throws Exception;
+        default Session create(String id, boolean resume, ChatConfig replacementConfig) throws Exception {
+            return create(id, resume);
+        }
     }
 
     private final Terminal terminal;
@@ -168,8 +172,9 @@ public final class MultiChatSessionHost implements AutoCloseable {
                 if (!session.ownsInput() && control(line)) continue;
                 if (!session.submit(line)) {
                     boolean replace = session.replacementRequested();
+                    ChatConfig replacementConfig = replace ? session.replacementConfig() : null;
                     closeSelected(!replace);
-                    if (replace) createFromControl();
+                    if (replace) createFromControl(replacementConfig);
                 }
             } catch (UserInterruptException | EndOfFileException end) {
                 closeSelected();
@@ -220,8 +225,12 @@ public final class MultiChatSessionHost implements AutoCloseable {
     }
 
     private void createFromControl() throws Exception {
+        createFromControl(null);
+    }
+
+    private void createFromControl(ChatConfig replacementConfig) throws Exception {
         try {
-            create(UUID.randomUUID().toString(), false);
+            create(UUID.randomUUID().toString(), false, replacementConfig);
         } catch (Exception failure) {
             if (foreground() == null || !foreground().isAttached()) throw failure;
             foreground().message("Could not create session: " + failure.getMessage());
@@ -229,6 +238,10 @@ public final class MultiChatSessionHost implements AutoCloseable {
     }
 
     int create(String id, boolean resume) throws Exception {
+        return create(id, resume, null);
+    }
+
+    private int create(String id, boolean resume, ChatConfig replacementConfig) throws Exception {
         if (closed) throw new IllegalStateException("Host is closed");
         requireTerminalSize();
         Session previous = foreground();
@@ -236,7 +249,7 @@ public final class MultiChatSessionHost implements AutoCloseable {
         if (previous != null) previous.detach();
         Session created = null;
         try {
-            created = factory.create(id, resume);
+            created = factory.create(id, resume, replacementConfig);
             created.start();
             requireAttached(created);
             int number = nextNumber++;
@@ -357,6 +370,10 @@ public final class MultiChatSessionHost implements AutoCloseable {
         }
 
         @Override public Session create(String id, boolean resume) throws Exception {
+            return create(id, resume, null);
+        }
+
+        @Override public Session create(String id, boolean resume, ChatConfig replacementConfig) throws Exception {
             ChatUiSession ui = new ChatUiSession();
             TranscriptLogScope log = TranscriptLogScope.openIsolated(id, cwd, resume, errorRoute);
             ChatRepl repl = null;
@@ -364,7 +381,8 @@ public final class MultiChatSessionHost implements AutoCloseable {
                 List<String> startup = java.util.Collections.synchronizedList(new ArrayList<>());
                 ChatCompleter.setContentOutput(startup::add);
                 // The first session has already had explicit CLI overrides applied.
-                ChatConfig sessionConfig = resume && first != null ? ChatConfig.loadSession(id) : null;
+                ChatConfig sessionConfig = replacementConfig != null ? replacementConfig
+                        : resume && first != null ? ChatConfig.loadSession(id) : null;
                 repl = new ChatRepl(null, null, id, false, agent, memory,
                         sessionConfig == null ? config.copy() : sessionConfig, cwd);
                 repl.installRetainedOutput();
@@ -451,6 +469,7 @@ public final class MultiChatSessionHost implements AutoCloseable {
         @Override public boolean submit(String line) throws Exception { return call(() -> repl.submitInteractiveLine(line)); }
         @Override public boolean ownsInput() { return repl.ownsInteractiveInput(); }
         @Override public boolean replacementRequested() { return repl.isNewConversationRequested(); }
+        @Override public ChatConfig replacementConfig() { return repl.getChatConfig().copy(); }
         @Override public void message(String text) { context.wrap(() -> repl.showHostMessage(text)).run(); }
         @Override public void diagnostic(String text) { context.wrap(() -> repl.getTui().showAlert(text)).run(); }
         @Override public void finish(boolean normal, IOException failure) {

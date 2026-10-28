@@ -2,11 +2,15 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.ProviderCompactionCapabilities;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
 import ai.kompile.cli.main.chat.mcp.McpDiagnostics;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.EditLockEntry;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.ToolRegistryFactory;
 import ai.kompile.cli.main.chat.tui.StatusBar;
 import ai.kompile.utils.AnsiConstants;
@@ -25,6 +29,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -57,7 +62,30 @@ class ChatReplRetainedLifecycleTest {
         }
     }
 
+    @Test
+    void providerCloseFailureStillReleasesTheEndedChatsLocks() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        String previousDirectory = System.getProperty("user.dir");
+        Path home = Files.createDirectories(temporaryDirectory.resolve("home"));
+        Path work = Files.createDirectories(temporaryDirectory.resolve("project"));
+        Files.createDirectories(work.resolve(".kompile"));
+        System.setProperty("user.home", home.toString());
+        System.setProperty("user.dir", work.toString());
+        try {
+            exerciseLifecycle(home, work, true);
+        } finally {
+            restoreProperty("user.home", previousHome);
+            restoreProperty("user.dir", previousDirectory);
+        }
+    }
+
     private void exerciseLifecycle(Path home, Path work) throws Exception {
+        exerciseLifecycle(home, work, false);
+    }
+
+    private void exerciseLifecycle(Path home, Path work, boolean failProviderClose) throws Exception {
+        List<CoordinationStateManager> coordinators = new ArrayList<>();
+        List<BackgroundProcessManager> processes = new ArrayList<>();
         HarnessConfig disabled = new HarnessConfig();
         disabled.setEnabled(false);
         disabled.setJudgeEnabled(false);
@@ -75,14 +103,24 @@ class ChatReplRetainedLifecycleTest {
         try (MockedStatic<HarnessConfig> harness = mockStatic(HarnessConfig.class);
              MockedStatic<ToolRegistryFactory> tools = mockStatic(ToolRegistryFactory.class);
              MockedStatic<McpBundleToolLoader> mcp = mockStatic(McpBundleToolLoader.class);
-             MockedConstruction<DirectLlmClient> clients = mockConstruction(DirectLlmClient.class);
+             MockedConstruction<DirectLlmClient> clients = mockConstruction(DirectLlmClient.class,
+                     (client, context) -> {
+                         when(client.compactionCapabilities(nullable(String.class)))
+                                 .thenReturn(ProviderCompactionCapabilities.generic());
+                         when(client.contextBudgetLimits(any(), nullable(String.class)))
+                                 .thenReturn(new ai.kompile.cli.main.chat.config.ModelContextResolver.ModelLimits(32_000, 4_000));
+                     });
              var terminal = new LineDisciplineTerminal(
                      "real-repl-retention", "xterm", output, StandardCharsets.UTF_8)) {
             harness.when(HarnessConfig::load).thenReturn(disabled);
             harness.when(() -> HarnessConfig.load(any())).thenReturn(disabled);
             tools.when(() -> ToolRegistryFactory.create(any(), anyString(), any(), any(),
                             any(), any(), any(), any(), isNull(), any(), any()))
-                    .thenAnswer(invocation -> new ToolRegistry(invocation.getArgument(0)));
+                    .thenAnswer(invocation -> {
+                        processes.add(invocation.getArgument(5));
+                        coordinators.add(invocation.getArgument(10));
+                        return new ToolRegistry(invocation.getArgument(0));
+                    });
             mcp.when(() -> McpBundleToolLoader.loadInteractive(eq(work), any(), anyString()))
                     .thenReturn(firstMcp, secondMcp);
             terminal.setSize(new Size(100, 30));
@@ -91,6 +129,11 @@ class ChatReplRetainedLifecycleTest {
                     ScheduledLoopManager.stateFileForProject(work));
             try (OwnedRepl first = new OwnedRepl("retained-first", work, projectLoops);
                  OwnedRepl second = new OwnedRepl("retained-second", work, projectLoops)) {
+                String firstLock = coordinators.get(0).tryAcquireEditLock(
+                        work.resolve("first.txt").toString(), "edit", "worker").getLockId();
+                String secondLock = coordinators.get(1).tryAcquireEditLock(
+                        work.resolve("second.txt").toString(), "edit", "worker").getLockId();
+                assertEquals(2, coordinators.get(1).queryEdits().size());
                 LineReader firstReader;
                 Consumer<String> firstOutput;
                 try (var ignored = first.ui.bind()) {
@@ -99,6 +142,12 @@ class ChatReplRetainedLifecycleTest {
                     assertNotNull(firstReader);
                     assertSame(terminal, firstReader.getTerminal());
                     assertTrue(first.repl.getTui().isTerminalAttached());
+                    // A separate writer (the MCP topology) must surface without a model/tool callback.
+                    new ai.kompile.cli.main.chat.activity.ConversationActivityService().record(
+                            first.repl.getActivityIdentity(), "test.milestone.recorded", "", "first-milestone-fixture", null,
+                            java.util.Map.of("source", "manual", "outcome", "failed", "failed", "1"));
+                    awaitActivityFrame(output, "Test milestone · first-milestone-fixture");
+                    assertTrue(content(first).contains("manual (agent-reported)"));
                     assertTrue(first.repl.submitInteractiveLine("/queue first queued work"));
                     firstReader.getBuffer().write("unfinished first draft");
                     firstReader.getHistory().add("first input history");
@@ -121,6 +170,7 @@ class ChatReplRetainedLifecycleTest {
                     assertNotNull(secondReader);
                     assertSame(terminal, secondReader.getTerminal());
                     assertNotSame(firstReader, secondReader);
+                    assertFalse(content(second).contains("first-milestone-fixture"), "milestone cards are session-local");
                     assertTrue(secondReader.getHistory().isEmpty(), "input history is session-local");
                     secondReader.getBuffer().write("unfinished second draft");
                     assertEquals(List.of(), second.ui.queueSupplier.get());
@@ -151,7 +201,16 @@ class ChatReplRetainedLifecycleTest {
                     assertSame(secondReader, second.ui.lineReaderRef);
                     assertEquals("unfinished second draft", secondReader.getBuffer().toString());
                     // Dispose the hidden owner while its sibling still owns the terminal.
-                    first.close();
+                    if (failProviderClose) {
+                        doThrow(new IllegalStateException("provider cleanup failed"))
+                                .when(clients.constructed().get(0)).close();
+                        assertThrows(IllegalStateException.class, first::close);
+                    } else {
+                        first.close();
+                    }
+                    assertFalse(Files.exists(work.resolve(".kompile/coordination/edits/" + firstLock + ".lock.json")));
+                    assertEquals(List.of(secondLock), coordinators.get(1).queryEdits().stream()
+                            .map(EditLockEntry::getLockId).toList(), "sibling chat locks must remain");
                     assertSame(second.ui, ChatUiSession.current());
                     assertTrue(second.repl.getTui().isTerminalAttached());
                     assertSame(secondReader, second.ui.lineReaderRef);
@@ -167,6 +226,7 @@ class ChatReplRetainedLifecycleTest {
                 second.close();
                 second.close();
                 assertFalse(second.repl.getTui().isStarted());
+                assertFalse(Files.exists(work.resolve(".kompile/coordination/edits/" + secondLock + ".lock.json")));
                 assertTrue(first.ui.isClosed());
                 assertTrue(second.ui.isClosed());
                 assertTrue(Files.isRegularFile(home.resolve(".kompile/conversations/retained-first.txt")));
@@ -185,6 +245,9 @@ class ChatReplRetainedLifecycleTest {
                 terminal.writer().flush();
                 assertTrue(output.toString(StandardCharsets.UTF_8).contains("shared terminal remains open"));
             } finally {
+                // A deliberately failing provider may prevent later general cleanup.
+                processes.forEach(BackgroundProcessManager::close);
+                coordinators.forEach(CoordinationStateManager::shutdown);
                 projectLoops.shutdown();
             }
         }
@@ -218,7 +281,13 @@ class ChatReplRetainedLifecycleTest {
         try (MockedStatic<HarnessConfig> harness = mockStatic(HarnessConfig.class);
              MockedStatic<ToolRegistryFactory> tools = mockStatic(ToolRegistryFactory.class);
              MockedStatic<McpBundleToolLoader> mcp = mockStatic(McpBundleToolLoader.class);
-             MockedConstruction<DirectLlmClient> clients = mockConstruction(DirectLlmClient.class);
+             MockedConstruction<DirectLlmClient> clients = mockConstruction(DirectLlmClient.class,
+                     (client, context) -> {
+                         when(client.compactionCapabilities(nullable(String.class)))
+                                 .thenReturn(ProviderCompactionCapabilities.generic());
+                         when(client.contextBudgetLimits(any(), nullable(String.class)))
+                                 .thenReturn(new ai.kompile.cli.main.chat.config.ModelContextResolver.ModelLimits(32_000, 4_000));
+                     });
              var terminal = new LineDisciplineTerminal(
                      "mcp-log-routing", "xterm", new ByteArrayOutputStream(), StandardCharsets.UTF_8)) {
             harness.when(HarnessConfig::load).thenReturn(disabled);
@@ -377,7 +446,13 @@ class ChatReplRetainedLifecycleTest {
              MockedStatic<McpBundleToolLoader> mcp = mockStatic(McpBundleToolLoader.class);
              // The running Claude Code turn takes every delivery written into it.
              MockedConstruction<DirectLlmClient> clients = mockConstruction(DirectLlmClient.class,
-                     (client, context) -> when(client.injectIntoClaudeTurn(anyString(), anyString())).thenReturn(true));
+                     (client, context) -> {
+                         when(client.compactionCapabilities(nullable(String.class)))
+                                 .thenReturn(ProviderCompactionCapabilities.generic());
+                         when(client.contextBudgetLimits(any(), nullable(String.class)))
+                                 .thenReturn(new ai.kompile.cli.main.chat.config.ModelContextResolver.ModelLimits(32_000, 4_000));
+                         when(client.injectIntoClaudeTurn(anyString(), anyString())).thenReturn(true);
+                     });
              var terminal = new LineDisciplineTerminal(
                      "running-turn-injection", "xterm", new ByteArrayOutputStream(), StandardCharsets.UTF_8)) {
             harness.when(HarnessConfig::load).thenReturn(disabled);
@@ -413,6 +488,173 @@ class ChatReplRetainedLifecycleTest {
             restoreProperty("user.home", previousHome);
             restoreProperty("user.dir", previousDirectory);
         }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"mcp__kompile__task", "mcp__kompile__multi_task"})
+    void openedDelegationActivityRendersLiveOutputWithoutReopening(String toolName) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        String previousDirectory = System.getProperty("user.dir");
+        Path home = Files.createDirectories(temporaryDirectory.resolve("activity-home"));
+        Path work = Files.createDirectories(temporaryDirectory.resolve("activity-project"));
+        System.setProperty("user.home", home.toString());
+        System.setProperty("user.dir", work.toString());
+        HarnessConfig disabled = new HarnessConfig();
+        disabled.setEnabled(false);
+        disabled.setJudgeGlobalEnabled(false);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        var childListener = new java.util.concurrent.atomic.AtomicReference<ai.kompile.cli.main.chat.agent.SubagentRunner.LifecycleListener>();
+        var childRunner = new ai.kompile.cli.main.chat.agent.SubagentRunner() {
+            public String runSubagent(ai.kompile.cli.main.chat.agent.AgentConfig agent, String prompt,
+                                      ai.kompile.cli.main.chat.tools.ToolContext context) {
+                throw new AssertionError("No model call expected");
+            }
+            public void setLifecycleListener(LifecycleListener listener) { childListener.set(listener); }
+        };
+        var bundle = mock(McpBundleToolLoader.class);
+        when(bundle.dashboardConfig()).thenReturn(Optional.empty());
+        try (MockedStatic<HarnessConfig> harness = mockStatic(HarnessConfig.class);
+             MockedStatic<ToolRegistryFactory> tools = mockStatic(ToolRegistryFactory.class);
+             MockedStatic<McpBundleToolLoader> mcp = mockStatic(McpBundleToolLoader.class);
+             MockedConstruction<DirectLlmClient> clients = mockConstruction(DirectLlmClient.class,
+                     (client, context) -> {
+                         when(client.compactionCapabilities(nullable(String.class)))
+                                 .thenReturn(ProviderCompactionCapabilities.generic());
+                         when(client.contextBudgetLimits(any(), nullable(String.class)))
+                                 .thenReturn(new ai.kompile.cli.main.chat.config.ModelContextResolver.ModelLimits(32_000, 4_000));
+                     });
+             var terminal = new LineDisciplineTerminal("live-delegation-view", "xterm", output, StandardCharsets.UTF_8)) {
+            harness.when(HarnessConfig::load).thenReturn(disabled);
+            harness.when(() -> HarnessConfig.load(any())).thenReturn(disabled);
+            tools.when(() -> ToolRegistryFactory.create(any(), anyString(), any(), any(),
+                            any(), any(), any(), any(), isNull(), any(), any()))
+                    .thenAnswer(invocation -> {
+                        var registry = new ToolRegistry(invocation.getArgument(0));
+                        registry.setSubagentRunner(childRunner);
+                        return registry;
+                    });
+            mcp.when(() -> McpBundleToolLoader.loadInteractive(eq(work), any(), anyString())).thenReturn(bundle);
+            terminal.setSize(new Size(120, 40));
+            ScheduledLoopManager loops = new ScheduledLoopManager(prompt -> fail("No model turn expected"),
+                    ScheduledLoopManager.stateFileForProject(work));
+            try (OwnedRepl owned = new OwnedRepl("live-delegation", work, loops);
+                 var ignored = owned.ui.bind()) {
+                owned.repl.initializeInteractive(terminal);
+                owned.repl.getTui().getStatusBar().stop();
+                var loopField = ChatRepl.class.getDeclaredField("agenticLoop");
+                loopField.setAccessible(true);
+                Object loop = loopField.get(owned.repl);
+                var listenerField = loop.getClass().getDeclaredField("toolActivityListener");
+                listenerField.setAccessible(true);
+                var listener = (ai.kompile.cli.main.chat.agent.AgenticChatLoop.ToolActivityListener) listenerField.get(loop);
+                var panelField = ChatRepl.class.getDeclaredField("activityPanel");
+                panelField.setAccessible(true);
+                var panel = (StandardChatActivityPanel) panelField.get(owned.repl);
+                listener.onToolStart("delegation", toolName, "{\"description\":\"inspect source\"}");
+                openActivityRow(owned, panel, "tool:delegation");
+
+                // Use the callback installed by ChatRepl, not a manual content-view refresh.
+                listener.onToolOutput("delegation", toolName, "{}", "Assistant: inspecting source\n");
+                awaitActivityFrame(output, "Assistant: inspecting source");
+                listener.onToolOutput("sibling", toolName, "{}", "sibling-private-output\n");
+                listener.onToolOutput("delegation", toolName, "{}", "Tool read: fixture evidence\n");
+                awaitActivityFrame(output, "Tool read: fixture evidence");
+                assertFalse(content(owned).contains("sibling-private-output"));
+                listener.onToolComplete("delegation", toolName, "{}",
+                        ai.kompile.cli.main.chat.tools.ToolResult.success("Finished child work"));
+                awaitActivityFrame(output, "Finished child work");
+                assertEquals("tool:delegation", owned.repl.getTui().getContentViewKey());
+                assertTrue(content(owned).contains("Assistant: inspecting source"));
+
+                // Native child rows use their lifecycle listener, not the invocation's output.
+                childListener.get().onSubagentStart("native-child", "general", "Live child");
+                openActivityRow(owned, panel, "subagent:native-child");
+                childListener.get().onSubagentOutput("native-child", "Child prose before completion\n");
+                awaitActivityFrame(output, "Child prose before completion");
+                childListener.get().onSubagentActivity("native-child", "reading", "Child read tool evidence\n");
+                awaitActivityFrame(output, "Child read tool evidence");
+                childListener.get().onSubagentOutput("native-child", "More live child prose\n");
+                awaitActivityFrame(output, "More live child prose");
+                childListener.get().onSubagentEnd("native-child");
+                assertEquals("subagent:native-child", owned.repl.getTui().getContentViewKey());
+                var mainEntries = owned.repl.getTui().getClass().getDeclaredField("mainTranscriptEntries");
+                mainEntries.setAccessible(true);
+                for (Object entry : (java.util.Collection<?>) mainEntries.get(owned.repl.getTui())) {
+                    var key = entry.getClass().getDeclaredField("key");
+                    key.setAccessible(true);
+                    assertFalse(String.valueOf(key.get(entry)).contains("native-child"),
+                            "lifecycle events must not insert child transcript blocks into Main");
+                }
+
+                // MCP task/multi_task children arrive as shared process logs in this chat.
+                var coordinator = new ai.kompile.cli.main.coordination.CoordinationStateManager(
+                        work, "mcp-children", new com.fasterxml.jackson.databind.ObjectMapper());
+                coordinator.registerAgent("fixture", "live-delegation", "kompile", 1, 0L, null, null);
+                try (var children = new ai.kompile.cli.main.chat.tools.BackgroundProcessManager("mcp-children", work)) {
+                    int count = toolName.endsWith("multi_task") ? 2 : 1;
+                    var logs = new java.util.ArrayList<ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessEntry>();
+                    for (int n = 0; n < count; n++) {
+                        var log = children.registerVirtual(ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessKind.COMMAND,
+                                "kompile", "MCP child " + n, java.util.Map.of("kind", "subagent"));
+                        logs.add(log);
+                        coordinator.publishProcess(log.getId(), log.getCommand(), log.getDescription(), -1L,
+                                "RUNNING", log.getOutputFile().toString(), "kompile", null, "subagent",
+                                log.getStartTime(), null, null);
+                    }
+                    var mirrorField = ChatRepl.class.getDeclaredField("sharedProcessMirror");
+                    mirrorField.setAccessible(true);
+                    var mirror = (SharedProcessMirror) mirrorField.get(owned.repl);
+                    mirror.pollOnce();
+                    String key = "process:shared-mcp-children-" + logs.get(0).getId();
+                    openActivityRow(owned, panel, key);
+                    children.appendVirtualOutputChunk(logs.get(0).getId(), "MCP live assistant prose\n");
+                    awaitActivityFrame(output, "MCP live assistant prose");
+                    if (count > 1) children.appendVirtualOutput(logs.get(1).getId(), "private sibling transcript");
+                    children.appendVirtualOutput(logs.get(0).getId(), "MCP child tool call and result");
+                    awaitActivityFrame(output, "MCP child tool call and result");
+                    assertFalse(content(owned).contains("private sibling transcript"));
+                    assertEquals(key, owned.repl.getTui().getContentViewKey());
+                    for (var log : logs) {
+                        children.complete(log.getId());
+                        coordinator.updateProcessState(log.getId(), "COMPLETED", log.getEndTime(), log.getExitCode());
+                    }
+                    mirror.pollOnce();
+                    assertEquals(key, panel.currentView().key());
+                    assertTrue(content(owned).contains("MCP child tool call and result"));
+                } finally {
+                    coordinator.shutdown();
+                }
+            } finally {
+                loops.shutdown();
+            }
+        } finally {
+            restoreProperty("user.home", previousHome);
+            restoreProperty("user.dir", previousDirectory);
+        }
+    }
+
+    private static void openActivityRow(OwnedRepl owned, StandardChatActivityPanel panel, String key) {
+        panel.clearSelection();
+        for (int n = 0; n < panel.activityItems().size() + 1; n++) {
+            assertTrue(panel.selectNext());
+            assertTrue(owned.ui.lineReaderRef.getWidgets().get(LineReader.ACCEPT_LINE).apply());
+            if (panel.currentView().key().equals(key)) break;
+        }
+        assertEquals(key, panel.currentView().key());
+        assertEquals(key, owned.repl.getTui().getContentViewKey());
+    }
+
+    private static void awaitActivityFrame(ByteArrayOutputStream output, String text) throws Exception {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+        String screen;
+        do {
+            var frame = new ai.kompile.cli.main.chat.tui.VirtualTerminal(40, 120);
+            frame.feed(output.toString(StandardCharsets.UTF_8));
+            screen = frame.screenDump();
+            if (screen.contains(text)) return;
+            Thread.sleep(10);
+        } while (System.nanoTime() < deadline);
+        fail("Opened activity frame did not update with " + text + ":\n" + screen);
     }
 
     private static String content(OwnedRepl owner) {

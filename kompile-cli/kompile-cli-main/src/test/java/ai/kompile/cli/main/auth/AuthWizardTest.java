@@ -65,7 +65,7 @@ class AuthWizardTest {
     }
 
     @Test
-    void anthropicLoginOffersItsApiKeyButNoSubscriptionSignIn() throws Exception {
+    void anthropicLoginOffersTheSetupTokenSignInBeforeItsApiKey() throws Exception {
         CredentialStore store = new CredentialStore(tempDir.resolve("anthropic-auth.json"));
         ScriptedPrompter prompter = new ScriptedPrompter()
                 .selecting("Anthropic", "Paste an API key")
@@ -77,8 +77,8 @@ class AuthWizardTest {
             request = wizard.promptForLogin(new OAuthProviderRegistry(), store);
         }
 
-        // Claude Code owns Anthropic's subscription login, so the wizard never offers to sign in to it.
-        assertEquals(List.of("Paste an API key", "Reference an environment variable"),
+        // One Anthropic entry: its OAuth method captures a Claude Code setup token; the API key stays.
+        assertEquals(List.of("OAuth / subscription sign-in", "Paste an API key", "Reference an environment variable"),
                 prompter.menus.get("Select Login Method:"));
         assertNotNull(request);
         assertEquals("anthropic", request.providerId());

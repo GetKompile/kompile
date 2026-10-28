@@ -114,8 +114,9 @@ public class TaskTool implements CliTool {
             desc.append("\n");
         }
 
-        desc.append("\nFor direct-model chat, model and thinking select this child's model and reasoning effort ")
-                .append("on the parent's provider without changing parent/global settings. ")
+        desc.append("\nKompile-managed child: model auto-routes; provider explicitly corrects the route. ")
+                .append("authentication_method=oauth/native uses Claude Code login for anthropic; api-key selects its separate API. ")
+                .append("Same-provider auth is inherited; resolve_model discovers routes and models. No parent/global settings change. ")
                 .append("Use role instead of agent_type to select a named role's prompt and tool policy. ")
                 .append("CLI agent selection and per-CLI role defaults belong to the MCP task tool, not this direct chat tool.\n")
                 .append("Inside an active workflow team, pass purpose (or a team role): the team decides which ")
@@ -124,12 +125,18 @@ public class TaskTool implements CliTool {
                 .append("In standard chat, Ctrl+B backgrounds a running subagent invocation. ")
                 .append("Select its activity row and press Delete to stop it, or open it and type ")
                 .append("to continue its retained conversation.\n")
-                .append("Set background=true to detach this invocation yourself (the agent-initiated ")
-                .append("equivalent of Ctrl+B): the parent continues immediately with a placeholder and ")
+                .append("Task invocations background by default (the agent-initiated equivalent of Ctrl+B): ")
+                .append("the parent continues immediately with a placeholder and ")
                 .append("the final result is delivered as a system message on completion, so several ")
-                .append("independent delegations can run concurrently. Silently falls back to synchronous ")
+                .append("independent delegations can run concurrently. Set background=false to wait for the result. ")
+                .append("Silently falls back to synchronous ")
                 .append("execution when the running harness cannot background (headless runs, subagent child contexts).");
         return desc.toString();
+    }
+
+    @Override
+    public String compactHint() {
+        return "Kompile child: role/agent_type, provider/model/authentication_method. Anthropic oauth=Claude login; api-key=HTTP API. resolve_model discovers routes. Not the vendor Agent tool.";
     }
 
     @Override
@@ -150,6 +157,11 @@ public class TaskTool implements CliTool {
 
         // Build enum from registered subagents
         List<AgentConfig> subagents = agentRegistry.getSubagents();
+        props.putObject("provider").put("type", "string").put("description",
+                "Request-local provider override; use resolve_model to correct an ambiguous route.");
+        props.putObject("authentication_method").put("type", "string").put("description",
+                "Auth route: oauth/native uses Claude Code login for anthropic; api-key uses the separate HTTP API. Same-provider omission inherits auth; no fallback after 401.")
+                .putArray("enum").add("oauth").add("native").add("api-key");
         ObjectNode agentType = props.putObject("agent_type");
         agentType.put("type", "string");
 
@@ -169,7 +181,7 @@ public class TaskTool implements CliTool {
         }
 
         props.putObject("model").put("type", "string").put("description",
-                "Request-scoped model id on the parent's direct chat provider. Omit to inherit; never changes defaults.");
+                "Request-scoped model id; auto-routes when needed. provider/authentication_method correct a route; resolve_model lists options. Never changes global defaults.");
         props.putObject("thinking").put("type", "string").put("description",
                 "Request-scoped provider-native reasoning effort (e.g. xhigh). Direct-model chat only; omit to inherit.");
         props.putObject("role").put("type", "string").put("description",
@@ -177,10 +189,18 @@ public class TaskTool implements CliTool {
                         + "Recursive delegation remains disabled.");
         props.putObject("purpose").put("type", "string").put("description",
                 "Workflow routing purpose (active workflow teams only): which participant should handle this task.");
-        props.putObject("background").put("type", "boolean").put("description",
-                "Detach this subagent invocation so the parent continues immediately; the final result "
-                        + "arrives as a system message on completion. Ignored with a synchronous fallback "
-                        + "when the harness cannot background. Default: false.");
+        props.putObject("background").put("type", "boolean").put("default", true).put("description",
+                "Background by default so the parent continues immediately; the final result "
+                        + "arrives as a system message on completion. Set false to wait for the result. "
+                        + "Ignored with a synchronous fallback when the harness cannot background. Default: true.");
+        ObjectNode resumable = props.putObject("resumable");
+        resumable.put("type", "boolean").put("default", false).put("description",
+                "Opt in to persisting this subagent's conversation so it can be named, listed, "
+                        + "and resumed later (this chat, /subagents, or the subagent_resume MCP tool). "
+                        + "Default false: nothing is persisted.");
+        props.putObject("name").put("type", "string").put("description",
+                "Unique short slug for a resumable run (lowercase letters, digits, '-' and '_'). "
+                        + "Implies resumable=true. Later turns address the run by this name.");
         schema.putArray("required").add("description").add("prompt");
         return schema;
     }
@@ -204,16 +224,24 @@ public class TaskTool implements CliTool {
         }
 
         if (params.hasNonNull("agent")) {
-            return ToolResult.error("Chat task inherits the parent's provider; CLI agent selection requires the MCP task tool.");
+            return ToolResult.error("Chat task uses agent_type/role for a Kompile-managed child, with provider/authentication_method for routing; CLI agent selection requires the MCP task tool.");
         }
-        for (String selector : List.of("model", "thinking", "role", "purpose")) {
+        for (String selector : List.of("model", "thinking", "provider", "authentication_method", "role", "purpose", "name")) {
             if (params.hasNonNull(selector) && !params.get(selector).isTextual()) {
                 return ToolResult.error(selector + " must be a string");
             }
         }
         String model = params.path("model").asText("").trim();
         String thinking = params.path("thinking").asText("").trim();
+        String provider = params.path("provider").asText("").trim();
+        String auth = params.path("authentication_method").asText("").trim();
         String roleName = params.path("role").asText("").trim();
+        String name = params.path("name").asText("").trim();
+        boolean resumableRequested = params.path("resumable").asBoolean(false) || !name.isEmpty();
+        if (!name.isEmpty()) {
+            String nameError = ai.kompile.cli.main.chat.agent.SubagentResumeMetadata.nameError(name);
+            if (nameError != null) return ToolResult.error("name: " + nameError);
+        }
 
         // Workflow team: the team decides who handles the task. Its purposes,
         // delegation edges, and gates are checked before any launch, and the
@@ -222,6 +250,9 @@ public class TaskTool implements CliTool {
         WorkflowTeam.Participant participant = null;
         WorkflowTeam.ModelBinding binding = null;
         if (workflow != null) {
+            if (!provider.isEmpty() || !auth.isEmpty()) {
+                return ToolResult.error("The workflow owns provider and authentication_method; change its participant binding instead.");
+            }
             DelegationDecision decision = workflow.evaluateDelegation(
                     params.path("purpose").asText("").trim(), roleName);
             if (decision instanceof DelegationDecision.Denied denied) {
@@ -267,7 +298,23 @@ public class TaskTool implements CliTool {
         AgentConfig.Builder child = subagentConfig.toBuilder().canSpawnSubagents(false);
         if (!model.isEmpty()) child.modelOverride(model);
         if (!thinking.isEmpty()) child.thinkingOverride(thinking);
+        if (!provider.isEmpty()) child.providerOverride(provider);
+        if (!auth.isEmpty()) child.authenticationMethodOverride(auth);
         subagentConfig = child.build();
+
+        ai.kompile.cli.main.chat.agent.SubagentRunOptions runOptions =
+                ai.kompile.cli.main.chat.agent.SubagentRunOptions.DEFAULT;
+        if (resumableRequested) {
+            ai.kompile.cli.main.chat.agent.SubagentResumeService resumeService =
+                    new ai.kompile.cli.main.chat.agent.SubagentResumeService(
+                            ai.kompile.cli.common.util.JsonUtils.standardMapper());
+            if (!name.isEmpty()) {
+                String conflict = resumeService.nameConflict(name);
+                if (conflict != null) return ToolResult.error(conflict);
+            }
+            runOptions = ai.kompile.cli.main.chat.agent.SubagentRunOptions.resumable(
+                    name.isEmpty() ? null : name);
+        }
 
         if (participant != null) {
             context.emitOutput("  [Delegating to " + participant.id() + " (" + roleName
@@ -276,7 +323,7 @@ public class TaskTool implements CliTool {
             context.emitOutput("  [Spawning " + agentType + " subagent: " + desc + "]");
         }
 
-        boolean requestedBackground = params.path("background").asBoolean(false);
+        boolean requestedBackground = params.path("background").asBoolean(true);
         boolean backgrounded = false;
         if (requestedBackground) {
             backgrounded = context.requestSelfBackground();
@@ -290,14 +337,18 @@ public class TaskTool implements CliTool {
         }
 
         try {
-            String result = subagentRunner.runSubagent(subagentConfig, prompt, context);
+            String result = runChild(subagentConfig, prompt, context, runOptions);
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("agentType", agentType);
             metadata.put("description", desc);
             metadata.put("backgroundRequested", requestedBackground);
             metadata.put("backgrounded", backgrounded);
+            if (runOptions.effectiveResumable()) metadata.put("resumable", true);
+            if (!name.isEmpty()) metadata.put("name", name);
             if (subagentConfig.getModelOverride() != null) metadata.put("model", subagentConfig.getModelOverride());
             if (subagentConfig.getThinkingOverride() != null) metadata.put("thinking", subagentConfig.getThinkingOverride());
+            if (subagentConfig.getProviderOverride() != null) metadata.put("provider", subagentConfig.getProviderOverride());
+            if (subagentConfig.getAuthenticationMethodOverride() != null) metadata.put("authentication_method", subagentConfig.getAuthenticationMethodOverride());
             if (!roleName.isEmpty()) metadata.put("role", roleName);
             if (participant != null) {
                 metadata.put("workflow", workflow.team().name());
@@ -307,6 +358,12 @@ public class TaskTool implements CliTool {
         } catch (Exception e) {
             return ToolResult.error("Subagent execution failed: " + e.getMessage());
         }
+    }
+
+    /** Shared policy boundary for fresh tasks and durable native continuations. */
+    protected String runChild(AgentConfig agent, String prompt, ToolContext context,
+                              ai.kompile.cli.main.chat.agent.SubagentRunOptions options) throws Exception {
+        return subagentRunner.runSubagent(agent, prompt, context, options);
     }
 
     /**

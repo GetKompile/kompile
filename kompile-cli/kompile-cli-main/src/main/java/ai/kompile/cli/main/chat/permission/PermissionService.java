@@ -107,6 +107,8 @@ public class PermissionService {
         d.put("external_directory", PermissionLevel.ALLOW);
         // Operator control of supervision is not an ordinary auto-approved tool mutation.
         d.put("judge_control", PermissionLevel.ASK);
+        // Hooks configure and execute automatic shell commands, even around read-only tools.
+        d.put("hooks", PermissionLevel.ASK);
 
         // Subagent spawning is allowed
         d.put("task", PermissionLevel.ALLOW);

@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.CoordinationStateManager.AgentEditGuard;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -28,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -49,6 +52,24 @@ public class PatchTool implements CliTool {
     private static final Pattern NEW_FILE = Pattern.compile("^\\+\\+\\+\\s+(.+)$");
     private static final Pattern CREATION_HEADER = Pattern.compile("(?m)^---\\s+/dev/null(\\s.*)?$");
     private static final Pattern FIRST_HUNK = Pattern.compile("(?m)^@@ -");
+
+    /**
+     * Optional coordination manager for multi-agent edit tracking. May be null (schema
+     * tests, ad-hoc registrations). When present, every file this tool is about to write,
+     * create, move or delete is guarded through {@link EditCoordinatorTool#guardEdit} —
+     * agent identity renews and re-verifies, ENFORCE session semantics refuse a live
+     * foreign lock and auto-lock a free target — immediately BEFORE the first write, in
+     * one coordinator critical section.
+     */
+    private final CoordinationStateManager coordinationManager;
+
+    public PatchTool() {
+        this.coordinationManager = null;
+    }
+
+    public PatchTool(CoordinationStateManager coordinationManager) {
+        this.coordinationManager = coordinationManager;
+    }
 
     @Override
     public String id() { return "patch"; }
@@ -103,6 +124,8 @@ public class PatchTool implements CliTool {
         unifiedDiff.put("type", "string");
         unifiedDiff.put("description", "Alias for patch used by transcript/imported CLI tools");
 
+        EditCoordinatorTool.addEditAgentNameProperty(props);
+
         schema.putArray("required");
         schema.putArray("anyOf").addObject().putArray("required").add("patch");
         schema.withArray("anyOf").addObject().putArray("required").add("diff");
@@ -117,18 +140,19 @@ public class PatchTool implements CliTool {
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         String filePath = firstText(params, "file_path", "path", "file");
         String rawPatch = firstRawText(params, "patch", "diff", "unified_diff");
+        String agent = EditCoordinatorTool.lockOwner(params, context);
 
         if (rawPatch.isBlank()) return ToolResult.error("patch, diff, or unified_diff is required");
         String patch = normalizePatchText(rawPatch);
 
         try {
             if (ApplyPatchFormat.isApplyPatchFormat(patch)) {
-                return applyApplyPatchFormat(context, patch, filePath);
+                return applyApplyPatchFormat(context, patch, filePath, agent);
             }
             if (!filePath.isEmpty()) {
-                return applySingleFilePatch(context, context.resolveMutationPath(filePath), patch);
+                return applySingleFilePatch(context, context.resolveMutationPath(filePath), patch, agent);
             }
-            return applyHeaderPatch(context, patch);
+            return applyHeaderPatch(context, patch, agent);
         } catch (ToolExecutionException e) {
             throw e;
         } catch (Exception e) {
@@ -136,9 +160,37 @@ public class PatchTool implements CliTool {
         }
     }
 
+    /**
+     * Pre-write guard over every file this patch call is about to touch (write, create,
+     * move target or delete), in one coordinator critical section. Returns the refusal
+     * error, or null when the whole call may proceed. Must run after the per-file
+     * validation, permission and freshness checks, immediately BEFORE the first write —
+     * the apply_patch path validates everything up-front, so it guards right before the
+     * flush loop; the shell-ladder paths re-verify nothing after the guard, so they guard
+     * immediately before the ladder starts.
+     */
+    private ToolResult guardPathsError(ToolContext context, String agent, Collection<Path> paths) {
+        if (coordinationManager == null || paths.isEmpty()) return null;
+        // One critical section for the whole call: a busy coordinator fails everything;
+        // CONFLICT paths refuse the call before the first write.
+        AgentEditGuard guard = EditCoordinatorTool.guardEdit(coordinationManager, agent, paths);
+        if (guard == null) return null;
+        if (guard.isBusy()) return ToolResult.error(guard.busyMessage());
+        for (Path path : paths) {
+            String conflict = guard.conflictMessage(path.toAbsolutePath().toString());
+            if (conflict != null) {
+                return ToolResult.error("Patch not applied — no files changed. " + conflict
+                        + " Apply the remaining files in a follow-up patch once the holder "
+                        + "releases it.");
+            }
+        }
+        return null;
+    }
+
     // ── apply_patch ("*** Begin Patch") format ─────────────────────────────
 
-    private ToolResult applyApplyPatchFormat(ToolContext context, String patch, String filePathParam)
+    private ToolResult applyApplyPatchFormat(ToolContext context, String patch, String filePathParam,
+                                             String agent)
             throws Exception {
         List<ApplyPatchFormat.FileOp> ops;
         try {
@@ -210,7 +262,12 @@ public class PatchTool implements CliTool {
             }
         }
 
-        // All operations validated and applied in memory — flush atomically-ish.
+        // All operations validated and applied in memory — guard every target (one
+        // critical section), then flush atomically-ish.
+        ToolResult guarded = guardPathsError(context, agent, pendingWrites.keySet());
+        if (guarded != null) return guarded;
+        ToolResult deleteGuarded = guardPathsError(context, agent, deletions);
+        if (deleteGuarded != null) return deleteGuarded;
         for (Map.Entry<Path, String> entry : pendingWrites.entrySet()) {
             Path p = entry.getKey();
             if (p.getParent() != null) Files.createDirectories(p.getParent());
@@ -231,12 +288,18 @@ public class PatchTool implements CliTool {
 
     // ── unified diff: single file ──────────────────────────────────────────
 
-    private ToolResult applySingleFilePatch(ToolContext context, Path path, String patch) throws Exception {
+    private ToolResult applySingleFilePatch(ToolContext context, Path path, String patch,
+                                            String agent) throws Exception {
         boolean creation = !Files.exists(path) && CREATION_HEADER.matcher(patch).find();
         if (!Files.exists(path) && !creation) {
             return ToolResult.error("File not found: " + path + ". For a brand-new file use the write tool, "
                     + "or send a creation diff with '--- /dev/null' headers.");
         }
+
+        // Guard before anything runs: the ladder shells out to patch/git-apply, which
+        // must never mutate a file another live owner holds.
+        ToolResult guarded = guardPathsError(context, agent, List.of(path));
+        if (guarded != null) return guarded;
 
         String original;
         if (creation) {
@@ -281,11 +344,16 @@ public class PatchTool implements CliTool {
 
     // ── unified diff: multi-file via headers ───────────────────────────────
 
-    private ToolResult applyHeaderPatch(ToolContext context, String patch) throws Exception {
+    private ToolResult applyHeaderPatch(ToolContext context, String patch, String agent) throws Exception {
         List<Path> touched = pathsFromUnifiedDiff(context, patch);
         if (touched.isEmpty()) {
             return ToolResult.error("file_path is required unless patch/diff contains unified diff file headers");
         }
+
+        // Guard before anything runs: the ladder shells out to patch/git-apply, which
+        // must never mutate a file another live owner holds.
+        ToolResult guarded = guardPathsError(context, agent, touched);
+        if (guarded != null) return guarded;
 
         Map<Path, String> originals = new LinkedHashMap<>();
         Set<Path> newFiles = new LinkedHashSet<>();

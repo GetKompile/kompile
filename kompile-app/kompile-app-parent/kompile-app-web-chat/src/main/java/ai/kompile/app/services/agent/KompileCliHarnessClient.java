@@ -1111,7 +1111,22 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                 tool.put("toolName", event.path("name").asText(""));
                 tool.put("input", bounded(event.path("input").asText(""), 16_384));
                 tool.put("status", "started");
+                JsonNode detail = event.get("detail");
+                if (detail != null && detail.isObject() && mapper.writeValueAsBytes(detail).length <= MAX_TOOL_DETAIL_BYTES)
+                    tool.put("detail", detail);
                 run.sink.send("tool_use", tool);
+                yield false;
+            }
+            case "tool_output" -> {
+                JsonNode detail = event.get("detail");
+                if (detail != null && detail.isObject() && mapper.writeValueAsBytes(detail).length <= MAX_TOOL_DETAIL_BYTES) {
+                    Map<String, Object> tool = new LinkedHashMap<>();
+                    tool.put("callId", event.path("call_id").asText(""));
+                    tool.put("toolName", event.path("name").asText(""));
+                    tool.put("status", "started");
+                    tool.put("detail", detail);
+                    run.sink.send("tool_output", tool);
+                }
                 yield false;
             }
             case "tool" -> {

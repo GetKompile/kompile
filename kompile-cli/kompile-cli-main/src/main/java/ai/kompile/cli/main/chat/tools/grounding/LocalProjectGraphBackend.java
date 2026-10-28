@@ -5360,7 +5360,6 @@ public final class LocalProjectGraphBackend {
           case "openai", "openai-codex", "codex" -> "codex-cli";
           case "google", "gemini" -> "gemini-cli";
           case "opencode" -> "opencode-cli";
-          case "qwen" -> "qwen-cli";
           case "pi" -> "pi-cli";
           default -> null;
         };

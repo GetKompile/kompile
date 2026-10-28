@@ -22,6 +22,7 @@ import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.config.KompileToolGuidance;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
@@ -84,7 +85,8 @@ public class DirectSubagentRunnerStdio {
 
     private final AtomicBoolean cancelSignal = new AtomicBoolean(false);
     private volatile SubprocessAgentRunner currentRunner;
-    private volatile Thread waitingThread;
+    private Thread waitingThread;
+    private final Object waitingThreadLock = new Object();
 
     public DirectSubagentRunnerStdio(Path workDir) {
         this(workDir, null);
@@ -140,9 +142,10 @@ public class DirectSubagentRunnerStdio {
         if (runner != null) {
             runner.cancel();
         }
-        Thread wt = waitingThread;
-        if (wt != null) {
-            wt.interrupt();
+        synchronized (waitingThreadLock) {
+            // Retirement uses this same short lock. A delayed cancel must not
+            // interrupt this executor thread after the owning turn has returned.
+            if (waitingThread != null) waitingThread.interrupt();
         }
     }
 
@@ -182,6 +185,12 @@ public class DirectSubagentRunnerStdio {
             return executeNativeSubagent(agent.toBuilder().roleName(roleName).build(), prompt);
         }
 
+        if ((agent.getProviderOverride() != null && !agent.getProviderOverride().isBlank())
+                || (agent.getAuthenticationMethodOverride() != null && !agent.getAuthenticationMethodOverride().isBlank())) {
+            throw new IllegalArgumentException("provider/authentication_method select a Kompile-managed route; "
+                    + "use agent=kompile (or general), not agent=" + agentName
+                    + ". Vendor CLI agents own their own login.");
+        }
         AgentLaunchDefaults.Selection launchDefaults = AgentLaunchDefaults.resolve(
                 agentName,
                 workDir,
@@ -207,11 +216,21 @@ public class DirectSubagentRunnerStdio {
     }
 
     String executeNativeSubagent(AgentConfig agent, String prompt) throws Exception {
-        waitingThread = Thread.currentThread();
+        synchronized (waitingThreadLock) { waitingThread = Thread.currentThread(); }
         try {
             return createNativeRunner().run(agent, prompt, cancelSignal);
         } finally {
-            waitingThread = null;
+            synchronized (waitingThreadLock) { waitingThread = null; }
+        }
+    }
+
+    String resumeNativeSubagent(AgentConfig agent, String sessionId, String prompt,
+                               ai.kompile.cli.main.chat.tools.ToolContext parentContext) throws Exception {
+        synchronized (waitingThreadLock) { waitingThread = Thread.currentThread(); }
+        try {
+            return createNativeRunner().resume(agent, sessionId, prompt, cancelSignal, parentContext);
+        } finally {
+            synchronized (waitingThreadLock) { waitingThread = null; }
         }
     }
 
@@ -241,6 +260,16 @@ public class DirectSubagentRunnerStdio {
                                   int currentDepth, boolean injectMcpTools,
                                   String modelOverride, String thinkingOverride,
                                   String workflowParticipant) throws Exception {
+        try (var admission = ai.kompile.cli.main.chat.agent.SubagentAdmission.acquire(agentName, modelOverride)) {
+            return executeAdmittedManagedSubagent(agentName, effectivePrompt, currentDepth, injectMcpTools,
+                    modelOverride, thinkingOverride, workflowParticipant);
+        }
+    }
+
+    private String executeAdmittedManagedSubagent(String agentName, String effectivePrompt,
+                                  int currentDepth, boolean injectMcpTools,
+                                  String modelOverride, String thinkingOverride,
+                                  String workflowParticipant) throws Exception {
         // Workflow team identity: the child is enforced as the participant it was
         // delegated to, resolved by the harness and never from prompt content. With
         // no participant it inherits this process's identity. A chat lead (whose JVM
@@ -248,7 +277,7 @@ public class DirectSubagentRunnerStdio {
         Map<String, String> workflowEnvironment = WorkflowSessionContext.inheritableEnvironment(workflowParticipant);
         long startTime = System.currentTimeMillis();
         cancelSignal.set(false);
-        waitingThread = Thread.currentThread();
+        synchronized (waitingThreadLock) { waitingThread = Thread.currentThread(); }
 
         StringBuilder captured = new StringBuilder();
         Path captureFile;
@@ -318,7 +347,10 @@ public class DirectSubagentRunnerStdio {
                     runner.injectSkills();
                 }
 
-                String response = runner.runMessage(effectivePrompt, history, metrics);
+                // Task, batch and quorum share this boundary. Do not depend on a parent
+                // prompt manager or on provider-specific system-prompt support to guide children.
+                String response = runner.runMessage(KompileToolGuidance.PROMPT + "\n\n" + effectivePrompt,
+                        history, metrics);
                 String blockingNotice = runner.getBlockingNotice();
                 if (blockingNotice != null) {
                     throw new IllegalStateException("Subagent '" + agentName + "' stopped: "
@@ -334,7 +366,7 @@ public class DirectSubagentRunnerStdio {
                 }
             } finally {
                 currentRunner = null;
-                waitingThread = null;
+                synchronized (waitingThreadLock) { waitingThread = null; }
                 runner.cleanup();
             }
 
@@ -353,6 +385,15 @@ public class DirectSubagentRunnerStdio {
                 throw new RateLimitException(agentName, output);
             }
 
+            // CLI transcripts were already durable; add their provider-neutral resume index.
+            if (workflowParticipant == null || workflowParticipant.isBlank()) {
+                try {
+                    new ai.kompile.cli.main.chat.agent.SubagentResumeService(ai.kompile.cli.common.util.JsonUtils.standardMapper())
+                            .registerTranscript(sessionId, agentName, modelOverride, baseEnvironment.get("KOMPILE_PARENT_SESSION_ID"));
+                } catch (Exception persistenceFailure) {
+                    System.err.println("[subagent] Resume history unavailable: " + persistenceFailure.getMessage());
+                }
+            }
             String header = String.format(
                     "Subagent '%s' completed in %.1fs%n%nDispatch: model=%s, thinking=%s, policy=%s",
                     agentName, elapsed / 1000.0,
@@ -402,8 +443,11 @@ public class DirectSubagentRunnerStdio {
     SubprocessAgentRunner createManagedRunner(String agentName, boolean injectMcpTools) {
         TerminalRenderer renderer = new SilentTerminalRenderer();
         AsciiRenderer ascii = new AsciiRenderer(renderer, 100);
-        return new SubprocessAgentRunner(agentName, workDir.toString(), true, injectMcpTools,
+        SubprocessAgentRunner runner = new SubprocessAgentRunner(agentName, workDir.toString(), true, injectMcpTools,
                 "", 0, systemPromptManager, renderer, ascii);
+        // This runner exists only for a delegated agent call; tag milestones it observes.
+        runner.setTestCaptureOrigin("subagent");
+        return runner;
     }
 
     private static final class SilentTerminalRenderer extends TerminalRenderer {

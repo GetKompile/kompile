@@ -6,14 +6,18 @@ import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.CliTool;
+import ai.kompile.cli.main.chat.tools.TaskTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -238,55 +242,27 @@ class AgentInitiatedBackgroundTransferTest {
         }
     }
 
-    @Test
-    void selfBackgroundRequestFromRunningTaskToolDetachesDeterministically() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"default", "true", "false"})
+    void taskDefaultsToBackgroundWithAnExplicitSynchronousOptOut(String background) throws Exception {
         ObjectMapper objectMapper = JsonUtils.standardMapper();
         CountDownLatch toolStarted = new CountDownLatch(1);
         CountDownLatch transferClaimed = new CountDownLatch(1);
         CountDownLatch completionDelivered = new CountDownLatch(1);
         CountDownLatch secondProviderRequest = new CountDownLatch(1);
-        AtomicBoolean requestAccepted = new AtomicBoolean(false);
+        CountDownLatch releaseTool = new CountDownLatch(1);
         AtomicReference<String> completedResult = new AtomicReference<>();
         AtomicReference<List<DirectLlmClient.ToolCallResultInput>> secondRequestToolResults =
                 new AtomicReference<>();
 
         ToolRegistry tools = new ToolRegistry(objectMapper);
-        tools.register(new CliTool() {
-            @Override
-            public String id() { return "task"; }
-
-            @Override
-            public boolean isBackgroundable() { return true; }
-
-            @Override
-            public String description() { return "self-backgrounding fixture"; }
-
-            @Override
-            public JsonNode parameterSchema() {
-                return objectMapper.createObjectNode().put("type", "object");
-            }
-
-            @Override
-            public String permissionKey() { return "read"; }
-
-            @Override
-            public ToolResult execute(JsonNode params, ToolContext context) {
-                // Mirrors TaskTool: request the transfer at invocation time,
-                // then keep the parent's tool call blocked on real work.
-                requestAccepted.set(context.requestSelfBackground());
-                toolStarted.countDown();
-                try {
-                    transferClaimed.await(5, TimeUnit.SECONDS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return ToolResult.error("interrupted");
-                }
-                return ToolResult.success("real subagent result");
-            }
-        });
+        tools.register(new TaskTool(new AgentRegistry(), (agent, prompt, context) -> {
+            toolStarted.countDown();
+            assertTrue(releaseTool.await(10, TimeUnit.SECONDS), "subagent must be released by the test");
+            return "real subagent result";
+        }));
 
         StringBuilder retained = new StringBuilder();
-        CountDownLatch releaseTool = new CountDownLatch(1);
 
         DirectLlmClient client = new DirectLlmClient(
                 new ChatConfig("custom", null, "self-background-test", "http://unused.invalid"),
@@ -306,7 +282,13 @@ class AgentInitiatedBackgroundTransferTest {
                     ToolCallOutput call = new ToolCallOutput();
                     call.id = "call-task";
                     call.name = "task";
-                    call.arguments = objectMapper.createObjectNode();
+                    ObjectNode arguments = objectMapper.createObjectNode()
+                            .put("description", "Task background audit")
+                            .put("prompt", "Read-only audit");
+                    if (!"default".equals(background)) {
+                        arguments.put("background", Boolean.parseBoolean(background));
+                    }
+                    call.arguments = arguments;
                     result.toolCalls.add(call);
                     return result;
                 }
@@ -334,7 +316,7 @@ class AgentInitiatedBackgroundTransferTest {
 
         CompletableFuture<String> response = CompletableFuture.supplyAsync(() -> {
             try {
-                return loop.chat("delegate in background", "self-bg-" + UUID.randomUUID(),
+                return loop.chat("delegate an audit", "self-bg-" + UUID.randomUUID(),
                         "coder", "default", false);
             } catch (RuntimeException e) {
                 throw e;
@@ -344,12 +326,24 @@ class AgentInitiatedBackgroundTransferTest {
         try {
             assertTrue(toolStarted.await(5, TimeUnit.SECONDS),
                     "the task tool must start before assertions");
-            assertTrue(requestAccepted.get(),
-                    "the self-background request must be accepted while the tool runs");
+            if ("false".equals(background)) {
+                assertFalse(response.isDone(), "background=false must wait for the subagent");
+                assertEquals(1L, secondProviderRequest.getCount(),
+                        "the provider must not continue while the subagent is blocked");
+                releaseTool.countDown();
+                assertEquals("final response", response.get(5, TimeUnit.SECONDS));
+                List<DirectLlmClient.ToolCallResultInput> results = secondRequestToolResults.get();
+                assertEquals(1, results.size());
+                assertFalse(results.get(0).isError);
+                assertEquals("real subagent result", results.get(0).output);
+                assertEquals(1L, transferClaimed.getCount(), "background=false must not detach");
+                assertEquals(1L, completionDelivered.getCount(), "no detached completion is expected");
+                return;
+            }
             assertTrue(transferClaimed.await(5, TimeUnit.SECONDS),
                     "the dispatch poll must claim the registered transfer");
 
-            // The placeholder reaches the model while the fixture tool is still blocked.
+            // The placeholder reaches the model while the real TaskTool's subagent is still blocked.
             assertTrue(secondProviderRequest.await(5, TimeUnit.SECONDS),
                     "the loop must continue to the next provider request after detaching");
             List<DirectLlmClient.ToolCallResultInput> results = secondRequestToolResults.get();
@@ -358,9 +352,12 @@ class AgentInitiatedBackgroundTransferTest {
             assertTrue(results.get(0).output.contains("still running in the background"),
                     () -> "expected placeholder tool result, got: " + results.get(0).output);
 
-            // Finish the work; the real result must arrive exactly once.
-            releaseTool.countDown();
             assertEquals("final response", response.get(5, TimeUnit.SECONDS));
+            assertEquals(1L, completionDelivered.getCount(),
+                    "the parent must finish while the subagent is still blocked");
+
+            // Finish the work; the real result must arrive through the completion consumer.
+            releaseTool.countDown();
             assertTrue(completionDelivered.await(5, TimeUnit.SECONDS),
                     "the detached completion consumer must receive the real result");
             assertTrue(completedResult.get().contains("real subagent result"),

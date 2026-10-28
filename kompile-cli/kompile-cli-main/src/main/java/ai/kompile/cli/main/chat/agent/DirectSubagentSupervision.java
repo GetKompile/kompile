@@ -22,14 +22,25 @@ public final class DirectSubagentSupervision {
                 throws Exception;
     }
 
+    /**
+     * Deflection check over a child's final completion text. Returns correction feedback
+     * to send back (non-null) or null when accepted. Throwing {@link SupervisionFailure}
+     * blocks the child outright.
+     */
+    @FunctionalInterface
+    public interface DeflectionReview {
+        String review(String childPrompt, String output, String toolTrace) throws Exception;
+    }
+
     public record Contract(WorkflowController.ChildContract workflow, String parentPrompt,
                            EnforcerEvaluator evaluator, EnforcerPolicy policy,
                            ToolReview toolReview, boolean reviewRequired, int maxCorrections,
-                           Ceiling ceiling) {
+                           DeflectionReview deflectionReview, Ceiling ceiling) {
         public Contract(WorkflowController.ChildContract workflow, String parentPrompt,
                         EnforcerEvaluator evaluator, EnforcerPolicy policy, ToolReview toolReview,
                         boolean reviewRequired, int maxCorrections) {
-            this(workflow, parentPrompt, evaluator, policy, toolReview, reviewRequired, maxCorrections, null);
+            this(workflow, parentPrompt, evaluator, policy, toolReview, reviewRequired,
+                    maxCorrections, null, null);
         }
 
         public Contract withCeiling(ToolContext parent) {
@@ -38,7 +49,14 @@ public final class DirectSubagentSupervision {
                             workflow.memoryContext())
                     : workflow;
             return new Contract(inheritedWorkflow, parentPrompt, evaluator, policy, toolReview,
-                    reviewRequired, maxCorrections, ceiling == null ? Ceiling.capture(parent) : ceiling);
+                    reviewRequired, maxCorrections, deflectionReview,
+                    ceiling == null ? Ceiling.capture(parent) : ceiling);
+        }
+
+        /** Copy of this contract with a deflection review attached. */
+        public Contract withDeflectionReview(DeflectionReview review) {
+            return new Contract(workflow, parentPrompt, evaluator, policy, toolReview,
+                    reviewRequired, maxCorrections, review, ceiling);
         }
 
         public Contract {
@@ -119,9 +137,21 @@ public final class DirectSubagentSupervision {
     public void end() { workflow.completeTurn(); }
     public void beginToolBatch() { workflow.beginToolBatch(); }
 
+    @FunctionalInterface
+    interface ToolInvocation {
+        ToolResult execute(CliTool tool, JsonNode arguments, ToolContext context) throws ToolExecutionException;
+    }
+
     /** Only arguments can be rewritten. Re-run all deterministic checks after a rewrite. */
     public ToolResult execute(String name, JsonNode arguments, String assistant, ToolContext context)
             throws ToolExecutionException {
+        return execute(name, arguments, assistant, context, CliTool::execute);
+    }
+
+    // Admission and workflow accounting stay on the owner thread. Only the admitted
+    // effect may move to a cancellable worker; workflow state is ThreadLocal.
+    ToolResult execute(String name, JsonNode arguments, String assistant, ToolContext context,
+                       ToolInvocation invocation) throws ToolExecutionException {
         context.markSupervisedChild();
         context.setSubagentSupervision(contract);
         JsonNode effective = arguments == null ? mapper.createObjectNode() : arguments.deepCopy();
@@ -163,9 +193,10 @@ public final class DirectSubagentSupervision {
         if (!allowed(name, context)) throw new SupervisionFailure("Tool no longer available: " + name);
         ToolResult result;
         try {
-            String permission = context.getToolRegistry().get(name).permissionKey();
+            CliTool tool = context.getToolRegistry().get(name);
+            String permission = tool.permissionKey();
             if (permission != null) context.checkPermission(permission, "Child tool: " + name);
-            result = context.getToolRegistry().get(name).execute(effective, context);
+            result = invocation.execute(tool, effective, context);
         } catch (ToolExecutionException | RuntimeException | Error failure) {
             rejectedCall = "Child tool failed: " + failure.getClass().getSimpleName();
             workflow.afterTool(name, effective, ToolResult.error(rejectedCall));
@@ -224,10 +255,27 @@ public final class DirectSubagentSupervision {
             if (!decision.retry()) throw new SupervisionFailure(decision.reason());
             feedback = decision.reason() + "\n" + decision.correctionPrompt();
         }
+        if (feedback == null && contract.deflectionReview() != null) {
+            try {
+                String toolTrace = rejectedCall == null ? "" : rejectedCall;
+                String deflectionFeedback = contract.deflectionReview()
+                        .review(prompt, text, toolTrace);
+                if (deflectionFeedback != null && !deflectionFeedback.isBlank()) {
+                    feedback = deflectionFeedback;
+                }
+            } catch (SupervisionFailure failure) {
+                throw failure;
+            } catch (Exception failure) {
+                // Deterministic lane must never break child completion; fail open.
+                feedback = null;
+            }
+        }
         if (feedback == null && contract.reviewRequired()) {
             try {
                 if (contract.evaluator() == null || !contract.evaluator().isAvailable()) {
-                    feedback = "Required child completion reviewer is unavailable";
+                    // Infrastructure failure cannot be repaired by another child
+                    // answer. Fail closed without spending its correction budget.
+                    throw new SupervisionFailure("Required child completion reviewer is unavailable");
                 } else {
                     var context = EnforcerConversationContext.of(List.of(
                             new EnforcerConversationContext.Message("user", prompt
@@ -237,7 +285,7 @@ public final class DirectSubagentSupervision {
                     EnforcerDecision review = contract.evaluator().evaluate(
                             prompt, text, contract.policy(), corrections + 1, context);
                     if (review == null || failOpen(review.getReasoning())) {
-                        feedback = "Required child completion review returned no valid verdict";
+                        throw new SupervisionFailure("Required child completion review returned no valid verdict");
                     } else if (review.isStop()) {
                         throw new SupervisionFailure("Child completion rejected: " + review.getReasoning());
                     } else if (!review.isCompliant()) {
@@ -247,7 +295,7 @@ public final class DirectSubagentSupervision {
             } catch (SupervisionFailure failure) {
                 throw failure;
             } catch (Exception failure) {
-                feedback = "Required child completion review failed: " + failure.getMessage();
+                throw new SupervisionFailure("Required child completion review failed: " + failure.getMessage());
             }
         }
         if (feedback != null && ++corrections > contract.maxCorrections()) {

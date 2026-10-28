@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -14,6 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+// Claude probes run the registered claude agent, read from the Kompile home.
+@TemporaryUserHome
 class LiveModelDiscoveryTest {
 
     @Test
@@ -127,7 +130,7 @@ class LiveModelDiscoveryTest {
         LiveModelDiscovery.useClaudeCodeLoginProbe(
                 () -> new LiveModelDiscovery.ClaudeCodeLogin(false, null, null, false));
         try {
-            assertNull(LiveModelDiscovery.discoverClaudeCliModels(notices::add, errors::add));
+            assertNull(LiveModelDiscovery.discoverClaudeCliModels(null, notices::add, errors::add));
         } finally {
             LiveModelDiscovery.useClaudeCodeLoginProbe(null);
         }

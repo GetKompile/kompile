@@ -105,6 +105,9 @@ public class StatusBar {
         private final String type;
         private final String description;
         private final Instant startedAt;
+        private volatile java.util.Map<String, String> metadata = java.util.Map.of();
+
+        public java.util.Map<String, String> getMetadata() { return metadata; }
         private final StringBuilder transcript = new StringBuilder();
         /** Bounded one-line activity tail for the collapsed inline block (oldest first). */
         private final List<String> recentSummaries = new ArrayList<>();
@@ -549,6 +552,22 @@ public class StatusBar {
             if (e.getId().equals(id)) {
                 e.appendActivity(summary, detail);
                 requestRedraw();
+                return;
+            }
+        }
+    }
+
+    /** Retain metadata across completion and interactive follow-ups, without transcript noise. */
+    public void updateSubagentMetadata(String id, java.util.Map<String, String> metadata) {
+        for (SubagentEntry entry : getActiveSubagents()) {
+            if (entry.getId().equals(id)) {
+                entry.metadata = java.util.Map.copyOf(metadata);
+                return;
+            }
+        }
+        for (SubagentEntry entry : getRecentSubagents()) {
+            if (entry.getId().equals(id)) {
+                entry.metadata = java.util.Map.copyOf(metadata);
                 return;
             }
         }

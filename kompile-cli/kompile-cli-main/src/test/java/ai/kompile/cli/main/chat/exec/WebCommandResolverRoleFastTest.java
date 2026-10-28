@@ -913,6 +913,34 @@ class WebCommandResolverRoleFastTest {
         resolve("/continue reset");
     }
 
+    @Test
+    void continueTriggerIsResolvedWithItsOwnMenu() {
+        WebCommandResolver.Resolution resolution = resolve("/continue-trigger");
+        assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED, resolution.status());
+        assertEquals("continue-trigger", resolution.data().path("menu").asText());
+        assertTrue(resolution.data().path("keywords").isArray());
+        assertTrue(resolution.text().contains("/continue-trigger"), resolution.text());
+    }
+
+    @Test
+    void continueTriggerEditsTheSameStoreAsContinue() {
+        // A trigger added through /continue-trigger is visible from /continue, and the
+        // firing configuration (enabled/reply) is one shared project-global file.
+        resolve("/continue-trigger add flag it to me");
+        boolean seen = false;
+        for (JsonNode keyword : resolve("/continue").data().path("keywords")) {
+            if (keyword.path("keyword").asText().equalsIgnoreCase("flag it to me")) seen = true;
+        }
+        assertTrue(seen, "a /continue-trigger add must appear in /continue's keyword list");
+
+        resolve("/continue-trigger remove flag it to me");
+        for (JsonNode keyword : resolve("/continue").data().path("keywords")) {
+            assertFalse(keyword.path("keyword").asText().equalsIgnoreCase("flag it to me"),
+                    "removal through /continue-trigger must reach the shared store");
+        }
+        resolve("/continue reset");
+    }
+
     // ── /judge and /judge-global (durable judge control over web) ──
 
     @Test

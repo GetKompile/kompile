@@ -669,7 +669,7 @@ class BackgroundProcessManagerTest {
         }
 
         @Test
-        void processToolStreamShouldExposeRunningProcessOutput() throws Exception {
+        void processToolStreamForcesMonitorWithoutWaitingOrInlineOutput() throws Exception {
             ProcessEntry entry = manager.launch(
                     "printf 'tool-stream-ready\\n'; sleep 10",
                     "Tool stream", Path.of(System.getProperty("user.dir")));
@@ -697,18 +697,14 @@ class BackgroundProcessManagerTest {
                 }
             });
 
-            assertTrue(firstLine.await(3, TimeUnit.SECONDS));
-            assertFalse(execution.isDone(),
-                    "process stream must publish its initial tail while still following");
-            ToolResult result = execution.get(5, TimeUnit.SECONDS);
+            ToolResult result = execution.get(2, TimeUnit.SECONDS);
 
             assertFalse(result.isError());
-            assertTrue(result.isOutputStreamed());
-            assertTrue(result.getOutput().contains("tool-stream-ready"),
-                    "process stream should include output from a still-running process");
-            assertTrue(result.getOutput().contains("stream status:"));
-            assertTrue(streamed.stream().anyMatch(line -> line.contains("tool-stream-ready")));
-            assertTrue(streamed.stream().anyMatch(line -> line.contains("stream status:")));
+            assertFalse(result.isOutputStreamed());
+            assertTrue(result.getOutput().contains("will be woken"));
+            assertNotNull(manager.getMonitor(entry.getId()));
+            assertTrue(streamed.isEmpty(), "the harness must not emit process logs inline");
+            assertEquals(1, firstLine.getCount());
             assertTrue(manager.kill(entry.getId()));
         }
 
@@ -732,14 +728,17 @@ class BackgroundProcessManagerTest {
             ToolContext context = new ToolContext(
                     "cancelled-process-stream-test", null, null,
                     Path.of(System.getProperty("user.dir")), null);
+            var existingMonitor = manager.getMonitor(entry.getId());
             context.abort();
 
             long started = System.nanoTime();
             ToolResult result = tool.execute(params, context);
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
 
-            assertFalse(result.isError());
-            assertTrue(result.getOutput().contains("stream status: cancelled"));
+            assertTrue(result.isError());
+            assertTrue(result.getOutput().contains("cancelled"));
+            assertSame(existingMonitor, manager.getMonitor(entry.getId()),
+                    "cancelled requests must not replace the launch's automatic monitor");
             assertTrue(elapsedMs < 2_000,
                     "cancelled process stream should not wait for the follow deadline");
             assertTrue(manager.kill(entry.getId()));

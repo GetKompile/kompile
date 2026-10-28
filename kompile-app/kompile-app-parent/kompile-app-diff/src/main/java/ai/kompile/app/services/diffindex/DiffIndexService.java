@@ -30,7 +30,11 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
@@ -67,7 +71,8 @@ public class DiffIndexService {
             "edit", "Edit", "write", "Write", "edit_file", "write_file",
             "write_to_file", "replace_in_file", "insert_code_block",
             "apply_diff", "create_file", "str_replace_editor",
-            "file_editor", "patch", "Patch", "NotebookEdit"
+            "file_editor", "patch", "Patch", "notebookedit", "apply_patch",
+            "edit_batch", "edit_patch"
     );
 
     // Tool names for bash/shell that might contain file writes
@@ -200,15 +205,15 @@ public class DiffIndexService {
 
     private int indexSession(String source, ChatSessionSummary session,
                              String projectDirectoryOverride) throws IOException {
+        ToolCallExtractor.ExtractionResult extraction = extractToolCalls(source, session);
+        return indexExtraction(source, session, projectDirectoryOverride, extraction);
+    }
+
+    synchronized int indexExtraction(String source, ChatSessionSummary session,
+                                     String projectDirectoryOverride,
+                                     ToolCallExtractor.ExtractionResult extraction) {
         String sessionId = session.sessionId();
         String fingerprint = source + ":" + sessionId;
-
-        // Skip if already indexed (check by session fingerprint)
-        if (entries.values().stream().anyMatch(e -> fingerprint.equals(e.getSessionFingerprint()))) {
-            return 0;
-        }
-
-        ToolCallExtractor.ExtractionResult extraction = extractToolCalls(source, session);
         if (extraction == null || extraction.toolCalls().isEmpty()) {
             return 0;
         }
@@ -222,17 +227,53 @@ public class DiffIndexService {
             }
         }
 
+        Map<String, Integer> occurrences = new HashMap<>();
+        Map<String, DiffIndexEntry> indexedCalls = entries.values().stream()
+                .filter(e -> fingerprint.equals(e.getSessionFingerprint()) && e.getSourceCallId() != null)
+                .collect(Collectors.toMap(DiffIndexEntry::getSourceCallId, e -> e, (a, b) -> a));
+        List<DiffIndexEntry> legacy = entries.values().stream()
+                .filter(e -> fingerprint.equals(e.getSessionFingerprint()) && e.getSourceCallId() == null)
+                .collect(Collectors.toCollection(ArrayList::new));
         for (ToolCallExtractor.ExtractedToolCall call : extraction.toolCalls()) {
             if (call.isError()) continue;
 
             String toolName = normalizeToolName(call.toolName());
             if (!isFileEditTool(toolName)) continue;
 
-            DiffIndexEntry entry = extractDiffEntry(call, source, sessionId, projectDir, fingerprint);
-            if (entry != null) {
-                entries.put(entry.getId(), entry);
-                persist(entry);
-                count++;
+            String identity = call.callId();
+            if (identity == null) {
+                String contentKey = toolName + ":" + call.toolInput();
+                identity = UUID.nameUUIDFromBytes(contentKey.getBytes(StandardCharsets.UTF_8))
+                        + ":" + occurrences.merge(contentKey, 1, Integer::sum);
+            }
+            List<JsonNode> inputs = editInputs(toolName, call.toolInput());
+            for (int part = 0; part < inputs.size(); part++) {
+                String editTool = "edit_batch".equals(toolName) ? "edit"
+                        : "edit_patch".equals(toolName) || "apply_patch".equals(toolName) ? "patch" : toolName;
+                DiffIndexEntry entry = extractDiffEntry(call, inputs.get(part), editTool,
+                        source, sessionId, projectDir, fingerprint);
+                if (entry == null) continue;
+                String callKey = identity + ":" + part;
+                entry.setSourceCallId(callKey);
+                entry.setTranscriptId(call.transcriptId());
+                entry.setId(UUID.nameUUIDFromBytes((fingerprint + ":" + callKey)
+                        .getBytes(StandardCharsets.UTF_8)).toString());
+                entry.setTimestamp(call.timestamp() != null ? call.timestamp()
+                        : session.lastModifiedMillis() > 0
+                        ? Instant.ofEpochMilli(session.lastModifiedMillis()).toString() : null);
+                // Upgrade legacy random-id entries in place, retaining IDs held by users.
+                DiffIndexEntry old = legacy.stream().filter(e -> sameEdit(e, entry)).findFirst().orElse(null);
+                if (old != null) {
+                    entry.setId(old.getId());
+                    legacy.remove(old);
+                } else {
+                    DiffIndexEntry indexed = indexedCalls.get(callKey);
+                    if (indexed != null) entry.setId(indexed.getId());
+                }
+                indexedCalls.put(callKey, entry);
+                DiffIndexEntry previous = entries.put(entry.getId(), entry);
+                if (!entry.equals(previous)) persist(entry);
+                if (previous == null) count++;
             }
         }
 
@@ -327,10 +368,10 @@ public class DiffIndexService {
      * Extract a DiffIndexEntry from a tool call's input JSON.
      */
     private DiffIndexEntry extractDiffEntry(ToolCallExtractor.ExtractedToolCall call,
+                                             JsonNode input, String toolName,
                                              String source, String sessionId,
                                              String projectDir, String fingerprint) {
         try {
-            JsonNode input = mapper.readTree(call.toolInput());
 
             String filePath = extractFilePath(input);
             if (filePath == null || filePath.isBlank()) return null;
@@ -345,12 +386,9 @@ public class DiffIndexService {
             entry.setProjectDirectory(projectDir);
             entry.setFilePath(filePath);
             entry.setToolName(call.toolName());
-            entry.setTimestamp(Instant.now().toString());
-
             // Extract diff content based on tool type
-            String toolName = normalizeToolName(call.toolName());
             switch (toolName) {
-                case "edit", "str_replace_editor", "replace_in_file" -> {
+                case "edit", "edit_file", "str_replace_editor", "replace_in_file" -> {
                     entry.setOldString(textField(input, "old_string", "old_str", "search"));
                     entry.setNewString(textField(input, "new_string", "new_str", "replace"));
                     entry.setDiffType("edit");
@@ -360,7 +398,7 @@ public class DiffIndexService {
                         entry.setLinesRemoved(countDiffLines(entry.getUnifiedDiff(), "-"));
                     }
                 }
-                case "write", "write_to_file", "create_file" -> {
+                case "write", "write_file", "write_to_file", "create_file" -> {
                     entry.setNewString(textField(input, "content", "file_text", "new_content"));
                     entry.setDiffType("write");
                     if (entry.getNewString() != null) {
@@ -388,6 +426,63 @@ public class DiffIndexService {
         }
     }
 
+    private static boolean sameEdit(DiffIndexEntry a, DiffIndexEntry b) {
+        return Objects.equals(a.getToolName(), b.getToolName())
+                && Objects.equals(a.getFilePath(), b.getFilePath())
+                && Objects.equals(a.getOldString(), b.getOldString())
+                && Objects.equals(a.getNewString(), b.getNewString())
+                && Objects.equals(a.getUnifiedDiff(), b.getUnifiedDiff());
+    }
+
+    private List<JsonNode> editInputs(String tool, String json) {
+        try {
+            JsonNode input = mapper.readTree(json);
+            List<JsonNode> result = new ArrayList<>();
+            if ("edit_batch".equals(tool) || "edit_patch".equals(tool)) {
+                input.path("edit_batch".equals(tool) ? "edits" : "patches").forEach(result::add);
+            } else if (extractFilePath(input) != null) {
+                result.add(input);
+            } else {
+                String patch = textField(input, "patch", "diff", "unified_diff");
+                if (patch == null) return result;
+                ObjectNode current = null;
+                StringBuilder hunk = new StringBuilder();
+                Pattern header = Pattern.compile("^\\*\\*\\* (?:Add|Update|Delete) File: (.+)$|^--- (.+)$");
+                for (String line : patch.split("\\n", -1)) {
+                    Matcher match = header.matcher(line);
+                    if (match.matches()) {
+                        if (current != null) {
+                            current.put("patch", hunk.toString());
+                            result.add(current);
+                        }
+                        current = mapper.createObjectNode();
+                        current.put("file_path", patchPath(match.group(1) != null ? match.group(1) : match.group(2)));
+                        hunk.setLength(0);
+                    }
+                    if (current != null) {
+                        if (line.startsWith("+++ ") && "/dev/null".equals(current.path("file_path").asText())) {
+                            current.put("file_path", patchPath(line.substring(4)));
+                        }
+                        hunk.append(line).append('\n');
+                    }
+                }
+                if (current != null) {
+                    current.put("patch", hunk.toString());
+                    result.add(current);
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            log.debug("Cannot decode {} edit inputs: {}", tool, e.getMessage());
+            return List.of();
+        }
+    }
+
+    private static String patchPath(String path) {
+        String clean = path.split("\\t", 2)[0].trim();
+        return clean.startsWith("a/") || clean.startsWith("b/") ? clean.substring(2) : clean;
+    }
+
     // ── Search ──────────────────────────────────────────────────────────────
 
     /**
@@ -412,6 +507,16 @@ public class DiffIndexService {
                                         String filePath, String contentQuery,
                                         String source, String since, String until,
                                         Integer limit, String sortBy, String sortDir) {
+        return search(agent, projectDirectory, filePath, contentQuery, source, since, until,
+                limit, sortBy, sortDir, 0, null);
+    }
+
+    /** Stable offset paging, optionally restricted to a transcript session. */
+    public List<DiffIndexEntry> search(String agent, String projectDirectory,
+                                      String filePath, String contentQuery, String source,
+                                      String since, String until, Integer limit,
+                                      String sortBy, String sortDir, Integer offset, String sessionId) {
+        if (offset != null && offset < 0) throw new IllegalArgumentException("offset must be non-negative");
         int max = limit != null && limit > 0 ? limit : 50;
         Long sinceMs = toEpochMillis(since);
         Long untilMs = toEpochMillis(until);
@@ -420,12 +525,15 @@ public class DiffIndexService {
         return entries.values().stream()
                 .filter(e -> agent == null || agent.equals(e.getAgent()))
                 .filter(e -> source == null || source.equals(e.getSource()))
+                .filter(e -> sessionId == null || sessionId.equals(e.getSessionId())
+                        || sessionId.equals(e.getTranscriptId()))
                 .filter(e -> projectDirectory == null || matchesProject(e, projectDirectory))
                 .filter(e -> filePath == null || PathGlobMatcher.matches(e.getFilePath(), filePath))
                 .filter(e -> contentQuery == null || matchesContent(e, contentQuery))
                 .filter(e -> sinceMs == null || afterOrEqual(e.getTimestamp(), sinceMs))
                 .filter(e -> untilMs == null || beforeOrEqual(e.getTimestamp(), untilMs))
                 .sorted(ordering)
+                .skip(offset == null ? 0 : offset)
                 .limit(max)
                 .collect(Collectors.toList());
     }
@@ -779,7 +887,8 @@ public class DiffIndexService {
             String[] parts = toolName.split("__");
             return parts[parts.length - 1].toLowerCase();
         }
-        return toolName.toLowerCase();
+        int dot = toolName.lastIndexOf('.');
+        return toolName.substring(dot + 1).toLowerCase(Locale.ROOT);
     }
 
     private String extractFilePath(JsonNode input) {

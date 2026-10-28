@@ -1,6 +1,8 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.ChatCommand;
+import ai.kompile.cli.main.chat.config.KompileToolGuidance;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
@@ -31,6 +33,41 @@ class NormalChatProjectContextTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void toolGuidanceIsShortAndPresentWithoutProjectFilesOrSkills() {
+        ProjectChatContext context = ProjectChatContext.load(tempDir, SkillRegistry.empty());
+        assertEquals(KompileToolGuidance.PROMPT, context.renderSystemPrompt());
+        assertEquals(KompileToolGuidance.PROMPT, context.renderSystemPrompt(true));
+        assertTrue(KompileToolGuidance.PROMPT.split("\\s+").length < 100);
+        assertTrue(KompileToolGuidance.PROMPT.contains("activate_tools"));
+        assertTrue(KompileToolGuidance.PROMPT.contains("skills/workflow, constraints and validation"));
+    }
+
+    @Test
+    void explicitRoleCannotReplaceHarnessToolGuidance() throws Exception {
+        AgentConfig role = AgentConfig.builder("custom-investigator")
+                .systemPrompt("CUSTOM_ROLE_MARKER").enabledTools(java.util.Set.of("read")).build();
+        ObjectMapper mapper = new ObjectMapper();
+        AgenticChatLoop loop = new AgenticChatLoop("http://unused.invalid", mapper,
+                new ToolRegistry(mapper), new PermissionService(), new AgentRegistry(),
+                tempDir, null, null, SkillRegistry.empty());
+        String prompt = loop.buildSystemPrompt(role);
+        assertTrue(prompt.contains("CUSTOM_ROLE_MARKER"));
+        assertTrue(prompt.contains(KompileToolGuidance.PROMPT));
+        assertEquals(java.util.Set.of("read"), role.getEnabledTools());
+    }
+
+    @Test
+    void passthroughChatInjectsGuidanceEvenWithoutConfiguredSystemPrompt() throws Exception {
+        var method = ChatCommand.class.getDeclaredMethod("passthroughSystemPrompt");
+        method.setAccessible(true);
+        SystemPromptManager prompt = (SystemPromptManager) method.invoke(new ChatCommand());
+        assertNotNull(prompt);
+        for (String provider : List.of("claude", "codex", "gemini", "qwen", "opencode", "pi")) {
+            assertTrue(prompt.resolveForAgent(provider).contains(KompileToolGuidance.PROMPT), provider);
+        }
+    }
 
     @Test
     void oversizedProjectContextFailsClearly() throws Exception {
@@ -82,6 +119,7 @@ class NormalChatProjectContextTest {
         String systemPrompt = loop.buildSystemPrompt(agents.getDefault());
         SkillConfig customSkill = skills.get("normal-context-check");
 
+        assertTrue(systemPrompt.contains(KompileToolGuidance.PROMPT));
         assertTrue(systemPrompt.contains("NORMAL_CHAT_AGENTS_MARKER"));
         assertTrue(systemPrompt.contains("# Kompile Skills"));
         assertTrue(systemPrompt.contains("/normal-context-check"));

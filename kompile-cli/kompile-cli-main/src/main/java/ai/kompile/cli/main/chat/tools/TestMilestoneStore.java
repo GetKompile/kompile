@@ -18,6 +18,11 @@ final class TestMilestoneStore {
     private TestMilestoneStore() {}
 
     static Path save(Path root, Map<String, Object> milestone, TimelineLifecycle.ProducerContext producer) throws IOException {
+        return save(root, milestone, producer, text -> System.err.println("Warning: " + text));
+    }
+
+    static Path save(Path root, Map<String, Object> milestone, TimelineLifecycle.ProducerContext producer,
+                     java.util.function.Consumer<String> warning) throws IOException {
         Path dir = root.resolve(TestMilestoneReader.STORE_DIR).resolve(TestMilestoneReader.MILESTONES_DIR);
         Files.createDirectories(dir);
         String id = String.valueOf(milestone.get("id"));
@@ -41,10 +46,34 @@ final class TestMilestoneStore {
                     Boolean.TRUE.equals(milestone.get("passing")) ? "passed" : "failed")));
             evidence.put("basis", String.valueOf(milestone.getOrDefault("basis", "milestone-saved")));
             evidence.put("attribution", milestone.containsKey("executionId") ? "test-process" : "recorder-not-test-process");
-            for (String key : List.of("module", "totalTests", "passed", "failed", "errors", "skipped", "executionId", "framework")) {
+            for (String key : List.of("source", "module", "totalTests", "passed", "failed", "errors", "skipped", "executionId", "framework", "countUnit")) {
                 if (milestone.get(key) != null) evidence.put(key, milestone.get(key).toString());
             }
-            producer.recordSaved("test.milestone.recorded", id, target, root, evidence);
+            // Retry only journal delivery, never the durable run or its test command.
+            boolean delivered = producer.recordSavedConfirmed("test.milestone.recorded", id, target, root, evidence)
+                    || producer.recordSavedConfirmed("test.milestone.recorded", id, target, root, evidence);
+            String deliveryWarning = delivered ? null : "Test milestone " + id
+                    + " was saved, but live harness delivery could not be recorded after retry. "
+                    + "Inspect /test-milestones for this ID; do not rerun tests or record another milestone.";
+            boolean automatic = "harness".equals(milestone.get("source"));
+            StringBuilder notice = new StringBuilder(automatic
+                    ? "Automatic test milestone recorded:" : "Test milestone recorded:");
+            for (String key : List.of("id", "outcome", "source", "module", "framework", "countUnit",
+                    "totalTests", "passed", "failed", "errors", "skipped", "basis")) {
+                if (milestone.get(key) != null) notice.append(' ').append(key).append('=').append(milestone.get(key));
+            }
+            try {
+                ai.kompile.cli.main.chat.ChatHistory.recordSystemEvent(
+                        producer.identity().conversationId(), notice
+                                + (deliveryWarning == null ? "" : " Warning: " + deliveryWarning));
+            } catch (IOException failure) {
+                // The run is already durable. Never invite a duplicate record by reporting a failed save.
+                String message = (automatic ? "Automatic test milestone " : "Test milestone ") + id
+                        + " was saved, but its transcript notice could not be written: " + failure.getMessage();
+                producer.record("test.milestone.notice_failed", id, Map.of("message", message));
+                warning.accept(message);
+            }
+            if (deliveryWarning != null) warning.accept(deliveryWarning);
         }
         return target;
     }

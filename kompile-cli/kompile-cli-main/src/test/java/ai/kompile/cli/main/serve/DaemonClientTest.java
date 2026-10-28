@@ -29,6 +29,7 @@ class DaemonClientTest {
                 Set.of("file_context", "local_code_index", "read")));
 
         assertEquals("mcp", header.path("type").asText());
+        assertEquals("1".equals(System.getenv("KOMPILE_HOOK_RUNNING")), header.path("hookRunning").asBoolean());
         assertEquals(workDir.toAbsolutePath().toString(), header.path("workDir").asText());
         assertEquals("explore", header.path("profile").asText());
         assertEquals(List.of("file_context", "local_code_index", "read"),

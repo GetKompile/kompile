@@ -101,6 +101,18 @@ public class HarnessConfig {
     @JsonProperty private int editLockLeaseSeconds = 600;
 
     /**
+     * Harness-level enforcement of edit coordination for every file-mutating native tool
+     * call: {@code enforce} (default) refuses a write when another live owner holds the
+     * target and auto-locks the target for this session before writing; {@code advisory}
+     * keeps the historical warn-after-write behaviour; {@code off} disables coordination
+     * work from mutation tools entirely. The environment variable
+     * {@code KOMPILE_EDIT_COORDINATION=off|advisory|enforce} wins over this value.
+     * Parsed by {@link ai.kompile.cli.main.coordination.EditEnforcement}.
+     */
+    @JsonProperty private String editCoordinationMode =
+            ai.kompile.cli.main.coordination.EditEnforcement.DEFAULT.name().toLowerCase(java.util.Locale.ROOT);
+
+    /**
      * Load config from disk, or return defaults if file doesn't exist.
      */
     public static HarnessConfig load() {

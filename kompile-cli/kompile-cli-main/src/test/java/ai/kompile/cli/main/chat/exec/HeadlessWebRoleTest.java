@@ -31,6 +31,45 @@ class HeadlessWebRoleTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Test
+    void localSubprocessOutputReachesTheWebBeforeItsCompletion(@TempDir Path project) throws Exception {
+        var requests = new java.util.concurrent.atomic.AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            try {
+                exchange.getRequestBody().readAllBytes();
+                String delta = requests.getAndIncrement() == 0
+                        ? "{\"tool_calls\":[{\"index\":0,\"id\":\"bash-web\",\"type\":\"function\",\"function\":{\"name\":\"bash\","
+                            + "\"arguments\":\"{\\\"command\\\":\\\"printf web-live-output\\\"}\"}}]}"
+                        : "{\"content\":\"done\"}";
+                String finish = requests.get() == 1 ? "tool_calls" : "stop";
+                byte[] body = ("data: {\"choices\":[{\"delta\":" + delta + ",\"finish_reason\":\"" + finish
+                        + "\"}]}\n\ndata: [DONE]\n\n").getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            } finally { exchange.close(); }
+        });
+        server.start();
+        try {
+            ChatConfig config = new ChatConfig("custom", null, "model", "http://127.0.0.1:" + server.getAddress().getPort());
+            config.setDefaultMemory(false);
+            List<HeadlessRunEvent> events = new CopyOnWriteArrayList<>();
+            var options = new HeadlessAgentRunner.Options("run the command", "web-live-local", false, null, null,
+                    HeadlessAgentRunner.OutputMode.QUIET, project, 20_000, null, null, null,
+                    events::add, config, null, false, false, null, true);
+            assertEquals(0, new HeadlessAgentRunner().run(options).exitCode());
+            var output = events.stream().filter(event -> event.type() == HeadlessRunEvent.Type.TOOL_OUTPUT).findFirst().orElseThrow();
+            var complete = events.stream().filter(event -> event.type() == HeadlessRunEvent.Type.TOOL_COMPLETED).findFirst().orElseThrow();
+            assertEquals("bash-web", output.callId());
+            assertTrue(output.sequence() < complete.sequence());
+            assertTrue(output.data().toString().contains("web-live-output"));
+            assertTrue(complete.data().toString().contains("web-live-output"));
+            assertFalse(events.stream().anyMatch(event -> event.type() == HeadlessRunEvent.Type.ASSISTANT_DELTA
+                    && event.text().contains("web-live-output")));
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void durableWebRoleSystemPromptReachesTheProvider(@TempDir Path tempDir) throws Exception {
         Path project = Files.createDirectories(tempDir.resolve("project"));
         Path roles = Files.createDirectories(project.resolve(".kompile").resolve("roles"));

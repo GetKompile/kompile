@@ -62,6 +62,49 @@ class MultiChatSessionHostTest {
         }
     }
 
+    @Test void clearCarriesOnlyTheSelectedSessionsActiveConfigNotTheLaunchDefaults() throws Exception {
+        ChatConfig launch = new ChatConfig("openai", "launch-key", "launch-model", "http://launch");
+        launch.setAuthenticationMethod("api-key");
+        ChatConfig selected = new ChatConfig("anthropic", null, "selected-model", "http://selected");
+        selected.setAuthenticationMethod("native");
+        selected.setCredentialName("selected-account");
+        selected.setThinking("high");
+        Fixture fixture = new Fixture(List.of(
+                List.of("/session new", "/quit"),
+                List.of("/clear"),
+                List.of("/session new", "/quit"),
+                List.of("/quit")));
+        MultiChatSessionHost.SessionFactory factory = new MultiChatSessionHost.SessionFactory() {
+            @Override public MultiChatSessionHost.Session create(String id, boolean resume) throws IOException {
+                return fixture.create(id, resume);
+            }
+            @Override public MultiChatSessionHost.Session create(
+                    String id, boolean resume, ChatConfig replacementConfig) throws IOException {
+                FakeSession session = (FakeSession) create(id, resume);
+                session.config = fixture.created.size() == 2 ? selected
+                        : replacementConfig == null ? launch.copy() : replacementConfig;
+                return session;
+            }
+        };
+        try (Terminal terminal = terminal(); var host = new MultiChatSessionHost(terminal, factory)) {
+            host.run("first", true);
+        }
+        assertEquals(List.of(true, false, false, false), fixture.resumes);
+        assertEquals(4, fixture.created.size());
+        ChatConfig replacement = fixture.created.get(2).config;
+        assertNotSame(selected, replacement, "snapshot before closing the selected session");
+        assertNotEquals(fixture.created.get(1).id, fixture.created.get(2).id);
+        assertEquals("anthropic", replacement.getProvider());
+        assertEquals("selected-model", replacement.getModel());
+        assertEquals("http://selected", replacement.getBaseUrl());
+        assertEquals("native", replacement.getAuthenticationMethod());
+        assertEquals("selected-account", replacement.getCredentialName());
+        assertEquals("high", replacement.getThinking());
+        assertEquals("launch-model", fixture.created.get(0).config.getModel(), "sibling stays unchanged");
+        assertEquals("launch-model", fixture.created.get(3).config.getModel(), "/session new keeps launch defaults");
+        assertTrue(fixture.created.stream().allMatch(session -> session.closes == 1));
+    }
+
     @Test void eofClosesSelectedSessionThenReturnsToSibling() throws Exception {
         Fixture fixture = new Fixture(List.of(List.of("/session new", "still here", "/quit"), List.of()));
         try (Terminal terminal = terminal(); var host = new MultiChatSessionHost(terminal, fixture)) {
@@ -380,6 +423,7 @@ class MultiChatSessionHostTest {
         boolean rejectAttach;
         boolean failAfterAttach;
         boolean replace;
+        ChatConfig config;
         boolean normal;
         IOException failure;
         FakeSession(Fixture fixture, String id, List<String> input) {
@@ -415,6 +459,7 @@ class MultiChatSessionHostTest {
         }
         @Override public boolean ownsInput() { return fixture.ownsFirstInput; }
         @Override public boolean replacementRequested() { return replace; }
+        @Override public ChatConfig replacementConfig() { return config == null ? null : config.copy(); }
         @Override public void message(String text) { messages.add(text); }
         @Override public void finish(boolean normal, IOException failure) { this.normal = normal; this.failure = failure; }
         @Override public void close() { assertFalse(attached); closes++; }

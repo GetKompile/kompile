@@ -64,16 +64,34 @@ public class TodoWriteTool implements CliTool {
         public String description;
         public String status; // pending, in_progress, completed, cancelled
         public String priority; // high, medium, low
+        /** ISO-8601 instant of the last mutation of this item; null on legacy entries. */
+        public String updatedBy;
+        public String updatedAt;
+        /** ISO-8601 instant of when this item entered the list; null on legacy entries. */
+        public String createdAt;
 
         public TodoItem() {
         }
 
         public TodoItem(String id, String subject, String description, String status, String priority) {
+            this(id, subject, description, status, priority, null, null);
+        }
+
+        public TodoItem(String id, String subject, String description, String status, String priority,
+                        String updatedBy, String updatedAt) {
+            this(id, subject, description, status, priority, updatedBy, updatedAt, null);
+        }
+
+        public TodoItem(String id, String subject, String description, String status, String priority,
+                        String updatedBy, String updatedAt, String createdAt) {
             this.id = id;
             this.subject = subject;
             this.description = description;
             this.status = status;
             this.priority = priority;
+            this.updatedBy = updatedBy;
+            this.updatedAt = updatedAt;
+            this.createdAt = createdAt;
         }
     }
 
@@ -93,6 +111,7 @@ public class TodoWriteTool implements CliTool {
                 "Read todoread for real IDs; never invent task or session IDs. " +
                 "For set, retain every existing task with its exact ID; omit IDs on new tasks. " +
                 "Use add to append, update for individual changes, and delete with a real task_id to remove. " +
+                "For multiple changes in one atomic call, use todo_apply_batch. " +
                 "Invalid calls leave the list unchanged.";
     }
 
@@ -168,14 +187,24 @@ public class TodoWriteTool implements CliTool {
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
+        return executeMutation(params, context, false);
+    }
+
+    ToolResult executeBatch(JsonNode params, ToolContext context) throws ToolExecutionException {
+        return executeMutation(params, context, true);
+    }
+
+    private ToolResult executeMutation(JsonNode params, ToolContext context, boolean batch)
+            throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Manage todo list");
 
         try {
-            validateRequest(params);
+            if (batch) validateBatchRequest(params);
+            else validateRequest(params);
         } catch (IllegalArgumentException e) {
             return rejected(e.getMessage());
         }
-        String action = params.path("action").asText();
+        String action = batch ? "apply_batch" : params.path("action").asText();
         String sessionId = resolveSessionId(context, params.path("session_id").asText(null));
         TodoSessionKey sessionKey = sessionKey(context.getWorkingDirectory(), sessionId);
         Path todoFile = sessionTodoPath(sessionId);
@@ -199,12 +228,14 @@ public class TodoWriteTool implements CliTool {
                     Map<String, String> before = todoStates(todos);
                     ToolResult result;
                     try {
-                        result = executeAction(action, params, context, sessionId, todos);
+                        result = batch ? applyBatch(params.path("operations"), todos)
+                                : executeAction(action, params, todos);
                     } catch (IllegalArgumentException e) {
                         return rejected(e.getMessage());
                     }
-                    // executeAction returns success only after the atomic snapshot save.
+                    // Mutations are staged in memory; rejected batches never reach the save.
                     if (!result.isError()) {
+                        persistTodos(context, sessionId, todos);
                         recordTransitions(context, sessionId, action, before, todoStates(todos));
                         return withTodoSnapshot(result, sessionId, todos);
                     }
@@ -217,15 +248,26 @@ public class TodoWriteTool implements CliTool {
         }
     }
 
+    private static ToolResult applyBatch(JsonNode operations, List<TodoItem> todos) {
+        List<String> results = new ArrayList<>();
+        for (JsonNode operation : operations) {
+            ToolResult result = executeAction(operation.path("action").asText(), operation, todos);
+            if (result.isError()) {
+                return rejected("Batch operation " + (results.size() + 1) + " failed: " + result.getOutput());
+            }
+            results.add(result.getOutput());
+        }
+        return ToolResult.success("Applied " + results.size() + " todo operation(s)",
+                String.join("\n", results));
+    }
+
     private static ToolResult executeAction(
-            String action, JsonNode params, ToolContext context,
-            String sessionId, List<TodoItem> todos) throws IOException {
+            String action, JsonNode params, List<TodoItem> todos) {
         switch (action) {
                 case "set": {
                     List<TodoItem> replacement = validatedReplacement(params.path("todos"), todos);
                     todos.clear();
                     todos.addAll(replacement);
-                    persistTodos(context, sessionId, todos);
                     return ToolResult.success("Set " + todos.size() + " task(s)");
                 }
                 case "add": {
@@ -234,8 +276,9 @@ public class TodoWriteTool implements CliTool {
                     String priority = params.path("priority").asText("medium");
                     String status = params.path("status").asText("pending");
                     String id = nextTodoId(todos);
-                    todos.add(new TodoItem(id, subject, taskDesc, status, priority));
-                    persistTodos(context, sessionId, todos);
+                    TodoItem added = new TodoItem(id, subject, taskDesc, status, priority);
+                    added.createdAt = Instant.now().toString();
+                    todos.add(added);
                     return ToolResult.success("Added task #" + id + ": " + subject);
                 }
                 case "update": {
@@ -243,6 +286,8 @@ public class TodoWriteTool implements CliTool {
                     if (taskId.isEmpty()) return ToolResult.error("task_id is required for update");
                     for (TodoItem item : todos) {
                         if (item.id.equals(taskId)) {
+                            TodoItem before = new TodoItem(item.id, item.subject, item.description,
+                                    item.status, item.priority);
                             String oldStatus = item.status;
                             String status = params.path("status").asText("");
                             if (!status.isEmpty() && isValidStatus(status)) item.status = status;
@@ -252,7 +297,12 @@ public class TodoWriteTool implements CliTool {
                             if (!priority.isEmpty() && isValidPriority(priority)) item.priority = priority;
                             String desc = params.path("task_description").asText("");
                             if (params.has("task_description")) item.description = desc;
-                            persistTodos(context, sessionId, todos);
+                            // Preserve legacy backfill without giving a modern no-op an update stamp.
+                            if (item.createdAt == null) {
+                                item.createdAt = Instant.now().toString();
+                                if (item.updatedAt == null) item.updatedAt = item.createdAt;
+                            }
+                            stampMutation(item, before, "model");
                             return ToolResult.success("Updated task #" + taskId +
                                     (!status.isEmpty() ? " (" + oldStatus + " → " + item.status + ")" : ""));
                         }
@@ -263,14 +313,22 @@ public class TodoWriteTool implements CliTool {
                     String taskId = params.path("task_id").asText("");
                     if (taskId.isEmpty()) return ToolResult.error("task_id is required for delete");
                     boolean removed = todos.removeIf(t -> t.id.equals(taskId));
-                    if (removed) {
-                        persistTodos(context, sessionId, todos);
-                    }
                     return removed ? ToolResult.success("Deleted task #" + taskId)
                             : rejected("Task not found: " + taskId);
                 }
                 default:
                     return ToolResult.error("Unknown action: " + action + ". Use set, add, update, or delete.");
+        }
+    }
+
+    /** Stamp only changes to persisted task content, never a repeated synchronization. */
+    private static void stampMutation(TodoItem item, TodoItem before, String updatedBy) {
+        if (!Objects.equals(item.subject, before.subject)
+                || !Objects.equals(item.description, before.description)
+                || !Objects.equals(item.status, before.status)
+                || !Objects.equals(item.priority, before.priority)) {
+            item.updatedBy = updatedBy;
+            item.updatedAt = Instant.now().toString();
         }
     }
 
@@ -308,6 +366,29 @@ public class TodoWriteTool implements CliTool {
                 "Conflicting subject and content");
         if (node.has("description") && node.has("task_description")) {
             require(node.get("description").equals(node.get("task_description")), "Conflicting description aliases");
+        }
+    }
+
+    private static void validateBatchRequest(JsonNode params) {
+        require(params != null && params.isObject(), "Expected a todo batch object");
+        params.fieldNames().forEachRemaining(field -> require(
+                Set.of("operations", "session_id").contains(field), "Unexpected field: " + field));
+        if (params.has("session_id")) require(params.get("session_id").isTextual()
+                && !params.get("session_id").asText().isBlank(), "session_id must be a nonblank string");
+        JsonNode operations = params.path("operations");
+        require(operations.isArray() && !operations.isEmpty(), "operations must be a non-empty array");
+        int index = 0;
+        for (JsonNode operation : operations) {
+            index++;
+            try {
+                require(operation.isObject(), "Expected an operation object");
+                require(!operation.has("session_id"), "Set session_id on the batch, not individual operations");
+                require(Set.of("add", "update", "delete").contains(operation.path("action").asText()),
+                        "Batch action must be add, update, or delete");
+                validateRequest(operation);
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Batch operation " + index + ": " + e.getMessage());
+            }
         }
     }
 
@@ -360,10 +441,15 @@ public class TodoWriteTool implements CliTool {
                     node.isTextual() ? node.asText().trim() : firstText(node, "subject", "content", ""),
                     firstText(node, "description", "task_description", old == null ? "" : old.description),
                     text(node, "status", old == null ? "pending" : old.status),
-                    text(node, "priority", old == null ? "medium" : old.priority));
+                    text(node, "priority", old == null ? "medium" : old.priority),
+                    old == null ? null : old.updatedBy,
+                    old == null ? null : old.updatedAt,
+                    // New items are stamped now; existing items keep their original creation time.
+                    old == null ? Instant.now().toString() : old.createdAt);
             // An explicit empty description is a valid edit, not an omitted field.
             if (node.has("description")) item.description = node.get("description").asText();
             else if (node.has("task_description")) item.description = node.get("task_description").asText();
+            if (old != null) stampMutation(item, old, "model");
             replacement.add(item);
             allocated.add(item);
         }
@@ -377,7 +463,8 @@ public class TodoWriteTool implements CliTool {
             if (node.isTextual()) {
                 require(!node.asText().isBlank(), "Todo title must not be blank");
             } else {
-                validateFields(node, Set.of("id", "subject", "content", "description", "task_description", "status", "priority"));
+                validateFields(node, Set.of("id", "subject", "content", "description", "task_description",
+                        "status", "priority", "updated_by", "updated_at", "created_at"));
                 require(node.has("subject") || node.has("content"), "Todo subject/content is required");
                 if (node.has("id")) require(ids.add(node.get("id").asText()), "Duplicate task ID: " + node.get("id").asText());
             }
@@ -459,7 +546,11 @@ public class TodoWriteTool implements CliTool {
             if (!isValidStatus(status)) status = "pending";
             String priority = text(node, "priority", "medium");
             if (!isValidPriority(priority)) priority = "medium";
-            parsed.add(new TodoItem(id, subject, description, status, priority));
+            TodoItem item = new TodoItem(id, subject, description, status, priority);
+            if (node.hasNonNull("updated_by")) item.updatedBy = node.get("updated_by").asText();
+            if (node.hasNonNull("updated_at")) item.updatedAt = node.get("updated_at").asText();
+            if (node.hasNonNull("created_at")) item.createdAt = node.get("created_at").asText();
+            parsed.add(item);
             index++;
         }
         return parsed;
@@ -509,6 +600,81 @@ public class TodoWriteTool implements CliTool {
     public static List<TodoItem> getTodos(String sessionId, Path workingDirectory) {
         return loadTodos(sessionKey(workingDirectory, normalizeSessionId(sessionId)));
     }
+
+    /**
+     * Harness-originated task change, applied with the same locking and validation as a model
+     * write but without a permission prompt. The current turn cannot be auto-started while
+     * another task is already in_progress, and auto-start is a no-op on an empty list.
+     * Returns the mutated list, or the untouched list with a reason when no change applied.
+     */
+    public static HarnessMutationResult applyHarnessMutation(HarnessMutation mutation, Path projectRoot) {
+        String sessionId = normalizeSessionId(mutation.sessionId());
+        TodoSessionKey sessionKey = sessionKey(projectRoot, sessionId);
+        Path todoFile = sessionTodoPath(sessionId);
+        try {
+            Files.createDirectories(todoFile.getParent());
+            Path lockFile = todoFile.resolveSibling("." + todoFile.getFileName() + ".lock");
+            synchronized (PROCESS_LOCK) {
+                try (FileChannel channel = FileChannel.open(lockFile,
+                        StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                     FileLock ignored = channel.lock()) {
+                    List<TodoItem> todos = loadTodosForWrite(sessionKey);
+                    Map<String, String> before = todoStates(todos);
+                    String reason = switch (mutation.kind()) {
+                        case AUTO_START_FIRST -> autoStartFirst(mutation, todos);
+                    };
+                    if (reason != null) {
+                        return new HarnessMutationResult(todos, false, reason);
+                    }
+                    persistTodos(projectRoot, sessionId, todos);
+                    recordHarnessTransitions(sessionId, projectRoot, before, todoStates(todos));
+                    return new HarnessMutationResult(todos, true, reason);
+                }
+            }
+        } catch (IOException | IllegalArgumentException e) {
+            return new HarnessMutationResult(null, false,
+                    "harness todo mutation failed: " + e.getMessage());
+        }
+    }
+
+    private static String autoStartFirst(HarnessMutation mutation, List<TodoItem> todos) {
+        boolean anyInProgress = todos.stream().anyMatch(t -> "in_progress".equals(t.status));
+        if (anyInProgress) return "a task is already in_progress";
+        for (TodoItem item : todos) {
+            if ("pending".equals(item.status)) {
+                TodoItem before = new TodoItem(item.id, item.subject, item.description,
+                        item.status, item.priority);
+                item.status = "in_progress";
+                stampMutation(item, before, "harness");
+                return null;
+            }
+        }
+        return "no pending task to start";
+    }
+
+    private static void recordHarnessTransitions(
+            String sessionId, Path projectRoot, Map<String, String> before, Map<String, String> after) {
+        TimelineLifecycle.ProducerContext producer = TimelineLifecycle.producer(
+                sessionId, sessionId, projectRoot);
+        Set<String> ids = new LinkedHashSet<>(before.keySet());
+        ids.addAll(after.keySet());
+        Path snapshot = sessionTodoPath(sessionId);
+        for (String id : ids) {
+            String oldState = before.get(id);
+            String newState = after.get(id);
+            if (!Objects.equals(oldState, newState)) producer.recordSaved("todo.changed", id,
+                    snapshot, snapshot.getParent(), Map.of("action", "harness-auto",
+                            "before", oldState == null ? "absent" : oldState,
+                            "after", newState == null ? "absent" : newState, "basis", "harness"));
+        }
+    }
+
+    /** The kinds of task change the harness itself may apply. */
+    public enum HarnessMutationKind { AUTO_START_FIRST }
+
+    public record HarnessMutation(String sessionId, HarnessMutationKind kind) { }
+
+    public record HarnessMutationResult(List<TodoItem> todos, boolean applied, String reason) { }
 
     /** Compatibility overload; the working directory is used only for legacy project state. */
     public static List<TodoItem> getTodos(String sessionId) {
@@ -565,11 +731,16 @@ public class TodoWriteTool implements CliTool {
 
     private static void persistTodos(
             ToolContext context, String sessionId, List<TodoItem> todos) throws IOException {
+        persistTodos(context.getWorkingDirectory(), sessionId, todos);
+    }
+
+    private static void persistTodos(
+            Path projectRoot, String sessionId, List<TodoItem> todos) throws IOException {
         Path file = sessionTodoPath(sessionId);
         Files.createDirectories(file.getParent());
         ObjectNode root = OM.createObjectNode();
         root.put("schema", "kompile-session-todos-v2");
-        root.put("project", context.getWorkingDirectory().toAbsolutePath().normalize().toString());
+        root.put("project", projectRoot.toAbsolutePath().normalize().toString());
         root.put("sessionId", sessionId);
         root.put("updatedAt", Instant.now().toString());
         // Build the array by hand — valueToTree(TodoItem) needs bean reflection, which is
@@ -582,6 +753,9 @@ public class TodoWriteTool implements CliTool {
             node.put("description", item.description == null ? "" : item.description);
             node.put("status", item.status == null ? "pending" : item.status);
             node.put("priority", item.priority == null ? "medium" : item.priority);
+            if (item.updatedBy != null) node.put("updated_by", item.updatedBy);
+            if (item.updatedAt != null) node.put("updated_at", item.updatedAt);
+            if (item.createdAt != null) node.put("created_at", item.createdAt);
         }
 
         Path temporary = Files.createTempFile(

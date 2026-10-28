@@ -8,3 +8,6 @@ ai.kompile.cli.main.chat.config.GitHubCopilotChatProvider
 ai.kompile.cli.main.chat.config.RadiusChatProvider
 ai.kompile.cli.main.chat.config.DeepSeekChatProvider
 ai.kompile.cli.main.chat.config.GroqChatProvider
+ai.kompile.cli.main.chat.config.QwenChatProvider
+ai.kompile.cli.main.chat.config.FireworksChatProvider
+ai.kompile.cli.main.chat.config.TogetherChatProvider

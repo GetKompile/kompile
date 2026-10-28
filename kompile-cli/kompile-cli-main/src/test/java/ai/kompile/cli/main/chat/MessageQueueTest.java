@@ -30,6 +30,56 @@ class MessageQueueTest {
     }
 
     @Test
+    void mutationsNotifyTheViewWithCurrentStateButDuplicatesDoNot() {
+        List<List<String>> snapshots = new ArrayList<>();
+        queue.setChangeListener(() -> snapshots.add(queue.getAll().stream()
+                .map(message -> message.getContent() + ":" + message.getStatus()).toList()));
+        var sent = queue.enqueue("sent");
+        assertNull(queue.enqueue("sent"));
+        assertEquals(1, snapshots.size());
+        assertTrue(queue.beginEdit(sent.getId()));
+        assertEquals(List.of("sent:EDITING"), snapshots.get(snapshots.size() - 1));
+        int beforeBlockedClaim = snapshots.size();
+        assertNull(queue.dequeue());
+        assertEquals(beforeBlockedClaim, snapshots.size());
+        assertTrue(queue.cancelEdit(sent.getId()));
+        assertEquals(List.of("sent:PENDING"), snapshots.get(snapshots.size() - 1));
+        assertEquals(sent.getId(), queue.dequeue().getId());
+        assertEquals(List.of(), snapshots.get(snapshots.size() - 1));
+        queue.requeueFirst(sent);
+        assertEquals(List.of("sent:PENDING"), snapshots.get(snapshots.size() - 1));
+        queue.takeForSend(sent.getId());
+        assertEquals(List.of(), snapshots.get(snapshots.size() - 1));
+        queue.setChangeListener(null);
+        int beforeDetached = snapshots.size();
+        queue.enqueue("no view");
+        assertEquals(beforeDetached, snapshots.size());
+    }
+
+    @Test
+    void persistenceFailureStillInvalidatesTheInMemoryPreview() throws Exception {
+        Files.createDirectory(queueFile()); // A directory cannot be overwritten with queue JSON.
+        List<List<MessageQueue.QueuedMessage>> snapshots = new ArrayList<>();
+        queue.setChangeListener(() -> snapshots.add(queue.getAll()));
+        var sent = queue.enqueue("sent despite a persistence failure");
+        assertEquals(List.of(sent), snapshots.get(snapshots.size() - 1));
+        assertSame(sent, queue.dequeue());
+        assertEquals(List.of(), snapshots.get(snapshots.size() - 1));
+        assertEquals(2, snapshots.size());
+    }
+
+    @Test
+    void failedRepaintCannotUndoQueueDelivery() {
+        var sent = queue.enqueue("sent once");
+        queue.setChangeListener(() -> { throw new IllegalStateException("view disposed"); });
+        assertSame(sent, queue.dequeue());
+        assertTrue(queue.isEmpty());
+        queue.requeueFirst(sent);
+        assertSame(sent, queue.takeForSend(sent.getId()));
+        assertTrue(queue.isEmpty());
+    }
+
+    @Test
     void duplicateAdmissionPreservesIdentityOrderAndPersistence() throws Exception {
         var first = queue.enqueue("Reminder: run the tests");
         var second = queue.enqueue("Distinct follow-up");

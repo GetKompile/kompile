@@ -27,6 +27,7 @@ import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.ProviderPromptCacheCapabilities;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.config.KompileToolGuidance;
 import ai.kompile.cli.main.chat.enforcer.*;
 import ai.kompile.cli.main.chat.exec.ChatAttachmentLoader;
 import ai.kompile.cli.main.chat.exec.ChatHarnessCapabilities;
@@ -77,6 +78,7 @@ import java.util.Map;
 import java.util.Scanner;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicReference;
 
 @CommandLine.Command(
         name = "chat",
@@ -273,7 +275,9 @@ public class ChatCommand implements Callable<Integer> {
     private String credentialName;
 
     @CommandLine.Option(names = {"--prompt-cache-retention"}, paramLabel = "POLICY",
-            description = "Prompt-prefix cache policy: none, short, or long.")
+            description = "Prompt-prefix cache policy: none, short, or long. "
+                    + "Defaults to long (extended tier) unless overridden by the "
+                    + "KOMPILE_CACHE_RETENTION (or PI_CACHE_RETENTION) environment variable.")
     private String promptCacheRetention;
 
     @CommandLine.Option(names = {"--base-url"}, description =
@@ -1050,6 +1054,8 @@ public class ChatCommand implements Callable<Integer> {
             if ("global".equals(authenticationScope))
                 throw new IllegalArgumentException("--credential requires session scope; use /auth global to change a vendor default");
             config.setAuthenticationScope("session");
+            // A named setup token moves the Claude Code route off Claude Code's own login.
+            if (config.isClaudeCliNative()) config.setAuthenticationMethod("oauth");
             config.setCredentialName(credentialName.trim());
         }
         if (blankToNull(providerBaseUrl) != null) config.setBaseUrl(providerBaseUrl.trim());
@@ -1066,6 +1072,11 @@ public class ChatCommand implements Callable<Integer> {
         if (blankToNull(thinking) != null) config.setThinking(thinking.trim());
         if (blankToNull(promptCacheRetention) != null) {
             config.setPromptCacheRetention(parsePromptCacheRetention(promptCacheRetention));
+        } else {
+            String fromEnvironment = environmentCacheRetention();
+            if (fromEnvironment != null) {
+                config.setPromptCacheRetention(fromEnvironment);
+            }
         }
         if (autoCompact != null) config.setAutoCompactEnabled(autoCompact);
         if (autoCompactThreshold != null) config.setAutoCompactThreshold(autoCompactThreshold);
@@ -1111,6 +1122,34 @@ public class ChatCommand implements Callable<Integer> {
             default -> throw new IllegalArgumentException(
                     "Unsupported --prompt-cache-retention '" + value
                             + "'. Use none, short, or long.");
+        };
+    }
+
+    /**
+     * Pi-compatible environment pin: {@code KOMPILE_CACHE_RETENTION} (preferred) or
+     * {@code PI_CACHE_RETENTION} (Pi muscle-memory alias). Values use Pi's vocabulary:
+     * {@code long} selects the extended tier (Anthropic one-hour, OpenAI 24-hour);
+     * {@code none}/{@code off} disables caching; unknown values fail closed to the
+     * cheaper short tier. Blank/unset yields null so the persisted config wins
+     * (which itself defaults to long).
+     */
+    static String environmentCacheRetention() {
+        String kompile = normalizeCacheRetentionEnv(System.getenv("KOMPILE_CACHE_RETENTION"));
+        if (kompile != null) return kompile;
+        return normalizeCacheRetentionEnv(System.getenv("PI_CACHE_RETENTION"));
+    }
+
+    /** Maps a raw environment value to the wire vocabulary; null when unset or blank. */
+    static String normalizeCacheRetentionEnv(String value) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "long", "1h", "24h" ->
+                    ProviderPromptCacheCapabilities.Retention.LONG.wireValue();
+            case "none", "off" ->
+                    ProviderPromptCacheCapabilities.Retention.NONE.wireValue();
+            default ->
+                    ProviderPromptCacheCapabilities.Retention.SHORT.wireValue();
         };
     }
 
@@ -1675,6 +1714,7 @@ public class ChatCommand implements Callable<Integer> {
      * Config is already resolved by the caller (call() or routeFromConfig()).
      */
     private int runLocalLlmMode(ChatConfig config, boolean isResume, String assignedRole) {
+        AtomicReference<ChatConfig> currentConfig = new AtomicReference<>(config);
         try {
             sessionId = runStandardSessionLoop(sessionId, isResume,
                     (currentTranscriptUuid, resumeCurrentTranscript) -> {
@@ -1695,7 +1735,7 @@ public class ChatCommand implements Callable<Integer> {
                                 false,      // no RAG in local mode
                                 agentName,
                                 memory,
-                                config,     // LLM config for direct calls
+                                currentConfig.get(), // active selection for direct calls
                                 effectiveWorkingDirectory()
                         )) {
                             repl.setDangerouslySkipPermissions(dangerouslySkipPermissions);
@@ -1705,7 +1745,13 @@ public class ChatCommand implements Callable<Integer> {
                             }
 
                             repl.run();
-                            return repl.isNewConversationRequested();
+                            boolean clear = repl.isNewConversationRequested();
+                            if (clear) {
+                                // The REPL owns an isolated config: switches never update the launch config.
+                                // Keep its active credentials/settings, but not its transcript or provider session.
+                                currentConfig.set(repl.getChatConfig().copy());
+                            }
+                            return clear;
                         }
                     });
             return 0;
@@ -2166,7 +2212,9 @@ public class ChatCommand implements Callable<Integer> {
      */
     private SystemPromptManager passthroughSystemPrompt() {
         WorkflowSessionContext workflowTeam = WorkflowSessionContext.current();
-        return SystemPromptManager.withSection(SystemPromptManager.resolve(null, null, null),
+        SystemPromptManager prompt = SystemPromptManager.withSection(
+                SystemPromptManager.resolve(null, null, null), KompileToolGuidance.PROMPT);
+        return SystemPromptManager.withSection(prompt,
                 workflowTeam == null ? null : workflowTeam.systemPromptSection(passthroughConfig));
     }
 

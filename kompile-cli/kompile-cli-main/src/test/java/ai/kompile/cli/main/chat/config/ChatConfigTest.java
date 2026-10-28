@@ -215,7 +215,8 @@ class ChatConfigTest {
     void promptCacheRetentionIsNormalizedPersistedAndSessionScoped() throws Exception {
         Path project = tempDir.resolve("prompt-cache-project");
         ChatConfig active = new ChatConfig("openai", null, "gpt-5.4", null);
-        assertEquals("short", active.getPromptCacheRetention());
+        assertEquals("long", active.getPromptCacheRetention(),
+                "long must be the default policy for a fresh config");
 
         active.setPromptCacheRetention("24h");
         active.saveProject(project);

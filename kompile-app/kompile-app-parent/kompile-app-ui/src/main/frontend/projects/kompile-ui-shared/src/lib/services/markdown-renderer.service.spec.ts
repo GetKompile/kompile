@@ -88,6 +88,19 @@ describe('MarkdownRendererService harness tool calls', () => {
     ].join('\n'));
   });
 
+  it('renders live subprocess output safely and retains it when the run stops', () => {
+    const call: ToolUseEvent = {
+      tool: 'bash', input: '{}', callId: 'native-1', status: 'started',
+      detail: { displayName: 'Bash', action: 'test', sections: [{ label: 'output', runs: [{ text: '<script>fail</script>' }] }] }
+    };
+    const running = renderer.renderToolCall(call, true);
+    expect(running.state).toBe('running');
+    expect(running.action).toBe('test');
+    expect(html(running.sections[0].html)).toBe('&lt;script&gt;fail&lt;/script&gt;');
+    expect(renderer.renderToolCall(call, false).state).toBe('stopped');
+    expect(renderer.renderToolCall(call, false).sections.length).toBe(1);
+  });
+
   it('states a call from its lifecycle and names it from the tool when there is no row', () => {
     const started: ToolUseEvent = {
       tool: 'mcp__kompile__code_search', toolName: 'mcp__kompile__code_search', input: '{}', callId: 'c', status: 'started'

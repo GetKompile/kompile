@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.serve;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard;
@@ -84,6 +85,19 @@ public class McpSocketSession implements Runnable {
     volatile CodeIndexSessionBrief sessionBrief;
     private volatile String requestedProfile = "full";
     private volatile Set<String> allowedToolIds;
+    /**
+     * The delegating runner's {@code KOMPILE_SUBAGENT_DEPTH} for this connection,
+     * from the socket header. The daemon JVM's own env is not this client's: two
+     * MCP clients — one a lead chat, one a subagent — can share one daemon.
+     */
+    private volatile String headerSubagentDepth;
+    private volatile boolean headerHookRunning;
+
+    void configureClientContext(JsonNode header) {
+        headerSubagentDepth = header.hasNonNull(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.DEPTH_ENV)
+                ? header.path(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.DEPTH_ENV).asText() : null;
+        headerHookRunning = header.path("hookRunning").asBoolean(false);
+    }
     private volatile CoordinationStateManager coordinator;
     private volatile HighMemoryToolCallGuard highMemoryToolCallGuard;
     private volatile EnforcerToolCallGuard enforcerGuard;
@@ -133,8 +147,9 @@ public class McpSocketSession implements Runnable {
             resultReferenceCache.configureOutputBudget(this.workDir);
             // Resolved per client on the brief's own thread; initialize waits only within its budget.
             this.sessionBrief = CodeIndexSessionBrief.start(workDir);
-            this.requestedProfile = header.path("profile").asText("full");
+                        this.requestedProfile = header.path("profile").asText("full");
             this.allowedToolIds = parseAllowedToolIds(header.get("allowedTools"));
+            configureClientContext(header);
             this.gatewayInterceptor = CliToolGatewayInterceptor.fromConfig(sessionOm);
             this.auditLogger = new McpToolAuditLogger(
                     sessionId, "kompile-daemon", "mcp-daemon", workDir, sessionOm);
@@ -266,9 +281,15 @@ public class McpSocketSession implements Runnable {
                 case "tools/list" -> {
                     // Wait for background tool initialization (max 30s)
                     waitForTools();
+                    boolean hideDelegation =
+                            ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.isSubagent(headerSubagentDepth);
                     ObjectNode toolsResult = om.createObjectNode();
                     var toolsArray = toolsResult.putArray("tools");
                     for (ToolDef td : tools.values()) {
+                        if (hideDelegation && ai.kompile.cli.main.chat.agent.SubagentDelegationGuard
+                                .DELEGATION_TOOLS.contains(td.name())) {
+                            continue;
+                        }
                         var toolObj = toolsArray.addObject();
                         toolObj.put("name", td.name());
                         toolObj.put("description", td.description());
@@ -306,7 +327,14 @@ public class McpSocketSession implements Runnable {
                     Map<String, Object> argMap = new LinkedHashMap<>(originalArgMap);
 
                     ToolDef td = tools.get(toolName);
-                    if (td == null) {
+                    if (ai.kompile.cli.main.chat.agent.SubagentDelegationGuard
+                            .blocksWithDepth(toolName, headerSubagentDepth)) {
+                        ObjectNode callResult = om.createObjectNode();
+                        callResult.putArray("content").addObject().put("type", "text")
+                                .put("text", ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.message(toolName));
+                        callResult.put("isError", true);
+                        result.set("result", callResult);
+                    } else if (td == null) {
                         ObjectNode callResult = om.createObjectNode();
                         callResult.putArray("content").addObject()
                                 .put("type", "text").put("text", "Unknown tool: " + toolName);
@@ -514,7 +542,7 @@ public class McpSocketSession implements Runnable {
      */
     private static final Set<String> HOST_NATIVE_TOOLS = Set.of(
             "read", "write", "edit", "bash", "grep", "glob", "list",
-            "webfetch", "websearch", "todowrite", "todoread"
+            "webfetch", "websearch", "todowrite", "todoread", "todo_apply_batch"
     );
 
     private Map<String, ToolDef> buildToolMap(ObjectMapper om, Path wd) {
@@ -531,7 +559,7 @@ public class McpSocketSession implements Runnable {
         // the MCP version over its own native tool, adding latency and instability.
 
         // Patch is kompile-specific (multi-hunk unified diff), always register
-        register(map, new PatchTool(), om, wd);
+        register(map, new PatchTool(coordinator), om, wd);
         register(map, new ReadBatchTool(), om, wd);
         register(map, new FetchResultTool(resultReferenceCache), om, wd);
         register(map, new FetchResultBatchTool(resultReferenceCache), om, wd);
@@ -550,6 +578,7 @@ public class McpSocketSession implements Runnable {
         register(map, new ProjectConfigTool(), om, wd);
         register(map, new EnforcerConfigTool(), om, wd);
         register(map, new JudgeControlTool(), om, wd);
+        register(map, new ai.kompile.cli.main.chat.tools.HooksTool(), om, wd);
         register(map, new ai.kompile.cli.main.chat.tools.PeerTool(coordinator), om, wd);
 
         // Test milestone
@@ -620,6 +649,10 @@ public class McpSocketSession implements Runnable {
                 McpToolAnnotations.DELEGATION,
                 args -> { try { return multiTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
+        var resolver = new ai.kompile.cli.mcp.stdio.ResolveModelTool(om, wd);
+        map.put(resolver.id(), new ToolDef(resolver.id(), resolver.description(), resolver.parameterSchema(),
+                resolver.mcpAnnotations(), resolver::execute));
+
         var rmTool = new RoleManagerTool(pool.roleManager(), om);
         map.put(rmTool.id(), new ToolDef(rmTool.id(), rmTool.description(), rmTool.parameterSchema(),
                 rmTool.mcpAnnotations(),
@@ -629,6 +662,10 @@ public class McpSocketSession implements Runnable {
         map.put(skillTool.id(), new ToolDef(skillTool.id(), skillTool.description(), skillTool.parameterSchema(),
                 skillTool.mcpAnnotations(),
                 args -> { try { return skillTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
+
+        register(map, new ai.kompile.cli.mcp.stdio.StdioSubagentResumeTool(
+                new StdioTaskTool(pool.agentRegistry(), subagentRunner, om, pool.roleManager(), wd), om,
+                new ai.kompile.cli.main.chat.agent.SubagentResumeService(om)), om, wd);
 
         // Resume tool — use MCP mode to avoid grabbing the system terminal/intercepting Ctrl+C
         try {
@@ -640,7 +677,21 @@ public class McpSocketSession implements Runnable {
             System.err.println("[daemon] Warning: ResumeTool not available: " + e.getMessage());
         }
 
+        map.replaceAll((name, definition) -> withHooks(definition, () -> ctx(wd)));
         return map;
+    }
+
+    static ToolDef withHooks(ToolDef definition, java.util.function.Supplier<ToolContext> context) {
+        return new ToolDef(definition.name(), definition.description(), definition.schema(),
+                definition.annotations(), args -> {
+                    try {
+                        return ai.kompile.cli.main.chat.hooks.HookExecutor.execute(definition.name(),
+                                JsonUtils.standardMapper().valueToTree(args), context.get(),
+                                input -> definition.executor().apply(args));
+                    } catch (ToolExecutionException e) {
+                        return ToolResult.error(e.getMessage());
+                    }
+                });
     }
 
     static Set<String> parseAllowedToolIds(JsonNode node) {
@@ -671,8 +722,12 @@ public class McpSocketSession implements Runnable {
         ));
     }
 
-    private ToolContext ctx(Path wd) {
+    ToolContext ctx(Path wd) {
         ToolContext context = new ToolContext(sessionId, null, new AllowAllPermissionService(), wd, null);
+        context.setHookExecutionSuppressed(headerHookRunning);
+        if (ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.isSubagent(headerSubagentDepth)) {
+            context.markSupervisedChild();
+        }
         context.bindJudgeControl(mcpJudgeControl(), true);
         return context;
     }

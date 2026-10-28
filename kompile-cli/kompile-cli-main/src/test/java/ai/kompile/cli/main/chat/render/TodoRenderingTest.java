@@ -50,7 +50,7 @@ class TodoRenderingTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"todowrite", "todoread", "mcp__kompile__todowrite", "mcp__kompile__todoread",
-            "TodoWrite", "TodoRead", "todo_write", "todo_read"})
+            "TodoWrite", "TodoRead", "todo_write", "todo_read", "todo_apply_batch", "mcp__kompile__todo_apply_batch"})
     void completedCallsAndInspectorUseListUi(String name) throws Exception {
         var tasks = JsonUtils.standardMapper().readTree("""
                 [{"id":"1","subject":"Done","status":"completed"},
@@ -129,6 +129,59 @@ class TodoRenderingTest {
         assertFalse(detail.contains("\u001b"), detail);
         assertFalse(detail.contains("\u0007"), detail);
         assertTrue(detail.contains("#1 task"), detail);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void malformedTimestampsArePrintableInPlainAndAnsiRendering(boolean ansi) {
+        TodoWriteTool.TodoItem item = new TodoWriteTool.TodoItem(
+                "1", "Timestamped task", null, "pending", "medium", "model",
+                unsafeTimestamp("updated"), unsafeTimestamp("created"));
+        TerminalRenderer viewer = new TerminalRenderer(ansi);
+        for (String output : List.of(viewer.renderTodoItem(item), viewer.renderTodoList(List.of(item)))) {
+            assertSafeTimestampOutput(output, "created " + TerminalRenderer.printableToolOutput(item.createdAt));
+            assertSafeTimestampOutput(output, "upd " + TerminalRenderer.printableToolOutput(item.updatedAt));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"created_at", "updated_at", "createdAt", "updatedAt"})
+    void structuredTodoTimestampAliasesCannotInjectTerminalControls(String field) throws Exception {
+        var mapper = JsonUtils.standardMapper();
+        var task = mapper.createObjectNode().put("id", "1").put("subject", "Timestamped task")
+                .put("status", "pending");
+        boolean created = field.startsWith("created");
+        task.put(created ? "updated_at" : "created_at", "2000-01-01T00:00:00Z");
+        String malformed = unsafeTimestamp("bad-stamp");
+        task.put(field, malformed);
+        var wire = ai.kompile.cli.main.chat.tools.McpToolResultSerializer.toMcpCallResult(mapper,
+                ToolResult.success("Tasks", "", Map.of("todos", List.of(task))));
+        ToolResult result = ai.kompile.cli.main.chat.tools.McpToolResultSerializer.fromStructuredContentText(
+                mapper, wire.path("structuredContent").toString(), false);
+        assertNotNull(result);
+        String expected = (created ? "created " : "upd ") + TerminalRenderer.printableToolOutput(malformed);
+        for (boolean ansi : List.of(false, true)) {
+            TerminalRenderer viewer = new TerminalRenderer(ansi);
+            assertSafeTimestampOutput(viewer.renderToolResultDetail("todoread", "{}", result), expected);
+            assertSafeTimestampOutput(viewer.renderToolCallComplete("todoread", "{}", result), expected);
+            var sections = viewer.renderToolDisplaySections("todoread", "{}", result, "", 128_000);
+            assertEquals(1, sections.size());
+            assertSafeTimestampOutput(sections.get(0).formattedContent(), expected);
+            assertSafeTimestampOutput(sections.get(0).content(), expected);
+        }
+    }
+
+    private static String unsafeTimestamp(String text) {
+        return text + "\u001b[2J\u0007\u0008\u009b\u001b[38;5;196mred\u001b[0m\u001b]0;injected\u0007";
+    }
+
+    private static void assertSafeTimestampOutput(String output, String expected) {
+        assertFalse(output.contains("\u001b[38;5;196m"), "Payload styling must not survive: " + output);
+        // Renderer-owned SGR is allowed in ANSI mode; every other terminal control is forbidden.
+        String plain = output.replaceAll("\u001b\\[[0-9;:]*m", "");
+        assertFalse(plain.codePoints().anyMatch(c -> (c < 0x20 && c != '\n' && c != '\r' && c != '\t')
+                || c == 0x7f || (c >= 0x80 && c <= 0x9f)), output);
+        assertTrue(plain.contains(expected), plain);
     }
 
     // ===================================================================
@@ -373,6 +426,48 @@ class TodoRenderingTest {
             // No extra description line
             assertEquals(1, output.split("\n").length,
                     "Should be single line without description");
+        }
+
+        @Test
+        void timestamps_shouldShowCompactCreatedAndUpdated() {
+            TodoWriteTool.TodoItem item = new TodoWriteTool.TodoItem(
+                    "11", "Timestamped task", null, "pending", "medium",
+                    null, "2026-07-07T09:12:00Z", "2026-07-06T14:03:00Z");
+            String output = renderer.renderTodoItem(item);
+
+            assertTrue(output.contains("created 07-06 14:03"), "Should show created stamp: " + output);
+            assertTrue(output.contains("upd 07-07 09:12"), "Should show updated stamp: " + output);
+        }
+
+        @Test
+        void timestamps_createdOnly_whenNeverUpdated() {
+            TodoWriteTool.TodoItem item = new TodoWriteTool.TodoItem(
+                    "12", "Fresh task", null, "pending", "medium",
+                    null, null, "2026-07-06T14:03:00Z");
+            String output = renderer.renderTodoItem(item);
+
+            assertTrue(output.contains("created 07-06 14:03"));
+            assertFalse(output.contains("upd "), "No update stamp when never mutated: " + output);
+        }
+
+        @Test
+        void timestamps_absent_shouldRenderNothing() {
+            TodoWriteTool.TodoItem item = new TodoWriteTool.TodoItem(
+                    "13", "Legacy task", null, "pending", "medium");
+            String output = renderer.renderTodoItem(item);
+
+            assertFalse(output.contains("created"),
+                    "Legacy items without timestamps stay clean: " + output);
+        }
+
+        @Test
+        void timestamps_unparsable_fallBackToRawValue() {
+            TodoWriteTool.TodoItem item = new TodoWriteTool.TodoItem(
+                    "14", "Odd task", null, "pending", "medium",
+                    null, null, "not-a-timestamp");
+            String output = renderer.renderTodoItem(item);
+
+            assertTrue(output.contains("created not-a-timestamp"));
         }
     }
 

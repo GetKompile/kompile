@@ -219,6 +219,17 @@ class ChatDiffsCommandTest {
     }
 
     @Test
+    void malformedTimestampsCannotInjectTerminalControls() throws Exception {
+        Files.createDirectories(journals);
+        Files.writeString(journals.resolve("current.jsonl"),
+                record("current", "edit", "edit", edit("safe.txt"), false)
+                        .replace("2026-10-13T12:00:00Z", "bad\\u001b[2J"));
+        String rendered = String.join("\n", show("1", "current"));
+        assertTrue(rendered.contains("safe.txt"), rendered);
+        assertFalse(rendered.contains("\033"), "Malformed timestamps must be printable text");
+    }
+
+    @Test
     void timestampsRenderInViewerLocalTimeNotRawUtc() throws Exception {
         // Fixture instant 2026-10-13T12:00:00Z renders as Oct 13 21:00 in Asia/Tokyo (+0900).
         java.util.TimeZone previousDefault = java.util.TimeZone.getDefault();
@@ -269,6 +280,46 @@ class ChatDiffsCommandTest {
                 "register_edit must surface as native edit activity");
         assertTrue(output.stream().anyMatch(line -> line.contains("NativeKernel.cpp")));
         assertTrue(output.stream().anyMatch(line -> line.contains("native edit, diff not captured")));
+    }
+
+    @Test
+    void fallbackIgnoresOlderAndForeignProjectEdits() throws Exception {
+        append("current", "mine", "edit", edit("mine.txt"), false, "2026-10-13T07:00:00Z");
+        append("current", "read", "read", Map.of("file_path", "read-only"), false,
+                "2026-10-13T10:00:00Z");
+        append("older", "old", "edit", edit("older-sibling.txt"), false, "2026-10-13T06:00:00Z");
+        String foreign = record("foreign", "foreign-edit", "edit", edit("foreign-project.txt"), false,
+                "2026-10-13T09:00:00Z").replace(home.toString(), home.resolve("elsewhere").toString());
+        Files.writeString(journals.resolve("foreign.jsonl"), foreign);
+        String rendered = String.join("\n", show("5", "current"));
+        assertFalse(rendered.contains("older-sibling.txt"), rendered);
+        assertFalse(rendered.contains("foreign-project.txt"), rendered);
+        assertFalse(rendered.contains("Newer edit activity"), rendered);
+    }
+
+    @Test
+    void fallbackRecognizesNamespacedLocksAndSanitizesUntrustedMetadata() throws Exception {
+        append("current", "mine", "edit", edit("mine.txt"), false, "2026-10-13T07:00:00Z");
+        append("current", "read", "read", Map.of("file_path", "read-only"), false,
+                "2026-10-13T10:00:00Z");
+        append("native", "lock", "mcp__kompile__edit_coordinator",
+                Map.of("action", "register_edits", "file_paths", List.of("unsafe\033[2J.txt")),
+                false, "2026-10-13T09:00:00Z");
+        String rendered = String.join("\n", show("5", "current"));
+        assertTrue(rendered.contains("unsafe"), rendered);
+        assertTrue(rendered.contains("native edit, diff not captured"), rendered);
+        assertFalse(rendered.contains("\033"), "Journal metadata must not execute terminal escapes");
+    }
+
+    @Test
+    void fallbackSkipsNullArgumentsWithoutHidingOtherRecentEdits() throws Exception {
+        append("current", "mine", "edit", edit("mine.txt"), false, "2026-10-13T07:00:00Z");
+        append("current", "read", "read", Map.of("file_path", "read-only"), false,
+                "2026-10-13T10:00:00Z");
+        append("native", "lock", "edit_coordinator", null, false, "2026-10-13T09:00:00Z");
+        append("valid", "edit", "edit", edit("valid-sibling.txt"), false, "2026-10-13T09:00:00Z");
+        String rendered = String.join("\n", assertDoesNotThrow(() -> show("5", "current")));
+        assertTrue(rendered.contains("valid-sibling.txt"), rendered);
     }
 
     @Test

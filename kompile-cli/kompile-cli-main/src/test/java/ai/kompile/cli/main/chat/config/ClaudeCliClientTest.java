@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.auth.oauth.ClaudeCodeOAuthFlow;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.utils.HashUtils;
@@ -203,6 +204,7 @@ class ClaudeCliClientTest {
         assertTrue(command.contains("--input-format stream-json"), command);
         assertTrue(command.contains("--output-format stream-json"), command);
         assertTrue(command.contains("--include-partial-messages"), command);
+        assertTrue(args(command).contains("--forward-subagent-text"), command);
         assertTrue(command.contains("--replay-user-messages"), command);
         assertTrue(command.contains("--session-id test-session"), "first turn creates the native session: " + command);
     }
@@ -1545,14 +1547,19 @@ class ClaudeCliClientTest {
 
     @Test
     void childConversationReachesItsViewerWithoutBecomingTheParentAnswer() throws Exception {
+        // Claude Code forwards child tools by default, but child prose/thinking
+        // only with --forward-subagent-text; partial messages alone are not enough.
         FakeClaudeCode fake = fake("""
                 turn() {
                   say_init
                   emit '{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"tool-agent","description":"Inspect code","task_type":"local_agent","prompt":"Find the bug"}'
-                  emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"message_start","message":{"id":"child-1"}}}'
-                  emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check the parser"}}}'
-                  emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Child prose"}}}'
-                  emit '{"type":"assistant","parent_tool_use_id":"tool-agent","message":{"id":"child-1","content":[{"type":"thinking","thinking":"Check the parser"},{"type":"text","text":"Child prose"},{"type":"tool_use","id":"read-child","name":"Read","input":{"path":"parser.java"}}]}}'
+                  if [[ " ${args[*]} " == *" --forward-subagent-text "* ]]; then
+                    emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"message_start","message":{"id":"child-1"}}}'
+                    emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check the parser"}}}'
+                    emit '{"type":"stream_event","parent_tool_use_id":"tool-agent","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Child prose"}}}'
+                    emit '{"type":"assistant","parent_tool_use_id":"tool-agent","message":{"id":"child-1","content":[{"type":"thinking","thinking":"Check the parser"},{"type":"text","text":"Child prose"}]}}'
+                  fi
+                  emit '{"type":"assistant","parent_tool_use_id":"tool-agent","message":{"id":"child-2","content":[{"type":"tool_use","id":"read-child","name":"Read","input":{"path":"parser.java"}}]}}'
                   emit '{"type":"user","parent_tool_use_id":"tool-agent","message":{"content":[{"type":"tool_result","tool_use_id":"read-child","content":"source code"}]}}'
                   emit '{"type":"system","subtype":"task_notification","task_id":"agent-1","status":"completed","summary":"found the bug"}'
                   say_text "$ANSWER"
@@ -1793,7 +1800,9 @@ class ClaudeCliClientTest {
             assertTrue(output.path("updatedToolOutput").path("file").path("content").asText().length() <= 1_000);
             assertTrue(output.path("additionalContext").asText().contains("d1.native-output-test."));
             assertFalse(output.has("permissionDecision"));
-            assertFalse(fake.argv().get(0).contains("--disallowedTools"));
+            // kompile.cli.binary is set for this test, so the launch carries Kompile's
+            // MCP server and the native shells are removed from the model's context.
+            assertTrue(fake.argv().get(0).contains("Bash,PowerShell"), fake.argv().get(0));
         } finally {
             if (previous == null) System.clearProperty("kompile.cli.binary");
             else System.setProperty("kompile.cli.binary", previous);
@@ -1812,7 +1821,9 @@ class ClaudeCliClientTest {
         try (ClaudeCliClient client = client(fake)) {
             client.send("sonnet", null, false, null, "hi", "", null, null);
             assertFalse(fake.awaitControl("initialize").has("hooks"));
-            assertFalse(fake.argv().get(0).contains("--disallowedTools"));
+            // kompile.cli.binary is set, so the launch carries Kompile's MCP server
+            // and the native shells are removed from the model's context.
+            assertTrue(fake.argv().get(0).contains("Bash,PowerShell"), fake.argv().get(0));
         } finally {
             if (binary == null) System.clearProperty("kompile.cli.binary");
             else System.setProperty("kompile.cli.binary", binary);
@@ -1878,8 +1889,10 @@ class ClaudeCliClientTest {
         }
         String chatArgs = Files.readString(chat.path("args"), StandardCharsets.UTF_8);
         assertFalse(chatArgs.contains("[--tools]"), chatArgs);
-        assertFalse(chatArgs.contains("[--disallowedTools]"),
-                "native availability and Kompile MCP injection must remain unchanged: " + chatArgs);
+        // Native Bash/PowerShell are removed when Kompile's MCP server serves the
+        // launch, so process work routes through mcp__kompile__process.
+        assertTrue(chatArgs.contains("[--disallowedTools]"), chatArgs);
+        assertTrue(chatArgs.contains("Bash,PowerShell"), chatArgs);
         assertFalse(chatArgs.contains("[--settings]"),
                 "a default-effort launch must leave the user's settings alone: " + chatArgs);
         assertFalse(chatArgs.contains("[--strict-mcp-config]"), chatArgs);
@@ -2214,6 +2227,50 @@ class ClaudeCliClientTest {
         }
     }
 
+    @Test
+    void eachProcessRunsOnTheSelectedSetupTokenAndANewSelectionResumesOnIt() throws Exception {
+        FakeClaudeCode fake = fake("""
+                startup() { printf '%s\\n' "${CLAUDE_CODE_OAUTH_TOKEN:-own-login}" >> "$DIR/token.log"; }
+                """);
+        AtomicReference<String> selected = new AtomicReference<>("sk-ant-oat01-work");
+
+        try (ClaudeCliClient client = client(fake)) {
+            client.setSetupToken(selected::get);
+            client.send("sonnet", null, false, null, "one", "", null, null);
+            client.send("sonnet", null, false, null, "two", "", null, null);
+            // Another credential picked mid-session: the next turn's process runs on it.
+            selected.set("sk-ant-oat01-personal");
+            client.send("sonnet", null, false, null, "three", "", null, null);
+            // Claude Code's own login picked: the process gets no token from Kompile.
+            selected.set(null);
+            client.send("sonnet", null, false, null, "four", "", null, null);
+        }
+        String inherited = System.getenv(ClaudeCodeOAuthFlow.OAUTH_TOKEN_ENV);
+        assertEquals(List.of("sk-ant-oat01-work", "sk-ant-oat01-personal", inherited == null ? "own-login" : inherited),
+                Files.readAllLines(fake.path("token.log")));
+        List<String> argv = fake.argv();
+        assertEquals(3, argv.size(), argv.toString());
+        assertTrue(argv.get(1).contains("--resume test-session"), argv.get(1));
+        assertTrue(argv.get(2).contains("--resume test-session"), argv.get(2));
+        assertEquals(List.of("one", "two", "three", "four"), fake.messages(), "the conversation continues");
+    }
+
+    @Test
+    void aSelectedCredentialThatCannotBeUsedStopsTheTurnBeforeAnyProcessStarts() throws Exception {
+        FakeClaudeCode fake = fake();
+
+        try (ClaudeCliClient client = client(fake)) {
+            client.setSetupToken(() -> {
+                throw new ChatConfig.AuthenticationException("anthropic", "Selected credential no longer exists.");
+            });
+            ClaudeCliClient.TurnNotStartedException failure = assertThrows(
+                    ClaudeCliClient.ClaudeCliAuthenticationException.class,
+                    () -> client.send("sonnet", null, false, null, "hi", "", null, null));
+            assertTrue(failure.getMessage().contains("no longer exists"), failure.getMessage());
+        }
+        assertFalse(Files.exists(fake.path("argv.log")), "no claude process ran on another login");
+    }
+
     private FakeClaudeCode fake() throws IOException {
         return fake("");
     }
@@ -2366,5 +2423,52 @@ class ClaudeCliClientTest {
             thread.join(10_000);
             assertFalse(thread.isAlive(), "the turn did not end");
         }
+    }
+
+    @Test
+    void chatModeCarriesNoSubagentGuardAtDepthZero() {
+        assertTrue(ClaudeCliClient.Mode.CHAT.subagentGuardArguments("0", false).isEmpty());
+        assertTrue(ClaudeCliClient.Mode.CHAT.subagentGuardArguments(null, false).isEmpty());
+        assertTrue(ClaudeCliClient.Mode.CHAT.subagentGuardArguments("junk", false).isEmpty());
+    }
+
+    @Test
+    void subagentDepthDisallowsClaudeNativeAndKompileDelegationTools() {
+        List<String> flags = ClaudeCliClient.Mode.CHAT.subagentGuardArguments("1", false);
+        assertEquals(List.of("--disallowedTools", String.join(",",
+                ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.CLAUDE_DISALLOWED)), flags);
+        assertTrue(flags.get(1).contains("Task"));
+        assertTrue(flags.get(1).contains("Agent"));
+        assertTrue(flags.get(1).contains("mcp__kompile__task"));
+        // Deeper subagents keep the same guard.
+        assertEquals(flags, ClaudeCliClient.Mode.CHAT.subagentGuardArguments("3", false));
+    }
+
+    @Test
+    void injectedKompileServerRemovesNativeShellsAndMergesTheSubagentGuardIntoOneFlag() {
+        // A chat launch with Kompile's MCP server loses Bash/PowerShell from the
+        // model's context; without the server they stay.
+        assertEquals(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.nativeShellGuard(true),
+                ClaudeCliClient.Mode.CHAT.guardedTools(null, true));
+        assertTrue(ClaudeCliClient.Mode.CHAT.guardedTools(null, false).isEmpty());
+        // The subagent guard and the shell guard share ONE --disallowedTools flag.
+        List<String> both = ClaudeCliClient.Mode.CHAT.subagentGuardArguments("1", true);
+        assertEquals(2, both.size(), both.toString());
+        List<String> merged = List.of(both.get(1).split(","));
+        assertTrue(merged.containsAll(
+                ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.CLAUDE_DISALLOWED), merged.toString());
+        assertTrue(merged.containsAll(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard
+                .CLAUDE_NATIVE_SHELL_TOOLS), merged.toString());
+        // A tool-free judge has no tools at all, so nothing to guard.
+        ClaudeCliClient.Mode judge = new ClaudeCliClient.Mode(true, true, "");
+        assertTrue(judge.guardedTools("2", true).isEmpty(),
+                "a tool-free judge has no tools to guard");
+    }
+
+    @Test
+    void toolFreeModeNeverNeedsTheGuard() {
+        ClaudeCliClient.Mode judge = new ClaudeCliClient.Mode(true, true, "");
+        assertTrue(judge.subagentGuardArguments("2").isEmpty(),
+                "a tool-free judge has no tools to guard");
     }
 }

@@ -166,8 +166,9 @@ public final class HeadlessPassthroughRunner {
             history.logUserMessage(opts.webInput() == null ? opts.prompt() : opts.webInput().rawInput());
             String pinnedFramework = framework;
             long[] toolCount = {0};
-            record PendingTool(String id, String input) { }
+            record PendingTool(String id, String name, String input, StringBuilder output, long startedAt) { }
             Map<String, ArrayDeque<PendingTool>> pendingTools = new HashMap<>();
+            PendingTool[] activeTool = {null};
             var result = runner.runHeadless(prompt, opts.timeoutMs(), event -> {
                 if (event instanceof PassthroughStreamParser.SessionInit init) {
                     try { saveNativeId(opts.sessionId(), cwd, pinnedFramework, init.sessionId()); }
@@ -181,23 +182,60 @@ public final class HeadlessPassthroughRunner {
                     events.accept(HeadlessRunEvent.thinkingDelta(opts.sessionId(), thinking.text()));
                 } else if (event instanceof PassthroughStreamParser.ToolUse use) {
                     String id = "native-" + (++toolCount[0]);
-                    pendingTools.computeIfAbsent(use.name(), name -> new ArrayDeque<>())
-                            .addLast(new PendingTool(id, use.input()));
-                    events.accept(HeadlessRunEvent.toolStarted(opts.sessionId(), id, use.name(), use.input()));
+                    PendingTool call = new PendingTool(id, use.name(), use.input(), new StringBuilder(), System.nanoTime());
+                    pendingTools.computeIfAbsent(use.name(), name -> new ArrayDeque<>()).addLast(call);
+                    activeTool[0] = call;
+                    events.accept(HeadlessRunEvent.toolStarted(opts.sessionId(), id, use.name(), use.input(),
+                            nativeToolDetail(use.name(), use.input(), "", false, -1)));
+                } else if (event instanceof PassthroughStreamParser.ToolOutput output) {
+                    PendingTool call = activeTool[0];
+                    if (call != null && output.output() != null && !output.output().isEmpty()) {
+                        // Pi sends cumulative snapshots; Codex sends deltas. Keep only a bounded preview.
+                        if ("pi".equals(pinnedFramework)) call.output().setLength(0);
+                        int remaining = 65_536 - call.output().length();
+                        call.output().append(output.output(), 0, Math.min(remaining, output.output().length()));
+                        events.accept(HeadlessRunEvent.toolOutput(opts.sessionId(), call.id(), call.name(),
+                                nativeToolDetail(call.name(), call.input(), call.output().toString(), false, -1)));
+                    }
                 } else if (event instanceof PassthroughStreamParser.ToolComplete done) {
-                    ObjectNode detail = JsonUtils.standardMapper().createObjectNode();
-                    detail.put("output", done.output());
-                    detail.put("exitCode", done.exitCode());
                     var pending = pendingTools.get(done.name());
                     PendingTool call = pending == null ? null : pending.pollFirst();
+                    String output = done.output() == null ? "" : done.output();
+                    if (call != null && !call.output().isEmpty()) {
+                        String live = call.output().toString();
+                        // Both adapters emit only the unstreamed suffix at completion.
+                        if ("pi".equals(pinnedFramework) || "codex".equals(pinnedFramework)) output = live + output;
+                        else if (output.isEmpty() || live.contains(output)) output = live;
+                        else if (!output.contains(live)) output = live + output;
+                    }
+                    long duration = call == null ? 0 : Math.max(0, (System.nanoTime() - call.startedAt()) / 1_000_000);
+                    boolean failed = done.error() || done.exitCode() > 0;
                     events.accept(HeadlessRunEvent.toolCompleted(opts.sessionId(), call == null ? "" : call.id(), done.name(),
-                            call == null ? "" : call.input(), !done.error(), 0, detail));
+                            call == null ? "" : call.input(), !failed, duration,
+                            nativeToolDetail(done.name(), call == null ? "" : call.input(), output, failed, done.exitCode())));
+                    if (call == activeTool[0]) activeTool[0] = null;
                 } else if (event instanceof PassthroughStreamParser.TokenUsage usage) {
                     events.accept(HeadlessRunEvent.tokenUsage(opts.sessionId(), usage.inputTokens(), usage.outputTokens(),
                             usage.cacheReadTokens(), usage.cacheCreationTokens()));
                 } else if (event instanceof PassthroughStreamParser.TurnComplete done) {
-                    events.accept(HeadlessRunEvent.tokenUsage(opts.sessionId(), done.inputTokens(), done.outputTokens(),
-                            done.cacheReadTokens(), done.cacheCreationTokens()));
+                    ObjectNode stats = JsonUtils.standardMapper().createObjectNode();
+                    stats.put("durationMs", done.durationMs());
+                    stats.put("costUsd", done.costUsd());
+                    stats.put("numTurns", done.numTurns());
+                    stats.put("isError", false);
+                    if (done.inputTokens() > 0 || done.outputTokens() > 0
+                            || done.cacheReadTokens() > 0 || done.cacheCreationTokens() > 0) {
+                        events.accept(HeadlessRunEvent.tokenUsage(opts.sessionId(), done.inputTokens(), done.outputTokens(),
+                                done.cacheReadTokens(), done.cacheCreationTokens()));
+                        ObjectNode tokens = stats.putObject("tokenMetrics");
+                        tokens.put("inputTokens", done.inputTokens());
+                        tokens.put("outputTokens", done.outputTokens());
+                        tokens.put("cacheReadTokens", done.cacheReadTokens());
+                        tokens.put("cacheCreationTokens", done.cacheCreationTokens());
+                        tokens.put("totalGenerationMs", done.durationMs());
+                        tokens.put("tokensPerSecond", done.durationMs() > 0 ? done.outputTokens() * 1000.0 / done.durationMs() : 0);
+                    }
+                    events.accept(HeadlessRunEvent.stats(opts.sessionId(), stats.toString()));
                 }
             });
             if (!answer.isEmpty()) history.logAgentResponse(framework, answer.toString(), 0);
@@ -219,6 +257,17 @@ public final class HeadlessPassthroughRunner {
             }
             if (runner != null) { runner.cancelHeadless(); runner.cleanup(); }
             if (history != null) history.close();
+        }
+    }
+
+    /** Native tools use the same printable, bounded row/body as in-process CLI tools. */
+    private static ObjectNode nativeToolDetail(String name, String input, String output, boolean error, int exitCode) {
+        try {
+            var result = new ai.kompile.cli.main.chat.tools.ToolResult("", output,
+                    exitCode < 0 ? Map.of() : Map.of("exitCode", exitCode), error);
+            return ToolCallJson.detail(JsonUtils.standardMapper(), name, input, result);
+        } catch (RuntimeException renderFailure) {
+            return null; // Display failure must not suppress the tool's lifecycle event.
         }
     }
 

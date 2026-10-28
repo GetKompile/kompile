@@ -64,10 +64,12 @@ public record ProviderPromptCacheCapabilities(
         }
 
         public static Retention from(String value) {
-            if (value == null || value.isBlank()) return SHORT;
+            // Unset/blank means "no preference" -> the default (extended) policy.
+            if (value == null || value.isBlank()) return LONG;
             return switch (value.strip().toLowerCase(Locale.ROOT)) {
                 case "none", "off", "disabled" -> NONE;
                 case "long", "1h", "24h" -> LONG;
+                // Unrecognized explicit values fail closed to the cheaper short tier.
                 default -> SHORT;
             };
         }

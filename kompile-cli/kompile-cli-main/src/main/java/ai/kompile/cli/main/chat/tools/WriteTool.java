@@ -141,9 +141,12 @@ public class WriteTool implements CliTool {
                 relativePath = path.toString();
             }
             String message = (exists ? "Overwrote" : "Created") + " file with " + lines + " lines";
-            if (coordinationManager != null && agent == null) {
-                // Without identity (session semantics) another session's lock only warns; a
-                // call with identity was already guarded before the write.
+            if (coordinationManager != null && agent == null
+                    && EditCoordinatorTool.advisoryWarningsApply(coordinationManager)) {
+                // Advisory mode only, and only without identity (session semantics): in
+                // ENFORCE the pre-write guard already refused a live conflicting lock and
+                // auto-locked a free target; a call with identity was guarded before the
+                // write in every mode.
                 EditLockEntry conflict = coordinationManager.findConflictingLock(
                         path.toAbsolutePath().toString());
                 if (conflict != null) {

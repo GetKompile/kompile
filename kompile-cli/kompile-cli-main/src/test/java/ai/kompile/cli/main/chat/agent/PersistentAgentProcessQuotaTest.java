@@ -47,7 +47,8 @@ class PersistentAgentProcessQuotaTest {
                     .skipPermissions(false)
                     .build();
             try {
-                process.start(3);
+                try { process.start(3); }
+                catch (java.io.IOException expected) { /* fatal diagnostic may beat readiness */ }
 
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
                 while (process.isAlive() && System.nanoTime() < deadline) {
@@ -95,7 +96,8 @@ class PersistentAgentProcessQuotaTest {
                     .skipPermissions(false)
                     .build();
             try {
-                process.start(3);
+                try { process.start(3); }
+                catch (java.io.IOException expected) { /* fatal diagnostic may beat readiness */ }
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
                 while (process.isAlive() && System.nanoTime() < deadline) {
                     Thread.sleep(10);

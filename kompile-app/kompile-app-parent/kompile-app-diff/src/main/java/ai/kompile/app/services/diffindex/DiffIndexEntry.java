@@ -33,6 +33,8 @@ public class DiffIndexEntry {
     private String source;
     private String sessionId;
     private String sessionFingerprint;
+    private String sourceCallId;
+    private String transcriptId;
     private String projectDirectory;
     private String filePath;
     private String toolName;

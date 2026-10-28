@@ -200,6 +200,7 @@ public class ChatRepl implements AutoCloseable {
     private final ProjectActivityController projectActivityController;
     private final ConversationActivityService conversationActivityService;
     private final TimelineLifecycle timelineLifecycle;
+    private TestMilestoneDisplay testMilestoneDisplay;
     private DashboardTimelineCommands dashboardTimelineCommands;
     private AutoCloseable processTimelineBinding = () -> { };
 
@@ -327,6 +328,14 @@ public class ChatRepl implements AutoCloseable {
                                 "kompile", operation, type, file, permittedRoot), attributes);
             }
 
+            /** Delivery acknowledgement; existing best-effort producers keep recordSaved. */
+            public boolean recordSavedConfirmed(String type, String operation, Path file, Path permittedRoot,
+                                                Map<String, String> attributes) {
+                return service.recordConfirmed(identity, type, identity.actorId(), operation,
+                        ai.kompile.cli.main.chat.activity.ActivitySourceRef.file(
+                                "kompile", operation, type, file, permittedRoot), attributes);
+            }
+
             /** Recorder attribution, not ownership of the process that ran the tests. */
             public void annotateMilestone(Map<String, Object> milestone) {
                 milestone.put("sessionId", identity.conversationId());
@@ -345,6 +354,7 @@ public class ChatRepl implements AutoCloseable {
     private final Path workingDirectory;
     private volatile ScheduledLoopManager scheduledLoopManager;
     private volatile ScheduledLoopManager globalScheduledLoopManager;
+    private volatile BoundedLoopManager boundedLoopManager;
 
     // Mode
     private final boolean localMode;
@@ -554,6 +564,7 @@ public class ChatRepl implements AutoCloseable {
                 baseUrl, objectMapper, toolRegistry, permissionService,
                 agentRegistry, workDir, directClient, processManager, skillRegistry);
         this.agenticLoop.configureConversationSession(sessionId);
+        this.agenticLoop.setCoordinationManager(coordinationManager);
         this.agenticLoop.setReminderManager(reminderManager);
         if (directClient != null && chatConfig.isKompileLocalServing()) {
             // ChatCommand just started the serving child and closed its lease, so idle
@@ -604,8 +615,9 @@ public class ChatRepl implements AutoCloseable {
         this.projectActivityController.setConversationActivityBrowser(
                 conversationActivityService, activityIdentity, workDir);
         this.activityPanel = new StandardChatActivityPanel(
-                backgroundTaskManager, processManager, statusBar, tui::getReservedMiddleRows);
+                backgroundTaskManager, processManager, statusBar, tui::getReservedMiddleRows, renderer);
         this.activityPanel.setProjectActivityView(projectActivityController);
+        this.activityPanel.setTranscriptUiConfig(tui::getUiConfig);
 
         HarnessConfig harnessConfig = HarnessConfig.load(objectMapper);
         this.judgeGloballyEnabled = harnessConfig.isJudgeGlobalEnabled();
@@ -627,12 +639,26 @@ public class ChatRepl implements AutoCloseable {
             @Override
             public void onToolStart(String callId, String toolName, String rawInput) {
                 timelineLifecycle.toolStarted(callId, toolName);
-                sessionContext.wrap(() -> activityPanel.recordToolStart(callId, toolName, rawInput)).run();
+                sessionContext.wrap(() -> {
+                    activityPanel.recordToolStart(callId, toolName, rawInput);
+                    auxiliaryActivityRedraw.run();
+                }).run();
             }
 
             @Override
             public void onToolInput(String callId, String toolName, String rawInput) {
-                sessionContext.wrap(() -> activityPanel.updateToolInput(callId, toolName, rawInput)).run();
+                sessionContext.wrap(() -> {
+                    activityPanel.updateToolInput(callId, toolName, rawInput);
+                    auxiliaryActivityRedraw.run();
+                }).run();
+            }
+
+            @Override
+            public void onToolOutput(String callId, String toolName, String rawInput, String output) {
+                sessionContext.wrap(() -> {
+                    activityPanel.recordToolOutput(callId, toolName, rawInput, output);
+                    auxiliaryActivityRedraw.run();
+                }).run();
             }
 
             @Override
@@ -641,9 +667,13 @@ public class ChatRepl implements AutoCloseable {
                 sessionContext.wrap(() -> {
                 timelineLifecycle.toolFinished(callId, toolName, result == null ? null : result.isError());
                 activityPanel.recordToolComplete(callId, toolName, rawInput, result);
+                auxiliaryActivityRedraw.run();
                 McpDashboardController dashboard = dashboardController;
                 if (dashboard != null) {
                     dashboard.onToolComplete(toolName, rawInput, result);
+                }
+                if (chatConfig != null && chatConfig.isClaudeCliNative() && messageHandler != null) {
+                    messageHandler.injectQueuedInputAtToolBoundary();
                 }
                 }).run();
             }
@@ -652,7 +682,10 @@ public class ChatRepl implements AutoCloseable {
             public void onToolDenied(String callId, String toolName,
                                      String rawInput, String reason) {
                 timelineLifecycle.toolDenied(callId, toolName);
-                sessionContext.wrap(() -> activityPanel.recordToolDenied(callId, toolName, rawInput, reason)).run();
+                sessionContext.wrap(() -> {
+                    activityPanel.recordToolDenied(callId, toolName, rawInput, reason);
+                    auxiliaryActivityRedraw.run();
+                }).run();
             }
         });
 
@@ -712,6 +745,7 @@ public class ChatRepl implements AutoCloseable {
         // one-shot override: direction monitoring is a separate supervision contract.
         if (judgeGloballyEnabled) {
             loadDirectionJudge(workDir);
+            loadDeflectionMonitor(workDir);
         }
 
         // Wire up extracted collaborators
@@ -1139,6 +1173,7 @@ public class ChatRepl implements AutoCloseable {
             agenticLoop.reloadWorkflowConfiguration();
             loadInlineEnforcer(workingDirectory, true);
             loadDirectionJudge(workingDirectory);
+            loadDeflectionMonitor(workingDirectory);
         } else {
             clearJudgePolicy();
         }
@@ -1153,6 +1188,7 @@ public class ChatRepl implements AutoCloseable {
         }
         loadInlineEnforcer(workingDirectory, true);
         loadDirectionJudge(workingDirectory);
+        loadDeflectionMonitor(workingDirectory);
         agenticLoop.reloadWorkflowConfiguration();
     }
 
@@ -1160,6 +1196,7 @@ public class ChatRepl implements AutoCloseable {
     public void clearJudgePolicy() {
         clearInlineJudgePolicy();
         clearDirectionJudge();
+        clearDeflectionMonitor();
         agenticLoop.reloadWorkflowConfiguration();
     }
 
@@ -1555,6 +1592,65 @@ public class ChatRepl implements AutoCloseable {
         return directionJudge;
     }
 
+    // ── Deflection monitor loading (called at startup and from /judge reload) ──
+
+    /**
+     * Construct and bind the deflection monitor when — and only when — the project enforcer
+     * config explicitly sets {@code deflectionDetection=true}. A config without that flag
+     * or any construction failure leaves deflection monitoring OFF; nothing here can enable
+     * it implicitly. Deterministic-only: no judge backend is needed, so unlike
+     * {@link #loadDirectionJudge} this never fails for lack of a model.
+     */
+    public void loadDeflectionMonitor(Path workDir) {
+        EnforcerConfig enforcerConfig = EnforcerConfig.load(workDir);
+        if (!judgeGloballyEnabled || enforcerConfig == null
+                || !enforcerConfig.isDeflectionDetection()
+                || "off".equalsIgnoreCase(enforcerConfig.getDeflectionMode())) {
+            clearDeflectionMonitor();
+            return;
+        }
+        try {
+            var options = new ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor.Options(
+                    enforcerConfig.getDeflectionMode(),
+                    enforcerConfig.isDeflectionReportOnly(),
+                    enforcerConfig.getDeflectionConfidenceThreshold(),
+                    enforcerConfig.getDeflectionMaxCorrections(),
+                    enforcerConfig.getDeflectionCrossTurnLimit(),
+                    enforcerConfig.isDeflectionRequireReceipts());
+            var library = ai.kompile.cli.main.chat.enforcer.deflection.DeflectionPatternLibrary.create(
+                    enforcerConfig.getDeflectionExtraPatterns(),
+                    enforcerConfig.getDeflectionWhitelistPhrases());
+            var detector = new ai.kompile.cli.main.chat.enforcer.deflection.DeflectionDetector(
+                    library,
+                    new ai.kompile.cli.main.chat.enforcer.deflection.DeflectionDetector.Options(
+                            enforcerConfig.getDeflectionConfidenceThreshold(),
+                            enforcerConfig.isDeflectionRequireReceipts()));
+            var monitor = new ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor(
+                    detector, options,
+                    ai.kompile.cli.main.chat.enforcer.JudgementLog.forSession(sessionId));
+            agenticLoop.setDeflectionMonitor(monitor, options.maxCorrections());
+            recordSupervisorActivity("[deflection] enabled · mode=" + options.mode()
+                    + " · threshold=" + options.confidenceThreshold()
+                    + " · corrections " + options.maxCorrections()
+                    + (options.crossTurnLimit() == 0
+                            ? " · cross-turn off"
+                            : " · cross-turn " + options.crossTurnLimit())
+                    + (options.reportOnly() ? " · report-only" : " · enforcing"));
+        } catch (Exception e) {
+            clearDeflectionMonitor();
+            recordSupervisorActivity("[deflection] configuration error: " + e.getMessage());
+        }
+    }
+
+    private void clearDeflectionMonitor() {
+        agenticLoop.setDeflectionMonitor(null, 0);
+    }
+
+    /** The live deflection monitor, or null when deflection monitoring is off. */
+    public ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor getDeflectionMonitor() {
+        return agenticLoop.getDeflectionMonitor();
+    }
+
     // ── Main REPL loop ────────────────────────────────────────────────────────
 
     /**
@@ -1621,8 +1717,8 @@ public class ChatRepl implements AutoCloseable {
             projectActivityController.close();
             sharedProcessMirror.close();
             processManager.close();
-            coordinationManager.shutdown();
             } finally {
+                coordinationManager.shutdown();
                 closeDashboardReports();
                 closeProcessTimelineBinding();
                 timelineLifecycle.close();
@@ -1648,12 +1744,13 @@ public class ChatRepl implements AutoCloseable {
                 if (directClient != null) directClient.close();
                 sharedProcessMirror.close();
                 processManager.close();
-                coordinationManager.shutdown();
             }
         } finally {
+            coordinationManager.shutdown();
             closeDashboardReports();
             closeProcessTimelineBinding();
             timelineLifecycle.close();
+            if (testMilestoneDisplay != null) testMilestoneDisplay.close();
             shutdownScheduledLoops();
             projectActivityController.close();
             dashboardController.close();
@@ -1782,8 +1879,6 @@ public class ChatRepl implements AutoCloseable {
                             + renderer.dim(" [" + (task != null ? task.getId() : "?") + "] · "
                             + (releasedInput > 0 ? releasedInput + " pending message(s) released · " : "")
                             + "Output retained in /jobs; ↓ selects the subagent"));
-                    statusBar.getActiveSubagents().forEach(entry ->
-                            refreshInlineSubagentBlock(tui, activityPanel, entry.getId(), true));
 
                 }
                 return true;
@@ -2053,21 +2148,20 @@ public class ChatRepl implements AutoCloseable {
         sharedProcessMirror.start();
         tui.addResizeListener(activityRedraw);
         projectActivityController.start(activityRedraw);
+        testMilestoneDisplay = new TestMilestoneDisplay(conversationActivityService.storage(),
+                getActivityIdentity(), renderer, sessionContext.wrapConsumer(tui::upsertDisplayBlock));
+        testMilestoneDisplay.start();
 
         // Wire subagent lifecycle tracking into the status bar
         SubagentRunner runner = toolRegistry.getSubagentRunner();
         if (runner != null) {
             activityPanel.setSubagentRunner(runner);
-            Set<String> dirtySubagentOutputs = java.util.concurrent.ConcurrentHashMap.newKeySet();
             AtomicBoolean subagentOutputRefreshQueued = new AtomicBoolean(false);
             Runnable scheduleSubagentOutputRefresh = () -> {
                 if (!subagentOutputRefreshQueued.compareAndSet(false, true)) return;
                 CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(sessionContext.wrap(() -> {
                     subagentOutputRefreshQueued.set(false);
-                    Set<String> ids = Set.copyOf(dirtySubagentOutputs);
-                    dirtySubagentOutputs.removeAll(ids);
-                    ids.forEach(id -> refreshInlineSubagentBlock(
-                            tui, activityPanel, id, false));
+                    // Live child output belongs to its selected activity view, never Main.
                     refreshCurrentActivityView(tui, activityPanel);
                 }));
             };
@@ -2077,7 +2171,6 @@ public class ChatRepl implements AutoCloseable {
                     sessionContext.wrap(() -> {
                     statusBar.registerSubagent(id, type, description);
                     activityPanel.refresh();
-                    refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
                     }).run();
                 }
@@ -2086,7 +2179,6 @@ public class ChatRepl implements AutoCloseable {
                     sessionContext.wrap(() -> {
                     statusBar.updateSubagentStatus(id, status);
                     activityPanel.refresh();
-                    refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
                     }).run();
                 }
@@ -2095,7 +2187,6 @@ public class ChatRepl implements AutoCloseable {
                     sessionContext.wrap(() -> {
                     statusBar.appendSubagentActivity(id, summary, detail);
                     activityPanel.refresh();
-                    refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
                     }).run();
                 }
@@ -2103,7 +2194,13 @@ public class ChatRepl implements AutoCloseable {
                 public void onSubagentOutput(String id, String chunk) {
                     sessionContext.wrap(() -> {
                     statusBar.appendSubagentOutput(id, chunk);
-                    dirtySubagentOutputs.add(id);
+                    scheduleSubagentOutputRefresh.run();
+                    }).run();
+                }
+                @Override
+                public void onSubagentMetadata(String id, Map<String, String> metadata) {
+                    sessionContext.wrap(() -> {
+                    statusBar.updateSubagentMetadata(id, metadata);
                     scheduleSubagentOutputRefresh.run();
                     }).run();
                 }
@@ -2112,7 +2209,6 @@ public class ChatRepl implements AutoCloseable {
                     sessionContext.wrap(() -> {
                     statusBar.unregisterSubagent(id);
                     activityPanel.refresh();
-                    refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
                     }).run();
                 }
@@ -2120,10 +2216,6 @@ public class ChatRepl implements AutoCloseable {
             agenticLoop.setBackgroundEligibilityListener(sessionContext.wrap(() -> {
                 activityPanel.refresh();
                 statusBar.requestRedraw();
-                statusBar.getActiveSubagents().forEach(entry ->
-                        refreshInlineSubagentBlock(tui, activityPanel, entry.getId(), false));
-                statusBar.getRecentSubagents().forEach(entry ->
-                        refreshInlineSubagentBlock(tui, activityPanel, entry.getId(), false));
                 refreshCurrentActivityView(tui, activityPanel);
             }));
         }
@@ -2271,6 +2363,7 @@ public class ChatRepl implements AutoCloseable {
             messageHandler.shutdown();
             stopGeneratingSpinner();
             auxiliaryActivityRedraw = () -> { };
+            if (testMilestoneDisplay != null) testMilestoneDisplay.close();
             projectActivityController.close();
             closeAuxiliaryRepls();
             processManager.removeMonitorListener(processExitWakeListener);
@@ -2351,7 +2444,6 @@ public class ChatRepl implements AutoCloseable {
 
             // Clean up background process manager to prevent shutdown hook leak
             processManager.close();
-            coordinationManager.shutdown();
 
             // Properly clean up JLine terminal state.
             // Catch Exception AND IOError — JLine wraps stty failures in
@@ -2377,6 +2469,7 @@ public class ChatRepl implements AutoCloseable {
                 }
             }
         } finally {
+            coordinationManager.shutdown();
             closeDashboardReports();
             closeProcessTimelineBinding();
             timelineLifecycle.close();
@@ -2500,27 +2593,76 @@ public class ChatRepl implements AutoCloseable {
         }
     }
 
+    /**
+     * Bounded loops for this conversation: like {@link #getScheduledLoopManager()}
+     * but each loop stops by itself after a fire count or duration bound.
+     */
+    BoundedLoopManager getBoundedLoopManager() {
+        BoundedLoopManager existing = boundedLoopManager;
+        if (existing != null) return existing;
+        synchronized (this) {
+            if (boundedLoopManager == null) {
+                boundedLoopManager = new BoundedLoopManager(
+                        sessionContext.wrapConsumer(this::dispatchScheduledLoop),
+                        sessionContext.wrapConsumer(this::showBoundedLoopCompletion),
+                        BoundedLoopManager.stateFileForSession(sessionId));
+            }
+            return boundedLoopManager;
+        }
+    }
+
+    /** Clear end-of-loop indicator, printed exactly once when a bounded loop finishes. */
+    private void showBoundedLoopCompletion(BoundedLoopManager.BoundedLoop loop) {
+        String detail = loop.getCompletionReason() == null ? "" : " — " + loop.getCompletionReason();
+        ChatCompleter.showNotice(renderer.green("  ✓ Bounded loop [" + loop.getId() + "] completed")
+                + renderer.dim(detail)
+                + renderer.dim(" (fired " + loop.getFireCount() + "x total)"));
+    }
+
     private void shutdownScheduledLoops() {
         ScheduledLoopManager sessionLoops = scheduledLoopManager;
         if (sessionLoops != null) sessionLoops.shutdown();
         ScheduledLoopManager globalLoops = globalScheduledLoopManager;
         if (globalLoops != null && !hostManaged) globalLoops.shutdown();
+        BoundedLoopManager bounded = boundedLoopManager;
+        if (bounded != null) {
+            List<BoundedLoopManager.BoundedLoop> stillActive = bounded.list().stream()
+                    .filter(loop -> loop.getStatus()
+                            == BoundedLoopManager.BoundedLoop.LoopStatus.ACTIVE)
+                    .toList();
+            bounded.shutdown();
+            if (!stillActive.isEmpty()) {
+                // Clear end-of-chat indicator: these loops stopped because the chat closed.
+                ChatCompleter.printAbove(renderer.cyan("  ⏹ " + stillActive.size()
+                        + " bounded loop" + (stillActive.size() == 1 ? "" : "s")
+                        + " stopped at chat close ("
+                        + stillActive.stream()
+                                .map(BoundedLoopManager.BoundedLoop::getId)
+                                .collect(java.util.stream.Collectors.joining(", "))
+                        + "); /loop-bounded after resume to restart them."));
+            }
+        }
     }
 
     void dispatchScheduledLoop(String prompt) {
         if (prompt == null || prompt.isBlank()) return;
+        String normalizedPrompt = prompt.strip();
         messageHandler.runScheduledDispatch(sessionContext.wrap(() -> {
+            // Check before announcing or dispatching: idle/backgrounded turns can
+            // bypass enqueue's duplicate check. Editing entries are pending too.
+            if (!normalizedPrompt.startsWith("/") && messageQueue.getAll().stream()
+                    .anyMatch(queued -> normalizedPrompt.equals(queued.getContent()))) return;
             ChatCompleter.showNotice(renderer.cyan("  ⟳ Scheduled loop fired")
-                    + renderer.dim(" → " + StringUtils.truncate(prompt, 60)));
-            if (prompt.stripLeading().startsWith("/")) {
+                    + renderer.dim(" → " + StringUtils.truncate(normalizedPrompt, 60)));
+            if (normalizedPrompt.startsWith("/")) {
                 if (hostManaged) {
                     // Scheduled callbacks never borrow the host's reader or change its focus.
                     ChatCompleter.printAbove("Multi-session scheduled loops accept chat prompts, not slash commands.");
                     return;
                 }
-                commandRouter.handleSlashCommand(prompt.strip());
+                commandRouter.handleSlashCommand(normalizedPrompt);
             } else {
-                messageHandler.handleChatMessage(prompt.strip());
+                messageHandler.handleChatMessage(normalizedPrompt);
             }
             statusBar.requestRedraw();
         }));
@@ -2572,7 +2714,7 @@ public class ChatRepl implements AutoCloseable {
 
     /** Turn a terminal Ctrl+B task into a mandatory agent turn, not just a UI notification. */
     private void handleBackgroundTaskCompletion(BackgroundTaskManager.BackgroundTask task) {
-        if (task == null || !task.wasBackgrounded() || forceAgentic || cancelSignal.get()) return;
+        if (task == null || !task.wasBackgrounded() || forceAgentic || !acceptingProcessWakeups.get()) return;
         String output = task.getOutput() == null ? "" : task.getOutput().strip();
         if (output.length() > 2_000) {
             output = output.substring(0, 2_000) + "\n… [truncated; inspect the task log]";
@@ -3613,6 +3755,60 @@ public class ChatRepl implements AutoCloseable {
         tui.updateActivityView(view.key(), view.title(), view.content());
     }
 
+    void handleSubagentConfigCommand(String arguments) {
+        String input = arguments == null ? "" : arguments.strip();
+        Path path = ai.kompile.cli.main.chat.config.SubagentConfig.path();
+        try {
+            if (input.isEmpty() || input.equalsIgnoreCase("failover")) {
+                if (activeReader == null) {
+                    ChatCompleter.showNotice("The settings wizard needs an interactive terminal. Use /subagent-config status to inspect settings.");
+                    return;
+                }
+                PickerHistoryState history = beginPickerHistory(activeReader);
+                ChatCompleter.setTemporaryWindowActive(true);
+                try {
+                    if (input.isEmpty()) {
+                        SubagentConfigCommands.wizard(activeReader, path,
+                                tui::updateTemporaryWindow, tui::closeTemporaryWindow, chatConfig);
+                    } else {
+                        SubagentConfigCommands.failoverWizard(activeReader, path, chatConfig,
+                                tui::updateTemporaryWindow, tui::closeTemporaryWindow);
+                    }
+                } finally {
+                    endPickerHistory(activeReader, history);
+                    ChatCompleter.setTemporaryWindowActive(false);
+                    tui.closeTemporaryWindow();
+                }
+            } else {
+                ChatCompleter.printAbove(SubagentConfigCommands.command(path, input));
+            }
+        } catch (IllegalArgumentException | IOException e) { ChatCompleter.showNotice(e.getMessage()); }
+    }
+
+    void openModelFailoverWizard(SessionModelLadder ladder) {
+        LineReader reader = activeReader;
+        if (reader == null) {
+            ChatCompleter.showNotice("The failover wizard needs an interactive terminal. Use /model ladder status to inspect routes.");
+            return;
+        }
+        PickerHistoryState history = beginPickerHistory(reader);
+        ChatCompleter.setTemporaryWindowActive(true);
+        try {
+            var draft = ai.kompile.cli.main.chat.config.FailoverConfigWizard.edit(reader, ladder.enabled(),
+                    ladder.rungs(), chatConfig, tui::updateTemporaryWindow);
+            if (draft == null) return;
+            ladder.replaceRungs(draft.rungs());
+            ladder.setEnabled(draft.enabled());
+            ladder.save(); // Preserve the ladder's own session/project/global persistence target.
+        } catch (IOException | IllegalArgumentException e) {
+            ChatCompleter.showNotice("Could not save model failover settings: " + e.getMessage());
+        } finally {
+            endPickerHistory(reader, history);
+            ChatCompleter.setTemporaryWindowActive(false);
+            tui.closeTemporaryWindow();
+        }
+    }
+
     void handleUiCommand(String arguments) {
         ChatUiConfig config = tui.getUiConfig();
         String input = arguments == null ? "" : arguments.strip();
@@ -3687,6 +3883,7 @@ public class ChatRepl implements AutoCloseable {
         if (activeReader instanceof LineReaderImpl reader) bindUiKeys(reader, config);
         tui.setUiConfig(config);
         activityPanel.resultDisplayBlocks().forEach(tui::upsertDisplayBlock);
+        refreshCurrentActivityView(tui, activityPanel);
     }
 
     private final Map<String, Binding> uiOriginalBindings = new java.util.HashMap<>();
@@ -3791,16 +3988,6 @@ public class ChatRepl implements AutoCloseable {
                 ProcessHandle.current().pid(), sessionId, role);
     }
 
-    private static void refreshInlineSubagentBlock(
-            KompileTui tui,
-            StandardChatActivityPanel activityPanel,
-            String subagentId,
-            boolean includeBackgroundMarker) {
-        if (activityPanel.isCurrentTurnBackgrounded() && !includeBackgroundMarker) return;
-        ChatDisplayBlock block = activityPanel.subagentDisplayBlock(subagentId);
-        if (block != null) tui.upsertDisplayBlock(block);
-    }
-
     /**
      * Binds mode shortcuts as true two-key Ctrl+X chords. JLine's bind method
      * accepts independent key sequences as varargs, so passing Ctrl+X and "p"
@@ -3875,10 +4062,47 @@ public class ChatRepl implements AutoCloseable {
 
     Path getWorkingDirectory() { return workingDirectory; }
 
+    /** This session's id, for session-scoped configuration files. */
+    String getSessionId() { return sessionId; }
+
     boolean isRagEnabled() { return ragEnabled; }
     void setRagEnabled(boolean enabled) { this.ragEnabled = enabled; }
 
     ChatConfig getChatConfig() { return chatConfig; }
+
+    /**
+     * Apply a temporary model failover rung to this session.
+     *
+     * <p>Deliberately does <em>not</em> persist: {@link #updateChatConfig} is
+     * followed by {@code saveLoadedOrGlobal()} for an explicit {@code /model}
+     * choice, which is the user's intent. A failover is the opposite — it must
+     * leave the user's chosen primary in the session config untouched so the
+     * next session or an explicit selection returns to it.</p>
+     *
+     * @return true when the rung is active in this session
+     */
+    synchronized boolean updateChatConfigForFailover(ChatConfig config) {
+        if (config == null || modelSelectionPending.get()) return false;
+        if (!localMode || this.chatConfig == null || !canHotSwitchLocalProvider(config)) return false;
+
+        String previousProvider = this.chatConfig.getProvider();
+        String previousModel = this.chatConfig.getModel();
+        AgenticChatLoop.DirectSettingsChange change = agenticLoop.changeDirectSettings(
+                () -> this.chatConfig.applyLlmSettingsFrom(config), true);
+        sessionMetrics.setProvider(this.chatConfig.getProvider());
+        sessionMetrics.setModel(this.chatConfig.getModel());
+        chatHistory.logSystem("Failover switched LLM from " + previousProvider + "/" + previousModel
+                + " to " + this.chatConfig.getProvider() + "/" + this.chatConfig.getModel()
+                + (change.keptProviderSession()
+                        ? "; kept the provider session and its process"
+                        : "; retained " + change.retainedMessages() + " conversation messages"));
+        refreshModelDisplay();
+        if (directClient != null) {
+            directClient.syncClaudeIdleSettings(this.chatConfig.getModel(),
+                    this.chatConfig.effectiveEffort(), this.chatConfig.isFastMode());
+        }
+        return true;
+    }
 
     /**
      * Apply a standard direct-provider change without replacing this REPL,
@@ -4177,10 +4401,18 @@ public class ChatRepl implements AutoCloseable {
                             SetupWizard.vendorLabel(selectedVendor) + " · "
                                     + SetupWizard.authMethodLabel(selectedVendor, selectedAuth)));
                     String authVendor = selectedVendor;
-                    SetupWizard.AuthMethod authMethod = selectedAuth;
-                    // A native CLI login is machine-wide, so it always takes the session page.
+                    SetupWizard.AuthMethod oauthOrSelected = selectedAuth;
+                    // A chat on Claude Code's own login keeps it as the credential page's default.
+                    if (SetupWizard.isClaudeCodeRoute(authVendor, oauthOrSelected) && discoveryConfig.isClaudeCliNative()
+                            && "native".equalsIgnoreCase(discoveryConfig.getAuthenticationMethod())) {
+                        oauthOrSelected = SetupWizard.AuthMethod.NATIVE;
+                    }
+                    SetupWizard.AuthMethod authMethod = oauthOrSelected;
+                    // A native CLI login is machine-wide, so it always takes the session page;
+                    // the Claude Code route selects stored setup tokens like any other vendor.
                     boolean globalScope = "global".equals(chatConfig.getAuthenticationScope())
-                            && authMethod != SetupWizard.AuthMethod.NATIVE;
+                            && (authMethod != SetupWizard.AuthMethod.NATIVE
+                            || SetupWizard.isClaudeCodeRoute(authVendor, authMethod));
                     String sessionCredential = sessionCredentialFor(discoveryConfig, authVendor, authMethod);
                     authentication = withNativeMouseDuringAuthentication(
                             reader.getTerminal(), () -> globalScope
@@ -4210,8 +4442,9 @@ public class ChatRepl implements AutoCloseable {
                     discoveryConfig = buildModelProviderCandidateFrom(
                             discoveryConfig, selectedProvider, sameProvider ? selectedModel : null, selectedBaseUrl);
                     discoveryConfig.setThinking(previousThinking);
-                    discoveryConfig.setCredentialName(authentication.credentialName());
+                    // The route first: credential names are kept per route's credential provider.
                     discoveryConfig.setAuthenticationMethod(authentication.authMethod().configValue());
+                    discoveryConfig.setCredentialName(authentication.credentialName());
                     if (authentication.apiKey() != null && !authentication.apiKey().isBlank()) {
                         discoveryConfig.setApiKey(authentication.apiKey());
                     }
@@ -4521,17 +4754,22 @@ public class ChatRepl implements AutoCloseable {
         try {
             var store = ai.kompile.cli.main.auth.CredentialStore.create();
             if ("list".equals(args[0])) {
-                if (chatConfig.isClaudeCliNative()) {
-                    ChatCompleter.printAbove("Authentication: Claude Code route — "
-                            + LiveModelDiscovery.claudeCodeLogin().describe());
-                    ChatCompleter.printAbove("Kompile-managed Anthropic credentials apply to the API-key route; "
-                            + "/auth lets you choose the route and credential.");
-                    return;
-                }
+                boolean claudeCode = chatConfig.isClaudeCliNative();
+                boolean ownLogin = claudeCode && "native".equalsIgnoreCase(chatConfig.getAuthenticationMethod());
                 ChatCompleter.printAbove("Authentication: " + chatConfig.getAuthenticationScope()
-                        + " / " + chatConfig.getProvider() + " / "
-                        + (chatConfig.getCredentialName() == null ? "vendor global default" : chatConfig.getCredentialName()));
-                for (var info : store.list(chatConfig.getProvider()))
+                        + " / " + chatConfig.getProvider() + (claudeCode ? " (Claude Code)" : "") + " / "
+                        + (ownLogin ? "Claude Code's own login"
+                        : chatConfig.getCredentialName() == null ? "vendor global default" : chatConfig.getCredentialName()));
+                if (claudeCode) {
+                    String login;
+                    try {
+                        login = LiveModelDiscovery.claudeCodeLogin(chatConfig.resolveClaudeCodeToken()).describe();
+                    } catch (ChatConfig.AuthenticationException unusable) {
+                        login = unusable.getMessage();
+                    }
+                    ChatCompleter.printAbove("  " + login);
+                }
+                for (var info : store.list(chatConfig.credentialProvider()))
                     ChatCompleter.printAbove("  " + info.credentialName() + " (" + info.type() + ")"
                             + (info.active() ? " [global default]" : ""));
                 ChatCompleter.printAbove("/auth session [name] — pin this session; /auth global — follow vendor default\n"
@@ -4557,15 +4795,11 @@ public class ChatRepl implements AutoCloseable {
                         + "; global-mode sessions use it on their next request. Session pins are unchanged.");
                 return;
             }
-            if (chatConfig.isClaudeCliNative()) {
-                // The route's credential is the Claude Code login; Kompile has none to pin.
-                ChatCompleter.printAbove("The Claude Code route uses your Claude Code login, so there is no "
-                        + "Kompile credential to pin. Use /auth and choose Anthropic's API-key route.");
-                return;
-            }
             ChatConfig candidate = chatConfig.copy();
             if ("session".equals(args[0]) && args.length <= 2) {
                 candidate.setAuthenticationScope("session");
+                // Pinning a setup token moves the Claude Code route off Claude Code's own login.
+                if (args.length == 2 && candidate.isClaudeCliNative()) candidate.setAuthenticationMethod("oauth");
                 if (args.length == 2) candidate.setCredentialName(args[1]);
                 else candidate.pinActiveCredential();
             } else if ("global".equals(args[0]) && args.length == 1) {
@@ -4576,7 +4810,9 @@ public class ChatRepl implements AutoCloseable {
             if (!ChatConfig.isClaudeCliNativeProvider(candidate.getProvider())) {
                 candidate.setAuthenticationMethod(null);
             }
-            candidate.resolveRequestAuth(); // Fail closed before changing the active session.
+            // Fail closed before changing the active session.
+            if (candidate.isClaudeCliNative()) candidate.resolveClaudeCodeToken();
+            else candidate.resolveRequestAuth();
             if (updateChatConfig(candidate)) {
                 chatConfig.saveLoadedOrGlobal();
                 ChatCompleter.printAbove("Authentication scope: " + chatConfig.getAuthenticationScope());
@@ -4715,7 +4951,7 @@ public class ChatRepl implements AutoCloseable {
         return lines;
     }
 
-    /** The credential this session pins for the route's wire provider, or null. */
+    /** The credential this session pins for the route's credential provider, or null. */
     static String sessionCredentialFor(ChatConfig config, String vendor, SetupWizard.AuthMethod method) {
         ChatConfig probe = config.copy();
         try {
@@ -4723,6 +4959,7 @@ public class ChatRepl implements AutoCloseable {
         } catch (IllegalArgumentException unsupported) {
             return null;
         }
+        probe.setAuthenticationMethod(method.configValue());
         return probe.getCredentialName();
     }
 

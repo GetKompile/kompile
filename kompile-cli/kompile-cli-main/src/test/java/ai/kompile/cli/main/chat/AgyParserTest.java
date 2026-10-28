@@ -1,123 +1,128 @@
 /*
- *   Copyright 2025 Kompile Inc.
+ * Copyright 2025 Kompile Inc.
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed under the Apache License, Version 2.0.
  */
-
 package ai.kompile.cli.main.chat;
 
-import ai.kompile.cli.main.chat.PassthroughStreamParser.*;
+import ai.kompile.cli.main.chat.PassthroughStreamParser.PassthroughEvent;
+import ai.kompile.cli.main.chat.PassthroughStreamParser.SessionInit;
+import ai.kompile.cli.main.chat.PassthroughStreamParser.ToolUse;
+import ai.kompile.cli.main.chat.PassthroughStreamParser.TurnComplete;
 import ai.kompile.cli.main.chat.testing.AgentOutputAssertions;
-import ai.kompile.cli.main.chat.testing.ParserTestFixtures;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Unit tests for {@link PassthroughStreamParser#parseAgyLine(String)}.
- * <p>
- * Covers Agy/Qwen stream-json event types: init, message (assistant vs user),
- * tool_use, tool_result (skipped), result with stats, null/blank input, and
- * known noise lines that should be suppressed.
+ * Parser tests for the Antigravity CLI ({@code agy}) stream-json protocol.
+ * Fixtures mirror the real envelopes emitted by the installed CLI
+ * ({@code agy -p <msg> --output-format stream-json}).
  */
 class AgyParserTest {
 
-    // ===================================================================
-    // Setup
-    // ===================================================================
-
-    private PassthroughStreamParser parser;
-
-    @BeforeEach
-    void setUp() {
-        parser = new PassthroughStreamParser();
-    }
+    private final PassthroughStreamParser parser = new PassthroughStreamParser();
 
     // ===================================================================
-    // Setup / helper methods could go here
+    // Init → SessionInit
     // ===================================================================
 
     @Test
     void initEvent_shouldProduceSessionInit() {
-        String line = ParserTestFixtures.geminiInit("gemini-session-abc");
+        String line = "{\"event\":\"init\",\"conversation_id\":\"237f047d-00de-48fd\","
+                + "\"init\":{\"cwd\":\"/repo\",\"tools\":[\"read_file\"],\"permission_mode\":\"request-review\"}}";
         PassthroughEvent event = parser.parseAgyLine(line);
 
         AgentOutputAssertions.assertThat(event)
                 .hasEventCount(1)
-                .hasSessionInit("gemini-session-abc");
+                .hasSessionInit("237f047d-00de-48fd");
+    }
+
+    @Test
+    void initEventWithoutConversationId_shouldReturnNull() {
+        String line = "{\"event\":\"init\",\"init\":{}}";
+        assertNull(parser.parseAgyLine(line));
     }
 
     // ===================================================================
-    // Messages
+    // agent_response text deltas → TextChunk
     // ===================================================================
 
     @Test
-    void messageWithRoleAssistant_shouldProduceTextChunk() {
-        String line = ParserTestFixtures.geminiMessage("Here is the answer.");
+    void agentResponseDelta_shouldProduceTextChunk() {
+        String line = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"c1\","
+                + "\"step_index\":2,\"state\":\"ACTIVE\",\"step_type\":\"agent_response\","
+                + "\"text_delta\":\"apple\"}}";
         PassthroughEvent event = parser.parseAgyLine(line);
 
         AgentOutputAssertions.assertThat(event)
                 .hasEventCount(1)
-                .hasTextChunk("Here is the answer.");
+                .hasTextChunk("apple");
     }
 
     @Test
-    void messageWithRoleUser_shouldReturnNull() {
-        String line = "{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is 2+2?\"}";
-        PassthroughEvent event = parser.parseAgyLine(line);
-
-        assertNull(event, "User messages should be skipped");
+    void agentResponseDoneWithTrailingNewline_shouldStreamTheDelta() {
+        // The DONE agent step may carry a final text_delta (a trailing newline);
+        // it is legitimate turn text, unlike its cumulative usage block.
+        String line = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"c1\","
+                + "\"step_index\":2,\"state\":\"DONE\",\"step_type\":\"agent_response\","
+                + "\"text_delta\":\"\\n\",\"duration_seconds\":1.17,"
+                + "\"usage\":{\"input_tokens\":30384,\"output_tokens\":4}}}";
+        AgentOutputAssertions.assertThat(parser.parseAgyLine(line))
+                .hasEventCount(1)
+                .hasTextChunk("\n");
     }
 
     // ===================================================================
-    // Tool use
+    // Tool steps → ToolUse on ACTIVE
     // ===================================================================
 
     @Test
-    void toolUseEvent_shouldProduceToolUseWithNameAndParams() {
-        String line = ParserTestFixtures.geminiToolUse("search_web", "{\"query\":\"kompile docs\"}");
+    void toolStepActive_shouldProduceToolUseWithParameters() {
+        String line = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"c1\","
+                + "\"step_index\":2,\"state\":\"ACTIVE\",\"step_type\":\"tool\","
+                + "\"tool_name\":\"read_file\","
+                + "\"tool_info\":{\"name\":\"read_file\",\"parameters\":{\"Path\":\"/etc/hostname\"}}}}";
         PassthroughEvent event = parser.parseAgyLine(line);
 
         AgentOutputAssertions.assertThat(event)
                 .hasEventCount(1)
-                .hasToolUse("search_web");
+                .hasToolUse("read_file");
 
         ToolUse toolUse = AgentOutputAssertions.assertThat(event).firstOfType(ToolUse.class);
         assertNotNull(toolUse);
-        assertEquals("search_web", toolUse.name());
-        assertTrue(toolUse.input().contains("query"), "Parameters should be serialised into input");
+        assertTrue(toolUse.input().contains("Path"), "Parameters should be serialised into input");
+    }
+
+    @Test
+    void toolStepDone_shouldReturnNull() {
+        String line = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"c1\","
+                + "\"step_index\":2,\"state\":\"DONE\",\"step_type\":\"tool\",\"tool_name\":\"read_file\"}}";
+        assertNull(parser.parseAgyLine(line));
+    }
+
+    @Test
+    void userStep_shouldReturnNull() {
+        String line = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"c1\","
+                + "\"step_index\":0,\"state\":\"DONE\",\"step_type\":\"user_input\"}}";
+        assertNull(parser.parseAgyLine(line));
     }
 
     // ===================================================================
-    // Tool result (skipped)
+    // Result → TurnComplete
     // ===================================================================
 
     @Test
-    void toolResult_shouldReturnNull() {
-        String line = "{\"type\":\"tool_result\",\"tool_name\":\"search_web\",\"output\":\"some result\"}";
-        PassthroughEvent event = parser.parseAgyLine(line);
-
-        assertNull(event, "tool_result events should be skipped");
-    }
-
-    // ===================================================================
-    // Result with stats → TurnComplete
-    // ===================================================================
-
-    @Test
-    void resultWithStats_shouldProduceTurnComplete() {
-        String line = ParserTestFixtures.geminiResult(5000L, 3);
+    void result_shouldProduceTurnCompleteWithDisjointUsage() {
+        // Real envelope: input_tokens already excludes cache_read_tokens
+        String line = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"c1\","
+                + "\"status\":\"SUCCESS\",\"response\":\"PING\\n\",\"duration_seconds\":3.184096927,"
+                + "\"num_turns\":1,"
+                + "\"usage\":{\"input_tokens\":15259,\"output_tokens\":15,\"thinking_tokens\":0,"
+                + "\"cache_read_tokens\":0,\"total_tokens\":15274}}}";
         PassthroughEvent event = parser.parseAgyLine(line);
 
         AgentOutputAssertions.assertThat(event)
@@ -126,36 +131,49 @@ class AgyParserTest {
 
         TurnComplete tc = AgentOutputAssertions.assertThat(event).firstOfType(TurnComplete.class);
         assertNotNull(tc);
-        assertEquals(5000L, tc.durationMs());
-        // numTurns is 1 when tool_calls > 0
+        assertEquals(3184L, tc.durationMs());
         assertEquals(1, tc.numTurns());
+        assertEquals(15259L, tc.inputTokens());
+        assertEquals(15L, tc.outputTokens());
+        assertEquals(0L, tc.cacheReadTokens());
+        assertEquals(0L, tc.cacheCreationTokens());
     }
 
     @Test
-    void resultWithZeroToolCalls_shouldProduceTurnCompleteWithNumTurnsZero() {
-        String line = ParserTestFixtures.geminiResult(3000L, 0);
-        PassthroughEvent event = parser.parseAgyLine(line);
-
-        TurnComplete tc = AgentOutputAssertions.assertThat(event).firstOfType(TurnComplete.class);
+    void resultWithCacheRead_shouldKeepDisjointCounts() {
+        String line = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"c1\","
+                + "\"status\":\"SUCCESS\",\"response\":\"apple\\n\",\"duration_seconds\":2.548755756,"
+                + "\"num_turns\":2,"
+                + "\"usage\":{\"input_tokens\":30662,\"output_tokens\":8,\"thinking_tokens\":0,"
+                + "\"cache_read_tokens\":30214,\"total_tokens\":30670}}}";
+        TurnComplete tc = AgentOutputAssertions.assertThat(parser.parseAgyLine(line))
+                .firstOfType(TurnComplete.class);
         assertNotNull(tc);
+        // Disjoint: no subtraction — agy's input_tokens already excludes the cached prefix
+        assertEquals(30662L, tc.inputTokens());
+        assertEquals(30214L, tc.cacheReadTokens());
+    }
+
+    @Test
+    void resultWithNoUsage_shouldProduceTurnCompleteWithDefaults() {
+        String line = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"c1\","
+                + "\"status\":\"SUCCESS\",\"response\":\"ok\",\"duration_seconds\":0,\"num_turns\":0}}";
+        TurnComplete tc = AgentOutputAssertions.assertThat(parser.parseAgyLine(line))
+                .firstOfType(TurnComplete.class);
+        assertNotNull(tc);
+        assertEquals(0L, tc.durationMs());
         assertEquals(0, tc.numTurns());
     }
 
-    @Test
-    void resultWithUsage_shouldCarryDisjointTokenCounts() {
-        // prompt_tokens is inclusive of cached_content (Google convention)
-        String line = ParserTestFixtures.geminiResultWithUsage(
-                5000L, 3, 2000L, 500L, 700L);
-        PassthroughEvent event = parser.parseAgyLine(line);
+    // ===================================================================
+    // CLI slash command reports
+    // ===================================================================
 
-        TurnComplete tc = AgentOutputAssertions.assertThat(event).firstOfType(TurnComplete.class);
-        assertNotNull(tc);
-        // Disjoint normalization: 2000 - 700 = 1300 ordinary prompt tokens
-        assertEquals(1300L, tc.inputTokens());
-        assertEquals(500L, tc.outputTokens());
-        assertEquals(700L, tc.cacheReadTokens());
-        assertEquals(0L, tc.cacheCreationTokens());
-        assertEquals(5000L, tc.durationMs());
+    @Test
+    void commandResult_shouldReturnNull() {
+        String line = "{\"event\":\"command_result\",\"command\":{\"name\":\"model\","
+                + "\"data\":{\"id\":\"claude-opus-4-6-thinking\",\"label\":\"Claude Opus 4.6 (Thinking)\"}}}";
+        assertNull(parser.parseAgyLine(line));
     }
 
     // ===================================================================
@@ -172,9 +190,32 @@ class AgyParserTest {
         assertNull(parser.parseAgyLine("   "));
     }
 
+    @Test
+    void unknownFutureEvent_shouldReturnNull() {
+        String line = "{\"event\":\"future_thing\",\"data\":{}}";
+        assertNull(parser.parseAgyLine(line));
+    }
+
+    @Test
+    void malformedJson_shouldFallBackToTextChunk() {
+        // agy writes plain-text notices to stdout; only known noise patterns are
+        // suppressed, so an arbitrary non-JSON line surfaces as text.
+        AgentOutputAssertions.assertThat(parser.parseAgyLine("{not json"))
+                .hasEventCount(1)
+                .hasTextContaining("{not json");
+    }
+
     // ===================================================================
     // Agy noise lines — should be suppressed
     // ===================================================================
+
+    @Test
+    void jetskiPermissionNotice_shouldReturnNull() {
+        PassthroughEvent event = parser.parseAgyLine(
+                "jetski: no output produced — a tool required the \"read_file\" permission"
+                        + " that headless mode cannot prompt for, so it was auto-denied.");
+        assertNull(event, "jetski permission notices should be suppressed");
+    }
 
     @Test
     void yoloModeNoiseLine_shouldReturnNull() {
@@ -208,70 +249,26 @@ class AgyParserTest {
     }
 
     // ===================================================================
-    // Result with no tool_calls → numTurns=0
+    // parseAgyLineMulti wrapper
     // ===================================================================
 
     @Test
-    void resultWithNoStats_shouldProduceTurnCompleteWithDefaults() {
-        String line = "{\"type\":\"result\"}";
-        PassthroughEvent event = parser.parseAgyLine(line);
-
-        TurnComplete tc = AgentOutputAssertions.assertThat(event).firstOfType(TurnComplete.class);
-        assertNotNull(tc);
-        assertEquals(0L, tc.durationMs());
-        assertEquals(0, tc.numTurns());
-    }
-
-    // ===================================================================
-    // Tool use with complex parameters
-    // ===================================================================
-
-    @Test
-    void toolUseWithNestedParams_shouldPreserveJson() {
-        String line = ParserTestFixtures.geminiToolUse("edit_file",
-                "{\"path\":\"/tmp/test.java\",\"changes\":[{\"line\":5,\"text\":\"new content\"}]}");
-        PassthroughEvent event = parser.parseAgyLine(line);
-
-        ToolUse toolUse = AgentOutputAssertions.assertThat(event).firstOfType(ToolUse.class);
-        assertNotNull(toolUse);
-        assertEquals("edit_file", toolUse.name());
-        assertTrue(toolUse.input().contains("path"));
-        assertTrue(toolUse.input().contains("changes"));
-    }
-
-    // ===================================================================
-    // Message with empty content
-    // ===================================================================
-
-    @Test
-    void messageWithEmptyContent_shouldProduceTextChunk() {
-        String line = "{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"\"}";
-        PassthroughEvent event = parser.parseAgyLine(line);
-
-        AgentOutputAssertions.assertThat(event)
-                .hasEventCount(1)
-                .hasTextChunk("");
-    }
-
-    // ===================================================================
-    // Noise lines — more patterns
-    // ===================================================================
-
-    @Test
-    void yoloModeVariant_shouldReturnNull() {
-        PassthroughEvent event = parser.parseAgyLine("YOLO mode is enabled");
-        assertNull(event, "YOLO mode variant should be suppressed");
+    void parseAgyLineMulti_shouldWrapSingleEvent() {
+        String line = "{\"event\":\"init\",\"conversation_id\":\"abc\"}";
+        var events = parser.parseAgyLineMulti(line);
+        assertEquals(1, events.size());
+        assertInstanceOf(SessionInit.class, events.get(0));
     }
 
     @Test
-    void retryingVariant_shouldReturnNull() {
-        PassthroughEvent event = parser.parseAgyLine("Retrying after 30 seconds...");
-        assertNull(event, "Retry with different interval should be suppressed");
+    void parseAgyLineMulti_shouldReturnEmptyForNoise() {
+        assertTrue(parser.parseAgyLineMulti("Retrying after 5 seconds...").isEmpty());
     }
 
-    @Test
-    void attemptVariant_shouldReturnNull() {
-        PassthroughEvent event = parser.parseAgyLine("Attempt 5 failed: rate limited");
-        assertNull(event, "Higher attempt number should still be suppressed");
+    private static void assertInstanceOf(Class<?> expected, Object actual) {
+        assertNotNull(actual);
+        assertTrue(expected.isInstance(actual),
+                "Expected " + expected.getSimpleName() + " but was "
+                        + actual.getClass().getSimpleName());
     }
 }

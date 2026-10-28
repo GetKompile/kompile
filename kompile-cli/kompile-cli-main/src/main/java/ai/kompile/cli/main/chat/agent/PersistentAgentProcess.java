@@ -16,6 +16,9 @@
 
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.oauth.ClaudeCodeOAuthFlow;
+
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -77,6 +80,7 @@ public class PersistentAgentProcess implements AutoCloseable {
     private static final int MAX_DIAGNOSTICS_CHARS = 4_000;
 
     private final ReentrantLock sendLock = new ReentrantLock();
+    private final ReentrantLock startLock = new ReentrantLock();
     private final AtomicReference<StringBuilder> currentTurnOutput = new AtomicReference<>();
     private volatile CountDownLatch turnComplete;
     private volatile CountDownLatch processReady;
@@ -97,71 +101,75 @@ public class PersistentAgentProcess implements AutoCloseable {
      * @param timeoutSeconds max seconds to wait for the process to initialize
      * @throws IOException if the process fails to start
      */
-    public synchronized void start(int timeoutSeconds) throws IOException, InterruptedException {
-        if (process != null && process.isAlive() && ready) return;
-
-        failureReason = null;
-        synchronized (diagnostics) {
-            diagnostics.setLength(0);
-        }
-        List<String> cmd = buildCommand();
-
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        if (workDir != null) pb.directory(workDir.toFile());
-        pb.redirectErrorStream(false);
-        inheritEnv(pb.environment());
-        // Drop inherited env by prefix (ProcessBuilder pre-populates the FULL parent
-        // env). E.g. the enforcer judge strips KOMPILE_ENFORCER_* so its subprocess
-        // tree does not treat itself as an enforced session and re-spawn judges.
-        if (!clearEnvPrefixes.isEmpty()) {
-            pb.environment().keySet().removeIf(
-                    key -> clearEnvPrefixes.stream().anyMatch(key::startsWith));
-        }
-
-        processReady = new CountDownLatch(1);
-        process = pb.start();
-        stdin = process.getOutputStream();
-
-        // Send stream-json initialization control_request
+    public void start(int timeoutSeconds) throws IOException, InterruptedException {
+        startLock.lockInterruptibly();
         try {
-            sendInitMessage();
-        } catch (IOException failure) {
-            failureReason = "Could not initialize judge agent: " + failure.getMessage();
-            close();
-            throw failure;
-        }
-
-        // Drain stderr, but retain a bounded diagnostic excerpt. The previous null sink made
-        // quota/auth/disabled-agent failures indistinguishable from a healthy idle process.
-        Thread errDrain = new Thread(() -> {
-            try (BufferedReader br = new BufferedReader(
-                    new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = br.readLine()) != null) {
-                    if (handleDiagnostic(line)) {
-                        return;
-                    }
+            final Process started;
+            final CountDownLatch startup;
+            synchronized (this) {
+                if (process != null && process.isAlive() && ready) return;
+                if (process != null) close();
+                ready = false;
+                failureReason = null;
+                synchronized (diagnostics) { diagnostics.setLength(0); }
+                ProcessBuilder pb = new ProcessBuilder(buildCommand());
+                if (workDir != null) pb.directory(workDir.toFile());
+                pb.redirectErrorStream(false);
+                inheritEnv(pb.environment());
+                applyManagedSetupToken(pb.environment());
+                // A judge must not recursively inherit enforcer setup into its own subprocesses.
+                if (!clearEnvPrefixes.isEmpty()) {
+                    pb.environment().keySet().removeIf(
+                            key -> clearEnvPrefixes.stream().anyMatch(key::startsWith));
                 }
-            } catch (IOException ignored) {}
-        }, "agent-proc-err-drain");
-        errDrain.setDaemon(true);
-        errDrain.start();
-
-        // Start output reader
-        Thread outputReader = new Thread(this::readOutputLoop, "agent-proc-reader");
-        outputReader.setDaemon(true);
-        outputReader.start();
-
-        // Wait for ready signal. A disabled/exhausted CLI may leave a shell process alive
-        // without ever producing the protocol handshake; that is a failed judge, not "working".
-        boolean gotReady = processReady.await(timeoutSeconds, TimeUnit.SECONDS);
-        ready = gotReady;
-        if (!gotReady) {
-            String detail = diagnosticText();
-            failureReason = "Judge agent did not become ready within " + timeoutSeconds + "s"
-                    + (detail.isBlank() ? "" : ": " + detail);
-            close();
-            throw new IOException(failureReason);
+                processReady = startup = new CountDownLatch(1);
+                process = started = pb.start();
+                stdin = started.getOutputStream();
+                try {
+                    sendInitMessage();
+                } catch (IOException failure) {
+                    failureReason = "Could not initialize judge agent: " + failure.getMessage();
+                    close();
+                    throw failure;
+                }
+                Thread errDrain = new Thread(() -> {
+                    try (BufferedReader br = new BufferedReader(
+                            new InputStreamReader(started.getErrorStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = br.readLine()) != null) {
+                            if (handleDiagnostic(line, started)) return;
+                        }
+                    } catch (IOException ignored) {}
+                }, "agent-proc-err-drain");
+                errDrain.setDaemon(true);
+                errDrain.start();
+                Thread outputReader = new Thread(() -> readOutputLoop(started), "agent-proc-reader");
+                outputReader.setDaemon(true);
+                outputReader.start();
+            }
+            // Never hold the lifecycle monitor during provider readiness. Diagnostic
+            // readers AND close() must be able to end a silent/failed bootstrap promptly.
+            boolean gotReady;
+            try {
+                gotReady = startup.await(timeoutSeconds, TimeUnit.SECONDS);
+            } catch (InterruptedException cancelled) {
+                failureReason = "Judge agent startup cancelled";
+                close();
+                throw cancelled;
+            }
+            synchronized (this) {
+                if (!gotReady || !ready || failureReason != null || process != started || !started.isAlive()) {
+                    String detail = diagnosticText();
+                    if (failureReason == null) {
+                        failureReason = "Judge agent did not become ready within " + timeoutSeconds + "s"
+                                + (detail.isBlank() ? "" : ": " + detail);
+                    }
+                    close();
+                    throw new IOException(failureReason);
+                }
+            }
+        } finally {
+            startLock.unlock();
         }
     }
 
@@ -177,6 +185,16 @@ public class PersistentAgentProcess implements AutoCloseable {
      * Carries the partial text so callers can surface it as INCOMPLETE rather
      * than silently treating it as a successful completion.
      */
+    /** Queue cancellation/timeout never invalidates another lease's active verdict. */
+    public static final class NotAdmittedException extends IOException {
+        private final boolean interrupted;
+        public NotAdmittedException(String message, boolean interrupted) {
+            super(message);
+            this.interrupted = interrupted;
+        }
+        public boolean wasInterrupted() { return interrupted; }
+    }
+
     public static final class TimedOutException extends IOException {
         private final String partialOutput;
 
@@ -208,8 +226,22 @@ public class PersistentAgentProcess implements AutoCloseable {
      *                            MUST distinguish this from a true completion)
      */
     public String sendMessage(String message, int timeoutSeconds) throws IOException, InterruptedException {
-        sendLock.lock();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        boolean admitted;
         try {
+            admitted = sendLock.tryLock(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException cancelled) {
+            Thread.currentThread().interrupt();
+            throw new NotAdmittedException("Judge request cancelled while queued; no request was sent", true);
+        }
+        if (!admitted) {
+            throw new NotAdmittedException("Judge request deadline expired while queued; no request was sent", false);
+        }
+        try {
+            if (Thread.currentThread().isInterrupted() || System.nanoTime() >= deadline) {
+                throw new NotAdmittedException("Judge request cancelled or expired before admission; no request was sent",
+                        Thread.currentThread().isInterrupted());
+            }
             if (process == null || !process.isAlive()) {
                 throw new IOException("Agent process is not running");
             }
@@ -220,7 +252,7 @@ public class PersistentAgentProcess implements AutoCloseable {
 
             writeUserMessage(message);
 
-            boolean completed = turnComplete.await(timeoutSeconds, TimeUnit.SECONDS);
+            boolean completed = turnComplete.await(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
             String result = turnOutput.toString().trim();
 
             if (!completed) {
@@ -359,75 +391,86 @@ public class PersistentAgentProcess implements AutoCloseable {
         }
     }
 
-    private void readOutputLoop() {
+    private void readOutputLoop(Process owner) {
         try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                new InputStreamReader(owner.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = br.readLine()) != null) {
                 String trimmed = line.trim();
                 if (trimmed.isEmpty()) continue;
                 // Preserve provider errors (including quota/auth/disabled messages) even when
                 // they arrive on stdout as a non-protocol line or an error JSON event.
-                if (handleDiagnostic(trimmed)) {
+                if (process != owner || handleDiagnostic(trimmed, owner)) {
                     return;
                 }
                 if (!trimmed.startsWith("{")) continue;
 
-                // Capture session ID
-                if (sessionId == null && trimmed.contains("\"session_id\"")) {
-                    String sid = extractFieldValue(trimmed, "session_id");
-                    if (sid != null && !sid.isBlank()) sessionId = sid;
-                }
-
-                // Signal ready on system/control_response events
-                if (trimmed.contains("\"type\":\"system\"") || trimmed.contains("\"type\":\"control_response\"")) {
-                    CountDownLatch ready = processReady;
-                    if (ready != null && ready.getCount() > 0) {
-                        ready.countDown();
+                // No I/O or waits under this lock. A retired reader must not
+                // mutate a replacement process's session, output or completion latch.
+                synchronized (this) {
+                    if (process != owner) return;
+                    // Capture session ID
+                    if (sessionId == null && trimmed.contains("\"session_id\"")) {
+                        String sid = extractFieldValue(trimmed, "session_id");
+                        if (sid != null && !sid.isBlank()) sessionId = sid;
                     }
-                }
 
-                // Extract text from assistant message events
-                if (trimmed.contains("\"type\":\"assistant\"")) {
-                    String text = extractAssistantText(trimmed);
-                    if (text != null) {
-                        StringBuilder current = currentTurnOutput.get();
-                        if (current != null) current.append(text);
-                    }
-                }
-
-                // Content block delta — streaming text chunks
-                if (trimmed.contains("\"type\":\"content_block_delta\"")) {
-                    String delta = extractDeltaText(trimmed);
-                    if (delta != null) {
-                        StringBuilder current = currentTurnOutput.get();
-                        if (current != null) current.append(delta);
-                    }
-                }
-
-                // Result event = turn complete
-                if (trimmed.contains("\"type\":\"result\"")) {
-                    String resultText = extractFieldValue(trimmed, "result");
-                    if (resultText != null) {
-                        StringBuilder current = currentTurnOutput.get();
-                        if (current != null && current.length() == 0) {
-                            current.append(resultText);
+                    // Signal ready on system/control_response events
+                    if (trimmed.contains("\"type\":\"system\"") || trimmed.contains("\"type\":\"control_response\"")) {
+                        CountDownLatch readyLatch = processReady;
+                        if (readyLatch != null && readyLatch.getCount() > 0) {
+                            ready = true;
+                            readyLatch.countDown();
                         }
                     }
-                    CountDownLatch latch = turnComplete;
-                    if (latch != null) latch.countDown();
+
+                    // Extract text from assistant message events
+                    if (trimmed.contains("\"type\":\"assistant\"")) {
+                        String text = extractAssistantText(trimmed);
+                        if (text != null) {
+                            StringBuilder current = currentTurnOutput.get();
+                            if (current != null) current.append(text);
+                        }
+                    }
+
+                    // Content block delta — streaming text chunks
+                    if (trimmed.contains("\"type\":\"content_block_delta\"")) {
+                        String delta = extractDeltaText(trimmed);
+                        if (delta != null) {
+                            StringBuilder current = currentTurnOutput.get();
+                            if (current != null) current.append(delta);
+                        }
+                    }
+
+                    // Result event = turn complete
+                    if (trimmed.contains("\"type\":\"result\"")) {
+                        String resultText = extractFieldValue(trimmed, "result");
+                        if (resultText != null) {
+                            StringBuilder current = currentTurnOutput.get();
+                            if (current != null && current.length() == 0) {
+                                current.append(resultText);
+                            }
+                        }
+                        CountDownLatch latch = turnComplete;
+                        if (latch != null) latch.countDown();
+                    }
                 }
             }
         } catch (IOException ignored) {
         } finally {
-            CountDownLatch latch = turnComplete;
-            if (latch != null) latch.countDown();
-            CountDownLatch rdy = processReady;
-            if (rdy != null) rdy.countDown();
+            synchronized (this) {
+                if (process == owner) {
+                    CountDownLatch latch = turnComplete;
+                    if (latch != null) latch.countDown();
+                    CountDownLatch rdy = processReady;
+                    if (rdy != null) rdy.countDown();
+                }
+            }
         }
     }
 
-    private boolean handleDiagnostic(String line) {
+    private synchronized boolean handleDiagnostic(String line, Process owner) {
+        if (process != owner) return true;
         if (line == null || line.isBlank()) return false;
         String trimmed = line.trim();
         String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
@@ -438,6 +481,9 @@ public class PersistentAgentProcess implements AutoCloseable {
         recordDiagnostic(trimmed);
         if (!isFatalDiagnostic(lower)) return false;
         failureReason = "Judge agent reported an availability failure: " + trimmed;
+        // Distinguish a failed readiness signal from a successful protocol handshake.
+        CountDownLatch startup = processReady;
+        if (startup != null) startup.countDown();
         close();
         return true;
     }
@@ -554,6 +600,7 @@ public class PersistentAgentProcess implements AutoCloseable {
         String[] keys = {"PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL",
                 "JAVA_HOME", "MAVEN_HOME", "TERM", "COLORTERM",
                 "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+                ClaudeCodeOAuthFlow.OAUTH_TOKEN_ENV,
                 "MCP_TIMEOUT"};
         Map<String, String> sysEnv = System.getenv();
         for (String key : keys) {
@@ -561,6 +608,17 @@ public class PersistentAgentProcess implements AutoCloseable {
             if (val != null) env.putIfAbsent(key, val);
         }
         env.putIfAbsent("MCP_TIMEOUT", "60000");
+    }
+
+    /**
+     * A judge belongs to no chat session, so a claude judge runs on the globally
+     * active Claude Code setup token, the global default every vendor has. A
+     * user-set variable always wins; absent/expired credential changes nothing.
+     */
+    private void applyManagedSetupToken(Map<String, String> env) {
+        if (ClaudeCodeOAuthFlow.isClaudeBinary(agentBinary)) {
+            ClaudeCodeOAuthFlow.relayManagedToken(env, CredentialStore.create());
+        }
     }
 
     // ── Builder ──────────────────────────────────────────────────────────────

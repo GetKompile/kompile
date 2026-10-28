@@ -78,9 +78,24 @@ public final class ModelDiscoveryHttp {
 
     /** Discover models through the user's Claude Code login, not Anthropic API credentials. */
     public static ModelDiscovery.Result discoverClaudeCliResult() {
+        return discoverClaudeCliResult(null);
+    }
+
+    /**
+     * Discover models as {@code route}'s claude process runs: on the setup token of
+     * its selected Claude Code credential, else on Claude Code's own login.
+     */
+    public static ModelDiscovery.Result discoverClaudeCliResult(ChatConfig route) {
+        String setupToken;
+        try {
+            setupToken = route == null ? null : route.resolveClaudeCodeToken();
+        } catch (ChatConfig.AuthenticationException error) {
+            return ModelDiscovery.Result.failure(credentialStatus(error.failure()), error.getMessage(),
+                    List.of(CLAUDE_CODE_ENDPOINT));
+        }
         StringBuilder reason = new StringBuilder();
         List<LiveModelDiscovery.Model> models =
-                LiveModelDiscovery.discoverClaudeCliModels(null, reason::append);
+                LiveModelDiscovery.discoverClaudeCliModels(setupToken, null, reason::append);
         return claudeCliResult(models, reason.toString());
     }
 

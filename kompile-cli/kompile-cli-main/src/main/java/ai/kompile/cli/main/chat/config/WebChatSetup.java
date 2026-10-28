@@ -166,7 +166,12 @@ public final class WebChatSetup {
                 throw new IllegalArgumentException("Vendor is not available for this runtime");
             boolean sameVendor = vendor.equals(SetupWizard.vendorForProvider(config.getProvider()));
             SetupWizard.AuthMethod method = auth(text(input, "authMethod", sameVendor ? config.getAuthenticationMethod() : null), vendor);
-            if (!methods(vendor).contains(method)) throw new IllegalArgumentException("Authentication method not supported by vendor");
+            // Native is the Claude Code route on Claude Code's own login (the terminal wizard saves it);
+            // picking a stored setup token moves the route to OAuth.
+            boolean claudeCode = SetupWizard.isClaudeCodeRoute(vendor, method);
+            if (claudeCode && input.hasNonNull("credentialName")) method = SetupWizard.AuthMethod.OAUTH;
+            if (!methods(vendor).contains(method) && !claudeCode)
+                throw new IllegalArgumentException("Authentication method not supported by vendor");
             config.setProvider(SetupWizard.resolveProviderForAuth(vendor, method));
             config.setAuthenticationMethod(method.configValue());
             config.setBaseUrl(text(input, "baseUrl", sameVendor ? config.getBaseUrl() : SetupWizard.baseUrlForAuth(vendor, method)));
@@ -179,8 +184,9 @@ public final class WebChatSetup {
             if (inputKey != null && method != SetupWizard.AuthMethod.API_KEY && method != SetupWizard.AuthMethod.API_KEY_CREDITS)
                 throw new IllegalArgumentException("API key requires API-key authentication");
             String credential = config.getCredentialName();
-            if (credential != null && CredentialStore.create().list(config.getProvider()).stream()
-                    .noneMatch(c -> c.credentialName().equals(credential) && compatible(c, method)))
+            SetupWizard.AuthMethod credentialMethod = config.isClaudeCliNative() ? SetupWizard.AuthMethod.OAUTH : method;
+            if (credential != null && CredentialStore.create().list(config.credentialProvider()).stream()
+                    .noneMatch(c -> c.credentialName().equals(credential) && compatible(c, credentialMethod)))
                 throw new IllegalArgumentException("Selected credential is not available for this vendor and authentication route");
         }
         String savedModel = config.getModel();
@@ -281,8 +287,10 @@ public final class WebChatSetup {
         }
         var credentials = out.putArray("credentials");
         if (config.getProvider() != null) {
-            var method = auth(config.getAuthenticationMethod(), SetupWizard.vendorForProvider(config.getProvider()));
-            for (var c : CredentialStore.create().list(config.getProvider())) if (compatible(c, method))
+            // The Claude Code route lists its claude-code setup tokens, whichever login it runs on now.
+            var method = config.isClaudeCliNative() ? SetupWizard.AuthMethod.OAUTH
+                    : auth(config.getAuthenticationMethod(), SetupWizard.vendorForProvider(config.getProvider()));
+            for (var c : CredentialStore.create().list(config.credentialProvider())) if (compatible(c, method))
                 credentials.addObject().put("name", c.credentialName()).put("label", c.credentialName() + " — " + c.type()
                         + (c.identity() == null ? "" : " — " + c.identity())
                         + (c.status() == null || c.status().isBlank() ? "" : " (" + c.status() + ")"));

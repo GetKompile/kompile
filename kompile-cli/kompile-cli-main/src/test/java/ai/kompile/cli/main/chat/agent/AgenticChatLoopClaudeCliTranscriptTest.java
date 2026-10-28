@@ -3,6 +3,7 @@ package ai.kompile.cli.main.chat.agent;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatCompleter;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.cli.main.chat.ChatUiSession;
 import ai.kompile.cli.main.chat.ForegroundRequestProgress;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
@@ -11,6 +12,8 @@ import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -39,6 +42,24 @@ import static org.junit.jupiter.api.Assertions.*;
 @ResourceLock(Resources.SYSTEM_PROPERTIES)
 class AgenticChatLoopClaudeCliTranscriptTest {
     @TempDir Path directory;
+    private ChatUiSession uiSession;
+    private ChatUiSession.Binding uiBinding;
+
+    @BeforeEach
+    void bindUiSession() {
+        // Delayed tool frames must never reach the next test's display sink.
+        uiSession = new ChatUiSession();
+        uiBinding = uiSession.bind();
+    }
+
+    @AfterEach
+    void closeUiSession() {
+        try {
+            uiSession.close();
+        } finally {
+            uiBinding.close();
+        }
+    }
 
     @Test
     void providerMcpToolCallRendersInlineInMainTranscript() throws Exception {
@@ -476,6 +497,110 @@ class AgenticChatLoopClaudeCliTranscriptTest {
             ChatCompleter.setDisplayBlockOutput(null);
             ChatCompleter.setContentOutput(null);
             ChatCompleter.setAlertOutput(null);
+            ChatCompleter.setActivity(null);
+            if (home == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", home);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void nativeCompactionReportsLatestMainRequestAndInvalidatesItAtTheBoundary(boolean typed) throws Exception {
+        String home = System.getProperty("user.home");
+        System.setProperty("user.home", directory.toString());
+        Map<String, String> starts = new java.util.concurrent.ConcurrentHashMap<>();
+        List<String> lines = Collections.synchronizedList(new ArrayList<>());
+        ChatCompleter.setContentOutput(lines::add);
+        ChatCompleter.setDisplayBlockOutput(block -> {
+            if (block.running() && block.key().startsWith("compact:provider:")) {
+                starts.putIfAbsent(block.key(), block.classic());
+            }
+            return typed;
+        });
+        try (DirectLlmClient client = new DirectLlmClient(claudeConfig(), JsonUtils.standardMapper(), directory)) {
+            FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("measured-compaction"), """
+                    turn() {
+                      say_init
+                      emit '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-old","usage":{"input_tokens":100000,"output_tokens":1}}}}'
+                      emit '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-last","usage":{"input_tokens":5,"cache_read_input_tokens":150000,"cache_creation_input_tokens":2000,"output_tokens":1}}}}'
+                      emit '{"type":"stream_event","parent_tool_use_id":"task-sub","event":{"type":"message_start","message":{"id":"msg-sub","usage":{"input_tokens":900000,"output_tokens":1}}}}'
+                      emit '{"type":"system","subtype":"status","status":"compacting"}'
+                      emit '{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":180000}}'
+                      emit '{"type":"system","subtype":"status","status":"compacting"}'
+                      emit '{"type":"system","subtype":"status","compact_result":"failed","compact_error":"aborted"}'
+                      say_text 'Continued'
+                      say_result
+                    }
+                    """);
+            fake.install(client, directory, "claude-measured-compaction");
+            var mapper = JsonUtils.standardMapper();
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            loop.configureConversationSession("measured-compaction");
+            loop.setSessionMetrics(new ChatSessionMetrics("measured-compaction"));
+
+            loop.chat("continue", "measured-compaction", "coder", "default", false);
+
+            assertEquals(2, starts.size(), starts.toString());
+            assertEquals(1, starts.values().stream()
+                    .filter(text -> text.contains("last reported input: 152,005 tokens")).count(),
+                    "must use the latest main request including cache, not cumulative or subagent usage: " + starts);
+            assertEquals(1, starts.values().stream()
+                    .filter(text -> text.contains("provider context size not reported")).count(),
+                    "the next compaction must not reuse the replaced context: " + starts);
+            if (!typed) {
+                String transcript = String.join("\n", lines);
+                assertTrue(transcript.contains("last reported input: 152,005 tokens"), transcript);
+                assertTrue(transcript.contains("provider context size not reported"), transcript);
+            }
+        } finally {
+            ChatCompleter.setDisplayBlockOutput(null);
+            ChatCompleter.setContentOutput(null);
+            ChatCompleter.setActivity(null);
+            if (home == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", home);
+        }
+    }
+
+    @Test
+    void nativeCompactionAtTurnStartUsesThePreviousMeasuredRequestWithoutMetrics() throws Exception {
+        String home = System.getProperty("user.home");
+        System.setProperty("user.home", directory.toString());
+        List<String> starts = Collections.synchronizedList(new ArrayList<>());
+        ChatCompleter.setContentOutput(line -> { });
+        ChatCompleter.setDisplayBlockOutput(block -> {
+            if (block.running() && block.key().startsWith("compact:provider:")) starts.add(block.classic());
+            return true;
+        });
+        try (DirectLlmClient client = new DirectLlmClient(claudeConfig(), JsonUtils.standardMapper(), directory)) {
+            FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("previous-request-compaction"), """
+                    turn() {
+                      say_init
+                      if [ "$1" = 1 ]; then
+                        emit '{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-previous","usage":{"input_tokens":5,"cache_read_input_tokens":150000,"cache_creation_input_tokens":2000,"output_tokens":1}}}}'
+                      else
+                        emit '{"type":"system","subtype":"status","status":"compacting"}'
+                        emit '{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":180000}}'
+                      fi
+                      say_text 'Continued'
+                      say_result
+                    }
+                    """);
+            fake.install(client, directory, "claude-previous-request-compaction");
+            var mapper = JsonUtils.standardMapper();
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            loop.configureConversationSession("previous-request-compaction");
+
+            loop.chat("first", "previous-request-compaction", "coder", "default", false);
+            assertEquals(152_005, loop.lastReportedInputTokens());
+            loop.chat("second", "previous-request-compaction", "coder", "default", false);
+
+            assertFalse(starts.isEmpty());
+            assertTrue(starts.get(0).contains("last reported input: 152,005 tokens"), starts.toString());
+        } finally {
+            ChatCompleter.setDisplayBlockOutput(null);
+            ChatCompleter.setContentOutput(null);
             ChatCompleter.setActivity(null);
             if (home == null) System.clearProperty("user.home");
             else System.setProperty("user.home", home);

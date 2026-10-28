@@ -135,6 +135,17 @@ describe('UnifiedChat streaming render cache', () => {
       expect(component.getMessageSegments({ ...live, isStreaming: false })[0].toolCall!.state).toBe('stopped');
     });
 
+    it('invalidates a running card when only subprocess output changes', () => {
+      const started = call({ status: 'started', ok: undefined, textOffset: 0 });
+      const before = component.getMessageSegments({ ...message('Working'), toolUses: [started] });
+      const updated = { ...started, detail: { displayName: 'Bash', sections: [{ label: 'output', runs: [{ text: 'linking' }] }] } };
+      const after = component.getMessageSegments({ ...message('Working'), toolUses: [updated] });
+      expect(after[0].toolCall!.state).toBe('running');
+      expect(after[0].toolCall).not.toBe(before[0].toolCall);
+      expect((after[0].toolCall!.sections[0].html as any).changingThisBreaksApplicationSecurity).toBe('linking');
+      expect(component.trackBySegment(0, after[0])).toBe(component.trackBySegment(0, before[0]));
+    });
+
     it('renders a finished call once while the answer keeps streaming', () => {
       const render = spyOn(renderer, 'renderToolCall').and.callThrough();
       const done = call({ textOffset: 0 });

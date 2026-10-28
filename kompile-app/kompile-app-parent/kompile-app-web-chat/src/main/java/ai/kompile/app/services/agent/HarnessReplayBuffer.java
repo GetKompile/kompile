@@ -26,11 +26,42 @@ final class HarnessReplayBuffer implements KompileCliHarnessClient.HarnessEventS
     private Event latestActivity;
     private Event evictedEnding;
     private Connection connection;
+    private final long heartbeatMillis;
+    private Thread heartbeatThread;
     final long createdAt = System.currentTimeMillis();
 
     HarnessReplayBuffer(ObjectMapper mapper) { this(mapper, 1_048_576, 2000); }
     HarnessReplayBuffer(ObjectMapper mapper, int maxBytes, int maxEvents) {
+        this(mapper, maxBytes, maxEvents, 15_000);
+    }
+    HarnessReplayBuffer(ObjectMapper mapper, int maxBytes, int maxEvents, long heartbeatMillis) {
+        if (heartbeatMillis <= 0) throw new IllegalArgumentException("Heartbeat interval must be positive");
         this.mapper = mapper; this.maxBytes = maxBytes; this.maxEvents = maxEvents;
+        this.heartbeatMillis = heartbeatMillis;
+    }
+    /** Liveness belongs to this subscriber, not the replay log or the underlying agent run. */
+    private void startHeartbeat(Connection expected) {
+        heartbeatThread = new Thread(() -> {
+            try {
+                while (!Thread.currentThread().isInterrupted()) {
+                    Thread.sleep(heartbeatMillis);
+                    synchronized (this) {
+                        if (terminal || connection != expected || Thread.currentThread().isInterrupted()) return;
+                    }
+                    // A liveness probe must never hold the replay/publish monitor during socket I/O.
+                    // It is out of band: a late probe on an already detached socket changes no state.
+                    try { expected.send(new Event(RESYNC_ID, "heartbeat", mapper.createObjectNode(), 0)); }
+                    catch (IOException | RuntimeException disconnected) { detach(expected); return; }
+                }
+            } catch (InterruptedException detached) {
+                Thread.currentThread().interrupt();
+            }
+        }, "chat-sse-heartbeat");
+        heartbeatThread.setDaemon(true);
+        heartbeatThread.start();
+    }
+    private void stopHeartbeat() {
+        if (heartbeatThread != null) { heartbeatThread.interrupt(); heartbeatThread = null; }
     }
     @Override public synchronized void send(String name, Object value) throws IOException {
         if (terminal) return;
@@ -60,6 +91,7 @@ final class HarnessReplayBuffer implements KompileCliHarnessClient.HarnessEventS
         long oldest = events.isEmpty() ? sequence + 1 : events.getFirst().id();
         if (after < 0 || after > sequence) throw new IllegalArgumentException("Invalid replay cursor");
         Connection previous = connection;
+        stopHeartbeat();
         connection = next;
         if (previous != null && previous != next) previous.superseded();
         if (after < oldest - 1) {
@@ -77,13 +109,15 @@ final class HarnessReplayBuffer implements KompileCliHarnessClient.HarnessEventS
         if (terminal && connection != null) {
             Connection done = connection; connection = null; done.complete();
         }
+        if (!terminal && connection == next) startHeartbeat(next);
     }
     synchronized void detach(Connection expected) {
-        if (connection == expected) connection = null;
+        if (connection == expected) { connection = null; stopHeartbeat(); }
     }
     synchronized boolean isTerminal() { return terminal; }
     @Override public synchronized void complete() {
         terminal = true;
+        stopHeartbeat();
         Connection done = connection; connection = null;
         if (done != null) done.complete();
     }

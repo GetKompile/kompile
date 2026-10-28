@@ -8,3 +8,4 @@ ai.kompile.cli.main.auth.oauth.MicrosoftOAuthFlow
 ai.kompile.cli.main.auth.oauth.NotionOAuthFlow
 ai.kompile.cli.main.auth.oauth.RedditOAuthFlow
 ai.kompile.cli.main.auth.oauth.AtlassianOAuthFlow
+ai.kompile.cli.main.auth.oauth.ClaudeCodeOAuthFlow

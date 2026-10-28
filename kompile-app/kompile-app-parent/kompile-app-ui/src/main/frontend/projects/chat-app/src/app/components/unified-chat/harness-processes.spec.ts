@@ -1,6 +1,26 @@
-import { formatProcessDuration, groupHarnessProcesses, processDetailRows, processTiming } from './harness-processes';
+import { formatProcessDuration, groupHarnessProcesses, processDetailRows, processTiming,
+  harnessAgentIdentity, harnessAgentUsage, harnessAgentDetails, isHarnessAgent } from './harness-processes';
 
 describe('harness process view', () => {
+  it('distinguishes measured child usage, aggregate provider totals and live estimates without inventing counts', () => {
+    const child = { id: 'child', description: '', state: 'RUNNING', durationMs: 4200, details: {
+      kind: 'subagent', source: 'claude-code', model: 'child-model', stream_output_tokens: '18',
+      authentication: 'oauth', thinking: 'high', tool_uses: '2', context_tokens: '200', cache_read_tokens: '0' } };
+    expect(isHarnessAgent(child)).toBeTrue();
+    expect(harnessAgentIdentity(child)).toBe('anthropic / child-model');
+    expect(harnessAgentUsage(child)).toBe('↑? in · ↓? out · ~18 streaming out (estimated)');
+    expect(harnessAgentUsage({ ...child, details: { total_tokens: '300', stream_output_tokens: '0' } }))
+      .toBe('Σ300 total (provider)');
+    expect(harnessAgentUsage({ ...child, details: { input_tokens: '0', output_tokens: '42' } }))
+      .toBe('↑0 in · ↓42 out');
+    expect(harnessAgentDetails(child)).toContain({ label: 'Elapsed', value: '4.2s' });
+    expect(harnessAgentDetails(child)).toContain({ label: 'Authentication', value: 'oauth' });
+    expect(harnessAgentDetails(child)).toContain({ label: 'Cache read tokens', value: '0' });
+    expect(harnessAgentDetails(child)).toContain({ label: 'Last input tokens', value: '200' });
+    expect(harnessAgentIdentity({ ...child, details: {} })).toBe('? / ?');
+    expect(isHarnessAgent({ ...child, details: {} })).toBeFalse();
+  });
+
   it('formats durations as ProcessManagementTool.formatDuration does', () => {
     expect(formatProcessDuration(850)).toBe('850ms');
     expect(formatProcessDuration(4200)).toBe('4.2s');

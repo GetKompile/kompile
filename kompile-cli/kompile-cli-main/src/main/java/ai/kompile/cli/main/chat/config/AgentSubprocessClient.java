@@ -464,7 +464,16 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
 
         String name = agentName.toLowerCase();
 
-        if (name.contains("claude")) {
+        if (name.contains("agy") || name.contains("antigravity")) {
+            // Antigravity print mode: prompts arrive on stdin, events stream as NDJSON.
+            // Resume a continuing conversation by its conversation_id (captured from init).
+            cmd.add("--output-format");
+            cmd.add("stream-json");
+            if (firstMessageSent && sessionId != null) {
+                cmd.add("--conversation");
+                cmd.add(sessionId);
+            }
+        } else if (name.contains("claude")) {
             cmd.add("--output-format");
             cmd.add("stream-json");
             cmd.add("--verbose");
@@ -516,6 +525,9 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
 
     private List<PassthroughEvent> parseAgentLineMulti(String line) {
         String name = agentName.toLowerCase();
+        if (name.contains("agy") || name.contains("antigravity")) {
+            return parser.parseAgyLineMulti(line);
+        }
         if (name.contains("claude")) {
             return parser.parseClaudeLineMulti(line);
         }

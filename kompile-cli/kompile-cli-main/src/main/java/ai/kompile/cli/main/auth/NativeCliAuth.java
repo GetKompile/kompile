@@ -62,6 +62,19 @@ public final class NativeCliAuth {
             return 2;
         }
 
+        // Antigravity has no `auth` subcommand: sign-in is the interactive TUI
+        // (silent OS keyring first, then browser OAuth), logout is the in-TUI
+        // `/logout` command, and CI runs use GEMINI_API_KEY instead. Route the
+        // three actions through that contract instead of appending an action verb.
+        String command0 = definition.get().getCommand() == null
+                ? "" : definition.get().getCommand().toLowerCase(Locale.ROOT);
+        String name0 = definition.get().getName() == null
+                ? "" : definition.get().getName().toLowerCase(Locale.ROOT);
+        if (command0.contains("agy") || command0.contains("antigravity")
+                || name0.contains("agy") || name0.contains("antigravity")) {
+            return executeAgy(providerId, action);
+        }
+
         List<String> command = new ArrayList<>(definition.get().getAuthCommand());
         // The registered command is provider-specific (for OpenCode this is
         // `opencode auth`); let the native CLI perform its own provider selection.
@@ -81,6 +94,88 @@ public final class NativeCliAuth {
             System.err.println("Native authentication was interrupted.");
             return 130;
         }
+    }
+
+    /**
+     * Antigravity's authentication actions. LOGIN attaches this terminal to a
+     * fresh interactive {@code agy} session — its first launch performs the
+     * silent keyring sign-in and falls back to the browser OAuth loop; the
+     * credentials it caches are exactly what headless {@code agy -p} runs use.
+     * LOGOUT can only happen inside that TUI ({@code /logout}), so the guidance
+     * is printed rather than simulated. LIST probes the cached credential state
+     * with the CLI's own zero-cost {@code /model} report (no model turn runs).
+     */
+    private static int executeAgy(String providerId, Action action) {
+        switch (action) {
+            case LOGIN -> {
+                List<String> command = List.of(definitionCommand(providerId), "--prompt-interactive");
+                try {
+                    Process process = new ProcessBuilder(command).inheritIO().start();
+                    return process.waitFor();
+                } catch (IOException e) {
+                    System.err.println("Could not start the Antigravity CLI for " + providerId
+                            + ". Install the 'agy' CLI, ensure it is on PATH, and retry. Details: "
+                            + e.getMessage());
+                    return 1;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.err.println("Antigravity sign-in was interrupted.");
+                    return 130;
+                }
+            }
+            case LOGOUT -> {
+                System.out.println("Antigravity signs out inside its interactive session:");
+                System.out.println("  1. Run `agy` (or `agy --prompt-interactive`).");
+                System.out.println("  2. Type /logout in the prompt box.");
+                System.out.println("This clears the cached keyring credentials and local cache.");
+                System.out.println("Headless CI runs use GEMINI_API_KEY instead of the keyring profile.");
+                return 0;
+            }
+            case LIST -> {
+                List<String> command = List.of(definitionCommand(providerId), "-p", "/model",
+                        "--output-format", "json");
+                try {
+                    Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+                    String output;
+                    try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                            new java.io.InputStreamReader(process.getInputStream(),
+                                    java.nio.charset.StandardCharsets.UTF_8))) {
+                        output = reader.lines().reduce("", (a, b) -> a.isEmpty() ? b : a + "\n" + b);
+                    }
+                    int exit = process.waitFor();
+                    if (exit != 0) {
+                        System.out.println("agy: not authenticated (exit " + exit + ")");
+                        return exit == 1 ? 3 : exit;
+                    }
+                    if (output.contains("\"command_result\"") || output.contains("\"command\"")) {
+                        int idStart = output.indexOf("\"id\"");
+                        System.out.println("agy: authenticated ("
+                                + (idStart >= 0
+                                        ? "active model " + output.substring(idStart).replaceFirst("\"id\"\\s*:\\s*\"([^\"]+)\".*", "$1")
+                                        : "active keyring profile") + ")");
+                        return 0;
+                    }
+                    System.out.println("agy: authenticated");
+                    return 0;
+                } catch (IOException e) {
+                    System.err.println("Could not probe Antigravity authentication for " + providerId
+                            + ": " + e.getMessage());
+                    return 1;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.err.println("Antigravity authentication probe was interrupted.");
+                    return 130;
+                }
+            }
+        }
+        return 2;
+    }
+
+    private static String definitionCommand(String providerId) {
+        return resolve(providerId)
+                .map(def -> def.getCommand() == null || def.getCommand().isBlank()
+                        ? "agy" : def.getCommand())
+                .orElse("agy");
     }
 
     private static Optional<AgentProvider> resolve(String providerId) {

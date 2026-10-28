@@ -179,6 +179,11 @@ public class CliJudgeBackend implements JudgeBackend {
                 throw new IOException("Judge agent returned an empty response");
             }
             return response;
+        } catch (PersistentAgentProcess.NotAdmittedException queued) {
+            // This lease never wrote a request. Aborting the pooled process here
+            // would kill a different child's active verdict.
+            if (queued.wasInterrupted()) Thread.currentThread().interrupt();
+            throw queued;
         } catch (Exception failure) {
             invalidatePersistentProcess();
             markFailure(failure.getMessage());
@@ -250,6 +255,33 @@ public class CliJudgeBackend implements JudgeBackend {
         inheritEnv(pb.environment());
 
         Process process = pb.start();
+        try {
+            return readSingleShot(process);
+        } catch (InterruptedException cancelled) {
+            Thread.currentThread().interrupt();
+            throw cancelled;
+        } finally {
+            // Warm-up is interruptible. Never leave its owned process (or pipe
+            // readers) alive when waitFor/join exits exceptionally.
+            boolean interrupted = Thread.interrupted();
+            try {
+                if (process.isAlive()) {
+                    process.descendants().forEach(ProcessHandle::destroyForcibly);
+                    process.destroyForcibly();
+                    process.waitFor(1, TimeUnit.SECONDS);
+                }
+            } catch (InterruptedException cancelled) {
+                interrupted = true;
+            } finally {
+                try { process.getOutputStream().close(); } catch (IOException ignored) {}
+                try { process.getInputStream().close(); } catch (IOException ignored) {}
+                try { process.getErrorStream().close(); } catch (IOException ignored) {}
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private String readSingleShot(Process process) throws Exception {
         process.getOutputStream().close();
 
         StringBuilder output = new StringBuilder();
@@ -289,7 +321,6 @@ public class CliJudgeBackend implements JudgeBackend {
 
         boolean finished = process.waitFor(JUDGE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         if (!finished) {
-            process.destroyForcibly();
             throw new IOException("Judge agent timed out after " + JUDGE_TIMEOUT_SECONDS + "s"
                     + diagnosticSuffix(diagnostics));
         }

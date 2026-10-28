@@ -105,6 +105,40 @@ public class ChatMessageHandler {
             this::resumeAfterUsageLimitWindow,
             line -> ChatCompleter.showNotice(line), this::quotaProvider);
     private final ThreadLocal<UsageLimitAutoContinue.Turn> quotaTurn = new ThreadLocal<>();
+    /**
+     * Per-session model failover ladder. Loaded lazily because a headless or
+     * non-local session never needs it, and it reads the user's config files.
+     */
+    private SessionModelLifecycle ladderLifecycle;
+    /**
+     * The session's failover ladder, or null when it is empty/unreadable.
+     */
+    private SessionModelLadder failoverLadder() {
+        if (ladderLifecycle == null) {
+            ladderLifecycle = new SessionModelLifecycle(sessionId, repl.getWorkingDirectory());
+        }
+        return ladderLifecycle.current();
+    }
+
+    /** Load once per turn so a just-saved wizard edit applies immediately. */
+    private static final class SessionModelLifecycle {
+        private final String sessionId;
+        private final java.nio.file.Path projectRoot;
+
+        SessionModelLifecycle(String sessionId, java.nio.file.Path projectRoot) {
+            this.sessionId = sessionId;
+            this.projectRoot = projectRoot;
+        }
+
+        SessionModelLadder current() {
+            try {
+                return SessionModelLadder.load(sessionId, projectRoot);
+            } catch (RuntimeException e) {
+                // A malformed config must never break a chat turn.
+                return null;
+            }
+        }
+    }
     /** Accessed only under turnDispatchLock; a busy owner must not discard a due wake. */
     private UsageLimitAutoContinue.Resume deferredQuotaResume;
     private final ProviderConnectivityPolicy serverConnectivityPolicy =
@@ -146,6 +180,8 @@ public class ChatMessageHandler {
      * them read or dropped. Guarded by turnDispatchLock.
      */
     private final Map<String, Injection> injectedExternal = new LinkedHashMap<>();
+    /** User input claimed by a native turn until receipt or identity-preserving rollback. */
+    private final Map<String, MessageQueue.QueuedMessage> injectedUserInput = new LinkedHashMap<>();
 
     private record Injection(String id, String delivery, List<String> events) { }
     /**
@@ -204,6 +240,20 @@ public class ChatMessageHandler {
                 .map(MessageQueue.QueuedMessage::getContent)
                 .collect(Collectors.toList()));
         this.agenticLoop.setQueuedMessageSupplier(this::claimPendingInputAtBoundary);
+        this.agenticLoop.setProviderFailoverFactory(() -> {
+            ModelFailoverController controller = new ModelFailoverController(
+                    localDirectMode() ? failoverLadder() : null, agenticLoop::failoverSourceConfig,
+                    candidate -> {
+                        if (cancelSignal.get() || !acceptingDispatches.get()
+                                || !agenticLoop.isFailoverModelAllowed(candidate.getModel())
+                                || !repl.updateChatConfigForFailover(candidate)) return false;
+                        // Preserve generation/retry budget, bind reset wake to the new provider.
+                        quotaTurn.set(usageLimitAutoContinue.beginTurn());
+                        return true;
+                    },
+                    text -> { ChatCompleter.showNotice(renderer.cyan("  " + text)); chatHistory.logSystem(text); });
+            return controller::tryFailover;
+        });
         // Agent-initiated backgrounding delegates to the same transfer path as
         // Ctrl+B; the subagent-invocation eligibility gate inside requestBackground
         // remains the single source of truth for what may be detached.
@@ -360,9 +410,46 @@ public class ChatMessageHandler {
         }
     }
 
-    /** The running turn took in an injected delivery: its events are delivered. */
+    /** Offer user input after a provider-owned tool concludes, not after its full turn. */
+    void injectQueuedInputAtToolBoundary() {
+        BiPredicate<String, String> injector = runningTurnInjector;
+        if (injector == null) return;
+        String id;
+        MessageQueue.QueuedMessage queued;
+        synchronized (turnDispatchLock) {
+            if (!acceptingDispatches.get() || cancelSignal.get() || !turnActive.get()
+                    || !injectedUserInput.isEmpty()
+                    || (!repl.isAutoDequeueEnabled() && !backgroundTaskManager.isInQueueChain())) return;
+            queued = messageQueue.peek();
+            if (queued == null || queued.getStatus()
+                    == MessageQueue.QueuedMessage.QueuedMessageStatus.EDITING) return;
+            queued = messageQueue.dequeue();
+            if (queued == null) return;
+            id = UUID.randomUUID().toString();
+            injectedUserInput.put(id, queued);
+            repl.requestStatusRedraw();
+        }
+        // Never write provider stdin under the dispatch lock: receipts use that lock too.
+        boolean written = false;
+        try {
+            written = injector.test(id, reminderManager == null
+                    ? queued.getContent() : reminderManager.decorateUserTurn(queued.getContent()));
+        } finally {
+            if (!written) injectionDropped(id);
+        }
+    }
+
+    /** The running turn took in an injected delivery: it must not be sent again. */
     void injectionDelivered(String id) {
         synchronized (turnDispatchLock) {
+            MessageQueue.QueuedMessage queued = injectedUserInput.remove(id);
+            if (queued != null) {
+                if (acceptingDispatches.get()) recordQueuedMessageSent(queued);
+                if (acceptingDispatches.get() && !repl.isLlmBusy()) {
+                    dispatchSuccessorAfterTurnRelease(cancelSignal.get() && turnStopped.get());
+                }
+                return;
+            }
             Injection injection = injectedExternal.remove(id);
             // A stopped handler leaves the events in the file for the next chat on the session.
             if (injection == null || !acceptingExternalMessages.get()) return;
@@ -374,6 +461,14 @@ public class ChatMessageHandler {
     /** The provider dropped an injected delivery unread: its events wait for the next turn. */
     void injectionDropped(String id) {
         synchronized (turnDispatchLock) {
+            MessageQueue.QueuedMessage dropped = injectedUserInput.remove(id);
+            if (dropped != null) {
+                messageQueue.requeueFirst(dropped);
+                if (!repl.isLlmBusy() && acceptingDispatches.get()) {
+                    dispatchSuccessorAfterTurnRelease(cancelSignal.get() && turnStopped.get());
+                }
+                return;
+            }
             if (!requeueInjected(id)) return;
             if (repl.isLlmBusy()) {
                 repl.requestStatusRedraw();
@@ -507,11 +602,19 @@ public class ChatMessageHandler {
         stopAcceptingExternalMessages();
         Thread asyncOwner = activeDispatchThread.get();
         Thread synchronousOwner = synchronousTurnOwner.get();
-        if ((asyncOwner == null || asyncOwner == Thread.currentThread())
-                && (synchronousOwner == null || synchronousOwner == Thread.currentThread())) return;
-        requestCancel();
-        joinOwner(asyncOwner);
-        if (synchronousOwner != asyncOwner) joinOwner(synchronousOwner);
+        if ((asyncOwner != null && asyncOwner != Thread.currentThread())
+                || (synchronousOwner != null && synchronousOwner != Thread.currentThread())) {
+            requestCancel();
+            joinOwner(asyncOwner);
+            if (synchronousOwner != asyncOwner) joinOwner(synchronousOwner);
+        }
+        synchronized (turnDispatchLock) {
+            // Restore any delivery for which process shutdown supplied no receipt.
+            for (MessageQueue.QueuedMessage queued : injectedUserInput.values()) {
+                messageQueue.requeueFirst(queued);
+            }
+            injectedUserInput.clear();
+        }
     }
 
     private static void joinOwner(Thread owner) {
@@ -642,6 +745,8 @@ public class ChatMessageHandler {
      */
     private void dispatchSuccessorAfterTurnRelease(boolean stopped) {
         if (dispatchProviderFollowUpAfterTurnRelease()) return;
+        // The native provider may take this input as its own follow-up turn.
+        if (!injectedUserInput.isEmpty()) return;
         if (!stopped && dispatchPendingUserFeedbackAfterTurnRelease()) return;
         if (!stopped && acceptingExternalMessages.get()
                 && dispatchPendingExternalAfterTurnRelease()) return;
@@ -1061,6 +1166,17 @@ public class ChatMessageHandler {
             }
         }
         if (changed) savePendingEvents();
+        // Render only accepted deliveries, not queued events or unacknowledged native writes.
+        for (String event : events) {
+            var block = renderer.renderAgentNotificationBlock(event);
+            if (block == null) continue;
+            BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
+            boolean backgrounded = task != null && task.getStatus()
+                    == BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.BACKGROUNDED;
+            if (backgrounded || !ChatCompleter.upsertDisplayBlock(block)) {
+                emitLine(block.classic());
+            }
+        }
     }
 
     Path pendingEventsFile() {
@@ -1160,9 +1276,9 @@ public class ChatMessageHandler {
         }
         if (!decision.fire() || decision.reply() == null) return false;
         String reply = decision.reply();
-        ChatCompleter.showNotice(renderer.cyan("  ▶ /continue auto-reply: "
-                + StringUtils.truncate(reply, 60)));
-        chatHistory.logSystem("[continue] auto-reply dispatched (keyword match)");
+        ChatCompleter.showNotice(renderer.cyan("  ▶ /continue auto-reply (" + decision.describe()
+                + "): " + StringUtils.truncate(reply, 60)));
+        chatHistory.logSystem("[continue] auto-reply dispatched (" + decision.describe() + ")");
         dispatchTurn(reply, () -> handleAcceptedChatMessage(reply), "standard-chat-continue");
         continueManager.noteAutoReplySent();
         return true;
@@ -1294,7 +1410,8 @@ public class ChatMessageHandler {
                     }
                 });
             }
-            if (!repl.isAutoDequeueEnabled() && !backgroundTaskManager.isInQueueChain()) {
+            if (!injectedUserInput.isEmpty()
+                    || (!repl.isAutoDequeueEnabled() && !backgroundTaskManager.isInQueueChain())) {
                 return null;
             }
             MessageQueue.QueuedMessage next = messageQueue.peek();
@@ -1310,22 +1427,7 @@ public class ChatMessageHandler {
             return new AgenticChatLoop.QueuedInput(claimed.getContent(), () -> {
                 synchronized (turnDispatchLock) {
                     if (cancelSignal.get() || !acceptingDispatches.get()) return false;
-                    if (!backgroundTaskManager.isInQueueChain()) {
-                        backgroundTaskManager.startQueueChain(messageQueue.size() + 1);
-                    }
-                    backgroundTaskManager.advanceQueueChain();
-                    if (messageQueue.isEmpty()) {
-                        backgroundTaskManager.endQueueChain();
-                    }
-                    sessionMetrics.recordMessageAutoDequeued();
-                    sessionMetrics.recordUserTurn(claimed.getContent());
-                    chatHistory.logUserMessage(reminderManager == null
-                            ? claimed.getContent()
-                            : reminderManager.previewUserTurn(claimed.getContent()));
-                    repl.requestStatusRedraw();
-                    ChatCompleter.showNotice(renderer.cyan(
-                                    "  ↪ Sent queued message at tool boundary")
-                            + renderer.dim(" [" + claimed.getId() + "]"));
+                    recordQueuedMessageSent(claimed);
                     return true;
                 }
             }, () -> {
@@ -1337,6 +1439,22 @@ public class ChatMessageHandler {
                 }
             });
         }
+    }
+
+    /** Shared acceptance bookkeeping for local tools and acknowledged native input. */
+    private void recordQueuedMessageSent(MessageQueue.QueuedMessage claimed) {
+        if (!backgroundTaskManager.isInQueueChain()) {
+            backgroundTaskManager.startQueueChain(messageQueue.size() + 1);
+        }
+        backgroundTaskManager.advanceQueueChain();
+        if (messageQueue.isEmpty()) backgroundTaskManager.endQueueChain();
+        sessionMetrics.recordMessageAutoDequeued();
+        sessionMetrics.recordUserTurn(claimed.getContent());
+        chatHistory.logUserMessage(reminderManager == null
+                ? claimed.getContent() : reminderManager.previewUserTurn(claimed.getContent()));
+        repl.requestStatusRedraw();
+        ChatCompleter.showNotice(renderer.cyan("  ↪ Sent queued message at tool boundary")
+                + renderer.dim(" [" + claimed.getId() + "]"));
     }
 
     /**
@@ -1527,8 +1645,9 @@ public class ChatMessageHandler {
                 repl.stopGeneratingSpinner();
                 String failure = e.getMessage() == null ? "" : e.getMessage();
                 emitLine(renderer.red("Error in chat: " + e.getMessage()));
-                // Only provider failure evidence may set the quota wake, not prior model/tool output.
-                usageLimitAutoContinue.onTurnFailure(failure, message, !repl.isForceAgentic(), quotaTurn.get());
+                // Immediate failover was exhausted inside the loop without replaying tools.
+                usageLimitAutoContinue.onTurnFailure(
+                        failure, message, !repl.isForceAgentic(), quotaTurn.get());
                 task.setError(e);
             }
         }
@@ -1870,7 +1989,8 @@ public class ChatMessageHandler {
                 repl.stopGeneratingSpinner();
                 String failure = e.getMessage() == null ? "" : e.getMessage();
                 emitLine(renderer.red("Error in agentic chat: " + e.getMessage()));
-                usageLimitAutoContinue.onTurnFailure(failure, message, !repl.isForceAgentic(), quotaTurn.get());
+                usageLimitAutoContinue.onTurnFailure(
+                        failure, message, !repl.isForceAgentic(), quotaTurn.get());
                 if (parentTask != null) parentTask.setError(e);
             }
         }
@@ -1878,6 +1998,11 @@ public class ChatMessageHandler {
 
     private String quotaProvider() {
         return repl.getChatConfig() == null ? "" : repl.getChatConfig().getProvider();
+    }
+
+    /** Failover only applies to the local direct route the ladder can reconfigure. */
+    private boolean localDirectMode() {
+        return localMode && !repl.isForceAgentic();
     }
 
     /**

@@ -23,25 +23,110 @@ import static org.junit.jupiter.api.Assertions.*;
 class StandardChatActivityPanelTest {
 
     @Test
-    void mirroredMcpSubagentLogsOpenInBrowserWithoutLeakingIntoParentCards(
+    void typedChildBrowserUsesMainProjectionAndLiveUiPolicyWithoutParentLeakage(
             @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
         BackgroundTaskManager tasks = new BackgroundTaskManager();
-        try (BackgroundProcessManager processes = new BackgroundProcessManager("parent-chat", workspace)) {
-            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
-            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
-            var log = workspace.resolve("child.log");
-            java.nio.file.Files.writeString(log, "child transcript and tool output\n");
-            processes.upsertShared("child", "codex", "Subagent: inspect files", -1L,
-                    java.time.Instant.now(), BackgroundProcessManager.ProcessState.RUNNING,
-                    null, null, log, Map.of("parentSessionId", "parent-chat", "kind", "subagent"));
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("child-format", workspace)) {
+            var renderer = new TerminalRenderer(true);
+            StatusBar bar = new StatusBar(tasks, processes, null, renderer);
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6, renderer);
+            var config = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+            panel.setTranscriptUiConfig(() -> config);
+            var row = processes.registerVirtual(ProcessKind.COMMAND, "claude local_agent", "Inspect code",
+                    Map.of("source", "claude-code", "task_type", "local_agent"));
+            var transcript = new ai.kompile.cli.main.chat.render.SubagentTranscript();
+            assertTrue(processes.setVirtualTranscript(row.getId(), transcript));
+            processes.appendVirtualOutput(row.getId(), "raw-log-sentinel");
+            transcript.text("thinking", "private reasoning");
+            transcript.text("assistant", "**Formatted** child prose");
             panel.refresh();
-            var cards = panel.resultDisplayBlocks();
-            assertEquals(1, cards.size());
-            assertTrue(cards.get(0).sections().isEmpty());
-            assertFalse(cards.toString().contains("child transcript and tool output"));
             assertTrue(panel.selectNext());
             var view = panel.openSelectedView();
-            assertTrue(view.content().contains("child transcript and tool output"));
+            var projection = new ai.kompile.cli.main.chat.tui.ChatSidebar(renderer);
+            for (var block : row.transcriptBlocks(renderer)) {
+                assertTrue(view.content().contains(projection.inline(block, config)), view.content());
+            }
+            assertFalse(view.content().contains("**Formatted**"));
+            assertFalse(view.content().contains("raw-log-sentinel"));
+            assertFalse(panel.resultDisplayBlocks().toString().contains("child prose"));
+
+            config.set("content.thinking.inline", "none");
+            config.set("content.thinking.sidebar", "off");
+            var refreshed = panel.currentView();
+            assertFalse(refreshed.content().contains("private reasoning"), refreshed.content());
+            transcript.text("assistant", " continues");
+            assertTrue(panel.currentView().content().contains("child prose continues"));
+            transcript.finish();
+            processes.complete(row.getId());
+            assertTrue(panel.currentView().content().contains("child prose continues"));
+            assertTrue(processes.readOutput(row.getId(), 10).contains("raw-log-sentinel"), "diagnostic log is unchanged");
+        }
+    }
+
+    @Test
+    void typedTranscriptCannotAttachToSharedTerminalOrClosedEntries(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        var processes = new BackgroundProcessManager("transcript-ownership", workspace);
+        try {
+            var transcript = new ai.kompile.cli.main.chat.render.SubagentTranscript();
+            processes.upsertShared("foreign", "claude", "other chat", -1, java.time.Instant.now(),
+                    BackgroundProcessManager.ProcessState.RUNNING, null, null, null, Map.of());
+            assertFalse(processes.setVirtualTranscript("foreign", transcript));
+            assertFalse(processes.setVirtualTranscript("unknown", transcript));
+            var row = processes.registerVirtual(ProcessKind.COMMAND, "claude", "local child", Map.of());
+            processes.complete(row.getId());
+            assertFalse(processes.setVirtualTranscript(row.getId(), transcript));
+            var live = processes.registerVirtual(ProcessKind.COMMAND, "claude", "live child", Map.of());
+            processes.close();
+            assertFalse(processes.setVirtualTranscript(live.getId(), transcript));
+        } finally {
+            processes.close();
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 2})
+    void mirroredMcpSubagentLogsOpenInBrowserWithoutLeakingIntoParentCards(int children,
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        var coordinator = new ai.kompile.cli.main.coordination.CoordinationStateManager(
+                workspace, "mcp-owner", ai.kompile.cli.common.util.JsonUtils.standardMapper());
+        coordinator.registerAgent("MCP fixture", "parent-chat", "kompile", 1, 0L, null, null);
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("parent-chat", workspace);
+             BackgroundProcessManager owner = new BackgroundProcessManager("mcp-owner", workspace);
+             SharedProcessMirror mirror = new SharedProcessMirror(processes, coordinator, "parent-chat")) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            for (int n = 1; n <= children; n++) {
+                var child = owner.registerVirtual(ProcessKind.COMMAND, "kompile", "Subagent: child " + n,
+                        Map.of("kind", "subagent"));
+                owner.appendVirtualOutputChunk(child.getId(), "Thinking:\nchild-" + n + " live");
+                coordinator.publishProcess(child.getId(), child.getCommand(), child.getDescription(), -1L,
+                        "RUNNING", child.getOutputFile().toString(), "kompile", null, "subagent",
+                        child.getStartTime(), null, null);
+            }
+            mirror.pollOnce();
+            panel.refresh();
+            var cards = panel.resultDisplayBlocks();
+            assertEquals(children, cards.size());
+            assertTrue(cards.stream().allMatch(card -> card.sections().isEmpty()));
+            assertFalse(cards.toString().contains("Thinking:"));
+            assertTrue(panel.selectNext());
+            var view = panel.openSelectedView();
+            assertTrue(view.content().contains(" live"), view.content());
+            for (var child : owner.listAll()) {
+                owner.appendVirtualOutputChunk(child.getId(), " stream\nAssistant:\nchild answer\n");
+                owner.complete(child.getId());
+                coordinator.updateProcessState(child.getId(), "COMPLETED", child.getEndTime(), child.getExitCode());
+            }
+            mirror.pollOnce();
+            assertEquals(view.key(), panel.currentView().key());
+            assertTrue(panel.currentView().content().contains(" live stream"));
+            assertTrue(panel.currentView().content().contains("child answer"));
+            assertFalse(panel.resultDisplayBlocks().toString().contains("child answer"));
+            assertTrue(processes.listAll().stream().noneMatch(BackgroundProcessManager.ProcessEntry::isRunning));
+        } finally {
+            coordinator.shutdown();
         }
     }
 
@@ -148,6 +233,12 @@ class StandardChatActivityPanelTest {
             assertTrue(panel.selectNext());
             var view = panel.openSelectedView();
             assertNotNull(view);
+            assertTrue(view.content().contains("model: ? · vendor: anthropic"), "do not guess the parent's model");
+            processes.updateVirtual(child.getId(), null, Map.of("source", "claude-code", "task_type", "local_agent",
+                    "model", "claude-child", "total_tokens", "410", "tool_uses", "2"));
+            assertTrue(panel.currentView().content().contains("model: claude-child · vendor: anthropic"));
+            assertTrue(panel.currentView().content().contains("410 total (provider)"));
+            assertTrue(panel.currentView().content().contains("tools: 2"));
             assertTrue(view.content().contains("User:\nInspect the parser"), view.content());
             assertTrue(view.content().contains("Thinking:\nFind the dropped frames"), view.content());
             assertTrue(view.content().contains("Assistant:\nI will inspect the parser"), view.content());
@@ -871,6 +962,9 @@ class StandardChatActivityPanelTest {
             StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
             StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 4);
             bar.registerSubagent("busy-1", "general", "Run the long task");
+            bar.updateSubagentMetadata("busy-1", Map.of("model", "child-model", "vendor", "child-vendor",
+                    "input_tokens", "120", "output_tokens", "8", "stream_output_tokens", "3",
+                    "authentication", "native", "thinking", "high", "tool_uses", "9"));
             String launch = panel.inlineSubagentTranscript("busy-1");
             assertTrue(launch.contains("Launched subagent [busy-1] general — Run the long task"));
             assertTrue(launch.contains("process browser below"));
@@ -907,6 +1001,18 @@ class StandardChatActivityPanelTest {
             assertTrue(panel.selectNext());
             var view = panel.openSelectedView();
             assertTrue(view.content().contains("raw tool detail 8"));
+            assertTrue(view.content().contains("model: child-model · vendor: child-vendor"));
+            assertTrue(view.title().startsWith("child-vendor/child-model · ↑120 ↓8 ~3 est."));
+            assertTrue(view.content().contains("tokens: 120 in · 8 out"));
+            assertTrue(view.content().contains("streaming ~3 out (estimated)"));
+            assertTrue(view.content().contains("authentication: native"));
+            assertTrue(view.content().contains("thinking: high"));
+            assertTrue(view.content().contains("tools: 9"));
+            bar.updateSubagentMetadata("busy-1", Map.of("model", "child-model", "vendor", "child-vendor",
+                    "input_tokens", "120", "output_tokens", "12"));
+            assertTrue(panel.currentView().content().contains("tokens: 120 in · 12 out"));
+            assertTrue(panel.currentView().title().contains("↑120 ↓12"));
+            assertFalse(panel.currentView().title().contains("est."));
             assertTrue(view.content().contains("live answer chunk"));
             bar.appendSubagentOutput("busy-1", " and more live output");
             assertTrue(panel.currentView().content().contains("and more live output"));
@@ -917,9 +1023,101 @@ class StandardChatActivityPanelTest {
             assertTrue(completed.error(), "failure status must remain visible without its transcript");
             assertEquals(launch, completed.classic());
             assertTrue(panel.currentView().content().contains("raw tool detail 8"));
+            assertTrue(panel.currentView().content().contains("model: child-model · vendor: child-vendor"));
+            assertTrue(panel.currentView().content().contains("tokens: 120 in · 12 out"));
             panel.returnToMain();
             assertTrue(panel.currentView().main());
             assertNull(panel.subagentDisplayBlock("unknown"));
+        }
+    }
+
+    @Test
+    void childIdentityAndLiveTokensStayPinnedWhileFollowingLongOutput() throws Exception {
+        var tasks = new BackgroundTaskManager();
+        try (var processes = new BackgroundProcessManager("child-telemetry-pinned")) {
+            var renderer = new TerminalRenderer(false);
+            var bar = new StatusBar(tasks, processes, null, renderer);
+            var panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 4);
+            bar.registerSubagent("child", "general", "Inspect long output");
+            bar.updateSubagentMetadata("child", Map.of("model", "child-model", "vendor", "anthropic",
+                    "input_tokens", "100", "output_tokens", "7", "stream_output_tokens", "3"));
+            bar.appendSubagentOutput("child", "long child output\n".repeat(100));
+            panel.refresh();
+            assertTrue(panel.selectNext());
+            var view = panel.openSelectedView();
+            var tui = new ai.kompile.cli.main.chat.tui.KompileTui(tasks, processes,
+                    new MessageQueue("child-telemetry-pinned"), renderer);
+            try {
+                for (int width : new int[]{80, 120}) {
+                    var widthField = tui.getClass().getDeclaredField("terminalWidth");
+                    widthField.setAccessible(true);
+                    widthField.setInt(tui, width);
+                    var heightField = tui.getClass().getDeclaredField("terminalHeight");
+                    heightField.setAccessible(true);
+                    heightField.setInt(tui, 24);
+                    tui.showActivityView(view.key(), view.title(), view.content());
+                    String header = tui.getVisibleContentLines().get(0);
+                    assertTrue(header.contains("anthropic/child-model"), header);
+                    assertTrue(header.contains("↑100 ↓7 ~3 est."), header);
+                    assertTrue(tui.getVisibleContentLines().stream().skip(1)
+                            .anyMatch(line -> line.contains("long child output")));
+                    tui.updateActivityView(view.key(), view.title().replace("↓7 ~3 est.", "↓12"), view.content());
+                    assertTrue(tui.getVisibleContentLines().get(0).contains("↓12"));
+                }
+            } finally {
+                tui.stop();
+            }
+        }
+    }
+
+    @Test
+    void openedBackgroundTaskFollowsItsLinkedSubagentInsteadOfFallingBackToMain() {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        tasks.setBackgroundableCheck(() -> true);
+        try (var processes = new BackgroundProcessManager("opened-background-child")) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(false));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            tasks.startTask("Delegated work");
+            assertNotNull(tasks.requestBackground());
+            panel.refresh();
+            assertTrue(panel.selectNext());
+            var opened = panel.openSelectedView();
+            assertTrue(opened.key().startsWith("task:"));
+            bar.registerSubagent("child", "general", "Delegated work");
+            bar.appendSubagentOutput("child", "Assistant: live investigation\n");
+            bar.appendSubagentActivity("child", "read fixture", "Tool read: evidence");
+            assertEquals(opened.key(), panel.currentView().key(), "a newly linked child must not close the opened view");
+            assertTrue(panel.currentView().content().contains("live investigation"));
+            assertTrue(panel.currentView().content().contains("Tool read: evidence"));
+            bar.appendSubagentOutput("child", "next live chunk");
+            assertTrue(panel.currentView().content().contains("next live chunk"));
+            bar.unregisterSubagent("child");
+            assertTrue(panel.currentView().content().contains("live investigation"));
+        }
+    }
+
+    @Test
+    void liveToolTranscriptIsBoundedIsolatedAndIgnoresLateOutput() {
+        var tasks = new BackgroundTaskManager();
+        try (var processes = new BackgroundProcessManager("bounded-live-tools")) {
+            var bar = new StatusBar(tasks, processes, null, new TerminalRenderer(false));
+            var panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            panel.recordToolStart("one", "mcp__kompile__task", "{}");
+            panel.refresh();
+            assertTrue(panel.selectNext());
+            panel.openSelectedView();
+            panel.recordToolOutput("one", "mcp__kompile__task", "{}", "old-start" + "x".repeat(150_000));
+            panel.recordToolOutput("one", "mcp__kompile__task", "{}", "\nlatest prose and tools\n");
+            panel.recordToolOutput("two", "mcp__kompile__multi_task", "{}", "sibling-output");
+            String content = panel.currentView().content();
+            assertTrue(content.contains("older tool output omitted"));
+            assertTrue(content.contains("latest prose and tools"));
+            assertFalse(content.contains("old-start"));
+            assertFalse(content.contains("sibling-output"));
+            assertTrue(content.length() < 130_000);
+            panel.recordToolComplete("one", "mcp__kompile__task", "{}", ToolResult.success("done"));
+            panel.recordToolOutput("one", "mcp__kompile__task", "{}", "late-output");
+            assertFalse(panel.currentView().content().contains("late-output"));
         }
     }
 

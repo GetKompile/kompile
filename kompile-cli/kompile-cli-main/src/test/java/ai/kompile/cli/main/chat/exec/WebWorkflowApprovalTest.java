@@ -67,6 +67,9 @@ class WebWorkflowApprovalTest {
     void aGateApprovedBetweenRunsIsWhatTheNextRunRestores(@TempDir Path project) throws Exception {
         String sessionId = startTeamSession(project);
         assertEquals(Set.of(), WorkflowSessionContext.satisfiedGates(sessionId));
+        // The first run spends one model turn plus its isolated first-prompt title
+        // request; the approval itself must add nothing to whatever that baseline is.
+        int afterFirstTurn = modelRequests.get();
 
         Run approval = approve(project, sessionId, "");
 
@@ -80,7 +83,7 @@ class WebWorkflowApprovalTest {
         assertEquals("approved-design", command.path("data").path("gate").asText());
         assertEquals(List.of("approved-design"), strings(command.path("data").path("approved")));
         assertEquals(Set.of("approved-design"), WorkflowSessionContext.satisfiedGates(sessionId));
-        assertEquals(1, modelRequests.get(), "an approval never reaches the model");
+        assertEquals(afterFirstTurn, modelRequests.get(), "an approval never reaches the model");
 
         // The next turn is a new process: only the session carries the team and its approval.
         WorkflowSessionContext.activate(null);
@@ -90,13 +93,16 @@ class WebWorkflowApprovalTest {
         JsonNode workflow = resumed.event("session").path("workflow");
         assertEquals("session-team", workflow.path("name").asText(), resumed.toString());
         assertEquals(List.of("approved-design"), strings(workflow.path("gates").path("approved")), workflow.toString());
-        assertEquals(2, modelRequests.get());
+        assertEquals(afterFirstTurn + 1, modelRequests.get());
     }
 
     @Test
     @Timeout(90)
     void anApprovalWithNothingLeftToApproveOrAnUnknownGateIsRefused(@TempDir Path project) throws Exception {
         String sessionId = startTeamSession(project);
+        // First turn (+ its isolated title request) sets the baseline the refusals
+        // must not move: refused and unknown approvals never reach the model.
+        int afterFirstTurn = modelRequests.get();
         // Gate names match as the terminal's /workflow approve matches them.
         Run named = approve(project, sessionId, " Approved-Design ");
         assertEquals(0, named.exitCode(), named.toString());
@@ -113,7 +119,7 @@ class WebWorkflowApprovalTest {
         assertEquals("Workflow 'session-team' has no gate 'shipped'. Its gates: implementation 'approved-design'.",
                 unknown.event("command").path("text").asText());
         assertEquals(Set.of("approved-design"), WorkflowSessionContext.satisfiedGates(sessionId));
-        assertEquals(1, modelRequests.get());
+        assertEquals(afterFirstTurn, modelRequests.get());
     }
 
     @Test

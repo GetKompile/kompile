@@ -881,6 +881,38 @@ class WorkflowControllerTest {
         }
     }
 
+    @Test
+    void batchTodoPlanAndCompletionUsePersistedSnapshot() throws Exception {
+        ToolRegistry registry = tools();
+        registry.register(new ai.kompile.cli.main.chat.tools.TodoApplyBatchTool());
+        WorkflowController controller = new WorkflowController(skills(), registry,
+                new WorkflowPolicy(WorkflowPolicy.Mode.ENFORCED, List.of(), true, 2));
+        controller.beginTurn();
+        controller.beginToolBatch();
+        JsonNode batch = mapper.readTree("""
+                {"operations":[{"action":"add","subject":"Work"}]}
+                """);
+        assertTrue(controller.beforeTool("mcp__kompile__todo_apply_batch", batch).allowed());
+        JsonNode snapshot = mapper.readTree("[{\"id\":\"7\",\"subject\":\"Work\",\"status\":\"pending\"}]");
+        controller.afterTool("mcp__kompile__todo_apply_batch", batch,
+                ToolResult.success("Applied", "Added task #7: Work", Map.of("todos", snapshot)));
+        assertFalse(controller.beforeTool("write_fixture", mapper.createObjectNode()).allowed());
+        controller.beginToolBatch();
+        assertTrue(controller.beforeTool("write_fixture", mapper.createObjectNode()).allowed());
+        assertFalse(controller.beforeFinalResponse().allowed(), "pending task 7 is tracked from the real snapshot");
+        JsonNode complete = mapper.readTree("""
+                {"operations":[{"action":"update","task_id":"7","status":"completed"}]}
+                """);
+        assertTrue(controller.beforeTool("todo_apply_batch", complete).allowed());
+        controller.afterTool("todo_apply_batch", complete, ToolResult.error("Invalid batch"));
+        assertFalse(controller.beforeFinalResponse().allowed(), "failed batches cannot complete tasks");
+        JsonNode done = mapper.readTree("[{\"id\":\"7\",\"subject\":\"Work\",\"status\":\"completed\"}]");
+        controller.afterTool("todo_apply_batch", complete,
+                ToolResult.success("Applied", "Updated task #7", Map.of("todos", done)));
+        assertTrue(controller.beforeFinalResponse().allowed());
+        controller.completeTurn();
+    }
+
     private SkillRegistry skills() {
         SkillRegistry registry = new SkillRegistry();
         registry.register(SkillConfig.builder("workflow-check")

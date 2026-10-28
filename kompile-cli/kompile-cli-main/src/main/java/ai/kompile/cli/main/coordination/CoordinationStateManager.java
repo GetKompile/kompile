@@ -112,10 +112,20 @@ public class CoordinationStateManager {
     private final Set<String> ownedLockIds = ConcurrentHashMap.newKeySet();
     private final AtomicReference<Consumer<String>> warningSink = new AtomicReference<>();
     private volatile boolean shutdown = false;
+    private final Thread shutdownHook;
     /** Parent session of the registered agent, stamped on every process it publishes. */
     private volatile String registeredParentSessionId;
     /** Lease of an agent-owned edit lock (from {@link HarnessConfig#getEditLockLeaseSeconds()}). */
     private final Duration agentLease;
+    /**
+     * Harness enforcement mode for file-mutating tools ({@code edit}, {@code write},
+     * {@code edit_batch}, {@code edit_patch}, {@code patch}, LSP rename, shell file-writes),
+     * resolved ONCE at construction from {@link EditEnforcement#fromConfig(String)} with
+     * {@link HarnessConfig#getEditCoordinationMode()}. Fixed per session on purpose: a
+     * mid-session mode change would let a caller act on a lock decision that a mode flip
+     * invalidates a moment later.
+     */
+    private final EditEnforcement editEnforcement;
     /**
      * Renewal write throttle. Every persisted lease end is {@code activity + lease + slack},
      * and a lock is rewritten only when its persisted end (read from disk inside the
@@ -175,6 +185,8 @@ public class CoordinationStateManager {
                                     Clock leaseClock) {
         Duration lease = agentLease == null ? configuredAgentLease() : agentLease;
         this.agentLease = lease.compareTo(MIN_AGENT_LEASE) < 0 ? MIN_AGENT_LEASE : lease;
+        this.editEnforcement = EditEnforcement.fromConfig(
+                HarnessConfig.load(mapper).getEditCoordinationMode());
         Duration quarter = this.agentLease.dividedBy(4);
         this.leaseRenewSlack = quarter.compareTo(MAX_LEASE_RENEW_SLACK) < 0
                 ? quarter : MAX_LEASE_RENEW_SLACK;
@@ -229,6 +241,9 @@ public class CoordinationStateManager {
                 HEARTBEAT_INTERVAL_SECONDS,
                 TimeUnit.SECONDS
         );
+        // SIGTERM/System.exit do not unwind the REPL's finally blocks.
+        this.shutdownHook = new Thread(this::shutdown, "coord-shutdown-" + sessionId);
+        Runtime.getRuntime().addShutdownHook(shutdownHook);
     }
 
     /**
@@ -238,6 +253,7 @@ public class CoordinationStateManager {
         ObjectMapper om = JsonUtils.standardMapper();
         CoordinationStateManager mgr = new CoordinationStateManager(workDir, "cli-" + System.currentTimeMillis(), om);
         mgr.heartbeatExecutor.shutdownNow();
+        mgr.removeShutdownHook(); // Query-only managers must not accumulate JVM hooks.
         return mgr;
     }
 
@@ -253,6 +269,11 @@ public class CoordinationStateManager {
     /** Effective lease of an agent-owned edit lock. */
     public Duration getAgentLease() {
         return agentLease;
+    }
+
+    /** Harness enforcement mode this coordinator was constructed with. */
+    public EditEnforcement getEditEnforcement() {
+        return editEnforcement;
     }
 
     public Path getProjectRoot() {
@@ -383,6 +404,7 @@ public class CoordinationStateManager {
             // reclaims leases) waits a bounded time for a busy coordinator; a session-level
             // acquire stays single-attempt and fails open, so chat never blocks on it.
             return withCoordinatorLock(acquireWaitMillis(owner), () -> {
+                requireActive();
                 Instant now = leaseClock.instant();
                 boolean alreadyHeld = false;
                 for (EditLockEntry entry : readEditLocks()) {
@@ -400,7 +422,7 @@ public class CoordinationStateManager {
                     Files.deleteIfExists(lockPath(entry.getLockId()));
                 }
 
-                writeJsonAtomically(lockPath(lockId),
+                writeEditLock(lockPath(lockId),
                         newLockEntry(lockId, owner, label, filePath, editType, now));
                 ownedLockIds.add(lockId);
                 // Acquiring is agent activity: it renews the lease of the agent's other locks.
@@ -408,8 +430,8 @@ public class CoordinationStateManager {
                 return EditLockResult.acquired(lockId, alreadyHeld);
             });
         } catch (Exception e) {
-            if (owner != null) {
-                // An agent-scoped acquire never fakes success: the caller would edit under a
+            if (owner != null || shutdown) {
+                // An agent-scoped acquire (or a closed session) never fakes success: the caller would edit under a
                 // lock (and a lease) that was neither taken nor renewed.
                 notifyWarning("[Coordination] Warning: Could not acquire edit lock for agent '"
                         + owner + "': " + e.getMessage());
@@ -420,6 +442,11 @@ public class CoordinationStateManager {
             notifyWarning("[Coordination] Warning: Could not acquire edit lock: " + e.getMessage());
             return EditLockResult.acquired(lockId);
         }
+    }
+
+    /** Checked inside the coordinator lock so a queued tool cannot resurrect an ended session. */
+    private void requireActive() {
+        if (shutdown) throw new IllegalStateException("Coordination session is shut down");
     }
 
     /** Coordinator wait of an acquire: bounded for an agent owner, single-attempt otherwise. */
@@ -660,9 +687,11 @@ public class CoordinationStateManager {
      */
     public boolean renewAgentLease(String agentName) {
         String owner = ownerAgentKey(agentName);
-        if (owner == null || shutdown) return true;
+        if (shutdown) return false;
+        if (owner == null) return true;
         try {
             withCoordinatorLock(editLockWaitMillis, () -> {
+                requireActive();
                 extendLeases(owner, leaseClock.instant(), Set.of());
                 return null;
             });
@@ -755,11 +784,13 @@ public class CoordinationStateManager {
      * @return ALLOWED for a caller without agent identity (session semantics; no lease)
      */
     public AgentEditGuard guardAgentEdit(String agentName, Collection<String> absolutePaths) {
+        if (shutdown) return AgentEditGuard.busy("Coordination session is shut down; nothing was written.");
         String owner = ownerAgentKey(agentName);
         if (owner == null) return AgentEditGuard.allowed();
         Set<String> paths = new LinkedHashSet<>(absolutePaths);
         try {
             return withCoordinatorLock(editLockWaitMillis, () -> {
+                requireActive();
                 Instant now = leaseClock.instant();
                 List<EditLockEntry> locks = readEditLocks();
                 Map<String, EditLockEntry> conflicts = new LinkedHashMap<>();
@@ -783,7 +814,7 @@ public class CoordinationStateManager {
                         if (!held && ownedHere) lost.add(path);
                     } else if (!held && ownedHere) {
                         // Evicted (lease ran out) but never reclaimed: the active agent keeps it.
-                        writeJsonAtomically(lockPath(lockId),
+                        writeEditLock(lockPath(lockId),
                                 newLockEntry(lockId, owner, owner, path, "edit", now));
                     }
                 }
@@ -827,9 +858,101 @@ public class CoordinationStateManager {
             if (!renewLease && !refreshHeartbeat) continue;
             if (renewLease) entry.setLeaseExpiresAt(until);
             if (refreshHeartbeat) entry.setLastHeartbeat(wallNow);
-            writeJsonAtomically(lockPath(entry.getLockId()), entry);
+            writeEditLock(lockPath(entry.getLockId()), entry);
         }
     }
+
+    /**
+     * Pre-mutation guard of an edit-tool call made WITHOUT an agent identity under
+     * {@link EditEnforcement#ENFORCE}: the session-level counterpart of
+     * {@link #guardAgentEdit}. In ONE coordinator critical section — waiting up to
+     * {@link #EDIT_LOCK_WAIT_MS} for a busy coordinator — it judges every target file:
+     * <ul>
+     *   <li>held by another LIVE owner (another session; per the ownership contract a
+     *       sibling agent of this session does not conflict with session semantics) —
+     *       CONFLICT naming that holder;</li>
+     *   <li>held by a stale or provably-dead holder — the lock is evicted;</li>
+     *   <li>free — this session's session-level lock is AUTO-ACQUIRED, so the write is
+     *       registered in the ledger and subsequent calls from any host refuse;</li>
+     *   <li>already this session's own lock — kept, heartbeat refreshed.</li>
+     * </ul>
+     * A BUSY coordinator (whole bounded wait) refuses the call: nothing was verified or
+     * acquired, so nothing may be written. Unlike {@link #tryAcquireEditLock}, session
+     * semantics do NOT fail open here — under ENFORCE the guard is the correctness
+     * invariant, and fail-open would silently reintroduce the clobber it exists to prevent.
+     *
+     * <p>Auto-locks carry no lease (session-level form); liveness is the session heartbeat
+     * TTL plus dead-holder eviction, exactly like any other session lock, and any caller of
+     * this session may release them via the coordinator as usual.
+     *
+     * @return ALLOWED for callers when this manager runs in OFF/ADVISORY mode — callers
+     *         must check {@link #getEditEnforcement()} first; this returns ALLOWED only as a
+     *         defensive default so an unchecked call never blocks a legacy flow.
+     */
+    public AgentEditGuard guardSessionEdit(Collection<String> absolutePaths) {
+        if (shutdown) return AgentEditGuard.busy("Coordination session is shut down; nothing was written.");
+        if (editEnforcement != EditEnforcement.ENFORCE) return AgentEditGuard.allowed();
+        Set<String> paths = new LinkedHashSet<>(absolutePaths);
+        try {
+            return withCoordinatorLock(editLockWaitMillis, () -> {
+                requireActive();
+                Instant now = leaseClock.instant();
+                Instant wallNow = Instant.now();
+                Map<String, EditLockEntry> conflicts = new LinkedHashMap<>();
+                for (String path : paths) {
+                    String lockId = lockIdFor(null, path);
+                    boolean held = false;
+                    EditLockEntry conflict = null;
+                    List<EditLockEntry> evict = new ArrayList<>();
+                    for (EditLockEntry entry : readEditLocks()) {
+                        if (!path.equals(entry.getAbsolutePath())) continue;
+                        if (lockId.equals(entry.getLockId())) {
+                            held = true;
+                        } else if (conflict == null && heldByAnotherOwner(entry, null)) {
+                            if (isStale(entry, now) || holderIsDead(entry)) {
+                                evict.add(entry); // stale/dead: clear it instead of conflict
+                            } else {
+                                conflict = entry;
+                            }
+                        }
+                    }
+                    if (conflict != null) {
+                        conflicts.put(path, conflict);
+                        continue;
+                    }
+                    for (EditLockEntry stale : evict) {
+                        Files.deleteIfExists(lockPath(stale.getLockId()));
+                    }
+                    if (!held) {
+                        // Auto-acquire: register the write so later calls refuse.
+                        writeEditLock(lockPath(lockId),
+                                newLockEntry(lockId, null, SESSION_AUTO_LOCK_LABEL, path, "edit", now));
+                        ownedLockIds.add(lockId);
+                    } else {
+                        // Own lock: keep it, defensively refresh its session heartbeat.
+                        EditLockEntry own = readLockQuietly(lockPath(lockId));
+                        if (own != null && !wallNow.equals(own.getLastHeartbeat())) {
+                            own.setLastHeartbeat(wallNow);
+                            writeEditLock(lockPath(lockId), own);
+                        }
+                    }
+                }
+                return conflicts.isEmpty()
+                        ? AgentEditGuard.allowed()
+                        : new AgentEditGuard(EditGuardStatus.CONFLICT,
+                                Collections.unmodifiableMap(conflicts),
+                                Collections.unmodifiableSet(new LinkedHashSet<>()), null);
+            });
+        } catch (Exception e) {
+            notifyWarning("[Coordination] Warning: Could not guard a session edit: " + e.getMessage());
+            return AgentEditGuard.busy("Coordinator busy: could not verify and auto-acquire the "
+                    + "session edit locks within " + editLockWaitMillis + " ms (" + e.getMessage()
+                    + "); nothing was written — retry.");
+        }
+    }
+
+    /** Display label of an auto-lock a session guard took for an identity-less caller. */
+    static final String SESSION_AUTO_LOCK_LABEL = "session auto-lock";
 
     /**
      * Release every edit lock {@code agentName} holds in this session, at once, whatever its
@@ -908,6 +1031,7 @@ public class CoordinationStateManager {
         try {
             // In-section staleness and the same wait policy as the single acquire.
             return withCoordinatorLock(acquireWaitMillis(owner), () -> {
+                requireActive();
                 Instant now = leaseClock.instant();
                 List<EditLockEntry> existing = readEditLocks();
                 Map<String, EditLockResult> results = new LinkedHashMap<>();
@@ -941,7 +1065,7 @@ public class CoordinationStateManager {
                                         + "(pass allow_partial=true to lock what is free)"));
                     } else {
                         String lockId = lockIdFor(owner, path);
-                        writeJsonAtomically(lockPath(lockId),
+                        writeEditLock(lockPath(lockId),
                                 newLockEntry(lockId, owner, label, path, editType, now));
                         ownedLockIds.add(lockId);
                         results.put(path, EditLockResult.acquired(lockId, alreadyHeld.contains(path)));
@@ -953,8 +1077,8 @@ public class CoordinationStateManager {
             });
         } catch (Exception e) {
             Map<String, EditLockResult> results = new LinkedHashMap<>();
-            if (owner != null) {
-                // Agent-scoped: never report locks (or a lease renewal) that did not happen.
+            if (owner != null || shutdown) {
+                // Agent-scoped or closed: never report locks that did not happen.
                 notifyWarning("[Coordination] Warning: Could not batch-acquire edit locks for agent '"
                         + owner + "': " + e.getMessage());
                 String message = busyMessage(owner, "acquire the edit locks", e,
@@ -1121,11 +1245,15 @@ public class CoordinationStateManager {
         if (!Files.isRegularFile(agentFile, LinkOption.NOFOLLOW_LINKS)) return false;
         try {
             AgentEntry holder = mapper.readValue(agentFile.toFile(), AgentEntry.class);
-            if (holder.isStale()) return true;
-            return holder.getPid() > 0 && !isProcessAlive(holder.getPid());
+            return agentHasEnded(holder);
         } catch (IOException | RuntimeException ignored) {
             return false;
         }
+    }
+
+    private boolean agentHasEnded(AgentEntry agent) {
+        return agent.isStale() || (!sessionId.equals(agent.getSessionId())
+                && agent.getPid() > 0 && !isProcessAlive(agent.getPid()));
     }
 
     /**
@@ -1183,6 +1311,7 @@ public class CoordinationStateManager {
                 ? null : parentSessionId.trim();
         try {
             synchronized (agentEntryLock) {
+                if (shutdown) return;
                 String resolvedToolSessionId = toolSessionId == null || toolSessionId.isBlank()
                         ? sessionId : requireSafeComponent(toolSessionId.trim(), "toolSessionId");
                 AgentEntry entry = new AgentEntry(
@@ -1222,18 +1351,47 @@ public class CoordinationStateManager {
     }
 
     /**
-     * Deregister an agent session.
+     * Deregister an ended agent session and release ALL its persisted edit locks, including
+     * locks acquired by another manager of that session. Remove locks before presence: a
+     * missing presence file alone is not proof that a holder died.
      */
     public void deregisterAgent(String agentSessionId) {
+        String endedSession = requireSafeComponent(agentSessionId, "agentSessionId");
         try {
-            Path agentFile = agentsDir.resolve(
-                    requireSafeComponent(agentSessionId, "agentSessionId") + ".agent.json");
-            synchronized (agentEntryLock) {
-                Files.deleteIfExists(agentFile);
+            withCoordinatorLock(AGENT_RELEASE_LOCK_WAIT_MS, () -> {
+                deleteSessionLocks(endedSession);
+                synchronized (agentEntryLock) {
+                    Files.deleteIfExists(agentsDir.resolve(endedSession + ".agent.json"));
+                }
+                return null;
+            });
+        } catch (Exception e) {
+            // Like releaseAgentLocks, terminal cleanup must not leave locks heartbeating
+            // forever just because another coordinator call is busy. The session has ended;
+            // remove only its records, and retain presence if any lock deletion fails.
+            notifyWarning("[Coordination] Warning: Could not deregister agent under the coordinator lock; "
+                    + "releasing its locks directly: " + e.getMessage());
+            try {
+                deleteSessionLocks(endedSession);
+                synchronized (agentEntryLock) {
+                    Files.deleteIfExists(agentsDir.resolve(endedSession + ".agent.json"));
+                }
+            } catch (IOException failure) {
+                notifyWarning("[Coordination] Warning: Could not release ended session '" + endedSession
+                        + "': " + failure.getMessage());
             }
-        } catch (IOException e) {
-            notifyWarning("[Coordination] Warning: Could not deregister agent: " + e.getMessage());
         }
+    }
+
+    /** Ownership comes from the record, not a filename prefix; normally called under the coordinator lock. */
+    private int deleteSessionLocks(String endedSession) throws IOException {
+        int released = 0;
+        for (EditLockEntry entry : readEditLocks()) {
+            if (!endedSession.equals(entry.getSessionId())) continue;
+            ownedLockIds.remove(entry.getLockId());
+            if (Files.deleteIfExists(lockPath(entry.getLockId()))) released++;
+        }
+        return released;
     }
 
     /**
@@ -1254,7 +1412,8 @@ public class CoordinationStateManager {
 
                 List<AgentEntry> active = new ArrayList<>();
                 for (AgentEntry entry : all) {
-                    if (entry.isStale()) {
+                    if (agentHasEnded(entry)) {
+                        deleteSessionLocks(entry.getSessionId());
                         Path agentFile = agentsDir.resolve(entry.getSessionId() + ".agent.json");
                         Files.deleteIfExists(agentFile);
                     } else {
@@ -1462,11 +1621,19 @@ public class CoordinationStateManager {
     /** Update a published process, retaining terminal time and exit status when available. */
     public void updateProcessState(String processId, String state,
                                    Instant endedAt, Integer exitCode) {
+        updateProcessState(processId, state, endedAt, exitCode, null);
+    }
+
+    /** Publish child display metadata with the same ownership/locking rules as lifecycle state. */
+    public void updateProcessState(String processId, String state,
+                                   Instant endedAt, Integer exitCode, Map<String, String> metadata) {
         String safeProcessId = requireSafeComponent(processId, "processId");
         try {
             Path procFile = processFile(sessionId, safeProcessId);
             if (Files.exists(procFile)) {
-                withCoordinatorLock(isRunningProcessState(state)
+                // Coalesced child telemetry may be the last update before a long pause.
+                // Unlike a disposable heartbeat, it must survive simultaneous sibling publications.
+                withCoordinatorLock(isRunningProcessState(state) && metadata == null
                         ? 0L : PROCESS_LIFECYCLE_LOCK_WAIT_MS, () -> {
                     // Re-check inside the lock: shutdown() deletes proc files under this
                     // same lock, and a publication that started before shutdown() can
@@ -1476,6 +1643,7 @@ public class CoordinationStateManager {
                     }
                     ProcessCoordEntry entry = mapper.readValue(procFile.toFile(), ProcessCoordEntry.class);
                     entry.setState(state);
+                    if (metadata != null) entry.setMetadata(Map.copyOf(metadata));
                     Instant now = Instant.now();
                     if (entry.isTerminalState()) {
                         entry.setEndedAt(endedAt != null ? endedAt : now);
@@ -1616,7 +1784,8 @@ public class CoordinationStateManager {
                     }
                 }
                 for (AgentEntry e : readAgentEntries()) {
-                    if (e.isStale()) {
+                    if (agentHasEnded(e)) {
+                        evicted += deleteSessionLocks(e.getSessionId());
                         Files.deleteIfExists(agentsDir.resolve(e.getSessionId() + ".agent.json"));
                         evicted++;
                     }
@@ -1668,22 +1837,17 @@ public class CoordinationStateManager {
     /**
      * Clean shutdown: deregister this session, release all owned locks, stop heartbeat.
      */
-    public void shutdown() {
+    public synchronized void shutdown() {
         if (shutdown) return;
         shutdown = true;
+        removeShutdownHook();
 
         heartbeatExecutor.shutdownNow();
         activityWaits.close();
         systemActivityCoordinator.close();
 
-        // Remove this session's agent file
+        // Release persisted locks as well as locally tracked ones, then remove presence.
         deregisterAgent(sessionId);
-
-        // Remove all owned edit locks
-        for (String lockId : ownedLockIds) {
-            releaseEditLock(lockId);
-        }
-        ownedLockIds.clear();
 
         // Remove this session's process entries. Locked so a concurrent
         // updateProcessState/updateProcessMonitor call sees either the file or its
@@ -1702,6 +1866,15 @@ public class CoordinationStateManager {
             });
         } catch (Exception e) {
             notifyWarning("[Coordination] Warning: Could not clean up process entries: " + e.getMessage());
+        }
+    }
+
+    private void removeShutdownHook() {
+        if (Thread.currentThread() == shutdownHook) return;
+        try {
+            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+        } catch (IllegalStateException ignored) {
+            // JVM shutdown has already started; the hook and explicit close are idempotent.
         }
     }
 
@@ -1822,10 +1995,11 @@ public class CoordinationStateManager {
                 Path lockPath = editsDir.resolve(lockId + ".lock.json");
                 if (Files.exists(lockPath)) {
                     withCoordinatorLock(() -> {
-                        if (Files.exists(lockPath)) {
+                        if (!shutdown && ownedLockIds.contains(lockId) && Files.exists(lockPath)) {
                             EditLockEntry entry = mapper.readValue(lockPath.toFile(), EditLockEntry.class);
+                            if (!sessionId.equals(entry.getSessionId())) return null;
                             entry.setLastHeartbeat(Instant.now());
-                            writeJsonAtomically(lockPath, entry);
+                            writeEditLock(lockPath, entry);
                         }
                         return null;
                     });
@@ -1874,6 +2048,21 @@ public class CoordinationStateManager {
         String normalized = state.trim().toUpperCase(Locale.ROOT);
         return normalized.equals("RUNNING") || normalized.equals("STARTING")
                 || normalized.equals("ACTIVE");
+    }
+
+    /**
+     * Fence both sides of a lock write: terminal cleanup may have fallen back to an
+     * unlocked scan while this call was already serializing inside the critical section.
+     * In that case the writer must remove its late commit, not resurrect an ended session.
+     */
+    private void writeEditLock(Path target, EditLockEntry entry) throws IOException {
+        requireActive();
+        writeJsonAtomically(target, entry);
+        if (shutdown) {
+            ownedLockIds.remove(entry.getLockId());
+            Files.deleteIfExists(target);
+            requireActive();
+        }
     }
 
     /** Replace state without ever exposing a truncated JSON document to another process. */

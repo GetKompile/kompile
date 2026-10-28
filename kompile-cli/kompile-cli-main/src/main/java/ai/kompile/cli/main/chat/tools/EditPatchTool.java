@@ -216,11 +216,13 @@ public class EditPatchTool implements CliTool {
             return context.staleReadMessage(path, "patch");
         }
         if (guard != null) {
-            // Agent identity: the pre-write guard already renewed and verified this file.
+            // Identity, or ENFORCE session semantics: the pre-write guard already renewed
+            // and verified (or auto-locked) this file.
             String refused = guard.conflictMessage(path.toAbsolutePath().toString());
             if (refused != null) return refused;
-        } else if (coordinationManager != null) {
-            // No identity: session semantics — another session's lock fails the file fast.
+        } else if (coordinationManager != null
+                && EditCoordinatorTool.advisoryWarningsApply(coordinationManager)) {
+            // ADVISORY session semantics: another session's lock fails the file fast.
             EditLockEntry conflict = coordinationManager.findConflictingLock(
                     path.toAbsolutePath().toString());
             if (conflict != null) {

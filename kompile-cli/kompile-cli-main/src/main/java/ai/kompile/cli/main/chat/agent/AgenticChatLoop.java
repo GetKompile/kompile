@@ -37,6 +37,7 @@ import ai.kompile.cli.main.chat.enforcer.EnforcerJudge;
 import ai.kompile.cli.main.chat.enforcer.EnforcerPolicy;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
 import ai.kompile.cli.main.chat.enforcer.JudgeToolPolicy;
+import ai.kompile.cli.main.chat.harness.LoopDetector;
 import ai.kompile.cli.main.chat.harness.PerformanceHarness;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
@@ -124,6 +125,7 @@ public class AgenticChatLoop {
     public interface ToolActivityListener {
         void onToolStart(String callId, String toolName, String rawInput);
         default void onToolInput(String callId, String toolName, String rawInput) { }
+        default void onToolOutput(String callId, String toolName, String rawInput, String output) { }
         void onToolComplete(String callId, String toolName, String rawInput, ToolResult result);
         default void onToolDenied(String callId, String toolName, String rawInput, String reason) {
             onToolComplete(callId, toolName, rawInput, ToolResult.error(reason));
@@ -246,6 +248,8 @@ public class AgenticChatLoop {
     private volatile long lastReportedHistoryTokens = 0L;
     // Identity of the checkpoint measured by that usage; a replacement invalidates it.
     private volatile ConversationLedger.CompactionCheckpoint lastReportedCheckpoint;
+    // Allows a no-usage turn to retain the last measurement only in the same native session/model.
+    private ConversationLedger.NativeSession lastMeasuredClaudeSession;
 
     // Size-only observations at assembly time. /status must not rebuild prompts/tools,
     // re-project memory, count via a provider, or retain another copy of prompt contents.
@@ -280,6 +284,13 @@ public class AgenticChatLoop {
     private volatile Supplier<QueuedInput> queuedMessageSupplier = () -> null;
     private volatile BooleanSupplier selfBackgroundRequest = () -> false;
     private volatile ReminderManager reminderManager;
+    private final ai.kompile.cli.main.chat.workflow.TodoAutopilot todoAutopilot =
+            new ai.kompile.cli.main.chat.workflow.TodoAutopilot();
+
+    /** Test/advanced configuration of the harness todo autopilot. */
+    ai.kompile.cli.main.chat.workflow.TodoAutopilot todoAutopilot() {
+        return todoAutopilot;
+    }
     private final AtomicReference<Consumer<String>> backgroundOutputConsumer = new AtomicReference<>();
     private final AtomicBoolean backgroundableToolPhase = new AtomicBoolean(false);
     private volatile Runnable backgroundEligibilityListener = () -> { };
@@ -311,9 +322,34 @@ public class AgenticChatLoop {
     // override: direction monitoring is its own supervision contract.
     private volatile ai.kompile.cli.main.chat.enforcer.DirectionJudge directionJudge;
 
+    // Deflection monitor: deterministic non-ownership-without-receipts detection, strictly
+    // opt-in (configured + enabled via ChatRepl.loadDeflectionMonitor), its own supervision
+    // contract like the direction judge. Never constructed or enabled implicitly.
+    private volatile ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor deflectionMonitor;
+    private volatile int deflectionMaxCorrections = 2;
+    // Only completion callbacks/returned executions may add receipts. Never
+    // count proposed or denied calls, and never carry receipts into a new turn.
+    private final StringBuffer executedDeflectionReceipts = new StringBuffer();
+    private final AtomicLong deflectionReceiptTurn = new AtomicLong();
+
     // Host-applied workflow state is deterministic and independent from probabilistic
     // judge verdicts. The one-shot judge override therefore never bypasses this gate.
     private final WorkflowController workflowController;
+
+    // Shared coordination state, used by the compile-error auto-fix to see whether
+    // other agents hold edit locks before the harness keeps a turn open to repair
+    // a failed build. Null for callers that never wire it: detection still runs
+    // and the directive still renders, without the coordination/keep-open paths.
+    private volatile ai.kompile.cli.main.coordination.CoordinationStateManager coordinationManager;
+
+    // Compile-error auto-fix: turn-local state. Detection happens when a shell or
+    // process tool finishes; the end-of-turn gate decides between keeping the turn
+    // open with an automated directive (no other agent is editing) and handing the
+    // directive to the supervisor lane (someone is editing). Bounded per turn.
+    private static final int COMPILE_FIX_MAX_ATTEMPTS = 2;
+    private final ai.kompile.cli.main.chat.workflow.CompileErrorAutoFix.Finding[] compileFixFindings =
+            new ai.kompile.cli.main.chat.workflow.CompileErrorAutoFix.Finding[1];
+    private int compileFixAttempts;
 
 
     /**
@@ -408,6 +444,9 @@ public class AgenticChatLoop {
         this.agentsMdContent = projectChatContext.agentsMdContent();
         this.workflowController = new WorkflowController(
                 workingDirectory, effectiveSkills, toolRegistry);
+        this.workflowController.setTodoAutopilot(todoAutopilot);
+        // setTodoAutopilot applies project startup settings; do not overwrite
+        // a configured disable/interval with unconditional harness defaults.
     }
 
     private SidePanelManager findSidePanelManager(ToolRegistry registry) {
@@ -425,6 +464,7 @@ public class AgenticChatLoop {
         this.sessionMetrics = metrics;
         if (metrics != null && directLlmClient != null) {
             refreshContextDisplayWindow(resolvedContextWindowTokens());
+            restoreClaudeContextUsageIfCurrent();
         }
     }
 
@@ -439,7 +479,8 @@ public class AgenticChatLoop {
         boolean provisional = config.getContextWindowTokens() <= 0
                 && directLlmClient.claudeReportedLimits(activeModelOverride()) == null
                 && contextResolver.isContextWindowProvisional(config, activeModelOverride());
-        sessionMetrics.recordContextWindow(contextDisplayModelKey(), window, provisional);
+        sessionMetrics.recordContextWindow(contextDisplayModelKey(), window, provisional,
+                directLlmClient.claudeHasConfiguredCompactWindow(activeModelOverride()));
     }
 
     /**
@@ -464,6 +505,14 @@ public class AgenticChatLoop {
         this.foregroundProgress = progress;
     }
 
+    private java.util.function.Supplier<java.util.function.Predicate<ProviderChatFailure>> providerFailoverFactory;
+
+    /** Each turn receives its own bounded failover budget; children install their own policy. */
+    public void setProviderFailoverFactory(
+            java.util.function.Supplier<java.util.function.Predicate<ProviderChatFailure>> factory) {
+        this.providerFailoverFactory = factory;
+    }
+
     public void setToolActivityListener(ToolActivityListener listener) {
         this.toolActivityListener = listener;
     }
@@ -484,6 +533,16 @@ public class AgenticChatLoop {
         this.supervisorFeedbackHandler = handler;
     }
 
+    /**
+     * Bind the session's shared coordination state so the compile-error auto-fix
+     * can see which agents hold edit locks and acquire/release on the session's
+     * behalf when the harness keeps a turn open to repair a failed build.
+     */
+    public void setCoordinationManager(
+            ai.kompile.cli.main.coordination.CoordinationStateManager manager) {
+        this.coordinationManager = manager;
+    }
+
     /** Bind the session's user-judge control (guidance + one-shot override). */
     public void setJudgeControl(ai.kompile.cli.main.chat.enforcer.JudgeControl control) {
         this.judgeControl = control;
@@ -502,6 +561,24 @@ public class AgenticChatLoop {
 
     public ai.kompile.cli.main.chat.enforcer.DirectionJudge getDirectionJudge() {
         return directionJudge;
+    }
+
+    /**
+     * Bind the deflection monitor. When present and enabled, the loop checks every model
+     * iteration's output for non-ownership claims without receipts and feeds the mandate
+     * back in place; after the correction budget, the turn is blocked through the
+     * supervisor feedback lane. The monitor must already be configured and enabled by the
+     * caller — the loop never constructs or enables one implicitly.
+     */
+    public void setDeflectionMonitor(
+            ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor monitor,
+            int maxCorrections) {
+        this.deflectionMonitor = monitor;
+        this.deflectionMaxCorrections = Math.max(0, Math.min(4, maxCorrections));
+    }
+
+    public ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor getDeflectionMonitor() {
+        return deflectionMonitor;
     }
 
     public void setInlineEnforcerActivityListener(Consumer<String> listener) {
@@ -686,10 +763,27 @@ public class AgenticChatLoop {
     private void trackClaudeBackgroundableCall(String callId, String name, boolean started) {
         boolean changed;
         synchronized (backgroundTransferLock) {
-            changed = started && ("Agent".equals(name) || "Task".equals(name) || "Bash".equals(name))
+            // Claude routes Kompile's task/bash tools under the mcp__kompile__ prefix.
+            // They block exactly like the native Agent/Task/Bash calls, so Ctrl+B must
+            // offer the same native background control for them. Eligibility is only an
+            // offer: acceptance still depends on Claude's own background_tasks control,
+            // which rejects it when its CLI cannot detach the call.
+            changed = started && isClaudeBackgroundableName(name)
                     ? claudeBackgroundableCalls.add(callId) : claudeBackgroundableCalls.remove(callId);
         }
         if (changed) notifyBackgroundEligibility();
+    }
+
+    /** Background-offer names on the Claude route, including Kompile's MCP namespaced tools. */
+    static boolean isClaudeBackgroundableName(String name) {
+        if (name == null || name.isBlank()) return false;
+        if ("Agent".equals(name) || "Task".equals(name) || "Bash".equals(name)) return true;
+        if (name.startsWith("mcp__kompile__")) {
+            String tool = name.substring("mcp__kompile__".length());
+            return "task".equals(tool) || "multi_task".equals(tool) || "quorum_task".equals(tool)
+                    || "bash".equals(tool) || "task".equalsIgnoreCase(tool);
+        }
+        return false;
     }
 
     /** Repaint the owning REPL when local or Claude-native background eligibility changes. */
@@ -843,8 +937,25 @@ public class AgenticChatLoop {
         return turn != null ? turn : currentAgentConfig;
     }
 
-    /** The active agent's model override, or null when it has none. */
+    /** Snapshot the actual request route, including an agent-level model override. */
+    public ChatConfig failoverSourceConfig() {
+        if (directLlmClient == null) return null;
+        ChatConfig source = new ChatConfig();
+        source.applyLlmSettingsFrom(directLlmClient.getChatConfig());
+        if (activeModelOverride() != null) source.setModel(activeModelOverride());
+        return source;
+    }
+
+    public boolean isFailoverModelAllowed(String model) {
+        AgentConfig agent = activeAgentConfig();
+        return agent == null || agent.isModelAllowed(model);
+    }
+
+    private String turnFailoverModel;
+
+    /** The active agent's model override, or the fallback selected inside this turn. */
     private String activeModelOverride() {
+        if (turnFailoverModel != null) return turnFailoverModel;
         AgentConfig agent = activeAgentConfig();
         String model = agent == null ? null : agent.getModelOverride();
         return model == null || model.isBlank() ? null : model;
@@ -1003,6 +1114,42 @@ public class AgenticChatLoop {
         }
     }
 
+    /** Restore counters before the first prompt, but only for the native session we can resume. */
+    private void restoreClaudeContextUsageIfCurrent() {
+        if (!isDirectMode() || !claudeCodeRoute(activeModelOverride())) return;
+        ConversationLedger.NativeSession saved =
+                conversationLedger.resumableNativeSession(CLAUDE_NATIVE_TRANSPORT);
+        ConversationLedger.NativeContextUsage usage = saved == null ? null : saved.contextUsage();
+        if (usage == null || !Objects.equals(usage.model(), activeModel())) return;
+        directLlmClient.restoreClaudeReportedLimits(usage.model(),
+                new ModelContextResolver.ModelLimits(usage.contextWindow(), usage.maxOutputTokens()));
+        lastReportedInputTokens = Math.max(0L, usage.inputTokens());
+        lastReportedHistoryTokens = Math.max(0L, usage.historyTokens());
+        lastReportedCheckpoint = conversationLedger.snapshot().checkpoint();
+        lastMeasuredClaudeSession = saved;
+        refreshCompactionBudget(activeAgentConfig());
+        if (sessionMetrics != null) sessionMetrics.recordContextInputTokens(lastReportedInputTokens);
+    }
+
+    private void recordClaudeNativeSession(StreamResult result) {
+        if (result.claudeNativeSession == null) return;
+        ModelContextResolver.ModelLimits limits = directLlmClient.claudeReportedLimits(activeModelOverride());
+        ConversationLedger.NativeContextUsage prior = lastMeasuredClaudeSession != null
+                && Objects.equals(lastMeasuredClaudeSession.sessionId(), result.claudeNativeSession.sessionId())
+                ? lastMeasuredClaudeSession.contextUsage() : null;
+        if (prior != null && !Objects.equals(prior.model(), activeModel())) prior = null;
+        long input = result.contextInputTokens > 0 ? result.contextInputTokens
+                : prior == null ? 0 : prior.inputTokens();
+        long history = result.contextInputTokens > 0 ? lastReportedHistoryTokens
+                : prior == null ? 0 : prior.historyTokens();
+        ConversationLedger.NativeContextUsage usage = new ConversationLedger.NativeContextUsage(
+                activeModel(), input, history,
+                limits == null ? 0 : limits.contextWindow(), limits == null ? 0 : limits.maxOutputTokens());
+        conversationLedger.recordNativeSession(CLAUDE_NATIVE_TRANSPORT,
+                result.claudeNativeSession.sessionId(), result.claudeNativeSession.instructionsDigest(), usage);
+        lastMeasuredClaudeSession = conversationLedger.resumableNativeSession(CLAUDE_NATIVE_TRANSPORT);
+    }
+
     /**
      * Build a cache-stable system prefix. Reusable agent/project/workflow instructions
      * precede session-local result paths, and the changing result inventory stays in the
@@ -1143,6 +1290,7 @@ public class AgenticChatLoop {
         conversationSessionId = sessionId;
         if (conversationLedger.hasDurableState() && directLlmClient != null) {
             rebuildDirectHistoryForProviderSwitch();
+            restoreClaudeContextUsageIfCurrent();
         }
     }
 
@@ -1153,6 +1301,7 @@ public class AgenticChatLoop {
     public void restoreHistory(java.util.List<ai.kompile.cli.main.chat.ChatHistory.Turn> turns) {
         conversationLedger.importLegacyTurns(turns);
         rebuildDirectHistoryForProviderSwitch();
+        restoreClaudeContextUsageIfCurrent();
     }
 
     /**
@@ -1221,6 +1370,11 @@ public class AgenticChatLoop {
      * @param applySettings changes the direct client's chat config
      */
     public DirectSettingsChange changeDirectSettings(Runnable applySettings) {
+        return changeDirectSettings(applySettings, false);
+    }
+
+    /** Install the target override between resolving the old and new routes. */
+    public DirectSettingsChange changeDirectSettings(Runnable applySettings, boolean automaticFailover) {
         if (directLlmClient == null) {
             applySettings.run();
             return new DirectSettingsChange(0, false);
@@ -1229,6 +1383,7 @@ public class AgenticChatLoop {
         DirectLlmClient.ResolvedRoute previousRoute =
                 directLlmClient.resolveRoute(activeModelOverride());
         applySettings.run();
+        turnFailoverModel = automaticFailover ? directLlmClient.getConfiguredModel() : null;
         if (sessionMetrics != null) refreshContextDisplayWindow(resolvedContextWindowTokens());
         DirectLlmClient.ResolvedRoute route = directLlmClient.resolveRoute(activeModelOverride());
         boolean keepSession = route.equals(previousRoute)
@@ -1881,6 +2036,12 @@ public class AgenticChatLoop {
     private void rebuildDirectHistoryForRetry(
             String currentMessage, List<ToolCallResult> pendingToolResults,
             String modelOverride) {
+        rebuildDirectHistoryForRetry(currentMessage, pendingToolResults, modelOverride, false);
+    }
+
+    private void rebuildDirectHistoryForRetry(
+            String currentMessage, List<ToolCallResult> pendingToolResults,
+            String modelOverride, boolean keepNativeProcess) {
         List<CompactionService.ConversationEntry> entries = new ArrayList<>(
                 conversationLedger.snapshot().activeEntries());
         Set<String> pendingCallIds = new LinkedHashSet<>();
@@ -1908,7 +2069,8 @@ public class AgenticChatLoop {
         }
         // Pending call envelopes deliberately remain dangling here: the exact matching
         // tool results are supplied once on the retried request.
-        rebuildDirectHistory(entries, true, false, false, modelOverride);
+        if (keepNativeProcess) directLlmClient.clearHistoryForProviderSwitch();
+        rebuildDirectHistory(entries, !keepNativeProcess, false, false, modelOverride);
     }
 
     private boolean looksLikeFailedSummary(String summary) {
@@ -1925,17 +2087,17 @@ public class AgenticChatLoop {
      * chat is talking to: per-agent override first, then the configured model; the
      * resolver consults the live CLI catalogs, the static table, and — for staged
      * local GGUFs unknown to both — the local serving origin's /api/llm/status.
-     * On the Claude Code route, the limits Claude Code reported enforcing come
-     * before the catalogs: its settings can set them lower.
+     * On the Claude Code route, reported model limits precede the catalogs and
+     * the local native auto-compact window bounds the working budget. Neither
+     * that window nor Kompile's fallback threshold claims a native trigger.
      * Server mode keeps the default budget (the server bounds its own context).
      */
     private void refreshCompactionBudget(AgentConfig agent) {
         if (directLlmClient == null) return;
         try {
-            String override = agent != null ? agent.getModelOverride() : null;
+            String override = agent != null ? activeModelOverride() : null;
             ChatConfig chatConfig = directLlmClient.getChatConfig();
-            ModelContextResolver.ModelLimits limits = contextResolver.resolveLimits(
-                    chatConfig, override, directLlmClient.claudeReportedLimits(override));
+            ModelContextResolver.ModelLimits limits = directLlmClient.contextBudgetLimits(contextResolver, override);
             compactionService.setMaxTokens(limits.contextWindow());
             compactionService.configure(
                     chatConfig.isAutoCompactEnabled(),
@@ -2003,8 +2165,8 @@ public class AgenticChatLoop {
             String pendingMessage, String systemPrompt, ArrayNode toolDefs,
             String modelOverride) {
         if (!hasAutoCompactableHistory()) return;
-        ProviderCompactionCapabilities.NativeCompaction nativeCompaction =
-                directLlmClient.compactionCapabilities(modelOverride).nativeCompaction();
+        ProviderCompactionCapabilities capabilities = directLlmClient.compactionCapabilities(modelOverride);
+        ProviderCompactionCapabilities.NativeCompaction nativeCompaction = capabilities.nativeCompaction();
         // Claude Code compacts the session it owns and reports it on its stream.
         // Summarizing here would replace that session with a new one seeded from
         // Kompile's summary, so Kompile steps in only after Claude Code reported
@@ -2012,6 +2174,14 @@ public class AgenticChatLoop {
         boolean claudeCodeFallback =
                 nativeCompaction == ProviderCompactionCapabilities.NativeCompaction.CLAUDE_CODE_SESSION;
         if (claudeCodeFallback && !directLlmClient.claudeCompactionFailed()) return;
+        // A restored provider-owned session is opaque. Its portable ledger can be
+        // much larger than the bounded seed or already-compacted native context.
+        // Unknown occupancy is not evidence of pressure: wait for native usage
+        // (or an actual overflow), rather than compacting immediately on resume.
+        if (!claudeCodeFallback && lastReportedInputTokens <= 0L
+                && capabilities.historyOwnership() == ProviderCompactionCapabilities.HistoryOwnership.PROVIDER) {
+            return;
+        }
         String pendingRequestMessage = reminderManager == null
                 ? pendingMessage : reminderManager.previewUserTurn(pendingMessage);
         long fallbackInputTokens = projectedInputTokens(pendingRequestMessage);
@@ -2233,6 +2403,7 @@ public class AgenticChatLoop {
         lastReportedInputTokens = 0L;
         lastReportedHistoryTokens = 0L;
         lastReportedCheckpoint = null;
+        lastMeasuredClaudeSession = null;
     }
 
     /** The model-aware context budget currently in effect, in tokens. */
@@ -2247,8 +2418,7 @@ public class AgenticChatLoop {
     public int resolvedContextWindowTokens() {
         if (directLlmClient == null) return contextWindowTokens();
         String override = activeModelOverride();
-        return contextResolver.resolveLimits(directLlmClient.getChatConfig(), override,
-                directLlmClient.claudeReportedLimits(override)).contextWindow();
+        return directLlmClient.contextBudgetLimits(contextResolver, override).contextWindow();
     }
 
     /**
@@ -2285,6 +2455,10 @@ public class AgenticChatLoop {
         return directLlmClient != null
                 && directLlmClient.compactionCapabilities(modelOverride).nativeCompaction()
                         == ProviderCompactionCapabilities.NativeCompaction.CLAUDE_CODE_SESSION;
+    }
+
+    public String claudeCompactionPolicyDescription() {
+        return directLlmClient.claudeCompactionPolicyDescription(activeModelOverride());
     }
 
     public boolean autoCompactEnabled() { return compactionService.isAutoCompactEnabled(); }
@@ -2376,6 +2550,13 @@ public class AgenticChatLoop {
         // all come from the chat's agent, which this name selects.
         AgentConfig agent = selectAgent(agentName);
         workflowController.beginTurn(originalUserPrompt, sessionId);
+        todoAutopilot.beginTurn();
+        synchronized (executedDeflectionReceipts) {
+            deflectionReceiptTurn.incrementAndGet();
+            executedDeflectionReceipts.setLength(0);
+        }
+        compileFixAttempts = 0;
+        compileFixFindings[0] = null;
         try {
             if (planningMode && exitPlanModeTool != null) {
                 return chatWithPlanning(
@@ -2453,8 +2634,11 @@ public class AgenticChatLoop {
                                 String serverAgent, boolean ragEnabled) {
         // Compaction and model routing read the agent this turn runs as.
         turnAgentConfig = agent;
+        turnFailoverModel = null;
         configureConversationSession(sessionId);
         long turnStartMs = System.currentTimeMillis();
+        java.util.function.Predicate<ProviderChatFailure> providerFailover = providerFailoverFactory == null
+                ? failure -> false : providerFailoverFactory.get();
 
         // Capture the user's judge posture (guidance + one-shot override) once per turn.
         // beginTurn() also consumes the one-shot override, so a single /judge override
@@ -2479,6 +2663,12 @@ public class AgenticChatLoop {
                     ? activeJudgeSnapshot.guidance() : null);
         }
 
+        // Deflection monitor turn lifecycle: reset per-turn correction counters.
+        ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor deflection = deflectionMonitor;
+        if (deflection != null) {
+            deflection.beginTurn();
+        }
+
         // Initialize tool result store for this session
         this.toolResultStore = new ToolResultStore(sessionId);
 
@@ -2487,6 +2677,7 @@ public class AgenticChatLoop {
         ToolContext toolContext = new ToolContext(
                 sessionId, agent, permissionService, workingDirectory, toolRegistry);
         toolContext.bindJudgeControl(control, false);
+        toolContext.bindCoordinator(coordinationManager);
         toolContext.linkAbortSignal(turnToolAbort);
         toolContext.linkSelfBackgroundRequest(selfBackgroundRequest);
         toolContext.setOutputConsumer(sessionContext.wrapConsumer(this::emitLine));
@@ -2510,6 +2701,9 @@ public class AgenticChatLoop {
         // Model requests this turn made: one per iteration, or as many as the provider
         // reports for the agent loop it runs (Claude Code, OpenCode).
         int turnSteps = 0;
+        // Always-on, content-based guard; independent of optional judge settings.
+        // New results break cycles, so long productive work has no step cutoff.
+        LoopDetector loopDetector = new LoopDetector();
         // The judge sees this turn's tool calls, whether Kompile or the provider ran them.
         ChatSessionMetrics.ToolTally toolsBeforeTurn =
                 sessionMetrics != null ? sessionMetrics.toolTally() : null;
@@ -2522,6 +2716,7 @@ public class AgenticChatLoop {
         QueuedInput pendingQueuedInput = null;
         boolean directionHaltedTurn = false;
         boolean directionLoopCompleted = false;
+        boolean providerCancelledTurn = false;
         boolean directHistoryHasUnsubmittedToolCalls = false;
 
         try {
@@ -2529,7 +2724,7 @@ public class AgenticChatLoop {
         // then auto-compact BEFORE this turn if the prior conversation is already near it.
         refreshCompactionBudget(agent);
         maybeAutoCompactBeforeTurn(
-                message, systemPrompt, initialToolDefs, agent.getModelOverride());
+                message, systemPrompt, initialToolDefs, activeModelOverride());
         resumeClaudeNativeSessionIfCurrent();
 
         // Track conversation for compaction. The turn's attachments are recorded with it
@@ -2555,7 +2750,7 @@ public class AgenticChatLoop {
                 // provider's tool calls ran. Rebuild so the new prompt is sent exactly
                 // once and the superseded calls close with synthetic results.
                 rebuildDirectHistoryForRetry(
-                        currentMessage, pendingToolResults, agent.getModelOverride());
+                        currentMessage, pendingToolResults, activeModelOverride());
                 directHistoryHasUnsubmittedToolCalls = false;
             }
 
@@ -2579,29 +2774,43 @@ public class AgenticChatLoop {
                     break;
                 }
                 promptUnderReview = extractOriginalUserPrompt(pendingQueuedInput.content());
+                loopDetector.reset();
                 conversationLedger.append(
                         CompactionService.ConversationEntry.user(currentMessage));
                 pendingQueuedInput = null;
+            }
+            String loopWarning = loopDetector.drainWarning();
+            if (loopWarning != null) {
+                emitLine(renderer.yellow(loopWarning));
+                conversationLedger.append(CompactionService.ConversationEntry.user(loopWarning));
+                currentMessage = currentMessage == null ? loopWarning
+                        : currentMessage + "\n\n" + loopWarning;
             }
             ConversationLedger.Snapshot ledgerBeforeRequest = conversationLedger.snapshot();
             // A turn Claude Code started by itself is shown, not sent, so reminders
             // stay for the user's next message.
             String outboundMessage = reminderManager == null
                     || DirectLlmClient.isProviderFollowUp(currentMessage)
+                    || ai.kompile.cli.main.chat.workflow.TodoAutopilot.isHarnessReminder(currentMessage)
                     ? currentMessage : reminderManager.decorateUserTurn(currentMessage);
             String reminderContent = ReminderManager.reminderBlockContent(outboundMessage);
             if (reminderContent != null) {
                 emitLine(renderer.renderReminderSection(reminderContent));
             }
+            if (ai.kompile.cli.main.chat.workflow.TodoAutopilot.isHarnessReminder(currentMessage)) {
+                ChatDisplayBlock notification = renderer.renderAgentNotificationBlock(currentMessage);
+                if (!publishForegroundBlock(notification)) emitLine(notification.classic());
+            }
 
             StreamResult result;
             boolean retryProjectionInstalled = false;
+            List<DirectLlmClient.AttachmentInput> requestAttachments = null;
             if (isDirectMode()) {
-                List<DirectLlmClient.AttachmentInput> requestAttachments = pendingAttachments;
+                requestAttachments = pendingAttachments;
                 pendingAttachments = null;
                 result = streamDirectTurn(
                         outboundMessage, systemPrompt, toolDefs, pendingToolResults,
-                        agent.getModelOverride(), requestAttachments);
+                        activeModelOverride(), requestAttachments, loopDetector);
                 if (result.contextOverflow && result.contextOverflowRetrySafe
                         && !isCancelled()) {
                     emitLine(renderer.yellow(
@@ -2617,7 +2826,7 @@ public class AgenticChatLoop {
                     ForceCompactResult recovery;
                     try {
                         recovery = compactForContextOverflow(
-                                currentMessage, pendingToolResults, agent.getModelOverride());
+                                currentMessage, pendingToolResults, activeModelOverride());
                     } catch (RuntimeException recoveryFailure) {
                         // The recovery path can throw through; still close the block.
                         recoveryProgress.failed(AgenticChatLoop.describeThrowable(recoveryFailure));
@@ -2636,13 +2845,13 @@ public class AgenticChatLoop {
                         // that history is smaller even when the history cannot be compacted.
                         // A rejected session that was itself just restored would receive
                         // the same request again.
-                        if (!isCancelled() && claudeCodeRoute(agent.getModelOverride())
+                        if (!isCancelled() && claudeCodeRoute(activeModelOverride())
                                 && directLlmClient.claudeSessionHoldsConversation()) {
                             emitLine(renderer.dim("Retrying in a new Claude Code session "
                                     + "restored from Kompile's history, without the old "
                                     + "session's tool output."));
                             rebuildDirectHistoryForRetry(
-                                    currentMessage, pendingToolResults, agent.getModelOverride());
+                                    currentMessage, pendingToolResults, activeModelOverride());
                             retry = true;
                         }
                     }
@@ -2652,7 +2861,7 @@ public class AgenticChatLoop {
                         try {
                             result = streamDirectTurn(
                                     outboundMessage, systemPrompt, toolDefs, pendingToolResults,
-                                    agent.getModelOverride(), requestAttachments);
+                                    activeModelOverride(), requestAttachments, loopDetector);
                         } catch (RuntimeException retryFailure) {
                             rebuildDirectHistoryForProviderSwitch();
                             throw retryFailure;
@@ -2664,16 +2873,58 @@ public class AgenticChatLoop {
                         outboundMessage, sessionId, serverAgent, ragEnabled,
                         systemPrompt, toolDefs, pendingToolResults);
             }
+            // Retry only the rejected request, inside this turn. The ledger already
+            // contains completed tool results; never redispatch the original task.
+            while (isDirectMode() && result.failed && result.replaySafe && !isCancelled()
+                    && !result.cancelled && !loopDetector.isTerminated()
+                    && providerFailover.test(new ProviderChatFailure(
+                            result.providerFailureMessage == null ? result.text : result.providerFailureMessage,
+                            result.failureKind, result.failureStatusCode, true))) {
+                turnFailoverModel = directLlmClient.getConfiguredModel();
+                refreshCompactionBudget(agent);
+                rebuildDirectHistoryForRetry(currentMessage, pendingToolResults, activeModelOverride(), true);
+                ledgerBeforeRequest = conversationLedger.snapshot();
+                retryProjectionInstalled = true;
+                result = streamDirectTurn(outboundMessage, systemPrompt, toolDefs, pendingToolResults,
+                        activeModelOverride(), requestAttachments, loopDetector);
+            }
             turnSteps += Math.max(1, result.providerSteps);
 
-            // Check if cancelled during streaming
-            if (isCancelled()) {
+            // Acceptance, not successful completion, determines whether Claude owns
+            // this turn. Persist it before the cancellation/failure exits; otherwise
+            // a restart discards the native context and seeds a replacement session.
+            // An unread/rejected turn has no receipt, so the strict version guard
+            // still prevents resuming a session that missed a ledger turn.
+            if (result.claudeNativeSession != null
+                    && (isCancelled() || result.cancelled || result.failed || loopDetector.isTerminated())) {
+                if (!result.text.isEmpty()) {
+                    conversationLedger.append(CompactionService.ConversationEntry.assistant(result.text));
+                }
+                recordClaudeNativeSession(result);
+            }
+
+            // Preserve provider/caller cancellation too, but let a loop-guard
+            // stop retain its specific diagnosis rather than a user-stop label.
+            if (isCancelled() || (result.cancelled && !loopDetector.isTerminated())) {
+                providerCancelledTurn = result.cancelled;
                 if (!result.text.isEmpty()) {
                     fullResponse.append(result.text);
+                    if (result.claudeNativeSession == null) {
+                        conversationLedger.append(CompactionService.ConversationEntry.assistant(result.text));
+                    }
                 }
                 String label = stopLabel;
                 emitLine("\n" + renderer.yellow("  ⊘ " + label));
                 fullResponse.append("\n[").append(label).append("]");
+                break;
+            }
+
+            if (loopDetector.isTerminated()) {
+                fullResponse.append(result.text);
+                if (result.claudeNativeSession == null && !result.text.isEmpty()) {
+                    conversationLedger.append(CompactionService.ConversationEntry.assistant(result.text));
+                }
+                reportLoopStop(loopDetector, fullResponse);
                 break;
             }
 
@@ -2684,8 +2935,9 @@ public class AgenticChatLoop {
                 }
                 String failure = result.providerFailureMessage;
                 if (failure == null || failure.isBlank()) failure = result.text;
-                throw new ProviderChatException(failure == null || failure.isBlank()
-                        ? "Standard Chat provider request failed" : failure);
+                throw new ProviderChatFailure(failure == null || failure.isBlank()
+                        ? "Standard Chat provider request failed" : failure,
+                        result.failureKind, result.failureStatusCode, result.replaySafe);
             }
             if (isDirectMode()) {
                 if (pendingToolResults != null && !pendingToolResults.isEmpty()) {
@@ -2711,8 +2963,8 @@ public class AgenticChatLoop {
                         ConversationLedger.SUMMARY_MARKER + portableSummary);
                 long coveredThrough = ledgerBeforeRequest.coveredThroughForPrefix(
                         ledgerBeforeRequest.activeEntries().size());
-                String model = agent.getModelOverride() != null
-                        ? agent.getModelOverride() : directLlmClient.getConfiguredModel();
+                String model = activeModelOverride() != null
+                        ? activeModelOverride() : directLlmClient.getConfiguredModel();
                 // The portable digest is a replay fallback, not a token count of
                 // encrypted native context. Keep the version/persistence guard,
                 // but never undo provider compaction because that fallback grows.
@@ -2749,12 +3001,16 @@ public class AgenticChatLoop {
             }
             if (result.claudeNativeSession != null) {
                 // The Claude Code session now holds everything the ledger does.
-                conversationLedger.recordNativeSession(CLAUDE_NATIVE_TRANSPORT,
-                        result.claudeNativeSession.sessionId(),
-                        result.claudeNativeSession.instructionsDigest());
+                recordClaudeNativeSession(result);
             }
             if (rebuildAfterRejectedNativeCheckpoint && directLlmClient != null) {
                 rebuildDirectHistoryForProviderSwitch();
+            }
+
+            if (result.toolCalls.isEmpty()
+                    && loopDetector.afterAssistantText(result.text).shouldStopTurn()) {
+                reportLoopStop(loopDetector, fullResponse);
+                break;
             }
 
             // ── Inline enforcer check ─────────────────────────────────────
@@ -2834,6 +3090,62 @@ public class AgenticChatLoop {
                 }
             }
 
+            // ── Deflection check (ownership mandate) ────────────────────────
+            // Deterministic, opt-in, and independent of the judge lane. Runs on every
+            // model iteration like the direction check: a deflecting FINAL answer is
+            // exactly the lazy-model pattern this lane exists to catch. In-place
+            // correction keeps the agent's context; after the budget, the turn ends
+            // through the supervisor feedback lane. Report-only mode never corrects.
+            {
+                ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor deflectionMon =
+                        deflectionMonitor;
+                if (deflectionMon != null && !result.text.isEmpty()) {
+                    String trace = executedDeflectionReceipts.toString();
+                    var outcome = deflectionMon.check(promptUnderReview, result.text, trace);
+                    if (outcome.shouldCorrect()) {
+                        emitLine("\n" + renderer.yellow("[deflection] "
+                                + outcome.decision().getReasoning()));
+                        if (deflectionMon.getCorrectionsThisTurn() <= deflectionMaxCorrections) {
+                            emitLine(renderer.yellow("[deflection] sending ownership mandate (correction "
+                                    + deflectionMon.getCorrectionsThisTurn() + "/"
+                                    + deflectionMaxCorrections + ")"));
+                            String correction = outcome.correctionPrompt();
+                            String userFeedback = enforcerFeedbackForUser(
+                                    correction, deflectionMon.getCorrectionsThisTurn(),
+                                    deflectionMaxCorrections, promptUnderReview);
+                            if (submitSupervisorFeedback("deflection", userFeedback, true)) {
+                                fullResponse.append(
+                                        "\n[Interrupted by deflection enforcer; correction queued as user feedback]");
+                                break;
+                            }
+                            // Headless/embedded callers: bounded in-loop correction.
+                            currentMessage = correction;
+                            pendingToolResults = null;
+                            conversationLedger.append(
+                                    CompactionService.ConversationEntry.user(currentMessage));
+                            continue;
+                        }
+                        emitLine(renderer.red("[deflection] max corrections exceeded; response blocked"));
+                        fullResponse.append("\n[Blocked by deflection policy]");
+                        break;
+                    } else if (outcome.shouldStop()) {
+                        emitLine("\n" + renderer.red("[deflection] BLOCKED: "
+                                + outcome.decision().getReasoning()));
+                        fullResponse.append("\n[Blocked by deflection policy: "
+                                + outcome.decision().getReasoning() + "]");
+                        submitSupervisorFeedback("deflection",
+                                "[deflection] turn blocked: "
+                                        + outcome.decision().getReasoning(), true);
+                        break;
+                    } else if (outcome.shouldLog()) {
+                        emitInlineEnforcerActivity("[deflection] "
+                                + (outcome.reportOnlyOverride() ? "(report-only) " : "")
+                                + outcome.verdict().action() + " · "
+                                + outcome.decision().getReasoning());
+                    }
+                }
+            }
+
             // ── Direction check (goal-drift supervision) ────────────────────
             // Runs on EVERY model iteration, including the final text-only one: a
             // drifting final answer is exactly the long-conversation derailment this
@@ -2866,6 +3178,18 @@ public class AgenticChatLoop {
             // A queued message can continue the same owner immediately after a model
             // response, avoiding an end-of-turn dequeue/re-dispatch race.
             if (result.toolCalls.isEmpty()) {
+                // Compile-error auto-fix gate: the turn does not quietly end with a
+                // red build. With no other agent editing, the automated directive is
+                // fed back as the next message so this same turn repairs the code;
+                // with agents holding locks the directive goes to the supervisor lane.
+                String compileDirective = compileErrorGate(fullResponse);
+                if (compileDirective != null) {
+                    currentMessage = compileDirective;
+                    pendingToolResults = null;
+                    conversationLedger.append(
+                            CompactionService.ConversationEntry.user(currentMessage));
+                    continue;
+                }
                 WorkflowController.FinalDecision workflowFinal =
                         workflowController.beforeFinalResponse();
                 if (!workflowFinal.allowed()) {
@@ -2918,6 +3242,18 @@ public class AgenticChatLoop {
             boolean awaitingProductApproval = false;
             for (int toolIndex = 0; toolIndex < result.toolCalls.size(); toolIndex++) {
                 ToolCallRequest call = result.toolCalls.get(toolIndex);
+                if (loopDetector.isTerminated()) {
+                    String skipped = "Not executed: " + loopDetector.stopNotice();
+                    notifyToolDenied(call, call.arguments == null ? "" : call.arguments.toString(), skipped);
+                    publishToolDenied(call, call.arguments == null ? "" : call.arguments.toString(), skipped);
+                    toolResults.add(new ToolCallResult(call.id, call.name, skipped, true));
+                    conversationLedger.append(CompactionService.ConversationEntry.toolResult(
+                            call.name, call.id, skipped));
+                    continue;
+                }
+                int resultsBeforeCall = toolResults.size();
+                boolean loopObserved = false;
+                try {
                 if (awaitingProductApproval) {
                     String rejected = "Not executed: waiting for human content approval";
                     notifyToolDenied(call, call.arguments == null ? "" : call.arguments.toString(), rejected);
@@ -3030,7 +3366,19 @@ public class AgenticChatLoop {
                 // Capture on the owner thread before task execution moves to a worker.
                 toolContext.setSubagentSupervision(captureSubagentSupervision(promptUnderReview, toolContext));
                 ToolContext callToolContext = toolContext.forkForToolExecution();
-                callToolContext.setOutputConsumer(sessionContext.wrapConsumer(transcriptBlock::appendOutput));
+                String outputToolInput = rawToolInput;
+                callToolContext.setOutputConsumer(sessionContext.wrapConsumer(output -> {
+                    transcriptBlock.appendOutput(output);
+                    ToolActivityListener listener = toolActivityListener;
+                    if (listener != null) {
+                        try {
+                            // Local tool callbacks are transcript lines, unlike provider token deltas.
+                            listener.onToolOutput(call.id, call.name, outputToolInput, output + "\n");
+                        } catch (RuntimeException ignored) {
+                            // A transport display failure must not interrupt the actual tool.
+                        }
+                    }
+                }));
 
                 // JLine owns the cursor while the asynchronous REPL accepts queued
                 // input. In that mode the bottom status bar is the activity spinner;
@@ -3087,6 +3435,9 @@ public class AgenticChatLoop {
 
                     // Keep the full result readable in insights even when the model receives a shortened payload.
                     ToolResult rawToolResult = toolResult;
+                    loopDetector.afterToolResult(call.name, call.arguments,
+                            rawToolResult.getOutput(), rawToolResult.isError());
+                    loopObserved = true;
                     awaitingProductApproval |= Boolean.TRUE.equals(rawToolResult.getMetadata().get("productApprovalRequired"));
                     // Truncate large outputs
                     OutputTruncator.TruncationResult truncResult = toolRegistry != null && toolRegistry.isProductMode()
@@ -3151,6 +3502,12 @@ public class AgenticChatLoop {
                     conversationLedger.append(CompactionService.ConversationEntry.toolResult(
                             call.name, call.id, outputWithPath, captureToolOutcome(call, rawToolResult)));
 
+                    // Compile-error auto-fix: watch shell and background-process tool
+                    // executions for failed builds so the end-of-turn gate can keep
+                    // this turn open with a repair directive instead of letting the
+                    // agent stop and ask the user what to do.
+                    observeToolForCompileErrors(call.name, call.arguments, rawToolResult);
+
                 } catch (ToolExecutionException e) {
                     if (spinner != null) spinner.stop();
 
@@ -3195,6 +3552,21 @@ public class AgenticChatLoop {
                             call.name, call.id, errMsg));
                     if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
                 }
+                } finally {
+                    // Denials, unknown tools and exceptions must be observed too;
+                    // otherwise a model can retry a rejected call forever.
+                    if (!loopObserved && toolResults.size() > resultsBeforeCall) {
+                        ToolCallResult observed = toolResults.get(resultsBeforeCall);
+                        loopDetector.afterToolResult(call.name, call.arguments,
+                                observed.output, observed.isError);
+                    }
+                }
+            }
+
+            if (loopDetector.isTerminated()) {
+                reportLoopStop(loopDetector, fullResponse);
+                if (runController != null) runController.afterStep();
+                break;
             }
 
             if (awaitingProductApproval) {
@@ -3230,6 +3602,29 @@ public class AgenticChatLoop {
             pendingToolResults = toolResults;
             currentMessage = queuedMessage == null || queuedMessage.isBlank()
                     ? null : queuedMessage;
+
+            // Harness-driven periodic todo reminder: sent with the next request so a long
+            // tool loop cannot drift away from its task list.
+            for (ToolCallResult executed : toolResults) {
+                todoAutopilot.recordTool(executed.toolName);
+            }
+            if (currentMessage == null) {
+                // Harness auto-start: once per turn, right after a plan exists, the first
+                // pending task moves to in_progress. Enabled only by project config.
+                if (todoAutopilot.isEnabled() && workflowController.shouldAutoStartFirstTask()) {
+                    try {
+                        TodoWriteTool.applyHarnessMutation(
+                                new TodoWriteTool.HarnessMutation(sessionId,
+                                        TodoWriteTool.HarnessMutationKind.AUTO_START_FIRST),
+                                workingDirectory);
+                    } catch (RuntimeException ignored) {
+                        // Advisory: a failed auto-start must never break the chat turn.
+                    }
+                }
+                String todoReminder = todoAutopilot.nextReminder(
+                        TodoWriteTool.getTodos(sessionId, workingDirectory));
+                if (todoReminder != null) currentMessage = todoReminder;
+            }
         }
         directionLoopCompleted = true;
         } finally {
@@ -3239,7 +3634,7 @@ public class AgenticChatLoop {
             if (activeJudgeSnapshot.enabled() && direction != null) {
                 try {
                     boolean countTurn = directionHaltedTurn
-                            || (directionLoopCompleted && !isCancelled());
+                            || (directionLoopCompleted && !isCancelled() && !providerCancelledTurn);
                     ai.kompile.cli.main.chat.enforcer.DirectionJudge.SessionState state =
                             direction.completeTurn(countTurn);
                     if (direction.getChecksThisTurn() > 0) {
@@ -3254,6 +3649,15 @@ public class AgenticChatLoop {
                             "[direction] state FAIL-OPEN · " + failure.getMessage());
                 }
             }
+            deflectionReceiptTurn.incrementAndGet();
+            if (deflectionMonitor != null) {
+                try {
+                    deflectionMonitor.completeTurn(directionLoopCompleted && !isCancelled() && !providerCancelledTurn);
+                } catch (RuntimeException failure) {
+                    emitInlineEnforcerActivity(
+                            "[deflection] state FAIL-OPEN · " + failure.getMessage());
+                }
+            }
             try {
                 truncator.cleanupOldFiles();
                 // A cancelled direct turn may have left provider-native tool-call
@@ -3262,9 +3666,9 @@ public class AgenticChatLoop {
                 // closes the tool calls it interrupted in the session it keeps;
                 // reprojecting would stop its process, with the tasks it runs, and
                 // continue in a new session without their output.
-                if ((isCancelled() || directHistoryHasUnsubmittedToolCalls)
+                if ((isCancelled() || providerCancelledTurn || directHistoryHasUnsubmittedToolCalls)
                         && directLlmClient != null
-                        && !claudeCodeRoute(agent.getModelOverride())) {
+                        && !claudeCodeRoute(activeModelOverride())) {
                     rebuildDirectHistoryForProviderSwitch();
                     directHistoryHasUnsubmittedToolCalls = false;
                 }
@@ -3278,7 +3682,7 @@ public class AgenticChatLoop {
         // Evaluate turn with performance harness if configured
         String output = fullResponse.toString();
         if (activeJudgeSnapshot.enabled() && performanceHarness != null && !output.isBlank()
-                && !isCancelled()) {
+                && !isCancelled() && !providerCancelledTurn) {
             try {
                 long turnLatency = System.currentTimeMillis() - turnStartMs;
                 ChatSessionMetrics.ToolTally turnTools = sessionMetrics != null
@@ -3287,8 +3691,8 @@ public class AgenticChatLoop {
                 performanceHarness.evaluateTurnAsync(performanceHarness.turnMetrics()
                         .sessionId(sessionId)
                         .agentName(agent.getName())
-                        .model(agent.getModelOverride() != null
-                                ? agent.getModelOverride() : directLlmClient.getConfiguredModel())
+                        .model(activeModelOverride() != null
+                                ? activeModelOverride() : directLlmClient.getConfiguredModel())
                         .latencyMs(turnLatency)
                         .agentOutput(output)
                         .taskPrompt(judgedRequest(message, originalUserPrompt))
@@ -3340,6 +3744,18 @@ public class AgenticChatLoop {
                         : "");
     }
 
+    private void recordDeflectionReceipt(String name, String input, long receiptTurn) {
+        if (deflectionMonitor == null) return;
+        synchronized (executedDeflectionReceipts) {
+            if (receiptTurn != deflectionReceiptTurn.get()) return;
+            executedDeflectionReceipts.append("Executed tool: ").append(name).append(' ')
+                    .append(StringUtils.truncateWithSize(input == null ? "" : input, 1_200)).append('\n');
+            if (executedDeflectionReceipts.length() > 8_000) {
+                executedDeflectionReceipts.delete(0, executedDeflectionReceipts.length() - 8_000);
+            }
+        }
+    }
+
     static EnforcerConversationContext pendingToolContext(List<ToolCallRequest> calls) {
         if (calls.isEmpty()) {
             return EnforcerConversationContext.of(List.of(new EnforcerConversationContext.Message(
@@ -3347,7 +3763,8 @@ public class AgenticChatLoop {
         }
         List<ToolCallRequest> updates = calls.stream()
                 .filter(call -> JudgeToolPolicy.isRoutineSessionTool(call.name)
-                        && call.name.trim().toLowerCase(java.util.Locale.ROOT).endsWith("todowrite"))
+                        && (call.name.trim().toLowerCase(java.util.Locale.ROOT).endsWith("todowrite")
+                            || call.name.trim().toLowerCase(java.util.Locale.ROOT).endsWith("todo_apply_batch")))
                 .toList();
         // Keep the whole context under the judge's 8K budget. Project repairs separately:
         // a late todowrite must remain visible even when the ordinary sample is full.
@@ -3392,6 +3809,28 @@ public class AgenticChatLoop {
     }
 
     DirectSubagentSupervision.Contract captureSubagentSupervision(String userPrompt, ToolContext parent) {
+        // Deflection propagation: children get a child-scoped deflection review from the
+        // parent's monitor (own correction counter per child; the parent keeps the
+        // cross-turn streak). Subagents are the worst deflection offenders.
+        ai.kompile.cli.main.chat.enforcer.deflection.DeflectionMonitor deflectionMon = deflectionMonitor;
+        DirectSubagentSupervision.Contract contract = buildBaseSupervisionContract(userPrompt, parent);
+        if (deflectionMon != null) {
+            var childReview = deflectionMon.childReview();
+            contract = contract.withDeflectionReview((childPrompt, output, toolTrace) -> {
+                try {
+                    return childReview.review(childPrompt, output, toolTrace);
+                } catch (IllegalStateException escalation) {
+                    throw new DirectSubagentSupervision.SupervisionFailure(
+                            "Child completion blocked by deflection enforcer: "
+                                    + escalation.getMessage());
+                }
+            });
+        }
+        return contract;
+    }
+
+    private DirectSubagentSupervision.Contract buildBaseSupervisionContract(
+            String userPrompt, ToolContext parent) {
         EnforcerEvaluator captured = inlineEnforcer;
         try {
             if (captured instanceof EnforcerJudge judge) captured = judge.captureForChild();
@@ -3603,6 +4042,127 @@ public class AgenticChatLoop {
         } catch (RuntimeException ignored) {
             return false;
         }
+    }
+
+    private void reportLoopStop(LoopDetector detector, StringBuilder response) {
+        String notice = "[" + detector.stopNotice() + "]";
+        emitLine("\n" + renderer.yellow(notice));
+        notifyAssistantDelta("\n" + notice);
+        response.append("\n").append(notice);
+        conversationLedger.append(CompactionService.ConversationEntry.assistant(notice));
+        submitSupervisorFeedback("loop-guard", detector.stopNotice(), false);
+    }
+
+    // ── Compile-error auto-fix ───────────────────────────────────────────
+
+    /**
+     * Called after every executed tool. Shell and background-process tools are
+     * the only outputs a failed build can reach the model through; remember the
+     * most recent compilation failure so the end-of-turn gate can act on it.
+     * Non-build tools (reads, edits, MCP calls) never clear an armed finding:
+     * the usual blocked sequence is build → inspect → ask the user, and the
+     * inspection must not erase the evidence.
+     */
+    private void observeToolForCompileErrors(String toolName, JsonNode arguments, ToolResult result) {
+        boolean buildTool = "bash".equals(toolName) || "process".equals(toolName);
+        if (!buildTool) return;
+        compileFixFindings[0] = null;
+        if (result == null || !result.isError() || arguments == null) return;
+        String command = arguments.path("command").asText("");
+        if (command.isBlank()) return;
+        ai.kompile.cli.main.chat.workflow.CompileErrorAutoFix.Finding finding =
+                ai.kompile.cli.main.chat.workflow.CompileErrorAutoFix.detect(
+                        command, exitCodeOf(result), result.getOutput());
+        if (finding == null || finding.isEmpty()) return;
+        compileFixFindings[0] = finding;
+    }
+
+    /** Exit code of a bash/process tool result, falling back to nonzero when absent. */
+    private static int exitCodeOf(ToolResult result) {
+        Object value = result.getMetadata().get("exitCode");
+        if (value instanceof Number number) return number.intValue();
+        // A timed-out or aborted build can still be a compile failure; treat a
+        // missing code as the generic failure exit rather than hiding it.
+        return 1;
+    }
+
+    /**
+     * Locks on the files this turn's failing build named, held by agents other
+     * than this session (any session-level or foreign-agent lock counts).
+     */
+    private List<String> foreignEditLocks() {
+        var coordinator = coordinationManager;
+        if (coordinator == null) return List.of();
+        try {
+            List<String> out = new ArrayList<>();
+            for (var entry : coordinator.queryEdits()) {
+                boolean ours = Objects.equals(entry.getSessionId(), conversationSessionId);
+                if (!ours) {
+                    out.add((entry.getAgentName() != null ? entry.getAgentName()
+                            : entry.getSessionId()) + " → "
+                            + entry.getAbsolutePath());
+                }
+            }
+            return out;
+        } catch (RuntimeException failure) {
+            return List.of();
+        }
+    }
+
+    /**
+     * True when no other agent or session currently holds ANY edit lock, meaning
+     * the harness can keep the turn open and repair the build itself without
+     * stepping on a sibling agent's work.
+     */
+    private boolean noAgentsAreEditing() {
+        var coordinator = coordinationManager;
+        if (coordinator == null) return true;
+        try {
+            return coordinator.queryEdits().isEmpty();
+        } catch (RuntimeException failure) {
+            return true;
+        }
+    }
+
+    /**
+     * End-of-turn compile-error gate. A turn whose last executed build failed
+     * to compile does not quietly end and ask the user what to do: with no
+     * other agent editing, the directive is fed straight back as the next
+     * message so the same turn repairs the failure (bounded); with other agents
+     * holding locks, the directive goes to the supervisor feedback lane so the
+     * coordinating REPL relays it with the lock context.
+     *
+     * @return the directive to continue this turn with, or null to let the turn end
+     */
+    private String compileErrorGate(StringBuilder fullResponse) {
+        var finding = compileFixFindings[0];
+        if (finding == null) return null;
+        if (compileFixAttempts >= COMPILE_FIX_MAX_ATTEMPTS) {
+            emitLine(renderer.yellow("[build] compile error persists after "
+                    + compileFixAttempts + " automated correction"
+                    + (compileFixAttempts == 1 ? "" : "s") + "; ending the turn"));
+            compileFixFindings[0] = null;
+            return null;
+        }
+        compileFixAttempts++;
+        List<String> locks = foreignEditLocks();
+        if (noAgentsAreEditing()) {
+            emitLine(renderer.yellow("[build] compile error detected — auto-fixing in this "
+                    + "turn (attempt " + compileFixAttempts + "/" + COMPILE_FIX_MAX_ATTEMPTS + ")"));
+            fullResponse.append("\n[Interrupted by harness compile-error auto-fix]");
+            String directive = ai.kompile.cli.main.chat.workflow.CompileErrorAutoFix.message(
+                    finding, locks, true);
+            // Consume the finding: the repair attempt's own tools re-arm it.
+            compileFixFindings[0] = null;
+            return directive;
+        }
+        emitLine(renderer.yellow("[build] compile error detected — other agents are editing; "
+                + "sending coordination directive"));
+        String directive = ai.kompile.cli.main.chat.workflow.CompileErrorAutoFix.message(
+                finding, locks, false);
+        submitSupervisorFeedback("compile-error", directive, true);
+        compileFixFindings[0] = null;
+        return null;
     }
 
     private static String enforcerFeedback(EnforcerDecision decision) {
@@ -3828,8 +4388,11 @@ public class AgenticChatLoop {
             CliTool tool, JsonNode arguments, ToolContext context, String toolName,
             java.util.function.Function<ToolResult, Path> saveCompletion)
             throws ToolExecutionException {
+        long executionReceiptTurn = deflectionReceiptTurn.get();
         if (toolRegistry != null && toolRegistry.isProductMode()) {
-            return executeProductToolAwaitingCompletion(tool, arguments, context, toolName);
+            ToolResult result = executeProductToolAwaitingCompletion(tool, arguments, context, toolName);
+            recordDeflectionReceipt(toolName, String.valueOf(arguments), executionReceiptTurn);
+            return result;
         }
         ToolContext executionContext = context.forkForToolExecution();
         // Children may retain this signal/supplier and consumer before Ctrl+B.
@@ -3843,8 +4406,13 @@ public class AgenticChatLoop {
             Consumer<String> sink = output.get();
             if (sink != null) sink.accept(line);
         }));
-        FutureTask<ToolResult> execution = new FutureTask<>(
-                sessionContext.wrapCallable(() -> tool.execute(arguments, executionContext)));
+        FutureTask<ToolResult> execution = new FutureTask<>(sessionContext.wrapCallable(() -> {
+            ToolResult result = toolRegistry.execute(toolName, arguments, executionContext);
+            // Record real completion, never a detached acknowledgement. A late
+            // old-turn worker cannot lend evidence to a newer user request.
+            recordDeflectionReceipt(toolName, String.valueOf(arguments), executionReceiptTurn);
+            return result;
+        }));
         Thread worker = new Thread(execution,
                 "chat-tool-" + (toolName == null ? "unknown"
                         : toolName.replaceAll("[^A-Za-z0-9_.-]", "_")));
@@ -4188,6 +4756,9 @@ public class AgenticChatLoop {
                 return;
             }
             retainOutput(output);
+            // Keep raw output for the tool/result store and activity listeners, but
+            // never stream a second conversation or process log into Main.
+            if (TerminalRenderer.isMonitoredActivityTool(toolName)) return;
             String rendered = renderer.renderToolOutput(output);
             for (String rawLine : rendered.split("\\R", -1)) {
                 String line = rawLine.length() <= MAX_LIVE_TOOL_LINE_CHARS
@@ -4323,8 +4894,9 @@ public class AgenticChatLoop {
                     : terminalHeader != null ? terminalHeader : start;
             String kind = TerminalRenderer.isTodoTool(toolName) ? "todos" : "tool";
             ChatDisplayBlock block = new ChatDisplayBlock(key, kind, toolName, summary, classic,
-                    renderer.renderToolDisplaySections(toolName, rawInput, displayResult, live,
-                            ChatDisplayBlock.MAX_SECTION_CHARS),
+                    TerminalRenderer.isMonitoredActivityTool(toolName) ? List.of()
+                            : renderer.renderToolDisplaySections(toolName, rawInput, displayResult, live,
+                                    ChatDisplayBlock.MAX_SECTION_CHARS),
                     displayResult != null && displayResult.isError(), running);
             return ChatCompleter.upsertDisplayBlock(block);
         }
@@ -4335,6 +4907,7 @@ public class AgenticChatLoop {
                     : result != null
                             ? renderer.renderToolCallSummary(toolName, rawInput, result)
                             : start;
+            if (TerminalRenderer.isMonitoredActivityTool(toolName)) return header;
             StringBuilder block = new StringBuilder(header);
             if (omittedOutputLines > 0) {
                 block.append('\n').append(renderer.renderToolOutput(
@@ -4427,6 +5000,17 @@ public class AgenticChatLoop {
                     call.id, result, rawResult);
         } catch (RuntimeException ignored) {
             // Optional diagnostic persistence must not turn a completed tool into a failure.
+        }
+    }
+
+    /** Display observers are not execution gates, including on native-provider paths. */
+    private void notifyToolActivity(Consumer<ToolActivityListener> notification) {
+        ToolActivityListener listener = toolActivityListener;
+        if (listener == null) return;
+        try {
+            notification.accept(listener);
+        } catch (RuntimeException ignored) {
+            // Rendering/transport failure must not stop real work or leak stream state.
         }
     }
 
@@ -4527,9 +5111,11 @@ public class AgenticChatLoop {
     private StreamResult streamDirectTurn(String message, String systemPrompt,
                                            ArrayNode toolDefs, List<ToolCallResult> toolResults,
                                            String modelOverride,
-                                           List<DirectLlmClient.AttachmentInput> attachments) {
+                                           List<DirectLlmClient.AttachmentInput> attachments,
+                                           LoopDetector loopDetector) {
         refreshNativeCompactionTrigger();
         StreamResult result = new StreamResult();
+        long requestReceiptTurn = deflectionReceiptTurn.get();
 
         // Convert tool results to DirectLlmClient format
         List<DirectLlmClient.ToolCallResultInput> directToolResults = null;
@@ -4560,10 +5146,12 @@ public class AgenticChatLoop {
                 directLlmClient.getConnectivityEventConsumer();
         DirectLlmClient.ProviderActivityListener previousProviderActivityListener =
                 directLlmClient.getProviderActivityListener();
+        BooleanSupplier previousCancellationCheck = directLlmClient.getCancellationCheck();
         boolean claudeCliRoute = directLlmClient.getChatConfig().isClaudeCliNative();
         DirectLlmClient.StreamResult directResult;
         AtomicBoolean reconnecting = new AtomicBoolean();
         AtomicReference<CompactionProgressIndicator> providerCompaction = new AtomicReference<>();
+        AtomicLong providerContextInput = new AtomicLong(lastReportedInputTokens);
         // Line-buffered reasoning rendering: word-sized deltas coalesce into
         // complete transcript lines instead of one fragmented line per delta.
         TextTranscriptBurst thinkingBlock = new TextTranscriptBurst("thinking");
@@ -4612,6 +5200,8 @@ public class AgenticChatLoop {
             if (!ChatCompleter.showAlert(warning)) setForegroundActivity(warning);
         }));
         if (claudeCliRoute) setForegroundActivity("Waiting for Claude response");
+        directLlmClient.setCancellationCheck(() -> loopDetector.isTerminated() || isCancelled()
+                || (previousCancellationCheck != null && previousCancellationCheck.getAsBoolean()));
         directLlmClient.setProviderActivityListener(
                 new DirectLlmClient.ProviderActivityListener() {
                     @Override
@@ -4658,23 +5248,22 @@ public class AgenticChatLoop {
                                         + transcriptBlockSequence.incrementAndGet() + ":" + callId;
                                 providerToolBlocks.put(callId, new ToolTranscriptBlock(
                                         key, name, input, isEmptyToolInput(input)));
-                                providerToolInputs.put(callId, input == null ? "" : input);
-                                providerToolNames.put(callId, name);
                                 trackClaudeBackgroundableCall(callId, name, true);
                             }
+                            providerToolInputs.put(callId, input == null ? "" : input);
+                            providerToolNames.put(callId, name);
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onToolStart(callId, name, input);
                             }
-                            ToolActivityListener listener = toolActivityListener;
-                            if (listener != null) listener.onToolStart(callId, name, input);
+                            notifyToolActivity(listener -> listener.onToolStart(callId, name, input));
                         }).run();
                     }
 
                     @Override
                     public void onToolInput(String callId, String name, String input) {
                         sessionContext.wrap(() -> {
+                            providerToolInputs.put(callId, input == null ? "" : input);
                             if (claudeCliRoute) {
-                                providerToolInputs.put(callId, input == null ? "" : input);
                                 setForegroundActivity("Running: "
                                         + TerminalRenderer.summarizeToolCall(name, input, 96));
                                 ToolTranscriptBlock block = providerToolBlocks.get(callId);
@@ -4683,8 +5272,7 @@ public class AgenticChatLoop {
                             DirectLlmClient.ProviderActivityListener previous =
                                     previousProviderActivityListener;
                             if (previous != null) previous.onToolInput(callId, name, input);
-                            ToolActivityListener listener = toolActivityListener;
-                            if (listener != null) listener.onToolInput(callId, name, input);
+                            notifyToolActivity(listener -> listener.onToolInput(callId, name, input));
                         }).run();
                     }
 
@@ -4700,6 +5288,8 @@ public class AgenticChatLoop {
                             DirectLlmClient.ProviderActivityListener previous =
                                     previousProviderActivityListener;
                             if (previous != null) previous.onToolOutput(callId, name, output);
+                            notifyToolActivity(listener -> listener.onToolOutput(callId, name,
+                                    providerToolInputs.getOrDefault(callId, ""), output));
                         }).run();
                     }
 
@@ -4718,17 +5308,21 @@ public class AgenticChatLoop {
                     public void onToolComplete(String callId, String name, String output,
                                                int exitCode, boolean error) {
                         sessionContext.wrap(() -> {
-                            String rawInput = "";
-                            String toolName = name;
+                            String rawInput = providerToolInputs.remove(callId);
+                            LoopDetector.Verdict loopVerdict = loopDetector.afterProviderToolResult(
+                                    name, rawInput, output, error);
+                            if (loopVerdict.action() == LoopDetector.Action.WARN) {
+                                emitLine(renderer.yellow(loopVerdict.notice()));
+                            }
+                            if (rawInput == null) rawInput = "";
+                            String toolName = providerToolNames.remove(callId);
+                            if (toolName == null || toolName.isBlank()) toolName = name;
+                            recordDeflectionReceipt(toolName, rawInput, requestReceiptTurn);
                             if (claudeCliRoute) {
                                 ((PresentationMarkdownRenderer) markdownRenderer).boundary();
                                 thinkingRenderer.flush();
                                 thinkingBlock.finish();
-                                rawInput = providerToolInputs.remove(callId);
-                                if (rawInput == null) rawInput = "";
-                                toolName = providerToolNames.remove(callId);
                                 trackClaudeBackgroundableCall(callId, name, false);
-                                if (toolName == null || toolName.isBlank()) toolName = name;
                             }
                             ToolTranscriptBlock block = claudeCliRoute
                                     ? providerToolBlocks.remove(callId) : null;
@@ -4762,17 +5356,17 @@ public class AgenticChatLoop {
                                 previousProviderActivityListener.onToolComplete(
                                         callId, toolName, output, exitCode, error);
                             }
-                            ToolActivityListener listener = toolActivityListener;
-                            if (listener != null) {
-                                listener.onToolComplete(
-                                        callId, toolName, rawInput, providerResult);
-                            }
+                            String completedName = toolName;
+                            String completedInput = rawInput;
+                            notifyToolActivity(listener -> listener.onToolComplete(
+                                    callId, completedName, completedInput, providerResult));
                         }).run();
                     }
 
                     @Override
                     public void onContextUsage(long inputTokens) {
                         sessionContext.wrap(() -> {
+                            providerContextInput.set(Math.max(0L, inputTokens));
                             if (sessionMetrics != null) sessionMetrics.recordContextInputTokens(inputTokens);
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onContextUsage(inputTokens);
@@ -4783,7 +5377,13 @@ public class AgenticChatLoop {
                     @Override
                     public void onModelLimits(int window, int maxOutputTokens) {
                         sessionContext.wrap(() -> {
-                            if (sessionMetrics != null) sessionMetrics.recordContextWindow(contextDisplayModelKey(), window);
+                            if (claudeCliRoute) {
+                                // DirectLlmClient has cached the raw model report. Re-resolve
+                                // the native budget, not the model's full capacity.
+                                refreshCompactionBudget(activeAgentConfig());
+                            } else if (sessionMetrics != null) {
+                                sessionMetrics.recordContextWindow(contextDisplayModelKey(), window);
+                            }
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onModelLimits(window, maxOutputTokens);
                             }
@@ -4845,8 +5445,8 @@ public class AgenticChatLoop {
                                 providerCompaction.set(CompactionProgressIndicator.startProvider(
                                         "compact:provider:" + conversationSessionId + ":"
                                                 + transcriptBlockSequence.incrementAndGet(),
-                                        renderer, "Claude Code", AgenticChatLoop.this::emitLine,
-                                        AgenticChatLoop.this::setForegroundActivity));
+                                        renderer, "Claude Code", providerContextInput.get(),
+                                        AgenticChatLoop.this::emitLine, AgenticChatLoop.this::setForegroundActivity));
                             }
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onCompactionStarted();
@@ -4876,6 +5476,7 @@ public class AgenticChatLoop {
                             fireFirstOutput();
                             // Earlier usage measured the context the provider just
                             // compacted.
+                            providerContextInput.set(0L);
                             resetReportedContextUsage();
                             if (sessionMetrics != null) sessionMetrics.recordProviderCompaction();
                             CompactionProgressIndicator progress = providerCompaction.getAndSet(null);
@@ -4921,6 +5522,7 @@ public class AgenticChatLoop {
         try {
             directResult = directLlmClient.streamChat(message, systemPrompt, toolDefs, directToolResults, modelOverride, attachments);
         } finally {
+            try {
             CompactionProgressIndicator progress = providerCompaction.getAndSet(null);
             if (progress != null) progress.abandonIfActive(isCancelled()
                     ? "Context compaction interrupted" : "Claude stream ended before compaction reported a result");
@@ -4938,16 +5540,20 @@ public class AgenticChatLoop {
                 String input = providerToolInputs.getOrDefault(callId, "");
                 ToolResult incomplete = ToolResult.error(unfinished);
                 entry.getValue().complete(incomplete);
-                ToolActivityListener listener = toolActivityListener;
-                if (listener != null) listener.onToolComplete(callId, name, input, incomplete);
+                notifyToolActivity(listener -> listener.onToolComplete(callId, name, input, incomplete));
             }
             providerToolBlocks.clear();
             synchronized (backgroundTransferLock) { claudeBackgroundableCalls.clear(); }
             notifyBackgroundEligibility();
+            } finally {
+            // Cleanup/display callbacks can throw too. Never leak the temporary
+            // loop predicate or stream consumers into the next user turn.
             directLlmClient.setOutputConsumer(previousConsumer);
             directLlmClient.setThinkingConsumer(previousThinkingConsumer);
             directLlmClient.setConnectivityEventConsumer(previousConnectivityConsumer);
             directLlmClient.setProviderActivityListener(previousProviderActivityListener);
+            directLlmClient.setCancellationCheck(previousCancellationCheck);
+            }
         }
 
         // Some routes only return totals; others already reported live per-call
@@ -4990,11 +5596,15 @@ public class AgenticChatLoop {
         }
 
         result.text = directResult.text;
+        result.cancelled = directResult.cancelled;
         result.providerSteps = providerSteps.get();
         result.failed = directResult.failed && !directResult.cancelled;
         result.contextOverflow = directResult.isContextOverflow();
         result.contextOverflowRetrySafe = directResult.canRetryAfterContextOverflow();
         result.providerFailureMessage = directResult.failureMessage;
+        result.failureKind = directResult.failureKind;
+        result.failureStatusCode = directResult.failureStatusCode;
+        result.replaySafe = directResult.isReplaySafe();
         result.nativeCompactionSummary = directResult.nativeCompactionSummary;
         result.nativeCompactionStrategy = directResult.nativeCompactionStrategy;
         result.nativeCompactionPayload = directResult.nativeCompactionPayload;
@@ -5446,9 +6056,19 @@ public class AgenticChatLoop {
         String text = "";
         List<ToolCallRequest> toolCalls = new ArrayList<>();
         boolean failed;
+        boolean cancelled;
         boolean contextOverflow;
         boolean contextOverflowRetrySafe;
         String providerFailureMessage;
+        /**
+         * Typed provider failure category. A failover decision must never be
+         * derived from prose: {@code QUOTA_EXHAUSTED} and a policy
+         * {@code REFUSAL} read nothing alike but both end up as text here.
+         */
+        DirectLlmClient.FailureKind failureKind = DirectLlmClient.FailureKind.NONE;
+        int failureStatusCode;
+        /** The failed attempt produced no text, tool calls or provider side effects. */
+        boolean replaySafe;
         boolean streamStarted;
         boolean retryableConnectivityFailure;
         String connectivityFailure;
@@ -5471,10 +6091,31 @@ public class AgenticChatLoop {
         }
     }
 
-    private static final class ProviderChatException extends RuntimeException {
-        private ProviderChatException(String message) {
+    /**
+     * A terminal provider failure for the turn. Carries the typed evidence a
+     * failover decision needs; {@code getMessage()} stays exactly the rendered
+     * failure text so string-based consumers (the usage-limit watchdog) keep
+     * working unchanged.
+     */
+    public static final class ProviderChatFailure extends RuntimeException {
+        private final DirectLlmClient.FailureKind failureKind;
+        private final int failureStatusCode;
+        private final boolean replaySafe;
+
+        private ProviderChatFailure(String message, DirectLlmClient.FailureKind failureKind,
+                                    int failureStatusCode, boolean replaySafe) {
             super(message);
+            this.failureKind = failureKind == null ? DirectLlmClient.FailureKind.NONE : failureKind;
+            this.failureStatusCode = failureStatusCode;
+            this.replaySafe = replaySafe;
         }
+
+        public DirectLlmClient.FailureKind failureKind() { return failureKind; }
+
+        public int failureStatusCode() { return failureStatusCode; }
+
+        /** True when replaying this turn on another model cannot duplicate side effects. */
+        public boolean replaySafe() { return replaySafe; }
     }
 
     static class ToolCallRequest {

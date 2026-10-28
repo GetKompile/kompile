@@ -7,6 +7,7 @@ package ai.kompile.cli.main.auth;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
+import ai.kompile.cli.main.auth.oauth.TerminalHandoff;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.ChatProvider;
 import ai.kompile.cli.main.chat.config.ChatProviderRegistry;
@@ -143,17 +144,19 @@ final class AuthWizard implements AutoCloseable {
                 activate);
     }
 
-    private static List<LoginKind> loginKinds(
+    /** Package-private so tests can assert each vendor's offered login kinds. */
+    static List<LoginKind> loginKinds(
             OAuthProviderRegistry registry,
             String providerId,
             String oauthProviderId) {
-        if (NativeCliAuth.isSupported(providerId)) {
-            return List.of(LoginKind.NATIVE);
-        }
         List<LoginKind> kinds = new ArrayList<>();
-        // Anthropic has no Kompile OAuth flow: its subscription login is Claude Code's.
+        // Vendors with a Kompile-managed OAuth flow (anthropic's setup-token
+        // capture included) offer it first; NATIVE stays the fallback only when
+        // Kompile has no flow for the vendor and its native CLI can log itself in.
         if (oauthProviderId != null) {
             kinds.add(LoginKind.OAUTH);
+        } else if (NativeCliAuth.isSupported(providerId)) {
+            return List.of(LoginKind.NATIVE);
         }
         if (registry.supportsApiKey(providerId)) {
             kinds.add(LoginKind.API_KEY);
@@ -287,6 +290,17 @@ final class AuthWizard implements AutoCloseable {
                     throw new IOException("Could not read OAuth input", e);
                 }
             }
+
+            @Override
+            public String secret(String message) {
+                return prompter.secret(message);
+            }
+
+            @Override
+            public <T> T withTerminal(OAuthProviderFlow.TerminalTask<T> task)
+                    throws IOException, InterruptedException {
+                return prompter.withTerminal(task);
+            }
         };
     }
 
@@ -383,6 +397,12 @@ final class AuthWizard implements AutoCloseable {
         boolean confirm(String question, boolean defaultYes);
 
         void message(String message);
+
+        /** Run an interactive child that owns the terminal until it exits. */
+        default <T> T withTerminal(OAuthProviderFlow.TerminalTask<T> task)
+                throws IOException, InterruptedException {
+            return task.run();
+        }
 
         @Override
         default void close() {
@@ -613,6 +633,12 @@ final class AuthWizard implements AutoCloseable {
         @Override
         public void message(String message) {
             System.out.println("  " + GREEN + terminalSafe(message) + RESET);
+        }
+
+        @Override
+        public <T> T withTerminal(OAuthProviderFlow.TerminalTask<T> task)
+                throws IOException, InterruptedException {
+            return TerminalHandoff.run(terminal, task);
         }
 
         @Override

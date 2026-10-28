@@ -46,6 +46,8 @@ public class AgentConfig {
     private final List<String> allowedModels; // models this agent is allowed to use (empty = all)
     private final String modelOverride; // explicit model override for this agent (null = use default)
     private final String thinkingOverride; // explicit provider-native thinking/effort override
+    private final String providerOverride; // explicit Kompile chat provider override (null = configured route)
+    private final String authenticationMethodOverride; // request-local auth route, not a credential
     private final boolean isCustom; // loaded from .kompile/agents/ file
     private final String roleName; // optional role to apply to this agent
     private final String workflowParticipant; // workflow participant this subagent runs as (null = none)
@@ -63,6 +65,8 @@ public class AgentConfig {
         this.allowedModels = builder.allowedModels;
         this.modelOverride = builder.modelOverride;
         this.thinkingOverride = builder.thinkingOverride;
+        this.providerOverride = builder.providerOverride;
+        this.authenticationMethodOverride = builder.authenticationMethodOverride;
         this.isCustom = builder.isCustom;
         this.roleName = builder.roleName;
         this.workflowParticipant = builder.workflowParticipant;
@@ -80,6 +84,8 @@ public class AgentConfig {
     public List<String> getAllowedModels() { return allowedModels; }
     public String getModelOverride() { return modelOverride; }
     public String getThinkingOverride() { return thinkingOverride; }
+    public String getProviderOverride() { return providerOverride; }
+    public String getAuthenticationMethodOverride() { return authenticationMethodOverride; }
     public boolean isCustom() { return isCustom; }
     public String getRoleName() { return roleName; }
     public String getWorkflowParticipant() { return workflowParticipant; }
@@ -101,6 +107,16 @@ public class AgentConfig {
         return defaultModel;
     }
 
+    /**
+     * Resolve the request's Kompile chat provider: explicit override > configured route.
+     * Unlike the model this has no fallback hierarchy — the provider is the credential
+     * and wire route, so only a caller-supplied value can change it.
+     */
+    public String resolveProvider(String configuredProvider) {
+        if (providerOverride != null && !providerOverride.isBlank()) return providerOverride.trim();
+        return configuredProvider;
+    }
+
     public static Builder builder(String name) {
         return new Builder(name);
     }
@@ -112,7 +128,9 @@ public class AgentConfig {
                 .permissionOverrides(permissionOverrides).isSubagent(isSubagent)
                 .canSpawnSubagents(canSpawnSubagents).modelHint(modelHint)
                 .allowedModels(allowedModels).modelOverride(modelOverride)
-                .thinkingOverride(thinkingOverride).isCustom(isCustom).roleName(roleName)
+                .thinkingOverride(thinkingOverride).providerOverride(providerOverride)
+                .authenticationMethodOverride(authenticationMethodOverride)
+                .isCustom(isCustom).roleName(roleName)
                 .workflowParticipant(workflowParticipant);
     }
 
@@ -129,6 +147,8 @@ public class AgentConfig {
         private List<String> allowedModels = List.of();
         private String modelOverride = null;
         private String thinkingOverride = null;
+        private String providerOverride = null;
+        private String authenticationMethodOverride = null;
         private boolean isCustom = false;
         private String roleName = null;
         private String workflowParticipant = null;
@@ -190,6 +210,16 @@ public class AgentConfig {
 
         public Builder thinkingOverride(String thinkingOverride) {
             this.thinkingOverride = thinkingOverride;
+            return this;
+        }
+
+        public Builder providerOverride(String providerOverride) {
+            this.providerOverride = providerOverride;
+            return this;
+        }
+
+        public Builder authenticationMethodOverride(String method) {
+            this.authenticationMethodOverride = method;
             return this;
         }
 

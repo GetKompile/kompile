@@ -48,6 +48,16 @@ class TestMilestoneToolTest {
     Path project;
 
     @Test
+    void contradictoryManualSuccessAndInvalidCountsAreRejectedBeforeWriting() throws Exception {
+        for (String fields : List.of("\"passed\":-1", "\"passed\":1.5", "\"passed\":\"2\"",
+                "\"total_tests\":1,\"passed\":2", "\"failed\":1", "\"passed\":2147483648")) {
+            ToolResult result = run("{\"action\":\"record\"," + fields + "}");
+            assertTrue(result.isError(), result.getOutput());
+        }
+        assertFalse(Files.exists(TestMilestoneTool.storeDir(project).resolve("milestones")));
+    }
+
+    @Test
     void idsCannotNameFilesOutsideTheMilestoneDirectory() throws Exception {
         Path store = TestMilestoneTool.storeDir(project);
         Files.createDirectories(store.resolve("milestones"));

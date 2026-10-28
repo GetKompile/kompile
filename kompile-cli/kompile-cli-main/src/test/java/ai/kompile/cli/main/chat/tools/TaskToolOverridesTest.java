@@ -48,7 +48,7 @@ class TaskToolOverridesTest {
     @Test
     void schemaExposesOptionalSelectorsWithoutChangingLegacyRequiredFields() {
         var schema = tool().parameterSchema();
-        for (String field : List.of("agent_type", "model", "thinking", "role")) {
+        for (String field : List.of("agent_type", "model", "thinking", "role", "provider", "authentication_method")) {
             assertEquals("string", schema.path("properties").path(field).path("type").asText());
         }
         assertEquals(mapper.valueToTree(List.of("description", "prompt")), schema.path("required"));
@@ -65,10 +65,16 @@ class TaskToolOverridesTest {
                 .modelOverride("old-model").thinkingOverride("low").build();
         registry.register(profile);
         ToolResult result = tool().execute(request().put("agent_type", "restricted")
-                .put("model", "gpt-5.6-luna").put("thinking", "xhigh"), context());
+                .put("model", "gpt-5.6-luna").put("thinking", "xhigh")
+                .put("provider", "anthropic").put("authentication_method", "oauth"), context());
         assertFalse(result.isError(), result.getOutput());
         AgentConfig child = launched.get();
         assertNotSame(profile, child);
+        assertEquals("anthropic", child.getProviderOverride());
+        assertEquals("oauth", child.getAuthenticationMethodOverride());
+        assertEquals("oauth", child.toBuilder().build().getAuthenticationMethodOverride());
+        assertNull(profile.getProviderOverride());
+        assertNull(profile.getAuthenticationMethodOverride());
         assertEquals("gpt-5.6-luna", child.getModelOverride());
         assertEquals("xhigh", child.getThinkingOverride());
         assertEquals(profile.getSystemPrompt(), child.getSystemPrompt());
@@ -97,7 +103,8 @@ class TaskToolOverridesTest {
                 .canSpawnSubagents(true).build();
         registry.registerRole(role);
         ToolResult result = tool().execute(request().put("role", "release-auditor")
-                .put("model", "gpt-5.6-luna").put("thinking", "xhigh"), context());
+                .put("model", "gpt-5.6-luna").put("thinking", "xhigh")
+                .put("provider", "anthropic").put("authentication_method", "oauth"), context());
         assertFalse(result.isError(), result.getOutput());
         assertEquals(role.getSystemPrompt(), launched.get().getSystemPrompt());
         assertEquals(role.getEnabledTools(), launched.get().getEnabledTools());
@@ -118,6 +125,8 @@ class TaskToolOverridesTest {
                 request().put("role", "architect").put("agent_type", "architect"),
                 request().put("agent", "codex"),
                 request().put("thinking", 5),
+                request().put("provider", 5),
+                request().put("authentication_method", false),
                 request().put("model", true),
                 request().put("agent_type", "restricted").put("model", "not-allowed"))) {
             ToolResult result = tool().execute(request, context());
@@ -143,7 +152,7 @@ class TaskToolOverridesTest {
         ServerSubagentRunner runner = new ServerSubagentRunner("http://127.0.0.1:1",
                 new ToolRegistry(mapper), new PermissionService(), mapper, new TerminalRenderer(false));
         TaskTool tool = new TaskTool(registry, runner);
-        for (String selector : List.of("model", "thinking")) {
+        for (String selector : List.of("model", "thinking", "provider", "authentication_method")) {
             ToolResult result = tool.execute(request().put(selector, "explicit"), context());
             assertTrue(result.isError());
             assertTrue(result.getOutput().contains("does not support model/thinking overrides"), result.getOutput());

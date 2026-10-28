@@ -148,6 +148,96 @@ class ToolCallExtractorTest {
         assertEquals(0, result.toolCalls().size());
     }
 
+    @Test
+    void extractClaude_includesWorkersAndPreservesTimeIdentityAndFailure() throws IOException {
+        Path main = tempDir.resolve("parent.jsonl");
+        Files.writeString(main, """
+                {"cwd":"/project","type":"assistant","timestamp":"2026-10-25T08:57:00Z","message":{"content":[{"type":"tool_use","id":"failed","name":"Edit","input":{"file_path":"Bad.java"}}]}}
+                {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"failed","is_error":true}]}}
+                """);
+        Path workers = tempDir.resolve("parent/subagents");
+        Files.createDirectories(workers);
+        String worker = """
+                {"type":"assistant","timestamp":"2026-10-25T08:58:00Z","message":{"content":[{"type":"tool_use","id":"worker-edit","name":"mcp__kompile__edit_batch","input":{"edits":[{"file_path":"Worker.java","old_string":"a","new_string":"b"}]}}]}}
+                """;
+        Files.writeString(workers.resolve("agent-one.jsonl"), worker);
+        Path duplicate = tempDir.resolve("agent-one.output");
+        Files.writeString(duplicate, worker);
+        var discovered = ToolCallExtractor.extractClaude(main, "parent");
+        assertEquals(2, discovered.toolCalls().size());
+        assertTrue(discovered.toolCalls().get(0).isError());
+        var edit = discovered.toolCalls().get(1);
+        assertEquals("2026-10-25T08:58:00Z", edit.timestamp());
+        assertEquals("worker-edit", edit.callId());
+        assertEquals("agent-one", edit.transcriptId());
+        assertEquals("/project", edit.projectDirectory());
+        var deduplicated = ToolCallExtractor.extractClaudeTranscripts(
+                List.of(main, workers.resolve("agent-one.jsonl"), duplicate), "parent");
+        assertEquals(2, deduplicated.toolCalls().size());
+    }
+
+    @Test
+    void extractClaude_discoversLegacyTaskOutputsOnlyUnderItsProjectAndSession() throws IOException {
+        Path main = tempDir.resolve("project/parent.jsonl");
+        Files.createDirectories(main.getParent());
+        Files.writeString(main, "{\"cwd\":\"/project\"}\n");
+        Object uid = Files.getAttribute(main, "unix:uid");
+        Path tempRoot = tempDir.resolve("tmp");
+        Path tasks = tempRoot.resolve("claude-" + uid).resolve("project/parent/tasks");
+        Files.createDirectories(tasks);
+        Files.writeString(tasks.resolve("worker.output"), """
+                {"type":"assistant","message":{"content":[{"type":"tool_use","id":"legacy-worker","name":"Write","input":{"file_path":"Legacy.java","content":"new"}}]}}
+                """);
+        Path other = tempRoot.resolve("claude-" + uid).resolve("project/other/tasks");
+        Files.createDirectories(other);
+        Files.writeString(other.resolve("unrelated.output"), Files.readString(tasks.resolve("worker.output"))
+                .replace("legacy-worker", "unrelated"));
+        String previous = System.getProperty("java.io.tmpdir");
+        try {
+            System.setProperty("java.io.tmpdir", tempRoot.toString());
+            var result = ToolCallExtractor.extractClaude(main, "parent");
+            assertEquals(1, result.toolCalls().size());
+            assertEquals("legacy-worker", result.toolCalls().get(0).callId());
+        } finally {
+            System.setProperty("java.io.tmpdir", previous);
+        }
+    }
+
+    @Test
+    void extractCodex_decodesStringArgumentsAndFreeformPatchInput() throws IOException {
+        Path file = tempDir.resolve("codex.jsonl");
+        Files.writeString(file, """
+                {"type":"session_meta","payload":{"cwd":"/project"}}
+                {"type":"response_item","timestamp":"2026-10-25T08:57:00Z","payload":{"type":"function_call","name":"edit","call_id":"function-1","arguments":"{\\"file_path\\":\\"A.java\\",\\"old_string\\":\\"a\\",\\"new_string\\":\\"b\\"}"}}
+                {"type":"response_item","timestamp":"2026-10-25T08:58:00Z","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"patch-1","input":"*** Begin Patch\\n*** Add File: B.java\\n+new\\n*** End Patch"}}
+                """);
+        var result = ToolCallExtractor.extractCodex(file, "codex");
+        assertEquals(2, result.toolCalls().size());
+        var mapper = ChatAdapterSupport.MAPPER;
+        assertEquals("A.java", mapper.readTree(result.toolCalls().get(0).toolInput()).path("file_path").asText());
+        assertTrue(mapper.readTree(result.toolCalls().get(1).toolInput()).path("patch").asText().contains("Add File: B.java"));
+        assertEquals("2026-10-25T08:57:00Z", result.toolCalls().get(0).timestamp());
+        assertEquals("function-1", result.toolCalls().get(0).callId());
+    }
+
+    @Test
+    void extractKompile_prefersFullStructuredJournalToTextLabels() throws IOException {
+        Path transcript = tempDir.resolve("native.txt");
+        Files.writeString(transcript, "CWD: /project\n\n[tool:edit]\n");
+        Path journal = tempDir.resolve("tool-calls/native.jsonl");
+        Files.createDirectories(journal.getParent());
+        Files.writeString(journal, """
+                {"id":"native-call","sessionId":"native","toolName":"edit_batch","toolInput":"{\\"edits\\":[{\\"file_path\\":\\"A.java\\"}]}","timestamp":"2026-10-25T08:57:00Z","agentName":"coder","projectDirectory":"/project","isError":false}
+                {"id":"unrelated","sessionId":"other","toolName":"Write","toolInput":"{}"}
+                """);
+        var result = ToolCallExtractor.extractKompile(transcript, "native");
+        assertEquals(1, result.toolCalls().size());
+        assertEquals("edit_batch", result.toolCalls().get(0).toolName());
+        assertTrue(result.toolCalls().get(0).toolInput().contains("A.java"));
+        assertEquals("native-call", result.toolCalls().get(0).callId());
+        assertEquals("2026-10-25T08:57:00Z", result.toolCalls().get(0).timestamp());
+    }
+
     // ── Claude live session test ──────────────────────────────────────────
 
     @Test

@@ -120,7 +120,8 @@ class AuthCommandTest {
                 AuthCommand.LoginCommand.oauthCredentialProviderId(registry, "openai"));
         assertEquals("openai-codex",
                 AuthCommand.LoginCommand.oauthCredentialProviderId(registry, "openai-codex"));
-        assertEquals("anthropic",
+        // Anthropic's OAuth route stores its setup token under the claude-code provider.
+        assertEquals("claude-code",
                 AuthCommand.LoginCommand.oauthCredentialProviderId(registry, "anthropic"));
     }
 
@@ -147,33 +148,31 @@ class AuthCommandTest {
     }
 
     @Test
-    void anthropicOauthLoginLeavesTheLoginToClaudeCodeWithoutSigningIn() throws Exception {
+    void anthropicOauthLoginStoresAPastedSetupTokenForTheClaudeCodeRoute() throws Exception {
         String originalHome = System.getProperty("user.home");
-        PrintStream originalError = System.err;
-        ByteArrayOutputStream errors = new ByteArrayOutputStream();
+        InputStream originalInput = System.in;
         System.setProperty("user.home", tempDir.resolve("anthropic-claude-code").toString());
         AtomicInteger loginChecks = new AtomicInteger();
         LiveModelDiscovery.useClaudeCodeLoginProbe(() -> {
             loginChecks.incrementAndGet();
             return new LiveModelDiscovery.ClaudeCodeLogin(false, null, null, false);
         });
-        try (PrintStream captured = new PrintStream(errors, true, StandardCharsets.UTF_8)) {
-            System.setErr(captured);
+        // The paste method; the setup-token method would run the real `claude setup-token`.
+        String token = "sk-ant-oat01-" + "AbCdEfGh1234567890_-".repeat(4) + "AA";
+        try {
+            System.setIn(input(token.substring(0, 60) + " " + token.substring(60) + "\n"));
+            assertEquals(0, new CommandLine(new AuthCommand()).execute(
+                    "login", "anthropic", "--oauth", "--method", "manual", "--name", "work"));
 
-            assertEquals(2, new CommandLine(new AuthCommand()).execute("login", "anthropic", "--oauth"));
-            assertEquals(2, new CommandLine(new AuthCommand()).execute(
-                    "login", "anthropic", "--oauth", "--name", "work"));
-
-            String error = errors.toString(StandardCharsets.UTF_8);
-            assertTrue(error.contains("belongs to Claude Code"), error);
-            assertTrue(error.contains("`claude auth login`"), error);
-            assertTrue(error.contains("`kompile auth login anthropic`"), error);
-            // Kompile neither checks nor drives Claude Code's login, and stores nothing for it.
+            CredentialStore store = CredentialStore.create();
+            assertEquals(token, store.read("claude-code").getAccess());
+            assertEquals("work", store.activeCredentialName("claude-code"));
+            // Anthropic's API-key route keeps its own provider; nothing lands there.
+            assertNull(store.read("anthropic"));
             assertEquals(0, loginChecks.get());
-            assertTrue(CredentialStore.create().list().isEmpty());
         } finally {
             LiveModelDiscovery.useClaudeCodeLoginProbe(null);
-            System.setErr(originalError);
+            System.setIn(originalInput);
             System.setProperty("user.home", originalHome);
         }
     }

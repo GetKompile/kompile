@@ -65,7 +65,9 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/local-agents", "List local agents");
         COMMANDS.put("/agent-chat", "Direct agent chat");
         COMMANDS.put("/subagents", "List available subagents");
+        COMMANDS.put("/subagent-config", "Configure subagent concurrency, model bans and failover");
         COMMANDS.put("/ask", "Ask a question");
+        COMMANDS.put("/btw", "Side question answered outside the conversation (never added to history)");
 
         // Tools
         COMMANDS.put("/tool", "Invoke a tool by name");
@@ -96,14 +98,20 @@ public class ChatCompleter implements Completer {
                     ? "Session activity timeline; next/inspect:EVENT_ID/follow/stop"
                     : "On-demand " + topic + " report; session:ID and supported topic filters");
         }
+        COMMANDS.put("/hooks", "Manage tool hooks: list, add, edit, enable, disable, delete");
         COMMANDS.put("/reminder", "List or add session reminders");
         COMMANDS.put("/reminder-global", "List or add project-global reminders");
         COMMANDS.put("/continue", "Auto-reply to agent questions (keywords configurable)");
+        COMMANDS.put("/continue-trigger", "Manage /continue trigger keywords (same config)");
 
         // RAG & planning
         COMMANDS.put("/rag", "Toggle or configure RAG");
         COMMANDS.put("/plan", "Toggle plan mode");
         COMMANDS.put("/todos", "Show todo list");
+        COMMANDS.put("/todos-ongoing", "Show pending + in-progress tasks");
+        COMMANDS.put("/todos-completed", "Show completed tasks");
+        COMMANDS.put("/todos-canceled", "Show cancelled tasks");
+        COMMANDS.put("/test-milestones", "Recent session test milestones (auto capture + agent records)");
 
         // Config & permissions
         COMMANDS.put("/config", "Show or edit configuration");
@@ -142,6 +150,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/auto-dequeue", "Toggle auto-dequeue");
         COMMANDS.put("/loop", "Schedule recurring tasks for this session");
         COMMANDS.put("/loop-global", "Schedule recurring tasks for this project");
+        COMMANDS.put("/loop-bounded", "Recurring prompt that stops after a count or duration bound");
         COMMANDS.put("/stats", "Session stats; /stats tools [tool:NAME session:ID call:ID offset:N] for token drill-down");
 
         // Roles & skills
@@ -297,8 +306,24 @@ public class ChatCompleter implements Completer {
                 new String[]{"run", "Run a loop immediately"},
                 new String[]{"remove", "Remove a loop by id"}
         );
+        SUB_ARGS.put("/hooks", List.of(
+                new String[]{"list", "List effective hooks and paths"},
+                new String[]{"project", "Manage project hooks"}, new String[]{"global", "Manage global hooks"},
+                new String[]{"add", "Add a hook from JSON"}, new String[]{"edit", "Edit a hook by ID and JSON"},
+                new String[]{"get", "Inspect a hook"}, new String[]{"enable", "Enable a hook"},
+                new String[]{"disable", "Disable a hook"}, new String[]{"delete", "Delete a hook"},
+                new String[]{"help", "Hook command syntax"}));
         SUB_ARGS.put("/loop", loopArgs);
         SUB_ARGS.put("/loop-global", loopArgs);
+        SUB_ARGS.put("/loop-bounded", List.of(
+                new String[]{"add", "Add a bounded loop"},
+                new String[]{"list", "List bounded loops"},
+                new String[]{"clear", "Clear all bounded loops"},
+                new String[]{"pause", "Pause a bounded loop by id"},
+                new String[]{"resume", "Resume a bounded loop by id"},
+                new String[]{"run", "Run a bounded loop immediately"},
+                new String[]{"remove", "Remove a bounded loop by id"}
+        ));
         SUB_ARGS.put("/compact", List.<String[]>of(
                 new String[]{"reviewed", "Prepare an exact older-scope review; apply the returned JSON explicitly"}));
         SUB_ARGS.put("/auto-compact", List.of(
@@ -309,6 +334,11 @@ public class ChatCompleter implements Completer {
                 new String[]{"reserve", "Set reserved input headroom"},
                 new String[]{"context", "Override context window"},
                 new String[]{"output", "Override max output tokens"}
+        ));
+        SUB_ARGS.put("/model", List.of(
+                new String[]{"status", "Show the active model and failover state"},
+                new String[]{"ladder", "Open the failover wizard; ladder status shows saved routes"},
+                new String[]{"failover", "Open the failover wizard (alias for ladder)"}
         ));
         SUB_ARGS.put("/fast", List.of(
                 new String[]{"on", "Request fast mode (higher cost)"},
@@ -348,6 +378,17 @@ public class ChatCompleter implements Completer {
                 new String[]{"test", "Preview whether a text would trigger"},
                 new String[]{"help", "Show usage"}
         ));
+        // Trigger-focused alias: same store, same matcher, so the same subcommands apply.
+        SUB_ARGS.put("/continue-trigger", List.of(
+                new String[]{"list", "List trigger keywords"},
+                new String[]{"add", "Add trigger keywords"},
+                new String[]{"remove", "Remove trigger keywords"},
+                new String[]{"reset", "Restore default keywords"},
+                new String[]{"test", "Preview whether a text would trigger"},
+                new String[]{"on", "Enable auto-reply"},
+                new String[]{"off", "Disable auto-reply"},
+                new String[]{"reply", "Show or set the auto-reply text"}
+        ));
         SUB_ARGS.put("/render", List.of(
                 new String[]{"mirror", "Render the agent terminal directly"},
                 new String[]{"decoded", "Render the decoded transcript"},
@@ -379,6 +420,15 @@ public class ChatCompleter implements Completer {
                 new String[]{"clear", "Clear completed activities"},
                 new String[]{"close", "Close activity menu"}
         );
+        SUB_ARGS.put("/subagent-config", List.of(
+                new String[]{"status", "Show process-wide subagent count and policy"},
+                new String[]{"max", "Set maximum concurrent children; 0 disables, unlimited removes the cap"},
+                new String[]{"ban", "Ban model ids matching a glob (* and ?)"},
+                new String[]{"unban", "Remove an exact model ban pattern"},
+                new String[]{"clear-bans", "Remove all model bans"},
+                new String[]{"failover", "Configure saved fallback routes and thinking"},
+                new String[]{"help", "Show subagent policy usage"}
+        ));
         SUB_ARGS.put("/resources", List.of(
                 new String[]{"setup", "Interactive resource configuration wizard"},
                 new String[]{"add", "Interactive add-rule wizard"},

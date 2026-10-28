@@ -51,7 +51,7 @@ public final class WorkflowTeamEnforcement {
      * {@code patch}) and state-changing shell commands.
      */
     private static final Set<String> EDIT_PERMISSION_KEYS = Set.of(
-            "edit", "write", "patch", "bash.write", "bash.destructive");
+            "edit", "write", "patch", "bash.write", "bash.destructive", "hooks");
 
     /** Tool ids that require the delegate capability. */
     private static final Set<String> DELEGATION_TOOLS = Set.of("task", "multi_task", "quorum_task");

@@ -181,6 +181,31 @@ class StdioAgentAvailabilityTest {
         assertSelectionFields(quorum.parameterSchema().path("properties"));
     }
 
+    @Test
+    void nativeProviderAndAuthReachSingleParallelAndQuorumDispatches() {
+        CapturingRunner runner = new CapturingRunner(tempDir);
+        ToolResult one = new StdioTaskTool(null, runner, objectMapper, null).execute(Map.of(
+                "description", "native route", "prompt", "reply", "agent", "kompile",
+                "provider", "anthropic", "authentication_method", "oauth"));
+        assertTrue(!one.isError(), one.getOutput());
+        assertEquals("anthropic", runner.lastAgent.getProviderOverride());
+        assertEquals("oauth", runner.lastAgent.getAuthenticationMethodOverride());
+        Map<String, Object> override = subtask("override-auth", "kompile");
+        override.put("authentication_method", "api-key");
+        ToolResult many = new StdioMultiTaskTool(null, runner, objectMapper, tempDir, null).execute(Map.of(
+                "description", "native batch", "provider", "anthropic", "authentication_method", "oauth",
+                "subtasks", List.of(subtask("inherit-auth", "general"), override)));
+        assertTrue(!many.isError(), many.getOutput());
+        assertEquals("oauth", runner.agentWithDescription("Subtask: inherit-auth").getAuthenticationMethodOverride());
+        assertEquals("api-key", runner.agentWithDescription("Subtask: override-auth").getAuthenticationMethodOverride());
+        assertEquals("anthropic", runner.agentWithDescription("Subtask: override-auth").getProviderOverride());
+        ToolResult quorum = new StdioQuorumTaskTool(null, runner, objectMapper, tempDir).execute(Map.of(
+                "description", "native quorum", "prompt", "reply", "agents", List.of("kompile", "general"),
+                "provider", "anthropic", "authentication_method", "native"));
+        assertTrue(!quorum.isError(), quorum.getOutput());
+        assertEquals(2, runner.capturedAgents.stream().filter(a -> "native".equals(a.getAuthenticationMethodOverride())).count());
+    }
+
     private static final class CapturingRunner extends DirectSubagentRunnerStdio {
         AgentConfig lastAgent;
         final List<AgentConfig> capturedAgents = new CopyOnWriteArrayList<>();
@@ -226,12 +251,14 @@ class StdioAgentAvailabilityTest {
     private static void assertDelegationAgents(JsonNode enumValues) {
         List<String> values = new ArrayList<>();
         enumValues.forEach(value -> values.add(value.asText()));
-        assertEquals(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi", "kompile", "general"), values);
+        assertEquals(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi", "agy", "kompile", "general"), values);
     }
 
     private static void assertSelectionFields(JsonNode properties) {
         assertEquals("string", properties.path("model").path("type").asText());
         assertEquals("string", properties.path("thinking").path("type").asText());
+        assertEquals("string", properties.path("provider").path("type").asText());
+        assertEquals("string", properties.path("authentication_method").path("type").asText());
     }
 
     private static void assertUnavailable(ToolResult result) {

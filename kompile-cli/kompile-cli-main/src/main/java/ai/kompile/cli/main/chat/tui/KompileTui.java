@@ -293,6 +293,9 @@ public class KompileTui {
                 taskManager, processManager, messageQueue, renderer,
                 drawLock, true);
         this.statusBar.setRedrawRequester(this::requestRedraw);
+        // Delivery can win just after a compact/tool-completion frame. Queue
+        // invalidation must not depend on another activity tick or model delta.
+        if (messageQueue != null) messageQueue.setChangeListener(this::requestRedraw);
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────

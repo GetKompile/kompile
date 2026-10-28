@@ -7,6 +7,8 @@ import ai.kompile.cli.main.chat.SharedProcessMirror;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
+import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
@@ -27,7 +29,7 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -35,12 +37,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiPredicate;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /** Opt-in JSONL control transport. Only the dispatch owner starts model turns. */
 public final class WebHarnessControls implements AutoCloseable {
@@ -61,6 +67,9 @@ public final class WebHarnessControls implements AutoCloseable {
     private volatile IOException inputFailure;
     private volatile CommandResolver commandResolver;
     private volatile String initialDisplay = "";
+    private Consumer<String> boundaryInputListener = text -> { };
+    private volatile Supplier<AgenticChatLoop.QueuedInput> nativeInputSupplier = () -> null;
+    private final Map<String, AgenticChatLoop.QueuedInput> nativeDeliveries = new ConcurrentHashMap<>();
     private volatile SharedProcessMirror sharedProcesses;
     /** Where the reader answers a control that arrives after the run stopped taking any. */
     private volatile Consumer<HeadlessRunEvent> lateEvents;
@@ -77,6 +86,11 @@ public final class WebHarnessControls implements AutoCloseable {
 
     /** What the user typed for the initial turn; the prompt itself carries harness decorations. */
     public void setInitialDisplay(String text) { this.initialDisplay = text == null ? "" : text; }
+
+    /** Persist input accepted inside a running turn just like separately dispatched input. */
+    public void setBoundaryInputListener(Consumer<String> listener) {
+        boundaryInputListener = listener == null ? text -> { } : listener;
+    }
 
     /** Other sessions' processes; a monitored one launched for this session keeps the run open until it ends. */
     public void setSharedProcesses(SharedProcessMirror mirror) { this.sharedProcesses = mirror; }
@@ -201,8 +215,8 @@ public final class WebHarnessControls implements AutoCloseable {
                ProcessControl processControl, Consumer<HeadlessRunEvent> events, SubagentRunner runner) throws Exception {
         var tasks = new BackgroundTaskManager();
         tasks.setBackgroundableCheck(loop::isBackgroundableToolPhaseActive);
-        var pendingInput = new ArrayDeque<Queued>();
-        var wakeups = new ArrayDeque<String>();
+        var pendingInput = new ConcurrentLinkedDeque<Queued>();
+        var wakeups = new ConcurrentLinkedDeque<String>();
         var completedProcesses = new HashSet<String>();
         // Commands whose completion monitor was cancelled, by the user or the model: they finish
         // without waking the model, as in the CLI. Every launch arms one (launchMonitored).
@@ -238,6 +252,12 @@ public final class WebHarnessControls implements AutoCloseable {
         processes.addOutputListener(outputListener);
         processes.addMonitorListener(monitor);
         loop.setBackgroundEligibilityListener(changed);
+        // The turn worker polls this after tools. These queues are shared with
+        // the control owner, so claims must be thread-safe and reversible.
+        loop.setQueuedMessageSupplier(() -> closed || cancel.get() || !nativeDeliveries.isEmpty()
+                ? null : claimBoundaryInput(pendingInput, wakeups, cancel, changed, false));
+        nativeInputSupplier = () -> closed || cancel.get() ? null
+                : claimBoundaryInput(pendingInput, wakeups, cancel, changed, true);
         var executor = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "web-harness-turn"); t.setDaemon(true); return t;
         });
@@ -355,7 +375,7 @@ public final class WebHarnessControls implements AutoCloseable {
                             if (pendingInput.size() >= 64) reply(events, sessionId, frame, false, "Input queue full", null);
                             else {
                                 pendingInput.add(new Queued(frame.text(), frame.text()));
-                                reply(events, sessionId, frame, true, "Queued for next turn boundary", null);
+                                reply(events, sessionId, frame, true, "Queued for next tool boundary (or turn completion if no tools run)", null);
                             }
                         }
                         case "subagent_input", "subagent_cancel" -> {
@@ -395,7 +415,7 @@ public final class WebHarnessControls implements AutoCloseable {
                         }
                     }
                 }
-                if (active == null) {
+                if (active == null && nativeDeliveries.isEmpty()) {
                     boolean systemTurn = turnId > 0 && !wakeups.isEmpty();
                     Queued queued = systemTurn ? null : pendingInput.pollFirst();
                     String next = systemTurn ? wakeups.removeFirst() : queued == null ? null : queued.prompt();
@@ -448,6 +468,9 @@ public final class WebHarnessControls implements AutoCloseable {
             loop.cancelDetachedInvocations();
             loop.clearBackgroundOutput();
             loop.setBackgroundEligibilityListener(null);
+            loop.setQueuedMessageSupplier(null);
+            nativeInputSupplier = () -> null;
+            for (String id : List.copyOf(nativeDeliveries.keySet())) nativeInputDropped(id);
             processes.removeChangeListener(changed);
             processes.removeOutputListener(outputListener);
             processes.removeMonitorListener(monitor);
@@ -456,6 +479,60 @@ public final class WebHarnessControls implements AutoCloseable {
             Frame remaining;
             while ((remaining = frames.poll()) != null) refuseClosed(events, sessionId, remaining);
             close();
+        }
+    }
+
+    private AgenticChatLoop.QueuedInput claimBoundaryInput(
+            Deque<Queued> pendingInput, Deque<String> wakeups, AtomicBoolean cancel,
+            Runnable changed, boolean providerReceipt) {
+        String wakeup = wakeups.pollFirst();
+        Queued queued = wakeup == null ? pendingInput.pollFirst() : null;
+        String prompt = wakeup != null ? wakeup : queued == null ? null : queued.prompt();
+        if (prompt == null) return null;
+        return new AgenticChatLoop.QueuedInput(prompt, () -> {
+            // A native receipt proves consumption even if cancellation raced it.
+            if (!providerReceipt && (closed || cancel.get())) return false;
+            boundaryInputListener.accept(prompt);
+            changed.run();
+            return true;
+        }, () -> {
+            if (wakeup != null) wakeups.addFirst(wakeup);
+            else pendingInput.addFirst(queued);
+            changed.run();
+        });
+    }
+
+    /** Native providers execute tools inside their stream, outside the local tool loop. */
+    public void nativeToolCompleted(BiPredicate<String, String> injector) {
+        String id;
+        AgenticChatLoop.QueuedInput claimed;
+        synchronized (nativeDeliveries) {
+            if (!nativeDeliveries.isEmpty()) return;
+            claimed = nativeInputSupplier.get();
+            if (claimed == null) return;
+            id = java.util.UUID.randomUUID().toString();
+            nativeDeliveries.put(id, claimed);
+        }
+        boolean written = false;
+        try { written = injector.test(id, claimed.content()); }
+        finally { if (!written) nativeInputDropped(id); }
+    }
+
+    public void nativeInputDelivered(String id) {
+        synchronized (nativeDeliveries) {
+            AgenticChatLoop.QueuedInput claimed = nativeDeliveries.get(id);
+            if (claimed == null) return;
+            try { claimed.accept(); }
+            finally { nativeDeliveries.remove(id); }
+        }
+    }
+
+    public void nativeInputDropped(String id) {
+        synchronized (nativeDeliveries) {
+            AgenticChatLoop.QueuedInput claimed = nativeDeliveries.get(id);
+            if (claimed == null) return;
+            try { claimed.restore(); }
+            finally { nativeDeliveries.remove(id); }
         }
     }
 
@@ -591,7 +668,7 @@ public final class WebHarnessControls implements AutoCloseable {
      */
     private void command(Consumer<HeadlessRunEvent> events, String session, Frame frame, BackgroundTaskManager tasks,
                          BackgroundProcessManager processes, ProcessControl processControl, StatusBar panel,
-                         ArrayDeque<Queued> pendingInput, Set<String> silenced) {
+                         Deque<Queued> pendingInput, Set<String> silenced) {
         String raw = frame.text().strip();
         int end = 1;
         while (end < raw.length() && !Character.isWhitespace(raw.charAt(end))) end++;
@@ -617,7 +694,7 @@ public final class WebHarnessControls implements AutoCloseable {
                 } else {
                     pendingInput.add(new Queued(resolution.modelPrompt(), raw));
                     emit(events, session, HeadlessRunEvent.Type.CONTROL,
-                            replyData(frame, true, "Queued for next turn boundary", null).put("queued", true));
+                            replyData(frame, true, "Queued for next tool boundary (or turn completion if no tools run)", null).put("queued", true));
                     return;
                 }
             } catch (Exception e) {
@@ -637,7 +714,7 @@ public final class WebHarnessControls implements AutoCloseable {
                               ProcessControl processControl) {
         var tasks = new BackgroundTaskManager();
         var panel = new StatusBar(tasks, processes, null, null, new Object(), true);
-        return answer(name, arg, tasks, processes, processControl, panel, new ArrayDeque<>(), new HashSet<>());
+        return answer(name, arg, tasks, processes, processControl, panel, new ConcurrentLinkedDeque<>(), new HashSet<>());
     }
 
     /**
@@ -646,7 +723,7 @@ public final class WebHarnessControls implements AutoCloseable {
      */
     private static Answer answer(String name, String arg, BackgroundTaskManager tasks,
                                  BackgroundProcessManager processes, ProcessControl processControl,
-                                 StatusBar panel, ArrayDeque<Queued> pendingInput, Set<String> silenced) {
+                                 StatusBar panel, Deque<Queued> pendingInput, Set<String> silenced) {
         return switch (name) {
             case "processes" -> processPanel(processControl, panel);
             case "activity" -> Set.of("", "list", "local", "status").contains(arg.toLowerCase(Locale.ROOT))
@@ -717,7 +794,7 @@ public final class WebHarnessControls implements AutoCloseable {
     }
 
     /** ChatCommandRouter's Jobs & Queue listing; the queue is this run's pending input. */
-    private static String jobs(BackgroundTaskManager tasks, ArrayDeque<Queued> pendingInput) {
+    private static String jobs(BackgroundTaskManager tasks, Deque<Queued> pendingInput) {
         StringBuilder body = new StringBuilder("Jobs & Queue\n");
         var active = tasks.getActiveTasks();
         if (!active.isEmpty()) {
@@ -759,7 +836,7 @@ public final class WebHarnessControls implements AutoCloseable {
                         .append(StringUtils.truncate(queued.display().replaceAll("\\s+", " ").strip(), 60)).append("\n");
                 i++;
             }
-            body.append("  Queued input sends at the next turn boundary\n");
+            body.append("  Queued input sends at the next tool boundary (or turn completion if no tools run)\n");
         }
         return bounded(body.append("\n  /jobs-remove <id>   Remove a completed task")
                 .append("\n  /jobs-clear         Clear all completed tasks").toString());
@@ -781,13 +858,14 @@ public final class WebHarnessControls implements AutoCloseable {
         var ps = data.putArray("processes");
         var listed = processes.listAll();
         // Finished commands beyond the most recent few drop out, as from the CLI panel's Recent section.
-        long finished = listed.stream().filter(p -> !p.isVirtual() && !p.isRunning()).count();
+        long finished = listed.stream().filter(p -> !p.isRunning() && (!p.isVirtual() || childProcess(p.getMetadata()))).count();
         long skipFinished = Math.max(0, finished - RECENT_PROCESSES);
         for (var p : listed) {
-            // This run's commands plus running watchers and other sessions' processes; MCP servers
-            // and finished mirrors are listed by /processes.
-            if (p.isVirtual() && (!p.isRunning() || p.getKind() == BackgroundProcessManager.ProcessKind.MCP)) continue;
-            if (!p.isVirtual() && !p.isRunning() && skipFinished-- > 0) continue;
+            // Keep owned/native child results inspectable after completion as well as active watchers.
+            // MCP servers and other finished virtual mirrors remain available via /processes.
+            if (p.getKind() == BackgroundProcessManager.ProcessKind.MCP
+                    || (p.isVirtual() && !p.isRunning() && !childProcess(p.getMetadata()))) continue;
+            if (!p.isRunning() && skipFinished-- > 0) continue;
             boolean shared = p.getKind() == BackgroundProcessManager.ProcessKind.SHARED;
             var item = ps.addObject().put("id", p.getId()).put("description", p.getDescription())
                     .put("command", p.getCommand()).put("state", p.getState().name())
@@ -810,10 +888,15 @@ public final class WebHarnessControls implements AutoCloseable {
             var monitor = p.isRunning() ? processes.getMonitor(p.getId()) : null;
             if (monitor != null) item.putObject("monitor").put("message", browserText(monitor.message()))
                     .put("armedAt", monitor.createdAt().toString());
-            if (p.isVirtual()) continue;
+            // Typed child prose/reasoning/tool sections are display snapshots, never parent messages.
+            var transcript = p.transcriptBlocks(new TerminalRenderer(false));
+            if (p.isVirtual() && transcript.isEmpty()) continue;
             try {
                 ToolResult result = processControl.execute("output", p.getId());
-                if (!result.isError()) item.put("output", browserText(result.getOutput()));
+                if (!result.isError()) {
+                    if (!transcript.isEmpty()) item.set("transcript", browserTranscript(transcript));
+                    if (!p.isVirtual()) item.put("output", browserText(result.getOutput()));
+                }
             } catch (Exception ignored) {
                 // Output remains absent when policy denies access; snapshots are not a bypass.
             }
@@ -823,6 +906,27 @@ public final class WebHarnessControls implements AutoCloseable {
                 .put("state", t.getStatus().name()).put("output", browserText(t.getOutput()));
         data.set("subagents", children.snapshot());
         emit(events, session, HeadlessRunEvent.Type.ACTIVITY, data);
+    }
+
+    private static boolean childProcess(Map<String, String> metadata) {
+        String type = metadata.getOrDefault("task_type", "");
+        return "subagent".equals(metadata.get("kind")) || ("claude-code".equals(metadata.get("source"))
+                && (type.equals("agent") || type.endsWith("_agent")));
+    }
+
+    /** Keep typed payloads plain and bounded; ANSI-formatted terminal content never becomes HTML. */
+    private static ArrayNode browserTranscript(List<ChatDisplayBlock> blocks) {
+        var result = JSON.createArrayNode();
+        for (var block : blocks) {
+            var item = result.addObject().put("key", block.key()).put("kind", block.kind())
+                    .put("toolName", browserText(block.toolName())).put("summary", browserText(block.summary()))
+                    .put("error", block.error()).put("running", block.running());
+            var sections = item.putArray("sections");
+            for (var section : block.sections()) sections.addObject().put("id", section.id())
+                    .put("kind", section.kind()).put("title", browserText(section.title()))
+                    .put("content", ChatDisplayBlock.boundedPlainText(section.content(), ChatDisplayBlock.MAX_SECTION_CHARS));
+        }
+        return result;
     }
 
     /** Tracks only this harness's runner; external/foreign ids never reach child controls. */
@@ -839,6 +943,9 @@ public final class WebHarnessControls implements AutoCloseable {
             if (closed) return;
             entries.computeIfAbsent(id, key -> JSON.createObjectNode().put("id", key).put("output", ""))
                     .put("type", type).put("description", description).put("state", "RUNNING");
+            var entry = entries.get(id);
+            if (!entry.has("startedAt")) entry.put("startedAt", java.time.Instant.now().toString());
+            entry.remove("endedAt");
             panel.registerSubagent(id, type, description);
             changed.run();
         }
@@ -858,18 +965,46 @@ public final class WebHarnessControls implements AutoCloseable {
             if (entry != null) entry.put("output", bounded(entry.path("output").asText() + chunk));
             changed.run();
         }
-        public synchronized void onSubagentEnd(String id) { panel.unregisterSubagent(id); changed.run(); }
+        public synchronized void onSubagentMetadata(String id, Map<String, String> metadata) {
+            if (closed) return;
+            var entry = entries.get(id);
+            if (entry == null || metadata == null) return;
+            // Merge partial updates and retain the child's resolved identity across parent route changes.
+            var details = entry.withObject("/details");
+            metadata.forEach((key, value) -> {
+                if (value != null && !value.isBlank()) details.put(key, browserText(value));
+            });
+            panel.updateSubagentMetadata(id, metadata);
+            changed.run();
+        }
+        public synchronized void onSubagentEnd(String id) {
+            if (closed) return;
+            var entry = entries.get(id);
+            if (entry != null) {
+                entry.put("endedAt", java.time.Instant.now().toString());
+                if (entry.path("state").asText().equals("RUNNING")) entry.put("state", "COMPLETED");
+            }
+            panel.unregisterSubagent(id);
+            changed.run();
+        }
         synchronized boolean contains(String id) { return entries.containsKey(id); }
         synchronized boolean hasPendingWork() {
             return runner != null && entries.keySet().stream().anyMatch(runner::hasPendingWork);
         }
         synchronized com.fasterxml.jackson.databind.node.ArrayNode snapshot() {
             var result = JSON.createArrayNode();
-            entries.forEach((id, entry) -> result.add(entry.deepCopy()
-                    .put("output", browserText(entry.path("output").asText()))
-                    .put("running", runner != null && runner.hasPendingWork(id))
-                    .put("canSend", runner != null && runner.canSendMessage(id))
-                    .put("canCancel", runner != null && runner.canCancel(id))));
+            entries.forEach((id, entry) -> {
+                boolean running = runner != null && runner.hasPendingWork(id);
+                var snapshot = entry.deepCopy().put("output", browserText(entry.path("output").asText()))
+                        .put("running", running)
+                        .put("canSend", runner != null && runner.canSendMessage(id))
+                        .put("canCancel", runner != null && runner.canCancel(id));
+                var start = java.time.Instant.parse(entry.path("startedAt").asText());
+                var end = !running && entry.has("endedAt")
+                        ? java.time.Instant.parse(entry.path("endedAt").asText()) : java.time.Instant.now();
+                snapshot.put("durationMs", Math.max(0, java.time.Duration.between(start, end).toMillis()));
+                result.add(snapshot);
+            });
             return result;
         }
         @Override public void close() {

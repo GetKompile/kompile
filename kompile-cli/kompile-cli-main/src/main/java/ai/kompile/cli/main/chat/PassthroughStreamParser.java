@@ -39,17 +39,24 @@ public class PassthroughStreamParser {
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private ai.kompile.cli.main.chat.tools.ProviderTestCapture testCapture;
     private java.nio.file.Path testCaptureDirectory;
+    private String testCaptureOrigin;
 
     /** Enable only on a real provider execution stream, never on imported transcripts or renderer fixtures. */
     public void enableTestCapture(java.nio.file.Path directory) {
+        enableTestCapture(directory, null);
+    }
+
+    /** Tag every capture from this stream with the delegated surface that observed it (e.g. subagent). */
+    public void enableTestCapture(java.nio.file.Path directory, String origin) {
         testCaptureDirectory = directory;
-        if (testCapture == null) testCapture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(directory);
+        testCaptureOrigin = origin == null || origin.isBlank() ? null : origin.trim();
+        if (testCapture == null) testCapture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(directory, testCaptureOrigin);
     }
 
     public void closeTestCapture() {
         if (testCapture != null) {
             testCapture.close();
-            testCapture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(testCaptureDirectory);
+            testCapture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(testCaptureDirectory, testCaptureOrigin);
         }
     }
 
@@ -512,10 +519,128 @@ public class PassthroughStreamParser {
     }
 
     /**
-     * Alias for {@link #parseGeminiLine(String)} used by the Agy/Qwen adapter.
+     * Parse a line of Antigravity CLI ({@code agy}) stream-json output
+     * ({@code --output-format stream-json}).
+     * <p>
+     * Agy's envelopes are keyed by an {@code event} field rather than {@code type}
+     * (verified against the installed CLI):
+     * <ul>
+     *   <li>{@code init} — one per session, carries {@code conversation_id} (session id)</li>
+     *   <li>{@code step_update} — per-step progress; {@code step_type} {@code agent_response}
+     *       with a {@code text_delta} streams text, {@code step_type} {@code tool} carries
+     *       {@code tool_name} + {@code tool_info.parameters}, and a DONE agent step reports
+     *       cumulative {@code duration_seconds} and {@code usage}</li>
+     *   <li>{@code result} — turn end: {@code response} (this turn's text), {@code status},
+     *       {@code error}, cumulative {@code num_turns}/{@code usage}; usage counters are
+     *       already disjoint ({@code input_tokens} excludes {@code cache_read_tokens})</li>
+     *   <li>{@code command_result} — a slash command answered by the CLI itself</li>
+     * </ul>
+     * Plain-text lines (agy writes its own notices to stdout, e.g. permission denials)
+     * surface as {@link TextChunk} unless they match a known noise pattern.
      */
     public PassthroughEvent parseAgyLine(String line) {
-        return parseGeminiLine(line);
+        if (line == null || line.isBlank()) {
+            return null;
+        }
+
+        try {
+            JsonNode node = objectMapper.readTree(line);
+            String event = node.has("event") ? node.get("event").asText() : "";
+
+            switch (event) {
+                case "init" -> {
+                    String conversationId = node.path("conversation_id").asText("");
+                    return conversationId.isEmpty() ? null : new SessionInit(conversationId);
+                }
+                case "step_update" -> {
+                    JsonNode step = node.path("step_update");
+                    if (step.isMissingNode() || !step.isObject()) {
+                        return null;
+                    }
+                    String stepType = step.path("step_type").asText("");
+                    String state = step.path("state").asText("");
+                    switch (stepType) {
+                        case "agent_response" -> {
+                            // Text deltas stream while ACTIVE; the DONE step carries the
+                            // cumulative turn usage and is reported by the result event.
+                            String delta = step.path("text_delta").asText("");
+                            if (!delta.isEmpty()) {
+                                return new TextChunk(delta);
+                            }
+                            return null;
+                        }
+                        case "tool" -> {
+                            String toolName = step.path("tool_name").asText("unknown");
+                            JsonNode params = step.path("tool_info").path("parameters");
+                            String serialized = params.isMissingNode() || !params.isObject()
+                                    ? "" : params.toString();
+                            if ("ACTIVE".equals(state)) {
+                                if (testCapture != null) {
+                                    testCapture.start(step.path("step_index").asText(), toolName, serialized);
+                                }
+                                return new ToolUse(toolName, serialized);
+                            }
+                            // DONE/ERROR: report completion. Agy reports tool failures through
+                            // tool_info.error; keep the transcript's tool trail accurate.
+                            if (testCapture != null) {
+                                String error = step.path("tool_info").path("error").path("message").asText(null);
+                                testCapture.complete(step.path("step_index").asText(), null,
+                                        "ERROR".equals(state) ? 1 : null, error != null);
+                            }
+                            return null;
+                        }
+                        default -> {
+                            // user_input and other internal steps carry no renderable content
+                            return null;
+                        }
+                    }
+                }
+                case "result" -> {
+                    JsonNode result = node.path("result");
+                    if (result.isMissingNode() || !result.isObject()) {
+                        return null;
+                    }
+                    JsonNode usage = result.path("usage");
+                    // Agy's usage is already disjoint: input_tokens excludes cache reads.
+                    long inputTokens = Math.max(0, usage.path("input_tokens").asLong(0));
+                    long outputTokens = Math.max(0, usage.path("output_tokens").asLong(0));
+                    long cacheReadTokens = Math.max(0, usage.path("cache_read_tokens").asLong(0));
+                    long durationMs = Math.round(result.path("duration_seconds").asDouble(0) * 1000.0);
+                    return new TurnComplete(durationMs, 0.0,
+                            result.path("num_turns").asInt(0),
+                            inputTokens, outputTokens, cacheReadTokens, 0);
+                }
+                case "command_result" -> {
+                    // A CLI-internal report (e.g. `agy -p /model`); its result event follows.
+                    return null;
+                }
+                default -> {
+                    // Unknown future events are ignored, mirroring agy's own forward
+                    // compatibility contract for stream input.
+                    return null;
+                }
+            }
+        } catch (Exception e) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty() && !isAgyNoiseLine(trimmed)) {
+                return new TextChunk(trimmed);
+            }
+            return null;
+        }
+    }
+
+    /** Lines agy writes to stdout that we should suppress (its notices echo `jetski:`). */
+    private static boolean isAgyNoiseLine(String line) {
+        return line.startsWith("jetski:")
+                || line.startsWith("YOLO mode is enabled")
+                || line.startsWith("Attempt ") && line.contains("failed:")
+                || line.startsWith("Retrying after");
+    }
+
+    /** Multi-event variant of {@link #parseAgyLine(String)} for the agent dispatch loops. */
+    public List<PassthroughEvent> parseAgyLineMulti(String line) {
+        PassthroughEvent event = parseAgyLine(line);
+        return event != null ? List.of(event) : List.of();
     }
 
     /**

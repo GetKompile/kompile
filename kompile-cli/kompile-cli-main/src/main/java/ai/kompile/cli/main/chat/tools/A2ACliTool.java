@@ -148,6 +148,9 @@ public class A2ACliTool implements CliTool {
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
+        if (context.isSupervisedChild()) {
+            return ToolResult.error(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.message(TOOL_ID));
+        }
         String action = params.path("action").asText("");
 
         return switch (action) {
