@@ -7,18 +7,17 @@ import org.w3c.dom.NodeList;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.*;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.*;
 import java.util.function.Consumer;
+import java.io.ByteArrayInputStream;
 
-/** Bounded, XXE-safe report import, restricted to reports changed during this execution. */
+/** XXE-safe report import, restricted to reports changed during this execution.
+ * Reports are read individually, without a run-wide file, module, or byte-count ceiling. */
 final class TestReportReader {
-    private static final long MAX_FILE = 8 * 1024 * 1024;
-    private static final int MAX_REPORTS = 128;
     private final Path directory;
     private final TestCaptureConfig config;
     private final List<Path> explicit = new ArrayList<>();
@@ -87,12 +86,11 @@ final class TestReportReader {
         // Known report locations only. Do not walk source trees, node_modules, caches, or arbitrary logs.
         Deque<Path> modules = new ArrayDeque<>();
         modules.add(directory);
-        int visited = 0;
-        while (!modules.isEmpty() && visited++ < 256) {
+        while (!modules.isEmpty()) {
             Path module = modules.removeFirst();
             for (String suffix : List.of("target/surefire-reports", "target/failsafe-reports", "build/test-results",
                     "TestResults", ".vitest/junit", ".vitest/json", "test-results.xml", "test-results.json", "junit.xml")) roots.add(module.resolve(suffix));
-            if (directory.relativize(module).getNameCount() >= 4 || !Files.isDirectory(module)) continue;
+            if (!Files.isDirectory(module, LinkOption.NOFOLLOW_LINKS)) continue;
             try (DirectoryStream<Path> children = Files.newDirectoryStream(module)) {
                 for (Path child : children) {
                     String name = child.getFileName().toString();
@@ -101,25 +99,17 @@ final class TestReportReader {
                 }
             }
         }
-        if (!modules.isEmpty()) throw new IOException("Too many modules for bounded report discovery; configure narrower reportPaths");
         for (Path root : roots) {
             if (Files.isRegularFile(root, LinkOption.NOFOLLOW_LINKS)) add(files, root);
             else if (Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
-                try (var walk = Files.walk(root, 3)) {
+                try (var walk = Files.walk(root)) {
                     Iterator<Path> iterator = walk.iterator();
-                    int seen = 0;
                     while (iterator.hasNext()) {
-                        if (++seen > 2048) throw new IOException("Report directory exceeds capture limit: " + root);
                         Path file = iterator.next();
                         if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) add(files, file);
                     }
                 }
             }
-        }
-        long bytes = 0;
-        for (Path file : files) {
-            bytes += Files.size(file);
-            if (bytes > 32L * 1024 * 1024) throw new IOException("Test report set exceeds 32 MiB capture limit");
         }
         return files;
     }
@@ -127,25 +117,24 @@ final class TestReportReader {
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
         if (name.endsWith(".xml") || name.endsWith(".trx") || name.endsWith(".json")) {
             paths.add(file.toAbsolutePath().normalize());
-            if (paths.size() > MAX_REPORTS) throw new IOException("Too many test reports (limit " + MAX_REPORTS + ")");
-        }
-    }
-    private static byte[] bytes(Path file) throws IOException {
-        if (Files.size(file) > MAX_FILE) throw new IOException("Test report exceeds 8 MiB: " + file);
-        try (var input = Files.newInputStream(file)) {
-            byte[] value = input.readNBytes((int) MAX_FILE + 1);
-            if (value.length > MAX_FILE) throw new IOException("Growing test report exceeds 8 MiB: " + file);
-            return value;
         }
     }
     private static String fingerprint(Path file) throws Exception {
-        return Files.getLastModifiedTime(file) + ":" + HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes(file)));
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (var input = Files.newInputStream(file)) {
+            byte[] buffer = new byte[8192]; // Transfer buffer, not a report-size limit.
+            int read;
+            while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read);
+        }
+        return Files.getLastModifiedTime(file) + ":" + HexFormat.of().formatHex(digest.digest());
     }
 
     static TestRunDetector.Result parse(Path file, String framework) throws Exception {
-        byte[] value = bytes(file);
         if (file.toString().endsWith(".json")) {
-            JsonNode json = JsonUtils.standardMapper().readTree(value);
+            JsonNode json;
+            try (var input = Files.newInputStream(file)) {
+                json = JsonUtils.standardMapper().readTree(input);
+            }
             if (json.has("numTotalTests") && json.has("numFailedTests") && json.has("numPassedTests")) {
                 long total = json.path("numTotalTests").asLong(-1), failed = json.path("numFailedTests").asLong(-1), passed = json.path("numPassedTests").asLong(-1);
                 long skipped = json.path("numPendingTests").asLong() + json.path("numTodoTests").asLong();
@@ -169,7 +158,10 @@ final class TestReportReader {
         factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
         factory.setXIncludeAware(false);
         factory.setExpandEntityReferences(false);
-        var document = factory.newDocumentBuilder().parse(new ByteArrayInputStream(value));
+        org.w3c.dom.Document document;
+        try (var input = Files.newInputStream(file)) {
+            document = factory.newDocumentBuilder().parse(input);
+        }
         Element root = document.getDocumentElement();
         String kind = root.getLocalName();
         if ("TestRun".equals(kind)) {

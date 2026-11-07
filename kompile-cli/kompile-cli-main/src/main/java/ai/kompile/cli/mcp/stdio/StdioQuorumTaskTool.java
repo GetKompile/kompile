@@ -2,6 +2,8 @@ package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -84,7 +86,7 @@ public class StdioQuorumTaskTool {
         model.put("description", "Optional model override for every instance. When omitted, each agent resolves the selected role, project, user, then provider native default. For agent=kompile the id auto-routes the provider (claude-* to anthropic, ...); ambiguous multi-host families error listing candidates.");
 
         props.putObject("authentication_method").put("type", "string").put("description",
-                "Auth route for Kompile-native instances: oauth/native uses Claude Code login for anthropic; api-key uses its separate API.")
+                "Auth route for Kompile-native instances: " + ChatConfig.ANTHROPIC_AUTH_ROUTES + ".")
                 .putArray("enum").add("oauth").add("native").add("api-key");
         var provider = props.putObject("provider");
         provider.put("type", "string");
@@ -139,6 +141,7 @@ public class StdioQuorumTaskTool {
 
         // Run all agents in parallel
         ExecutorService executor = Executors.newFixedThreadPool(agentNames.size());
+        java.util.concurrent.atomic.AtomicBoolean stop = new java.util.concurrent.atomic.AtomicBoolean();
         List<AgentFuture> futures = new ArrayList<>();
         Map<String, Integer> totalByAgent = new HashMap<>();
         for (String agentName : agentNames) {
@@ -150,7 +153,7 @@ public class StdioQuorumTaskTool {
             int instance = seenByAgent.merge(agentName, 1, Integer::sum);
             String label = totalByAgent.get(agentName) > 1 ? agentName + "#" + instance : agentName;
             futures.add(new AgentFuture(label,
-                executor.submit(() -> runAgent(agentName, prompt, roleName, model, thinking, provider, authenticationMethod, desc))));
+                executor.submit(SessionEnvironment.wrap(() -> runAgent(agentName, prompt, roleName, model, thinking, provider, authenticationMethod, desc, stop)))));
         }
 
         // Collect results — full output goes to file, summary to tool result
@@ -170,7 +173,8 @@ public class StdioQuorumTaskTool {
             fullOutput.append("## Agent: ").append(agentName).append("\n\n");
 
             try {
-                AgentResult result = entry.future.get(10, TimeUnit.MINUTES);
+                // Like task, there is no wall-clock limit: wait until the agent finishes.
+                AgentResult result = entry.future.get();
                 if (result.success) {
                     succeeded++;
                     successfulAgents.add(agentName);
@@ -184,10 +188,11 @@ public class StdioQuorumTaskTool {
                     summaryOutput.append("- **").append(agentName).append("**: FAILED — ")
                         .append(truncateForSummary(result.output, 100)).append("\n");
                 }
-            } catch (TimeoutException e) {
-                failed++;
-                fullOutput.append("**Timed out** after 10 minutes.\n\n");
-                summaryOutput.append("- **").append(agentName).append("**: TIMED OUT\n");
+            } catch (InterruptedException e) {
+                stop.set(true);
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
+                return ToolResult.error("Quorum task cancelled; active agent cancellation requested");
             } catch (Exception e) {
                 failed++;
                 fullOutput.append("**Error:** ").append(e.getMessage()).append("\n\n");
@@ -225,7 +230,8 @@ public class StdioQuorumTaskTool {
     }
 
     private AgentResult runAgent(String agentName, String prompt, String roleName,
-                                 String model, String thinking, String provider, String authenticationMethod, String desc) {
+                                 String model, String thinking, String provider, String authenticationMethod, String desc,
+                                 java.util.concurrent.atomic.AtomicBoolean stop) {
         try {
             AgentConfig agentConfig = AgentConfig.builder(agentName)
                 .displayName(agentName.substring(0, 1).toUpperCase() + agentName.substring(1))
@@ -238,7 +244,7 @@ public class StdioQuorumTaskTool {
                 .authenticationMethodOverride(authenticationMethod)
                 .build();
 
-            String result = subagentRunner.forkForSubagent().runSubagent(agentConfig, prompt);
+            String result = StdioTaskTool.runWithCancellation(subagentRunner.forkForSubagent(), agentConfig, prompt, null, stop::get);
             if (StdioTaskTool.isAgentMissing(result)) {
                 return new AgentResult(false, agentName + " is not installed.");
             }

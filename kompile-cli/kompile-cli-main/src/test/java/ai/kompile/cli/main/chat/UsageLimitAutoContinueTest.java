@@ -47,6 +47,10 @@ class UsageLimitAutoContinueTest {
     void ignoresPerMinuteThrottle() {
         assertFalse(classify("429: rate limit exceeded for requests per minute").arm());
         assertFalse(classify("tokens_per_minute quota exceeded").arm());
+        assertFalse(classify("429: rate limit exceeded for requests per minute").stopSchedulers(),
+                "transient throttles must not stop loops");
+        assertFalse(classify("tokens_per_minute quota exceeded").stopSchedulers(),
+                "transient throttles must not stop loops");
     }
 
     @Test
@@ -57,8 +61,14 @@ class UsageLimitAutoContinueTest {
 
     @Test
     void ignoresWeeklyAndMonthlyWindows() {
-        assertFalse(classify("usage limit reached (weekly limit)").arm());
-        assertFalse(classify("monthly limit reached").arm());
+        // Weekly/monthly caps carry no reset a bounded wait can bridge, so the
+        // wake never arms — but they must stop recurring schedules.
+        UsageLimitAutoContinue.Verdict weekly = classify("usage limit reached (weekly limit)");
+        assertFalse(weekly.arm());
+        assertTrue(weekly.stopSchedulers());
+        UsageLimitAutoContinue.Verdict monthly = classify("monthly limit reached");
+        assertFalse(monthly.arm());
+        assertTrue(monthly.stopSchedulers());
     }
 
     @Test
@@ -72,6 +82,19 @@ class UsageLimitAutoContinueTest {
         assertFalse(classify("connection reset by peer").arm());
         assertFalse(classify(null).arm());
         assertFalse(classify("").arm());
+        assertFalse(classify("[Anthropic API error 500: internal server error]").stopSchedulers());
+        assertFalse(classify("connection reset by peer").stopSchedulers());
+    }
+
+    @Test
+    void everyArmedWindowAlsoStopsSchedulers() {
+        UsageLimitAutoContinue.Verdict fiveHour = classify(
+                "[Error 429: usage limit reached, resets in 45 minutes]");
+        assertTrue(fiveHour.arm());
+        assertTrue(fiveHour.stopSchedulers(),
+                "the 5-hour window stops loops too; the wake re-runs the failed message, "
+                        + "the loop pause prevents new firings from the same quota");
+        assertTrue(classify("[OpenAI Codex API error 429: usage limit reached]").stopSchedulers());
     }
 
     // ========================================================================
@@ -202,6 +225,96 @@ class UsageLimitAutoContinueTest {
         watchdog.onTurnFailure("429: usage limit reached", "prompt", false);
         assertTrue(notices.isEmpty());
         watchdog.shutdown();
+    }
+
+    @Test
+    void headlessFailuresStillNotifyLoopSchedulers() {
+        // Headless/crawl turns must not sleep for hours, but a live loop firing
+        // during the turn would keep hitting the same quota; it must be paused.
+        List<String> windows = new ArrayList<>();
+        UsageLimitAutoContinue.UsageWindowListener listener =
+                (provider, detail, verdict) -> windows.add(provider);
+        UsageLimitAutoContinue.addUsageWindowListener(listener);
+        try {
+            List<String> resumes = new ArrayList<>();
+            List<String> notices = new ArrayList<>();
+            UsageLimitAutoContinue watchdog = new UsageLimitAutoContinue(
+                    message -> resumes.add(message), notices::add);
+            watchdog.onTurnFailure("429: usage limit reached", "prompt", false);
+            assertEquals(List.of(""), windows, "listener must see the window with the turn's provider");
+            assertTrue(notices.isEmpty(), "headless runs never arm the wake");
+            watchdog.shutdown();
+        } finally {
+            UsageLimitAutoContinue.removeUsageWindowListener(listener);
+        }
+    }
+
+    @Test
+    void loopSchedulersAreNotifiedForUnbridgedWeeklyWindows() {
+        List<UsageLimitAutoContinue.Verdict> verdicts = new ArrayList<>();
+        UsageLimitAutoContinue.UsageWindowListener listener =
+                (provider, detail, verdict) -> verdicts.add(verdict);
+        UsageLimitAutoContinue.addUsageWindowListener(listener);
+        try {
+            List<String> resumes = new ArrayList<>();
+            List<String> notices = new ArrayList<>();
+            UsageLimitAutoContinue watchdog = new UsageLimitAutoContinue(
+                    message -> resumes.add(message), notices::add);
+            watchdog.onTurnFailure("usage limit reached (weekly limit)", "prompt", true);
+            assertEquals(1, verdicts.size());
+            assertTrue(verdicts.get(0).stopSchedulers());
+            assertFalse(verdicts.get(0).arm(), "no reset exists to sleep until");
+            assertTrue(resumes.isEmpty());
+            assertTrue(notices.isEmpty(), "no wake armed means no armed notice");
+            watchdog.shutdown();
+        } finally {
+            UsageLimitAutoContinue.removeUsageWindowListener(listener);
+        }
+    }
+
+    @Test
+    void loopSchedulersAreNotNotifiedForNonLimitFailures() {
+        List<String> windows = new ArrayList<>();
+        UsageLimitAutoContinue.UsageWindowListener listener =
+                (provider, detail, verdict) -> windows.add(provider);
+        UsageLimitAutoContinue.addUsageWindowListener(listener);
+        try {
+            List<String> notices = new ArrayList<>();
+            UsageLimitAutoContinue watchdog = new UsageLimitAutoContinue(
+                    message -> { }, notices::add);
+            watchdog.onTurnFailure("connection reset by peer", "prompt", true);
+            watchdog.onTurnFailure("429: rate limit exceeded for requests per minute", "prompt", true);
+            assertTrue(windows.isEmpty(), "transient throttles and transport errors must not stop loops");
+            watchdog.shutdown();
+        } finally {
+            UsageLimitAutoContinue.removeUsageWindowListener(listener);
+        }
+    }
+
+    @Test
+    void aBrokenListenerDoesNotBreakAutoContinueOrOtherListeners() {
+        List<String> windows = new ArrayList<>();
+        UsageLimitAutoContinue.UsageWindowListener healthy =
+                (provider, detail, verdict) -> windows.add(provider);
+        UsageLimitAutoContinue.UsageWindowListener broken =
+                (provider, detail, verdict) -> { throw new IllegalStateException("listener exploded"); };
+        UsageLimitAutoContinue.addUsageWindowListener(broken);
+        UsageLimitAutoContinue.addUsageWindowListener(healthy);
+        try {
+            List<String> resumes = new ArrayList<>();
+            List<String> notices = new ArrayList<>();
+            UsageLimitAutoContinue watchdog = new UsageLimitAutoContinue(
+                    message -> resumes.add(message), notices::add);
+            watchdog.onTurnFailure("[Error 429: usage limit reached, try again in 2 seconds]",
+                    "prompt", true);
+            assertTrue(windows.contains(""));
+            assertTrue(notices.stream().anyMatch(n -> n.contains("Auto-continue armed")),
+                    "auto-continue must still arm");
+            watchdog.shutdown();
+        } finally {
+            UsageLimitAutoContinue.removeUsageWindowListener(broken);
+            UsageLimitAutoContinue.removeUsageWindowListener(healthy);
+        }
     }
 
     @Test

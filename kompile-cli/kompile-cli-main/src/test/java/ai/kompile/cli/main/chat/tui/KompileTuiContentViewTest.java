@@ -126,6 +126,78 @@ class KompileTuiContentViewTest {
     }
 
     @Test
+    void repeatedFramesWithoutTranscriptChangesEmitNoContentRegionBytes() throws Exception {
+        var output = new java.io.ByteArrayOutputStream();
+        try (var terminal = new org.jline.terminal.impl.LineDisciplineTerminal(
+                "paint-cache", "xterm", output, java.nio.charset.StandardCharsets.UTF_8);
+             BackgroundProcessManager processes = new BackgroundProcessManager("paint-cache")) {
+            terminal.setSize(new org.jline.terminal.Size(120, 32));
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("paint-cache"), new TerminalRenderer(true));
+            try {
+                tui.start(terminal);
+                tui.getStatusBar().stop(); // Frames must not depend on periodic ticks.
+                tui.recordInScrollRegion("stable one");
+                tui.recordInScrollRegion("stable two");
+                tui.recordInScrollRegion("stable three");
+                tui.redrawContentView();
+                String painted = output.toString(java.nio.charset.StandardCharsets.UTF_8);
+                assertTrue(containsContentRowErase(tui, painted),
+                        "the recovery draw repaints the region it just invalidated");
+                java.util.concurrent.atomic.AtomicInteger cursor = new java.util.concurrent.atomic.AtomicInteger(
+                        output.size());
+
+                // The hot loop while subagents stream: redraws whose transcript
+                // rows are unchanged must not touch a single transcript row.
+                tui.requestRedraw();
+                String idle = awaitFrameDelta(tui, output, cursor,
+                        delta -> !delta.isBlank());
+                assertFalse(containsContentRowErase(tui, idle),
+                        "unchanged transcript frames must not erase or rewrite content rows:\n" + idle);
+
+                // A real transcript change must still paint (no over-caching).
+                tui.recordInScrollRegion("fresh tail");
+                tui.requestRedraw();
+                String changed = awaitFrameDelta(tui, output, cursor,
+                        delta -> delta.contains("fresh tail"));
+                assertTrue(containsContentRowErase(tui, changed),
+                        "changed transcript rows must be repainted:\n" + changed);
+            } finally {
+                tui.stop();
+            }
+        }
+    }
+
+    /** Cursor-addressed erase of any transcript row inside the content region. */
+    private static boolean containsContentRowErase(KompileTui tui, String frame) {
+        for (int row = tui.scrollTop(); row <= tui.transcriptBottom(); row++) {
+            if (frame.contains("\u001B[" + row + ";1H\u001B[2K")) return true;
+        }
+        return false;
+    }
+
+    private static String awaitFrameDelta(KompileTui tui, java.io.ByteArrayOutputStream output,
+                                          java.util.concurrent.atomic.AtomicInteger cursor,
+                                          java.util.function.Predicate<String> expected) throws Exception {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        String delta;
+        do {
+            String all = output.toString(java.nio.charset.StandardCharsets.UTF_8);
+            if (all.length() > cursor.get()) {
+                delta = all.substring(cursor.get());
+                if (expected.test(delta)) {
+                    cursor.set(all.length());
+                    return delta;
+                }
+            }
+            Thread.sleep(10);
+        } while (System.nanoTime() < deadline);
+        fail("frame was not produced:\n" + output.toString(java.nio.charset.StandardCharsets.UTF_8)
+                .substring(Math.min(cursor.get(), output.size())));
+        return "";
+    }
+
+    @Test
     void unchangedTranscriptLayoutIsReusedAcrossRedrawsAndScrolls() throws Exception {
         try (BackgroundProcessManager processes = new BackgroundProcessManager("layout-cache")) {
             KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,

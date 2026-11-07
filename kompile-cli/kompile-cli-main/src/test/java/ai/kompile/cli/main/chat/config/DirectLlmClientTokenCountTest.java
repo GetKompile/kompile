@@ -33,7 +33,7 @@ class DirectLlmClientTokenCountTest {
                     "anthropic", "claude-test", baseUrl(server), "key");
             client.addToHistory("user", "prior turn");
 
-            DirectLlmClient.TokenCountResult count = client.countInputTokens(
+            TokenCountResult count = client.countInputTokens(
                     "pending", "system", tools(), null, null);
 
             assertTrue(count.exact());
@@ -62,7 +62,7 @@ class DirectLlmClientTokenCountTest {
                     "openai-codex", "gpt-test", baseUrl(server), "key");
             client.addToHistory("assistant", "prior answer");
 
-            DirectLlmClient.TokenCountResult count = client.countInputTokens(
+            TokenCountResult count = client.countInputTokens(
                     "pending", "instructions", tools(), null, null);
 
             assertTrue(count.exact());
@@ -89,7 +89,7 @@ class DirectLlmClientTokenCountTest {
                     + "x".repeat(DirectLlmClient.OPENAI_INSTRUCTIONS_MAX_CHARS)
                     + "\nTAIL_SENTINEL";
 
-            DirectLlmClient.TokenCountResult count = client.countInputTokens(
+            TokenCountResult count = client.countInputTokens(
                     "pending", oversized, tools(), null, null);
 
             assertTrue(count.exact());
@@ -152,7 +152,7 @@ class DirectLlmClientTokenCountTest {
                     "gemini", "gemini-test", baseUrl(server) + "/v1beta/openai", "key");
             client.addToHistory("assistant", "prior model output");
 
-            DirectLlmClient.TokenCountResult count = client.countInputTokens(
+            TokenCountResult count = client.countInputTokens(
                     "pending", "system instruction", tools(), null, null);
 
             assertTrue(count.exact());
@@ -181,7 +181,7 @@ class DirectLlmClientTokenCountTest {
             client.addReplayedToolCall("read", "call_1", "{\"file_path\":\"a.txt\"}");
             client.addReplayedToolResult("read", "call_1", "contents");
 
-            DirectLlmClient.TokenCountResult count = client.countInputTokens(
+            TokenCountResult count = client.countInputTokens(
                     "pending", "system", tools(), null, null);
 
             assertFalse(count.supported());
@@ -209,7 +209,7 @@ class DirectLlmClientTokenCountTest {
             DirectLlmClient client = client(
                     "gemini", "gemini-test", baseUrl(server) + "/v1beta/openai", "key");
             var results = java.util.List.of(
-                    new DirectLlmClient.ToolCallResultInput("call_1", "read", "contents", false));
+                    new ToolCallResultInput("call_1", "read", "contents", false));
 
             assertFalse(client.countInputTokens(null, "system", tools(), results, null).exact());
             assertNull(body.get());

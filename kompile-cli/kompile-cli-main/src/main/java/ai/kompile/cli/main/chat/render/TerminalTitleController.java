@@ -36,6 +36,8 @@ public final class TerminalTitleController {
     private int busyFrame;
     private long activityVersion;
     private int runningProcessCount;
+    /** Last title actually handed to the terminal; identical rewrites are skipped. */
+    private String lastWrittenTitle = "";
 
     public void attach(Terminal terminal, String readyTitle) {
         synchronized (lock) {
@@ -44,6 +46,8 @@ public final class TerminalTitleController {
             if (readyTitle != null && !readyTitle.isBlank()) {
                 this.readyTitle = sanitize(readyTitle);
             }
+            // A new terminal has not seen the old title; force the initial write.
+            lastWrittenTitle = "";
             writeLocked(this.readyTitle);
         }
     }
@@ -98,7 +102,11 @@ public final class TerminalTitleController {
                 // Foreground work owns the title; the overlay reappears on reset().
                 return;
             }
-            writeLocked(renderIdleTitleLocked());
+            // Activity ticks call this many times per second; rewriting an unchanged
+            // OSC title just adds writer traffic between prompt repaints.
+            String next = renderIdleTitleLocked();
+            if (next.equals(lastWrittenTitle)) return;
+            writeLocked(next);
         }
     }
 
@@ -193,6 +201,7 @@ public final class TerminalTitleController {
             // concurrent prompt repaint and corrupt both the title and cursor.
             active.writer().print(ESC + "2;" + title + BEL);
             active.writer().flush();
+            lastWrittenTitle = title;
         } catch (RuntimeException ignored) {
             // A closing terminal must not interrupt the chat turn.
         }

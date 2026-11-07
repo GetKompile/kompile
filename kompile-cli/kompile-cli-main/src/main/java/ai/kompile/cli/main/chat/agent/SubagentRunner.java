@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.ReminderManager;
+import ai.kompile.cli.main.chat.render.SubagentTranscript;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 
 /**
@@ -108,6 +109,15 @@ public interface SubagentRunner {
     /** Whether the identified subagent currently owns cancellable work. */
     default boolean canCancel(String subagentId) {
         return false;
+    }
+
+    /**
+     * Typed transcript for the identified child, using the same parts the main
+     * chat renders. Null when the runtime does not retain one or the id is
+     * unknown; callers fall back to the legacy raw-string transcript.
+     */
+    default SubagentTranscript transcriptOf(String subagentId) {
+        return null;
     }
 
     /** Cancel only the identified subagent, leaving its parent turn running. */

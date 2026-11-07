@@ -8,6 +8,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@ai.kompile.cli.main.chat.testing.TemporaryUserHome
 class TestReportReaderTest {
     @TempDir Path root;
     @Test void nestedJUnitSuiteTotalsAreNotDoubleCounted() throws Exception {
@@ -67,6 +68,54 @@ class TestReportReaderTest {
         assertEquals(3L, result.passed());
         assertEquals(1L, result.failed());
     }
+    @Test void discoversAllReportsBeyondOldFileAndDirectoryEntryLimits() throws Exception {
+        var reader = reader();
+        Path reports = Files.createDirectories(root.resolve("target/surefire-reports"));
+        for (int i = 0; i < 2050; i++) Files.writeString(reports.resolve("TEST-" + i + ".xml"),
+                "<testsuite tests='1' failures='" + (i == 2049 ? 1 : 0) + "'/>");
+        var result = reader.fresh("jvm");
+        assertNotNull(result);
+        assertEquals("failed", result.outcome());
+        assertEquals(2050L, result.total());
+        assertEquals(1L, result.failed());
+        assertEquals(2050, reader.references().size());
+    }
+    @Test void discoversReportsBeyondOldModuleCountAndNestingLimits() throws Exception {
+        for (int i = 0; i < 257; i++) {
+            Path module = Files.createDirectories(root.resolve("module-" + i));
+            Files.writeString(module.resolve("pom.xml"), "<project/>");
+        }
+        Path nested = root;
+        for (int i = 0; i < 6; i++) {
+            nested = Files.createDirectories(nested.resolve("nested"));
+            Files.writeString(nested.resolve("pom.xml"), "<project/>");
+        }
+        var reader = reader();
+        Path report = nested.resolve("target/surefire-reports/TEST-nested.xml");
+        Files.createDirectories(report.getParent());
+        Files.writeString(report, "<testsuite tests='2'/>");
+        assertEquals(2L, reader.fresh("jvm").total());
+        assertEquals(java.util.List.of(report.toString()), reader.references());
+    }
+    @Test void reportSizeAndAggregateSizeDoNotDiscardFreshResults() throws Exception {
+        var reader = reader();
+        Path reports = Files.createDirectories(root.resolve("target/surefire-reports"));
+        String padding = " ".repeat(1024 * 1024);
+        for (int i = 0; i < 5; i++) {
+            try (var writer = Files.newBufferedWriter(reports.resolve("TEST-large-" + i + ".xml"))) {
+                writer.write("<testsuite tests='1'>");
+                for (int mb = 0; mb < 9; mb++) writer.write(padding);
+                writer.write("</testsuite>");
+            }
+        }
+        assertEquals(5L, reader.fresh("jvm").total());
+        assertEquals(5, reader.references().size());
+    }
+    private TestReportReader reader() {
+        return new TestReportReader(root, TestCaptureConfig.load(root, text -> fail(text)), "mvn test",
+                java.time.Instant.now(), text -> fail(text));
+    }
+
     private TestRunDetector.Result xml(String xml) throws Exception {
         return TestReportReader.parse(Files.writeString(root.resolve("report.xml"), xml), "fixture");
     }

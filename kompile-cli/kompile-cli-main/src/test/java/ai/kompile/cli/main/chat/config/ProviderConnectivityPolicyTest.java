@@ -74,6 +74,26 @@ class ProviderConnectivityPolicyTest {
     }
 
     @Test
+    void relayedConnectionClosedAndErrorEnvelopesConsumeTheRetryBudget() {
+        ProviderConnectivityPolicy policy = ProviderConnectivityPolicy.forProvider("openai");
+
+        // Native transports and the Kompile server's SSE error events relay provider
+        // drops as IllegalStateException-style envelopes, not IOExceptions. The
+        // capitalized provider phrasing must still classify as a transient drop.
+        for (String message : List.of(
+                "Connection Error: Connection Closed",
+                "connection closed before a terminal event",
+                "turn failed: connection error while streaming")) {
+            assertTrue(policy.isRetryableFailure(new IllegalStateException(message)), message);
+            assertTrue(policy.isRetryableFailure(new IOException(message)), message);
+        }
+        // Non-transport IllegalStateExceptions stay terminal: the policy classifies
+        // messages, not exception shapes.
+        assertFalse(policy.isRetryableFailure(new IllegalStateException("bad request shape")));
+        assertFalse(policy.isRetryableFailure(new IllegalStateException("cancelled")));
+    }
+
+    @Test
     void openAiServerSideErrorEnvelopesCountForRetries() {
         ProviderConnectivityPolicy policy = ProviderConnectivityPolicy.forProvider("openai");
 

@@ -53,6 +53,35 @@ class HookExecutorTest {
         assertSame(original, execute(args -> { calls.incrementAndGet(); return original; }));
         assertEquals(1, calls.get());
     }
+    @Test void managedCommandListsExecuteInSavedOrderOnlyOnTheNextToolCall() throws Exception {
+        var request = JsonUtils.standardMapper().createObjectNode().put("action", "add").put("id", "ordered")
+                .put("event", "PreToolUse").put("matcher", "^write$");
+        var commands = request.putArray("hooks");
+        commands.addObject().put("command", "printf 1 >> order.txt").put("timeout", 5);
+        commands.addObject().put("command", "printf 2 >> order.txt").put("timeout", 6);
+        manager.manage(request);
+        Path output = directory.resolve("order.txt"); assertFalse(Files.exists(output));
+        HookExecutor.Invocation invocation = args -> {
+            assertDoesNotThrow(() -> Files.writeString(output, "tool", java.nio.file.StandardOpenOption.APPEND));
+            return ToolResult.success("ok");
+        };
+        assertFalse(execute(invocation).isError()); assertEquals("12tool", Files.readString(output));
+        request.put("action", "edit");
+        var reordered = request.putArray("hooks"); reordered.add(commands.get(1)); reordered.add(commands.get(0));
+        manager.manage(request); assertEquals("12tool", Files.readString(output));
+        assertFalse(execute(invocation).isError()); assertEquals("12tool21tool", Files.readString(output));
+    }
+    @Test void aBlockingCommandInAListStopsLaterCommandsAndTheTool() throws Exception {
+        var request = JsonUtils.standardMapper().createObjectNode().put("action", "add").put("event", "PreToolUse");
+        var commands = request.putArray("hooks");
+        commands.addObject().put("command", "printf before >> trace.txt");
+        commands.addObject().put("command", "exit 2");
+        commands.addObject().put("command", "printf after >> trace.txt");
+        manager.manage(request);
+        assertTrue(execute(args -> { fail("blocking handler must prevent the tool"); return null; }).isError());
+        assertEquals("before", Files.readString(directory.resolve("trace.txt")));
+    }
+
     @Test void preExitTwoBlocksSideEffect() throws Exception {
         add("PreToolUse", "printf 'policy says no' >&2; exit 2");
         ToolResult result = execute(args -> { fail("tool must not run"); return null; });

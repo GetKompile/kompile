@@ -20,11 +20,20 @@ import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ChatSessionContext;
 import ai.kompile.cli.main.chat.ModelFailoverController;
 import ai.kompile.cli.main.chat.SessionModelLadder;
+import ai.kompile.cli.main.auth.CredentialMenu;
+import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.chat.config.ChatConfig;
-import ai.kompile.cli.main.chat.config.SubagentChatConfig;
-import ai.kompile.cli.main.chat.config.SubagentConfig;
-import ai.kompile.utils.StringUtils;
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
+
 import ai.kompile.cli.main.chat.harness.LoopDetector;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.CompactionService;
@@ -39,6 +48,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -48,6 +58,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import ai.kompile.cli.main.chat.config.SubagentChatConfig;
+import ai.kompile.cli.main.chat.config.SubagentConfig;
+import ai.kompile.utils.StringUtils;
 
 /**
  * Runs subagents through the selected provider transport (HTTP or provider-owned login; no kompile-app server needed).
@@ -58,6 +71,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  * execute tool calls → send results → repeat until text-only response.
  */
 public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
+
+    /** The provider refused the subagent's request; the kind says whether retrying can help. */
+    public static final class ProviderRequestFailedException extends IllegalStateException {
+        private final FailureKind failureKind;
+
+        ProviderRequestFailedException(String message, FailureKind failureKind) {
+            super(message);
+            this.failureKind = failureKind;
+        }
+
+        public FailureKind failureKind() { return failureKind; }
+    }
 
     private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final ChatConfig chatConfig;
@@ -111,6 +136,9 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
         private volatile long lastTouched = System.currentTimeMillis();
         /** Transcript-only stream boundary; reasoning never enters the returned answer. */
         private String streamKind = "";
+        /** Same typed parts the main chat renders; the parent panel projects them directly. */
+        private final ai.kompile.cli.main.chat.render.SubagentTranscript transcript =
+                new ai.kompile.cli.main.chat.render.SubagentTranscript();
         private final ai.kompile.cli.main.chat.SubagentTelemetry telemetry =
                 new ai.kompile.cli.main.chat.SubagentTelemetry();
 
@@ -160,6 +188,15 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
     /** Isolated transport per child; provider-owned login routes remain supported. */
     protected DirectLlmClient createClient(ChatConfig config, ToolContext context) {
         return new DirectLlmClient(config, objectMapper, context.getWorkingDirectory());
+    }
+
+    /**
+     * The depth a child of this process runs at. A provider CLI route (Claude Code, agy,
+     * OpenCode) runs its own tool loop outside the supervised child context, so its client
+     * must know it serves a subagent ({@link DirectLlmClient#runAsSubagent}).
+     */
+    static int childDepth() {
+        return SubagentDelegationGuard.depth(System.getenv(SubagentDelegationGuard.DEPTH_ENV)) + 1;
     }
 
     @Override
@@ -237,6 +274,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
         }
         try (SubagentAdmission.Lease admission = SubagentAdmission.acquire(childConfig.getProvider(), model)) {
         DirectLlmClient subClient = createClient(childConfig, parentContext);
+        subClient.runAsSubagent(childDepth());
         subClient.setPromptCacheSessionId(subagentId);
         AtomicBoolean subagentCancelled = new AtomicBoolean(false);
         subClient.setCancellationCheck(
@@ -281,7 +319,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                             model, childConfig.getCredentialName(), childConfig.getThinking());
             try {
                 new SubagentResumeService(objectMapper).writeMetadata(metadata);
-            } catch (java.io.IOException sidecarFailure) {
+            } catch (IOException sidecarFailure) {
                 // Without a sidecar the run is not discoverable/resumable; the ledger
                 // alone is inert. Warn once and continue — the delegation still runs.
                 System.err.println("Warning: Resumable subagent metadata unavailable ("
@@ -421,6 +459,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
         }
         try (SubagentAdmission.Lease admission = SubagentAdmission.acquire(childConfig.getProvider(), model)) {
         DirectLlmClient subClient = createClient(childConfig, parentContext);
+        subClient.runAsSubagent(childDepth());
         subClient.setPromptCacheSessionId(sessionId);
         AtomicBoolean subagentCancelled = new AtomicBoolean(false);
         subClient.setCancellationCheck(
@@ -482,7 +521,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
             service.writeMetadata(metadata.withParent(parentContext.getSessionId()).withRoute(
                     childConfig.getProvider(), childConfig.getAuthenticationMethod(), model,
                     childConfig.getCredentialName(), childConfig.getThinking()));
-        } catch (java.io.IOException ignored) {
+        } catch (IOException ignored) {
             // Continuation proceeds; the parent update is metadata, not history.
         }
 
@@ -542,6 +581,40 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
         session.ledgerFlushed = count;
     }
 
+    /**
+     * The same model on every other login its route can use, so a child whose
+     * account is exhausted or rejected continues on the user's next one: the
+     * route's other stored credentials and, on the Claude Code route, Claude
+     * Code's own login. The ladder tries these before configured model changes.
+     */
+    static List<SessionModelLadder.ModelRung> credentialRungs(ChatConfig route) {
+        String provider = route.getProvider();
+        String model = route.getModel();
+        String store = route.credentialProvider();
+        if (store == null || model == null || model.isBlank()) return List.of();
+        String current;
+        List<CredentialStore.CredentialInfo> stored;
+        try {
+            current = route.effectiveCredentialName();
+            stored = CredentialMenu.unexpired(CredentialStore.create().list(store));
+        } catch (IOException | RuntimeException unreadable) {
+            return List.of();
+        }
+        boolean claudeCode = route.isClaudeCliNative();
+        List<SessionModelLadder.ModelRung> rungs = new ArrayList<>();
+        for (CredentialStore.CredentialInfo info : stored) {
+            if (info.credentialName().equals(current)) continue;
+            rungs.add(new SessionModelLadder.ModelRung(provider, model, info.credentialName(),
+                    info.credentialName(), route.getThinking(),
+                    claudeCode ? "oauth" : route.getAuthenticationMethod()));
+        }
+        if (claudeCode && current != null) {
+            rungs.add(new SessionModelLadder.ModelRung(provider, model, null,
+                    ChatConfig.CLAUDE_CODE_OWN_LOGIN, route.getThinking(), "native"));
+        }
+        return rungs;
+    }
+
     /** Switch only the child's transport after current policy admits the route. */
     private boolean activateFailover(DirectSession session, ChatConfig candidate) {
         if (session.cancelled.get() || session.parentContext.isAborted()
@@ -549,7 +622,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
         if (!session.agent.isModelAllowed(candidate.getModel())) return false;
         try {
             SubagentAdmission.validateRoute(candidate.getProvider(), candidate.getModel());
-        } catch (java.io.IOException | IllegalStateException refused) {
+        } catch (IOException | IllegalStateException refused) {
             return false;
         }
         // Keep config/client/supervision identities and the existing admission
@@ -569,7 +642,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                 if (metadata != null) service.writeMetadata(metadata.withRoute(
                         session.provider, session.config.getAuthenticationMethod(), session.modelOverride,
                         session.config.getCredentialName(), session.config.getThinking()));
-            } catch (java.io.IOException persistenceFailure) {
+            } catch (IOException persistenceFailure) {
                 emitActivity(session.id, "failover",
                         renderer.renderSubagentStatus(session.label,
                                 "fallback active, but its resume route could not be saved"), session.parentContext);
@@ -580,6 +653,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
 
     private String runConversation(DirectSession session, String prompt, long startTime) throws Exception {
         session.loopDetector.reset();
+        session.transcript.message("user", prompt);
         var previousCancellationCheck = session.client.getCancellationCheck();
         session.client.setCancellationCheck(() -> session.loopDetector.isTerminated()
                 || session.cancelled.get() || session.parentContext.isAborted()
@@ -600,9 +674,17 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
         StringBuilder fullResponse = new StringBuilder();
         LoopDetector loopDetector = session.loopDetector;
         SubagentConfig policy = SubagentConfig.load();
+        // Configured fallback routes are the user's explicit order; without any, a
+        // child fails over to its route's other logins.
+        List<SessionModelLadder.ModelRung> rungs = new ArrayList<>(policy.failoverRungs());
+        if (rungs.isEmpty()) {
+            ChatConfig route = session.config.copy();
+            route.setModel(session.modelOverride);
+            rungs.addAll(credentialRungs(route));
+        }
         ModelFailoverController failover = new ModelFailoverController(
                 SessionModelLadder.forSubagent(session.id, session.parentContext.getWorkingDirectory(),
-                        policy.failoverRungs(), policy.failoverEnabled()),
+                        rungs, policy.failoverEnabled()),
                 () -> {
                     ChatConfig active = session.config.copy();
                     active.setModel(session.modelOverride);
@@ -613,7 +695,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                         renderer.renderSubagentStatus(session.label, notice), session.parentContext));
 
         String currentMessage = prompt;
-        List<DirectLlmClient.ToolCallResultInput> pendingToolResults = null;
+        List<ToolCallResultInput> pendingToolResults = null;
 
         // Direct subagents run until they finish or their shared abort signal
         // fires. Chat does not impose an arbitrary execution-limit cutoff.
@@ -760,8 +842,8 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                     flushLedger(session);
                     continue;
                 }
-                throw new IllegalStateException("Subagent provider request failed: "
-                        + (reason == null || reason.isBlank() ? result.failureKind : reason));
+                throw new ProviderRequestFailedException("Subagent provider request failed: "
+                        + (reason == null || reason.isBlank() ? result.failureKind : reason), result.failureKind);
             }
 
             // Accepted response: the adapter has committed the previous pending tool
@@ -801,7 +883,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
 
             // Mirror the assistant tool-call envelope this response just committed,
             // then advance the committed mark before execution appends results.
-            for (DirectLlmClient.ToolCallOutput tc : result.toolCalls) {
+            for (ToolCallOutput tc : result.toolCalls) {
                 session.compactor.appendToolCall(tc.name, tc.id,
                         tc.arguments == null ? null : tc.arguments.toString());
             }
@@ -809,12 +891,13 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
             flushLedger(session);
 
             session.supervision.beginToolBatch();
-            List<DirectLlmClient.ToolCallResultInput> toolResults = new ArrayList<>();
-            for (DirectLlmClient.ToolCallOutput tc : result.toolCalls) {
+            List<ToolCallResultInput> toolResults = new ArrayList<>();
+            for (ToolCallOutput tc : result.toolCalls) {
                 if (loopDetector.isTerminated()) {
                     String skipped = "Not executed: " + loopDetector.stopNotice();
                     session.compactor.appendToolResult(tc.name, tc.id, skipped);
-                    toolResults.add(new DirectLlmClient.ToolCallResultInput(tc.id, tc.name, skipped, true));
+                    session.transcript.toolComplete(tc.id, skipped, true);
+                    toolResults.add(new ToolCallResultInput(tc.id, tc.name, skipped, true));
                     continue;
                 }
                 if (session.cancelled.get() || session.parentContext.isAborted()) {
@@ -824,6 +907,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                 String rawInput = tc.arguments == null ? "" : tc.arguments.toString();
                 session.telemetry.tool();
                 publishMetadata(session);
+                session.transcript.toolStart(tc.id, tc.name, rawInput);
                 String callSummary = TerminalRenderer.summarizeToolCall(tc.name, rawInput, 88);
                 emitActivity(session.id, callSummary + " …",
                         renderer.renderToolCallStart(tc.name, rawInput), session.parentContext);
@@ -867,11 +951,12 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                             outputTruncator.truncate(toolResult.getOutput(), tc.name).getOutput());
 
                     session.compactor.appendToolResult(tc.name, tc.id, output);
+                    session.transcript.toolComplete(tc.id, output, toolResult.isError());
                     // Not flushed here: a tool result rides the next request and only
                     // becomes committed wire history at the next commit point, where
                     // the ledger delta-append picks it up.
 
-                    toolResults.add(new DirectLlmClient.ToolCallResultInput(
+                    toolResults.add(new ToolCallResultInput(
                             tc.id, tc.name, output, toolResult.isError()));
                 } catch (DirectSubagentSupervision.SupervisionFailure failure) {
                     session.compactor.appendToolResult(tc.name, tc.id,
@@ -881,12 +966,13 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                     loopDetector.afterToolResult(tc.name, executedArguments.get(), "Error: " + e.getMessage(), true);
                     String output = childExecutionOutput(tc.arguments, executedArguments.get(), "Error: " + e.getMessage());
                     session.compactor.appendToolResult(tc.name, tc.id, output);
+                    session.transcript.toolComplete(tc.id, output, true);
                     ToolResult failed = ToolResult.error(e.getMessage());
                     emitActivity(session.id, callSummary + " ✗ "
                                     + TerminalRenderer.truncatePreview(e.getMessage(), 72),
                             renderer.renderSubagentToolCall(tc.name, rawInput, failed),
                             session.parentContext);
-                    toolResults.add(new DirectLlmClient.ToolCallResultInput(
+                    toolResults.add(new ToolCallResultInput(
                             tc.id, tc.name, output, true));
                 } catch (Throwable unexpectedToolFailure) {
                     // Same contract as the main loop: an uncaught LinkageError must not
@@ -895,12 +981,13 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                     loopDetector.afterToolResult(tc.name, executedArguments.get(), "Error: " + failure, true);
                     String output = childExecutionOutput(tc.arguments, executedArguments.get(), "Error: " + failure);
                     session.compactor.appendToolResult(tc.name, tc.id, output);
+                    session.transcript.toolComplete(tc.id, output, true);
                     ToolResult failed = ToolResult.error(failure);
                     emitActivity(session.id, callSummary + " ✗ "
                                     + TerminalRenderer.truncatePreview(failure, 72),
                             renderer.renderSubagentToolCall(tc.name, rawInput, failed),
                             session.parentContext);
-                    toolResults.add(new DirectLlmClient.ToolCallResultInput(
+                    toolResults.add(new ToolCallResultInput(
                             tc.id, tc.name, output, true));
                 } finally {
                     session.activeToolContext = null;
@@ -926,7 +1013,12 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                 renderer.renderSubagentComplete(session.label, durationMs),
                 session.parentContext);
 
-        return finalResult.isEmpty() ? "(subagent returned empty response)" : finalResult;
+        String reported = finalResult.isEmpty() ? "(subagent returned empty response)" : finalResult;
+        // Kept despite a failed review, but never passed off as a reviewed answer.
+        String unreviewed = session.supervision.unreviewedReason();
+        if (unreviewed == null) return reported;
+        session.transcript.message("metadata", "Accepted without completion review: " + unreviewed);
+        return reported + "\n\n[Accepted without child completion review: " + unreviewed + "]";
     }
 
     private static String childExecutionOutput(JsonNode requested, JsonNode executed, String output) {
@@ -1011,6 +1103,12 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
     }
 
     @Override
+    public ai.kompile.cli.main.chat.render.SubagentTranscript transcriptOf(String subagentId) {
+        DirectSession session = sessions.get(subagentId);
+        return session == null ? null : session.transcript;
+    }
+
+    @Override
     public boolean canCancel(String subagentId) {
         DirectSession session = sessions.get(subagentId);
         return session != null && session.running.get()
@@ -1046,6 +1144,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
         EditCoordinatorTool.releaseAgentLocks(toolRegistry, session.id);
         try {
             finishStream(session);
+            session.transcript.finish();
             if (lifecycleListener != null) lifecycleListener.onSubagentEnd(session.id);
         } catch (RuntimeException observerFailure) {
             System.err.println("Warning: Subagent completion observer failed: " + observerFailure.getMessage());
@@ -1075,6 +1174,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
                         lifecycleListener.onSubagentStart(session.id, session.label, "Interactive follow-up");
                         publishMetadata(session);
                     }
+                    session.transcript.reactivate();
                     if (session.ledger != null && session.ledger.usable()) {
                         session.ledger.open();
                         var restored = SubagentLedger.read(session.ledger.file(), objectMapper);
@@ -1184,7 +1284,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
         session.telemetry.put("vendor", config.getProvider());
         session.telemetry.put("authentication", config.getAuthenticationMethod());
         session.telemetry.put("thinking", config.getThinking());
-        session.client.setProviderActivityListener(new DirectLlmClient.ProviderActivityListener() {
+        session.client.setProviderActivityListener(new ProviderActivityListener() {
             private final Map<String, String> inputs = new ConcurrentHashMap<>();
             @Override
             public void onToolStart(String callId, String name, String input) {
@@ -1232,6 +1332,7 @@ public class DirectSubagentRunner implements SubagentRunner, AutoCloseable {
         synchronized (session) {
             session.telemetry.stream(chunk);
             publishMetadata(session);
+            session.transcript.text(kind, chunk);
             if (!kind.equals(session.streamKind)) {
                 if (!session.streamKind.isEmpty()) emitOutput(session.id, "\n");
                 if (kind.equals("thinking")) emitOutput(session.id, renderer.dim("Thinking:\n"));

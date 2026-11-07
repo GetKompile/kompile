@@ -44,6 +44,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -93,6 +94,17 @@ public class MemoryTool implements CliTool {
     private static final int DEFAULT_RECALL_RESULTS = 10;
     private static final int MAX_RECALL_RESULTS = 100;
     private static final int MAX_RECALL_BODY_CHARS = 8_000;
+    /**
+     * Budget for the MEMORY.md indexes every turn carries; an index past it is selected,
+     * not cut. Sized to sit beside the incident section inside the chat's 6000-char
+     * memory envelope, so the envelope's own cut never reaches it.
+     */
+    static final int MAX_CONTEXT_INDEX_CHARS = 4_000;
+    /** The global index's share when a project index exists too; what it leaves goes to the project. */
+    private static final int GLOBAL_INDEX_SHARE = 1_500;
+    private static final int MAX_CONTEXT_ENTRY_CHARS = 240;
+    private static final Pattern STANDING_HEADING =
+            Pattern.compile("(?i)\\b(standing|mandates?|guidance)\\b");
 
     private static final Set<String> MEMORY_TYPES =
             Set.of("user", "feedback", "project", "reference");
@@ -1357,26 +1369,96 @@ public class MemoryTool implements CliTool {
      */
     public static String loadMemoryForContext(Path workDir) {
         StringBuilder sb = new StringBuilder();
+        List<Path> indexes = memoryIndexFiles(workDir);
+        String globalContent = readFileQuietly(indexes.get(0), Integer.MAX_VALUE);
+        String projectContent = readFileQuietly(indexes.get(1), Integer.MAX_VALUE);
 
-        Path globalFile = KompileHome.homeDirectory().toPath()
-                .resolve(MEMORY_DIR).resolve(DEFAULT_FILE);
-        String globalContent = readFileQuietly(globalFile, MAX_MAIN_MEMORY_LINES);
         if (globalContent != null) {
+            int budget = projectContent == null ? MAX_CONTEXT_INDEX_CHARS : GLOBAL_INDEX_SHARE;
             sb.append("[Global memory - ~/.kompile/memory/MEMORY.md]\n");
-            sb.append(globalContent);
+            sb.append(selectIndexForContext(globalContent, budget));
             sb.append("\n\n");
         }
 
-        Path projectFile = workDir.resolve(".kompile")
-                .resolve(MEMORY_DIR).resolve(DEFAULT_FILE);
-        String projectContent = readFileQuietly(projectFile, MAX_MAIN_MEMORY_LINES);
         if (projectContent != null) {
+            int budget = Math.max(GLOBAL_INDEX_SHARE, MAX_CONTEXT_INDEX_CHARS - sb.length());
             sb.append("[Project memory - .kompile/memory/MEMORY.md]\n");
-            sb.append(projectContent);
+            sb.append(selectIndexForContext(projectContent, budget));
             sb.append("\n\n");
         }
 
         return sb.length() > 0 ? sb.toString() : null;
+    }
+
+    /** The global and project MEMORY.md paths, in that order, whether or not they exist. */
+    public static List<Path> memoryIndexFiles(Path workDir) {
+        return List.of(memoryDirectory("global", workDir).resolve(INDEX_FILE),
+                memoryDirectory("project", workDir).resolve(INDEX_FILE));
+    }
+
+    /** The directory a memory {@code scope} ("global" or project) stores its files in. */
+    public static Path memoryDirectory(String scope, Path workDir) {
+        if ("global".equalsIgnoreCase(scope)) {
+            return KompileHome.homeDirectory().toPath().resolve(MEMORY_DIR);
+        }
+        return workDir.resolve(".kompile").resolve(MEMORY_DIR);
+    }
+
+    /**
+     * An index that fits is injected verbatim. A larger one is selected rather than
+     * cut from the top: saves append at the bottom, so a head cut showed the oldest
+     * entries forever and hid every new memory. Standing rules (entries under a
+     * standing/mandate/guidance heading, or typed feedback/user) come first, then the
+     * newest entries until the budget is spent.
+     */
+    static String selectIndexForContext(String content, int budget) {
+        String text = content.strip();
+        if (text.length() <= budget) return text;
+        String[] lines = text.split("\n");
+        List<Integer> pinned = new ArrayList<>();
+        List<Integer> entries = new ArrayList<>();
+        boolean standing = false;
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].strip();
+            if (line.startsWith("#")) {
+                standing = STANDING_HEADING.matcher(line).find();
+            } else if (line.startsWith("- ")) {
+                if (standing || line.contains("[feedback]") || line.contains("[user]")) pinned.add(i);
+                else entries.add(i);
+            }
+        }
+        int total = pinned.size() + entries.size();
+        String notice = "(" + total + " entries, selected: standing rules, then the newest. "
+                + "memory action=recall query=<topic> reaches the rest.)";
+        int room = budget - notice.length() - 1;
+        if (total == 0 || room <= 0) {
+            return text.substring(0, Math.max(0, budget)) + "\n... (index truncated)";
+        }
+        Set<Integer> chosen = new TreeSet<>();
+        // Rules may take two thirds, so the newest entries always keep some room.
+        int used = take(lines, pinned, false, chosen, 0, room * 2 / 3);
+        take(lines, entries, true, chosen, used, room);
+        StringBuilder out = new StringBuilder(notice).append('\n');
+        for (int i : chosen) out.append(clipEntry(lines[i])).append('\n');
+        return out.toString().strip();
+    }
+
+    private static int take(String[] lines, List<Integer> candidates, boolean newestFirst,
+                            Set<Integer> chosen, int used, int limit) {
+        for (int k = 0; k < candidates.size(); k++) {
+            int index = candidates.get(newestFirst ? candidates.size() - 1 - k : k);
+            int cost = clipEntry(lines[index]).length() + 1;
+            if (used + cost > limit) break;
+            chosen.add(index);
+            used += cost;
+        }
+        return used;
+    }
+
+    private static String clipEntry(String line) {
+        String entry = line.strip();
+        return entry.length() <= MAX_CONTEXT_ENTRY_CHARS ? entry
+                : entry.substring(0, MAX_CONTEXT_ENTRY_CHARS - 3) + "...";
     }
 
     /**
@@ -1415,10 +1497,7 @@ public class MemoryTool implements CliTool {
     // ========================================================================
 
     private Path resolveMemoryDir(String scope, Path workDir) {
-        if ("global".equalsIgnoreCase(scope)) {
-            return KompileHome.homeDirectory().toPath().resolve(MEMORY_DIR);
-        }
-        return workDir.resolve(".kompile").resolve(MEMORY_DIR);
+        return memoryDirectory(scope, workDir);
     }
 
     /**

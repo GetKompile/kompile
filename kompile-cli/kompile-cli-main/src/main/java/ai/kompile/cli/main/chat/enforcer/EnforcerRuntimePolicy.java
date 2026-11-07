@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.enforcer;
 
 import ai.kompile.cli.main.chat.ReminderManager;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -153,11 +154,11 @@ public class EnforcerRuntimePolicy {
     }
 
     public static EnforcerRuntimePolicy loadFromEnvironment(ObjectMapper objectMapper) {
-        String active = System.getenv(ENV_ACTIVE);
+        String active = SessionEnvironment.get(ENV_ACTIVE);
         if (!Boolean.parseBoolean(active)) {
             return null;
         }
-        String path = System.getenv(ENV_POLICY_FILE);
+        String path = SessionEnvironment.get(ENV_POLICY_FILE);
         if (path == null || path.isBlank()) {
             return null;
         }

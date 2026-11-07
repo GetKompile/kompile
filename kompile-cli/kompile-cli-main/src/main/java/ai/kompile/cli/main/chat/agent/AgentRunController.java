@@ -124,6 +124,10 @@ public final class AgentRunController {
             String op = arguments == null ? "" : arguments.path("operation").asText("").toLowerCase(Locale.ROOT);
             return !READ_ONLY_CRAWL_OPERATIONS.contains(op);
         }
+        if (normalized.equals("subagent_resume")) {
+            String action = arguments == null ? "list" : arguments.path("action").asText("list").toLowerCase(Locale.ROOT);
+            return !action.equals("list") && !action.equals("show");
+        }
         return switch (normalized) {
             case "crawl_documents", "crawl_source", "write", "edit", "edit_batch", "patch", "edit_patch",
                     "bash", "task", "graph_assert", "ask_graph_assert", "graph_retract",

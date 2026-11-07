@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -144,6 +145,67 @@ class ServerStreamMidDropRecoveryTest {
                     "partial output must survive even when every retry also dropped");
             assertTrue(result.text.startsWith("kept"));
             assertEquals(FAST_POLICY.maxAttempts(), calls.get());
+        }
+    }
+
+    @Test
+    void aRelayedTransientErrorEventReconnectsInsteadOfEndingTheConversation() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        HttpServerFixture fixture = new HttpServerFixture(exchange -> {
+            int call = calls.incrementAndGet();
+            if (call == 1) {
+                // The server relayed its upstream provider's transient drop as an
+                // SSE error event: the turn must reconnect, not die.
+                respondSse(exchange, "event: error\ndata: {\"message\":"
+                        + "\"Connection Error: Connection Closed\"}\n\n");
+            } else {
+                respondSse(exchange,
+                        "event: chunk\ndata: \"recovered\"\n\nevent: complete\n\n");
+            }
+        });
+        AgenticChatLoop loop = loop(fixture.server);
+        try (fixture) {
+            var method = AgenticChatLoop.class.getDeclaredMethod("streamServerTurn",
+                    String.class, String.class, String.class, boolean.class,
+                    String.class, com.fasterxml.jackson.databind.node.ArrayNode.class,
+                    List.class);
+            method.setAccessible(true);
+            AgenticChatLoop.StreamResult result = (AgenticChatLoop.StreamResult)
+                    method.invoke(loop, "hello", "session", "claude", false, "", null, null);
+
+            assertFalse(result.failed, "a transient relayed error must not fail the turn");
+            assertEquals("recovered", result.text);
+            assertEquals(2, calls.get(), "the transient error event must consume one retry");
+        }
+    }
+
+    @Test
+    void aGenuineServerErrorEventStillEndsTheTurn() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        HttpServerFixture fixture = new HttpServerFixture(exchange -> {
+            calls.incrementAndGet();
+            respondSse(exchange, "event: error\ndata: {\"message\":"
+                    + "\"Agent misconfigured: unknown model id\"}\n\n");
+        });
+        AgenticChatLoop loop = loop(fixture.server);
+        try (fixture) {
+            var method = AgenticChatLoop.class.getDeclaredMethod("streamServerTurn",
+                    String.class, String.class, String.class, boolean.class,
+                    String.class, com.fasterxml.jackson.databind.node.ArrayNode.class,
+                    List.class);
+            method.setAccessible(true);
+
+            RuntimeException terminal = assertThrows(RuntimeException.class, () -> {
+                try {
+                    method.invoke(loop, "hello", "session", "claude", false, "", null, null);
+                } catch (java.lang.reflect.InvocationTargetException wrapped) {
+                    throw (RuntimeException) wrapped.getCause();
+                }
+            });
+            assertTrue(terminal.getMessage().contains("unknown model id"),
+                    "the genuine error message must still reach the caller");
+            assertEquals(1, calls.get(),
+                    "a non-transport error must not spend the reconnect budget");
         }
     }
 

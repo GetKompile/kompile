@@ -203,10 +203,25 @@ public class BackgroundProcessManager implements AutoCloseable {
         public ProcessKind getKind() { return kind; }
         public Map<String, String> getMetadata() { return metadata; }
         /** Child presentation is read only by its explicitly opened browser view. */
-        public List<ChatDisplayBlock> transcriptBlocks(TerminalRenderer renderer) {
+        public synchronized List<ChatDisplayBlock> transcriptBlocks(TerminalRenderer renderer) {
+            // MCP children live in another JVM. Load only an explicitly opened view,
+            // and render raw typed parts with this chat's renderer, never the owner's ANSI.
+            String file = metadata.get("transcript_file");
+            String revision = metadata.get("transcript_revision");
+            String snapshot = file == null || revision == null ? null : file + ":" + revision;
+            if (snapshot != null && (kind == ProcessKind.SHARED || transcript == null || fromHistory)
+                    && !snapshot.equals(loadedTranscriptSnapshot)) {
+                try {
+                    transcript = SubagentTranscript.readSnapshot(Path.of(file));
+                    loadedTranscriptSnapshot = snapshot;
+                } catch (IOException | RuntimeException ignored) {
+                    // Keep the last good frame (or the legacy log) on a missing/invalid sidecar.
+                }
+            }
             SubagentTranscript current = transcript;
             return current == null ? List.of() : current.blocks(renderer);
         }
+        private String loadedTranscriptSnapshot;
         public boolean isVirtual() { return process == null; }
 
         /**
@@ -1011,8 +1026,17 @@ public class BackgroundProcessManager implements AutoCloseable {
     /** Launch a command with a one-shot completion monitor installed before output capture starts. */
     public ProcessEntry launchMonitored(String command, String description, Path workDir,
                                         String monitorMessage) throws IOException {
+        return launchMonitored(command, description, workDir, monitorMessage, null);
+    }
+
+    /**
+     * Launch a command whose test-milestone capture is tagged with the delegated surface that
+     * invoked it (e.g. {@code "subagent"} when the process tool runs inside kompile.task).
+     */
+    public ProcessEntry launchMonitored(String command, String description, Path workDir,
+                                        String monitorMessage, String captureOrigin) throws IOException {
         return launch(new String[]{"bash", "-c", command}, command, description, workDir,
-                true, monitorMessage);
+                true, monitorMessage, captureOrigin);
     }
 
     /**
@@ -1027,11 +1051,16 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     public ProcessEntry launch(String[] args, String description, Path workDir) throws IOException {
         String command = String.join(" ", args);
-        return launch(args, command, description, workDir, true, "");
+        return launch(args, command, description, workDir, true, "", null);
     }
 
     private ProcessEntry launch(String[] args, String command, String description, Path workDir,
                                 boolean monitored, String monitorMessage) throws IOException {
+        return launch(args, command, description, workDir, monitored, monitorMessage, null);
+    }
+
+    private ProcessEntry launch(String[] args, String command, String description, Path workDir,
+                                boolean monitored, String monitorMessage, String captureOrigin) throws IOException {
         ProcessEntry entry;
         synchronized (launchLock) {
             // A process started past close() would run on with no one left to kill it.
@@ -1058,7 +1087,7 @@ public class BackgroundProcessManager implements AutoCloseable {
             Process process;
             TestMilestoneCapture capture = TestMilestoneCapture.start(command,
                     workDir != null ? workDir : Path.of(System.getProperty("user.dir")),
-                    sessionId, sessionId + ":" + id, null);
+                    sessionId, sessionId + ":" + id, captureOrigin, null);
             try {
                 process = pb.start();
             } catch (IOException | RuntimeException e) {
@@ -1760,9 +1789,11 @@ public class BackgroundProcessManager implements AutoCloseable {
             if (!entry.isRunning() && entry.endTime != null && entry.endTime.isBefore(cutoff)) {
                 it.remove();
                 monitors.remove(entry.getId());
-                // Also delete the output file
+                // Only owned files: a mirror must never delete its owner's log or sidecar.
                 try {
                     Files.deleteIfExists(entry.outputFile);
+                    Files.deleteIfExists(entry.outputFile.resolveSibling(
+                            entry.outputFile.getFileName() + ".transcript.json"));
                 } catch (IOException ignored) {}
                 removed++;
             }

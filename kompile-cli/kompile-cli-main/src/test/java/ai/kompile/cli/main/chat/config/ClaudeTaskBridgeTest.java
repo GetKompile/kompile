@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -63,6 +64,8 @@ class ClaudeTaskBridgeTest {
 
     @AfterEach
     void tearDown() {
+        // Agent rows are tailed too, so the shared bridge owns a tailer thread.
+        bridge.close();
         processes.close();
     }
 
@@ -338,6 +341,174 @@ class ClaudeTaskBridgeTest {
         assertEquals(2, logs.size(), String.valueOf(logs));
         ProcessEntry replacement = logs.stream().filter(ProcessEntry::isRunning).findFirst().orElseThrow();
         assertEquals(List.of("after the kill"), output(replacement));
+    }
+
+    @Test
+    void aBackgroundShellRowShowsClaudeCodesTaskLogAsItGrows() throws Exception {
+        Path log = Files.createDirectories(tempDir.resolve("claude-tasks")).resolve("shell-1.output");
+        ClaudeTaskBridge tailing = new ClaudeTaskBridge(processes, stopped::add,
+                task -> "shell-1".equals(task) && Files.exists(log) ? log : null);
+        try {
+            tailing.onEvent(PROCESS, new ClaudeCliStreamParser.TaskStarted("shell-1", "toolu_shell-1",
+                    "run the build", "local_bash", true));
+            ProcessEntry row = row("shell-1");
+
+            Files.writeString(log, "compiling 1/2\npart", StandardCharsets.UTF_8);
+            awaitOutput(row, "compiling 1/2");
+            assertFalse(output(row).contains("part"), "a line is shown once it is whole");
+
+            Files.writeString(log, "ial line\ncompiling 2/2\n", StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+            awaitOutput(row, "compiling 2/2");
+            assertTrue(output(row).contains("partial line"), String.valueOf(output(row)));
+
+            // Whatever Claude Code wrote before reporting the end is read before the row ends.
+            Files.writeString(log, "BUILD SUCCESS", StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+            tailing.onEvent(PROCESS, new ClaudeCliStreamParser.TaskEnded("shell-1", "completed", ""));
+            List<String> lines = output(row);
+            assertEquals(ProcessState.COMPLETED, row.getState());
+            assertEquals("BUILD SUCCESS", lines.get(lines.size() - 2), String.valueOf(lines));
+            assertEquals("Claude Code reports the task completed", lines.get(lines.size() - 1));
+        } finally {
+            tailing.close();
+        }
+    }
+
+    @Test
+    void anAgentRowFollowsClaudeCodesTranscriptOfTheChildAsItGrows() throws Exception {
+        // A backgrounded agent's messages never reach the stream; its task log links to
+        // Claude Code's transcript of the child (subagents/agent-<id>.jsonl).
+        Path log = Files.createDirectories(tempDir.resolve("claude-tasks")).resolve("agent-1.output");
+        ClaudeTaskBridge tailing = new ClaudeTaskBridge(processes, stopped::add,
+                task -> "agent-1".equals(task) && Files.exists(log) ? log : null);
+        var renderer = new ai.kompile.cli.main.chat.render.TerminalRenderer(false);
+        try {
+            tailing.onEvent(PROCESS, started("agent-1"));
+            tailing.onEvent(PROCESS, new ClaudeCliStreamParser.SubagentEvent("toolu_agent-1",
+                    new ClaudeCliStreamParser.UserText("index the docs")));
+            ProcessEntry row = row("agent-1");
+            assertEquals(List.of("user"), kinds(row, renderer), "forwarded messages show until the log is found");
+
+            Files.writeString(log, String.join("\n",
+                    """
+                    {"type":"user","isSidechain":true,"message":{"role":"user","content":"index the docs"}}""",
+                    """
+                    {"type":"attachment","isSidechain":true,"attachment":{"type":"skill_listing"}}""",
+                    """
+                    {"type":"assistant","isSidechain":true,"message":{"id":"msg_1","model":"claude-child","role":"assistant","content":[{"type":"text","text":"Reading the index."}],"usage":{"input_tokens":40,"output_tokens":5}}}""",
+                    """
+                    {"type":"assistant","isSidechain":true,"message":{"id":"msg_1","model":"claude-child","role":"assistant","content":[{"type":"tool_use","id":"toolu_read","name":"Read","input":{"file_path":"docs/index.md"}}],"usage":{"input_tokens":40,"output_tokens":9}}}""",
+                    """
+                    {"type":"user","isSidechain":true,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_read","content":"# Index"}]}}""",
+                    "not json")
+                    + "\n", StandardCharsets.UTF_8);
+            awaitKinds(row, renderer, List.of("user", "assistant", "tool"));
+            String shown = row.transcriptBlocks(renderer).toString();
+            assertTrue(shown.contains("Reading the index."), shown);
+            assertTrue(shown.contains("# Index"), "the child's tool result is shown: " + shown);
+            assertEquals("claude-child", row.getMetadata().get("model"));
+            assertEquals("40", row.getMetadata().get("input_tokens"), "one request's repeats are not additive");
+            assertEquals("1", row.getMetadata().get("tool_uses"));
+
+            // The followed transcript already holds whatever the stream still forwards.
+            tailing.onEvent(PROCESS, new ClaudeCliStreamParser.SubagentEvent("toolu_agent-1",
+                    new ClaudeCliStreamParser.Text("Reading the index.")));
+            assertEquals(List.of("user", "assistant", "tool"), kinds(row, renderer));
+
+            // What Claude Code wrote before reporting the end is read before the row ends,
+            // even a last line without its newline yet.
+            Files.writeString(log, """
+                    {"type":"assistant","isSidechain":true,"message":{"id":"msg_3","role":"assistant","content":[{"type":"text","text":"Indexed 3 pages."}]}}""",
+                    StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+            tailing.onEvent(PROCESS, new ClaudeCliStreamParser.TaskEnded("agent-1", "completed", "done"));
+            assertEquals(ProcessState.COMPLETED, row.getState());
+            var blocks = row.transcriptBlocks(renderer);
+            assertEquals(List.of("user", "assistant", "tool", "assistant"), kinds(row, renderer));
+            assertTrue(blocks.get(3).classic().contains("Indexed 3 pages."), String.valueOf(blocks));
+            assertTrue(blocks.stream().noneMatch(ai.kompile.cli.main.chat.render.ChatDisplayBlock::running));
+            assertFalse(blocks.toString().contains("not json"), "other log lines are never shown as messages");
+        } finally {
+            tailing.close();
+        }
+    }
+
+    @Test
+    void aLongTranscriptLineIsShownOnceClaudeCodeFinishesWritingIt() throws Exception {
+        Path log = Files.createDirectories(tempDir.resolve("claude-tasks")).resolve("agent-3.output");
+        ClaudeTaskBridge tailing = new ClaudeTaskBridge(processes, stopped::add,
+                task -> "agent-3".equals(task) && Files.exists(log) ? log : null);
+        var renderer = new ai.kompile.cli.main.chat.render.TerminalRenderer(false);
+        try {
+            tailing.onEvent(PROCESS, started("agent-3"));
+            ProcessEntry row = row("agent-3");
+            String text = "x".repeat(100_000) + " END";
+            String line = """
+                    {"type":"assistant","isSidechain":true,"message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"%s"}]}}
+                    """.formatted(text);
+            // More than a shell log's longest held line, written in two parts.
+            Files.writeString(log, line.substring(0, 80_000), StandardCharsets.UTF_8);
+            Thread.sleep(1_500);
+            assertEquals(List.of(), kinds(row, renderer), "half a line is held, not shown or dropped");
+            Files.writeString(log, line.substring(80_000), StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+            awaitKinds(row, renderer, List.of("assistant"));
+            assertTrue(row.transcriptBlocks(renderer).get(0).classic().contains("END"));
+        } finally {
+            tailing.close();
+        }
+    }
+
+    @Test
+    void anAgentRowWhoseTranscriptIsNeverFoundKeepsTheForwardedMessages() {
+        ClaudeTaskBridge tailing = new ClaudeTaskBridge(processes, stopped::add, task -> null);
+        var renderer = new ai.kompile.cli.main.chat.render.TerminalRenderer(false);
+        try {
+            tailing.onEvent(PROCESS, started("agent-2"));
+            tailing.onEvent(PROCESS, new ClaudeCliStreamParser.SubagentEvent("toolu_agent-2",
+                    new ClaudeCliStreamParser.Text("streamed answer")));
+            tailing.onEvent(PROCESS, new ClaudeCliStreamParser.TaskEnded("agent-2", "completed", "done"));
+            ProcessEntry row = row("agent-2");
+            assertEquals(List.of("assistant"), kinds(row, renderer));
+            assertTrue(row.transcriptBlocks(renderer).get(0).classic().contains("streamed answer"));
+        } finally {
+            tailing.close();
+        }
+    }
+
+    private static List<String> kinds(ProcessEntry row, ai.kompile.cli.main.chat.render.TerminalRenderer renderer) {
+        return row.transcriptBlocks(renderer).stream()
+                .map(ai.kompile.cli.main.chat.render.ChatDisplayBlock::kind).toList();
+    }
+
+    private static void awaitKinds(ProcessEntry row, ai.kompile.cli.main.chat.render.TerminalRenderer renderer,
+                                   List<String> expected) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (!kinds(row, renderer).equals(expected)) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("expected " + expected + " in " + kinds(row, renderer));
+            }
+            Thread.sleep(25);
+        }
+    }
+
+    @Test
+    void aTaskLogIsFoundThroughItsSessionWhateverTheProjectFolderIsCalled() throws IOException {
+        Path user = tempDir.resolve("claude-1000");
+        Path log = Files.createDirectories(user.resolve("-home-me-project").resolve("session-1").resolve("tasks"))
+                .resolve("b1x2.output");
+        Files.writeString(log, "", StandardCharsets.UTF_8);
+        Files.createDirectories(user.resolve("-home-me-other").resolve("session-2").resolve("tasks"));
+
+        assertEquals(log, ClaudeTaskBridge.findTaskOutput(List.of(user), "session-1", "b1x2"));
+        assertNull(ClaudeTaskBridge.findTaskOutput(List.of(user), "session-2", "b1x2"));
+        assertNull(ClaudeTaskBridge.findTaskOutput(List.of(user), "session-1", "../b1x2"), "ids stay names");
+        assertNull(ClaudeTaskBridge.findTaskOutput(List.of(user), null, "b1x2"));
+    }
+
+    private static void awaitOutput(ProcessEntry row, String line) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (!output(row).contains(line)) {
+            if (System.nanoTime() > deadline) throw new AssertionError("no '" + line + "' in " + output(row));
+            Thread.sleep(25);
+        }
     }
 
     private static ClaudeCliStreamParser.TaskStarted started(String taskId) {

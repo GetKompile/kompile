@@ -21,6 +21,8 @@ public final class DashboardCommands {
     public static final String DISCOVERY = "Reports: /dashboard-summary /dashboard-tools /dashboard-judge /dashboard-tests\n"
             + "         /dashboard-crawl /dashboard-graph /dashboard-tokens /dashboard-tasks /dashboard-processes\n"
             + "Timeline: /timeline [session:ID run:ID kind:TYPE] | next | inspect:EVENT_ID | follow | stop (alias: /dashboard-timeline)\n"
+            + "          /dashboard-timeline tokens [from:ISO to:ISO | last N days] — project token usage by model, default last 7 days\n"
+            + "Tokens: /dashboard-tokens [last N days] — project total for the window (default last 7 days), then the tool breakdown\n"
             + "Controls: /dashboard refresh|show|hide|status (aliases: reload|on|off)\n"
             + "Filters: session:ID tool:NAME call:ID offset:N last 2 hours; offset is tool-token rows only.";
 

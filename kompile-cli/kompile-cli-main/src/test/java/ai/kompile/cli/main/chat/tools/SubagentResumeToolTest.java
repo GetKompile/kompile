@@ -57,6 +57,36 @@ class SubagentResumeToolTest {
         assertTrue(discovery.activateGroup("delegation").contains(tool.id()));
     }
 
+    @Test void cancelStopsARunningChildByItsLiveIdOnly() throws Exception {
+        var service = new SubagentResumeService(directory, MAPPER);
+        var cancelled = new java.util.ArrayList<String>();
+        SubagentRunner runner = new SubagentRunner() {
+            public String runSubagent(AgentConfig agent, String prompt, ToolContext parent) { throw new AssertionError(); }
+            @Override public boolean canCancel(String id) { return id.equals("general-live"); }
+            @Override public boolean cancel(String id) { cancelled.add(id); return true; }
+        };
+        var tool = new SubagentResumeTool(MAPPER, service, (metadata, params, context) -> { fail("not a resume"); return null; });
+        ToolContext context = context();
+        context.getToolRegistry().setSubagentRunner(runner);
+
+        var result = tool.execute(MAPPER.createObjectNode().put("action", "cancel").put("session_id", "general-live"), context);
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals(java.util.List.of("general-live"), cancelled);
+        assertEquals(true, result.getMetadata().get("cancelled"));
+
+        var finished = tool.execute(MAPPER.createObjectNode().put("action", "cancel").put("session_id", "general-done"), context);
+        assertTrue(finished.isError());
+        assertTrue(finished.getOutput().contains("not running"), finished.getOutput());
+        assertEquals(1, cancelled.size(), "a child that cannot be cancelled is never asked to");
+        assertTrue(tool.execute(MAPPER.createObjectNode().put("action", "cancel"), context).isError());
+        assertTrue(AgentRunController.isMutation(tool.id(), MAPPER.createObjectNode().put("action", "cancel")));
+
+        context.getToolRegistry().setSubagentRunner(null);
+        var unavailable = tool.execute(MAPPER.createObjectNode().put("action", "cancel").put("session_id", "general-live"), context);
+        assertTrue(unavailable.isError());
+        assertTrue(unavailable.getOutput().contains("unavailable"), unavailable.getOutput());
+    }
+
     @Test void differentNativeAgentAndRouteReachResumeNotFreshTask() throws Exception {
         var service = seed("subagent-native", "native-run");
         AtomicReference<AgentConfig> selected = new AtomicReference<>();

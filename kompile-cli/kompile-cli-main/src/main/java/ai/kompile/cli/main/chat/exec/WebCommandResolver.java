@@ -81,7 +81,11 @@ public final class WebCommandResolver {
      * Who a web run acts as, from the flags it was started with: the agent it names, its
      * role, and whether it skips permission prompts.
      */
-    public record RunPermissions(String agentName, String roleName, boolean skipPermissions) { }
+    public record RunPermissions(String agentName, String roleName, boolean skipPermissions, boolean managementBlocked) {
+        public RunPermissions(String agentName, String roleName, boolean skipPermissions) {
+            this(agentName, roleName, skipPermissions, false);
+        }
+    }
 
     /**
      * Resolve input for a web run started with {@code permissions}. A process command sent
@@ -91,6 +95,14 @@ public final class WebCommandResolver {
     public static Resolution resolve(WebChatInput input, Path directory, RunPermissions permissions) {
         return resolveInternal(input, () -> loadSkills(directory), new ChatSessionStateStore(), directory,
                 null, null, permissions);
+    }
+
+    /** Resolve from the actual host options, preserving both configuration and principal. */
+    public static Resolution resolveForRun(WebChatInput input, Path directory, ChatSessionStateStore stateStore,
+                                           ChatConfig configOverride, RunPermissions permissions) {
+        return resolveInternal(input, () -> loadSkills(directory),
+                stateStore == null ? new ChatSessionStateStore() : stateStore, directory,
+                configOverride == null ? null : () -> configOverride, null, permissions);
     }
 
     /** Headless entry: explicit store seam for tests and embedders. */
@@ -142,7 +154,7 @@ public final class WebCommandResolver {
         // Headless session-configuration read: one quiet outcome with every config
         // menu aggregated. Never reaches a model turn and never touches rawInput.
         if (input.configQuery()) {
-            return configSnapshot(input, stateStore, directory, configOverride, modelCatalogStorePath);
+            return configSnapshot(input, stateStore, directory, configOverride, modelCatalogStorePath, permissions);
         }
         if (input.insightsQuery()) return insightsSnapshot(input, directory);
         if (input.workflowApprove() != null) return workflowApproval(input, directory);
@@ -164,6 +176,23 @@ public final class WebCommandResolver {
                 var report = new ai.kompile.cli.main.chat.config.VendorUsageService().fetch(config);
                 return new Resolution(report.status() == ai.kompile.cli.main.chat.config.VendorUsageService.Status.ERROR
                         ? Status.INVALID : Status.COMPLETED, command, report.text(), null);
+            }
+            if ("hooks".equals(name) || "permissions".equals(name)) {
+                ToolContext principal = durablePrincipal(input.sessionId(), directory, permissions, stateStore, configOverride);
+                boolean manage = managementAllowed(directory, permissions, configOverride);
+                String arguments = raw.substring(Math.min(end, raw.length()));
+                return "hooks".equals(name) ? WebHooksSettings.resolve(arguments, principal, manage)
+                        : WebPermissionSettings.resolve(arguments, principal, manage);
+            }
+            if ("subagent-config".equals(name)) {
+                return WebHarnessSettings.subagents(raw.substring(Math.min(end, raw.length())));
+            }
+            if ("test-milestones".equals(name)) {
+                return WebTestMilestones.resolve(raw.substring(end), input.sessionId(), directory);
+            }
+            if ("subagents".equals(name)) {
+                return new WebDurableSubagents().resolve(raw.substring(end), directory,
+                        durablePrincipal(input.sessionId(), directory, permissions, stateStore, configOverride));
             }
             if ("model".equals(name)) {
                 return resolveModelCommand(raw.substring(Math.min(end, raw.length())),
@@ -305,6 +334,7 @@ public final class WebCommandResolver {
         }
         PermissionService permissionService = new PermissionService();
         permissionService.setAutoApproveAll(permissions.skipPermissions());
+        WebPermissionSettings.apply(sessionId, directory, permissionService);
         permissionService.setPromptListener(ignored -> permissionService.submitPromptResponse("deny"));
         ToolContext context = new ToolContext(sessionId, agents.get(agent), permissionService, directory, null);
         // Coordination first, as in a run: it creates the project's .kompile directory, where
@@ -325,6 +355,38 @@ public final class WebCommandResolver {
         } finally {
             coordinator.shutdown();
         }
+    }
+
+    /** A read-only principal, without starting tools, a model, coordination, or a transcript. */
+    private static ToolContext durablePrincipal(String sessionId, Path directory, RunPermissions permissions,
+                                                 ChatSessionStateStore store, Supplier<ChatConfig> configOverride) {
+        if (directory == null) return null;
+        try {
+            RunPermissions run = permissions == null ? new RunPermissions(null, null, false) : permissions;
+            AgentRegistry agents = new AgentRegistry();
+            new CustomAgentLoader(directory).loadAll().values().forEach(agents::register);
+            RoleManager roles = new RoleManager(directory);
+            String durableRole = run.roleName() == null || run.roleName().isBlank()
+                    ? store.loadRole(sessionId, directory) : null;
+            if (durableRole != null && !durableRole.isBlank() && roles.getRole(durableRole) == null) return null;
+            String agent = HeadlessAgentRunner.localTurnAgent(agents, roles, run.roleName(), durableRole,
+                    defaultAgent(run, directory, configOverride));
+            if (agent == null || agents.get(agent) == null) return null;
+            PermissionService permissionService = new PermissionService();
+            permissionService.setAutoApproveAll(false);
+            if (sessionId != null && !sessionId.isBlank()) WebPermissionSettings.apply(sessionId, directory, permissionService);
+            permissionService.setPromptListener(ignored -> permissionService.submitPromptResponse("deny"));
+            return new ToolContext(sessionId, agents.get(agent), permissionService, directory, null);
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+    }
+
+    private static boolean managementAllowed(Path directory, RunPermissions permissions, Supplier<ChatConfig> override) {
+        if (permissions != null && permissions.managementBlocked()) return false;
+        ChatConfig config = override != null ? override.get() : ChatConfig.loadOrFromEnv(directory == null ? Path.of(".") : directory);
+        return config == null || ("standard".equalsIgnoreCase(config.getChatMode())
+                && !config.isKompileServer() && !config.isOpenCodeNative());
     }
 
     /** The agent a local run defaults to: the one it names, else the configured default, else coder. */
@@ -348,6 +410,10 @@ public final class WebCommandResolver {
             ChatSessionStateStore store, Path directory, Supplier<ChatConfig> configOverride,
             Path modelCatalogStorePath) {
         String rest = argumentRegion == null ? "" : argumentRegion.strip();
+        String[] action = rest.split("\\s+", 2);
+        if ("failover".equals(action[0]) || "ladder".equals(action[0])) {
+            return WebHarnessSettings.ladder(action.length == 2 ? action[1] : "", input.sessionId(), directory, false);
+        }
         ChatConfig config = configOverride != null ? configOverride.get()
                 : ChatConfig.loadOrFromEnv(directory == null ? Path.of(".") : directory);
         String sessionId = input.sessionId() == null || input.sessionId().isBlank()
@@ -970,7 +1036,7 @@ public final class WebCommandResolver {
 
     private static Resolution configSnapshot(WebChatInput input, ChatSessionStateStore store,
                                              Path directory, Supplier<ChatConfig> configOverride,
-                                             Path modelCatalogStorePath) {
+                                             Path modelCatalogStorePath, RunPermissions permissions) {
         Path workDir = directory == null ? Path.of(".") : directory;
         String sessionId = input.sessionId() == null || input.sessionId().isBlank()
                 ? null : input.sessionId();
@@ -996,6 +1062,20 @@ public final class WebCommandResolver {
         data.set("fast", fastSnapshot(config));
         data.set("ultracode", ultracodeSnapshot(config));
         data.set("thinking", thinkingSnapshot(config, discovery));
+        try {
+            data.set("subagents", WebHarnessSettings.subagents());
+        } catch (java.io.IOException invalidPolicy) {
+            data.putObject("subagents").put("menu", "subagent-config")
+                    .put("error", "Subagent configuration could not be read; no default policy was substituted.");
+        }
+        try {
+            data.set("durableSubagents", new WebDurableSubagents().list(workDir,
+                    durablePrincipal(sessionId, workDir, permissions, store, configOverride)));
+        } catch (Exception denied) {
+            data.putObject("durableSubagents").put("menu", "durable-subagents").put("action", "list")
+                    .put("error", "Durable child discovery is unavailable to the current principal.").putArray("children");
+        }
+        data.set("failover", WebHarnessSettings.failover(sessionId, workDir));
         ReminderManager sessionReminders = new ReminderManager(JsonUtils.standardMapper(),
                 sessionId == null ? "unknown-session" : sessionId, workDir);
         data.set("reminders", reminderSnapshot(ReminderManager.Scope.SESSION, sessionReminders));
@@ -1013,6 +1093,15 @@ public final class WebCommandResolver {
         queueData.put("scope", "session");
         queueData.set("queued", refreshedEntries(queue));
         data.set("queue", queueData);
+        data.set("judge", judgeData(input, store, workDir));
+        ToolContext principal = durablePrincipal(sessionId, workDir, permissions, store, configOverride);
+        boolean manage = managementAllowed(workDir, permissions, configOverride);
+        try { data.set("permissions", WebPermissionSettings.snapshot(principal, manage)); }
+        catch (Exception refused) { data.putObject("permissions").put("menu", "permissions").put("canManage", false)
+                .put("error", "Permission settings are unavailable to this principal or session."); }
+        try { data.set("hooks", WebHooksSettings.snapshot(principal, manage)); }
+        catch (Exception refused) { data.putObject("hooks").put("menu", "hooks").put("canManage", false)
+                .put("error", "Hook settings could not be read safely."); }
         StringBuilder text = new StringBuilder("Session configuration snapshot loaded.");
         if (sessionId != null) text.append(" Session: ").append(sessionId);
         return new Resolution(Status.INTERACTION_REQUIRED, "/config", text.toString(), null, data);

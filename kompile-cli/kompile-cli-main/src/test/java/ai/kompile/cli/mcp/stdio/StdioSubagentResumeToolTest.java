@@ -103,6 +103,17 @@ class StdioSubagentResumeToolTest {
         assertFalse(tool.parameterSchema().path("properties").has("agent_type"));
     }
 
+    @Test void mcpDoesNotOfferCancelBecauseClientsCancelTheToolCall() throws Exception {
+        var tool = new StdioSubagentResumeTool(new StdioTaskTool(null, null, MAPPER, null), MAPPER, seed());
+        var actions = tool.parameterSchema().path("properties").path("action").path("enum");
+        assertEquals("[\"list\",\"show\",\"resume\"]", actions.toString());
+        assertFalse(tool.description().contains("cancel"), tool.description());
+        assertFalse(tool.compactHint().contains("cancel"), tool.compactHint());
+        var refused = tool.execute(MAPPER.createObjectNode().put("action", "cancel").put("session_id", ID), context());
+        assertTrue(refused.isError());
+        assertTrue(refused.getOutput().contains("cancelling its tool call"), refused.getOutput());
+    }
+
     @Test void nativeRuntimeInvokesResumeRatherThanStartingANewChild() throws Exception {
         var config = new ai.kompile.cli.main.chat.config.ChatConfig();
         config.setProvider("openai"); config.setModel("target-model"); config.setApiKey("test-key");

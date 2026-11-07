@@ -128,6 +128,75 @@ class FileToolSafetyTest {
         assertEquals("external\n", Files.readString(file));
     }
 
+    @Test
+    void subagentEditThatEmptiesFileIsRefused() throws Exception {
+        Path file = tempDir.resolve("victim.txt");
+        Files.writeString(file, "alpha\nbeta\n");
+        context.markSupervisedChild();
+        assertFalse(new ReadTool().execute(readParams("victim.txt"), context).isError());
+
+        ToolResult edit = new EditTool().execute(editParams("victim.txt", "alpha\nbeta", "  "), context);
+
+        assertTrue(edit.isError());
+        assertTrue(edit.getOutput().contains("equivalent to deleting it"), edit.getOutput());
+        assertEquals("alpha\nbeta\n", Files.readString(file));
+    }
+
+    @Test
+    void subagentPartialRemovalStillApplies() throws Exception {
+        Path file = tempDir.resolve("partial.txt");
+        Files.writeString(file, "alpha\nbeta\n");
+        context.markSupervisedChild();
+        assertFalse(new ReadTool().execute(readParams("partial.txt"), context).isError());
+
+        ToolResult edit = new EditTool().execute(editParams("partial.txt", "alpha\n", ""), context);
+
+        assertFalse(edit.isError(), edit::getOutput);
+        assertEquals("beta\n", Files.readString(file));
+    }
+
+    @Test
+    void subagentBlankOverwriteIsRefused() throws Exception {
+        Path file = tempDir.resolve("victim.txt");
+        Files.writeString(file, "alpha\n");
+        context.markSupervisedChild();
+        assertFalse(new ReadTool().execute(readParams("victim.txt"), context).isError());
+
+        ToolResult write = new WriteTool().execute(writeParams("victim.txt", "\n"), context);
+
+        assertTrue(write.isError());
+        assertTrue(write.getOutput().contains("equivalent to deleting it"), write.getOutput());
+        assertEquals("alpha\n", Files.readString(file));
+    }
+
+    @Test
+    void subagentBatchEditThatEmptiesFileIsRefused() throws Exception {
+        Path file = tempDir.resolve("victim.txt");
+        Files.writeString(file, "alpha\nbeta\n");
+        context.markSupervisedChild();
+        assertFalse(new ReadTool().execute(readParams("victim.txt"), context).isError());
+
+        ObjectNode params = om.createObjectNode();
+        params.putArray("edits").add(editParams("victim.txt", "alpha\n", ""))
+                .add(editParams("victim.txt", "beta\n", ""));
+        ToolResult batch = new EditBatchTool().execute(params, context);
+
+        assertTrue(batch.getOutput().contains("equivalent to deleting it"), batch::getOutput);
+        assertEquals("alpha\nbeta\n", Files.readString(file));
+    }
+
+    @Test
+    void parentAgentMayEmptyFile() throws Exception {
+        Path file = tempDir.resolve("parent.txt");
+        Files.writeString(file, "alpha\n");
+        assertFalse(new ReadTool().execute(readParams("parent.txt"), context).isError());
+
+        ToolResult edit = new EditTool().execute(editParams("parent.txt", "alpha\n", ""), context);
+
+        assertFalse(edit.isError(), edit::getOutput);
+        assertEquals("", Files.readString(file));
+    }
+
     private ObjectNode readParams(String filePath) {
         ObjectNode params = om.createObjectNode();
         params.put("file_path", filePath);

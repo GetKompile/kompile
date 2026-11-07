@@ -18,7 +18,14 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.common.mcp.McpSseClient;
-import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.IdleTimeoutInputStream;
 import ai.kompile.cli.main.chat.config.ProviderConnectivityPolicy;
@@ -61,6 +68,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiPredicate;
 import java.util.stream.Collectors;
+import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 
 /**
  * Handles chat message dispatch: inline RAG, local/agentic chat, server streaming, and
@@ -309,7 +317,6 @@ public class ChatMessageHandler {
             }
             String timelineTurnId = repl.getTimelineLifecycle().turnStarted("synchronous-owner");
             try {
-                repl.syncPendingSessionTitle();
                 handleAcceptedChatMessage(message);
             } finally {
                 repl.getTimelineLifecycle().turnFinished(timelineTurnId);
@@ -688,7 +695,6 @@ public class ChatMessageHandler {
                 quotaTurn.set(quotaOwner);
                 String timelineTurnId = repl.getTimelineLifecycle().turnStarted("dispatch-owner");
                 try {
-                    repl.syncPendingSessionTitle();
                     action.run();
                 } catch (Throwable uncaughtTurnFailure) {
                     // LinkageError and friends are not Exception: before this guard, an
@@ -1168,6 +1174,8 @@ public class ChatMessageHandler {
         if (changed) savePendingEvents();
         // Render only accepted deliveries, not queued events or unacknowledged native writes.
         for (String event : events) {
+            // A follow-up marker carries no event text; its task ends were shown on arrival.
+            if (DirectLlmClient.isProviderFollowUp(event)) continue;
             var block = renderer.renderAgentNotificationBlock(event);
             if (block == null) continue;
             BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
@@ -1560,6 +1568,19 @@ public class ChatMessageHandler {
         return output == null ? "" : output;
     }
 
+    /**
+     * Prefixes the turn with recalled memory. Callers run this after
+     * {@link #startActivityIndicator()}: recall reads saved transcripts and
+     * incidents (and RAG in server mode), and before the indicator was up the
+     * user saw a sent message and nothing else for as long as it took.
+     */
+    private String withMemoryContext(String message) {
+        if (chatMemory == null || !chatMemory.isEnabled()) return message;
+        String memoryContext = chatMemory.buildMemoryContext(message);
+        return memoryContext == null ? message
+                : "<memory_context>\n" + memoryContext + "</memory_context>\n\n" + message;
+    }
+
     private void startActivityIndicator() {
         setForegroundActivity("Thinking");
         beginForegroundProgress();
@@ -1570,6 +1591,9 @@ public class ChatMessageHandler {
         if (!ChatCompleter.hasLineReader()) {
             repl.printGeneratingIndicator();
         }
+        // The registry write fsyncs under a lock shared with other sessions;
+        // run it on the turn owner only once the user can see the turn started.
+        repl.syncPendingSessionTitle();
     }
 
     /**
@@ -1604,17 +1628,9 @@ public class ChatMessageHandler {
         // Claude Code-style: a bare image path in the prompt becomes an attached image
         // plus an [Image #N] chip so the model sees the pixels, not the filename.
         if (!providerFollowUp) message = repl.autoAttachImagePaths(message);
-        // Build memory-enriched message if memory is enabled
-        String enrichedMessage = message;
-        if (!providerFollowUp && chatMemory != null && chatMemory.isEnabled()) {
-            String memoryContext = chatMemory.buildMemoryContext(message);
-            if (memoryContext != null) {
-                enrichedMessage = "<memory_context>\n" + memoryContext + "</memory_context>\n\n" + message;
-            }
-        }
 
         // Load pending attachments and pass to agentic loop
-        List<DirectLlmClient.AttachmentInput> attachments = providerFollowUp ? null : loadAttachments();
+        List<AttachmentInput> attachments = providerFollowUp ? null : loadAttachments();
         if (attachments != null) {
             agenticLoop.setPendingAttachments(attachments);
         }
@@ -1627,6 +1643,7 @@ public class ChatMessageHandler {
         long turnStart = System.currentTimeMillis();
 
         try {
+            String enrichedMessage = providerFollowUp ? message : withMemoryContext(message);
             String response = agenticLoop.chat(
                     enrichedMessage, sessionId, repl.getLocalAgentName(), repl.getAgentName(), false);
 
@@ -1658,19 +1675,11 @@ public class ChatMessageHandler {
     // ========================================================================
 
     public void handleServerChat(String message) {
-        // Build memory-enriched message if memory is enabled
-        String enrichedMessage = message;
-        if (chatMemory != null && chatMemory.isEnabled()) {
-            String memoryContext = chatMemory.buildMemoryContext(message);
-            if (memoryContext != null) {
-                enrichedMessage = "<memory_context>\n" + memoryContext + "</memory_context>\n\n" + message;
-            }
-        }
-
         repl.setLlmBusy(true);
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("LLM response: " + StringUtils.truncate(message, 50));
         startActivityIndicator();
         try {
+            String enrichedMessage = withMemoryContext(message);
             String outboundMessage = reminderManager == null
                     ? enrichedMessage : reminderManager.decorateUserTurn(enrichedMessage);
             emitReminderSection(outboundMessage);
@@ -1749,19 +1758,11 @@ public class ChatMessageHandler {
         chatHistory.logUserMessage("/ask " + (reminderManager == null
                 ? message : reminderManager.previewUserTurn(message)));
 
-        // Build memory-enriched message if memory is enabled
-        String enrichedMessage = message;
-        if (chatMemory != null && chatMemory.isEnabled()) {
-            String memoryContext = chatMemory.buildMemoryContext(message);
-            if (memoryContext != null) {
-                enrichedMessage = "<memory_context>\n" + memoryContext + "</memory_context>\n\n" + message;
-            }
-        }
-
         repl.setLlmBusy(true);
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("Streaming LLM response: " + StringUtils.truncate(message, 40));
         startActivityIndicator();
         try {
+            String enrichedMessage = withMemoryContext(message);
             String outboundMessage = reminderManager == null
                     ? enrichedMessage : reminderManager.decorateUserTurn(enrichedMessage);
             emitReminderSection(outboundMessage);
@@ -1952,15 +1953,6 @@ public class ChatMessageHandler {
         chatHistory.logUserMessage(transcriptPrefix + (reminderManager == null
                 ? message : reminderManager.previewUserTurn(message)));
 
-        // Build memory-enriched message if memory is enabled
-        String enrichedMessage = message;
-        if (chatMemory != null && chatMemory.isEnabled()) {
-            String memoryContext = chatMemory.buildMemoryContext(message);
-            if (memoryContext != null) {
-                enrichedMessage = "<memory_context>\n" + memoryContext + "</memory_context>\n\n" + message;
-            }
-        }
-
         emitLine("");
 
         repl.setLlmBusy(true);
@@ -1969,6 +1961,7 @@ public class ChatMessageHandler {
         agenticLoop.setOnFirstOutput(repl::stopGeneratingSpinner);
         long turnStart = System.currentTimeMillis();
         try {
+            String enrichedMessage = withMemoryContext(message);
             String response = agenticLoop.chat(
                     enrichedMessage, sessionId, repl.getLocalAgentName(), repl.getAgentName(), repl.isRagEnabled());
 
@@ -2131,14 +2124,14 @@ public class ChatMessageHandler {
     // ========================================================================
 
     /**
-     * Load pending attachments into DirectLlmClient.AttachmentInput format the way a
+     * Load pending attachments into AttachmentInput format the way a
      * headless turn does ({@link ChatAttachmentLoader#read}), within the same total limit.
      * A file that can't be read or doesn't fit is skipped with a warning; the rest still go.
      */
-    public List<DirectLlmClient.AttachmentInput> loadAttachments() {
+    public List<AttachmentInput> loadAttachments() {
         if (pendingAttachments.isEmpty()) return null;
 
-        List<DirectLlmClient.AttachmentInput> loaded = new ArrayList<>();
+        List<AttachmentInput> loaded = new ArrayList<>();
         long total = 0;
         for (ChatRepl.PendingAttachment att : pendingAttachments) {
             try {

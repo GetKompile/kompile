@@ -113,6 +113,17 @@ public class WriteTool implements CliTool {
         if (exists && !context.hasFreshFileRead(path)) {
             return ToolResult.error(context.staleReadMessage(path, "overwrite"));
         }
+        if (exists && context.isSupervisedChild() && content.isBlank()) {
+            try {
+                String deletion = EditTool.subagentDeletionError(
+                        context, path, Files.readString(path), content);
+                if (deletion != null) {
+                    return ToolResult.error(deletion);
+                }
+            } catch (IOException e) {
+                return ToolResult.error("Error reading file: " + e.getMessage());
+            }
+        }
 
         // Under an agent identity: renew the lease and re-verify the lock in one coordinator
         // critical section, then write — or refuse without touching the file system.

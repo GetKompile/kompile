@@ -30,8 +30,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -57,7 +57,19 @@ public class ChatMemory {
     private static final int MAX_TRANSCRIPT_SNIPPETS = 5;
     private static final int MAX_SNIPPET_LINES = 8;
     private static final int MAX_RAG_RESULTS = 3;
+    /**
+     * The whole envelope. Incidents (1800) and the selected MEMORY.md indexes
+     * ({@link MemoryTool#loadMemoryForContext}, 4000) fit inside it, so its cut only
+     * ever trims retrieval.
+     */
     private static final int MAX_MEMORY_CONTEXT_CHARS = 6000;
+    private static final int MAX_INCIDENT_CONTEXT_CHARS = 1800;
+    /** Below this, retrieval would deliver only a fragment of its top snippet. */
+    private static final int MIN_RETRIEVAL_ROOM = 500;
+    // Scoring is a full pass over every cached turn per keyword, so a pasted
+    // log with hundreds of distinct words stalled the turn for tens of seconds.
+    // The longest words are the most distinctive; the rest add cost, not recall.
+    static final int MAX_QUERY_KEYWORDS = 24;
 
     private final McpSseClient mcpClient; // may be null in local mode
     private final ObjectMapper objectMapper;
@@ -70,11 +82,15 @@ public class ChatMemory {
     private boolean transcriptSearchEnabled;
     private boolean ragSearchEnabled;
 
-    // Cached persistent memory content (loaded once at startup)
+    // Cached persistent memory content, reloaded when a MEMORY.md index changes on disk
     private String persistentMemoryContent;
+    private String persistentMemoryStamp;
 
-    // Cached transcript index: maps session IDs to their parsed turns
-    private Map<String, List<ChatHistory.Turn>> transcriptCache;
+    // Cached transcript index: maps session IDs to their parsed turns. A refresh
+    // swaps in a new map, so readers never see a half-built one.
+    private volatile Map<String, List<ChatHistory.Turn>> transcriptCache;
+    // Size and mtime each cached transcript was parsed at; unchanged files are reused.
+    private Map<String, FileStamp> transcriptStamps = Map.of();
     private long lastCacheRefresh;
     private static final long CACHE_TTL_MS = 60_000; // 1 minute
 
@@ -103,7 +119,7 @@ public class ChatMemory {
         this.ragSearchEnabled = mcpClient != null; // only if server connected
 
         // Load persistent memory at construction
-        this.persistentMemoryContent = MemoryTool.loadMemoryForContext(this.workDir);
+        reloadPersistentMemory();
     }
 
     public boolean isEnabled() {
@@ -126,7 +142,29 @@ public class ChatMemory {
      * Reloads the persistent MEMORY.md files from disk.
      */
     public void reloadPersistentMemory() {
+        this.persistentMemoryStamp = persistentMemoryStamp();
         this.persistentMemoryContent = MemoryTool.loadMemoryForContext(workDir);
+    }
+
+    /** A memory saved mid-session must reach the next turn, not the next session. */
+    private void reloadPersistentMemoryIfChanged() {
+        if (!Objects.equals(persistentMemoryStamp, persistentMemoryStamp())) {
+            reloadPersistentMemory();
+        }
+    }
+
+    private String persistentMemoryStamp() {
+        StringBuilder stamp = new StringBuilder();
+        for (Path index : MemoryTool.memoryIndexFiles(workDir)) {
+            try {
+                BasicFileAttributes attributes = Files.readAttributes(index, BasicFileAttributes.class);
+                stamp.append(attributes.size()).append('@').append(attributes.lastModifiedTime().toMillis());
+            } catch (IOException missing) {
+                stamp.append('-');
+            }
+            stamp.append('|');
+        }
+        return stamp.toString();
     }
 
     public boolean isTranscriptSearchEnabled() {
@@ -170,19 +208,26 @@ public class ChatMemory {
         // Reserve a bounded leading block so long MEMORY.md content cannot hide relevant incidents.
         // Uses the existing memory controls; never launches a model or executes linked checks.
         if (persistentMemoryEnabled) {
-            context.append(new IncidentStore(workDir).context(query, null, 1800));
+            context.append(new IncidentStore(workDir).context(query, null, MAX_INCIDENT_CONTEXT_CHARS));
         }
 
-        // 1. Stable project/global memory
+        // 1. Stable project/global memory, already selected to its own budget so the
+        // envelope cut below never reaches it: a cut here hid every memory past the
+        // first few index lines.
+        if (persistentMemoryEnabled) {
+            reloadPersistentMemoryIfChanged();
+        }
         if (persistentMemoryEnabled && persistentMemoryContent != null
                 && !persistentMemoryContent.isBlank()) {
             context.append("[Persistent memory]\n");
             context.append(persistentMemoryContent);
             context.append("\n");
         }
+        int retrievalLimit = MAX_MEMORY_CONTEXT_CHARS - MIN_RETRIEVAL_ROOM;
 
-        // 2. Search previous conversation transcripts
-        if (transcriptSearchEnabled) {
+        // 2. Search previous conversation transcripts. Skipped once the leading
+        // sections fill the budget: the result would be truncated away unseen.
+        if (transcriptSearchEnabled && context.length() < retrievalLimit) {
             String transcriptContext = searchTranscripts(query);
             if (transcriptContext != null && !transcriptContext.isBlank()) {
                 context.append("[Previous conversations]\n");
@@ -192,7 +237,7 @@ public class ChatMemory {
         }
 
         // 3. Search RAG index for relevant documents
-        if (ragSearchEnabled && mcpClient != null) {
+        if (ragSearchEnabled && mcpClient != null && context.length() < retrievalLimit) {
             String ragContext = searchRag(query);
             if (ragContext != null && !ragContext.isBlank()) {
                 context.append("[Retrieved documents]\n");
@@ -220,19 +265,20 @@ public class ChatMemory {
      */
     public String searchTranscripts(String query) {
         refreshCacheIfNeeded();
-        if (transcriptCache == null || transcriptCache.isEmpty()) {
+        Map<String, List<ChatHistory.Turn>> cache = transcriptCache;
+        if (cache == null || cache.isEmpty()) {
             return null;
         }
 
         // Extract keywords from query (words >= 3 chars, lowercased)
-        Set<String> keywords = extractKeywords(query);
+        List<String> keywords = boundedKeywords(extractKeywords(query));
         if (keywords.isEmpty()) {
             return null;
         }
 
         // Score each turn across all transcripts
         List<ScoredSnippet> scored = new ArrayList<>();
-        for (Map.Entry<String, List<ChatHistory.Turn>> entry : transcriptCache.entrySet()) {
+        for (Map.Entry<String, List<ChatHistory.Turn>> entry : cache.entrySet()) {
             String sid = entry.getKey();
             if (sid.equals(currentSessionId)) {
                 continue; // skip current conversation
@@ -425,10 +471,11 @@ public class ChatMemory {
 
         // Count available transcripts
         refreshCacheIfNeeded();
-        int totalTranscripts = transcriptCache != null ? transcriptCache.size() : 0;
+        Map<String, List<ChatHistory.Turn>> cache = transcriptCache;
+        int totalTranscripts = cache != null ? cache.size() : 0;
         int totalTurns = 0;
-        if (transcriptCache != null) {
-            for (List<ChatHistory.Turn> turns : transcriptCache.values()) {
+        if (cache != null) {
+            for (List<ChatHistory.Turn> turns : cache.values()) {
                 totalTurns += turns.size();
             }
         }
@@ -455,37 +502,46 @@ public class ChatMemory {
     // Internal helpers
     // ========================================================================
 
-    private void refreshCacheIfNeeded() {
+    private synchronized void refreshCacheIfNeeded() {
         long now = System.currentTimeMillis();
         if (transcriptCache != null && (now - lastCacheRefresh) < CACHE_TTL_MS) {
             return;
         }
-
-        transcriptCache = new LinkedHashMap<>();
         lastCacheRefresh = now;
 
-        if (!Files.exists(conversationsDir)) {
-            return;
-        }
-
-        try (Stream<Path> files = Files.list(conversationsDir)) {
-            files.filter(p -> p.toString().endsWith(".txt"))
-                    .filter(p -> !p.getFileName().toString().equals("index.properties"))
-                    .forEach(p -> {
-                        String sid = p.getFileName().toString().replace(".txt", "");
-                        try {
-                            ChatHistory history = new ChatHistory(sid);
-                            List<ChatHistory.Turn> turns = history.readTurns();
-                            if (!turns.isEmpty()) {
-                                transcriptCache.put(sid, turns);
+        // Re-parse only transcripts whose size or mtime moved. A full re-read of
+        // every saved conversation ran on the turn thread each minute.
+        Map<String, List<ChatHistory.Turn>> previous = transcriptCache == null ? Map.of() : transcriptCache;
+        Map<String, FileStamp> previousStamps = transcriptStamps;
+        Map<String, List<ChatHistory.Turn>> refreshed = new LinkedHashMap<>();
+        Map<String, FileStamp> stamps = new HashMap<>();
+        if (Files.exists(conversationsDir)) {
+            try (Stream<Path> files = Files.list(conversationsDir)) {
+                files.filter(p -> p.toString().endsWith(".txt"))
+                        .filter(p -> !p.getFileName().toString().equals("index.properties"))
+                        .forEach(p -> {
+                            String sid = p.getFileName().toString().replace(".txt", "");
+                            try {
+                                BasicFileAttributes attributes = Files.readAttributes(p, BasicFileAttributes.class);
+                                FileStamp stamp = new FileStamp(attributes.size(),
+                                        attributes.lastModifiedTime().toMillis());
+                                List<ChatHistory.Turn> turns = stamp.equals(previousStamps.get(sid))
+                                        ? previous.getOrDefault(sid, List.of())
+                                        : new ChatHistory(sid).readTurns();
+                                stamps.put(sid, stamp);
+                                if (!turns.isEmpty()) {
+                                    refreshed.put(sid, turns);
+                                }
+                            } catch (Exception e) {
+                                // Skip unreadable transcripts
                             }
-                        } catch (Exception e) {
-                            // Skip unreadable transcripts
-                        }
-                    });
-        } catch (IOException e) {
-            // Best effort
+                        });
+            } catch (IOException e) {
+                // Best effort
+            }
         }
+        transcriptStamps = stamps;
+        transcriptCache = refreshed;
     }
 
     /**
@@ -509,22 +565,53 @@ public class ChatMemory {
                 .collect(Collectors.toSet());
     }
 
+    /** The {@link #MAX_QUERY_KEYWORDS} longest keywords, longest first. */
+    static List<String> boundedKeywords(Set<String> keywords) {
+        return keywords.stream()
+                .sorted(Comparator.comparingInt(String::length).reversed()
+                        .thenComparing(Comparator.naturalOrder()))
+                .limit(MAX_QUERY_KEYWORDS)
+                .toList();
+    }
+
     /**
      * Scores a turn based on keyword matches.
      */
-    private int scoreTurn(ChatHistory.Turn turn, Set<String> keywords) {
+    private int scoreTurn(ChatHistory.Turn turn, List<String> keywords) {
         String text = turn.content().toLowerCase();
         int score = 0;
         for (String keyword : keywords) {
-            if (text.contains(keyword)) {
+            int first = text.indexOf(keyword);
+            if (first >= 0) {
                 score++;
                 // Bonus for exact word match (not just substring)
-                if (Pattern.compile("\\b" + Pattern.quote(keyword) + "\\b").matcher(text).find()) {
+                if (containsWord(text, keyword, first)) {
                     score++;
                 }
             }
         }
         return score;
+    }
+
+    /**
+     * Whole-word occurrence of {@code word} at or after {@code from}, with the
+     * same word characters as regex {@code \b}. A {@code \b}-anchored regex
+     * cannot use the literal search, so on a long turn that held the word only
+     * as a substring it stepped through every character.
+     */
+    static boolean containsWord(String text, String word, int from) {
+        for (int at = from; at >= 0; at = text.indexOf(word, at + 1)) {
+            int end = at + word.length();
+            if ((at == 0 || !isWordChar(text.charAt(at - 1)))
+                    && (end == text.length() || !isWordChar(text.charAt(end)))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isWordChar(char c) {
+        return c == '_' || Character.isLetterOrDigit(c);
     }
 
     private static String truncateLines(String text, int maxLines) {
@@ -549,4 +636,6 @@ public class ChatMemory {
     }
 
     private record ScoredSnippet(int score, String text) {}
+
+    private record FileStamp(long size, long modifiedMillis) {}
 }

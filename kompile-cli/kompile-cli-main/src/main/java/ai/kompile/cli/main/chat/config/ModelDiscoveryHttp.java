@@ -151,6 +151,35 @@ public final class ModelDiscoveryHttp {
         return ModelDiscovery.Result.success(models, List.of(CLAUDE_CODE_ENDPOINT));
     }
 
+    /** Attempted-endpoint marker of a catalog read through the Antigravity CLI's own login. */
+    static final String AGY_CLI_ENDPOINT = "native:agy";
+
+    /**
+     * Discover models through the user's Antigravity CLI (agy) Google Code Assist
+     * login — `agy models` runs on whatever keyring profile the CLI already
+     * cached; no Kompile-stored token rides with it.
+     */
+    public static ModelDiscovery.Result discoverAgyCliResult(ChatConfig route) {
+        if (route != null && !route.isAgyCliNative()) {
+            throw new IllegalArgumentException(
+                    "The Antigravity CLI route serves the Gemini OAuth/native authentication route");
+        }
+        return agyCliResult(LiveModelDiscovery.discoverNative("agy"));
+    }
+
+    static ModelDiscovery.Result agyCliResult(List<LiveModelDiscovery.Model> models) {
+        if (models == null || models.isEmpty()) {
+            return ModelDiscovery.Result.failure(
+                    ModelDiscovery.Status.UNAVAILABLE,
+                    "Antigravity's model list could not be read (`agy models` failed or returned"
+                            + " nothing). Ensure the 'agy' CLI is installed, on PATH, and signed in —"
+                            + " run `kompile auth login agy` (or launch `agy` and complete its Google"
+                            + " Code Assist sign-in) — then retry discovery, or enter a model id manually.",
+                    List.of(AGY_CLI_ENDPOINT));
+        }
+        return ModelDiscovery.Result.success(models, List.of(AGY_CLI_ENDPOINT));
+    }
+
     public static void clearCache() {
         CACHE.clear();
     }
@@ -556,12 +585,12 @@ public final class ModelDiscoveryHttp {
                         } catch (Exception ignored) { /* HTTP status remains authoritative. */ }
                     }
                     try { input.close(); } catch (IOException ignored) { }
-                    DirectLlmClient.FailureKind kind = ProviderResponseFailure.classify(code, diagnostic);
-                    if (kind == DirectLlmClient.FailureKind.PERMISSION_DENIED
-                            || kind == DirectLlmClient.FailureKind.REFUSAL) {
+                    FailureKind kind = ProviderResponseFailure.classify(code, diagnostic);
+                    if (kind == FailureKind.PERMISSION_DENIED
+                            || kind == FailureKind.REFUSAL) {
                         return fail(ModelDiscovery.Status.FORBIDDEN, ProviderResponseFailure.message(kind));
                     }
-                    if (kind == DirectLlmClient.FailureKind.QUOTA_EXHAUSTED) {
+                    if (kind == FailureKind.QUOTA_EXHAUSTED) {
                         return fail(ModelDiscovery.Status.RATE_LIMITED, ProviderResponseFailure.message(kind));
                     }
                     if (recovery.attempted || auth == null || !auth.oauth()

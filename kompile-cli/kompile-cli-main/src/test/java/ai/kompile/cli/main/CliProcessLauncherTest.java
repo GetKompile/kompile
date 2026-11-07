@@ -67,6 +67,71 @@ class CliProcessLauncherTest {
     }
 
     @Test
+    void distributionLauncherRecordsThenAdoptsAClassDataSharingArchive() throws Exception {
+        Path repository = Path.of("").toAbsolutePath();
+        while (repository != null && !Files.isRegularFile(repository.resolve("kompile-dist/src/main/scripts/kompile.sh"))) {
+            repository = repository.getParent();
+        }
+        assertTrue(repository != null, "repository launcher must be available to this source regression test");
+        Path bin = Files.createDirectories(tempDir.resolve("bin"));
+        Files.createDirectories(tempDir.resolve("lib"));
+        Files.createFile(tempDir.resolve("lib/kompile-cli.jar"));
+        Path script = Files.copy(repository.resolve("kompile-dist/src/main/scripts/kompile.sh"), bin.resolve("kompile"));
+        // Writes the archive it is asked to record, as a JVM does at exit.
+        Path fakeJava = Files.writeString(tempDir.resolve("fake-java"), "#!/usr/bin/env bash\n"
+                + "for a in \"$@\"; do case \"$a\" in -XX:ArchiveClassesAtExit=*) printf x > \"${a#*=}\";; esac; done\n"
+                + "printf '%s\\n' \"$@\"\n");
+        assertTrue(fakeJava.toFile().setExecutable(true));
+        Path cache = tempDir.resolve(".kompile/cache/cds");
+
+        String other = runLauncher(script, Map.of(), "--version");
+        assertFalse(other.contains("-XX:ArchiveClassesAtExit="), "only an MCP server launch records: " + other);
+        assertFalse(other.contains("-XX:SharedArchiveFile="), other);
+        assertTrue(other.contains("-Xlog:disable\n-Xlog:all=warning:stderr\n"), "JVM warnings never reach stdout: " + other);
+
+        String recording = runLauncher(script, Map.of(), "mcp-stdio", "--transcript-id", "11111111-1111-1111-1111-111111111111");
+        assertTrue(recording.contains("-XX:ArchiveClassesAtExit=" + cache), recording);
+        assertFalse(recording.contains("-XX:SharedArchiveFile="), recording);
+
+        String adopted = runLauncher(script, Map.of(), "mcp-stdio", "--transcript-id", "11111111-1111-1111-1111-111111111111");
+        assertTrue(adopted.contains("-XX:SharedArchiveFile=" + cache), adopted);
+        assertFalse(adopted.contains("-XX:ArchiveClassesAtExit="), adopted);
+        try (var entries = Files.list(cache)) {
+            assertEquals(List.of(".jsa"), entries.map(p -> p.getFileName().toString())
+                    .map(name -> name.substring(name.lastIndexOf('.'))).toList(),
+                    "the finished recording becomes the archive and leaves nothing behind");
+        }
+        assertTrue(runLauncher(script, Map.of(), "--version").contains("-XX:SharedArchiveFile=" + cache),
+                "every CLI launch maps the recorded archive");
+
+        String disabled = runLauncher(script, Map.of("KOMPILE_CLI_CDS", "0"), "mcp-stdio");
+        assertFalse(disabled.contains("-XX:SharedArchiveFile="), disabled);
+        assertFalse(disabled.contains("-XX:ArchiveClassesAtExit="), disabled);
+        assertTrue(disabled.contains("-Xlog:all=warning:stderr\n"), disabled);
+    }
+
+    private String runLauncher(Path script, Map<String, String> environment, String... args) throws Exception {
+        List<String> command = new java.util.ArrayList<>(List.of("bash", script.toString()));
+        command.addAll(List.of(args));
+        ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
+        builder.environment().put("HOME", tempDir.toString());
+        builder.environment().put("KOMPILE_JAVA", tempDir.resolve("fake-java").toString());
+        for (String key : List.of("KOMPILE_CLI_CDS", "KOMPILE_TRANSCRIPT_UUID")) {
+            builder.environment().remove(key);
+        }
+        builder.environment().putAll(environment);
+        Process process = builder.start();
+        try {
+            assertTrue(process.waitFor(10, TimeUnit.SECONDS), "fake JVM launcher must terminate");
+            String output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals(0, process.exitValue(), output);
+            return output;
+        } finally {
+            process.destroyForcibly();
+        }
+    }
+
+    @Test
     void nativeParentAcceptsOnlyNativeChildren() {
         assertTrue(CliProcessLauncher.childArtifactCompatible(true, true));
         assertFalse(CliProcessLauncher.childArtifactCompatible(true, false));

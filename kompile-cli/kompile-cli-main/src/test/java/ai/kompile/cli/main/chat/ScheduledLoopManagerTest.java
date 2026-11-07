@@ -178,6 +178,75 @@ class ScheduledLoopManagerTest {
     }
 
     @Test
+    void pauseAllActivePausesEveryLoopAndStopsFiring() throws Exception {
+        CountDownLatch fired = new CountDownLatch(1);
+        AtomicInteger attempts = new AtomicInteger();
+        ScheduledLoopManager manager = new ScheduledLoopManager(ignored -> {
+            attempts.incrementAndGet();
+            fired.countDown();
+        }, null, 1);
+        try {
+            ScheduledLoopManager.ScheduledLoop first = manager.create("1s", "first");
+            ScheduledLoopManager.ScheduledLoop second = manager.create("1s", "second");
+            assertNotNull(first);
+            assertNotNull(second);
+            assertTrue(manager.pause(second.getId()));
+
+            assertTrue(fired.await(5, TimeUnit.SECONDS),
+                    "an active loop fires while it is still active");
+            int afterPause = attempts.get();
+
+            assertEquals(java.util.Set.of(first.getId()),
+                    java.util.Set.copyOf(manager.pauseAllActive()),
+                    "already-paused loops are not reported again");
+
+            Thread.sleep(1_200);
+            assertEquals(afterPause, attempts.get(), "no tick may fire after pauseAllActive");
+            assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.PAUSED, first.getStatus());
+            assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.PAUSED, second.getStatus());
+            assertEquals(0, manager.activeCount());
+        } finally {
+            manager.shutdown();
+        }
+    }
+
+    @Test
+    void pauseAllActivePersistsAndResumeRestoresSchedules() throws Exception {
+        Path stateFile = tempDir.resolve("pause-all.json");
+        List<String> fired = new CopyOnWriteArrayList<>();
+        String firstId;
+        String secondId;
+        ScheduledLoopManager first = new ScheduledLoopManager(fired::add, stateFile, 1);
+        try {
+            ScheduledLoopManager.ScheduledLoop a = first.create("1h", "alpha");
+            ScheduledLoopManager.ScheduledLoop b = first.create("2h", "beta");
+            assertNotNull(a);
+            assertNotNull(b);
+            firstId = a.getId();
+            secondId = b.getId();
+            assertEquals(java.util.Set.of(firstId, secondId),
+                    java.util.Set.copyOf(first.pauseAllActive()));
+        } finally {
+            first.shutdown();
+        }
+
+        ScheduledLoopManager restored = new ScheduledLoopManager(fired::add, stateFile, 1);
+        try {
+            assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.PAUSED,
+                    restored.get(firstId).getStatus(), "the pause must survive restart");
+            assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.PAUSED,
+                    restored.get(secondId).getStatus());
+            assertEquals(0, restored.activeCount());
+            assertTrue(restored.resume(firstId), "the ordinary resume command must restart the loop");
+            assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.ACTIVE,
+                    restored.get(firstId).getStatus());
+            assertTrue(restored.resume(secondId));
+        } finally {
+            restored.shutdown();
+        }
+    }
+
+    @Test
     void queuedInvocationCannotFireAfterClear() throws Exception {
         AtomicInteger attempts = new AtomicInteger();
         ScheduledLoopManager manager = new ScheduledLoopManager(

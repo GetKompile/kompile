@@ -93,7 +93,7 @@ class DirectLlmClientToolReplayTest {
                 "buildOpenAiMessages", String.class, String.class, List.class);
         method.setAccessible(true);
         ArrayNode messages = (ArrayNode) method.invoke(client, null, " ", List.of(
-                new DirectLlmClient.ToolCallResultInput("call_live", "bash", null, false)));
+                new ToolCallResultInput("call_live", "bash", null, false)));
         assertEquals(2, messages.size());
         assertTrue(messages.get(0).path("content").isNull());
         assertEquals("call_live", messages.get(1).path("tool_call_id").asText());
@@ -207,7 +207,7 @@ class DirectLlmClientToolReplayTest {
         ArrayNode toolDefs = mapper.createArrayNode();
         toolDefs.addObject().put("name", "bash");
 
-        List<DirectLlmClient.ToolCallOutput> rescued =
+        List<ToolCallOutput> rescued =
                 client.rescueTextEncodedToolCalls(result, toolDefs);
 
         assertEquals(1, rescued.size());
@@ -240,7 +240,7 @@ class DirectLlmClientToolReplayTest {
         DirectLlmClient client = clientForProvider("zai");
 
         DirectLlmClient.StreamResult structured = new DirectLlmClient.StreamResult();
-        structured.toolCalls.add(new DirectLlmClient.ToolCallOutput());
+        structured.toolCalls.add(new ToolCallOutput());
         structured.text = "[Tool call bash call_1]\n{}";
         assertTrue(client.rescueTextEncodedToolCalls(structured, toolDefs()).isEmpty());
 

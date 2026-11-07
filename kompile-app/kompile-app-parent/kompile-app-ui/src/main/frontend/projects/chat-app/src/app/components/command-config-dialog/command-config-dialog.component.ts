@@ -15,15 +15,23 @@ import { Subject, takeUntil } from 'rxjs';
 import {
   CommandEventData,
   CommandOutcome,
-  CommandRoleEntry
+  CommandRoleEntry,
+  ModelFailoverPolicy,
+  ModelRung
 } from '@shared/models/api-models';
 import { LocalAgentChatService, SessionConfigSnapshot } from '@shared/services/local-agent-chat.service';
 import {
   ChatRouteFieldsComponent, ChatSetupCatalog, ChatSetupSelection, Choice, clearRouteDependents, mergeRouteCatalog
 } from '../chat-route-fields/chat-route-fields.component';
+import { DurableSubagentsComponent, DurableSubagentsMenu, DurableSubagentsOutcome, durableSubagentsMenu }
+  from '../durable-subagents/durable-subagents.component';
+import { SafetySettingsComponent, SafetySettingsOutcome } from '../safety-settings/safety-settings.component';
 
 /** What the session wizard's update answers: the CLI's ok/status plus the route it pinned. */
 interface RouteUpdate { ok?: boolean; status?: string; framework?: string; model?: string; }
+type FailoverTarget = 'lead' | 'child';
+interface FailoverDraft extends ModelFailoverPolicy { target: FailoverTarget; }
+interface SubagentDraft { maxConcurrent: number | null; bannedModels: string; }
 
 /**
  * Data for the command configuration modal. The parent owns all CLI
@@ -85,7 +93,7 @@ export interface CommandConfigDialogData {
   selector: 'app-command-config-dialog',
   standalone: true,
   imports: [CommonModule, FormsModule, MatDialogModule, MatButtonModule, MatIconModule, MatProgressBarModule,
-    ChatRouteFieldsComponent],
+    ChatRouteFieldsComponent, DurableSubagentsComponent, SafetySettingsComponent],
   template: `
     <div class="command-config">
       <h2 mat-dialog-title>Session Configuration</h2>
@@ -138,6 +146,82 @@ export interface CommandConfigDialogData {
           </div>
           <p class="cc-hint" role="status" *ngIf="routeStatus" data-testid="session-route-status">{{ routeStatus }}</p>
         </section>
+
+        <app-durable-subagents [menu]="durableMenu" [outcome]="durableOutcome"
+          [disabled]="busy() || !!policySaving" (dispatch)="data.dispatch($event)"></app-durable-subagents>
+
+        <app-safety-settings [permissionMenu]="permissionMenu" [hooksMenu]="hooksMenu" [outcome]="safetyOutcome"
+          [disabled]="busy() || !!policySaving" (dispatch)="data.dispatch($event)"></app-safety-settings>
+
+        <p class="cc-error" *ngIf="policyError" role="alert" data-testid="policy-error">{{ policyError }}</p>
+        <section class="cc-section" data-testid="subagent-policy-config">
+          <header class="cc-section-header"><span class="cc-title">Subagent policy</span></header>
+          <ng-container *ngIf="subagents; else subagentsUnavailable">
+            <p data-testid="subagent-persisted">Saved: max concurrent per process/JVM {{ subagents.maxConcurrent }}
+              ({{ concurrencyLabel(subagents.maxConcurrent) }}).</p>
+            <p class="cc-hint">{{ subagents.activeCount == null ? (subagents.activeCountScope || 'See Activity for active children in the owning run.') : 'Active in owning process: ' + subagents.activeCount }}</p>
+            <p>Saved model bans: {{ subagents.bannedModels?.join(', ') || 'None' }}</p>
+            <button mat-button type="button" data-testid="subagent-edit" [disabled]="policyLocked()"
+              *ngIf="!subagentDraft" (click)="editSubagents()">Edit subagent policy</button>
+            <fieldset *ngIf="subagentDraft as draft" [disabled]="busy() || !!policySaving">
+              <legend>Draft subagent policy</legend>
+              <label>Max concurrent per process/JVM (0 disabled, -1 unlimited)
+                <input class="cc-input" type="number" min="-1" step="1" name="subagentMaxConcurrent"
+                  data-testid="subagent-max" [(ngModel)]="draft.maxConcurrent"></label>
+              <label>Model bans (one exact model ID per line)
+                <textarea class="cc-input" name="subagentBans" rows="3" data-testid="subagent-bans"
+                  [(ngModel)]="draft.bannedModels"></textarea></label>
+              <button mat-flat-button type="button" data-testid="subagent-save" [disabled]="!canSaveSubagents()"
+                (click)="saveSubagents()">{{ policySaving === 'subagents' ? 'Saving…' : 'Save' }}</button>
+              <button mat-button type="button" data-testid="subagent-cancel" (click)="cancelPolicy()">Cancel</button>
+            </fieldset>
+          </ng-container>
+          <ng-template #subagentsUnavailable><p class="cc-empty">Subagent policy is unavailable from the CLI.</p></ng-template>
+        </section>
+
+        <ng-container *ngTemplateOutlet="ladder; context: {$implicit: 'lead'}"></ng-container>
+        <ng-container *ngTemplateOutlet="ladder; context: {$implicit: 'child'}"></ng-container>
+        <ng-template #ladder let-target>
+          <section class="cc-section" [attr.data-testid]="'failover-' + target">
+            <header class="cc-section-header"><span class="cc-title">{{ target === 'lead' ? 'Main' : 'Child' }} failover ladder</span></header>
+            <ng-container *ngIf="savedFailover(target) as saved; else ladderUnavailable">
+              <p [attr.data-testid]="'failover-persisted-' + target">Saved: {{ saved.enabled ? 'ON' : 'OFF' }}. Routes are tried in order.</p>
+              <ol><li *ngFor="let rung of saved.rungs">{{ rungLabel(rung) }}</li></ol>
+              <p class="cc-empty" *ngIf="!saved.rungs.length">No saved fallback routes.</p>
+              <button mat-button type="button" [attr.data-testid]="'failover-edit-' + target" [disabled]="policyLocked()"
+                *ngIf="failoverDraft?.target !== target" (click)="editFailover(target)">Edit ladder</button>
+              <ng-container *ngIf="failoverDraft?.target === target">
+                <fieldset [disabled]="busy() || !!policySaving">
+                  <legend>Draft {{ target === 'lead' ? 'main' : 'child' }} ladder</legend>
+                  <label><input type="checkbox" name="failoverEnabled" data-testid="failover-enabled"
+                    [(ngModel)]="failoverDraft!.enabled"> Enable failover</label>
+                  <ol><li *ngFor="let rung of failoverDraft!.rungs; let i = index" data-testid="failover-draft-rung">
+                    {{ rungLabel(rung) }}
+                    <button mat-button type="button" (click)="moveRung(i, -1)" [disabled]="i === 0" aria-label="Move fallback up">Up</button>
+                    <button mat-button type="button" (click)="moveRung(i, 1)" [disabled]="i === failoverDraft!.rungs.length - 1" aria-label="Move fallback down">Down</button>
+                    <button mat-button type="button" (click)="removeRung(i)" aria-label="Remove fallback">Remove</button>
+                  </li></ol>
+                  <button mat-button type="button" data-testid="failover-clear" (click)="clearRungs()"
+                    [disabled]="!failoverDraft!.rungs.length">Clear draft ladder</button>
+                  <p class="cc-hint">Add a route using an existing account. No API keys or tokens are collected or saved here.</p>
+                  <p *ngIf="fallbackLoading" role="status">Discovering fallback routes…</p>
+                  <p *ngIf="fallbackError" class="cc-error" role="alert" data-testid="fallback-error">{{ fallbackError }}</p>
+                  <app-chat-route-fields *ngIf="fallbackCatalog" data-testid="fallback-route-fields"
+                    [catalog]="fallbackCatalog" [selection]="fallbackRoute" [toggles]="false" [existingAccountsOnly]="true"
+                    [disabled]="busy() || fallbackLoading || !!policySaving" (fieldChange)="fallbackChange($event)"
+                    (refresh)="loadFallbackCatalog()"></app-chat-route-fields>
+                  <button mat-button type="button" data-testid="failover-add" [disabled]="!canAddRung()" (click)="addRung()">Add fallback route</button>
+                  <div class="cc-footer-row">
+                    <button mat-flat-button type="button" [attr.data-testid]="'failover-save-' + target" [disabled]="busy() || !!policySaving"
+                      (click)="saveFailover()">{{ policySaving === target ? 'Saving…' : 'Save' }}</button>
+                    <button mat-button type="button" data-testid="failover-cancel" (click)="cancelPolicy()">Cancel</button>
+                  </div>
+                </fieldset>
+              </ng-container>
+            </ng-container>
+            <ng-template #ladderUnavailable><p class="cc-empty">Failover policy is unavailable from the CLI.</p></ng-template>
+          </section>
+        </ng-template>
 
         <ng-container *ngIf="!modelMenu?.nativeModelSelection">
         <!-- Role -->
@@ -353,7 +437,10 @@ export interface CommandConfigDialogData {
               <span class="cc-option-label">{{ i + 1 }}. [{{ q.id }}] {{ q.content }}</span>
               <span class="cc-option-meta" *ngIf="q.status !== 'PENDING'">{{ q.status.toLowerCase() }}</span>
               <span class="cc-loop-actions">
-                <button mat-button color="warn" type="button" class="cc-link cc-danger" [disabled]="busy()"
+                <button mat-button type="button" [disabled]="busy() || queueEditSaving" (click)="editQueued(q.id, q.content)" [attr.data-queue-edit]="q.id">edit</button>
+                <button mat-button type="button" [disabled]="busy() || !!queueEditId || i === 0" (click)="moveQueued(q.id, i)">up</button>
+                <button mat-button type="button" [disabled]="busy() || !!queueEditId || i === queueEntries().length - 1" (click)="moveQueued(q.id, i + 2)">down</button>
+                <button mat-button color="warn" type="button" class="cc-link cc-danger" [disabled]="busy() || queueEditSaving"
                   (click)="dispatch('/queue-remove ' + q.id)"
                   title="Remove this message from the queue, as /queue-remove does in the terminal">remove</button>
               </span>
@@ -362,6 +449,13 @@ export interface CommandConfigDialogData {
           <ng-template #noQueued>
             <p class="cc-empty">Queue is empty.</p>
           </ng-template>
+          <fieldset *ngIf="queueEditId" [disabled]="busy() || queueEditSaving">
+            <legend>Edit queued message {{ queueEditId }} (draft)</legend>
+            <textarea class="cc-input" data-testid="queue-edit-content" [(ngModel)]="queueEditContent" rows="3"></textarea>
+            <button mat-button type="button" data-testid="queue-edit-save" [disabled]="!queueEditContent.trim() || busy() || queueEditSaving" (click)="saveQueuedEdit()">Save edit</button>
+            <button mat-button type="button" [disabled]="queueEditSaving" (click)="queueEditId = null; queueEditContent = ''; queueEditError = ''">Cancel</button>
+          </fieldset>
+          <p *ngIf="queueEditError" role="alert" data-testid="queue-edit-error">{{ queueEditError }}</p>
           <div class="cc-add-row">
             <input type="text" class="cc-input cc-grow" [(ngModel)]="newQueued" [ngModelOptions]="{standalone: true}"
               placeholder="Message to queue…" (keyup.enter)="addQueued()" [disabled]="busy()">
@@ -422,13 +516,19 @@ export interface CommandConfigDialogData {
             </div>
             <p class="cc-hint" *ngIf="judgeGuidance()">
               Guidance: {{ judgeGuidance() }}
-              <button mat-button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/judge feedback clear')"
+              <button mat-button type="button" class="cc-link" [disabled]="busy() || judgeSaving" (click)="clearJudgeGuidance()"
                 title="Clear the durable guidance, as /judge feedback clear does in the terminal">clear</button>
             </p>
-            <p class="cc-hint" *ngIf="!judgeGuidance()">
-              No guidance set. Use the chat input:
-              <code>/judge feedback &lt;text&gt;</code>
-            </p>
+            <p class="cc-hint" *ngIf="!judgeGuidance()">No judge guidance set.</p>
+            <button mat-button type="button" data-testid="judge-edit" [disabled]="busy() || judgeSaving" (click)="editJudgeGuidance()">Edit guidance for this chat</button>
+            <fieldset *ngIf="judgeDraft !== null" [disabled]="busy() || judgeSaving">
+              <legend>Durable judge guidance (draft)</legend>
+              <textarea class="cc-input" data-testid="judge-guidance" rows="3" maxlength="8000" [(ngModel)]="judgeDraft"></textarea>
+              <button mat-button type="button" data-testid="judge-save" [disabled]="!judgeDraft.trim() || busy() || judgeSaving" (click)="saveJudgeGuidance()">Save guidance</button>
+              <button mat-button type="button" [disabled]="judgeSaving" (click)="judgeDraft = null; judgeError = ''">Cancel</button>
+              <p class="cc-hint">Use Clear to remove guidance. Live-only approvals and overrides are not armed here.</p>
+            </fieldset>
+            <p *ngIf="judgeError" role="alert" data-testid="judge-error">{{ judgeError }}</p>
           </ng-container>
         </section>
 
@@ -576,6 +676,29 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
   queue: CommandEventData | null;
   continueMenu: CommandEventData | null;
   judgeMenu: CommandEventData | null;
+  subagents: CommandEventData | null = null;
+  failover: CommandEventData | null = null;
+  subagentDraft: SubagentDraft | null = null;
+  failoverDraft: FailoverDraft | null = null;
+  policySaving: 'subagents' | FailoverTarget | null = null;
+  policyError: string | null = null;
+  durableMenu: DurableSubagentsMenu | null = null;
+  durableOutcome: DurableSubagentsOutcome | null = null;
+  permissionMenu: unknown;
+  hooksMenu: unknown;
+  safetyOutcome: SafetySettingsOutcome | null = null;
+  judgeDraft: string | null = null;
+  judgeSaving = false;
+  judgeError = '';
+  queueEditId: string | null = null;
+  queueEditContent = '';
+  queueEditSaving = false;
+  queueEditError = '';
+  fallbackCatalog?: ChatSetupCatalog;
+  fallbackRoute: ChatSetupSelection = {};
+  fallbackLoading = false;
+  fallbackError: string | null = null;
+  private fallbackRequest = 0;
   newReminder = '';
   newLoopSchedule = '';
   newLoopPrompt = '';
@@ -642,6 +765,13 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
           this.queue = snapshot?.queue ?? this.queue;
           this.continueMenu = snapshot?.continue ?? this.continueMenu;
           this.judgeMenu = snapshot?.judge ?? this.judgeMenu;
+          this.subagents = snapshot?.subagents ?? this.subagents;
+          this.failover = snapshot?.failover ?? this.failover;
+          const children: SessionConfigSnapshot & { durableSubagents?: unknown } = snapshot;
+          this.durableMenu = durableSubagentsMenu(children?.durableSubagents) ?? this.durableMenu;
+          const safety: SessionConfigSnapshot & { permissions?: unknown; hooks?: unknown } = snapshot;
+          this.permissionMenu = safety?.permissions;
+          this.hooksMenu = safety?.hooks;
         },
         error: (error: unknown) => {
           this.loading = false;
@@ -663,7 +793,8 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
 
   /** Anything the dialog is waiting on: the snapshot, route discovery, an Apply, or a dispatched command. */
   working(): boolean {
-    return this.loading || this.refreshing || this.routeLoading || this.routeSaving || this.busy();
+    return this.loading || this.refreshing || this.routeLoading || this.routeSaving || this.fallbackLoading
+      || !!this.policySaving || this.judgeSaving || this.queueEditSaving || this.busy();
   }
 
   /** What the route section is waiting on, in words. */
@@ -744,6 +875,196 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
           this.routeError = error?.error?.message || 'The chat route was not changed.';
         }
       });
+  }
+
+  concurrencyLabel(value: number | undefined): string {
+    return value === 0 ? 'disabled' : value === -1 ? 'unlimited' : 'limited';
+  }
+
+  policyLocked(): boolean {
+    return this.busy() || this.refreshing || !!this.policySaving || !!this.subagentDraft || !!this.failoverDraft;
+  }
+
+  editSubagents(): void {
+    if (this.policyLocked() || this.subagents?.maxConcurrent === undefined) return;
+    this.policyError = null;
+    this.subagentDraft = { maxConcurrent: this.subagents.maxConcurrent,
+      bannedModels: (this.subagents.bannedModels || []).join('\n') };
+  }
+
+  canSaveSubagents(): boolean {
+    const max = this.subagentDraft?.maxConcurrent;
+    return !this.busy() && !this.policySaving && typeof max === 'number' && Number.isInteger(max) && max >= -1;
+  }
+
+  saveSubagents(): void {
+    if (!this.canSaveSubagents() || !this.subagentDraft) return;
+    const child = this.savedFailover('child');
+    // A full policy save must not silently erase a ladder the CLI could not return.
+    if (!child) { this.policyError = 'Reload the child failover policy before saving.'; return; }
+    const bannedModels = [...new Set(this.subagentDraft.bannedModels.split('\n').map(id => id.trim()).filter(Boolean))];
+    this.policySaving = 'subagents';
+    this.policyError = null;
+    this.data.dispatch('/subagent-config save ' + JSON.stringify({ maxConcurrent: this.subagentDraft.maxConcurrent,
+      bannedModels, failoverEnabled: child.enabled, failoverRungs: child.rungs.map(rung => this.cleanRung(rung)) }));
+  }
+
+  savedFailover(target: FailoverTarget): ModelFailoverPolicy | null {
+    if (target === 'child') return this.subagents?.failover ?? null;
+    return this.failover ? { enabled: !!this.failover.enabled, rungs: this.failover.rungs || [] } : null;
+  }
+
+  editFailover(target: FailoverTarget): void {
+    if (this.policyLocked()) return;
+    const saved = this.savedFailover(target);
+    if (!saved) return;
+    this.policyError = null;
+    this.failoverDraft = { target, enabled: saved.enabled, rungs: saved.rungs.map(rung => this.cleanRung(rung)) };
+    this.fallbackRoute = { mode: 'standard', runtime: 'direct' };
+    this.loadFallbackCatalog();
+  }
+
+  cancelPolicy(): void {
+    if (this.policySaving) return;
+    this.subagentDraft = null;
+    this.failoverDraft = null;
+    this.fallbackCatalog = undefined;
+    this.fallbackRoute = {};
+    this.fallbackLoading = false;
+    this.fallbackError = null;
+    this.policyError = null;
+    ++this.fallbackRequest; // Ignore a discovery answer arriving after Cancel or a different draft.
+  }
+
+  moveRung(index: number, offset: number): void {
+    if (this.busy() || this.policySaving || !this.failoverDraft) return;
+    const rungs = this.failoverDraft.rungs;
+    const destination = index + offset;
+    if (index < 0 || destination < 0 || index >= rungs.length || destination >= rungs.length) return;
+    [rungs[index], rungs[destination]] = [rungs[destination], rungs[index]];
+  }
+
+  removeRung(index: number): void {
+    if (!this.busy() && !this.policySaving && this.failoverDraft && index >= 0) this.failoverDraft.rungs.splice(index, 1);
+  }
+
+  clearRungs(): void {
+    if (!this.busy() && !this.policySaving && this.failoverDraft) this.failoverDraft.rungs = [];
+  }
+
+  saveFailover(): void {
+    if (this.busy() || this.policySaving || !this.failoverDraft) return;
+    const draft = this.failoverDraft;
+    this.policySaving = draft.target;
+    this.policyError = null;
+    const command = draft.target === 'lead' ? '/model failover save ' : '/subagent-config failover save ';
+    this.data.dispatch(command + JSON.stringify({ enabled: draft.enabled, rungs: draft.rungs.map(rung => this.cleanRung(rung)) }));
+  }
+
+  /** Discovery and persistence both use allowlists, never the wizard's secret-bearing selection object. */
+  private fallbackSelection(source: ChatSetupSelection = this.fallbackRoute): ChatSetupSelection {
+    const selection: ChatSetupSelection = { mode: 'standard', runtime: 'direct' };
+    for (const key of ['vendor', 'authMethod', 'credentialName', 'model', 'thinking']) {
+      if (typeof source[key] === 'string') selection[key] = source[key];
+    }
+    return selection;
+  }
+
+  fallbackChange(field: string): void {
+    if (this.busy() || this.policySaving || !this.failoverDraft) return;
+    clearRouteDependents(this.fallbackRoute, field);
+    this.loadFallbackCatalog();
+  }
+
+  loadFallbackCatalog(): void {
+    if (!this.failoverDraft || this.policySaving) return;
+    if (!this.data.sessionId) { this.fallbackError = 'A chat session is required to discover fallback routes.'; return; }
+    const request = ++this.fallbackRequest;
+    const requested = this.fallbackSelection();
+    this.fallbackLoading = true;
+    this.fallbackError = null;
+    this.agentChat.setupSession<ChatSetupCatalog>(this.data.sessionId, this.data.workingDirectory, 'catalog', requested)
+      .pipe(takeUntil(this.destroyed)).subscribe({
+        next: catalog => {
+          if (request !== this.fallbackRequest) return;
+          this.fallbackLoading = false;
+          if (!catalog?.available) {
+            this.fallbackCatalog = undefined;
+            this.fallbackError = catalog?.status || 'Fallback route discovery is unavailable.';
+            return;
+          }
+          // Ladders reference native chat routes, not CLI frameworks or locally entered endpoints.
+          this.fallbackCatalog = { ...catalog, runtimes: catalog.runtimes.filter(runtime => runtime.id === 'direct') };
+          this.fallbackRoute = this.fallbackSelection(mergeRouteCatalog(catalog, requested, {}));
+          if (!catalog.fallbackRoute?.provider) this.fallbackError = 'The CLI did not resolve a canonical fallback provider. Refresh or select another route.';
+        },
+        error: () => {
+          if (request !== this.fallbackRequest) return;
+          this.fallbackLoading = false;
+          this.fallbackCatalog = undefined;
+          this.fallbackError = 'Could not discover fallback routes from the CLI.';
+        }
+      });
+  }
+
+  canAddRung(): boolean {
+    const catalog = this.fallbackCatalog;
+    return !this.busy() && !this.policySaving && !this.fallbackLoading && !!this.failoverDraft
+      && !!catalog?.fallbackRoute?.provider?.trim() && !!this.fallbackRoute.model
+      && !!catalog.models.some(model => model.id === this.fallbackRoute.model)
+      && (!this.fallbackRoute.credentialName || catalog.credentials.some(account => account.name === this.fallbackRoute.credentialName));
+  }
+
+  addRung(): void {
+    if (!this.canAddRung() || !this.failoverDraft) return;
+    const metadata = this.fallbackCatalog!.fallbackRoute!;
+    this.failoverDraft.rungs.push(this.cleanRung({ provider: metadata.provider, model: this.fallbackRoute.model!,
+      credentialName: this.fallbackRoute.credentialName || null, thinking: this.fallbackRoute.thinking || null,
+      authenticationMethod: metadata.authenticationMethod,
+      label: this.fallbackCatalog!.models.find(model => model.id === this.fallbackRoute.model)?.label || null }));
+  }
+
+  rungLabel(rung: ModelRung): string {
+    return [rung.provider || 'Default provider', rung.model, rung.authenticationMethod,
+      rung.credentialName ? 'account: ' + rung.credentialName : null, rung.thinking ? 'effort: ' + rung.thinking : null]
+      .filter(Boolean).join(' · ');
+  }
+
+  /** Explicit allowlist: snapshots may grow fields; credentials and tokens must never follow them into a command. */
+  private cleanRung(rung: ModelRung): ModelRung {
+    const text = (value: string | null | undefined): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
+    return { provider: text(rung.provider), model: rung.model.trim(), credentialName: text(rung.credentialName),
+      label: text(rung.label), thinking: text(rung.thinking), authenticationMethod: text(rung.authenticationMethod) };
+  }
+
+  editJudgeGuidance(): void {
+    if (this.busy() || this.judgeSaving) return;
+    this.judgeDraft = this.judgeGuidance(); this.judgeError = '';
+  }
+  saveJudgeGuidance(): void {
+    if (this.busy() || this.judgeSaving || this.judgeDraft === null || !this.judgeDraft.trim()) return;
+    const text = this.judgeDraft.trim();
+    if (['clear', 'none', 'off'].includes(text.toLowerCase())) {
+      this.judgeError = 'That bare word clears guidance in the CLI; use the Clear control or more specific guidance.'; return;
+    }
+    this.judgeSaving = true; this.judgeError = ''; this.data.dispatch('/judge feedback ' + text);
+  }
+  clearJudgeGuidance(): void {
+    if (this.busy() || this.judgeSaving) return;
+    this.judgeSaving = true; this.judgeError = ''; this.data.dispatch('/judge feedback clear');
+  }
+  editQueued(id: string, text: string): void {
+    if (this.busy() || this.queueEditSaving) return;
+    this.queueEditId = id; this.queueEditContent = text; this.queueEditError = '';
+  }
+  saveQueuedEdit(): void {
+    if (this.busy() || this.queueEditSaving || !this.queueEditId || !this.queueEditContent.trim()) return;
+    this.queueEditSaving = true; this.queueEditError = '';
+    this.data.dispatch('/queue-edit ' + this.queueEditId + ' ' + this.queueEditContent.trim());
+  }
+  moveQueued(id: string, position: number): void {
+    if (this.busy() || this.queueEditSaving || this.queueEditId !== null || position < 1 || position > this.queueEntries().length) return;
+    this.data.dispatch('/queue-move ' + id + ' ' + position);
   }
 
   roles(): CommandRoleEntry[] {
@@ -863,6 +1184,41 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
 
   private applyOutcome(outcome: CommandOutcome): void {
     const data = outcome?.data;
+    if (data?.menu === 'subagent-config' && data.maxConcurrent !== undefined) this.subagents = data;
+    if (data?.menu === 'failover') {
+      if (data.scope === 'subagent') {
+        if (this.subagents) this.subagents = { ...this.subagents,
+          failover: { enabled: !!data.enabled, rungs: data.rungs || [] } };
+      } else this.failover = data;
+    }
+    const command = outcome?.command?.replace(/^\//, '').split(/\s+/)[0];
+    if (command === 'hooks' || command === 'permissions') {
+      this.safetyOutcome = { command, ok: outcome.ok, text: outcome.text || '', data: outcome.data };
+      if (outcome.ok && outcome.data) {
+        if (command === 'hooks') this.hooksMenu = outcome.data;
+        else this.permissionMenu = outcome.data;
+      }
+    }
+    if (this.judgeSaving && command === 'judge') {
+      this.judgeSaving = false;
+      if (outcome.ok) { this.judgeDraft = null; this.judgeError = ''; }
+      else this.judgeError = outcome.text || 'Judge guidance was not saved.';
+    }
+    if (this.queueEditSaving && command === 'queue-edit') {
+      this.queueEditSaving = false;
+      if (outcome.ok) { this.queueEditId = null; this.queueEditContent = ''; this.queueEditError = ''; }
+      else this.queueEditError = outcome.text || 'Queued message was not changed.';
+    }
+    if (command === 'subagents') {
+      const children = durableSubagentsMenu(outcome.data);
+      if (children) this.durableMenu = children;
+      this.durableOutcome = { ok: outcome.ok, text: outcome.text || '', data: children };
+    }
+    if (this.policySaving && command === (this.policySaving === 'lead' ? 'model' : 'subagent-config')) {
+      this.policySaving = null;
+      if (outcome.ok) { this.cancelPolicy(); this.loadSnapshot(); }
+      else this.policyError = outcome.text || outcome.status || 'The policy was not saved.';
+    }
     if (!data?.menu) return;
     if (data.menu === 'model') this.modelMenu = data;
     // A /model or /thinking from the selector above the chat re-pinned the route; reseed the wizard from it.

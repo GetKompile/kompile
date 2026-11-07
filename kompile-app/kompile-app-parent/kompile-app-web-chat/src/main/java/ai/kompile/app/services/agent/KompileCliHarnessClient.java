@@ -1149,11 +1149,9 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                 tokenMetrics.put("outputTokens", event.path("output_tokens").asLong(0));
                 tokenMetrics.put("cacheReadTokens", event.path("cache_read_tokens").asLong(0));
                 tokenMetrics.put("cacheCreationTokens", event.path("cache_creation_tokens").asLong(0));
-                tokenMetrics.put("totalGenerationMs", 0);
-                tokenMetrics.put("tokensPerSecond", 0.0d);
-                run.sink.send("stats", Map.of(
-                        "durationMs", 0, "costUsd", 0.0d, "numTurns", 1,
-                        "isError", false, "tokenMetrics", tokenMetrics));
+                // Usage reports counts only. Missing timing, cost, throughput and turn
+                // measurements must not be presented as measured zero (or one turn).
+                run.sink.send("stats", Map.of("isError", false, "tokenMetrics", tokenMetrics));
                 yield false;
             }
             case "sources" -> { run.sink.send("sources", event.get("sources")); yield false; }

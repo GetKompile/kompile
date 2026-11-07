@@ -132,8 +132,19 @@ class TestMilestonesCommandTest {
     }
 
     @Test
+    void requestedHistoryCanExceedTheOld100RowCeiling() throws Exception {
+        for (int i = 0; i < 501; i++) write(String.format("%08x", i), SESSION, "harness", "passed", 1, 1, 0, "m");
+        String report = command().show("501", SESSION);
+        assertTrue(report.contains("501 matched, 501 shown (limit 501)"), report);
+        assertTrue(report.contains("000001f4"), "All requested rows must be available");
+        var scoped = TestMilestonesCommand.scopedReport(project, "501", SESSION);
+        assertTrue(scoped.valid(), scoped.text());
+        assertTrue(scoped.text().contains("501 matched, 501 shown (limit 501)"), scoped.text());
+    }
+
+    @Test
     void badArgumentsPrintUsageWithoutThrowing() {
-        String tooBig = command().show("500", SESSION);
+        String tooBig = command().show("2147483648", SESSION);
         assertTrue(tooBig.contains("Usage: /test-milestones"), tooBig);
         assertTrue(tooBig.contains("Error:"), tooBig);
         String unknown = command().show("wat:1", SESSION);
@@ -144,6 +155,10 @@ class TestMilestonesCommandTest {
         assertTrue(badSource.contains("source must be auto or agent"), badSource);
         String dup = command().show("1 2", SESSION);
         assertTrue(dup.contains("Duplicate count"), dup);
+        String dupDefault = command().show("20 1", SESSION);
+        assertTrue(dupDefault.contains("Duplicate count"), dupDefault);
+        String reversed = command().show("session:" + OTHER + " all", SESSION);
+        assertTrue(reversed.contains("exclusive"), reversed);
     }
 
     @Test
@@ -242,5 +257,56 @@ class TestMilestonesCommandTest {
         assertTrue(printed.contains("Scope: session router-session"), printed);
         assertTrue(printed.contains("a1b2c3d4"), printed);
         assertTrue(ChatCommandCatalog.isBuiltin("test-milestones"));
+    }
+
+    @Test
+    void scopedApiReusesTheTerminalReportAndFormatting() throws Exception {
+        write("a1b2c3d4", SESSION, "harness", "passed", 12, 12, 0, "mod");
+        write("agentrec1", SESSION, null, "failed", 2, 1, 1, "mod");
+        for (String arguments : List.of("", "1", "all", "session:" + SESSION,
+                "source:auto", "source:agent module:mod", "help")) {
+            TestMilestonesCommand.Report scoped = TestMilestonesCommand.scopedReport(project, arguments, SESSION);
+            assertTrue(scoped.valid(), scoped.text());
+            assertEquals(command().show(arguments, SESSION), scoped.text(), arguments);
+        }
+    }
+
+    @Test
+    void scopedApiReturnsTypedSanitizedErrorsRatherThanParsingRenderedPrefixes() {
+        for (String arguments : List.of("0", "2147483648", "20 1", "source:invalid-secret", "secret-argv",
+                "session:" + SESSION + " all", "all session:" + SESSION, "path:/secret")) {
+            TestMilestonesCommand.Report report = TestMilestonesCommand.scopedReport(project, arguments, SESSION);
+            assertFalse(report.valid(), arguments);
+            assertTrue(report.text().contains("Usage: /test-milestones"), report.text());
+            assertFalse(report.text().contains("secret"), report.text());
+        }
+        assertFalse(TestMilestonesCommand.scopedReport(project, "", null).valid());
+        assertTrue(TestMilestonesCommand.scopedReport(project, "all", null).valid());
+    }
+
+    @Test
+    void terminalStillIncludesTheGlobalStoreWhileScopedApiNeverDoes() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        Path isolatedHome = Files.createDirectories(project.resolve("isolated-home"));
+        try {
+            System.setProperty("user.home", isolatedHome.toString());
+            Path global = Files.createDirectories(TestMilestoneReader.storeDir(isolatedHome)
+                    .resolve(TestMilestoneReader.MILESTONES_DIR));
+            Files.writeString(global.resolve("glob1234.json"),
+                    "{\"id\":\"glob1234\",\"sessionId\":\"" + SESSION + "\",\"passing\":true}");
+            write("a1b2c3d4", SESSION, "harness", "passed", 1, 1, 0, "mod");
+
+            String terminal = command().show("", SESSION);
+            assertTrue(terminal.contains("project + user global"), terminal);
+            assertTrue(terminal.contains("glob1234"), terminal);
+            assertTrue(terminal.contains("shown from the user-global store"), terminal);
+            TestMilestonesCommand.Report scoped = TestMilestonesCommand.scopedReport(project, "all", SESSION);
+            assertTrue(scoped.valid(), scoped.text());
+            assertTrue(scoped.text().contains("a1b2c3d4"), scoped.text());
+            assertFalse(scoped.text().contains("glob1234"), scoped.text());
+            assertFalse(scoped.text().contains("user global"), scoped.text());
+        } finally {
+            System.setProperty("user.home", previousHome);
+        }
     }
 }

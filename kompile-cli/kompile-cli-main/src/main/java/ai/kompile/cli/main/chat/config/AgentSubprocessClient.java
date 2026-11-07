@@ -28,6 +28,8 @@ import ai.kompile.cli.main.chat.PassthroughStreamParser.TurnComplete;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.enforcer.RealtimeInterruptEvent;
 import ai.kompile.cli.main.chat.enforcer.ScoringRealtimeMonitor;
+import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 
@@ -80,12 +82,14 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
     // Internal model-orchestration calls collect output without rendering it into the active chat.
     private volatile boolean quiet;
 
+    /** Same tool-row rendering the interactive runner uses — exact display parity. */
+    private final TerminalRenderer renderer = new TerminalRenderer();
+
     public AgentSubprocessClient(String agentName, String workingDir, ObjectMapper objectMapper) {
         super(new ChatConfig(agentName, null, agentName, null), objectMapper);
         this.agentName = agentName;
         this.agentBinary = resolveAgentBinary(agentName);
         this.workingDir = new File(workingDir).getAbsoluteFile();
-        parser.enableTestCapture(this.workingDir.toPath());
     }
 
     /**
@@ -97,7 +101,6 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
         this.agentName = agentName;
         this.agentBinary = binaryPath;
         this.workingDir = new File(workingDir).getAbsoluteFile();
-        parser.enableTestCapture(this.workingDir.toPath());
     }
 
     public String getAgentName() {
@@ -343,18 +346,28 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                                 }
                             }
                             if (!quiet) {
-                                System.out.println("\n  [tool: " + toolUse.name() + "]");
+                                // Same start row the interactive runner prints
+                                // (SubprocessAgentRunner.renderToolCallStart): prettified
+                                // name + action summary, never the raw wire name.
+                                System.out.println();
+                                System.out.println(renderer.renderToolCallStart(toolUse.name(), toolUse.input()));
                                 System.out.flush();
                             }
                         } else if (event instanceof ToolOutput toolOutput) {
                             if (!quiet) printToolOutput(toolOutput.output());
                         } else if (event instanceof ToolComplete toolComplete) {
                             if (!quiet) printToolOutput(toolComplete.output());
-                            String status = toolComplete.exitCode() >= 0
-                                    ? "exit " + toolComplete.exitCode()
-                                    : "completed";
                             if (!quiet) {
-                                System.out.println("\n  [tool: " + toolComplete.name() + " " + status + "]");
+                                // Same completion row the interactive runner prints
+                                // (renderToolCallSummary). The body above was streamed
+                                // live, so mark it streamed to suppress a repeated preview.
+                                Map<String, Object> streamed = Map.of(
+                                        ToolResult.OUTPUT_STREAMED_METADATA, true);
+                                ToolResult rowResult = toolComplete.error()
+                                        ? new ToolResult("error", toolComplete.output(), streamed, true)
+                                        : new ToolResult("", toolComplete.output(), streamed);
+                                System.out.println(renderer.renderToolCallSummary(
+                                        toolComplete.name(), "", rowResult));
                                 System.out.flush();
                             }
                         } else if (event instanceof TurnComplete tc) {
@@ -420,8 +433,6 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
 
         } catch (IOException e) {
             result.text = "Error running agent: " + e.getMessage();
-        } finally {
-            parser.closeTestCapture();
         }
 
         return result;
@@ -561,7 +572,6 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
 
     @Override
     public void close() {
-        parser.closeTestCapture();
         Process p = activeProcess;
         if (p != null && p.isAlive()) {
             p.destroy();

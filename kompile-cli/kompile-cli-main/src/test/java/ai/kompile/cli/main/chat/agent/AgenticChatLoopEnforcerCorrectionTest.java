@@ -18,6 +18,15 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.enforcer.EnforcerDecision;
 import ai.kompile.cli.main.chat.enforcer.EnforcerEvaluator;

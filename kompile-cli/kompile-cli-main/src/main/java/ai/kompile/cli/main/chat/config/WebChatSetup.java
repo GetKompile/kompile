@@ -253,6 +253,10 @@ public final class WebChatSetup {
                 .put("label", agent.getValue()).put("available", SubprocessAgentRunner.resolveAgentBinary(agent.getKey()) != null)
                 .put("webSupported", SubprocessAgentRunner.supportsHeadless(agent.getKey()));
         ChatConfig config = selection(directory, input, false, session);
+        // Canonical route metadata for saved-account-only fallback editors. The browser
+        // must not guess the provider behind a vendor/authentication-method choice.
+        out.putObject("fallbackRoute").put("provider", config.getProvider())
+                .put("authenticationMethod", config.getAuthenticationMethod());
         boolean nativeLead = "passthrough".equals(config.getChatMode());
         // Mirrors SetupWizard.supportsWeb minus completeness: whether this route can run in a browser at all.
         out.put("webSupported", nativeLead

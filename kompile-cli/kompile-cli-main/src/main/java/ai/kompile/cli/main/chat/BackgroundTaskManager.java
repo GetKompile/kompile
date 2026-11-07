@@ -21,8 +21,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -42,6 +45,7 @@ public class BackgroundTaskManager {
         private String output;
         private volatile Throwable error;
         private volatile boolean backgrounded;
+        private volatile Runnable outputListener;
 
         public enum BackgroundTaskStatus {
             RUNNING,
@@ -100,10 +104,14 @@ public class BackgroundTaskManager {
             return output;
         }
 
-        public synchronized void appendOutput(String text) {
-            if (text != null) {
+        public void appendOutput(String text) {
+            if (text == null) return;
+            synchronized (this) {
                 this.output += text;
             }
+            // Outside the monitor: the listener redraws under the UI's draw lock.
+            Runnable listener = outputListener;
+            if (listener != null) listener.run();
         }
 
         public Throwable getError() {
@@ -169,8 +177,9 @@ public class BackgroundTaskManager {
     // Optional listeners invoked on terminal status
     private final List<CompletionListener> completionListeners = new CopyOnWriteArrayList<>();
 
-    // General state-change listeners (fired on any task state transition)
+    // General state-change listeners (fired on any task state transition, and as output grows)
     private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean outputChangeQueued = new AtomicBoolean();
 
     public BackgroundTaskManager() {
         this.tasks = new ConcurrentHashMap<>();
@@ -208,6 +217,18 @@ public class BackgroundTaskManager {
 
     public void removeChangeListener(Runnable listener) {
         changeListeners.remove(listener);
+    }
+
+    /**
+     * A tracked task's output grew, so an opened view of it can follow live. A
+     * backgrounded turn appends per streamed line; one change per 50 ms is enough.
+     */
+    private void outputGrew() {
+        if (!outputChangeQueued.compareAndSet(false, true)) return;
+        CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(() -> {
+            outputChangeQueued.set(false);
+            fireChange();
+        });
     }
 
     private void fireChange() {
@@ -248,6 +269,7 @@ public class BackgroundTaskManager {
      */
     public BackgroundTask startTask(String description) {
         BackgroundTask task = new BackgroundTask(description);
+        task.outputListener = this::outputGrew;
         synchronized (this) {
             tasks.put(task.getId(), task);
             taskOrder.add(task.getId());

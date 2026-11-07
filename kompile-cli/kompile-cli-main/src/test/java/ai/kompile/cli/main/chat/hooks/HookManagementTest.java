@@ -48,6 +48,26 @@ class HookManagementTest {
         assertTrue(new HookManager(directory).load().isEmpty());
         assertTrue(ChatCommandCatalog.isBuiltin("hooks"));
     }
+    @Test void orderedHandlersAreSharedAcrossHumanAndToolManagementAndRemainGuarded() throws Exception {
+        ToolResult added = HookCommands.execute("add {\"event\":\"PreToolUse\",\"hooks\":[{\"command\":\"first\",\"timeout\":7},{\"command\":\"second\",\"timeout\":11}]}", context);
+        assertFalse(added.isError(), added.getOutput());
+        String id = json(added.getOutput()).path("id").asText();
+        String edit = "\"action\":\"edit\",\"id\":\"" + id + "\",\"hooks\":[{\"command\":\"second\",\"timeout\":11},{\"command\":\"first\",\"timeout\":7}]";
+        var manager = new HookManager(directory);
+        String original = Files.readString(manager.path("project"));
+        assertTrue(call("{" + edit + "}").isError());
+        assertEquals(original, Files.readString(manager.path("project")));
+        assertFalse(call("{" + edit + ",\"confirmed\":true}").isError());
+        var entries = json(call("{\"action\":\"get\",\"id\":\"" + id + "\"}").getOutput()).path("hooks");
+        assertEquals("second", entries.get(0).path("command").asText()); assertEquals(7, entries.get(1).path("timeout").asInt());
+        var schema = tool.parameterSchema().path("properties").path("hooks");
+        assertEquals("array", schema.path("type").asText()); assertEquals(1, schema.path("minItems").asInt());
+        assertFalse(schema.path("items").path("additionalProperties").asBoolean(true));
+        context.getPermissionService().setUserOverride("hooks", PermissionService.PermissionLevel.DENY);
+        assertThrows(ToolExecutionException.class, () -> call("{" + edit + ",\"confirmed\":true}"));
+        assertEquals("second", manager.load().get(0).commands().get(0).command());
+    }
+
     @Test void agentMutationsRequireTypedConfirmationAndAuthorization() throws Exception {
         String fields = "\"action\":\"add\",\"event\":\"PreToolUse\",\"command\":\"exit 0\"";
         assertTrue(call("{" + fields + "}").isError());

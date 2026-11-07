@@ -318,15 +318,15 @@ class DirectLlmClientMemoryProjectionTest {
         ArrayNode tools = mapper.createArrayNode();
         tools.addObject().put("name", "read").put("description", "d".repeat(4_000))
                 .putObject("inputSchema").put("type", "object");
-        DirectLlmClient.ToolCallResultInput result = new DirectLlmClient.ToolCallResultInput(
+        ToolCallResultInput result = new ToolCallResultInput(
                 "call-1", "read", "tool output sentinel", false);
-        List<DirectLlmClient.ToolCallResultInput> results = List.of(result);
-        List<DirectLlmClient.AttachmentInput> media = List.of(
-                new DirectLlmClient.AttachmentInput("document.txt", "text/plain", false, null, "f".repeat(4_000)),
-                new DirectLlmClient.AttachmentInput("image.png", "image/png", true, "a".repeat(40_000), null));
+        List<ToolCallResultInput> results = List.of(result);
+        List<AttachmentInput> media = List.of(
+                new AttachmentInput("document.txt", "text/plain", false, null, "f".repeat(4_000)),
+                new AttachmentInput("image.png", "image/png", true, "a".repeat(40_000), null));
         String pending = enriched(memory, "", "continue");
 
-        DirectLlmClient.TokenCountResult estimate = client.estimateInputTokens(
+        TokenCountResult estimate = client.estimateInputTokens(
                 pending, "system", tools, results, null, media);
         Method messages = DirectLlmClient.class.getDeclaredMethod("buildOpenAiMessages",
                 String.class, String.class, List.class, List.class);
@@ -361,7 +361,7 @@ class DirectLlmClientMemoryProjectionTest {
         client.addToHistory("user", "earlier request");
         String original = history.toString();
 
-        DirectLlmClient.TokenCountResult estimate = client.estimateInputTokens(
+        TokenCountResult estimate = client.estimateInputTokens(
                 "continue", null, null, null, null, List.of());
 
         assertTrue(estimate.supported());
@@ -425,7 +425,7 @@ class DirectLlmClientMemoryProjectionTest {
             tools.addObject().put("name", "read").put("description", "read a file")
                     .putObject("inputSchema").put("type", "object");
             String system = "instructions ".repeat(100);
-            DirectLlmClient.TokenCountResult estimate = client.estimateInputTokens(
+            TokenCountResult estimate = client.estimateInputTokens(
                     pending, system, tools, null, null, List.of());
             assertTrue(estimate.supported());
             assertFalse(estimate.exact());
@@ -512,7 +512,7 @@ class DirectLlmClientMemoryProjectionTest {
                 for (int i = 0; i < 12; i++) {
                     String id = "actual-" + i;
                     client.addReplayedToolCall("read", id, "{}");
-                    client.addReplayedToolResults(List.of(new DirectLlmClient.ToolCallResultInput(
+                    client.addReplayedToolResults(List.of(new ToolCallResultInput(
                             id, "read", "zero matches returned\n".repeat(1_000), error)), null);
                 }
                 String builder = provider.equals("openai") ? "buildOpenAiMessages" : "buildResponsesInput";
@@ -550,7 +550,7 @@ class DirectLlmClientMemoryProjectionTest {
                     String id = "live-" + i;
                     client.addReplayedToolCall("read", id, "{}");
                     assertFalse(client.streamChat(null, "system", null, List.of(
-                            new DirectLlmClient.ToolCallResultInput(id, "read",
+                            new ToolCallResultInput(id, "read",
                                     "zero matches returned\n".repeat(1_000), true))).failed);
                     assertFalse(sent.get().toString().contains("[Exact duplicate tool output:"), provider + " " + i);
                     assertFalse(sent.get().toString().contains("is_error"));

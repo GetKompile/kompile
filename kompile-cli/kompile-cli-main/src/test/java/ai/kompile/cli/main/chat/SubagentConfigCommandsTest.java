@@ -152,7 +152,7 @@ class SubagentConfigCommandsTest {
     @Test void catalogAndCompletionExposeNewCommandWithoutChangingSubagentListCommand() throws Exception {
         assertTrue(ChatCommandCatalog.isBuiltin("subagent-config"));
         assertTrue(ChatCommandCatalog.isBuiltin("subagents"));
-        assertEquals(ChatCommandCatalog.WebSupport.TERMINAL_REQUIRED, ChatCommandCatalog.webSupport("subagent-config"));
+        assertEquals(ChatCommandCatalog.WebSupport.SUPPORTED, ChatCommandCatalog.webSupport("subagent-config"));
         var completer = new ChatCompleter(List::of);
         var parser = new org.jline.reader.impl.DefaultParser();
         var candidates = new java.util.ArrayList<org.jline.reader.Candidate>();

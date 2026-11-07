@@ -1,0 +1,6 @@
+ai.kompile.cli.main.extensions.tools.BuiltinToolExtensions$Code
+ai.kompile.cli.main.extensions.tools.BuiltinToolExtensions$Knowledge
+ai.kompile.cli.main.extensions.tools.BuiltinToolExtensions$Graph
+ai.kompile.cli.main.extensions.tools.BuiltinToolExtensions$Crawl
+ai.kompile.cli.main.extensions.tools.BuiltinToolExtensions$Model
+ai.kompile.cli.main.extensions.tools.BuiltinToolExtensions$Pipeline

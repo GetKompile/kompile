@@ -162,7 +162,7 @@ class DirectLlmClientOAuthTest {
                 client.setOutputConsumer(ignored -> { });
                 DirectLlmClient.StreamResult result = client.streamChat("hi", "system", null, null);
                 assertTrue(result.failed);
-                assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind);
+                assertEquals(FailureKind.TRUNCATED, result.failureKind);
             }
         } finally {
             server.stop(0);
@@ -341,7 +341,7 @@ class DirectLlmClientOAuthTest {
                             client.streamChat("hello", "Kompile system prompt", null, null);
 
                     assertTrue(result.failed);
-                    assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, result.failureKind);
+                    assertEquals(FailureKind.AUTHENTICATION, result.failureKind);
                     assertTrue(result.failureMessage.contains("API-key route has no API key"),
                             result.failureMessage);
                     assertTrue(result.failureMessage.contains("Claude Code route"), result.failureMessage);
@@ -361,7 +361,7 @@ class DirectLlmClientOAuthTest {
 
                     // The stored sign-in is named, not reported as a missing key.
                     assertTrue(result.failed);
-                    assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, result.failureKind);
+                    assertEquals(FailureKind.AUTHENTICATION, result.failureKind);
                     assertTrue(result.failureMessage.contains("'" + signIn + "' is a stored OAuth sign-in"),
                             result.failureMessage);
                     assertTrue(result.failureMessage.contains("Claude Code route"), result.failureMessage);
@@ -932,7 +932,7 @@ class DirectLlmClientOAuthTest {
                         null,
                         "system",
                         toolDefinitions(mapper),
-                        List.of(new DirectLlmClient.ToolCallResultInput(
+                        List.of(new ToolCallResultInput(
                                 "call_abc", "read", "contents", false)));
                 assertEquals("done", second.text);
                 assertEquals(2, requests.size());
@@ -1165,7 +1165,7 @@ class DirectLlmClientOAuthTest {
                     null,
                     "system",
                     toolDefinitions(mapper),
-                    List.of(new DirectLlmClient.ToolCallResultInput(
+                    List.of(new ToolCallResultInput(
                             "call_radius", "read", "contents", false)));
 
             assertEquals("hello", result.text);
@@ -1232,7 +1232,7 @@ class DirectLlmClientOAuthTest {
             DirectLlmClient client = new DirectLlmClient(
                     new ChatConfig("radius", "radius-key", "radius-vision", baseUrl(server)), mapper);
             client.setOutputConsumer(ignored -> {});
-            List<DirectLlmClient.AttachmentInput> image = List.of(new DirectLlmClient.AttachmentInput(
+            List<AttachmentInput> image = List.of(new AttachmentInput(
                     "/tmp/page.png", "image/png", true, "cGFnZQ==", null));
 
             assertEquals("a page", client.streamChat("look", "system", null, null, null, image).text);
@@ -1294,8 +1294,8 @@ class DirectLlmClientOAuthTest {
                     new ChatConfig("radius", "key", "radius-model", baseUrl(server)),
                     mapper, policy);
             client.setOutputConsumer(ignored -> { });
-            List<DirectLlmClient.ToolCallResultInput> toolResults = List.of(
-                    new DirectLlmClient.ToolCallResultInput(
+            List<ToolCallResultInput> toolResults = List.of(
+                    new ToolCallResultInput(
                             "call_radius", "read", "contents", false));
 
             DirectLlmClient.StreamResult result =
@@ -1575,7 +1575,7 @@ class DirectLlmClientOAuthTest {
                     .put("type", "object")
                     .set("properties", mapper.createObjectNode()
                             .set("ocr", mapper.createObjectNode().put("type", "string")));
-            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+            AttachmentInput image = new AttachmentInput(
                     "page.png", "image/png", true, "aWNvbi1ieXRlcw==", null);
 
             DirectLlmClient.StreamResult result = client.streamOneShotJson(
@@ -1710,7 +1710,7 @@ class DirectLlmClientOAuthTest {
                     client.setOutputConsumer(ignored -> { });
                     DirectLlmClient.StreamResult rejected = client.streamChat("hello", "system", null, null);
                     assertTrue(rejected.failed);
-                    assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, rejected.failureKind);
+                    assertEquals(FailureKind.AUTHENTICATION, rejected.failureKind);
                     assertTrue(rejected.failureMessage.contains("kompile auth login openai-codex"),
                             rejected.failureMessage);
                     assertFalse(rejected.text.contains("expired-secret"));
@@ -1796,7 +1796,7 @@ class DirectLlmClientOAuthTest {
                     assertEquals(rejectReplay, result.failed, result.text);
                     assertFalse(tokens.contains("Bearer wrong-account"), route);
                     assertFalse(result.text.contains("secret-reflected-token"));
-                    if (rejectReplay) assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, result.failureKind);
+                    if (rejectReplay) assertEquals(FailureKind.AUTHENTICATION, result.failureKind);
                     else assertEquals("ok", result.text);
                 } finally {
                     server.stop(0);
@@ -1815,7 +1815,7 @@ class DirectLlmClientOAuthTest {
                 client.setOutputConsumer(ignored -> { });
                 var result = client.streamChat("hello", "system", null, null);
                 assertTrue(result.failed);
-                assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, result.failureKind);
+                assertEquals(FailureKind.AUTHENTICATION, result.failureKind);
                 assertEquals(0, result.failureStatusCode);
             }
         });

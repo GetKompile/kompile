@@ -87,7 +87,7 @@ class DirectLlmClientAstraResponsesTest {
                 assertEquals("call_1", first.toolCalls.get(0).id);
                 assertEquals("README.md", first.toolCalls.get(0).arguments.path("path").asText());
                 var second = client.streamChat(null, "system", tools, List.of(
-                        new DirectLlmClient.ToolCallResultInput("call_1", "read", "contents", false)));
+                        new ToolCallResultInput("call_1", "read", "contents", false)));
                 assertEquals("done", second.text);
             }
             assertEquals(3, requests.size());

@@ -10,6 +10,7 @@ import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.LinkedHashMap;
@@ -25,11 +26,19 @@ public final class SubagentResumeTool implements CliTool {
     private final ObjectMapper mapper;
     private final SubagentResumeService service;
     private final ResumeExecutor executor;
+    /** Whether this runtime owns the live runner of the caller's children, so it can cancel them. */
+    private final boolean cancellable;
 
     public SubagentResumeTool(ObjectMapper mapper, SubagentResumeService service, ResumeExecutor executor) {
+        this(mapper, service, executor, true);
+    }
+
+    public SubagentResumeTool(ObjectMapper mapper, SubagentResumeService service, ResumeExecutor executor,
+                              boolean cancellable) {
         this.mapper = mapper;
         this.service = service;
         this.executor = executor;
+        this.cancellable = cancellable;
     }
 
     /** Reuse task's current role, model and permission policy, never a saved permission grant. */
@@ -70,7 +79,9 @@ public final class SubagentResumeTool implements CliTool {
     @Override public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.DELEGATION; }
     @Override public boolean isBackgroundable() { return true; }
     @Override public String compactHint() {
-        return "Durable subagents: action=list|show|resume; session_id accepts id/name. Resume with prompt and ANY agent/provider/model, not just the original. background=false waits.";
+        return cancellable
+                ? "Durable subagents: action=list|show|resume|cancel; session_id accepts id/name. Resume with prompt and ANY agent/provider/model, not just the original. background=false waits. cancel stops a running child by its live id."
+                : "Durable subagents: action=list|show|resume; session_id accepts id/name. Resume with prompt and ANY agent/provider/model, not just the original. background=false waits.";
     }
     @Override public String description() {
         return "List, inspect, or resume a durable subagent by session_id or saved name. "
@@ -80,7 +91,8 @@ public final class SubagentResumeTool implements CliTool {
                 + "Discovers named/opt-in native runs and completed durable MCP tasks. "
                 + "action defaults to list; resume requires session_id and prompt. "
                 + "Resume backgrounds by default where supported; background=false waits. "
-                + "Concurrent writers and recursive subagent delegation are refused.";
+                + "Concurrent writers and recursive subagent delegation are refused."
+                + (cancellable ? " action=cancel stops a running subagent by the live id from its launch or watchdog notice." : "");
     }
 
     @Override public JsonNode parameterSchema() {
@@ -88,7 +100,9 @@ public final class SubagentResumeTool implements CliTool {
         ObjectNode props = schema.putObject("properties");
         props.putObject("action").put("type", "string").put("default", "list")
                 .putArray("enum").add("list").add("show").add("resume");
-        props.putObject("session_id").put("type", "string").put("description", "Durable subagent id, exact name, or unique name prefix.");
+        if (cancellable) ((ArrayNode) props.path("action").path("enum")).add("cancel");
+        props.putObject("session_id").put("type", "string").put("description",
+                "Durable subagent id, exact name, or unique name prefix; for cancel, the running subagent's live id.");
         props.putObject("prompt").put("type", "string").put("description", "Follow-up task for resume.");
         props.putObject("agent").put("type", "string").put("description", "Target CLI: kompile/general, codex, claude, opencode, gemini, qwen, pi. May differ from the original agent.");
         props.putObject("agent_type").put("type", "string").put("description", "Native chat subagent configuration, instead of a CLI agent or role.");
@@ -109,7 +123,7 @@ public final class SubagentResumeTool implements CliTool {
         if (params.hasNonNull("agent") && params.hasNonNull("agent_type")) return ToolResult.error("Specify agent or agent_type, not both");
         if (params.hasNonNull("limit") && !params.get("limit").isIntegralNumber()) return ToolResult.error("limit must be an integer");
         String action = params.path("action").asText("list");
-        if (!java.util.Set.of("list", "show", "resume").contains(action)) return ToolResult.error("Unknown action: " + action);
+        if (!java.util.Set.of("list", "show", "resume", "cancel").contains(action)) return ToolResult.error("Unknown action: " + action);
         int limit = params.path("limit").asInt(20);
         if (limit < 1 || limit > 200) return ToolResult.error("limit must be between 1 and 200");
         context.checkPermission("list".equals(action) || "show".equals(action) ? "read" : permissionKey(), "Subagent " + action);
@@ -117,6 +131,10 @@ public final class SubagentResumeTool implements CliTool {
             var runs = service.list();
             return ToolResult.success("subagents", mapper.valueToTree(runs.stream().limit(limit).toList()).toPrettyString(),
                     Map.of("total", runs.size()));
+        }
+        if ("cancel".equals(action)) {
+            if (!cancellable) return ToolResult.error("cancel is unavailable here; stop a running task by cancelling its tool call");
+            return cancel(params.path("session_id").asText("").trim(), context);
         }
         var resolution = service.resolve(params.path("session_id").asText("").trim());
         if (!resolution.ok()) return ToolResult.error(resolution.error());
@@ -156,5 +174,18 @@ public final class SubagentResumeTool implements CliTool {
             if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
             return ToolResult.error("Subagent resume failed: " + failure.getMessage());
         }
+    }
+
+    /** Running children are addressed by their live runner id, which need not be durable. */
+    private static ToolResult cancel(String id, ToolContext context) {
+        if (id.isEmpty()) return ToolResult.error("session_id is required for cancel");
+        SubagentRunner runner = context.getToolRegistry() == null ? null : context.getToolRegistry().getSubagentRunner();
+        if (runner == null) return ToolResult.error("Subagent cancellation is unavailable in this runtime");
+        if (!runner.canCancel(id) || !runner.cancel(id)) {
+            return ToolResult.error("Subagent " + id + " is not running or cannot be cancelled");
+        }
+        return ToolResult.success("subagent:" + id,
+                "Cancelled subagent " + id + ". Its run ends without a result; continue the user's work without it.",
+                Map.of("sessionId", id, "cancelled", true));
     }
 }

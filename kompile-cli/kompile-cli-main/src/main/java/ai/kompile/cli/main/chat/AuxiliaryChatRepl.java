@@ -16,7 +16,17 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
+ 
 import ai.kompile.cli.main.chat.harness.JudgeBackend;
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -157,7 +167,7 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
         // as it runs); it is one judge call. Each runner starts a call, and runs are
         // serialized.
         AtomicBoolean callCounted = new AtomicBoolean(true);
-        client.setProviderActivityListener(new DirectLlmClient.ProviderActivityListener() {
+        client.setProviderActivityListener(new ProviderActivityListener() {
             @Override
             public void onToolStart(String callId, String name, String input) {
                 // Judge clients do not run tools; nothing to track.

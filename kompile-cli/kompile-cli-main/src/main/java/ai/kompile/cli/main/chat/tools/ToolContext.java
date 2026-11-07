@@ -18,8 +18,10 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.DirectSubagentSupervision;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
+import ai.kompile.cli.plugin.api.tools.ToolInvocationContext;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -39,7 +41,7 @@ import java.util.function.Consumer;
  * Context passed to every tool execution. Contains session info,
  * permission checking, working directory, and cancellation signal.
  */
-public class ToolContext {
+public class ToolContext implements ToolInvocationContext {
     private static final Set<String> PROVIDER_MEMORY_DIRS = Set.of(
             ".claude", ".codex", ".gemini", ".qwen", ".opencode");
 
@@ -55,7 +57,7 @@ public class ToolContext {
     private volatile boolean autoApproveAll = false;
     private DirectSubagentSupervision.Contract subagentSupervision;
     private boolean supervisedChild;
-    private boolean hookExecutionSuppressed = "1".equals(System.getenv("KOMPILE_HOOK_RUNNING"));
+    private boolean hookExecutionSuppressed = "1".equals(SessionEnvironment.get("KOMPILE_HOOK_RUNNING"));
 
     /** Host-owned recursion state; socket hosts must override the daemon JVM's inherited environment. */
     public boolean isHookExecutionSuppressed() { return hookExecutionSuppressed; }

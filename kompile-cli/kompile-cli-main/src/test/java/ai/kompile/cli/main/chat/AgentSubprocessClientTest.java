@@ -1,6 +1,15 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.config.AgentSubprocessClient;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -270,8 +279,8 @@ class AgentSubprocessClientTest {
             assertEquals("Done", result.text);
             assertTrue(captured.toString().contains("BUILD SUCCESS"),
                     "Should print Codex command output, got: " + captured);
-            assertTrue(captured.toString().contains("[tool: exec exit 0]"),
-                    "Should print Codex tool completion status, got: " + captured);
+            assertTrue(captured.toString().contains("✓"),
+                    "Should print Codex tool completion row (renderer ✓), got: " + captured);
         } finally {
             System.setOut(originalOut);
             client.close();
@@ -351,8 +360,8 @@ class AgentSubprocessClientTest {
             assertEquals("Done", result.text);
             assertTrue(captured.toString().contains("one\ntwo"),
                     "Should print OpenCode tool output, got: " + captured);
-            assertTrue(captured.toString().contains("[tool: bash exit 0]"),
-                    "Should print OpenCode tool completion status, got: " + captured);
+            assertTrue(captured.toString().contains("Bash"),
+                    "Should print OpenCode tool completion row (prettified Bash), got: " + captured);
             assertEquals(3, result.inputTokens);
             assertEquals(2, result.outputTokens);
             assertEquals(1, result.cacheReadTokens);
@@ -466,7 +475,7 @@ class AgentSubprocessClientTest {
         try {
             assertFalse(client.supportsAttachments(null));
             DirectLlmClient.StreamResult result = client.streamChat("describe it", null, null, null, null,
-                    List.of(new DirectLlmClient.AttachmentInput(
+                    List.of(new AttachmentInput(
                             "/tmp/page.png", "image/png", true, "cGFnZQ==", null)));
 
             assertTrue(result.failed, result.text);

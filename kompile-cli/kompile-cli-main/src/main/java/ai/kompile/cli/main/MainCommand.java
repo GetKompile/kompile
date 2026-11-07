@@ -38,6 +38,9 @@ import ai.kompile.cli.main.codeindex.CodeIndexCommand;
 import ai.kompile.cli.main.coordination.EditCoordinatorCommand;
 import ai.kompile.cli.main.mcp.McpCommand;
 import ai.kompile.cli.main.mcp.McpStdioCommand;
+import ai.kompile.cli.main.extensions.CliExtensionDiscovery;
+import ai.kompile.cli.main.extensions.ExtensionCommand;
+import ai.kompile.cli.main.extensions.InstalledCliExtensions;
 import ai.kompile.cli.main.build.BuildMain;
 import ai.kompile.cli.main.build.DeployCommand;
 import ai.kompile.cli.main.build.InitProjectCommand;
@@ -116,6 +119,7 @@ import java.util.concurrent.Callable;
                 // Infrastructure commands
                 McpCommand.class,
                 McpStdioCommand.class,
+                ExtensionCommand.class,
                 ServeCommand.class,
                 DaemonCommand.class,
                 CodeIndexCommand.class,
@@ -214,6 +218,12 @@ public class MainCommand implements Callable<Integer> {
             }
         }
 
+        // Process packages contribute metadata/proxies only; they never load Java code
+        // into a native host. Keep management usable to remove a broken selected package.
+        CliExtensionDiscovery.registerCommands(commandLine,
+                isExtensionManagementRequest(effectiveArgs) ? CliExtensionDiscovery.discover()
+                        : InstalledCliExtensions.discover());
+
         int exitCode;
         try {
             exitCode = commandLine.execute(effectiveArgs);
@@ -235,6 +245,10 @@ public class MainCommand implements Callable<Integer> {
         // System.exit() still runs the registered shutdown hooks (which persist
         // session/coordination state) before reaping the process.
         System.exit(exitCode);
+    }
+
+    static boolean isExtensionManagementRequest(String[] args) {
+        return args != null && args.length > 0 && "extension".equals(args[0]);
     }
 
     static boolean isEmbeddingSubprocessRequest(String[] args) {

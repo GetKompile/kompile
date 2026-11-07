@@ -1,0 +1,4 @@
+[
+  {"name":"ai.kompile.cli.remote.RemoteCommand","allDeclaredConstructors":true,"allDeclaredFields":true},
+  {"name":"ai.kompile.cli.remote.RemoteCommand$RequestCommand","allDeclaredConstructors":true,"allDeclaredFields":true}
+]

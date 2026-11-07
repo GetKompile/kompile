@@ -151,6 +151,8 @@ public class SubprocessAgentRunner {
     private volatile boolean monitorSoftInterrupt;
     /** Human-readable reason when the selected agent is blocked, disabled, or out of quota. */
     private volatile String blockingNotice;
+    /** Why this turn's child was refused or stopped by {@link SubagentContainment}; null otherwise. */
+    private volatile String containmentNotice;
 
     // Injected settings file path (for cleanup)
     volatile Path injectedSettingsFile;
@@ -158,15 +160,16 @@ public class SubprocessAgentRunner {
     // A launch config this runner's owner injected and removes (see setManagedLaunchConfig).
     private volatile Path managedLaunchConfig;
 
+    // A session the launching MCP server serves this agent's tools from (see setHttpMcpEndpoint).
+    private volatile String httpMcpUrl;
+    private volatile String httpMcpToken;
+
     // Invocation-local options such as Codex MCP config overrides.
     volatile List<String> managedCommandPrefixArguments = List.of();
 
     // Explicit launch selection; persisted per-agent defaults are resolved at command-build time.
     private volatile String modelOverride;
     private volatile String thinkingOverride;
-
-    /** Non-null when this runner executes a delegated agent call; tags its test milestones. */
-    private volatile String testCaptureOrigin;
 
     // Skills injection (loaded lazily on first injectSkills() call)
     private SkillsInjection skillsInjection;
@@ -188,7 +191,6 @@ public class SubprocessAgentRunner {
                                   TerminalRenderer renderer, AsciiRenderer ascii) {
         this.agent = agent;
         this.workingDir = workingDir;
-        parser.enableTestCapture(Path.of(workingDir), testCaptureOrigin);
         this.skipPermissions = skipPermissions;
         this.injectTools = injectTools;
         this.kompileUrl = kompileUrl;
@@ -201,12 +203,6 @@ public class SubprocessAgentRunner {
 
     public void setInputProvider(Function<String, String> inputProvider) {
         this.inputProvider = inputProvider;
-    }
-
-    /** Attribute every test milestone this runner observes to a delegated agent call (e.g. subagent). */
-    public void setTestCaptureOrigin(String origin) {
-        this.testCaptureOrigin = origin == null || origin.isBlank() ? null : origin.trim();
-        parser.enableTestCapture(Path.of(workingDir), testCaptureOrigin);
     }
 
     /**
@@ -302,6 +298,8 @@ public class SubprocessAgentRunner {
         Thread stdout = null;
         Thread stderr = null;
         Process process = null;
+        containmentNotice = null;
+        boolean childLaunch = SubagentContainment.isChild(extraEnvironment);
         try {
             cancelSignal.set(false);
             reinjectMissingLaunchConfig();
@@ -312,6 +310,7 @@ public class SubprocessAgentRunner {
             builder.environment().putAll(extraEnvironment);
             builder.environment().put("GEMINI_CLI_TRUST_WORKSPACE", "true");
             McpToolInjection.applyLaunchEnvironment(builder.environment(), mcpLaunchConfig());
+            applyChildContainment(builder.environment());
             synchronized (lifecycleLock) {
                 if (closed.get()) return new NativeResult(130, "Native run cancelled", agentSessionId);
                 process = startHeadlessProcess(builder);
@@ -323,7 +322,11 @@ public class SubprocessAgentRunner {
             stdout = new Thread(() -> {
                 try {
                     readBoundedLines(child.getInputStream(), line -> {
+                        if (childLaunch) failOnContainment(SubagentContainment.violationInLine(agent, line));
                         for (var event : parseAgentLineMulti(agent.toLowerCase(Locale.ROOT), line)) {
+                            if (childLaunch && event instanceof PassthroughStreamParser.ToolUse use) {
+                                failOnContainment(SubagentContainment.violation(agent, use.name()));
+                            }
                             if (event instanceof PassthroughStreamParser.InteractiveQuestion
                                     || event instanceof PassthroughStreamParser.InteractiveApproval
                                     || event instanceof PassthroughStreamParser.PromptDetected) {
@@ -443,6 +446,13 @@ public class SubprocessAgentRunner {
         }
     }
 
+    /** A harness event the agent receives as its prompt is shown, not just its reminders. */
+    void emitAgentNotification(String message) {
+        if (!TerminalRenderer.isAgentNotification(message)) return;
+        var block = renderer.renderAgentNotificationBlock(message);
+        if (block != null) emitLine(block.classic());
+    }
+
     /**
      * Returns the current activity string (what the agent is doing right now).
      * Thread-safe — can be polled from any thread (e.g., the 1s process-display-updater).
@@ -461,6 +471,68 @@ public class SubprocessAgentRunner {
     /** Returns the last detected fatal agent availability notice for the current turn. */
     public String getBlockingNotice() {
         return blockingNotice;
+    }
+
+    /**
+     * Why this turn's subagent was not launched, or was stopped, because Kompile cannot keep
+     * it from launching agents of its own; null when containment held.
+     */
+    public String getContainmentNotice() {
+        return containmentNotice;
+    }
+
+    /** Refuse a subagent turn whose vendor Kompile cannot contain; true when refused. */
+    private boolean refuseUncontainedChild() {
+        String refusal = SubagentContainment.isChild(extraEnvironment)
+                ? SubagentContainment.refusal(agent) : null;
+        if (refusal == null) return false;
+        containmentNotice = refusal;
+        blockingNotice = refusal;
+        emitLine(renderer.red("  " + refusal));
+        return true;
+    }
+
+    /** A child's containment controls that live in its launch environment. */
+    private void applyChildContainment(Map<String, String> environment) {
+        if (!SubagentContainment.isChild(environment)) return;
+        try {
+            SubagentContainment.applyLaunchEnvironment(agent, environment, Path.of(workingDir));
+        } catch (IOException | RuntimeException e) {
+            String notice = "BLOCKED: could not apply the subagent guard for '" + agent
+                    + "', so it is not launched: " + e.getMessage();
+            containmentNotice = notice;
+            blockingNotice = notice;
+            throw new IllegalStateException(notice, e);
+        }
+    }
+
+    /**
+     * Stop a child whose stream shows one of its vendor's native sub-agent tools: the
+     * launch-time control did not hold, so the child and everything it started end now.
+     */
+    private boolean stopOnNativeDelegation(String toolName) {
+        return SubagentContainment.isChild(extraEnvironment)
+                && stopForContainment(SubagentContainment.violation(agent, toolName));
+    }
+
+    /** End the child and everything it started for {@code violation}; false when there is none. */
+    private boolean stopForContainment(String violation) {
+        if (violation == null) return false;
+        containmentNotice = violation;
+        blockingNotice = violation;
+        currentToolName = null;
+        Process p = activeProcess;
+        if (p != null && p.isAlive()) {
+            destroyHeadlessTree(p);
+        }
+        return true;
+    }
+
+    /** Headless variant: the event reader fails the run, which ends the process tree. */
+    private void failOnContainment(String violation) {
+        if (violation == null) return;
+        containmentNotice = violation;
+        throw new IllegalStateException(violation);
     }
 
     /**
@@ -508,6 +580,16 @@ public class SubprocessAgentRunner {
     public boolean isFirstMessageSent() { return firstMessageSent; }
 
     /**
+     * Connect a Claude agent's Kompile tools to {@code url}, a session the launching MCP
+     * server serves under this agent's identity, instead of a server process of its own.
+     * {@code null} goes back to its own server. Takes effect at {@link #injectMcpTools()}.
+     */
+    public void setHttpMcpEndpoint(String url, String bearerToken) {
+        this.httpMcpUrl = url;
+        this.httpMcpToken = bearerToken;
+    }
+
+    /**
      * Inject MCP tools into the agent's working directory. Call before the first message;
      * a later call replaces the last injection.
      */
@@ -535,7 +617,25 @@ public class SubprocessAgentRunner {
                 return;
             }
 
-            String sseUrl = mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
+            String httpUrl = httpMcpUrl;
+            if (httpUrl != null && agent != null && agent.toLowerCase(Locale.ROOT).contains("claude")) {
+                // The launching server's session carries this agent's identity, so it learns
+                // its depth and refuses delegation exactly as a server of its own would.
+                injectedSettingsFile = McpToolInjection.injectHttpForClaudeLaunch(
+                        Path.of(workingDir), httpUrl, httpMcpToken);
+                managedCommandPrefixArguments = McpToolInjection.commandLineOverrides(
+                        Path.of(workingDir), agent, injectedSettingsFile);
+                emitLine(GREEN + "  Kompile tools injected (http)" + RESET
+                        + DIM + " (" + injectedSettingsFile + ")" + RESET);
+                return;
+            }
+
+            // Otherwise a subagent's kompile MCP server must run on stdio, under the child's
+            // environment (or as a session of its launcher's server, above): that is how it
+            // learns its depth and refuses delegation. kompile-app's shared SSE server knows
+            // no depth, so a child connected there could still launch agents.
+            String sseUrl = SubagentContainment.isChild(extraEnvironment)
+                    ? null : mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
             injectedSettingsFile = McpToolInjection.injectTools(
                     Path.of(workingDir), agent, sseUrl, workflowEnvironment);
             if (injectedSettingsFile != null) {
@@ -727,6 +827,8 @@ public class SubprocessAgentRunner {
 
         cancelSignal.set(false);
         blockingNotice = null;
+        containmentNotice = null;
+        if (refuseUncontainedChild()) return "";
         monitorSoftInterrupt = false;
         monitorInterruptReason = null;
         currentToolName = null;
@@ -736,6 +838,7 @@ public class SubprocessAgentRunner {
                 ? message : reminderManager.decorateUserTurn(message);
         history.logUserMessage(outboundMessage);
         metrics.recordUserTurn(message);
+        emitAgentNotification(message);
         String reminderContent = ReminderManager.reminderBlockContent(outboundMessage);
         if (reminderContent != null) {
             emitLine(renderer.renderReminderSection(reminderContent));
@@ -777,6 +880,7 @@ public class SubprocessAgentRunner {
             }
             env.putAll(extraEnvironment);
             McpToolInjection.applyLaunchEnvironment(env, mcpLaunchConfig());
+            applyChildContainment(env);
 
             final Process process;
             synchronized (lifecycleLock) {
@@ -892,7 +996,6 @@ public class SubprocessAgentRunner {
                 emitLine(renderer.red("\n  Error running agent: " + e.getMessage()));
             }
         } finally {
-            parser.closeTestCapture();
             spinner.stop();
             activeProcess = null;
         }
@@ -956,6 +1059,7 @@ public class SubprocessAgentRunner {
                 ? message : reminderManager.decorateUserTurn(message);
         history.logUserMessage(outboundMessage);
         metrics.recordUserTurn(message);
+        emitAgentNotification(message);
         String reminderContent = ReminderManager.reminderBlockContent(outboundMessage);
         if (reminderContent != null) {
             emitLine(renderer.renderReminderSection(reminderContent));
@@ -1000,6 +1104,7 @@ public class SubprocessAgentRunner {
                 }
                 env.putAll(extraEnvironment);
                 McpToolInjection.applyLaunchEnvironment(env, mcpLaunchConfig());
+                applyChildContainment(env);
 
                 Process process = pb.start();
                 tuiProcess = process;
@@ -1068,7 +1173,6 @@ public class SubprocessAgentRunner {
                 emitLine(renderer.red("\n  Error running agent: " + e.getMessage()));
             }
         } finally {
-            parser.closeTestCapture();
             spinner.stop();
         }
 
@@ -1193,6 +1297,10 @@ public class SubprocessAgentRunner {
                                     StringBuilder pendingText) {
         lastOutputTime.set(System.currentTimeMillis());
         String agentLower = agent.toLowerCase();
+        if (SubagentContainment.isChild(extraEnvironment)
+                && stopForContainment(SubagentContainment.violationInLine(agent, line))) {
+            return;
+        }
 
         List<PassthroughStreamParser.PassthroughEvent> events = parseAgentLineMulti(agentLower, line);
 
@@ -1270,6 +1378,9 @@ public class SubprocessAgentRunner {
         } else if (event instanceof PassthroughStreamParser.ToolUse tu) {
             flushThinkingBurst();
             flushPendingText(pendingText, spinner, spinnerStopped);
+            if (stopOnNativeDelegation(tu.name())) {
+                return;
+            }
             MonitorDecision decision = evaluateRealtimeToolUse(tu.name(), tu.input());
             if (decision.interrupt()) {
                 interruptForMonitor(decision);
@@ -1783,29 +1894,34 @@ public class SubprocessAgentRunner {
         List<String> command = buildManagedCommand(agent, binary, message, canResume,
                 agentSessionId, skipPermissions, resolvedWorkingDir, systemPromptManager,
                 selection.model(), selection.thinking());
-        // Claude Code's built-in Task/Agent tools and Qwen's native `agent` tool bypass the
-        // kompile MCP server, so a child (depth >= 1) must have them disallowed on the command line.
+        // Every vendor's native sub-agent tools bypass the kompile MCP server, so a child
+        // (depth >= 1) gets its vendor's control on the command line (SubagentContainment);
+        // a vendor without one is never launched as a child.
         // A claude delegate whose launch carries Kompile's MCP server also loses the native
         // Bash/PowerShell tools, so its process work routes through mcp__kompile__process
         // (panel rows, durable output capture, wake-on-exit). Both guards share ONE flag.
-        String agentLower = agent == null ? "" : agent.toLowerCase(Locale.ROOT);
-        if (!requiresManagedOneShot(agent)) {
+        boolean child = SubagentContainment.isChild(extraEnvironment);
+        if (child) {
+            String refusal = SubagentContainment.refusal(agent);
+            if (refusal != null) throw new IllegalStateException(refusal);
+        }
+        if (SubagentContainment.vendor(agent) == SubagentContainment.Vendor.CLAUDE) {
             boolean injected = injectedSettingsFile != null || managedLaunchConfig != null;
-            if (agentLower.contains("claude")) {
-                List<String> disallowed = new ArrayList<>();
-                if (SubagentDelegationGuard.depth(
-                        extraEnvironment.get(SubagentDelegationGuard.DEPTH_ENV)) >= 1) {
-                    disallowed.addAll(SubagentDelegationGuard.CLAUDE_DISALLOWED);
-                }
-                disallowed.addAll(SubagentDelegationGuard.nativeShellGuard(injected));
-                if (!disallowed.isEmpty()) {
-                    command = prependGlobalOptions(command, List.of("--disallowedTools="
-                            + String.join(",", disallowed)));
-                }
-            } else if (agentLower.contains("qwen")
-                    && SubagentDelegationGuard.depth(
-                            extraEnvironment.get(SubagentDelegationGuard.DEPTH_ENV)) >= 1) {
-                command = prependGlobalOptions(command, List.of("--exclude-tools", "agent"));
+            List<String> disallowed = new ArrayList<>();
+            if (child) {
+                disallowed.addAll(SubagentDelegationGuard.CLAUDE_DISALLOWED);
+            }
+            disallowed.addAll(SubagentDelegationGuard.nativeShellGuard(injected));
+            if (!disallowed.isEmpty()) {
+                command = prependGlobalOptions(command, List.of("--disallowedTools="
+                        + String.join(",", disallowed)));
+            }
+        } else if (child) {
+            try {
+                command = prependGlobalOptions(command, SubagentContainment.launchArguments(agent));
+            } catch (IOException e) {
+                throw new IllegalStateException("BLOCKED: could not prepare the subagent guard for '"
+                        + agent + "', so it is not launched: " + e.getMessage(), e);
             }
         }
         // DeepSeek Harness has no verified command-line MCP override contract.

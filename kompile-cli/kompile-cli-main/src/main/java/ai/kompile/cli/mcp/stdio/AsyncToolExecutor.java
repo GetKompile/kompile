@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.mcp.stdio;
 
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 
 import java.util.*;
@@ -83,6 +84,8 @@ public class AsyncToolExecutor {
                 + "-" + taskCounter.incrementAndGet();
         BackgroundTask task = new BackgroundTask(taskId, toolName);
         tasks.put(taskId, task);
+        // The pool outlives the call; the work still belongs to the caller's session.
+        Callable<ToolResult> work = SessionEnvironment.wrap(callable);
         if (onStarted != null) {
             try {
                 onStarted.accept(task.toStatus());
@@ -96,7 +99,7 @@ public class AsyncToolExecutor {
             long start = System.currentTimeMillis();
             try {
                 callId = logger != null ? logger.toolStart(toolName, Map.of("_background", "true")) : null;
-                ToolResult result = callable.call();
+                ToolResult result = work.call();
                 long elapsed = System.currentTimeMillis() - start;
                 task.complete(result, elapsed);
                 if (logger != null && callId != null) {

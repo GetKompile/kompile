@@ -267,31 +267,16 @@ public class BashTool implements CliTool {
         Consumer<String> liveOutput = context.getOutputConsumer();
         AtomicBoolean outputStreamed = new AtomicBoolean(false);
 
-        // Observe the raw stream even in MCP/headless mode; the returned output is bounded.
-        List<String> captureWarnings = new java.util.concurrent.CopyOnWriteArrayList<>();
-        // A supervised child context marks native subagent work (kompile.task / multi_task
-        // / quorum_task delegation), so its milestones are attributed to that delegation.
-        String captureOrigin = context.isSupervisedChild() ? "subagent" : null;
-        TestMilestoneCapture capture = TestMilestoneCapture.start(command, workDir,
-                context.getSessionId(), UUID.randomUUID().toString(), captureOrigin, warning -> {
-                    if (captureWarnings.size() < 16) captureWarnings.add(warning);
-                    if (liveOutput != null) liveOutput.accept("Warning: " + warning);
-                    else System.err.println("Warning: " + warning); // Never corrupt MCP stdout.
+        // Test-milestone capture is armed by the process tool only. A plain bash command is
+        // never scanned for test output: a build script that happens to print "N tests passed"
+        // is not a test run, and echoing or replaying such a line must not fabricate a milestone.
+        ProcessManager.ProcessResult result = ProcessManager.executeInterruptibly(
+                command, workDir, timeout * 1000, context::isAborted, line -> {
+                    if (liveOutput != null) {
+                        outputStreamed.set(true);
+                        liveOutput.accept(line);
+                    }
                 });
-        ProcessManager.ProcessResult result;
-        String milestoneId;
-        try (capture) {
-            result = ProcessManager.executeInterruptibly(
-                    command, workDir, timeout * 1000, context::isAborted, line -> {
-                        if (capture != null) capture.accept(line);
-                        if (liveOutput != null) {
-                            outputStreamed.set(true);
-                            liveOutput.accept(line);
-                        }
-                    });
-            milestoneId = capture == null ? null : capture.finish(result.getExitCode(),
-                    result.isTimedOut(), result.isAborted(), null);
-        }
 
         String outputStr = result.getOutput();
 
@@ -302,8 +287,6 @@ public class BashTool implements CliTool {
         meta.put("timedOut", result.isTimedOut());
         meta.put("aborted", result.isAborted());
         meta.put("riskLevel", risk.name());
-        if (milestoneId != null) meta.put("testMilestoneId", milestoneId);
-        if (!captureWarnings.isEmpty()) meta.put("testCaptureWarnings", List.copyOf(captureWarnings));
         meta.put(ToolResult.OUTPUT_STREAMED_METADATA, outputStreamed.get());
 
         if (result.isTimedOut()) {
@@ -318,10 +301,6 @@ public class BashTool implements CliTool {
             return new ToolResult("exit " + result.getExitCode(), outputStr, meta, true);
         }
 
-        if (!captureWarnings.isEmpty()) {
-            return new ToolResult("exit 0; test milestone capture requires attention", outputStr
-                    + "\nTest milestone capture failed or is incomplete: " + String.join("; ", captureWarnings), meta, true);
-        }
         return ToolResult.success("exit 0", outputStr, meta);
     }
 

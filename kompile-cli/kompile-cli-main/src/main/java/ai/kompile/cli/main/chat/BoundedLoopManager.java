@@ -314,6 +314,30 @@ public class BoundedLoopManager {
     }
 
     /**
+     * Pause every active loop in this scope, e.g. when a provider usage-limit
+     * window opens; each loop keeps its remaining bound and can be resumed
+     * individually with the ordinary resume command. Paused, completed and
+     * stopped loops are left untouched. Ticks racing this method are rejected
+     * by the interval callback's status check.
+     *
+     * @return ids of the loops this call paused
+     */
+    public synchronized List<String> pauseAllActive() {
+        List<String> paused = new ArrayList<>();
+        for (BoundedLoop loop : loops.values()) {
+            if (loop.getStatus() != BoundedLoop.LoopStatus.ACTIVE) continue;
+            loop.setStatus(BoundedLoop.LoopStatus.PAUSED);
+            if (!persistExisting(loop)) {
+                discardStaleLoop(loop);
+                continue;
+            }
+            cancelFutures(loop.getId());
+            paused.add(loop.getId());
+        }
+        return paused;
+    }
+
+    /**
      * Resume a paused loop. A duration loop whose deadline already passed while
      * paused completes immediately instead of scheduling past-the-bound fires.
      */

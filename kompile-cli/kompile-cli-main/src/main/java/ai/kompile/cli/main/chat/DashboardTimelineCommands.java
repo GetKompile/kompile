@@ -5,7 +5,10 @@ import ai.kompile.cli.main.chat.activity.*;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -19,10 +22,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-/** Per-chat, model-free timeline navigation. Following is opt-in and owns no process controls. */
+/**
+ * Per-chat, model-free timeline navigation, plus the project-wide token usage timeline
+ * ({@code tokens}). Following is opt-in and owns no process controls.
+ */
 public final class DashboardTimelineCommands implements AutoCloseable {
     private static final String USAGE = "Usage: /timeline [session:ID] [run:ID] [kind:TYPE] "
-            + "[outcome:STATUS] [from:ISO_INSTANT] [to:ISO_INSTANT] [limit:1..100] | next | inspect:EVENT_ID | follow | stop";
+            + "[outcome:STATUS] [from:ISO_INSTANT] [to:ISO_INSTANT] [limit:1..100] | next | inspect:EVENT_ID | follow | stop\n"
+            + "       /timeline tokens [from:ISO to:ISO | last N hours|days|weeks] — project token usage by model (default: last 7 days)";
+    private static final Duration DEFAULT_TOKEN_WINDOW = Duration.ofDays(7);
+    private static final Duration MAX_TOKEN_WINDOW = Duration.ofDays(3660);
     private final ActivityStorage storage;
     private final SessionTimelineService service;
     private final Supplier<ActivityIdentity> currentIdentity;
@@ -68,6 +77,8 @@ public final class DashboardTimelineCommands implements AutoCloseable {
                 return render(query, cursor, false);
             }
             if (args.startsWith("inspect:")) { readCheck.check(); return inspect(args.substring(8)); }
+            // Independent report: leaves the session view, its cursor and any follow untouched.
+            if (args.equals("tokens") || args.startsWith("tokens ")) { readCheck.check(); return tokens(args.substring(6).strip()); }
             if (args.equals("follow")) {
                 stopFollow();
                 if (query == null) query = SessionTimelineQuery.recent(requireIdentity());
@@ -97,28 +108,66 @@ public final class DashboardTimelineCommands implements AutoCloseable {
         return identity;
     }
 
-    private SessionTimelineQuery parse(String args) {
-        ActivityIdentity identity = requireIdentity();
-        Instant relativeFrom = null;
-        var window = java.util.regex.Pattern.compile("(?:^|\\s)last ([0-9]+) (minutes?|hours?|days?|weeks?)$").matcher(args);
-        if (window.find()) {
-            long count = Long.parseLong(window.group(1));
-            if (count < 1) throw new IllegalArgumentException("Time window must be positive");
-            long unit = window.group(2).startsWith("minute") ? 60 : window.group(2).startsWith("hour") ? 3600
-                    : window.group(2).startsWith("day") ? 86400 : 604800;
-            relativeFrom = Instant.now().minusSeconds(Math.multiplyExact(count, unit));
-            args = args.substring(0, window.start()).strip();
-        }
+    /** A "last N unit" window, if present, and the remaining arguments. */
+    record RelativeWindow(Instant from, String rest) { }
+
+    static RelativeWindow relativeWindow(String args) {
+        var window = java.util.regex.Pattern.compile("(?:^|\\s)last ([0-9]+) (minutes?|hours?|days?|weeks?)(?=\\s|$)").matcher(args);
+        if (!window.find()) return new RelativeWindow(null, args);
+        long count = Long.parseLong(window.group(1));
+        if (count < 1) throw new IllegalArgumentException("Time window must be positive");
+        long unit = window.group(2).startsWith("minute") ? 60 : window.group(2).startsWith("hour") ? 3600
+                : window.group(2).startsWith("day") ? 86400 : 604800;
+        return new RelativeWindow(Instant.now().minusSeconds(Math.multiplyExact(count, unit)),
+                (args.substring(0, window.start()) + " " + args.substring(window.end())).strip());
+    }
+
+    private static Map<String, String> selectors(String args, Set<String> allowed) {
         Map<String, String> selectors = new LinkedHashMap<>();
         for (String part : args.isBlank() ? new String[0] : args.split("\\s+")) {
             int colon = part.indexOf(':');
             if (colon < 1 || colon == part.length() - 1) throw new IllegalArgumentException("Invalid selector: " + part);
             String key = part.substring(0, colon);
-            if (!Set.of("session", "run", "kind", "outcome", "from", "to", "limit").contains(key))
-                throw new IllegalArgumentException("Unknown selector: " + key);
+            if (!allowed.contains(key)) throw new IllegalArgumentException("Unknown selector: " + key);
             if (selectors.putIfAbsent(key, part.substring(colon + 1)) != null)
                 throw new IllegalArgumentException("Duplicate selector: " + key);
         }
+        return selectors;
+    }
+
+    /** Token usage across every chat journaled for this chat's project, bucketed over time and by model. */
+    private String tokens(String args) {
+        String project = requireIdentity().projectDirectory();
+        if (project == null || project.isBlank())
+            return "Token timeline unavailable: this chat has no project directory.\n" + TokenUsageTimelineReport.usage();
+        RelativeWindow window = relativeWindow(args);
+        Map<String, String> selectors = selectors(window.rest(), Set.of("from", "to"));
+        if (window.from() != null && selectors.containsKey("from"))
+            throw new IllegalArgumentException("Use either from: or a relative time window, not both");
+        ZoneId zone = ZoneId.systemDefault();
+        Instant to = selectors.containsKey("to") ? boundary(selectors.get("to"), zone, true) : Instant.now();
+        Instant from = window.from() != null ? window.from()
+                : selectors.containsKey("from") ? boundary(selectors.get("from"), zone, false) : to.minus(DEFAULT_TOKEN_WINDOW);
+        if (!from.isBefore(to)) throw new IllegalArgumentException("from: must be before to:");
+        if (Duration.between(from, to).compareTo(MAX_TOKEN_WINDOW) > 0)
+            throw new IllegalArgumentException("Token window is limited to 10 years");
+        TokenUsageJournal.Scan scan = TokenUsageJournal.read(storage.conversationsRoot(), project, from, to);
+        return TokenUsageTimelineReport.render(scan, clean(project, 240), from, to, zone);
+    }
+
+    /** ISO instant, or an ISO local date: from: starts that day, to: includes it (ends at the next midnight). */
+    private static Instant boundary(String value, ZoneId zone, boolean endOfDay) {
+        if (value.length() != 10) return Instant.parse(value);
+        LocalDate day = LocalDate.parse(value);
+        return (endOfDay ? day.plusDays(1) : day).atStartOfDay(zone).toInstant();
+    }
+
+    private SessionTimelineQuery parse(String args) {
+        ActivityIdentity identity = requireIdentity();
+        RelativeWindow window = relativeWindow(args);
+        Instant relativeFrom = window.from();
+        Map<String, String> selectors = selectors(window.rest(),
+                Set.of("session", "run", "kind", "outcome", "from", "to", "limit"));
         if (selectors.containsKey("session") && !identity.conversationId().equals(selectors.get("session")))
             identity = ActivityIdentity.conversation(selectors.get("session"), null);
         int limit = Integer.parseInt(selectors.getOrDefault("limit", "50"));

@@ -83,6 +83,50 @@ class HookManagerTest {
         assertEquals(42, json(Files.readString(manager.path("project"))).path("customSetting").asInt());
     }
 
+    @Test void orderedCommandListsRoundTripAndReplaceWithoutChangingSiblings() throws Exception {
+        HookManager manager = manager();
+        add(manager, "project", "sibling");
+        manager.manage(json("""
+                {"action":"add","id":"multi","event":"PostToolUse","matcher":"write","enabled":false,
+                 "hooks":[{"type":"command","command":"first","timeout":12},{"command":"second","timeout":45}]}
+                """));
+        var before = manager.load().get(1);
+        assertEquals(java.util.List.of(new HookManager.Command("first", 12), new HookManager.Command("second", 45)), before.commands());
+        manager.manage(json("""
+                {"action":"edit","id":"multi","hooks":[{"command":"second","timeout":45},{"command":"replacement","timeout":600}]}
+                """));
+        var reloaded = manager().load();
+        assertEquals("sibling", reloaded.get(0).id());
+        assertEquals("exit 0", reloaded.get(0).commands().get(0).command());
+        assertEquals("multi", reloaded.get(1).id()); assertFalse(reloaded.get(1).enabled());
+        assertEquals("PostToolUse", reloaded.get(1).event()); assertEquals("write", reloaded.get(1).matcher());
+        assertEquals(java.util.List.of(new HookManager.Command("second", 45), new HookManager.Command("replacement", 600)), reloaded.get(1).commands());
+        manager.manage(json("{\"action\":\"update\",\"id\":\"multi\",\"matcher\":\"read\"}"));
+        assertEquals(reloaded.get(1).commands(), manager.load().get(1).commands());
+        manager.manage(json("{\"action\":\"edit\",\"id\":\"multi\",\"command\":\"single\",\"timeout\":5}"));
+        assertEquals(java.util.List.of(new HookManager.Command("single", 5)), manager.load().get(1).commands());
+    }
+
+    @Test void invalidCommandListsAreAtomicAndRejectAmbiguousOrUnsupportedFields() throws Exception {
+        HookManager manager = manager(); add(manager, "project", "p");
+        String original = Files.readString(manager.path("project"));
+        for (String fields : new String[]{
+                "\"hooks\":null", "\"hooks\":{}", "\"hooks\":[]", "\"hooks\":[null]", "\"hooks\":[\"true\"]",
+                "\"hooks\":[{\"command\":\" \"}]", "\"hooks\":[{}]", "\"hooks\":[{\"command\":\"valid\"},{\"command\":\"\"}]",
+                "\"hooks\":[{\"type\":\"prompt\",\"command\":\"true\"}]", "\"hooks\":[{\"command\":\"true\",\"async\":true}]",
+                "\"hooks\":[{\"command\":\"true\",\"typo\":1}]", "\"hooks\":[{\"command\":\"true\",\"timeout\":0}]",
+                "\"hooks\":[{\"command\":\"true\",\"timeout\":601}]", "\"hooks\":[{\"command\":\"true\",\"timeout\":1.5}]",
+                "\"hooks\":[{\"command\":\"true\",\"timeout\":\"30\"}]",
+                "\"hooks\":[{\"command\":\"true\"}],\"command\":\"other\"", "\"hooks\":[{\"command\":\"true\"}],\"timeout\":5"}) {
+            assertThrows(IllegalArgumentException.class, () -> manager.manage(json("{\"action\":\"edit\",\"id\":\"p\"," + fields + "}")), fields);
+            assertEquals(original, Files.readString(manager.path("project")), fields);
+        }
+        for (String action : new String[]{"enable", "disable", "delete"}) {
+            assertThrows(IllegalArgumentException.class, () -> manager.manage(json("{\"action\":\"" + action + "\",\"id\":\"p\",\"hooks\":[{\"command\":\"true\"}]}")));
+            assertEquals(original, Files.readString(manager.path("project")));
+        }
+    }
+
     @Test void concurrentManagersDoNotLoseUpdates() throws Exception {
         var executor = Executors.newFixedThreadPool(4);
         try {

@@ -20,6 +20,7 @@ public final class StdioSubagentResumeTool implements CliTool {
     private final SubagentResumeTool delegate;
 
     public StdioSubagentResumeTool(StdioTaskTool taskTool, ObjectMapper mapper, SubagentResumeService service) {
+        // Not cancellable: MCP clients stop a running task by cancelling its tool call (notifications/cancelled).
         delegate = new SubagentResumeTool(mapper, service, (metadata, params, context) -> {
             if (taskTool.hasWorkflow()) return ToolResult.error("Durable subagent resume is unavailable inside a turn-scoped workflow team");
             if (params.hasNonNull("agent_type")) return ToolResult.error("Use agent or role to select the MCP resume target, not agent_type");
@@ -60,7 +61,7 @@ public final class StdioSubagentResumeTool implements CliTool {
                         return result.getOutput();
                     });
             return ToolResult.success("subagent:" + metadata.sessionId(), execution[0].getOutput(), execution[0].getMetadata());
-        });
+        }, false);
     }
 
     @Override public String id() { return delegate.id(); }

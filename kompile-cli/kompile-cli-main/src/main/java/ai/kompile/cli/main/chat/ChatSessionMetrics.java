@@ -128,6 +128,12 @@ public class ChatSessionMetrics {
     // Per-turn log for detailed analysis
     private final List<TurnMetric> turnLog = Collections.synchronizedList(new ArrayList<>());
 
+    // Timestamped per-request usage for the project token timeline (null = not journaled)
+    private volatile Path usageJournal;
+    private volatile String usageProjectDirectory;
+    private volatile boolean usageJournalWarned;
+    private final Object usageJournalLock = new Object();
+
     public ChatSessionMetrics(String sessionId) {
         this.sessionId = sessionId;
         this.sessionStart = Instant.now();
@@ -208,7 +214,38 @@ public class ChatSessionMetrics {
         // the host conversation ledger stays the single source for unattributed usage.
         ai.kompile.cli.common.metrics.ModelUsageScope.capture(
                 provider, model, input, output, cacheRead, cacheCreation);
+        journalTokenUsage(input, output, cacheRead, cacheCreation);
         fireChange();
+    }
+
+    /**
+     * Journal every later {@link #recordTokenUsage} call, stamped with the active
+     * provider/model and this project, for {@code /dashboard-timeline tokens}. A null
+     * project means the process working directory, where every chat entry point runs.
+     */
+    public void enableUsageJournal(Path journal, Path projectDirectory) {
+        Path project = projectDirectory != null ? projectDirectory : Path.of(System.getProperty("user.dir"));
+        this.usageProjectDirectory = project.toAbsolutePath().normalize().toString();
+        this.usageJournal = journal;
+    }
+
+    private void journalTokenUsage(long input, long output, long cacheRead, long cacheCreation) {
+        Path journal = usageJournal;
+        if (journal == null || Math.max(0, input) + Math.max(0, output)
+                + Math.max(0, cacheRead) + Math.max(0, cacheCreation) == 0) return;
+        try {
+            synchronized (usageJournalLock) {
+                TokenUsageJournal.append(journal, new TokenUsageJournal.Entry(Instant.now(), sessionId,
+                        usageProjectDirectory, agentName, provider, model, Math.max(0, input), Math.max(0, output),
+                        Math.max(0, cacheRead), Math.max(0, cacheCreation)));
+            }
+        } catch (IOException | RuntimeException e) {
+            // Accounting must never disturb the model call path; say so once per session.
+            if (!usageJournalWarned) {
+                usageJournalWarned = true;
+                System.err.println("Warning: Failed to journal token usage: " + e.getMessage());
+            }
+        }
     }
 
     /** Update the active model's window without carrying another model's measurement. */

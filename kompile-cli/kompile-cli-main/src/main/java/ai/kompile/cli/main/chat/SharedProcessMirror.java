@@ -331,7 +331,7 @@ public final class SharedProcessMirror implements AutoCloseable {
         if (entry.getMetadata() != null) {
             for (String key : List.of("model", "vendor", "authentication", "thinking", "input_tokens",
                     "output_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens",
-                    "stream_output_tokens", "tool_uses", "context_tokens")) {
+                    "stream_output_tokens", "tool_uses", "context_tokens", "transcript_file", "transcript_revision")) {
                 String value = entry.getMetadata().get(key);
                 if (value != null) metadata.put(key, value);
             }

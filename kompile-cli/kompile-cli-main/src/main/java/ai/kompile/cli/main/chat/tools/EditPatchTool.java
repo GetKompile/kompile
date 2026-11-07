@@ -240,6 +240,8 @@ public class EditPatchTool implements CliTool {
                 return e.getMessage() + " Re-read the file and regenerate this entry, "
                         + "or use edit/edit_batch for a targeted replacement.";
             }
+            String deletion = EditTool.subagentDeletionError(context, path, content, updated);
+            if (deletion != null) return deletion;
             Files.writeString(path, updated);
             context.recordFileRead(path);
             ai.kompile.cli.main.codeindex.BackgroundIndexService.getInstance()

@@ -3,9 +3,11 @@ package ai.kompile.cli.mcp.stdio;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.agent.DirectSubagentRunner;
 import ai.kompile.cli.main.chat.agent.DirectSubagentSupervision;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.FailureKind;
 import ai.kompile.cli.main.chat.config.ModelRouting;
 import ai.kompile.cli.main.chat.config.SubagentChatConfig;
 import ai.kompile.cli.main.chat.agent.ProjectChatContext;
@@ -85,8 +87,10 @@ class KompileNativeTaskRunner {
         return SubagentChatConfig.configure(configured, provider, model, thinking, null);
     }
 
+    /** The delegating chat's own route and login, else the project's saved configuration. */
     ChatConfig loadConfiguration() {
-        return ChatConfig.loadOrFromEnv(workDir);
+        ChatConfig session = ChatConfig.loadParentSession();
+        return session != null ? session : ChatConfig.loadOrFromEnv(workDir);
     }
 
     ToolRegistry createRegistry(ChatConfig config, AgentRegistry agents, PermissionService permissions) {
@@ -182,6 +186,7 @@ class KompileNativeTaskRunner {
                 + ", model=" + config.getModel() + ", thinking=" + config.getThinking()
                 + ", auth=" + (config.getAuthenticationMethod() == null ? "provider-default" : config.getAuthenticationMethod())
                 + ", transport=" + (config.isClaudeCliNative() ? "claude-code" : "provider")
+                + ", login=" + config.describeLogin()
                 + (request.getProviderOverride() != null && !request.getProviderOverride().isBlank()
                         ? ", providerOverride=" + request.getProviderOverride() : "");
         Path resultsDir = workDir.resolve(".kompile/task-results");
@@ -202,35 +207,73 @@ class KompileNativeTaskRunner {
             if (log != null) processes.appendVirtualOutput(log.getId(), text);
             else System.err.println(text);
         });
+        var transcriptMetadata = new java.util.concurrent.atomic.AtomicReference<Map<String, String>>(Map.of());
         runner.setLifecycleListener(new SubagentRunner.LifecycleListener() {
-            public void onSubagentStart(String id, String type, String description) {}
+            private String childId;
             private boolean ended;
             private boolean publicationQueued;
-            public synchronized void onSubagentEnd(String id) { ended = true; }
+            private long transcriptRevision;
+            public synchronized void onSubagentStart(String id, String type, String description) {
+                childId = id;
+                if (log != null && runner.transcriptOf(id) != null) {
+                    processes.setVirtualTranscript(log.getId(), runner.transcriptOf(id));
+                }
+                queuePublication();
+            }
+            public synchronized void onSubagentEnd(String id) {
+                ended = true;
+                publishTranscript();
+            }
             public synchronized void onSubagentMetadata(String id, Map<String, String> metadata) {
                 if (log == null) return;
                 Map<String, String> snapshot = new java.util.LinkedHashMap<>(log.getMetadata());
                 snapshot.putAll(metadata);
                 processes.updateVirtual(log.getId(), null, snapshot, false);
-                if (coordinator != null && !publicationQueued && !ended) {
+                queuePublication();
+            }
+            private synchronized void queuePublication() {
+                if (log != null && !publicationQueued && !ended) {
                     publicationQueued = true;
                     java.util.concurrent.CompletableFuture.delayedExecutor(250, java.util.concurrent.TimeUnit.MILLISECONDS)
                             .execute(() -> publishPending());
                 }
             }
+            private void publishTranscript() {
+                var transcript = childId == null ? null : runner.transcriptOf(childId);
+                if (log == null || transcript == null) return;
+                Path file = log.getOutputFile().resolveSibling(log.getOutputFile().getFileName() + ".transcript.json");
+                try {
+                    transcript.writeSnapshot(file);
+                    Map<String, String> snapshot = new java.util.LinkedHashMap<>(log.getMetadata());
+                    var reference = Map.of("transcript_file", file.toAbsolutePath().toString(),
+                            "transcript_revision", Long.toString(++transcriptRevision));
+                    transcriptMetadata.set(reference);
+                    snapshot.putAll(reference);
+                    processes.updateVirtual(log.getId(), null, snapshot, false);
+                } catch (java.io.IOException failure) {
+                    processes.appendVirtualOutput(log.getId(), "Child transcript snapshot unavailable: " + failure.getMessage());
+                }
+            }
             private synchronized void publishPending() {
                 publicationQueued = false;
                 // The terminal path flushes the final snapshot. Never resurrect a finished child.
-                if (!ended && log.isRunning()) coordinator.updateProcessState(
-                        log.getId(), "RUNNING", null, null, log.getMetadata());
+                if (!ended && log.isRunning()) {
+                    publishTranscript();
+                    if (coordinator != null) coordinator.updateProcessState(
+                            log.getId(), "RUNNING", null, null, log.getMetadata());
+                }
             }
             public void onSubagentActivity(String id, String summary, String detail) {
                 if (log != null && detail != null && !detail.isBlank()) {
                     processes.appendVirtualOutput(log.getId(), detail);
+                    queuePublication();
                 }
             }
             public void onSubagentOutput(String id, String chunk) {
-                if (log != null && chunk != null) processes.appendVirtualOutputChunk(log.getId(), chunk);
+                if (log != null && chunk != null) {
+                    processes.appendVirtualOutputChunk(log.getId(), chunk);
+                    queuePublication();
+                }
             }
         });
         boolean completed = false;
@@ -251,10 +294,7 @@ class KompileNativeTaskRunner {
             if (log != null) processes.appendVirtualOutput(log.getId(), "Native task failed: " + failure.getMessage());
             if (failure instanceof InterruptedException || cancelled.get()) throw failure;
             throw new IllegalStateException(dispatch + "\nNative task failed: " + failure.getMessage()
-                    + "\nUse resolve_model with this provider/authentication_method, then retry Kompile task with "
-                    + "agent=kompile, provider, model, and authentication_method. For anthropic, oauth/native uses "
-                    + "Claude Code login; api-key uses the separate API. Do not substitute the vendor Agent tool. "
-                    + "No account fallback was attempted.", failure);
+                    + "\n" + failureGuidance(config, failure), failure);
         } finally {
             // Finish process state publication even when cancellation interrupted this worker.
             boolean interrupted = Thread.interrupted();
@@ -262,12 +302,38 @@ class KompileNativeTaskRunner {
                 if (log != null) {
                     if (completed) processes.complete(log.getId());
                     else processes.fail(log.getId(), -1);
-                    if (coordinator != null) coordinator.updateProcessState(log.getId(), log.getState().name(),
-                            log.getEndTime(), log.getExitCode(), log.getMetadata());
+                    if (coordinator != null) {
+                        // A user kill may settle the row before onSubagentEnd. Publish its
+                        // final display reference without mutating or resurrecting that row.
+                        Map<String, String> metadata = new java.util.LinkedHashMap<>(log.getMetadata());
+                        metadata.putAll(transcriptMetadata.get());
+                        coordinator.updateProcessState(log.getId(), log.getState().name(),
+                                log.getEndTime(), log.getExitCode(), metadata);
+                    }
                 }
             } finally {
                 if (interrupted) Thread.currentThread().interrupt();
             }
         }
+    }
+
+    /**
+     * What the caller can do next. An exhausted quota belongs to the login, so a
+     * retry on that login with any model fails the same way until it resets.
+     */
+    static String failureGuidance(ChatConfig config, Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof DirectSubagentRunner.ProviderRequestFailedException rejected
+                    && rejected.failureKind() == FailureKind.QUOTA_EXHAUSTED) {
+                return "The quota of " + config.describeLogin() + " on " + config.getProvider()
+                        + " is exhausted: retrying it with any model fails the same way until it resets. "
+                        + "Failover found no other usable login for this route (stored credentials: "
+                        + "`kompile auth list`; fallback routes: /subagent-config), so choose another provider "
+                        + "with resolve_model. Do not substitute the vendor Agent tool.";
+            }
+        }
+        return "Use resolve_model with this provider/authentication_method, then retry Kompile task with "
+                + "agent=kompile, provider, model, and authentication_method (" + ChatConfig.ANTHROPIC_AUTH_ROUTES
+                + "). Do not substitute the vendor Agent tool.";
     }
 }

@@ -56,7 +56,7 @@ class ZaiEmptyContentLiveTest {
                     + ", code=" + error.path("code").asText("none"));
             org.junit.jupiter.api.Assumptions.assumeTrue(
                     ProviderResponseFailure.classify("zai", response.statusCode(), response.body())
-                            != DirectLlmClient.FailureKind.QUOTA_EXHAUSTED,
+                            != FailureKind.QUOTA_EXHAUSTED,
                     "Live content validation blocked by Z.AI quota code " + error.path("code").asText());
             if (corrected) {
                 assertEquals(200, response.statusCode(), "Normalized synthetic replay must be accepted");

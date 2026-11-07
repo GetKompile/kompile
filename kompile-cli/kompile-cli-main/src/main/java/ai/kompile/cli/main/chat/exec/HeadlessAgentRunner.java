@@ -18,21 +18,14 @@ package ai.kompile.cli.main.chat.exec;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
-import ai.kompile.cli.main.chat.ChatHistory;
-import ai.kompile.cli.main.chat.ChatTitleGenerator;
-import ai.kompile.cli.common.chat.sources.KompileTranscriptFormat;
-import ai.kompile.cli.main.chat.ChatMemory;
-import ai.kompile.cli.main.chat.ReminderManager;
-import ai.kompile.cli.main.chat.ChatSessionMetrics;
-import ai.kompile.cli.main.chat.SharedProcessMirror;
-import ai.kompile.cli.main.chat.agent.AgentRegistry;
-import ai.kompile.cli.main.chat.agent.AgentConfig;
-import ai.kompile.cli.main.chat.agent.AgentRunController;
-import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
-import ai.kompile.cli.main.chat.agent.CustomAgentLoader;
-import ai.kompile.cli.main.chat.agent.ProjectChatContext;
-import ai.kompile.cli.main.chat.skill.SkillRegistry;
-import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
@@ -62,11 +55,13 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -78,6 +73,24 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import ai.kompile.cli.common.chat.sources.KompileTranscriptFormat;
+import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ModelFailoverController;
+import ai.kompile.cli.main.chat.ChatMemory;
+import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.cli.main.chat.TokenUsageJournal;
+import ai.kompile.cli.main.chat.ChatTitleGenerator;
+import ai.kompile.cli.main.chat.ReminderManager;
+import ai.kompile.cli.main.chat.SharedProcessMirror;
+import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.agent.AgentRunController;
+import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
+import ai.kompile.cli.main.chat.agent.CustomAgentLoader;
+import ai.kompile.cli.main.chat.agent.ProjectChatContext;
+import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.skill.SkillRegistry;
+import ai.kompile.cli.main.chat.SessionModelLadder;
 
 /**
  * Runs kompile's native agent ({@link AgenticChatLoop}) for a single prompt,
@@ -137,7 +150,7 @@ public final class HeadlessAgentRunner {
             boolean memoryEnabled,
             String roleName,
             boolean autoApproveTools,
-            List<DirectLlmClient.AttachmentInput> attachments,
+            List<AttachmentInput> attachments,
             WebChatInput webInput,
             ChatSessionStateStore sessionStateStore) {
 
@@ -175,7 +188,7 @@ public final class HeadlessAgentRunner {
                        AgentRunController runController, HeadlessRunEventSink eventSink,
                        ChatConfig chatConfig, String serverBaseUrl, boolean ragEnabled,
                        boolean memoryEnabled, String roleName, boolean autoApproveTools,
-                       List<DirectLlmClient.AttachmentInput> attachments,
+                       List<AttachmentInput> attachments,
                        WebChatInput webInput) {
             this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
                     workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl,
@@ -190,7 +203,7 @@ public final class HeadlessAgentRunner {
                        AgentRunController runController, HeadlessRunEventSink eventSink,
                        ChatConfig chatConfig, String serverBaseUrl, boolean ragEnabled,
                        boolean memoryEnabled, String roleName, boolean autoApproveTools,
-                       List<DirectLlmClient.AttachmentInput> attachments) {
+                       List<AttachmentInput> attachments) {
             this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
                     workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl,
                     runController, eventSink, chatConfig, serverBaseUrl, ragEnabled,
@@ -298,8 +311,10 @@ public final class HeadlessAgentRunner {
         try {
             return runInternal(opts, realOut, realErr, mapper, events);
         } catch (RuntimeException e) {
-            String message = e.getMessage() == null
-                    ? e.getClass().getSimpleName() : e.getMessage();
+            boolean durableCommand = opts.webInput() != null
+                    && opts.webInput().rawInput().stripLeading().matches("(?s)/subagents(?:\\s.*)?");
+            String message = durableCommand ? "Durable child command failed; no configuration details are exposed."
+                    : e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), message, 1));
             if (opts.outputMode() != OutputMode.JSON) {
                 realErr.println("Error: " + message);
@@ -328,9 +343,12 @@ public final class HeadlessAgentRunner {
         // without provider configuration. Do not load memory/project instructions first.
         WebCommandResolver.Resolution webResolution = opts.webInput() == null ? null
                 : resolvedCommand != null ? resolvedCommand
-                : WebCommandResolver.resolve(opts.webInput(), opts.workingDirectory(),
-                        opts.sessionStateStoreOrDefault(), opts.chatConfig());
-        if (webResolution != null && webResolution.isCommandOutcome()) {
+                : WebCommandResolver.resolveForRun(opts.webInput(), opts.workingDirectory(),
+                        opts.sessionStateStoreOrDefault(), opts.chatConfig(),
+                        new WebCommandResolver.RunPermissions(opts.agentName(), opts.roleName(), opts.autoApproveTools(),
+                                opts.serverBaseUrl() != null || WorkflowSessionContext.current() != null));
+        boolean durableResume = WebDurableSubagents.isResume(webResolution);
+        if (webResolution != null && webResolution.isCommandOutcome() && !durableResume) {
             events.publish(HeadlessRunEvent.started(opts.sessionId(), null,
                     opts.workingDirectory().toString(), Map.of("mode", "command")));
             events.publish(HeadlessRunEvent.commandOutcome(opts.sessionId(), webResolution));
@@ -347,6 +365,9 @@ public final class HeadlessAgentRunner {
             return new Result(webResolution.exitCode(), webResolution.text(), opts.sessionId());
         }
         boolean serverMode = opts.serverBaseUrl() != null && !opts.serverBaseUrl().isBlank();
+        if (durableResume && (serverMode || WorkflowSessionContext.current() != null)) {
+            return finishDurableCommand(opts, durableRefusal("Durable child continuation requires Standard Chat without a workflow team."), events, realOut);
+        }
 
         // ── Resolve the same project-scoped config used by interactive chat ──
         ChatConfig config = opts.chatConfig();
@@ -409,6 +430,9 @@ public final class HeadlessAgentRunner {
         if (opts.modelOverride() != null) {
             config.setModel(opts.modelOverride());
         }
+        if (durableResume && !WebDurableSubagents.nativeRoute(config)) {
+            return finishDurableCommand(opts, durableRefusal("Durable child continuation requires a native Standard Chat route."), events, realOut);
+        }
         if (!serverMode && ("passthrough".equalsIgnoreCase(config.getChatMode())
                 || !config.isValid())) {
             String msg = "Incomplete Standard Chat configuration for provider '"
@@ -444,11 +468,23 @@ public final class HeadlessAgentRunner {
         if (frozenProductAgent != null) agentRegistry.register(frozenProductAgent);
         String localAgent = productPolicy != null ? productPolicy.role() : localTurnAgent(
                 agentRegistry, roleManager, opts.roleName(), durableRole, defaultAgent);
+        if (durableResume && (localAgent == null || agentRegistry.get(localAgent) == null
+                || (durableRole != null && !durableRole.isBlank() && roleManager.getRole(durableRole) == null))) {
+            return finishDurableCommand(opts, durableRefusal("The current durable child principal is unavailable."), events, realOut);
+        }
         if (localAgent == null) {
             String msg = "Role not found: " + opts.roleName();
             events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), msg, 2));
             if (opts.outputMode() != OutputMode.JSON) realErr.println(msg);
             return new Result(2, "", opts.sessionId());
+        }
+        // A web harness is recreated between messages. Keep automatic runtime
+        // selection separate from the user's configured/session primary.
+        SessionModelLifecycle modelLifecycle = !durableResume && opts.webInput() != null && !serverMode
+                && productPolicy == null && SessionModelLifecycle.switchable(config)
+                ? new SessionModelLifecycle(opts, config) : null;
+        if (modelLifecycle != null && (opts.modelOverride() == null || opts.modelOverride().isBlank())) {
+            modelLifecycle.restore(config, agentRegistry.get(localAgent));
         }
         boolean effectiveRag = serverMode && opts.ragEnabled();
         // Effectively-final capture for the turn lambda below; a role (explicit or
@@ -501,13 +537,14 @@ public final class HeadlessAgentRunner {
             events.publish(HeadlessRunEvent.thinkingDelta(opts.sessionId(), chunk));
         };
 
-        final CapturingLlmClient directClient = serverMode
+        final CapturingLlmClient directClient = serverMode || durableResume
                 ? null : new CapturingLlmClient(
                 config, mapper, textSink, thinkingSink, opts.workingDirectory());
 
         // ── Build the agent harness (auto-approve: non-interactive) ─────────
         PermissionService permissionService = new PermissionService();
         permissionService.setAutoApproveAll(opts.autoApproveTools());
+        if (opts.webInput() != null && productPolicy == null) WebPermissionSettings.apply(opts.sessionId(), opts.workingDirectory(), permissionService);
         if (webControls != null || productPolicy != null) {
             // The JSONL reader owns stdin. ASK must fail closed, never consume a control frame.
             permissionService.setPromptListener(ignored -> permissionService.submitPromptResponse("deny"));
@@ -525,6 +562,7 @@ public final class HeadlessAgentRunner {
         }
         TerminalRenderer renderer = new TerminalRenderer();
         final ChatConfig runtimeConfig = config;
+        if (webControls != null) webControls.setSubagentIdleAlertSeconds(runtimeConfig.getSubagentIdleAlertSeconds());
         java.util.function.Supplier<ToolRegistry> registryFactory = () -> ToolRegistryFactory.create(
                 mapper, serverMode ? opts.serverBaseUrl() : "", agentRegistry,
                 permissionService, renderer, processManager,
@@ -542,7 +580,8 @@ public final class HeadlessAgentRunner {
         if (frozenProductAgent != null) loop.setAgentConfig(frozenProductAgent);
         loop.setWorkflowGlobalEnabled(
                 HarnessConfig.load(mapper).isJudgeGlobalEnabled());
-        loop.configureConversationSession(opts.sessionId());
+        // Host-only continuation has no main model turn or main conversation ledger.
+        if (!durableResume) loop.configureConversationSession(opts.sessionId());
         loop.setCoordinationManager(coordinationManager);
         if (!serverMode && !opts.attachments().isEmpty()) {
             loop.setPendingAttachments(opts.attachments());
@@ -657,10 +696,18 @@ public final class HeadlessAgentRunner {
         metrics.setProvider(effectiveProvider);
         metrics.setModel(config.getModel());
         metrics.setAgentName(effectiveAgent);
+        metrics.enableUsageJournal(TokenUsageJournal.pathFor(
+                KompileHome.homeDirectory().toPath().resolve("conversations"), opts.sessionId()),
+                opts.workingDirectory());
         loop.setSessionMetrics(metrics);
 
         AtomicBoolean cancel = new AtomicBoolean(false);
         loop.setCancelSignal(cancel);
+        if (durableResume) {
+            return runDurableCommand(opts, webResolution, loop, toolRegistry, permissionService,
+                    agentRegistry, agentRegistry.get(localAgent), runtimeConfig, processManager, coordinationManager,
+                    cancel, events, realOut);
+        }
 
         // ── A vendor chat opened in Kompile chat starts with its vendor history ─
         boolean carriedOver;
@@ -692,6 +739,12 @@ public final class HeadlessAgentRunner {
                     effectiveRag, opts.workingDirectory());
         } catch (Exception ignored) {
             // Transcript persistence is best-effort; never block the run on it.
+        }
+        if (modelLifecycle != null) {
+            modelLifecycle.install(loop, runtimeConfig, cancel, metrics, text -> {
+                realErr.println(text);
+                history.logSystem(text);
+            });
         }
         // Web chat shares the interactive title policy. Restore existing names; only
         // a genuinely empty transcript gets one isolated first-prompt title request.
@@ -917,6 +970,109 @@ public final class HeadlessAgentRunner {
         return new Result(exitCode, response, opts.sessionId());
     }
 
+    private Result runDurableCommand(Options opts, WebCommandResolver.Resolution intent, AgenticChatLoop loop,
+                                     ToolRegistry tools, PermissionService permissions, AgentRegistry agents, AgentConfig principal,
+                                     ChatConfig config, BackgroundProcessManager processes,
+                                     CoordinationStateManager coordinator, AtomicBoolean cancel,
+                                     EventPublisher events, PrintStream realOut) {
+        ToolContext context = new ToolContext(opts.sessionId(), principal, permissions, opts.workingDirectory(), tools);
+        context.bindCoordinator(coordinator);
+        context.linkAbortSignal(cancel);
+        context.linkAbortCheck(() -> opts.runController() != null
+                && opts.runController().snapshot().state() == ai.kompile.cli.main.chat.agent.AgentRunController.State.STOPPED);
+        // Explicit host commands cannot turn --skip-permissions into a role-ceiling bypass.
+        permissions.setAutoApproveAll(false);
+        // ASK must never consume web JSONL (or a terminal prompt) in an explicit host command.
+        permissions.setPromptListener(ignored -> permissions.submitPromptResponse("deny"));
+        var result = new java.util.concurrent.atomic.AtomicReference<WebCommandResolver.Resolution>();
+        AtomicBoolean invoked = new AtomicBoolean();
+        java.util.concurrent.Callable<String> execute = () -> {
+            // The live control driver may deliver process wakeups or queued text. They
+            // must never become another resume invocation, nor a primary model request.
+            if (!invoked.compareAndSet(false, true)) return "";
+            WebCommandResolver.Resolution outcome;
+            if (opts.runController() != null && !opts.runController().beforeTool("subagent_resume",
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) intent.data().path("request").deepCopy())
+                            .put("action", "resume")).allowed()) {
+                outcome = durableRefusal("Durable child continuation was refused by run controls.");
+            } else {
+                outcome = new WebDurableSubagents().execute(intent, context, config, agents);
+            }
+            result.set(outcome);
+            return outcome.text();
+        };
+        ExecutorService executor = null;
+        Future<String> future = null;
+        WebCommandResolver.Resolution finalOutcome;
+        boolean interrupted = false;
+        try {
+            String response;
+            if (webControls != null) {
+                response = webControls.run(loop, processes, opts.sessionId(), "Resume durable child", opts.timeoutMs(),
+                        cancel, ignored -> execute.call(),
+                        WebHarnessControls.processControl(new ai.kompile.cli.main.chat.tools.ProcessManagementTool(processes, coordinator), context),
+                        events::publish, tools.getSubagentRunner());
+            } else {
+                executor = Executors.newSingleThreadExecutor(r -> {
+                    Thread thread = new Thread(r, "kompile-durable-resume");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+                future = executor.submit(execute);
+                long deadline = opts.timeoutMs() > 0 ? System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(opts.timeoutMs()) : Long.MAX_VALUE;
+                while (true) {
+                    if (context.isAborted() || Thread.currentThread().isInterrupted()) throw new InterruptedException();
+                    if (System.nanoTime() >= deadline) throw new TimeoutException();
+                    try { response = future.get(50, TimeUnit.MILLISECONDS); break; }
+                    catch (TimeoutException waiting) { /* Recheck cancellation and deadline. */ }
+                }
+            }
+            if (response == null) throw new TimeoutException();
+            var outcome = result.get();
+            finalOutcome = outcome == null ? durableRefusal("Durable child continuation did not execute.") : outcome;
+        } catch (Exception failed) {
+            cancel.set(true);
+            interrupted = failed instanceof InterruptedException;
+            finalOutcome = durableRefusal(failed instanceof TimeoutException
+                    ? "Durable child continuation timed out." : "Durable child continuation was cancelled or failed.");
+        } finally {
+            cancel.set(true);
+            context.abort();
+            String childId = intent.data().path("request").path("session_id").asText();
+            if (tools.getSubagentRunner() != null && childId.matches("subagent-[A-Za-z0-9_-]+")) {
+                try { tools.getSubagentRunner().cancel(childId); }
+                catch (RuntimeException ignored) { /* The shared abort signal still applies. */ }
+            }
+            if (future != null && !future.isDone()) future.cancel(true);
+            if (executor != null) {
+                executor.shutdownNow();
+                try { executor.awaitTermination(2, TimeUnit.SECONDS); }
+                catch (InterruptedException shutdownInterrupted) { Thread.currentThread().interrupt(); }
+            }
+            processes.close();
+            coordinator.shutdown();
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+        // Publish only after execution and the usual host resource cleanup.
+        return finishDurableCommand(opts, finalOutcome, events, realOut);
+    }
+
+    private static WebCommandResolver.Resolution durableRefusal(String text) {
+        return new WebCommandResolver.Resolution(WebCommandResolver.Status.INVALID, "/subagents", text, null);
+    }
+
+    private static Result finishDurableCommand(Options opts, WebCommandResolver.Resolution outcome,
+                                               EventPublisher events, PrintStream realOut) {
+        events.publish(HeadlessRunEvent.commandOutcome(opts.sessionId(), outcome));
+        events.publishTerminal(HeadlessRunEvent.completed(opts.sessionId(), outcome.text(), outcome.exitCode(), 0));
+        if (opts.outputMode() != OutputMode.JSON) realOut.println(outcome.text());
+        if (opts.outputLastMessage() != null) {
+            try { Files.writeString(opts.outputLastMessage(), outcome.text(), StandardCharsets.UTF_8); }
+            catch (IOException ignored) { /* As for normal command outcomes, never reflect configuration. */ }
+        }
+        return new Result(outcome.exitCode(), outcome.text(), opts.sessionId());
+    }
+
     static boolean drainProductManagedWork(ToolRegistry tools, Duration timeout) {
         var content = tools.productContentSession();
         if (content == null) return true;
@@ -1035,6 +1191,157 @@ public final class HeadlessAgentRunner {
         } catch (RuntimeException renderFailure) {
             return null;
         }
+    }
+
+    /** Web-only runtime route continuity; never writes chat config or credential material. */
+    static final class SessionModelLifecycle {
+        private final Options options;
+        private final ModelRoute primary;
+        private final ChatSessionStateStore.SessionState selection;
+        private boolean automaticSelection;
+        private boolean clearPrimaryCredential;
+
+        SessionModelLifecycle(Options options, ChatConfig config) {
+            this.options = options;
+            this.primary = ModelRoute.of(config);
+            this.selection = options.sessionStateStoreOrDefault().load(
+                    options.sessionId(), options.workingDirectory());
+        }
+
+        static boolean switchable(ChatConfig config) {
+            return config != null && config.getProvider() != null
+                    && "standard".equalsIgnoreCase(config.getChatMode())
+                    && !config.isKompileServer() && !config.isKompileLocalServing()
+                    && !config.isOpenCodeNative(); // opaque vendor requests cannot be replayed
+        }
+
+        SessionModelLadder current() {
+            try { return SessionModelLadder.load(options.sessionId(), options.workingDirectory()); }
+            catch (RuntimeException invalid) { return null; }
+        }
+
+        void install(AgenticChatLoop loop, ChatConfig config, AtomicBoolean cancel,
+                     ChatSessionMetrics metrics, Consumer<String> notice) {
+            java.util.function.BooleanSupplier stopped = () -> cancel.get()
+                    || Thread.currentThread().isInterrupted()
+                    || (options.runController() != null
+                        && options.runController().state() == AgentRunController.State.STOPPED);
+            loop.setProviderFailoverFactory(() -> {
+                // chatInternal has installed this turn's agent and cleared its override.
+                if (automaticSelection && !stopped.getAsBoolean() && loop.isFailoverModelAllowed(config.getModel())) {
+                    loop.changeDirectSettings(() -> {}, true);
+                }
+                SessionModelLadder ladder = current();
+                ModelFailoverController controller = new ModelFailoverController(ladder,
+                        loop::failoverSourceConfig, candidate -> {
+                            if (stopped.getAsBoolean()
+                                    || !switchable(config) || !switchable(candidate)
+                                    || !loop.isFailoverModelAllowed(candidate.getModel())) return false;
+                            loop.changeDirectSettings(() -> config.applyLlmSettingsFrom(candidate), true);
+                            metrics.setProvider(config.getProvider());
+                            metrics.setModel(config.getModel());
+                            automaticSelection = true;
+                            return true;
+                        }, notice);
+                return failure -> {
+                    if (stopped.getAsBoolean()
+                            || !switchable(config) || !controller.tryFailover(failure)) return false;
+                    SessionModelLadder.ModelRung rung = ladder.activeRung().orElseThrow();
+                    clearPrimaryCredential |= rung.authenticationMethod() != null || rung.credentialName() != null
+                            || !Objects.equals(primary.provider(), config.getProvider());
+                    remember(config, rung, notice);
+                    return true;
+                };
+            });
+        }
+
+        void restore(ChatConfig config, AgentConfig agent) {
+            try {
+                SessionModelLadder ladder = current();
+                if (ladder == null || !ladder.enabled() || ladder.activeRung().isEmpty()) return;
+                RuntimeRoute saved = JsonUtils.standardMapper().readValue(routePath().toFile(), RuntimeRoute.class);
+                ModelRoute route = saved.active();
+                if (!Objects.equals(saved.workspace(), workspace()) || !Objects.equals(saved.primary(), primary)
+                        || !Objects.equals(saved.selection(), selection) || route == null
+                        || !Objects.equals(saved.rung(), ladder.activeRung().orElseThrow())
+                        || (agent != null && !agent.isModelAllowed(route.model()))) return;
+                ChatConfig candidate = new ChatConfig();
+                candidate.applyLlmSettingsFrom(config);
+                boolean sameProvider = Objects.equals(config.getProvider(), route.provider());
+                candidate.setProvider(route.provider());
+                candidate.setModel(route.model());
+                candidate.setAuthenticationMethod(route.authenticationMethod());
+                if (!sameProvider) {
+                    candidate.setApiKey(null);
+                    candidate.setBaseUrl(null);
+                }
+                if (saved.clearPrimaryCredential() || !sameProvider
+                        || !Objects.equals(primary.credentialName(), route.credentialName())
+                        || !Objects.equals(primary.authenticationMethod(), route.authenticationMethod())
+                        || route.credentialName() != null) {
+                    candidate.setAuthenticationScope("session");
+                    candidate.setCredentialName(route.credentialName());
+                }
+                candidate.setFastMode(sameProvider && config.isFastMode() && candidate.supportsFastMode());
+                candidate.setUltracode(false);
+                candidate.setThinking(route.thinking());
+                if (!switchable(candidate) || !candidate.isValid()) return;
+                if (candidate.isClaudeCliNative()) candidate.resolveClaudeCodeToken();
+                else candidate.resolveRequestAuth();
+                config.applyLlmSettingsFrom(candidate);
+                automaticSelection = true;
+                clearPrimaryCredential = saved.clearPrimaryCredential();
+            } catch (IOException | RuntimeException unavailable) {
+                // Missing, stale or unusable runtime state leaves the primary intact.
+                // Never render credential-resolution errors or stored/provider bodies.
+            }
+        }
+
+        private String workspace() { return options.workingDirectory().toAbsolutePath().normalize().toString(); }
+
+        Path routePath() {
+            return SessionModelLadder.sessionPath(options.sessionId()).resolveSibling(
+                    options.sessionId() + ".web-model-route.json");
+        }
+
+        private void remember(ChatConfig config, SessionModelLadder.ModelRung rung, Consumer<String> notice) {
+            try {
+                Path target = routePath();
+                Files.createDirectories(target.getParent());
+                Path temporary = Files.createTempFile(target.getParent(), ".web-model-route-", ".tmp");
+                try {
+                    JsonUtils.standardMapper().writeValue(temporary.toFile(),
+                            new RuntimeRoute(workspace(), primary, selection, ModelRoute.of(config), rung,
+                                    clearPrimaryCredential));
+                    try {
+                        Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                    } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                        Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } finally { Files.deleteIfExists(temporary); }
+            } catch (IOException | RuntimeException unavailable) {
+                notice.accept("[failover] Could not persist web runtime route");
+            }
+        }
+
+        record ModelRoute(String provider, String model, String credentialName,
+                          String authenticationMethod, String thinking, String endpointFingerprint) {
+            static ModelRoute of(ChatConfig config) {
+                return new ModelRoute(config.getProvider(), config.getModel(), config.getCredentialName(),
+                        config.getAuthenticationMethod(), config.getThinking(), endpointFingerprint(config));
+            }
+            private static String endpointFingerprint(ChatConfig config) {
+                try {
+                    return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                            .digest(Objects.toString(config.getBaseUrl(), "").getBytes(StandardCharsets.UTF_8)));
+                } catch (java.security.NoSuchAlgorithmException impossible) {
+                    throw new IllegalStateException("SHA-256 unavailable");
+                }
+            }
+        }
+        record RuntimeRoute(String workspace, ModelRoute primary,
+                            ChatSessionStateStore.SessionState selection, ModelRoute active,
+                            SessionModelLadder.ModelRung rung, boolean clearPrimaryCredential) {}
     }
 
     /** Resume canonical conversation data only; role, model and tool policy remain frozen. */

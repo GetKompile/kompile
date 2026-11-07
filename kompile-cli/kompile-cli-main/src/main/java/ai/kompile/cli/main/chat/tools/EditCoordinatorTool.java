@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
 import ai.kompile.cli.main.coordination.*;
 import ai.kompile.cli.main.coordination.CoordinationStateManager.AgentEditGuard;
 import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
@@ -76,6 +77,10 @@ public class EditCoordinatorTool implements CliTool {
                 + "3. register_edit — lock the file before editing (returns lock_id)\n"
                 + "4. (do your edits)\n"
                 + "5. release_edit — release the lock using the lock_id\n\n"
+                + "Blocked on a file another agent holds? monitor_edit (file_path or lock_id) wakes "
+                + "you when that lock is released, expires, or its holder dies — a freed file is "
+                + "advisory, not reserved, so re-run query_edits before registering. unmonitor_edit "
+                + "cancels a monitor; query_edit_monitors lists them.\n\n"
                 + "Editing SEVERAL files (e.g. before edit_batch/edit_patch)? Use register_edits with "
                 + "file_paths to lock them all in ONE call (all-or-nothing unless allow_partial=true), "
                 + "then release_edits with lock_ids when done.\n\n"
@@ -103,6 +108,8 @@ public class EditCoordinatorTool implements CliTool {
                 + "and repeat it on timeout instead of ending their turn. query_activity_waits lists this "
                 + "session's watches; cancel_activity_wait cancels one. Watches end on host shutdown "
                 + "or after 24 hours, and never launch work or reserve capacity.\n\n"
+                + "Edit-lock monitors follow the same rule: native chat wakes automatically; external "
+                + "MCP agents hold a bounded wait on the monitor instead of ending their turn.\n\n"
                 + "Other actions: awareness (one-call cross-agent/resource snapshot with risks and next steps), "
                 + "query_processes (see running background processes), query_agents (see all active agents), "
                 + "send_message/broadcast_message/read_messages/ack_message (durable project-local bus; cooperative "
@@ -124,6 +131,7 @@ public class EditCoordinatorTool implements CliTool {
                 "Action to perform: register_edit, release_edit, register_edits, release_edits, "
                         + "query_edits, query_processes, "
                         + "register_agent, query_agents, send_message, broadcast_message, read_messages, ack_message, "
+                        + "monitor_edit, unmonitor_edit, query_edit_monitors, "
                         + "preflight_activity, watch_activity, wait_for_activity, query_activity_waits, cancel_activity_wait, "
                         + "query_activities, release_activity, "
                         + "publish_process, unpublish_process, awareness, status");
@@ -133,6 +141,7 @@ public class EditCoordinatorTool implements CliTool {
                 .add("query_edits").add("query_processes")
                 .add("register_agent").add("query_agents")
                 .add("send_message").add("broadcast_message").add("read_messages").add("ack_message")
+                .add("monitor_edit").add("unmonitor_edit").add("query_edit_monitors")
                 .add("preflight_activity").add("query_activities").add("release_activity")
                 .add("watch_activity").add("wait_for_activity")
                 .add("query_activity_waits").add("cancel_activity_wait")
@@ -141,7 +150,8 @@ public class EditCoordinatorTool implements CliTool {
 
         ObjectNode filePath = props.putObject("file_path");
         filePath.put("type", "string");
-        filePath.put("description", "File path for register_edit or query_edits filter");
+        filePath.put("description", "File path for register_edit or query_edits filter; "
+                + "monitor_edit target (with lock_id it identifies which of the file's locks to watch)");
 
         ObjectNode filePaths = props.putObject("file_paths");
         filePaths.put("type", "array");
@@ -159,6 +169,16 @@ public class EditCoordinatorTool implements CliTool {
         allowPartial.put("description",
                 "register_edits: lock the conflict-free files even when others conflict "
                         + "(default false = all-or-nothing)");
+
+        ObjectNode monitorMessage = props.putObject("monitor_message");
+        monitorMessage.put("type", "string");
+        monitorMessage.put("description", "Optional wake-up instructions carried on monitor_edit "
+                + "(e.g. 'retry registering the lock, then apply my edit')");
+
+        ObjectNode monitorId = props.putObject("monitor_id");
+        monitorId.put("type", "string");
+        monitorId.put("description", "Edit-lock monitor ID for unmonitor_edit "
+                + "(returned by monitor_edit; also listed by query_edit_monitors)");
 
         ObjectNode editType = props.putObject("edit_type");
         editType.put("type", "string");
@@ -306,6 +326,12 @@ public class EditCoordinatorTool implements CliTool {
                 return executeQueryEdits(params, context);
             case "query_processes":
                 return executeQueryProcesses();
+            case "monitor_edit":
+                return executeMonitorEdit(params, context);
+            case "unmonitor_edit":
+                return executeUnmonitorEdit(params, context);
+            case "query_edit_monitors":
+                return executeQueryEditMonitors(params, context);
             case "register_agent":
                 return executeRegisterAgent(params, context);
             case "query_agents":
@@ -341,6 +367,7 @@ public class EditCoordinatorTool implements CliTool {
                 return ToolResult.error("Unknown action: " + action
                         + ". Valid: register_edit, release_edit, register_edits, release_edits, "
                         + "query_edits, query_processes, "
+                        + "monitor_edit, unmonitor_edit, query_edit_monitors, "
                         + "register_agent, query_agents, send_message, broadcast_message, read_messages, ack_message, "
                         + "preflight_activity, watch_activity, wait_for_activity, query_activity_waits, cancel_activity_wait, "
                         + "query_activities, release_activity, "
@@ -688,6 +715,97 @@ public class EditCoordinatorTool implements CliTool {
                 Map.of("count", processes.size()));
     }
 
+    /**
+     * Wake this agent when a file's edit lock is released (explicitly, by lease expiry,
+     * or by dead-holder eviction). One-shot: the wake-up ends the monitor. A freed file is
+     * advisory, not a reservation — re-run query_edits, then register_edit.
+     */
+    private ToolResult executeMonitorEdit(JsonNode params, ToolContext context)
+            throws ToolExecutionException {
+        String lockId = params.path("lock_id").asText("");
+        String filePath = params.path("file_path").asText("");
+        if (lockId.isBlank() && filePath.isBlank()) {
+            return ToolResult.error("lock_id or file_path is required for monitor_edit");
+        }
+        String absolutePath = null;
+        if (!filePath.isBlank()) {
+            if (context == null) {
+                return ToolResult.error("file_path requires a tool context (pass lock_id instead)");
+            }
+            absolutePath = context.resolvePath(filePath).toAbsolutePath().toString();
+        }
+        String session = context == null || context.getSessionId() == null
+                ? coordinator.getSessionId() : context.getSessionId();
+        String message = params.path("monitor_message").asText("");
+        EditLockMonitorRegistry monitors = coordinator.editLockMonitors();
+        try {
+            EditLockMonitorRegistry.Snapshot monitor =
+                    monitors.watch(session, lockId.isBlank() ? null : lockId, absolutePath, message);
+            String guidance = switch (monitor.state()) {
+                case WAITING -> "This agent will be woken when the lock is released, expires, "
+                        + "or its holder dies." + (monitor.wakeSupported()
+                        ? ""
+                        : "\nExternal MCP client: re-run query_edit_monitors (or monitor_edit, "
+                          + "which is idempotent) instead of ending the turn expecting an "
+                          + "unsolicited wake-up.");
+                case RELEASED -> "The lock is already gone — no monitor was installed.";
+                case CANCELLED -> "No monitor was installed.";
+                default -> "";
+            };
+            String detail = "Watched " + (absolutePath != null ? absolutePath
+                    : "lock " + lockId) + ": " + monitor.reason() + "\n" + guidance
+                    + (message.isBlank() ? "" : "\nWake-up instructions: " + message);
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("editMonitorId", monitor.monitorId());
+            metadata.put("state", monitor.state().name());
+            metadata.put("wakeSupported", monitor.wakeSupported());
+            return ToolResult.success("edit lock monitor " + monitor.state(), detail, metadata);
+        } catch (IllegalArgumentException | IllegalStateException failure) {
+            return ToolResult.error(failure.getMessage());
+        }
+    }
+
+    private ToolResult executeUnmonitorEdit(JsonNode params, ToolContext context) {
+        String monitorId = params.path("monitor_id").asText("");
+        if (monitorId.isBlank()) {
+            return ToolResult.error("monitor_id is required for unmonitor_edit");
+        }
+        String session = context == null || context.getSessionId() == null
+                ? coordinator.getSessionId() : context.getSessionId();
+        try {
+            coordinator.editLockMonitors().cancel(session, monitorId);
+            return ToolResult.success("unmonitored " + monitorId,
+                    "Cancelled edit-lock monitor " + monitorId + "; no wake-up will be delivered.",
+                    Map.of("editMonitorId", monitorId));
+        } catch (IllegalArgumentException missing) {
+            return ToolResult.error("No edit-lock monitor " + monitorId
+                    + " in this tool session");
+        }
+    }
+
+    private ToolResult executeQueryEditMonitors(JsonNode params, ToolContext context) {
+        String session = context == null || context.getSessionId() == null
+                ? coordinator.getSessionId() : context.getSessionId();
+        List<EditLockMonitorRegistry.Snapshot> monitors =
+                coordinator.editLockMonitors().list(session);
+        if (monitors.isEmpty()) {
+            return ToolResult.success("No active edit-lock monitors");
+        }
+        StringBuilder sb = new StringBuilder();
+        for (EditLockMonitorRegistry.Snapshot monitor : monitors) {
+            sb.append(monitor.monitorId())
+                    .append(" · ").append(monitor.state())
+                    .append(" · ").append(monitor.filePath() != null
+                            ? monitor.filePath() : "lock " + monitor.lockId());
+            if (!monitor.message().isBlank()) {
+                sb.append("\n  -> ").append(monitor.message());
+            }
+            sb.append("\n");
+        }
+        return ToolResult.success("edit lock monitors", sb.toString().stripTrailing(),
+                Map.of("count", monitors.size(), "monitors", monitors));
+    }
+
     private ToolResult executeRegisterAgent(JsonNode params, ToolContext context) {
         String task = params.path("task").asText("");
         if (task.isEmpty()) {
@@ -697,7 +815,7 @@ public class EditCoordinatorTool implements CliTool {
         String agentName = params.path("agent_name").asText("unknown");
         String parentSessionId = params.path("parent_session_id").asText("");
         if (parentSessionId.isBlank()) {
-            parentSessionId = System.getenv("KOMPILE_PARENT_SESSION_ID");
+            parentSessionId = SessionEnvironment.get("KOMPILE_PARENT_SESSION_ID");
         }
         if (parentSessionId != null && parentSessionId.isBlank()) parentSessionId = null;
         String toolSessionId = params.path("tool_session_id").asText("");
@@ -712,7 +830,7 @@ public class EditCoordinatorTool implements CliTool {
             }
         }
         int depth = 0;
-        String depthEnv = System.getenv("KOMPILE_SUBAGENT_DEPTH");
+        String depthEnv = SessionEnvironment.get("KOMPILE_SUBAGENT_DEPTH");
         if (depthEnv != null) {
             try { depth = Integer.parseInt(depthEnv); } catch (NumberFormatException ignored) {}
         }

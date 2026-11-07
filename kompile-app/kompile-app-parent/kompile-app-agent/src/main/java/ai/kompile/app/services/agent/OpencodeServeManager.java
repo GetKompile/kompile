@@ -41,7 +41,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -222,7 +226,25 @@ public class OpencodeServeManager {
         }
         String text = extractAssistantText(resp.body());
         if (text == null || text.isBlank()) {
-            throw new IllegalStateException("opencode serve returned no assistant text");
+            // A textless final message is not necessarily a broken turn: a
+            // provider failure mid-loop arrives as a 2xx assistant message
+            // whose info.error carries the failure, and a turn that reaches
+            // its step limit ends in finish="tool-calls" whose final message
+            // holds tool bookkeeping only. Surface the real failure first,
+            // then reconcile the answer the turn's earlier assistant steps
+            // carried, and only then end the turn with the message shape.
+            JsonNode root = objectMapper.readTree(resp.body());
+            JsonNode info = root.path("info");
+            String failure = describeError(info);
+            if (failure != null) {
+                throw new IllegalStateException(failure);
+            }
+            String reconciled = reconcileTurnText(url, sessionId, info);
+            if (!reconciled.isBlank()) {
+                return reconciled;
+            }
+            throw new IllegalStateException(
+                    "opencode serve returned no assistant text" + blankTurnDiagnostics(root, info));
         }
         return text;
     }
@@ -239,7 +261,7 @@ public class OpencodeServeManager {
         return sb.toString().trim();
     }
 
-    private void collectTextParts(JsonNode node, StringBuilder sb) {
+    private static void collectTextParts(JsonNode node, StringBuilder sb) {
         if (node == null) {
             return;
         }
@@ -256,6 +278,150 @@ public class OpencodeServeManager {
         } else if (node.isArray()) {
             node.forEach(child -> collectTextParts(child, sb));
         }
+    }
+
+    /**
+     * The failure a finished turn carries on its assistant message —
+     * {@code info.error} is opencode's named-error envelope, e.g.
+     * {@code {name:"APIError",data:{message:...}}} for an upstream failure, or
+     * {@code MessageAbortedError} when the turn was stopped. Null when the
+     * message carries no error.
+     */
+    static String describeError(JsonNode info) {
+        JsonNode error = info.path("error");
+        if (error.isMissingNode() || error.isNull()) {
+            return null;
+        }
+        String name = error.path("name").asText("");
+        JsonNode data = error.path("data");
+        String message = "";
+        for (String field : List.of("message", "description")) {
+            JsonNode value = data.hasNonNull(field) ? data.get(field)
+                    : error.hasNonNull(field) ? error.get(field) : null;
+            if (value != null && value.isTextual() && !value.asText().isBlank()) {
+                message = value.asText().trim();
+                break;
+            }
+        }
+        String messageBounded = message.isBlank() ? "" : StringUtils.truncate(message, 400);
+        if (name.isBlank() && messageBounded.isEmpty()) {
+            return "unknown failure";
+        }
+        if (messageBounded.isEmpty()) {
+            return name;
+        }
+        if (name.isBlank()) {
+            return messageBounded;
+        }
+        return name + ": " + messageBounded;
+    }
+
+    /**
+     * Shape of the textless final message for the no-text diagnostic: the
+     * finish reason, an overview of the message's parts and the token counters
+     * — enough to tell a tool-only step message from a silent model response.
+     */
+    static String blankTurnDiagnostics(JsonNode root, JsonNode info) {
+        StringBuilder diagnostic = new StringBuilder();
+        String finish = info.path("finish").asText("");
+        diagnostic.append("(finish=").append(finish.isBlank() ? "none" : finish);
+        Map<String, Integer> partTypes = new LinkedHashMap<>();
+        JsonNode parts = root.path("parts");
+        if (parts.isArray()) {
+            for (JsonNode part : parts) {
+                partTypes.merge(part.path("type").asText("unknown"), 1, Integer::sum);
+            }
+        }
+        if (!partTypes.isEmpty()) {
+            diagnostic.append(", parts=");
+            boolean first = true;
+            for (Map.Entry<String, Integer> entry : partTypes.entrySet()) {
+                if (!first) {
+                    diagnostic.append(", ");
+                }
+                first = false;
+                diagnostic.append(entry.getKey()).append('×').append(entry.getValue());
+            }
+        }
+        JsonNode tokens = info.path("tokens");
+        if (tokens.isObject()) {
+            diagnostic.append(", tokens in=").append(tokens.path("input").asLong(0))
+                    .append(" out=").append(tokens.path("output").asLong(0))
+                    .append(" reasoning=").append(tokens.path("reasoning").asLong(0));
+        }
+        return diagnostic.append(')').toString();
+    }
+
+    /**
+     * Recover the answer a textless final message hid. A turn splits its text
+     * across assistant messages — one per model step — and the final message
+     * may only close out the tools. List the session's messages and join the
+     * text parts of this turn's assistant messages, named by the turn's user
+     * message ({@code info.parentID}); messages that carry their own error are
+     * skipped because their text died with it. Best effort: any listing
+     * failure yields "" so the caller's own diagnostics surface instead.
+     */
+    private String reconcileTurnText(String url, String sessionId, JsonNode info) {
+        String parentMessageId = info.path("parentID").asText("");
+        if (parentMessageId.isBlank()) {
+            return "";
+        }
+        try {
+            HttpResponse<String> messages = httpClient.send(
+                    HttpRequest.newBuilder(URI.create(url + "/session/" + sessionId + "/message"))
+                            .timeout(Duration.ofSeconds(30))
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (messages.statusCode() / 100 != 2 || messages.body() == null
+                    || messages.body().isBlank()) {
+                return "";
+            }
+            return extractAssistantTextByParent(objectMapper, messages.body(), parentMessageId);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * Join the text parts of a listing's turn assistant messages (same
+     * {@code parentID}), chronologically, skipping error-carrying messages.
+     * Returns "" when nothing in the listing qualifies.
+     */
+    static String extractAssistantTextByParent(ObjectMapper mapper, String messagesBody,
+                                               String parentMessageId) throws IOException {
+        JsonNode root = mapper.readTree(messagesBody);
+        if (root == null || root.isMissingNode() || root.isNull() || root.isValueNode()) {
+            return "";
+        }
+        List<JsonNode> messages = new ArrayList<>();
+        if (root.isArray()) {
+            root.forEach(messages::add);
+        }
+        // The listing normally arrives chronologically, but no ordering contract
+        // is documented: sort by (time.created, id) defensively.
+        messages.sort(Comparator
+                .comparing((JsonNode message) -> message.path("info").path("time").path("created").asLong(0))
+                .thenComparing(message -> message.path("info").path("id").asText("")));
+        StringBuilder text = new StringBuilder();
+        for (JsonNode message : messages) {
+            JsonNode messageInfo = message.path("info");
+            if (!"assistant".equals(messageInfo.path("role").asText(""))) {
+                continue;
+            }
+            if (!parentMessageId.equals(messageInfo.path("parentID").asText(""))) {
+                continue;
+            }
+            JsonNode error = messageInfo.path("error");
+            if (!error.isMissingNode() && !error.isNull()) {
+                continue;
+            }
+            collectTextParts(message, text);
+        }
+        return text.toString().trim();
     }
 
     private void deleteSessionQuietly(String url, String sessionId) {

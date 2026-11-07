@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.workflow;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolContext;
@@ -272,16 +273,16 @@ public final class WorkflowSessionContext {
         if (context != null) {
             return context.childEnvironment();
         }
-        String name = System.getenv(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
+        String name = SessionEnvironment.get(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
         if (name == null || name.isBlank()) {
             return Map.of();
         }
         Map<String, String> env = new LinkedHashMap<>();
         env.put(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME, name);
-        String participant = System.getenv(WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT);
+        String participant = SessionEnvironment.get(WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT);
         env.put(WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT,
                 participant == null ? "" : participant);
-        String session = System.getenv(WorkflowTeamEnforcement.ENV_WORKFLOW_SESSION);
+        String session = SessionEnvironment.get(WorkflowTeamEnforcement.ENV_WORKFLOW_SESSION);
         if (session != null && !session.isBlank()) {
             env.put(WorkflowTeamEnforcement.ENV_WORKFLOW_SESSION, session);
         }

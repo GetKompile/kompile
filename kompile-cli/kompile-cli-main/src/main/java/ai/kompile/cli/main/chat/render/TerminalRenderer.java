@@ -135,7 +135,7 @@ public class TerminalRenderer {
             Map.entry("list", new String[]{"path"}),
             Map.entry("webfetch", new String[]{"url"}),
             Map.entry("websearch", new String[]{"query"}),
-            Map.entry("task", new String[]{"description"}),
+            Map.entry("task", new String[]{"agent_type", "description"}),
             Map.entry("multi_task", new String[]{"description"}),
             Map.entry("quorum_task", new String[]{"description"}),
             Map.entry("toolsearch", new String[]{"query"}),
@@ -723,6 +723,13 @@ public class TerminalRenderer {
     public String renderReminderSection(String reminderContent) {
         String summary = reminderSummary(reminderLines(reminderContent));
         return summary.isEmpty() ? "" : summary + " " + dim("— /reminder list · /reminder-global list");
+    }
+
+    /** True for a harness event sent to an agent as its prompt rather than text a user typed. */
+    public static boolean isAgentNotification(String message) {
+        if (message == null) return false;
+        String content = message.strip();
+        return content.startsWith("[System ") || content.startsWith("<todo-status");
     }
 
     /** Summarize a delivered agent event while retaining its payload for /ui results. */
@@ -1748,6 +1755,10 @@ public class TerminalRenderer {
                 name = name.substring(lastSep + 2);
             }
         }
+        // opencode grants MCP tools as kompile_<tool> → <tool>
+        if (name.startsWith("kompile_")) {
+            name = name.substring("kompile_".length());
+        }
         return name.toLowerCase();
     }
 
@@ -1773,6 +1784,10 @@ public class TerminalRenderer {
             if (lastSep > 4) {
                 name = name.substring(lastSep + 2);
             }
+        }
+        // opencode grants MCP tools as kompile_<tool>
+        if (name.startsWith("kompile_")) {
+            name = name.substring("kompile_".length());
         }
 
         // If already CamelCase (contains uppercase after position 0), keep as-is

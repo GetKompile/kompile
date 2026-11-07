@@ -1328,13 +1328,13 @@
           </div>
 
           <!-- Performance Metrics -->
-          <div *ngIf="message.role === 'assistant' && showMetrics && (message.latencyMs || message.tokenMetrics || message.ragMetrics) && !message.isStreaming"
+          <div *ngIf="message.role === 'assistant' && showMetrics && (isMeasuredMetric(message.latencyMs) || message.tokenMetrics || message.ragMetrics) && !message.isStreaming"
             class="metrics-bar" data-testid="metrics-bar">
-            <span class="metric" *ngIf="message.latencyMs">
+            <span class="metric" *ngIf="isMeasuredMetric(message.latencyMs)">
               <span class="metric-label">Latency:</span>
               <span class="metric-value">{{ formatDuration(message.latencyMs) }}</span>
             </span>
-            <span class="metric" *ngIf="message.ragMetrics?.retrievalMs">
+            <span class="metric" *ngIf="isMeasuredMetric(message.ragMetrics?.retrievalMs)">
               <span class="metric-label">Retrieval:</span>
               <span class="metric-value metric-rag">{{ formatDuration(message.ragMetrics!.retrievalMs) }}</span>
             </span>
@@ -1342,19 +1342,19 @@
               <span class="metric-label">Docs:</span>
               <span class="metric-value metric-rag">{{ message.ragMetrics!.documentsRetrieved }}</span>
             </span>
-            <span class="metric" *ngIf="message.tokenMetrics?.tokensPerSecond">
+            <span class="metric" *ngIf="isMeasuredMetric(message.tokenMetrics?.tokensPerSecond)">
               <span class="metric-label">Speed:</span>
-              <span class="metric-value metric-highlight">{{ message.tokenMetrics?.tokensPerSecond?.toFixed(1) }} tok/s</span>
+              <span class="metric-value metric-highlight">{{ message.tokenMetrics!.tokensPerSecond!.toFixed(1) }} tok/s</span>
             </span>
-            <span class="metric" *ngIf="message.tokenMetrics?.inputTokens">
+            <span class="metric" *ngIf="isMeasuredMetric(message.tokenMetrics?.inputTokens)">
               <span class="metric-label">In:</span>
               <span class="metric-value">{{ formatTokenCount(message.tokenMetrics!.inputTokens) }}</span>
             </span>
-            <span class="metric" *ngIf="message.tokenMetrics?.outputTokens">
+            <span class="metric" *ngIf="isMeasuredMetric(message.tokenMetrics?.outputTokens)">
               <span class="metric-label">Out:</span>
               <span class="metric-value">{{ formatTokenCount(message.tokenMetrics!.outputTokens) }}</span>
             </span>
-            <span class="metric" *ngIf="message.tokenMetrics?.totalGenerationMs">
+            <span class="metric" *ngIf="isMeasuredMetric(message.tokenMetrics?.totalGenerationMs)">
               <span class="metric-label">Gen:</span>
               <span class="metric-value">{{ formatDuration(message.tokenMetrics!.totalGenerationMs) }}</span>
             </span>

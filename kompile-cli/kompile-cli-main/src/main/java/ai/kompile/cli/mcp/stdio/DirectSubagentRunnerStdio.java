@@ -20,8 +20,10 @@ import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
 import ai.kompile.cli.main.chat.config.KompileToolGuidance;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -31,6 +33,7 @@ import ai.kompile.cli.main.chat.skill.SkillsInjection;
 import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.mcp.McpHttpSubagentHost;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -41,6 +44,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -149,8 +153,22 @@ public class DirectSubagentRunnerStdio {
         }
     }
 
+    /**
+     * The identity the agent's own MCP server would have run under: this session's, with
+     * the launch's environment on top.
+     */
+    static Map<String, String> subagentMcpIdentity(Map<String, String> launchEnvironment) {
+        Map<String, String> identity = new LinkedHashMap<>(SessionEnvironment.current());
+        launchEnvironment.forEach((name, value) -> {
+            if (value != null) identity.put(name, value);
+        });
+        // Claude Code loads the project's .mcp.json servers itself.
+        identity.put(McpBundleToolLoader.HOST_LOADS_PROJECT_ENV, "true");
+        return identity;
+    }
+
     private int getCurrentSubagentDepth() {
-        String depthStr = System.getenv("KOMPILE_SUBAGENT_DEPTH");
+        String depthStr = SessionEnvironment.get("KOMPILE_SUBAGENT_DEPTH");
         if (depthStr != null) {
             try {
                 return Integer.parseInt(depthStr);
@@ -335,6 +353,13 @@ public class DirectSubagentRunnerStdio {
         });
         runner.setInputProvider(prompt -> null);
 
+        // A Claude agent's tools are a session of this server rather than a server process
+        // of its own, so its first prompt does not wait for one to boot.
+        McpHttpSubagentHost.Ticket mcpSession = injectMcpTools
+                && agentName.toLowerCase(Locale.ROOT).contains("claude")
+                ? McpHttpSubagentHost.openTicket(workDir, subagentMcpIdentity(env)) : null;
+        if (mcpSession != null) runner.setHttpMcpEndpoint(mcpSession.url(), mcpSession.bearerToken());
+
         boolean completed = false;
         String failureDetail = null;
         try {
@@ -351,6 +376,12 @@ public class DirectSubagentRunnerStdio {
                 // prompt manager or on provider-specific system-prompt support to guide children.
                 String response = runner.runMessage(KompileToolGuidance.PROMPT + "\n\n" + effectivePrompt,
                         history, metrics);
+                String containmentNotice = runner.getContainmentNotice();
+                if (containmentNotice != null) {
+                    throw new IllegalStateException("Subagent '" + agentName + "' "
+                            + (containmentNotice.startsWith("BLOCKED") ? "refused: " : "stopped: ")
+                            + containmentNotice);
+                }
                 String blockingNotice = runner.getBlockingNotice();
                 if (blockingNotice != null) {
                     throw new IllegalStateException("Subagent '" + agentName + "' stopped: "
@@ -368,6 +399,7 @@ public class DirectSubagentRunnerStdio {
                 currentRunner = null;
                 synchronized (waitingThreadLock) { waitingThread = null; }
                 runner.cleanup();
+                if (mcpSession != null) mcpSession.close();
             }
 
             if (cancelSignal.get()) {
@@ -445,8 +477,6 @@ public class DirectSubagentRunnerStdio {
         AsciiRenderer ascii = new AsciiRenderer(renderer, 100);
         SubprocessAgentRunner runner = new SubprocessAgentRunner(agentName, workDir.toString(), true, injectMcpTools,
                 "", 0, systemPromptManager, renderer, ascii);
-        // This runner exists only for a delegated agent call; tag milestones it observes.
-        runner.setTestCaptureOrigin("subagent");
         return runner;
     }
 

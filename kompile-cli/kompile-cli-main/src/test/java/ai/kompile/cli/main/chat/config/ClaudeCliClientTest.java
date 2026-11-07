@@ -310,9 +310,9 @@ class ClaudeCliClientTest {
     @Test
     void attachedImagesGoToClaudeCodeAsImageBlocksAheadOfTheText() throws Exception {
         FakeClaudeCode fake = fake();
-        DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+        AttachmentInput image = new AttachmentInput(
                 "/tmp/page.png", "image/png", true, "cGFnZQ==", null);
-        DirectLlmClient.AttachmentInput notes = new DirectLlmClient.AttachmentInput(
+        AttachmentInput notes = new AttachmentInput(
                 "/tmp/notes.txt", "text/plain", false, null, "margin notes");
 
         try (ClaudeCliClient client = client(fake)) {
@@ -1820,15 +1820,166 @@ class ClaudeCliClientTest {
         System.setProperty("kompile.chat.claude.boundNativeOutput", "false");
         try (ClaudeCliClient client = client(fake)) {
             client.send("sonnet", null, false, null, "hi", "", null, null);
-            assertFalse(fake.awaitControl("initialize").has("hooks"));
-            // kompile.cli.binary is set, so the launch carries Kompile's MCP server
-            // and the native shells are removed from the model's context.
+            JsonNode hooks = fake.awaitControl("initialize").path("hooks");
+            for (JsonNode registration : hooks.path("PostToolUse")) {
+                assertFalse(ClaudeNativeToolOutputPolicy.CALLBACK_ID.equals(
+                        registration.path("hookCallbackIds").get(0).asText()), registration.toString());
+            }
+            assertTrue(hooks.has("PreToolUse"),
+                    "the delegation guard stays on: only output bounding is disabled here");
+            // kompile.cli.binary is set, so the launch carries Kompile's
+            // MCP server and the native shells are removed from the model's context.
             assertTrue(fake.argv().get(0).contains("Bash,PowerShell"), fake.argv().get(0));
         } finally {
             if (binary == null) System.clearProperty("kompile.cli.binary");
             else System.setProperty("kompile.cli.binary", binary);
             if (bound == null) System.clearProperty("kompile.chat.claude.boundNativeOutput");
             else System.setProperty("kompile.chat.claude.boundNativeOutput", bound);
+        }
+    }
+
+    @Test
+    void nativeDelegationHookIsRegisteredAndDeniesNativeSubagentTools() throws Exception {
+        String callback = """
+                {"type":"control_request","request_id":"delegation-hook-1","request":{"subtype":"hook_callback","callback_id":"%s","input":{"hook_event_name":"PreToolUse","tool_name":"Task","tool_use_id":"native-task-1","tool_input":{"prompt":"search the code","subagent_type":"explore-quick"}}}}
+                """.formatted(ClaudeNativeDelegationPolicy.CALLBACK_ID).strip();
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  emit '%s'
+                  while IFS= read -r reply; do
+                    if [[ $reply == *'"request_id":"delegation-hook-1"'* ]]; then
+                      printf '%%s' "$reply" > "$DIR/delegation-response.json"
+                      break
+                    fi
+                  done
+                  say_init
+                  say_text ok
+                  say_result
+                }
+                """.formatted(callback));
+        Path launcher = Files.createFile(tempDir.resolve("kompile-delegation-hook"));
+        assertTrue(launcher.toFile().setExecutable(true));
+        String previous = System.getProperty("kompile.cli.binary");
+        System.setProperty("kompile.cli.binary", launcher.toString());
+        try (ClaudeCliClient client = client(fake)) {
+            client.setTranscriptSessionId("native-delegation-test");
+            assertEquals("ok", client.send("sonnet", null, false, "system", "delegate", "", null, null));
+            JsonNode registration = fake.awaitControl("initialize").path("hooks").path("PreToolUse").get(0);
+            assertNotNull(registration);
+            assertEquals(ClaudeNativeDelegationPolicy.MATCHER, registration.path("matcher").asText());
+            assertEquals(ClaudeNativeDelegationPolicy.CALLBACK_ID,
+                    registration.path("hookCallbackIds").get(0).asText());
+            JsonNode response = JsonUtils.standardMapper().readTree(fake.path("delegation-response.json").toFile());
+            assertEquals("success", response.path("response").path("subtype").asText());
+            JsonNode decision = response.path("response").path("response").path("hookSpecificOutput");
+            assertEquals("PreToolUse", decision.path("hookEventName").asText());
+            assertEquals("deny", decision.path("permissionDecision").asText());
+            assertTrue(decision.path("permissionDecisionReason").asText().contains("'Task'"));
+            assertTrue(decision.path("permissionDecisionReason").asText().contains("mcp__kompile__task"));
+            assertFalse(decision.has("updatedToolOutput"), "a deny decides; it does not rewrite tool output");
+        } finally {
+            if (previous == null) System.clearProperty("kompile.cli.binary");
+            else System.setProperty("kompile.cli.binary", previous);
+        }
+    }
+
+    @Test
+    void compactionReloadHooksRestoreRemindersMemoryAndSkillsAfterClaudeCompacts() throws Exception {
+        Path memory = tempDir.resolve(".kompile").resolve("memory");
+        Files.createDirectories(memory);
+        Files.writeString(memory.resolve("workflow_rule.md"), "Always batch fixes per build.\n");
+        String record = """
+                {"type":"control_request","request_id":"record-hook-1","request":{"subtype":"hook_callback","callback_id":"%s","input":{"hook_event_name":"PostToolUse","tool_name":"mcp__kompile__memory","tool_use_id":"memory-1","tool_input":{"action":"read","scope":"project","file":"workflow_rule.md"},"tool_response":[{"type":"text","text":"Always batch fixes per build."}]}}}
+                """.formatted(ClaudeNativeContextReloadPolicy.RECORD_CALLBACK_ID).strip();
+        String reload = """
+                {"type":"control_request","request_id":"reload-hook-1","request":{"subtype":"hook_callback","callback_id":"%s","input":{"hook_event_name":"SessionStart","source":"compact","session_id":"test-session"}}}
+                """.formatted(ClaudeNativeContextReloadPolicy.RELOAD_CALLBACK_ID).strip();
+        FakeClaudeCode fake = fake("""
+                turn() {
+                  emit '%s'
+                  while IFS= read -r reply; do
+                    if [[ $reply == *'"request_id":"record-hook-1"'* ]]; then
+                      printf '%%s' "$reply" > "$DIR/record-response.json"
+                      break
+                    fi
+                  done
+                  emit '%s'
+                  while IFS= read -r reply; do
+                    if [[ $reply == *'"request_id":"reload-hook-1"'* ]]; then
+                      printf '%%s' "$reply" > "$DIR/reload-response.json"
+                      break
+                    fi
+                  done
+                  say_init
+                  say_text ok
+                  say_result
+                }
+                """.formatted(record, reload));
+        Path launcher = Files.createFile(tempDir.resolve("kompile-reload-hook"));
+        assertTrue(launcher.toFile().setExecutable(true));
+        String previous = System.getProperty("kompile.cli.binary");
+        System.setProperty("kompile.cli.binary", launcher.toString());
+        String message = "<kompile_reminders>\n1. Plan before making changes.\n</kompile_reminders>\n\n"
+                + "<memory_context>\n[Persistent memory]\n- [rule](rule.md) — [feedback] never guess\n"
+                + "</memory_context>\n\n<skill name=\"fix\">\nFix build or test failures\n</skill>";
+        try (ClaudeCliClient client = client(fake)) {
+            client.setTranscriptSessionId("native-reload-test");
+            assertEquals("ok", client.send("sonnet", null, false, "system", message, "", null, null));
+            JsonNode hooks = fake.awaitControl("initialize").path("hooks");
+            boolean recordRegistered = false;
+            for (JsonNode registration : hooks.path("PostToolUse")) {
+                if (ClaudeNativeContextReloadPolicy.RECORD_CALLBACK_ID.equals(
+                        registration.path("hookCallbackIds").get(0).asText())) {
+                    recordRegistered = true;
+                    assertEquals(ClaudeNativeContextReloadPolicy.RECORD_MATCHER, registration.path("matcher").asText());
+                }
+            }
+            assertTrue(recordRegistered, hooks.toString());
+            JsonNode sessionStart = hooks.path("SessionStart").get(0);
+            assertEquals(ClaudeNativeContextReloadPolicy.RELOAD_MATCHER, sessionStart.path("matcher").asText());
+            assertEquals(ClaudeNativeContextReloadPolicy.RELOAD_CALLBACK_ID,
+                    sessionStart.path("hookCallbackIds").get(0).asText());
+
+            JsonNode recorded = JsonUtils.standardMapper().readTree(fake.path("record-response.json").toFile());
+            assertEquals("success", recorded.path("response").path("subtype").asText());
+            assertFalse(recorded.path("response").path("response").has("hookSpecificOutput"),
+                    "recording must never rewrite the memory tool's result");
+
+            JsonNode reloaded = JsonUtils.standardMapper().readTree(fake.path("reload-response.json").toFile());
+            assertEquals("success", reloaded.path("response").path("subtype").asText());
+            JsonNode output = reloaded.path("response").path("response").path("hookSpecificOutput");
+            assertEquals("SessionStart", output.path("hookEventName").asText());
+            String context = output.path("additionalContext").asText();
+            assertTrue(context.contains("Plan before making changes."), context);
+            assertTrue(context.contains("never guess"), context);
+            assertTrue(context.contains("### project/workflow_rule.md"), context);
+            assertTrue(context.contains("Always batch fixes per build."), context);
+            assertTrue(context.contains("<skill name=\"fix\">\nFix build or test failures\n</skill>"), context);
+        } finally {
+            if (previous == null) System.clearProperty("kompile.cli.binary");
+            else System.setProperty("kompile.cli.binary", previous);
+        }
+    }
+
+    @Test
+    void nativeDelegationDenialCanBeDisabledWithoutLosingOutputBounding() throws Exception {
+        FakeClaudeCode fake = fake();
+        Path launcher = Files.createFile(tempDir.resolve("kompile-delegation-off"));
+        assertTrue(launcher.toFile().setExecutable(true));
+        String binary = System.getProperty("kompile.cli.binary");
+        String guard = System.getProperty("kompile.chat.claude.nativeDelegationGuard");
+        System.setProperty("kompile.cli.binary", launcher.toString());
+        System.setProperty("kompile.chat.claude.nativeDelegationGuard", "false");
+        try (ClaudeCliClient client = client(fake)) {
+            client.send("sonnet", null, false, null, "hi", "", null, null);
+            JsonNode hooks = fake.awaitControl("initialize").path("hooks");
+            assertFalse(hooks.has("PreToolUse"));
+            assertTrue(hooks.has("PostToolUse"), "output bounding is independent of the delegation guard");
+        } finally {
+            if (binary == null) System.clearProperty("kompile.cli.binary");
+            else System.setProperty("kompile.cli.binary", binary);
+            if (guard == null) System.clearProperty("kompile.chat.claude.nativeDelegationGuard");
+            else System.setProperty("kompile.chat.claude.nativeDelegationGuard", guard);
         }
     }
 
@@ -2470,5 +2621,33 @@ class ClaudeCliClientTest {
         ClaudeCliClient.Mode judge = new ClaudeCliClient.Mode(true, true, "");
         assertTrue(judge.subagentGuardArguments("2").isEmpty(),
                 "a tool-free judge has no tools to guard");
+    }
+
+    /** {@link #LOGS_ARGUMENTS}, and each process writes the subagent depth it was started with to {@code depth}. */
+    private static final String LOGS_ARGUMENTS_AND_DEPTH = """
+            startup() {
+              printf '[%s]' "${args[@]}" > "$DIR/args.tmp" && mv "$DIR/args.tmp" "$DIR/args"
+              printf '%s' "${KOMPILE_SUBAGENT_DEPTH:-}" > "$DIR/depth"
+            }
+            """;
+
+    @Test
+    void aSubagentClientDisallowsDelegationAndCarriesItsDepthIntoClaudeCode() throws Exception {
+        // The delegating chat's JVM runs at depth 0, so a child served on the Claude Code
+        // route takes its depth from the runner, not from this process's environment.
+        FakeClaudeCode child = new FakeClaudeCode(tempDir.resolve("child-claude"), LOGS_ARGUMENTS_AND_DEPTH);
+        Path workspace = Files.createDirectories(tempDir.resolve("child-workspace"));
+        try (ClaudeCliClient client = new ClaudeCliClient(workspace, null, child.binary())) {
+            client.setSubagentDepth(1);
+            assertEquals("ok", client.send("sonnet", null, false, "be terse", "hi", "", null, null));
+        }
+        String args = Files.readString(child.path("args"), StandardCharsets.UTF_8);
+        assertTrue(args.contains("[--disallowedTools]"), args);
+        for (String tool : ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.CLAUDE_DISALLOWED) {
+            assertTrue(args.contains(tool), tool + " must be disallowed: " + args);
+        }
+        // Claude Code hands its environment to the Kompile MCP server it starts, which
+        // then refuses delegation tools as well.
+        assertEquals("1", Files.readString(child.path("depth"), StandardCharsets.UTF_8).strip());
     }
 }

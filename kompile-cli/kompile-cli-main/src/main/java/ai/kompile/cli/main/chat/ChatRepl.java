@@ -38,6 +38,15 @@ import ai.kompile.utils.StringUtils;
 import ai.kompile.project.KompileProjectChatSession;
 import ai.kompile.project.KompileProjectStore;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.exec.ChatAttachmentLoader;
 import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
@@ -349,12 +358,18 @@ public class ChatRepl implements AutoCloseable {
     private final AtomicBoolean acceptingProcessWakeups = new AtomicBoolean(false);
     private final BackgroundProcessManager.MonitorCallback processExitWakeListener =
             (entry, monitor) -> sessionContext.wrap(() -> handleProcessExitWakeup(entry, monitor)).run();
+    /** Alerts the agent about running subagents that stopped reporting; interactive sessions only. */
+    private volatile SubagentIdleWatchdog subagentIdleWatchdog;
     private final TerminalRenderer renderer;
     private AsciiRenderer ascii;
     private final Path workingDirectory;
     private volatile ScheduledLoopManager scheduledLoopManager;
     private volatile ScheduledLoopManager globalScheduledLoopManager;
     private volatile BoundedLoopManager boundedLoopManager;
+    /** Stable instance so the static listener registry can remove exactly what was added. */
+    private final UsageLimitAutoContinue.UsageWindowListener usageWindowListener =
+            this::pauseLoopsForUsageLimitWindow;
+    private volatile boolean usageWindowListenerRegistered;
 
     // Mode
     private final boolean localMode;
@@ -662,6 +677,12 @@ public class ChatRepl implements AutoCloseable {
             }
 
             @Override
+            public void onToolProgress(String callId, String toolName, long elapsedMillis) {
+                // Elapsed-only heartbeat: redraw so the running row's duration advances.
+                sessionContext.wrap(() -> auxiliaryActivityRedraw.run()).run();
+            }
+
+            @Override
             public void onToolComplete(String callId, String toolName,
                                        String rawInput, ToolResult result) {
                 sessionContext.wrap(() -> {
@@ -762,6 +783,15 @@ public class ChatRepl implements AutoCloseable {
                 if (!acceptingProcessWakeups.get() || forceAgentic) return;
                 // Informational: a transcript line, not an alert in the top bar.
                 ChatCompleter.printAbove(renderer.dim("  ↻ Claude Code started a turn by itself"));
+                // The marker says nothing of its own: show the task ends that prompted the turn.
+                List<String> triggers = directClient.providerFollowUpTriggers(marker);
+                if (!triggers.isEmpty()) {
+                    var block = renderer.renderAgentNotificationBlock(
+                            "[System Claude Code task completion]\n" + String.join("\n", triggers));
+                    if (block != null && !ChatCompleter.upsertDisplayBlock(block)) {
+                        ChatCompleter.printAbove(block.classic());
+                    }
+                }
                 messageHandler.handleExternalMessage(marker);
             }).run());
             // An event that arrives while Claude Code works goes into the turn it is running.
@@ -1671,6 +1701,8 @@ public class ChatRepl implements AutoCloseable {
         restoreSessionTitle();
         sessionMetrics.enableLivePersistence(chatHistory.getTranscriptFile().resolveSibling(
                 sessionId + ".metrics.json"), objectMapper);
+        sessionMetrics.enableUsageJournal(TokenUsageJournal.pathFor(
+                chatHistory.getTranscriptFile().getParent(), sessionId), workingDirectory);
         lifecycleManager.registerSession();
         lifecycleManager.syncSessionTitle(currentSessionTitle());
         registerProjectActivityPresence();
@@ -1746,6 +1778,7 @@ public class ChatRepl implements AutoCloseable {
                 processManager.close();
             }
         } finally {
+            closeSubagentIdleWatchdog();
             coordinationManager.shutdown();
             closeDashboardReports();
             closeProcessTimelineBinding();
@@ -1795,6 +1828,8 @@ public class ChatRepl implements AutoCloseable {
         restoreSessionTitle();
         sessionMetrics.enableLivePersistence(chatHistory.getTranscriptFile().resolveSibling(
                 sessionId + ".metrics.json"), objectMapper);
+        sessionMetrics.enableUsageJournal(TokenUsageJournal.pathFor(
+                chatHistory.getTranscriptFile().getParent(), sessionId), workingDirectory);
         lifecycleManager.registerSession();
         lifecycleManager.syncSessionTitle(currentSessionTitle());
         registerProjectActivityPresence();
@@ -2165,9 +2200,17 @@ public class ChatRepl implements AutoCloseable {
                     refreshCurrentActivityView(tui, activityPanel);
                 }));
             };
+            int idleAlertSeconds = chatConfig != null
+                    ? chatConfig.getSubagentIdleAlertSeconds() : SubagentIdleWatchdog.DEFAULT_IDLE_SECONDS;
+            SubagentIdleWatchdog idleWatchdog = new SubagentIdleWatchdog(Duration.ofSeconds(idleAlertSeconds),
+                    (id, notice) -> sessionContext.wrap(() -> handleSubagentIdleAlert(id, notice)).run());
+            idleWatchdog.setParentBlocked(() -> agenticLoop.isBackgroundableToolPhaseActive());
+            this.subagentIdleWatchdog = idleWatchdog;
+            idleWatchdog.start();
             runner.setLifecycleListener(new SubagentRunner.LifecycleListener() {
                 @Override
                 public void onSubagentStart(String id, String type, String description) {
+                    idleWatchdog.onStart(id, type, description);
                     sessionContext.wrap(() -> {
                     statusBar.registerSubagent(id, type, description);
                     activityPanel.refresh();
@@ -2176,6 +2219,7 @@ public class ChatRepl implements AutoCloseable {
                 }
                 @Override
                 public void onSubagentStatus(String id, String status) {
+                    idleWatchdog.onStatus(id, status);
                     sessionContext.wrap(() -> {
                     statusBar.updateSubagentStatus(id, status);
                     activityPanel.refresh();
@@ -2184,6 +2228,7 @@ public class ChatRepl implements AutoCloseable {
                 }
                 @Override
                 public void onSubagentActivity(String id, String summary, String detail) {
+                    idleWatchdog.onActivity(id, summary);
                     sessionContext.wrap(() -> {
                     statusBar.appendSubagentActivity(id, summary, detail);
                     activityPanel.refresh();
@@ -2192,6 +2237,7 @@ public class ChatRepl implements AutoCloseable {
                 }
                 @Override
                 public void onSubagentOutput(String id, String chunk) {
+                    idleWatchdog.onProgress(id);
                     sessionContext.wrap(() -> {
                     statusBar.appendSubagentOutput(id, chunk);
                     scheduleSubagentOutputRefresh.run();
@@ -2199,6 +2245,7 @@ public class ChatRepl implements AutoCloseable {
                 }
                 @Override
                 public void onSubagentMetadata(String id, Map<String, String> metadata) {
+                    idleWatchdog.onProgress(id);
                     sessionContext.wrap(() -> {
                     statusBar.updateSubagentMetadata(id, metadata);
                     scheduleSubagentOutputRefresh.run();
@@ -2206,6 +2253,7 @@ public class ChatRepl implements AutoCloseable {
                 }
                 @Override
                 public void onSubagentEnd(String id) {
+                    idleWatchdog.onEnd(id);
                     sessionContext.wrap(() -> {
                     statusBar.unregisterSubagent(id);
                     activityPanel.refresh();
@@ -2367,6 +2415,7 @@ public class ChatRepl implements AutoCloseable {
             projectActivityController.close();
             closeAuxiliaryRepls();
             processManager.removeMonitorListener(processExitWakeListener);
+            closeSubagentIdleWatchdog();
             shutdownScheduledLoops();
             codeIndexAlertCleanup.run();
             coordinationAlertCleanup.run();
@@ -2480,6 +2529,7 @@ public class ChatRepl implements AutoCloseable {
         if (interactiveInitialized) throw new IllegalStateException("Chat already initialized");
         hostManaged = true;
         globalScheduledLoopManager = Objects.requireNonNull(projectLoops);
+        ensureUsageWindowListenerRegistered();
     }
 
     void installRetainedOutput() {
@@ -2576,6 +2626,7 @@ public class ChatRepl implements AutoCloseable {
                         sessionContext.wrapConsumer(this::dispatchScheduledLoop),
                         ScheduledLoopManager.stateFileForSession(sessionId));
             }
+            ensureUsageWindowListenerRegistered();
             return scheduledLoopManager;
         }
     }
@@ -2589,8 +2640,71 @@ public class ChatRepl implements AutoCloseable {
                         sessionContext.wrapConsumer(this::dispatchScheduledLoop),
                         ScheduledLoopManager.stateFileForProject(workingDirectory));
             }
+            ensureUsageWindowListenerRegistered();
             return globalScheduledLoopManager;
         }
+    }
+
+    /**
+     * Read-only view of the live loop managers: the usage-limit watchdog needs
+     * to pause them without materializing managers a loop-less session would
+     * never use (each lazily created manager spawns a scheduler thread and
+     * reads persistence files).
+     */
+    List<ScheduledLoopManager> loopManagersSnapshot() {
+        List<ScheduledLoopManager> managers = new ArrayList<>(2);
+        ScheduledLoopManager sessionLoops = scheduledLoopManager;
+        ScheduledLoopManager globalLoops = globalScheduledLoopManager;
+        if (sessionLoops != null) managers.add(sessionLoops);
+        if (globalLoops != null && globalLoops != sessionLoops) managers.add(globalLoops);
+        return managers;
+    }
+
+    /**
+     * Stop every recurring schedule in this session — scheduled loops, the
+     * host's project loops, and bounded loops — when the provider reports a
+     * usage-limit window. Loops are paused, not removed, so the ordinary
+     * {@code /loop resume <id>} command restarts them once the window closes.
+     */
+    private void pauseLoopsForUsageLimitWindow(String provider, String failureDetail,
+                                               UsageLimitAutoContinue.Verdict verdict) {
+        List<String> paused = new ArrayList<>();
+        List<ScheduledLoopManager> managers = loopManagersSnapshot();
+        for (ScheduledLoopManager manager : managers) {
+            List<String> ids = manager.pauseAllActive();
+            for (String id : ids) paused.add((managers.size() > 1
+                    && manager == globalScheduledLoopManager ? "global " : "") + id);
+        }
+        BoundedLoopManager bounded = boundedLoopManager;
+        List<String> boundedIds = bounded == null ? List.of() : bounded.pauseAllActive();
+        if (paused.isEmpty() && boundedIds.isEmpty()) return;
+        StringBuilder message = new StringBuilder(
+                "⏸ " + verdict.reason() + " — paused " + (paused.size() + boundedIds.size())
+                + " loop" + ((paused.size() + boundedIds.size()) == 1 ? "" : "s"));
+        if (!paused.isEmpty()) {
+            message.append(" (").append(String.join(", ", paused))
+                    .append("; resume with /loop resume <id>");
+            if (managers.size() > 1 && globalScheduledLoopManager != null) {
+                message.append(" or /loop-global resume <id>");
+            }
+            message.append(")");
+        }
+        if (!boundedIds.isEmpty()) {
+            message.append(paused.isEmpty() ? " (" : ", ")
+                    .append(String.join(", ", boundedIds))
+                    .append("; resume with /loop-bounded resume <id>)");
+        }
+        ChatCompleter.showNotice(renderer.cyan("  " + message));
+        chatHistory.logSystem("[loops] usage-limit window: paused "
+                + String.join(", ", paused) + (paused.isEmpty() || boundedIds.isEmpty() ? ""
+                : " + bounded " + String.join(", ", boundedIds)));
+    }
+
+    /** Register the shared usage-window listener once this session owns any loop manager. */
+    private void ensureUsageWindowListenerRegistered() {
+        if (usageWindowListenerRegistered) return;
+        usageWindowListenerRegistered = true;
+        UsageLimitAutoContinue.addUsageWindowListener(usageWindowListener);
     }
 
     /**
@@ -2607,6 +2721,7 @@ public class ChatRepl implements AutoCloseable {
                         sessionContext.wrapConsumer(this::showBoundedLoopCompletion),
                         BoundedLoopManager.stateFileForSession(sessionId));
             }
+            ensureUsageWindowListenerRegistered();
             return boundedLoopManager;
         }
     }
@@ -2625,6 +2740,10 @@ public class ChatRepl implements AutoCloseable {
         ScheduledLoopManager globalLoops = globalScheduledLoopManager;
         if (globalLoops != null && !hostManaged) globalLoops.shutdown();
         BoundedLoopManager bounded = boundedLoopManager;
+        if (usageWindowListenerRegistered) {
+            usageWindowListenerRegistered = false;
+            UsageLimitAutoContinue.removeUsageWindowListener(usageWindowListener);
+        }
         if (bounded != null) {
             List<BoundedLoopManager.BoundedLoop> stillActive = bounded.list().stream()
                     .filter(loop -> loop.getStatus()
@@ -2676,6 +2795,13 @@ public class ChatRepl implements AutoCloseable {
                 }
                 messageHandler.handleExternalMessage(message);
             }));
+            // A watched edit lock was released: wake the agent so it can retry the blocked edit.
+            coordinationManager.editLockMonitors().setWakeHandler(sessionId, sessionContext.wrapConsumer(message -> {
+                if (!acceptingProcessWakeups.get()) {
+                    throw new IllegalStateException("Chat is not accepting edit-lock wakeups");
+                }
+                messageHandler.handleExternalMessage(message);
+            }));
         }
     }
 
@@ -2690,6 +2816,19 @@ public class ChatRepl implements AutoCloseable {
         ChatCompleter.showNotice(renderer.cyan("  ↻ Monitored process " + processId
                 + " exited; waking agent"));
         messageHandler.handleExternalMessage(processCompletionNotice(entry, monitor));
+    }
+
+    private void handleSubagentIdleAlert(String subagentId, String notice) {
+        if (!acceptingProcessWakeups.get() || forceAgentic) return;
+        ChatCompleter.showNotice(renderer.cyan("  ↻ Subagent " + subagentId
+                + " went idle; alerting agent"));
+        messageHandler.handleExternalMessage(notice);
+    }
+
+    private void closeSubagentIdleWatchdog() {
+        SubagentIdleWatchdog watchdog = subagentIdleWatchdog;
+        subagentIdleWatchdog = null;
+        if (watchdog != null) watchdog.close();
     }
 
     /** The agent's notice for a monitored process that ended, with the time it ended. */
@@ -3516,6 +3655,19 @@ public class ChatRepl implements AutoCloseable {
         if (originalDelete != null) {
             reader.getWidgets().put(LineReader.DELETE_CHAR, () -> {
                 if (tui != null && tui.isTemporaryWindowActive()) return originalDelete.apply();
+                // The results sidebar is a second selection surface over the same
+                // activity rows (Down reaches it first when it has focus). Delete must
+                // kill there too: route its selection into the activity panel's kill
+                // path so stop semantics, status messages and the agent wake-up match
+                // the process browser exactly. Without this branch the key falls
+                // through to plain delete-char — silently doing nothing on a blank buffer.
+                if (tui != null && tui.isSidebarFocused()
+                        && reader.getBuffer().toString().isBlank()) {
+                    String result = activityPanel.killByKey(tui.sidebarSelectedKey());
+                    ChatCompleter.showNotice(result);
+                    redisplayWithContent(reader, tui);
+                    return true;
+                }
                 if (activityPanel.isFocused() && reader.getBuffer().toString().isBlank()) {
                     String result = activityPanel.killSelected();
                     StandardChatActivityPanel.ActivityView view = activityPanel.currentView();
@@ -4186,10 +4338,11 @@ public class ChatRepl implements AutoCloseable {
     /**
      * Handle the configured cancel key without turning it into an implicit
      * subagent kill key. A blocking subagent keeps running until the user
-     * backgrounds it with Ctrl+B or targets its activity row with Delete.
+     * backgrounds it with Ctrl+B or targets its activity row with Delete. Any
+     * other blocking tool call (bash, an MCP tool) is cancelled like the turn.
      */
     boolean requestCancelFromInput() {
-        if (agenticLoop.isBackgroundableToolPhaseActive()) {
+        if (agenticLoop.isSubagentToolPhaseActive()) {
             String action = backgroundTaskManager.isCurrentTaskBackgroundable()
                     ? "Ctrl+B backgrounds it; ↓ selects its row and Delete stops it"
                     : "↓ selects its row and Delete stops it";

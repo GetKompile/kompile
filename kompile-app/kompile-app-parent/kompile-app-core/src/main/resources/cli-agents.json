@@ -75,6 +75,7 @@
     "args": [],
     "modelFlag": "--model",
     "modelListCommand": ["agy", "models"],
+    "authCommand": ["agy"],
     "isDefault": false,
     "description": "Google's Antigravity CLI; requires the agy CLI to be installed, on PATH, and authenticated/configured.",
     "mcpSupported": true,

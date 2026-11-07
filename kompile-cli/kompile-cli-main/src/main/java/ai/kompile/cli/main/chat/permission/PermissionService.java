@@ -116,6 +116,9 @@ public class PermissionService {
         return d;
     }
 
+    /** Read-only catalog shared by permission editors; role rules still take precedence. */
+    public Map<String, PermissionLevel> defaultLevels() { return Map.copyOf(defaults); }
+
     /**
      * Set a user-level permission override.
      */

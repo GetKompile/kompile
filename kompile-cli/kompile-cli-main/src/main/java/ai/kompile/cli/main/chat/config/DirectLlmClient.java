@@ -18,9 +18,14 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.chat.LocalServingRuntimePool;
+import ai.kompile.cli.main.chat.PassthroughStreamParser;
 import ai.kompile.cli.main.chat.ReminderManager;
+import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.ToolResultStore;
+import ai.kompile.cli.remote.transport.OpenAiChatExchange;
+import ai.kompile.cli.remote.transport.OpenAiChatRequestBody;
+import ai.kompile.cli.remote.transport.OpenAiChatStreamDecoder;
 import ai.kompile.core.llm.ModelContextWindows;
 import ai.kompile.core.llm.StructuredChatLanguageModel;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -80,62 +85,10 @@ public class DirectLlmClient implements AutoCloseable {
                     + "project instructions and saved tool results remain available through "
                     + "the read and glob tools.]\n\n";
 
-    public interface ProviderActivityListener {
-        void onToolStart(String callId, String name, String input);
-        default void onToolInput(String callId, String name, String input) { }
-        default void onToolOutput(String callId, String name, String output) { }
-        default void onToolProgress(String callId, String name, long elapsedMillis) { }
-        /** Transient provider phase, not transcript text. */
-        default void onActivity(String label) { }
-        /**
-         * A fragment of tool-call arguments as the model streams them. Their tokens
-         * are output the request's usage reports when it ends.
-         */
-        default void onToolInputDelta(String delta) { }
-        void onToolComplete(String callId, String name, String output,
-                            int exitCode, boolean error);
-        /** Settled usage deltas, never cumulative SSE snapshots; input/cache categories are disjoint. */
-        default void onTokenUsage(long input, long output,
-                                  long cacheRead, long cacheCreation) { }
-        /** Latest main-thread request input, including cache; not a billing delta. */
-        default void onContextUsage(long inputTokens) { }
-        /** Limits the native provider actually enforces, when it reports them. */
-        default void onModelLimits(int contextWindow, int maxOutputTokens) { }
-        default void onNotice(String text) { }
-        default void onCompactionStarted() { }
-        /** A harmless abort/no-op, not a context-overflow failure. */
-        default void onCompactionSkipped(String detail) { }
-        /**
-         * The provider compacted a session it owns. {@code trigger} is its reason
-         * ({@code auto}, {@code manual}), empty when not reported;
-         * {@code tokensBefore} is 0 when not reported.
-         */
-        default void onCompacted(String trigger, long tokensBefore) { }
-        /** The provider failed to compact a session it owns; {@code detail} may be empty. */
-        default void onCompactionFailed(String detail) { }
-        /**
-         * The provider made {@code steps} more model requests in the agent loop it runs
-         * for the turn (Claude Code, OpenCode); calls add up. Routes whose tool loop
-         * Kompile runs make one request per call and report none.
-         */
-        default void onSteps(int steps) { }
-    }
-
-    /** Provider-neutral terminal failure categories used by the chat coordinator. */
-    public enum FailureKind {
-        NONE,
-        CONTEXT_OVERFLOW,
-        AUTHENTICATION,
-        CREDENTIAL_UNAVAILABLE,
-        RATE_LIMITED,
-        TEMPORARY,
-        PERMISSION_DENIED,
-        QUOTA_EXHAUSTED,
-        REFUSAL,
-        TRUNCATED,
-        PROVIDER_ERROR
-    }
-
+// Contract types (FailureKind, ProviderActivityListener, ToolCallOutput,
+// ReplayedToolCallInput, ToolCallResultInput, AttachmentInput, ConnectivityEvent,
+// TokenCountResult) live in the dependency-free kompile-cli-chat-contract module;
+// this package is split across those two modules only.
     /** A Claude Code native session and the digest of the instructions it holds. */
     public record ClaudeNativeSession(String sessionId, String instructionsDigest) { }
 
@@ -167,9 +120,15 @@ public class DirectLlmClient implements AutoCloseable {
     private volatile String radiusGatewayConfigSource;
     private volatile OpenCodeServeClient openCodeServeClient;
     private volatile ClaudeCliClient claudeServeClient;
+    // Gemini's OAuth/native route turns run on one-shot agy CLI processes that
+    // keep their conversation id across turns in this client.
+    private volatile AgyCliClient agyServeClient;
+    private volatile boolean agyNeedsSeed = true;
     // How the Claude Code route runs this client's sessions: a chat's with its tools, a
     // utility lane's (a judge's) without.
     private volatile ClaudeCliClient.Mode claudeMode = ClaudeCliClient.Mode.CHAT;
+    // KOMPILE_SUBAGENT_DEPTH of the agent this client serves; 0 for a top-level chat.
+    private volatile int subagentDepth;
     // The Claude Code binary this client and its one-shot requests start; null = the registry's.
     private volatile String claudeBinaryOverride;
     // Where the Claude Code route shows its tasks, and who hears of the turns it starts itself.
@@ -331,15 +290,20 @@ public class DirectLlmClient implements AutoCloseable {
 
     /**
      * Show the Claude Code route's tasks as rows of this process manager, where
-     * killing a row stops its task. Null stops showing them.
+     * killing a row stops its task. Null stops showing them. The Claude Code and
+     * OpenCode routes' Kompile MCP servers register under this manager's session,
+     * so the processes they launch belong to this chat.
      */
     public void setClaudeTaskProcesses(BackgroundProcessManager processes) {
         ClaudeCliClient client;
+        OpenCodeServeClient openCode;
         synchronized (this) {
             claudeTaskProcesses = processes;
             client = claudeServeClient;
+            openCode = openCodeServeClient;
         }
         if (client != null) client.setTaskProcesses(processes);
+        if (openCode != null) openCode.setProcessPanel(processes);
     }
 
     /**
@@ -441,6 +405,17 @@ public class DirectLlmClient implements AutoCloseable {
      */
     public void runToolFree(boolean oneShot, String preferredEffort) {
         claudeMode = new ClaudeCliClient.Mode(true, oneShot, preferredEffort);
+    }
+
+    /**
+     * Serve a Kompile subagent at {@code depth}. The provider CLIs this client starts (Claude
+     * Code, agy, OpenCode) run their own tool loops, so the in-process child guard never sees
+     * their tool calls: each one is launched contained instead ({@code SubagentContainment}),
+     * with the depth in its environment so the Kompile MCP server it starts refuses delegation.
+     * Set before the first turn.
+     */
+    public void runAsSubagent(int depth) {
+        subagentDepth = Math.max(0, depth);
     }
 
     /**
@@ -703,6 +678,8 @@ public class DirectLlmClient implements AutoCloseable {
                     userMessage, systemPrompt, toolDefs, toolResults, attachments);
             case OPENCODE -> streamOpenCode(
                     userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments);
+            case AGY_CLI -> streamAgyCli(
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments);
             case CLAUDE_CLI -> streamClaudeCli(
                     userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments);
             case OPENAI_RESPONSES -> streamOpenAiResponses(
@@ -719,7 +696,8 @@ public class DirectLlmClient implements AutoCloseable {
         // Native session transports already emit per-request deltas. HTTP readers
         // reconcile cumulative SSE snapshots into one settled attempt here instead.
         if (route.protocol() != WireProtocol.OPENCODE
-                && route.protocol() != WireProtocol.CLAUDE_CLI) {
+                && route.protocol() != WireProtocol.CLAUDE_CLI
+                && route.protocol() != WireProtocol.AGY_CLI) {
             ProviderActivityListener listener = providerActivityListener;
             if (listener != null && hasTokenUsage(result)) {
                 listener.onTokenUsage(
@@ -762,6 +740,14 @@ public class DirectLlmClient implements AutoCloseable {
         if (config.isOpenCodeNative()) {
             return new ResolvedRoute(WireProtocol.OPENCODE, false,
                     ProviderCompactionCapabilities.forProvider("opencode"));
+        }
+        if (config.isAgyCliNative()) {
+            // Gemini vendor on the OAuth/native route: turns run through the agy
+            // CLI's headless one-shot stream-json transport; agy owns the Google
+            // Code Assist login (OAuth) Kompile never sees. Like Claude Code, agy
+            // owns that session's context and compacts it itself.
+            return new ResolvedRoute(WireProtocol.AGY_CLI, false,
+                    ProviderCompactionCapabilities.claudeCodeSession());
         }
         if (config.isOpenAiCodexFormat()) {
             return new ResolvedRoute(WireProtocol.OPENAI_RESPONSES, true,
@@ -1416,6 +1402,7 @@ public class DirectLlmClient implements AutoCloseable {
         KOMPILE_LOCAL(false),
         OPENCODE(true),
         CLAUDE_CLI(true),
+        AGY_CLI(true),
         OPENAI_RESPONSES(false),
         PI_MESSAGES(false),
         ANTHROPIC_MESSAGES(false),
@@ -1457,26 +1444,7 @@ public class DirectLlmClient implements AutoCloseable {
         }
     }
 
-    public record TokenCountResult(
-            boolean supported,
-            boolean exact,
-            long inputTokens,
-            String source,
-            String diagnostic) {
-
-        public static TokenCountResult unsupported() {
-            return new TokenCountResult(false, false, 0L, "none", null);
-        }
-
-        static TokenCountResult unavailable(String source, int status) {
-            return new TokenCountResult(false, false, 0L, source,
-                    "HTTP " + status);
-        }
-
-        static TokenCountResult exact(long inputTokens, String source) {
-            return new TokenCountResult(true, true, Math.max(0L, inputTokens), source, null);
-        }
-    }
+    // TokenCountResult moved to kompile-cli-chat-contract.
 
     private StreamResult streamOpenCode(String userMessage, String systemPrompt,
                                          ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
@@ -1554,6 +1522,28 @@ public class DirectLlmClient implements AutoCloseable {
                             ProviderActivityListener listener = providerActivityListener;
                             if (listener != null) listener.onSteps(steps);
                         }
+
+                        @Override
+                        public void onThinking(String reasoningDelta) {
+                            // Same pipeline every other lane feeds: renders in
+                            // the live thinking renderer when installed, dropped
+                            // otherwise (capture lanes must not receive reasoning).
+                            printThinkingChunk(reasoningDelta);
+                        }
+
+                        @Override
+                        public void onPermissionRequest(String requestId, String permission,
+                                                        List<String> patterns) {
+                            // The client answered the ask (reject) itself; a
+                            // permission event still places the turn's provider
+                            // activity, so the result is a live turn.
+                            result.providerSideEffectsObserved = true;
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) {
+                                listener.onNotice("[OpenCode] permission request auto-rejected: "
+                                        + permission + " [" + String.join(", ", patterns) + "]");
+                            }
+                        }
                     });
             result.text = text;
             if (streamed.length() == 0) {
@@ -1582,6 +1572,8 @@ public class DirectLlmClient implements AutoCloseable {
                 client = openCodeServeClient;
                 if (client == null) {
                     client = new OpenCodeServeClient(objectMapper, workingDirectory);
+                    client.setProcessPanel(claudeTaskProcesses);
+                    client.setSubagentDepth(subagentDepth);
                     openCodeServeClient = client;
                 }
             }
@@ -1997,6 +1989,135 @@ public class DirectLlmClient implements AutoCloseable {
         return client != null && client.reconnectMcpServer(name, timeout);
     }
 
+    // ── Antigravity CLI transport (Gemini's OAuth/native route) ──────────────
+
+    /**
+     * One agy CLI turn. A new conversation receives the earlier conversation
+     * ahead of the message, labeled as past turns; later turns resume the agy
+     * conversation with {@code --conversation}. Failures before any process
+     * starts stay replayable; anything after that does not.
+     */
+    private StreamResult streamAgyCli(String userMessage, String systemPrompt,
+                                       ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
+                                       String effectiveModel, List<AttachmentInput> attachments) {
+        StreamResult result = new StreamResult();
+        // Usage on this route rides the CLI's own turn envelope; only that
+        // last report describes the session, and 0 means agy reported none.
+        result.lastRequestInputTokens = 0;
+        if (attachments != null && !attachments.isEmpty()) {
+            return attachmentFailure("The Antigravity CLI (agy) route takes its turns as plain text,"
+                    + " so attachments cannot be sent to it; attach through a direct chat provider");
+        }
+        StringBuilder streamed = new StringBuilder();
+        try {
+            AgyCliClient client = agyClient();
+            String restored = agyNeedsSeed ? restoredConversation(systemPrompt, userMessage) : "";
+            StringBuilder prompt = new StringBuilder();
+            if (systemPrompt != null && !systemPrompt.isBlank()) {
+                prompt.append("[Instructions]\n").append(systemPrompt.strip()).append("\n\n");
+            }
+            if (!restored.isEmpty()) {
+                prompt.append(restored).append("\n\n");
+            }
+            // After agy compacted the conversation, the memory files and skills it used
+            // ride ahead of this message; the summary keeps at most a mention of them.
+            NativeCompactionReload reload = client.compactionReload();
+            String message = reload.withPendingReload(userMessage);
+            reload.recordPrompt(userMessage);
+            prompt.append(message == null ? "" : message);
+            String text = client.send(effectiveModel, prompt.toString(), agyEvents(result, streamed));
+            result.text = text;
+            if (streamed.length() == 0) {
+                printStreamingChunk(text);
+            }
+            appendOpenCodeHistory(userMessage, attachments, text);
+            agyNeedsSeed = false;
+            result.agyNativeSession = client.nativeSessionId();
+        } catch (AgyCliClient.TurnNotStartedException e) {
+            // The provider never answered; the connectivity retry loop may replay.
+            recordStreamFailure(result, e, "[Error: ");
+        } catch (Exception e) {
+            // A turn that began holds partial provider-side state in its own
+            // conversation; keep the result non-replayable.
+            result.providerSideEffectsObserved = true;
+            if (streamed.length() > 0) result.text = streamed.toString();
+            recordStreamFailure(result, e, "[Error: ");
+        }
+        return result;
+    }
+
+    /** Maps one agy turn's stream events to the chat's activity and usage surfaces. */
+    private Consumer<PassthroughStreamParser.PassthroughEvent> agyEvents(
+            StreamResult result, StringBuilder streamed) {
+        int[] toolCounter = {0};
+        return event -> {
+            if (event instanceof PassthroughStreamParser.TextChunk chunk) {
+                streamed.append(chunk.text());
+                printStreamingChunk(chunk.text());
+                return;
+            }
+            if (event instanceof PassthroughStreamParser.ToolUse toolUse) {
+                result.providerSideEffectsObserved = true;
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) {
+                    String callId = "agy-tool-" + ++toolCounter[0];
+                    listener.onToolStart(callId, toolUse.name(), toolUse.input());
+                    listener.onActivity("agy: " + toolUse.name());
+                }
+                return;
+            }
+            if (event instanceof PassthroughStreamParser.TurnComplete turn) {
+                // The result envelope settles the turn's cumulative usage; it
+                // replaces, not adds to, what this turn reported so far.
+                if (turn.inputTokens() > 0) result.inputTokens = turn.inputTokens();
+                if (turn.outputTokens() > 0) result.outputTokens = turn.outputTokens();
+                if (turn.cacheReadTokens() > 0) result.cacheReadTokens = turn.cacheReadTokens();
+                if (turn.cacheCreationTokens() > 0) result.cacheCreationTokens = turn.cacheCreationTokens();
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) {
+                    listener.onTokenUsage(turn.inputTokens(), turn.outputTokens(),
+                            turn.cacheReadTokens(), turn.cacheCreationTokens());
+                    listener.onActivity("agy: turn completed");
+                }
+            }
+        };
+    }
+
+    private AgyCliClient agyClient() {
+        AgyCliClient client = agyServeClient;
+        if (client == null) {
+            synchronized (this) {
+                client = agyServeClient;
+                if (client == null) {
+                    client = new AgyCliClient(workingDirectory.toString());
+                    client.setCancellationCheck(this::isCancelled);
+                    client.setSubagentDepth(subagentDepth);
+                    client.setSkipPermissions(true);
+                    try {
+                        // Antigravity reads the shared user-wide mcp_config.json;
+                        // a one-shot turn needs no per-launch config file.
+                        McpToolInjection.injectTools(workingDirectory, "agy");
+                    } catch (Exception injectionFailure) {
+                        System.err.println("  [MCP] Antigravity tool injection failed: "
+                                + injectionFailure.getMessage());
+                    }
+                    agyServeClient = client;
+                }
+            }
+        }
+        return client;
+    }
+
+    /** Tear the native agy transport down; the next turn seeds a fresh conversation. */
+    private void resetAgyClient() {
+        AgyCliClient client = agyServeClient;
+        agyServeClient = null;
+        agyNeedsSeed = true;
+        if (client != null) {
+            client.close();
+        }
+    }
+
     private ClaudeCliClient claudeClient() {
         ClaudeCliClient client = claudeServeClient;
         if (client == null) {
@@ -2004,6 +2125,7 @@ public class DirectLlmClient implements AutoCloseable {
                 client = claudeServeClient;
                 if (client == null) {
                     client = new ClaudeCliClient(workingDirectory, null, claudeBinaryOverride, claudeMode);
+                    client.setSubagentDepth(subagentDepth);
                     client.setSetupToken(config::resolveClaudeCodeToken);
                     client.setTaskProcesses(claudeTaskProcesses);
                     client.setFollowUpListener(followUpMarkers(claudeFollowUpListener));
@@ -2049,6 +2171,7 @@ public class DirectLlmClient implements AutoCloseable {
     public void close() {
         resetOpenCodeClient();
         resetClaudeClient();
+        resetAgyClient();
     }
 
     /**
@@ -2061,6 +2184,7 @@ public class DirectLlmClient implements AutoCloseable {
             toolResultArchive = null;
             resetOpenCodeClient();
             resetClaudeClient();
+            resetAgyClient();
         }
     }
 
@@ -2078,6 +2202,10 @@ public class DirectLlmClient implements AutoCloseable {
             toolResultArchive = null;
             resetOpenCodeClient();
             claudeNeedsSeed = true;
+            // Keeping the agy conversation alive mirrors Claude: the provider's
+            // own session is not chat disposal; the next turn of this provider
+            // seeds the rebuilt conversation again.
+            agyNeedsSeed = true;
         }
     }
 
@@ -2124,7 +2252,7 @@ public class DirectLlmClient implements AutoCloseable {
             case ANTHROPIC_MESSAGES -> anthropicUserMessage(text, attachments);
             case OPENAI_RESPONSES -> createResponsesUserMessage(text, attachments);
             case PI_MESSAGES -> createPiUserMessage(text, attachments);
-            case OPENCODE, CLAUDE_CLI -> textRouteUserMessage(text, attachments);
+            case OPENCODE, CLAUDE_CLI, AGY_CLI -> textRouteUserMessage(text, attachments);
         };
     }
 
@@ -4216,6 +4344,8 @@ public class DirectLlmClient implements AutoCloseable {
 
     private void appendProtocolError(
             StreamResult result, String message, String classificationDetail) {
+        // Capture actual provider output before classification adds any diagnostic text.
+        if (!result.failed) result.responseStarted |= !result.text.isEmpty() || !result.toolCalls.isEmpty();
         if (recordKnownProviderFailure(result, 0, classificationDetail)) return;
         result.failed = true;
         String formatted = "[Error: " + message + "]";
@@ -4600,6 +4730,8 @@ public class DirectLlmClient implements AutoCloseable {
                         result.cacheReadTokens += passResult.cacheReadTokens;
                         result.cacheCreationTokens += passResult.cacheCreationTokens;
                         result.toolCalls.addAll(passResult.toolCalls);
+                        result.responseStarted |= passResult.responseStarted;
+                        result.providerSideEffectsObserved |= passResult.providerSideEffectsObserved;
                         result.refusalDetected |= passResult.refusalDetected;
                         result.truncatedDetected |= passResult.truncatedDetected;
                         // Context is the resumed request alone, never their sum.
@@ -4626,6 +4758,8 @@ public class DirectLlmClient implements AutoCloseable {
                     commitOpenAiTurnHistory(result, toolResults, userMessage, attachments);
                     return result;
                 }
+                // A failed continuation must not make the original, visibly started request replay-safe.
+                result.responseStarted |= !passResult.text.isEmpty() || !passResult.toolCalls.isEmpty();
                 // The provider silently dropped a thinking stream (observed on the
                 // Z.AI coding endpoint: generation stops mid-reasoning with no
                 // finish_reason and no [DONE], keepalives still flowing). Ask it to
@@ -4654,10 +4788,7 @@ public class DirectLlmClient implements AutoCloseable {
     /** Build the shared OpenAI chat-completions wire request body. */
     private ObjectNode buildOpenAiWireRequest(String effectiveModel, ArrayNode messages,
                                               ArrayNode toolDefs) {
-        ObjectNode request = objectMapper.createObjectNode();
-        request.put("model", effectiveModel);
-        request.set("messages", messages);
-        request.put("stream", true);
+        ObjectNode request = OpenAiChatRequestBody.base(objectMapper, effectiveModel, messages);
         applyReasoningEffort(request, false);
         applyFastMode(request, effectiveModel);
         applyOpenAiCompatiblePromptCacheControls(request, effectiveModel);
@@ -4672,17 +4803,9 @@ public class DirectLlmClient implements AutoCloseable {
                     estimateRequestInputTokens(messages, toolDefs)));
         }
 
-        // Request token usage in streamed response
-        ObjectNode streamOptions = objectMapper.createObjectNode();
-        streamOptions.put("include_usage", true);
-        request.set("stream_options", streamOptions);
-
-        if (toolDefs != null && toolDefs.size() > 0) {
-            ArrayNode openAiTools = convertToolDefsToOpenAi(toolDefs);
-            if (openAiTools.size() > 0) {
-                request.set("tools", openAiTools);
-            }
-        }
+        ArrayNode wireTools = toolDefs != null && !toolDefs.isEmpty()
+                ? convertToolDefsToOpenAi(toolDefs) : null;
+        OpenAiChatRequestBody.addStreamingOptions(objectMapper, request, wireTools);
         return request;
     }
 
@@ -4706,17 +4829,17 @@ public class DirectLlmClient implements AutoCloseable {
     private void openAiStreamOnce(String url, ObjectNode request,
                                   OAuthProviderFlow.RequestAuth auth, String userMessage,
                                   ArrayNode toolDefs, StreamResult result) throws Exception {
-            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                    .timeout(connectivityPolicy.requestTimeout());
-            applyBearerAuthentication(requestBuilder, auth);
-            applyProviderRequestHeaders(requestBuilder, userMessage);
-            HttpRequest httpRequest = requestBuilder.build();
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
+                .timeout(connectivityPolicy.requestTimeout());
+        applyBearerAuthentication(requestBuilder, auth);
+        applyProviderRequestHeaders(requestBuilder, userMessage);
+        HttpRequest httpRequest = requestBuilder.build();
 
-            HttpResponse<java.io.InputStream> response = httpClient.send(
-                    httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+        try (OpenAiChatExchange exchange = OpenAiChatExchange.send(httpClient, httpRequest)) {
+            HttpResponse<java.io.InputStream> response = exchange.response();
 
             if (response.statusCode() != 200) {
                 if (response.statusCode() == 401) {
@@ -4758,6 +4881,7 @@ public class DirectLlmClient implements AutoCloseable {
             if (!result.cancelled && (!result.failed || isGenerationStopped(result))) {
                 appendOpenAiToolResultHistory(null);
             }
+        }
     }
 
     /**
@@ -5002,171 +5126,98 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private void parseOpenAiStream(java.io.InputStream inputStream, StreamResult result) throws Exception {
-        // Track tool calls being assembled from deltas
-        List<ToolCallAccumulator> toolAccumulators = new ArrayList<>();
-        boolean terminal = false;
-
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (isCancelled()) {
-                    result.cancelled = true;
-                    break;
-                }
-                if (!line.startsWith("data: ")) continue;
-                String data = line.substring(6).trim();
-                if ("[DONE]".equals(data)) {
-                    terminal = true;
-                    result.terminalEventSeen = true;
-                    break;
-                }
-
-                try {
-                    JsonNode chunk = objectMapper.readTree(data);
-                    JsonNode errorNode = chunk.get("error");
-                    if (errorNode != null && !errorNode.isNull()) {
-                        // OpenRouter-style upstream wraps carry the routed provider
-                        // and the real failure in metadata; surface them in both the
-                        // retry event reason and the terminal message.
-                        appendProtocolError(
-                                result,
-                                errorNode.path("message").asText("Unknown provider error")
-                                        + ProviderResponseFailure.upstreamDetail(errorNode),
-                                errorNode.toString());
-                        terminal = true;
-                        break;
-                    }
-                    JsonNode delta = chunk.path("choices").path(0).path("delta");
-                    String refusal = delta.path("refusal").asText("");
-                    if (!refusal.isEmpty()) {
-                        result.refusalDetected = true;
-                        printStreamingChunk(refusal);
-                        result.text += refusal;
-                    }
-
-                    // Text content
-                    String content = delta.path("content").asText(null);
-                    if (content != null) {
-                        printStreamingChunk(content);
-                        result.text += content;
-                    }
-
-                    // Reasoning content (DeepSeek/OpenAI-compatible reasoning models)
-                    String reasoningContent = delta.path("reasoning_content").asText(null);
-                    if (reasoningContent != null && !reasoningContent.isEmpty()) {
-                        printThinkingChunk(reasoningContent);
-                    }
-
-                    // Tool calls (streamed as deltas)
-                    JsonNode toolCallsNode = delta.path("tool_calls");
-                    if (toolCallsNode.isArray()) {
-                        for (JsonNode tcDelta : toolCallsNode) {
-                            int index = tcDelta.path("index").asInt(0);
-                            while (toolAccumulators.size() <= index) {
-                                toolAccumulators.add(new ToolCallAccumulator());
-                            }
-                            ToolCallAccumulator acc = toolAccumulators.get(index);
-
-                            String id = tcDelta.path("id").asText(null);
-                            if (id != null) acc.id = id;
-
-                            String name = tcDelta.path("function").path("name").asText(null);
-                            if (name != null) acc.name = name;
-
-                            String args = tcDelta.path("function").path("arguments").asText(null);
-                            if (args != null) {
-                                acc.arguments.append(args);
-                                reportToolInputDelta(args);
-                            }
+        OpenAiChatStreamDecoder.State state = new OpenAiChatStreamDecoder.State();
+        try {
+            OpenAiChatStreamDecoder.decode(inputStream, objectMapper, this::isCancelled,
+                    new OpenAiChatStreamDecoder.Listener() {
+                        @Override public void onText(String text) {
+                            printStreamingChunk(text);
+                            result.text += text;
                         }
-                    }
 
-                    // Extract token usage if present (final chunk in OpenAI streaming)
-                    JsonNode usageNode = chunk.path("usage");
-                    if (!usageNode.isObject() || usageNode.isEmpty()) {
-                        // Groq's original streaming dialect nests the same totals.
-                        usageNode = chunk.path("x_groq").path("usage");
-                    }
-                    readOpenAiCompatibleUsage(usageNode, result);
-                    if ("xai".equals(config.getProvider())
-                            && usageNode.hasNonNull("prompt_tokens")
-                            && usageNode.hasNonNull("completion_tokens")
-                            && usageNode.hasNonNull("total_tokens")) {
-                        // xAI's legacy chat dialect can exclude reasoning from
-                        // completion_tokens. Only add it when the wire total proves
-                        // it is separate; inclusive responses must not count it twice.
-                        long reasoning = usageCount(usageNode.path("completion_tokens_details"),
-                                "reasoning_tokens", 0L);
-                        long uncounted = usageCount(usageNode, "total_tokens", 0L)
-                                - usageCount(usageNode, "prompt_tokens", 0L) - result.outputTokens;
-                        if (reasoning > 0L && uncounted == reasoning) {
-                            result.outputTokens += reasoning;
+                        @Override public void onRefusal(String refusal) {
+                            result.refusalDetected = true;
+                            printStreamingChunk(refusal);
+                            result.text += refusal;
                         }
-                    }
 
-                    // Check for finish_reason
-                    String finishReason = chunk.path("choices").path(0).path("finish_reason").asText(null);
-                    if (finishReason != null && !finishReason.isBlank()) {
-                        terminal = true;
-                        result.terminalEventSeen = true;
-                    }
-                    result.refusalDetected |= "content_filter".equals(finishReason);
-                    result.truncatedDetected |= "length".equals(finishReason);
-                    // Even a refusal/length cutoff can be followed by the final
-                    // usage-only chunk. Drain through [DONE] before returning.
-                    if (terminal && finishGenerationOutcome(result)) continue;
-                    if ("tool_calls".equals(finishReason) || "stop".equals(finishReason)) {
-                        // Finalize any accumulated tool calls
-                        for (ToolCallAccumulator acc : toolAccumulators) {
-                            if (acc.name != null) {
-                                ToolCallOutput tc = new ToolCallOutput();
-                                tc.id = acc.id != null ? acc.id : "call_" + result.toolCalls.size();
-                                tc.name = acc.name;
-                                try {
-                                    tc.arguments = objectMapper.readTree(acc.arguments.toString());
-                                } catch (Exception e) {
-                                    tc.arguments = objectMapper.createObjectNode();
+                        @Override public void onReasoning(String reasoning) {
+                            printThinkingChunk(reasoning);
+                        }
+
+                        @Override public void onToolInputDelta(String delta) {
+                            reportToolInputDelta(delta);
+                        }
+
+                        @Override public void onUsage(JsonNode usage) {
+                            readOpenAiCompatibleUsage(usage, result);
+                            if ("xai".equals(config.getProvider())
+                                    && usage.hasNonNull("prompt_tokens")
+                                    && usage.hasNonNull("completion_tokens")
+                                    && usage.hasNonNull("total_tokens")) {
+                                // Only add reasoning when xAI's wire total proves
+                                // it is excluded from completion_tokens.
+                                long reasoning = usageCount(usage.path("completion_tokens_details"),
+                                        "reasoning_tokens", 0L);
+                                long uncounted = usageCount(usage, "total_tokens", 0L)
+                                        - usageCount(usage, "prompt_tokens", 0L) - result.outputTokens;
+                                if (reasoning > 0L && uncounted == reasoning) {
+                                    result.outputTokens += reasoning;
                                 }
-                                result.toolCalls.add(tc);
                             }
                         }
-                    }
-                } catch (Exception e) {
-                    // Skip unparseable chunks
+
+                        @Override public void onError(JsonNode error) {
+                            // Classification and routed-provider diagnostics remain
+                            // host policy, not transport-engine behavior.
+                            result.responseStarted |= !state.toolCalls.isEmpty();
+                            appendProtocolError(result,
+                                    error.path("message").asText("Unknown provider error")
+                                            + ProviderResponseFailure.upstreamDetail(error),
+                                    error.toString());
+                        }
+
+                        @Override public void onFinish(String finishReason) {
+                            syncOpenAiStreamFlags(state, result);
+                            result.terminalEventSeen |= finishReason != null && !finishReason.isBlank();
+                            result.refusalDetected |= "content_filter".equals(finishReason);
+                            result.truncatedDetected |= "length".equals(finishReason);
+                        }
+
+                        @Override public void onTerminalChunk() {
+                            // Also review trailing chunks without a finish_reason: a late
+                            // refusal must render before subsequent text, as in the old parser.
+                            syncOpenAiStreamFlags(state, result);
+                            result.responseStarted |= !state.toolCalls.isEmpty();
+                            finishGenerationOutcome(result);
+                        }
+                    }, state);
+            syncOpenAiStreamFlags(state, result);
+            if (!result.silentStreamDrop) finishGenerationOutcome(result);
+        } finally {
+            // Never replace host text with state.text: callbacks have already
+            // streamed it and may have appended refusal/error diagnostics.
+            // Preserve flags and any finalized calls even if a later read fails.
+            syncOpenAiStreamFlags(state, result);
+            if (!result.failed && !result.refusalDetected && !result.truncatedDetected
+                    && !state.protocolError) {
+                for (OpenAiChatStreamDecoder.ToolCall call : state.toolCalls) {
+                    ToolCallOutput output = new ToolCallOutput();
+                    output.id = call.id();
+                    output.name = call.name();
+                    output.arguments = call.arguments();
+                    result.toolCalls.add(output);
                 }
             }
         }
+    }
 
-        if (!result.cancelled && !result.failed && !terminal) {
-            // A text-bearing stream that dies without a terminal event is the
-            // silent-drop signature (Z.AI coding endpoint) — leave it unflagged so
-            // the route's resume logic can decide; routes without a resume path
-            // surface it through streamOpenAi's post-parse check below.
-            if (result.text.isEmpty() && result.toolCalls.isEmpty()) {
-                throw new EOFException("OpenAI stream ended before a terminal event");
-            }
-            result.silentStreamDrop = true;
-            return;
-        }
-
-        if (finishGenerationOutcome(result)) return;
-
-        // If tool calls were accumulated but finish_reason wasn't caught
-        if (result.toolCalls.isEmpty() && !toolAccumulators.isEmpty()) {
-            for (ToolCallAccumulator acc : toolAccumulators) {
-                if (acc.name != null) {
-                    ToolCallOutput tc = new ToolCallOutput();
-                    tc.id = acc.id != null ? acc.id : "call_" + result.toolCalls.size();
-                    tc.name = acc.name;
-                    try {
-                        tc.arguments = objectMapper.readTree(acc.arguments.toString());
-                    } catch (Exception e) {
-                        tc.arguments = objectMapper.createObjectNode();
-                    }
-                    result.toolCalls.add(tc);
-                }
-            }
-        }
+    private static void syncOpenAiStreamFlags(OpenAiChatStreamDecoder.State state, StreamResult result) {
+        result.cancelled |= state.cancelled;
+        result.refusalDetected |= state.refusalDetected;
+        result.truncatedDetected |= state.truncatedDetected;
+        result.terminalEventSeen |= state.terminalEventSeen;
+        result.silentStreamDrop |= state.silentStreamDrop;
     }
 
     // ========================================================================
@@ -5943,6 +5994,9 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private void recordStreamFailure(StreamResult result, Exception failure, String prefix) {
+        // Stream transport failures must not make already-visible output eligible for replay.
+        // Already-classified failures have captured this before rendering their diagnostics.
+        if (!result.failed) result.responseStarted |= !result.text.isEmpty() || !result.toolCalls.isEmpty();
         if (markCancelled(result, failure)) return;
         if (failure instanceof UnauthorizedRequestException rejected) {
             if (rejected.kind != FailureKind.NONE) recordTerminalOutcome(result, rejected.kind, 401);
@@ -5960,13 +6014,24 @@ public class DirectLlmClient implements AutoCloseable {
             result.failureKind = terminal.failureKind;
             return;
         }
-        if (failure instanceof OpenCodeServeClient.TurnNotStartedException turnNotStarted) {
+        if (failure instanceof OpenCodeServeClient.TurnNotStartedException) {
             // Pre-turn transport failure: the provider never received the prompt and
             // its session holds no new state, so the connectivity loop may replay it.
             result.failed = true;
             result.retryableConnectivityFailure = true;
             result.failureKind = FailureKind.PROVIDER_ERROR;
-            result.connectivityFailure = formatExceptionMessage(turnNotStarted);
+            result.connectivityFailure = formatExceptionMessage(failure);
+            result.connectivityFinalMessage = prefix + result.connectivityFailure + "]";
+            return;
+        }
+        if (failure instanceof AgyCliClient.TurnNotStartedException) {
+            // Pre-turn agy failure (CLI missing, spawn refused): the provider never
+            // received the prompt and holds no state, so the connectivity loop may
+            // retry once the user installs or signs in to the CLI.
+            result.failed = true;
+            result.retryableConnectivityFailure = true;
+            result.failureKind = FailureKind.PROVIDER_ERROR;
+            result.connectivityFailure = formatExceptionMessage(failure);
             result.connectivityFinalMessage = prefix + result.connectivityFailure + "]";
             return;
         }
@@ -6344,6 +6409,8 @@ public class DirectLlmClient implements AutoCloseable {
         public long compactionCacheCreationTokens;
         /** Native session a successful Claude Code turn ran in; null on every other route. */
         public ClaudeNativeSession claudeNativeSession;
+        /** Native agy conversation a successful turn ran in; null on every other route. */
+        public String agyNativeSession;
         // Token usage from API response (when available)
         public long inputTokens = 0;
         public long outputTokens = 0;
@@ -6407,48 +6474,9 @@ public class DirectLlmClient implements AutoCloseable {
         public String correctionPrompt = null;
     }
 
-    public record ConnectivityEvent(
-            String provider, int attempt, int maxAttempts, Duration delay, String reason) {
-    }
-
-    public static class ToolCallOutput {
-        public String id;
-        public String name;
-        public JsonNode arguments;
-    }
-
-    public record ReplayedToolCallInput(
-            String toolName, String callId, String argumentsJson) {
-    }
-
-    public static class ToolCallResultInput {
-        public String callId;
-        public String name;
-        public String output;
-        public boolean isError;
-
-        public ToolCallResultInput(String callId, String name, String output, boolean isError) {
-            this.callId = callId;
-            this.name = name;
-            this.output = output;
-            this.isError = isError;
-        }
-    }
-
-    /**
-     * An attachment (file, image, etc.) to include with a chat message.
-     */
-    public record AttachmentInput(String path, String mimeType, boolean isImage, String base64Data, String textContent) {
-        public AttachmentInput(String path, String mimeType) {
-            this(path, mimeType, false, null, null);
-        }
-    }
-
-    private static class ToolCallAccumulator {
-        String id;
-        String name;
-        StringBuilder arguments = new StringBuilder();
-    }
+    // ConnectivityEvent moved to kompile-cli-chat-contract.
+    // ToolCallOutput, ReplayedToolCallInput, ToolCallResultInput and AttachmentInput
+    // moved to kompile-cli-chat-contract (same package, split only across modules).
 
     private static class ResponsesToolCallAccumulator {
         String itemId;

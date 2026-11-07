@@ -99,7 +99,7 @@ class DirectLlmClientConnectivityTest {
                     client.streamChat("second", "system", null, null);
 
             assertTrue(rejected.failed);
-            assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, rejected.failureKind);
+            assertEquals(FailureKind.AUTHENTICATION, rejected.failureKind);
             assertEquals(401, rejected.failureStatusCode);
             assertTrue(rejected.failureMessage.contains("Unauthorized"));
             assertTrue(rejected.failureMessage.contains("kompile auth login openai"));
@@ -287,7 +287,7 @@ class DirectLlmClientConnectivityTest {
     void providerToolActivityMakesOverflowNonReplayable() {
         DirectLlmClient.StreamResult result = new DirectLlmClient.StreamResult();
         result.failed = true;
-        result.failureKind = DirectLlmClient.FailureKind.CONTEXT_OVERFLOW;
+        result.failureKind = FailureKind.CONTEXT_OVERFLOW;
         result.providerSideEffectsObserved = true;
 
         assertFalse(result.isReplaySafe());
@@ -361,7 +361,7 @@ class DirectLlmClientConnectivityTest {
             assertTrue(result.failed);
             assertTrue(result.text.startsWith("kept"),
                     "the partial answer must survive even when every resume drops");
-            assertEquals(DirectLlmClient.FailureKind.PROVIDER_ERROR, result.failureKind);
+            assertEquals(FailureKind.PROVIDER_ERROR, result.failureKind);
             assertTrue(result.failureMessage.contains("kept the partial response"));
             assertEquals(1 + 3, calls.get(), "1 initial + ANTHROPIC_MID_STREAM_RESUME_ATTEMPTS");
         }
@@ -379,7 +379,7 @@ class DirectLlmClientConnectivityTest {
             }
         });
         try (fixture; DirectLlmClient client = client(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             StringBuilder output = new StringBuilder();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(output::append);
@@ -411,7 +411,7 @@ class DirectLlmClientConnectivityTest {
             }
         });
         try (fixture; DirectLlmClient client = codexClient(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             StringBuilder output = new StringBuilder();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(output::append);
@@ -443,7 +443,7 @@ class DirectLlmClientConnectivityTest {
             respondCodexRetryBufferFailure(exchange, inBand);
         });
         try (fixture; DirectLlmClient client = codexClient(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(ignored -> { });
 
@@ -478,7 +478,7 @@ class DirectLlmClientConnectivityTest {
             respondSse(exchange, started + codexRetryBufferError());
         });
         try (fixture; DirectLlmClient client = codexClient(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(ignored -> { });
 
@@ -539,7 +539,7 @@ class DirectLlmClientConnectivityTest {
             }
         });
         try (fixture; DirectLlmClient client = client(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(ignored -> { });
 
@@ -597,7 +597,7 @@ class DirectLlmClientConnectivityTest {
             }
         });
         try (fixture; DirectLlmClient client = client(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             StringBuilder output = new StringBuilder();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(output::append);
@@ -660,7 +660,7 @@ class DirectLlmClientConnectivityTest {
             }
         });
         try (fixture; DirectLlmClient client = client(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             StringBuilder output = new StringBuilder();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(output::append);
@@ -699,7 +699,7 @@ class DirectLlmClientConnectivityTest {
             }
         });
         try (fixture; DirectLlmClient client = client(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             StringBuilder output = new StringBuilder();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(output::append);
@@ -735,7 +735,7 @@ class DirectLlmClientConnectivityTest {
                             + "\"raw\":\"too many concurrent requests for your tier\"}}}\n\n");
         });
         try (fixture; DirectLlmClient client = client(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             StringBuilder output = new StringBuilder();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(output::append);
@@ -770,7 +770,7 @@ class DirectLlmClientConnectivityTest {
                             + "\"type\":\"invalid_request_error\",\"param\":\"tools\"}}\n\n");
         });
         try (fixture; DirectLlmClient client = client(fixture)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(ignored -> { });
 
@@ -796,7 +796,7 @@ class DirectLlmClientConnectivityTest {
                     ? truncatedResponse(provider) : protocolCompletion(provider, "recovered"));
         });
         try (fixture; DirectLlmClient client = protocolClient(provider, fixture, FAST_POLICY)) {
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             StringBuilder output = new StringBuilder();
             client.setConnectivityEventConsumer(events::add);
             client.setOutputConsumer(output::append);
@@ -804,7 +804,7 @@ class DirectLlmClientConnectivityTest {
             client.addReplayedToolCall("lookup", "prior-call", "{}");
 
             var result = client.streamChat(null, "system", null, List.of(
-                    new DirectLlmClient.ToolCallResultInput(
+                    new ToolCallResultInput(
                             "prior-call", "lookup", "submitted-result", false)));
 
             assertFalse(result.failed, result.text);
@@ -839,13 +839,13 @@ class DirectLlmClientConnectivityTest {
         });
         try (fixture; DirectLlmClient client = protocolClient(provider, fixture, FAST_POLICY)) {
             StringBuilder output = new StringBuilder();
-            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            List<ConnectivityEvent> events = new ArrayList<>();
             client.setOutputConsumer(output::append);
             client.setConnectivityEventConsumer(events::add);
             var result = client.streamChat("hello", "system", null, null);
 
             assertTrue(result.failed);
-            assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind);
+            assertEquals(FailureKind.TRUNCATED, result.failureKind);
             assertTrue(result.toolCalls.isEmpty());
             assertEquals(FAST_POLICY.maxAttempts(), calls.get());
             assertEquals(FAST_POLICY.maxAttempts() - 1, events.size());
@@ -939,7 +939,7 @@ class DirectLlmClientConnectivityTest {
             client.addToHistory("user", "run a tool");
             client.addReplayedToolCall("lookup", "prior-call", "{}");
             var result = client.streamChat(null, "system", null, List.of(
-                    new DirectLlmClient.ToolCallResultInput(
+                    new ToolCallResultInput(
                             "prior-call", "lookup", "accepted-tool-result", false)));
             assertTrue(result.failed || result.cancelled);
             assertTrue(result.toolCalls.isEmpty());
@@ -981,11 +981,11 @@ class DirectLlmClientConnectivityTest {
             client.addToHistory("user", "run a tool");
             client.addReplayedToolCall("lookup", "prior-call", "{}");
             var result = client.streamChat(null, "system", null, List.of(
-                    new DirectLlmClient.ToolCallResultInput(
+                    new ToolCallResultInput(
                             "prior-call", "lookup", "accepted-tool-result", false)));
 
             assertTrue(result.cancelled);
-            assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind,
+            assertEquals(FailureKind.TRUNCATED, result.failureKind,
                     "the cancelled retry must already have recorded its length cutoff");
             assertEquals(2, requests.size());
             assertTrue(result.toolCalls.isEmpty());
@@ -1022,7 +1022,7 @@ class DirectLlmClientConnectivityTest {
             assertEquals("value", call.arguments.path("key").asText());
 
             var answer = client.streamChat(null, "system", null, List.of(
-                    new DirectLlmClient.ToolCallResultInput(call.id, call.name, "found", false)));
+                    new ToolCallResultInput(call.id, call.name, "found", false)));
             assertFalse(answer.failed);
             assertEquals("finished the task", answer.text);
             assertEquals(3, calls.get());
@@ -1043,7 +1043,7 @@ class DirectLlmClientConnectivityTest {
                 "openai", fixture, FAST_POLICY.withMaxAttempts(1))) {
             client.setOutputConsumer(ignored -> { });
             var result = client.streamChat("hello", "system", null, null);
-            assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind);
+            assertEquals(FailureKind.TRUNCATED, result.failureKind);
             assertEquals(1, calls.get());
         }
     }

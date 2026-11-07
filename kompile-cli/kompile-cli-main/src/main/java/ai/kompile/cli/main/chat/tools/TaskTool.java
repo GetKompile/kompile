@@ -20,6 +20,7 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
@@ -115,7 +116,7 @@ public class TaskTool implements CliTool {
         }
 
         desc.append("\nKompile-managed child: model auto-routes; provider explicitly corrects the route. ")
-                .append("authentication_method=oauth/native uses Claude Code login for anthropic; api-key selects its separate API. ")
+                .append("authentication_method: " + ChatConfig.ANTHROPIC_AUTH_ROUTES + ". ")
                 .append("Same-provider auth is inherited; resolve_model discovers routes and models. No parent/global settings change. ")
                 .append("Use role instead of agent_type to select a named role's prompt and tool policy. ")
                 .append("CLI agent selection and per-CLI role defaults belong to the MCP task tool, not this direct chat tool.\n")
@@ -160,7 +161,7 @@ public class TaskTool implements CliTool {
         props.putObject("provider").put("type", "string").put("description",
                 "Request-local provider override; use resolve_model to correct an ambiguous route.");
         props.putObject("authentication_method").put("type", "string").put("description",
-                "Auth route: oauth/native uses Claude Code login for anthropic; api-key uses the separate HTTP API. Same-provider omission inherits auth; no fallback after 401.")
+                "Auth route: " + ChatConfig.ANTHROPIC_AUTH_ROUTES + ". Omitted, the child inherits the session's login; a rejected or exhausted login fails over to the /subagent-config fallback routes, else the route's other logins, each switch reported.")
                 .putArray("enum").add("oauth").add("native").add("api-key");
         ObjectNode agentType = props.putObject("agent_type");
         agentType.put("type", "string");

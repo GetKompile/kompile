@@ -2,8 +2,8 @@ import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { Observable, of, Subject, throwError } from 'rxjs';
-import { LocalAgentChatService } from '@shared/services/local-agent-chat.service';
-import { CommandEventData, CommandOutcome } from '@shared/models/api-models';
+import { LocalAgentChatService, SessionConfigSnapshot } from '@shared/services/local-agent-chat.service';
+import { CommandEventData, CommandOutcome, ModelRung } from '@shared/models/api-models';
 import { CommandConfigDialogComponent, CommandConfigDialogData } from './command-config-dialog.component';
 import { ChatSetupCatalog, ChatSetupSelection } from '../chat-route-fields/chat-route-fields.component';
 
@@ -108,6 +108,34 @@ describe('Session configuration: the CLI setup wizard for this chat', () => {
   function lastCatalogRequest(): ChatSetupSelection {
     const calls = setupSession.calls.all().filter(call => call.args[2] === 'catalog');
     return calls[calls.length - 1].args[3];
+  }
+
+  const rung = (model: string): ModelRung => ({ provider: 'saved-provider', model, credentialName: 'work',
+    label: null, thinking: 'high', authenticationMethod: 'api-key' });
+
+  function policySnapshot(): SessionConfigSnapshot {
+    return { menu: 'config', available: true, model: { menu: 'model', provider: 'openai' },
+      subagents: { menu: 'subagent-config', maxConcurrent: 2, bannedModels: ['banned-model'], activeCount: null,
+        activeCountScope: 'See the owning run’s Activity panel; admission is per JVM.',
+        failover: { enabled: true, rungs: [rung('child-a')] } },
+      failover: { menu: 'failover', scope: 'session', enabled: false, rungs: [rung('lead-a'), rung('lead-b')] } };
+  }
+
+  function fallbackCatalog(selection: ChatSetupSelection): ChatSetupCatalog {
+    const catalog = standardCatalog(selection);
+    return { ...catalog, fallbackRoute: { provider: 'canonical-from-backend', authenticationMethod: selection.authMethod || 'api-key' },
+      vendors: catalog.vendors.map(vendor => ({ ...vendor, endpointRequired: true,
+        authMethods: [...auth, { id: 'oauth', label: 'Existing login', signIn: true }] })) };
+  }
+
+  async function openPolicies(catalog = fallbackCatalog): Promise<void> {
+    await open({ menu: 'model', provider: 'openai' }, catalog, undefined, () => of(policySnapshot()));
+  }
+
+  async function input(selector: string, value: string): Promise<void> {
+    element(selector).value = value;
+    element(selector).dispatchEvent(new Event('input'));
+    await settle();
   }
 
   afterEach(() => fixture.destroy());
@@ -271,6 +299,237 @@ describe('Session configuration: the CLI setup wizard for this chat', () => {
     await settle();
     const update = setupSession.calls.all().find(call => call.args[2] === 'update')!.args[3];
     expect(update).toEqual(jasmine.objectContaining({ mode: 'passthrough', passthroughAgent: 'opencode', model: 'zai/glm-5' }));
+  });
+
+  it('shows saved policy and per-process concurrency without inventing a live child count', async () => {
+    await openPolicies();
+    expect(element('[data-testid="subagent-persisted"]').textContent).toContain('per process/JVM 2');
+    expect(element('[data-testid="subagent-policy-config"]').textContent).toContain('Activity panel');
+    expect(element('[data-testid="subagent-policy-config"]').textContent).toContain('banned-model');
+    expect(element('[data-testid="failover-persisted-lead"]').textContent).toContain('OFF');
+    expect(element('[data-testid="failover-persisted-child"]').textContent).toContain('ON');
+    expect(element('[data-testid="failover-child"]').textContent).toContain('child-a');
+    expect(data.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('cancels concurrency and ban drafts without changing saved state or dispatching', async () => {
+    await openPolicies();
+    element('[data-testid="subagent-edit"]').click();
+    await settle();
+    await input('[data-testid="subagent-max"]', '0');
+    await input('[data-testid="subagent-bans"]', 'new-ban');
+    expect(element('[data-testid="failover-edit-lead"]').disabled).toBeTrue();
+    element('[data-testid="subagent-cancel"]').click();
+    await settle();
+    expect(data.dispatch).not.toHaveBeenCalled();
+    expect(element('[data-testid="subagent-persisted"]').textContent).toContain('2');
+    element('[data-testid="subagent-edit"]').click();
+    await settle();
+    expect(element('[data-testid="subagent-max"]').value).toBe('2');
+    expect(element('[data-testid="subagent-bans"]').value).toBe('banned-model');
+  });
+
+  it('validates concurrency and atomically saves disabled/unlimited limits and bans without secrets', async () => {
+    await openPolicies();
+    for (const max of [0, -1]) {
+      element('[data-testid="subagent-edit"]').click();
+      await settle();
+      for (const invalid of ['', '-2', '1.5']) {
+        await input('[data-testid="subagent-max"]', invalid);
+        expect(element('[data-testid="subagent-save"]').disabled).toBeTrue();
+      }
+      await input('[data-testid="subagent-max"]', String(max));
+      await input('[data-testid="subagent-bans"]', ' first-model \nsecond-model\nfirst-model\n');
+      // Unknown future fields from a snapshot are not permission to serialize credential material.
+      fixture.componentInstance.subagents!.failover!.rungs[0] = Object.assign(rung('child-a'), { apiKey: 'saved-secret', token: 'saved-token' });
+      element('[data-testid="subagent-save"]').click();
+      await settle();
+      const command = (data.dispatch as jasmine.Spy).calls.mostRecent().args[0] as string;
+      expect(command.startsWith('/subagent-config save ')).toBeTrue();
+      expect(JSON.parse(command.substring('/subagent-config save '.length))).toEqual({ maxConcurrent: max,
+        bannedModels: ['first-model', 'second-model'], failoverEnabled: true, failoverRungs: [rung('child-a')] });
+      expect(command).not.toContain('secret');
+      expect(command).not.toContain('token');
+      expect(fixture.componentInstance.policySaving).toBe('subagents');
+      const saved = policySnapshot();
+      saved.subagents!.maxConcurrent = max;
+      saved.subagents!.bannedModels = ['first-model', 'second-model'];
+      getSessionConfig.and.returnValue(of(saved));
+      outcomes.next({ command: '/subagent-config', ok: true, data: saved.subagents } as CommandOutcome);
+      await settle();
+      expect(element('[data-testid="subagent-max"]')).toBeNull();
+      expect(element('[data-testid="subagent-persisted"]').textContent).toContain(max === 0 ? 'disabled' : 'unlimited');
+    }
+  });
+
+  it('uses canonical catalog routes, orders a main draft and saves only credential references', async () => {
+    await openPolicies();
+    element('[data-testid="failover-edit-lead"]').click();
+    await settle();
+    const picker = '[data-testid="fallback-route-fields"]';
+    for (const secretInput of ['input[name="apiKey"]', 'input[name="baseUrl"]', 'select[name="authScope"]']) {
+      expect(element(picker + ' ' + secretInput)).toBeNull();
+    }
+    expect(element(picker + ' select[name="credential"]')).not.toBeNull();
+    await choose(picker + ' select[name="auth"]', 'oauth');
+    await choose(picker + ' select[name="credential"]', 'work');
+    await choose(picker + ' select[name="modelChoice"]', 'gpt-b');
+    await choose(picker + ' select[name="thinking"]', 'high');
+    // Neither discovery nor a saved rung can inherit secret-only wizard fields.
+    Object.assign(fixture.componentInstance.fallbackRoute, { apiKey: 'typed-secret', token: 'typed-token',
+      refreshToken: 'typed-refresh', baseUrl: 'https://private-endpoint' });
+    fixture.componentInstance.loadFallbackCatalog();
+    await settle();
+    const catalogRequest = lastCatalogRequest();
+    expect(catalogRequest).toEqual({ mode: 'standard', runtime: 'direct', vendor: 'openai', authMethod: 'oauth',
+      credentialName: 'work', model: 'gpt-b', thinking: 'high' });
+    element('[data-testid="failover-add"]').click();
+    fixture.componentInstance.moveRung(2, -1);
+    fixture.componentInstance.moveRung(1, -1);
+    fixture.componentInstance.removeRung(1);
+    element('[data-testid="failover-enabled"]').click();
+    await settle();
+    expect(fixture.componentInstance.failover!.rungs!.map(r => r.model)).toEqual(['lead-a', 'lead-b']);
+    element('[data-testid="failover-save-lead"]').click();
+    await settle();
+    const command = (data.dispatch as jasmine.Spy).calls.mostRecent().args[0] as string;
+    const expected = { enabled: true, rungs: [{ provider: 'canonical-from-backend', model: 'gpt-b', credentialName: 'work',
+      label: 'GPT B', thinking: 'high', authenticationMethod: 'oauth' }, rung('lead-b')] };
+    expect(command).toBe('/model failover save ' + JSON.stringify(expected));
+    for (const secret of ['typed-secret', 'typed-token', 'typed-refresh', 'private-endpoint', 'apiKey', 'baseUrl']) {
+      expect(command).not.toContain(secret);
+      expect(JSON.stringify(setupSession.calls.allArgs())).not.toContain(secret);
+    }
+    expect(element('[data-testid="failover-persisted-lead"]').textContent).toContain('OFF');
+    // A refusal retains the draft; no optimistic saved state.
+    outcomes.next({ command: '/model', ok: false, text: 'Route is unavailable' } as CommandOutcome);
+    await settle();
+    expect(element('[data-testid="policy-error"]').textContent).toContain('Route is unavailable');
+    expect(fixture.componentInstance.failoverDraft!.rungs.length).toBe(2);
+    element('[data-testid="failover-save-lead"]').click();
+    const saved = policySnapshot();
+    saved.failover = { menu: 'failover', scope: 'session', ...expected };
+    getSessionConfig.and.returnValue(of(saved));
+    outcomes.next({ command: '/model', ok: true, data: saved.failover } as CommandOutcome);
+    await settle();
+    expect(fixture.componentInstance.failoverDraft).toBeNull();
+    expect(element('[data-testid="failover-persisted-lead"]').textContent).toContain('ON');
+  });
+
+  it('cancels a reordered/cleared ladder and saves the child ladder with its own atomic command', async () => {
+    await openPolicies();
+    element('[data-testid="failover-edit-lead"]').click();
+    await settle();
+    fixture.componentInstance.moveRung(0, 1);
+    fixture.componentInstance.clearRungs();
+    element('[data-testid="failover-cancel"]').click();
+    await settle();
+    expect(data.dispatch).not.toHaveBeenCalled();
+    expect(fixture.componentInstance.failover!.rungs!.map(r => r.model)).toEqual(['lead-a', 'lead-b']);
+    element('[data-testid="failover-edit-child"]').click();
+    await settle();
+    element('[data-testid="failover-clear"]').click();
+    element('[data-testid="failover-enabled"]').click();
+    await settle();
+    element('[data-testid="failover-save-child"]').click();
+    expect(data.dispatch).toHaveBeenCalledOnceWith('/subagent-config failover save {"enabled":false,"rungs":[]}');
+    const saved = policySnapshot();
+    saved.subagents!.failover = { enabled: false, rungs: [] };
+    getSessionConfig.and.returnValue(of(saved));
+    outcomes.next({ command: '/subagent-config', ok: true, status: 'ok', text: '', exit: 0,
+      data: { menu: 'failover', scope: 'subagent', enabled: false, rungs: [] } });
+    await settle();
+    expect(fixture.componentInstance.failover!.rungs!.map(r => r.model)).toEqual(['lead-a', 'lead-b']);
+    expect(fixture.componentInstance.subagents!.failover).toEqual({ enabled: false, rungs: [] });
+  });
+
+  it('refuses guessed providers and ignores discovery responses after Cancel', async () => {
+    await openPolicies(standardCatalog); // Older CLI with no canonical route metadata.
+    element('[data-testid="failover-edit-lead"]').click();
+    await settle();
+    expect(element('[data-testid="failover-add"]').disabled).toBeTrue();
+    expect(element('[data-testid="fallback-error"]').textContent).toContain('canonical');
+    const late = new Subject<ChatSetupCatalog>();
+    setupSession.and.returnValue(late);
+    fixture.componentInstance.loadFallbackCatalog();
+    await settle();
+    expect(progressShown()).toBeTrue();
+    element('[data-testid="failover-cancel"]').click();
+    await settle();
+    late.next(fallbackCatalog({ model: 'gpt-b' }));
+    late.complete();
+    await settle();
+    expect(fixture.componentInstance.fallbackCatalog).toBeUndefined();
+    expect(fixture.componentInstance.failoverDraft).toBeNull();
+    expect(progressShown()).toBeFalse();
+    expect(data.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('loads project children into the picker and routes explicit child actions and refusals', async () => {
+    const children = { menu: 'durable-subagents', action: 'list', children: [
+      { sessionId: 'subagent-saved', name: 'Saved child', locked: false }
+    ] };
+    await open({ menu: 'model', provider: 'openai' }, standardCatalog, undefined,
+      () => of({ menu: 'config', available: true, durableSubagents: children }));
+    element('[data-child-id="subagent-saved"]').click(); await settle();
+    expect(data.dispatch).toHaveBeenCalledWith('/subagents show subagent-saved');
+    outcomes.next({ command: '/subagents', ok: true, status: 'COMPLETED', text: '', exit: 0,
+      data: { menu: 'durable-subagents', action: 'show', sessionId: 'subagent-saved',
+        history: [{ role: 'assistant', content: '<script>not markup</script>' }] } } as unknown as CommandOutcome);
+    await settle();
+    expect(element('.child-turn pre').textContent).toContain('<script>not markup</script>');
+    expect(element('.child-turn script')).toBeNull();
+    const prompt = element('[data-testid="durable-prompt"]');
+    prompt.value = 'continue the child'; prompt.dispatchEvent(new Event('input')); await settle();
+    element('[data-testid="durable-resume"]').click(); await settle();
+    expect(data.dispatch).toHaveBeenCalledWith('/subagents resume ' + JSON.stringify({ session_id: 'subagent-saved', prompt: 'continue the child' }));
+    outcomes.next({ command: '/subagents', ok: false, status: 'INVALID', text: 'Permission denied', exit: 2 });
+    await settle();
+    expect(element('[data-testid="durable-error"]').textContent).toContain('Permission denied');
+    expect(element('[data-testid="durable-prompt"]').value).toBe('continue the child');
+  });
+
+  it('loads hook/permission forms and preserves confirmed safety changes on refusal', async () => {
+    await open({ menu: 'model', provider: 'openai' }, standardCatalog, undefined, () => of({ menu: 'config', available: true,
+      permissions: { menu: 'permissions', canManage: true, rows: [{ key: 'bash', defaultLevel: 'allow', effectiveLevel: 'allow' }] },
+      hooks: { menu: 'hooks', canManage: true, events: ['PreToolUse'], hooks: [] } }));
+    element('[data-testid="permissions-edit"]').click(); await settle();
+    await choose('[data-permission="bash"]', 'deny');
+    element('[data-testid="permissions-confirm"]').click(); await settle();
+    element('[data-testid="permissions-save"]').click(); await settle();
+    expect(data.dispatch).toHaveBeenCalledWith('/permissions save ' + JSON.stringify({ overrides: { bash: 'deny' }, confirmed: true }));
+    outcomes.next({ command: '/permissions', ok: false, status: 'INVALID', text: 'Permission denied', exit: 2 }); await settle();
+    expect(element('[data-testid="safety-settings-error"]').textContent).toContain('Permission denied');
+    expect(element('[data-permission="bash"]').value).toBe('deny');
+  });
+
+  it('edits durable judge guidance without text commands and preserves a refused draft', async () => {
+    await open({ menu: 'model', provider: 'openai' }, standardCatalog, undefined, () => of({ menu: 'config', available: true,
+      judge: { menu: 'judge', guidance: 'old guidance', globalEnabled: true } }));
+    element('[data-testid="judge-edit"]').click(); await settle();
+    await input('[data-testid="judge-guidance"]', 'Check the exact source before rejecting this action');
+    expect(data.dispatch).not.toHaveBeenCalled();
+    element('[data-testid="judge-save"]').click(); await settle();
+    expect(data.dispatch).toHaveBeenCalledWith('/judge feedback Check the exact source before rejecting this action');
+    expect(progressShown()).toBeTrue();
+    outcomes.next({ command: '/judge', ok: false, status: 'INVALID', text: 'Not saved', exit: 2 }); await settle();
+    expect(element('[data-testid="judge-guidance"]').value).toContain('Check the exact source');
+    expect(element('[data-testid="judge-error"]').textContent).toContain('Not saved');
+    expect(progressShown()).toBeFalse();
+  });
+
+  it('edits and reorders queued messages by stable id, committing only after an acknowledgement', async () => {
+    await open({ menu: 'model', provider: 'openai' }, standardCatalog, undefined, () => of({ menu: 'config', available: true,
+      queue: { menu: 'queue', queued: [{ id: 'q1', content: 'first', status: 'PENDING' }, { id: 'q2', content: 'second', status: 'PENDING' }] } }));
+    fixture.componentInstance.moveQueued('q2', 1);
+    expect(data.dispatch).toHaveBeenCalledWith('/queue-move q2 1');
+    element('[data-queue-edit="q1"]').click(); await settle();
+    await input('[data-testid="queue-edit-content"]', 'edited message with spaces');
+    element('[data-testid="queue-edit-save"]').click(); await settle();
+    expect(data.dispatch).toHaveBeenCalledWith('/queue-edit q1 edited message with spaces');
+    outcomes.next({ command: '/queue-edit', ok: false, status: 'INVALID', text: 'Refused', exit: 2 }); await settle();
+    expect(element('[data-testid="queue-edit-content"]').value).toBe('edited message with spaces');
+    expect(element('[data-testid="queue-edit-error"]').textContent).toContain('Refused');
   });
 
   it('reseeds from the chat when the selector above the chat changes the model', async () => {

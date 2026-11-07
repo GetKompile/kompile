@@ -102,4 +102,26 @@ class BackgroundTaskManagerLockingTest {
         assertEquals("successor", manager.getCurrentTask().getDescription());
         assertEquals(java.util.List.of(failed), manager.drainNotifications());
     }
+
+    @Test
+    void streamedOutputOfABackgroundedTurnRedrawsItsViewWithoutHoldingTheTask() throws Exception {
+        BackgroundTaskManager manager = new BackgroundTaskManager();
+        var task = manager.startTask("backgrounded turn");
+        manager.requestBackground();
+        AtomicBoolean heldMonitor = new AtomicBoolean();
+        AtomicInteger changes = new AtomicInteger();
+        CountDownLatch changed = new CountDownLatch(1);
+        manager.addChangeListener(() -> {
+            heldMonitor.compareAndSet(false, Thread.holdsLock(task) || Thread.holdsLock(manager));
+            changes.incrementAndGet();
+            changed.countDown();
+        });
+
+        for (int i = 0; i < 100; i++) task.appendOutput("line " + i + "\n");
+
+        assertTrue(changed.await(2, TimeUnit.SECONDS), "an opened task view follows its output");
+        assertFalse(heldMonitor.get(), "UI callbacks must not run under the task or manager monitor");
+        assertTrue(changes.get() < 100, "streamed lines are coalesced, got " + changes.get());
+        assertTrue(task.getOutput().endsWith("line 99\n"));
+    }
 }

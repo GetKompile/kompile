@@ -2,7 +2,9 @@ package ai.kompile.cli.main.chat.exec;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.PassthroughStreamParser;
+import ai.kompile.cli.main.chat.TokenUsageJournal;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
@@ -165,6 +167,13 @@ public final class HeadlessPassthroughRunner {
             history.open(null, framework, false, cwd);
             history.logUserMessage(opts.webInput() == null ? opts.prompt() : opts.webInput().rawInput());
             String pinnedFramework = framework;
+            // Same per-request journal as terminal chats, so the project token timeline sees web turns.
+            ChatSessionMetrics usage = new ChatSessionMetrics(opts.sessionId());
+            usage.setAgentName(framework);
+            usage.setProvider(config.getProvider());
+            usage.setModel(config.getModel());
+            if (history.getTranscriptFile() != null) usage.enableUsageJournal(TokenUsageJournal.pathFor(
+                    history.getTranscriptFile().getParent(), opts.sessionId()), opts.workingDirectory());
             long[] toolCount = {0};
             record PendingTool(String id, String name, String input, StringBuilder output, long startedAt) { }
             Map<String, ArrayDeque<PendingTool>> pendingTools = new HashMap<>();
@@ -214,9 +223,11 @@ public final class HeadlessPassthroughRunner {
                             call == null ? "" : call.input(), !failed, duration,
                             nativeToolDetail(done.name(), call == null ? "" : call.input(), output, failed, done.exitCode())));
                     if (call == activeTool[0]) activeTool[0] = null;
-                } else if (event instanceof PassthroughStreamParser.TokenUsage usage) {
-                    events.accept(HeadlessRunEvent.tokenUsage(opts.sessionId(), usage.inputTokens(), usage.outputTokens(),
-                            usage.cacheReadTokens(), usage.cacheCreationTokens()));
+                } else if (event instanceof PassthroughStreamParser.TokenUsage reported) {
+                    usage.recordTokenUsage(reported.inputTokens(), reported.outputTokens(),
+                            reported.cacheReadTokens(), reported.cacheCreationTokens());
+                    events.accept(HeadlessRunEvent.tokenUsage(opts.sessionId(), reported.inputTokens(), reported.outputTokens(),
+                            reported.cacheReadTokens(), reported.cacheCreationTokens()));
                 } else if (event instanceof PassthroughStreamParser.TurnComplete done) {
                     ObjectNode stats = JsonUtils.standardMapper().createObjectNode();
                     stats.put("durationMs", done.durationMs());
@@ -225,6 +236,8 @@ public final class HeadlessPassthroughRunner {
                     stats.put("isError", false);
                     if (done.inputTokens() > 0 || done.outputTokens() > 0
                             || done.cacheReadTokens() > 0 || done.cacheCreationTokens() > 0) {
+                        usage.recordTokenUsage(done.inputTokens(), done.outputTokens(),
+                                done.cacheReadTokens(), done.cacheCreationTokens());
                         events.accept(HeadlessRunEvent.tokenUsage(opts.sessionId(), done.inputTokens(), done.outputTokens(),
                                 done.cacheReadTokens(), done.cacheCreationTokens()));
                         ObjectNode tokens = stats.putObject("tokenMetrics");

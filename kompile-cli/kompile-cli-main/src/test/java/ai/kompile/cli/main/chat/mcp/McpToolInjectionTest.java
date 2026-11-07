@@ -695,6 +695,55 @@ class McpToolInjectionTest {
     }
 
     @Test
+    void openCodeLaunchDeniesNativeBashAndArmsTheShellLockout() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path workDir = Files.createDirectories(tempDir.resolve("opencode-shell-work"));
+        Path binary = createExecutable("opencode-shell-kompile");
+        ObjectMapper mapper = new ObjectMapper();
+        Path written = null;
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            McpToolInjection.openCodeCrushFormat = true;
+            written = McpToolInjection.injectTools(workDir, "opencode", null, Map.of());
+            assertEquals("deny", mapper.readTree(written.toFile()).path("permission").path("bash").asText(),
+                    "a Kompile OpenCode launch routes shell work to Kompile's MCP tools");
+            assertTrue(Files.isRegularFile(workDir.resolve(".opencode/plugins/kompile-hooks.ts")),
+                    "the guard plugin carrying the shell lockout is installed before the launch");
+
+            // A launch config that never reaches OPENCODE_CONFIG_CONTENT denies nothing.
+            Map<String, String> bare = new LinkedHashMap<>();
+            McpToolInjection.applyLaunchEnvironment(bare, written);
+            JsonNode content = mapper.readTree(bare.get(McpToolInjection.OPENCODE_CONFIG_CONTENT_ENV));
+            assertEquals("deny", content.path("permission").path("bash").asText(), content.toString());
+            assertEquals(McpToolInjection.OPENCODE_SHELL_GATE_DENY, bare.get(McpToolInjection.OPENCODE_SHELL_GATE_ENV));
+
+            // OpenCode's last matching rule wins: the deny follows the wildcard the
+            // environment already carries, including one an earlier bash rule preceded.
+            Map<String, String> wildcard = new LinkedHashMap<>();
+            wildcard.put(McpToolInjection.OPENCODE_CONFIG_CONTENT_ENV,
+                    "{\"permission\":{\"bash\":\"allow\",\"*\":\"allow\",\"edit\":\"ask\"}}");
+            McpToolInjection.applyLaunchEnvironment(wildcard, written);
+            JsonNode rules = mapper.readTree(wildcard.get(McpToolInjection.OPENCODE_CONFIG_CONTENT_ENV))
+                    .path("permission");
+            assertEquals(List.of("*", "edit", "bash"), fieldNames(rules), rules.toString());
+            assertEquals("deny", rules.path("bash").asText());
+            assertEquals("ask", rules.path("edit").asText());
+
+            // A single action stands for its wildcard rule.
+            Map<String, String> action = new LinkedHashMap<>();
+            action.put(McpToolInjection.OPENCODE_CONFIG_CONTENT_ENV, "{\"permission\":\"allow\"}");
+            McpToolInjection.applyLaunchEnvironment(action, written);
+            JsonNode fromAction = mapper.readTree(action.get(McpToolInjection.OPENCODE_CONFIG_CONTENT_ENV))
+                    .path("permission");
+            assertEquals(List.of("*", "bash"), fieldNames(fromAction), fromAction.toString());
+            assertEquals("allow", fromAction.path("*").asText());
+        } finally {
+            McpToolInjection.removeTools(written);
+            restoreProperty("kompile.cli.binary", previousBinary);
+        }
+    }
+
+    @Test
     void qwenGetsAConfigOfItsOwnLaunchWhenItTakesMcpConfigAndSharesItsSettingsOtherwise() throws Exception {
         String previousBinary = System.getProperty("kompile.cli.binary");
         Path workDir = Files.createDirectories(tempDir.resolve("qwen-work"));

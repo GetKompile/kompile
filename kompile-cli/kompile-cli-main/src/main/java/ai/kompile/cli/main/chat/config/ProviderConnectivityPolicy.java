@@ -171,6 +171,12 @@ public record ProviderConnectivityPolicy(
             if (message.contains("connection timed out") || message.contains("connect timeout")
                     || message.contains("turn timed out") || message.contains("provider timed out")
                     || message.contains("connection reset") || message.contains("connection refused")
+                    // Relayed transport drops ("Connection Error: Connection Closed") arrive
+                    // as IllegalStateException-style envelopes from native transports and
+                    // the Kompile server's SSE error events, not IOExceptions; the same
+                    // words there mean the same transient drop and must consume the
+                    // retry budget instead of ending the conversation.
+                    || message.contains("connection closed") || message.contains("connection error")
                     || message.contains("upstream connect error") || message.contains("disconnect/reset")
                     // The same Codex proxy failure may arrive in an SSE envelope
                     // or a native CLI exception without an HTTP status.

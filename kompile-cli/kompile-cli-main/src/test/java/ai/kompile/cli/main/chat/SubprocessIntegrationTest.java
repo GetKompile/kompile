@@ -1,5 +1,13 @@
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.testing.MockAgentScript;
 import ai.kompile.cli.main.chat.testing.SubprocessTestHarness;
@@ -146,7 +154,7 @@ class SubprocessIntegrationTest {
             harness.chat("run tests");
             harness.assertResultEquals("All tests passed")
                     .assertOutputContains("BUILD SUCCESS")
-                    .assertToolCallRendered("exec");
+                    .assertToolCallRendered("Exec");
         }
     }
 
@@ -180,7 +188,8 @@ class SubprocessIntegrationTest {
             assertEquals(10, result.cacheReadTokens);
 
             harness.assertOutputContains("total 42")
-                    .assertOutputContains("[tool: bash exit 0]");
+                    .assertOutputContains("Bash")
+                    .assertOutputContains("✓");
         }
     }
 
@@ -301,8 +310,9 @@ class SubprocessIntegrationTest {
                 .script(script).build()) {
             harness.chat("run echo hello");
             harness.assertResultContains("Command output is hello")
-                    .assertToolCallRendered("bash")
-                    .assertOutputContains("[tool: bash exit 0]");
+                    .assertToolCallRendered("Bash")
+                    .assertOutputContains("Bash")
+                    .assertOutputContains("✓");
         }
     }
 
@@ -323,7 +333,7 @@ class SubprocessIntegrationTest {
                 .script(script).build()) {
             harness.chat("search for something");
             harness.assertResultContains("Found 3 results")
-                    .assertToolCallRendered("search");
+                    .assertToolCallRendered("Search");
         }
     }
 

@@ -107,6 +107,7 @@ public class CoordinationStateManager {
     private final ObjectMapper mapper;
     private final SystemActivityCoordinator systemActivityCoordinator;
     private final ActivityWaitRegistry activityWaits = new ActivityWaitRegistry();
+    private final EditLockMonitorRegistry editLockMonitors;
     private final ScheduledExecutorService heartbeatExecutor;
     private final Object agentEntryLock = new Object();
     private final Set<String> ownedLockIds = ConcurrentHashMap.newKeySet();
@@ -211,6 +212,9 @@ public class CoordinationStateManager {
         this.systemActivityCoordinator = new SystemActivityCoordinator(
                 Objects.requireNonNull(systemActivityStateRoot, "systemActivityStateRoot"),
                 projectRoot, this.sessionId, this.mapper, this::notifyWarning);
+        // Lock monitors read the ACTIVE lock ledger (path -> lockId); an unreadable read
+        // returns null so a monitor fails closed instead of reporting a phantom release.
+        this.editLockMonitors = new EditLockMonitorRegistry(this::readActiveLockLedger);
 
         // Ensure directories exist
         try {
@@ -1260,6 +1264,18 @@ public class CoordinationStateManager {
      * Query all active (non-stale) edit locks, evicting stale ones.
      */
     public List<EditLockEntry> queryEdits() {
+        List<EditLockEntry> active = readActiveEdits();
+        return active == null ? Collections.emptyList() : active;
+    }
+
+    /**
+     * The active-lock read behind {@link #queryEdits()} and the edit-lock monitors: evicts
+     * stale/dead-holder locks exactly as queryEdits always has.
+     *
+     * @return the active locks, or null when the coordinator state is unreadable — monitors
+     *         treat null as "cannot judge" and keep waiting rather than reporting a release
+     */
+    private List<EditLockEntry> readActiveEdits() {
         try {
             return withCoordinatorLock(() -> {
                 List<EditLockEntry> all = readEditLocks();
@@ -1276,8 +1292,19 @@ public class CoordinationStateManager {
             });
         } catch (Exception e) {
             notifyWarning("[Coordination] Warning: Could not query edits: " + e.getMessage());
-            return Collections.emptyList();
+            return null;
         }
+    }
+
+    /** Live ledger for {@link EditLockMonitorRegistry}: absolute path -> owning lock id. */
+    private Map<String, String> readActiveLockLedger() {
+        List<EditLockEntry> active = readActiveEdits();
+        if (active == null) return null;
+        Map<String, String> ledger = new LinkedHashMap<>();
+        for (EditLockEntry entry : active) {
+            ledger.put(entry.getAbsolutePath(), entry.getLockId());
+        }
+        return ledger;
     }
 
     /**
@@ -1529,6 +1556,11 @@ public class CoordinationStateManager {
 
     public ActivityWaitRegistry activityWaits() {
         return activityWaits;
+    }
+
+    /** One-shot wake-me-when-this-file-unlocks monitors; see {@link EditLockMonitorRegistry}. */
+    public EditLockMonitorRegistry editLockMonitors() {
+        return editLockMonitors;
     }
 
     public SystemActivityCoordinator.ReservationResult reserveHighMemoryActivity(
@@ -1844,6 +1876,7 @@ public class CoordinationStateManager {
 
         heartbeatExecutor.shutdownNow();
         activityWaits.close();
+        editLockMonitors.close();
         systemActivityCoordinator.close();
 
         // Release persisted locks as well as locally tracked ones, then remove presence.

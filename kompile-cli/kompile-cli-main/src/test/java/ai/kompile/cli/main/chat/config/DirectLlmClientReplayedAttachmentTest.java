@@ -28,8 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DirectLlmClientReplayedAttachmentTest {
 
     private static final String DATA = "cGFnZQ==";
-    private static final DirectLlmClient.AttachmentInput IMAGE =
-            new DirectLlmClient.AttachmentInput("report.png", "image/png", true, DATA, null);
+    private static final AttachmentInput IMAGE =
+            new AttachmentInput("report.png", "image/png", true, DATA, null);
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final List<JsonNode> requests = new CopyOnWriteArrayList<>();

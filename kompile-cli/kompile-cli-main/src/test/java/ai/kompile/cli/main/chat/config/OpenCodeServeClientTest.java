@@ -4,15 +4,19 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -22,9 +26,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -72,6 +79,184 @@ class OpenCodeServeClientTest {
                 """;
 
         assertEquals("answer", OpenCodeServeClient.extractText(objectMapper, response));
+    }
+
+    @Test
+    void textlessFinalMessageSurfacesTheTurnsRealProviderError() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+        });
+        server.createContext("/session/session-err/message", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] response = """
+                    {"info":{"id":"m-final","role":"assistant","parentID":"msg_u1","finish":"stop",
+                      "error":{"name":"APIError",
+                        "data":{"message":"rate limit exceeded, retry later","isRetryable":true}}},
+                     "parts":[{"type":"step-start"},{"type":"reasoning","text":"hmm"}]}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            try (OpenCodeServeClient client = new OpenCodeServeClient(
+                    objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "session-err")) {
+                IllegalStateException failure = assertThrows(IllegalStateException.class,
+                        () -> client.send("opencode-go/deepseek-v4-pro", null, null,
+                                "hello", ignored -> { }));
+
+                assertTrue(failure.getMessage().contains("rate limit exceeded"),
+                        "the provider's own error must surface, got: " + failure.getMessage());
+                assertTrue(failure.getMessage().contains("APIError"),
+                        "the named error carries the context, got: " + failure.getMessage());
+                assertFalse(failure.getMessage().contains("no assistant text"),
+                        "the blank-text error must not mask the real failure, got: "
+                                + failure.getMessage());
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void textlessFinalMessageReconcilesTheTurnAnswerFromTheSession() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+        });
+        server.createContext("/session/session-rec/message", exchange -> {
+            byte[] response;
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                response = """
+                        [
+                          {"info":{"id":"msg_old","role":"assistant","parentID":"msg_u0"},
+                           "parts":[{"type":"text","text":"stale earlier turn"}]},
+                          {"info":{"id":"msg_u1","role":"user"},
+                           "parts":[{"type":"text","text":"check the port"}]},
+                          {"info":{"id":"msg_a1","role":"assistant","parentID":"msg_u1"},
+                           "parts":[{"type":"text","text":"Checking the port now."},
+                                    {"type":"tool","tool":"bash",
+                                     "state":{"status":"completed","output":"8081"}}]},
+                          {"info":{"id":"msg_a2","role":"assistant","parentID":"msg_u1","finish":"tool-calls"},
+                           "parts":[{"type":"step-start"}]}
+                        ]
+                        """.getBytes(StandardCharsets.UTF_8);
+            } else {
+                response = """
+                        {"info":{"id":"msg_a2","role":"assistant","parentID":"msg_u1",
+                          "finish":"tool-calls"},
+                         "parts":[{"type":"step-start"}]}
+                        """.getBytes(StandardCharsets.UTF_8);
+            }
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            try (OpenCodeServeClient client = new OpenCodeServeClient(
+                    objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "session-rec")) {
+                String text = client.send("opencode-go/deepseek-v4-pro", null, null,
+                        "check the port", ignored -> { });
+
+                assertEquals("Checking the port now.", text,
+                        "the turn's earlier assistant text reconciles the blank final message");
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void textlessTurnWithNothingToReconcileFailsWithShapeDiagnostics() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+        });
+        server.createContext("/session/session-step/message", exchange -> {
+            byte[] response;
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                response = """
+                        [{"info":{"id":"msg_a2","role":"assistant","parentID":"msg_u1","finish":"tool-calls"},
+                          "parts":[{"type":"step-start"},{"type":"tool","tool":"bash"}]}]
+                        """.getBytes(StandardCharsets.UTF_8);
+            } else {
+                response = """
+                        {"info":{"id":"msg_a2","role":"assistant","parentID":"msg_u1","finish":"tool-calls",
+                          "tokens":{"input":13939,"output":4,"reasoning":18}},
+                         "parts":[{"type":"step-start"},{"type":"tool","tool":"bash"}]}
+                        """.getBytes(StandardCharsets.UTF_8);
+            }
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            try (OpenCodeServeClient client = new OpenCodeServeClient(
+                    objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "session-step")) {
+                IllegalStateException failure = assertThrows(IllegalStateException.class,
+                        () -> client.send("opencode-go/deepseek-v4-pro", null, null,
+                                "hello", ignored -> { }));
+
+                assertTrue(failure.getMessage().contains("returned no assistant text"),
+                        failure.getMessage());
+                assertTrue(failure.getMessage().contains("finish=tool-calls"),
+                        "the finish reason explains a tool-only step message, got: "
+                                + failure.getMessage());
+                assertTrue(failure.getMessage().contains("tool×1"),
+                        "the part overview shows the turn ran tools, got: " + failure.getMessage());
+                assertTrue(failure.getMessage().contains("tokens in=13939 out=4 reasoning=18"),
+                        "the token counters show whether the model spoke, got: "
+                                + failure.getMessage());
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void describeErrorReadsTheNamedErrorEnvelope() throws Exception {
+        assertNull(OpenCodeServeClient.describeError(objectMapper.createObjectNode()));
+        assertEquals("unknown failure", OpenCodeServeClient.describeError(
+                objectMapper.readTree("{\"error\":{\"data\":{}}}")));
+        assertEquals("APIError: connection reset",
+                OpenCodeServeClient.describeError(objectMapper.readTree(
+                        "{\"error\":{\"name\":\"APIError\",\"data\":{\"message\":\"connection reset\"}}}")));
+        assertEquals("MessageAbortedError", OpenCodeServeClient.describeError(objectMapper.readTree(
+                "{\"error\":{\"name\":\"MessageAbortedError\"}}")));
+        assertEquals("mined message", OpenCodeServeClient.describeError(objectMapper.readTree(
+                "{\"error\":{\"message\":\"mined message\"}}")));
+    }
+
+    @Test
+    void extractAssistantTextByParentJoinsTheTurnsAssistantSteps() throws Exception {
+        String messages = """
+                [
+                  {"info":{"id":"msg_old","role":"assistant","parentID":"msg_u0"},
+                   "parts":[{"type":"text","text":"stale earlier turn"}]},
+                  {"info":{"id":"msg_a0","role":"assistant","parentID":"msg_u1",
+                    "error":{"name":"MessageAbortedError"}},
+                   "parts":[{"type":"text","text":"died with the abort"}]},
+                  {"info":{"id":"msg_a1","role":"assistant","parentID":"msg_u1"},
+                   "parts":[{"type":"reasoning","text":"hmm"},{"type":"text","text":"first thing"}]},
+                  {"info":{"id":"msg_a2","role":"assistant","parentID":"msg_u1","finish":"tool-calls"},
+                   "parts":[{"type":"text","text":"final answer"}]}
+                ]
+                """;
+
+        assertEquals("first thing\nfinal answer", OpenCodeServeClient
+                .extractAssistantTextByParent(objectMapper, messages, "msg_u1"));
+        assertEquals("", OpenCodeServeClient
+                .extractAssistantTextByParent(objectMapper, messages, "msg_unknown"));
     }
 
     @Test
@@ -215,9 +400,9 @@ class OpenCodeServeClientTest {
             exchange.close();
         });
         server.start();
-        DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+        AttachmentInput image = new AttachmentInput(
                 "/tmp/page.png", "image/png", true, "cGFnZQ==", null);
-        DirectLlmClient.AttachmentInput notes = new DirectLlmClient.AttachmentInput(
+        AttachmentInput notes = new AttachmentInput(
                 "/tmp/notes.txt", "text/plain", false, null, "margin notes");
         try {
             try (OpenCodeServeClient client = new OpenCodeServeClient(
@@ -333,6 +518,502 @@ class OpenCodeServeClientTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    void afterOpenCodeCompactsTheNextPromptCarriesTheMemoryFilesAndSkillsTheSessionUsed(
+            @TempDir Path project) throws Exception {
+        Path memory = project.resolve(".kompile").resolve("memory");
+        Files.createDirectories(memory);
+        Files.writeString(memory.resolve("build_rule.md"), "Build from the repo root.\n");
+        List<String> prompts = new CopyOnWriteArrayList<>();
+        AtomicInteger connections = new AtomicInteger();
+        CountDownLatch framesWritten = new CountDownLatch(1);
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            OutputStream sse = exchange.getResponseBody();
+            try {
+                if (connections.incrementAndGet() == 1) {
+                    String[] frames = {
+                            "data: {\"type\":\"message.part.updated\",\"properties\":{"
+                                    + "\"sessionID\":\"session-c\",\"part\":{\"type\":\"tool\","
+                                    + "\"callID\":\"call-1\",\"tool\":\"kompile_memory\","
+                                    + "\"state\":{\"status\":\"completed\","
+                                    + "\"input\":{\"action\":\"read\",\"file\":\"build_rule.md\"},"
+                                    + "\"output\":\"Build from the repo root.\"}}}}",
+                            "data: {\"type\":\"session.compacted\",\"properties\":{\"sessionID\":\"session-c\"}}"};
+                    for (String frame : frames) {
+                        sse.write((frame + "\n\n").getBytes(StandardCharsets.UTF_8));
+                        sse.flush();
+                    }
+                }
+                framesWritten.countDown();
+                Thread.sleep(4000);
+            } catch (IOException | InterruptedException expected) {
+                // client stop() closed the stream or the window elapsed
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/session/session-c/message", exchange -> {
+            JsonNode body = objectMapper.readTree(exchange.getRequestBody().readAllBytes());
+            prompts.add(body.path("parts").path(0).path("text").asText());
+            try {
+                if (prompts.size() == 1) {
+                    framesWritten.await(5, TimeUnit.SECONDS);
+                    Thread.sleep(500); // let the client handle the frames before the turn settles
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            byte[] response = """
+                    {"info":{"id":"m"},"parts":[{"type":"text","text":"ok"}]}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, project, HttpClient.newHttpClient(),
+                "http://127.0.0.1:" + server.getAddress().getPort(), "session-c")) {
+            client.send("opencode-go/deepseek-v4-pro", null, null,
+                    "<skill name=\"fix\">\nFix build or test failures\n</skill>\n\nfix the build", null, null);
+            client.send("opencode-go/deepseek-v4-pro", null, null, "continue", null, null);
+            client.send("opencode-go/deepseek-v4-pro", null, null, "and then", null, null);
+        } finally {
+            server.stop(0);
+        }
+
+        assertEquals(3, prompts.size(), prompts.toString());
+        assertFalse(prompts.get(0).contains("<kompile_compaction_reload>"), prompts.get(0));
+        String reloaded = prompts.get(1);
+        assertTrue(reloaded.startsWith("<kompile_compaction_reload>"), reloaded);
+        assertTrue(reloaded.contains("### project/build_rule.md\nBuild from the repo root."), reloaded);
+        assertTrue(reloaded.contains("<skill name=\"fix\">\nFix build or test failures\n</skill>"), reloaded);
+        assertTrue(reloaded.endsWith("\n\ncontinue"), reloaded);
+        assertEquals("and then", prompts.get(2), "the reload rides only the first prompt after compaction");
+    }
+
+    @Test
+    void theReloadFileSitsBesideItsLaunchConfigSoTheLaunchSweepClaimsIt() {
+        Path config = Path.of("/tmp/mcp-launch/kompile-mcp-opencode-4242-abc.json");
+        assertEquals(Path.of("/tmp/mcp-launch/kompile-mcp-opencode-4242-abc-compaction-reload.json"),
+                OpenCodeServeClient.compactionReloadFile(config));
+    }
+
+    @Test
+    void restTurnRoutesReasoningDeltasToTheThinkingLane() throws Exception {
+        // OpenCode streams reasoning deltas over the same field="text" wire
+        // shape as answer text; only the part's type separates the lanes.
+        List<String> streamed = new ArrayList<>();
+        List<String> thinking = new ArrayList<>();
+        // The POST answer must not race the streamed deltas: respond only once
+        // both expected answer deltas reached the consumer. The exchanges wait
+        // on each other, so the mock needs a concurrent executor — the default
+        // dispatcher serializes them and self-deadlocks on the wait.
+        CountDownLatch answerDeltasSeen = new CountDownLatch(2);
+        ExecutorService handlers = Executors.newCachedThreadPool();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.setExecutor(handlers);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            OutputStream sse = exchange.getResponseBody();
+            try {
+                String[] frames = {
+                        // Full-part updates register the types: reasoning first.
+                        "data: {\"type\":\"message.part.updated\",\"properties\":{"
+                                + "\"sessionID\":\"session-think\",\"part\":{\"type\":\"reasoning\","
+                                + "\"id\":\"prt-r\",\"text\":\"\"}}}",
+                        "data: {\"type\":\"message.part.delta\",\"properties\":{"
+                                + "\"sessionID\":\"session-think\",\"field\":\"text\","
+                                + "\"partID\":\"prt-r\",\"delta\":\"hmm\"}}",
+                        "data: {\"type\":\"message.part.delta\",\"properties\":{"
+                                + "\"sessionID\":\"session-think\",\"field\":\"text\","
+                                + "\"partID\":\"prt-r\",\"delta\":\" let me see\"}}",
+                        // Then the answer part, plus a delta with an unknown
+                        // part id (no prior update) that must stay a legacy
+                        // answer delta, not be guessed away.
+                        "data: {\"type\":\"message.part.updated\",\"properties\":{"
+                                + "\"sessionID\":\"session-think\",\"part\":{\"type\":\"text\","
+                                + "\"id\":\"prt-t\",\"text\":\"\"}}}",
+                        "data: {\"type\":\"message.part.delta\",\"properties\":{"
+                                + "\"sessionID\":\"session-think\",\"field\":\"text\","
+                                + "\"partID\":\"prt-t\",\"delta\":\"The\"}}",
+                        "data: {\"type\":\"message.part.delta\",\"properties\":{"
+                                + "\"sessionID\":\"session-think\",\"field\":\"text\","
+                                + "\"partID\":\"prt-unknown\",\"delta\":\" answer\"}}",
+                        "data: {\"type\":\"message.part.updated\",\"properties\":{"
+                                + "\"sessionID\":\"other-session\",\"part\":{\"type\":\"reasoning\","
+                                + "\"id\":\"prt-other\",\"text\":\"\"}}}",
+                        "data: {\"type\":\"message.part.delta\",\"properties\":{"
+                                + "\"sessionID\":\"other-session\",\"field\":\"text\","
+                                + "\"partID\":\"prt-other\",\"delta\":\"noise\"}}"
+                };
+                for (String frame : frames) {
+                    sse.write((frame + "\n\n").getBytes(StandardCharsets.UTF_8));
+                    sse.flush();
+                    Thread.sleep(50);
+                }
+                Thread.sleep(4000); // keep lane open through the POST, then end
+            } catch (IOException | InterruptedException expected) {
+                // client stop() closed the stream or the window elapsed
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/session/session-think/message", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            try {
+                answerDeltasSeen.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            byte[] response = """
+                    {"info":{"id":"m1"},"parts":[{"type":"text","text":"final"}]}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            try (OpenCodeServeClient client = new OpenCodeServeClient(
+                    objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "session-think")) {
+                OpenCodeServeClient.ActivityListener listener =
+                        new OpenCodeServeClient.ActivityListener() {
+                            @Override
+                            public void onToolStart(String callId, String name, String input) { }
+
+                            @Override
+                            public void onToolComplete(String callId, String name, String output,
+                                                       int exitCode, boolean error) { }
+
+                            @Override
+                            public void onTokenUsage(long input, long output,
+                                                     long cacheRead, long cacheCreation) { }
+
+                        @Override
+                        public void onThinking(String reasoningDelta) {
+                            thinking.add(reasoningDelta);
+                        }
+                    };
+                String text = client.send("opencode-go/deepseek-v4-pro", null,
+                        null, "think then answer", delta -> {
+                            streamed.add(delta);
+                            answerDeltasSeen.countDown();
+                        }, listener);
+
+                assertEquals("final", text);
+                // Reasoning deltas never leak into the answer stream.
+                assertEquals("The answer", String.join("", streamed));
+                assertEquals(List.of("hmm", " let me see"), thinking);
+            }
+        } finally {
+            server.stop(0);
+            handlers.shutdownNow();
+        }
+    }
+
+    @Test
+    void restTurnAutoRejectsNativePermissionRequestsAndKeepsTheTurnAlive() throws Exception {
+        // OpenCode parks the native turn on an unanswered permission ask (its
+        // default action is "ask" for kind/action combos without a matching
+        // rule, e.g. reading a directory outside the workspace). Kompile's
+        // client is not interactive: it must reject the pending request and
+        // let the turn finish instead of hanging until the turn deadline.
+        List<String> permissionAsks = new CopyOnWriteArrayList<>();
+        AtomicReference<String> replyBody = new AtomicReference<>();
+        AtomicInteger replyCalls = new AtomicInteger();
+        CountDownLatch replyReceived = new CountDownLatch(1);
+        ExecutorService handlers = Executors.newCachedThreadPool();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.setExecutor(handlers);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            OutputStream sse = exchange.getResponseBody();
+            try {
+                sse.write(("data: {\"type\":\"permission.asked\",\"properties\":{"
+                        + "\"sessionID\":\"session-perm\",\"id\":\"per-1\","
+                        + "\"permission\":\"external_directory\","
+                        + "\"patterns\":[\"/home/x/.kompile/memory/*\"]}}\n\n")
+                        .getBytes(StandardCharsets.UTF_8));
+                sse.flush();
+                Thread.sleep(2000); // keep the lane open through the turn
+            } catch (IOException | InterruptedException expected) {
+                // client stop() closed the stream or the window elapsed
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/session/session-perm/permissions/per-1", exchange -> {
+            replyBody.set(new String(exchange.getRequestBody().readAllBytes(),
+                    StandardCharsets.UTF_8));
+            replyCalls.incrementAndGet();
+            replyReceived.countDown();
+            byte[] body = "{\"id\":\"per-1\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.createContext("/session/session-perm/message", exchange -> {
+            // Answer only after the ask was rejected, so the ordering is
+            // deterministic: the rejection happened mid-turn.
+            exchange.getRequestBody().readAllBytes();
+            try {
+                replyReceived.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            byte[] response = """
+                    {"info":{"id":"m1","role":"assistant","tokens":
+                      {"input":6,"output":2,"cache":{"read":0,"write":0}}},
+                     "parts":[{"type":"text","text":"unblocked"}]}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:" + server.getAddress().getPort(), "session-perm")) {
+            OpenCodeServeClient.ActivityListener listener =
+                    new OpenCodeServeClient.ActivityListener() {
+                        @Override
+                        public void onToolStart(String callId, String name, String input) { }
+
+                        @Override
+                        public void onToolComplete(String callId, String name, String output,
+                                                   int exitCode, boolean error) { }
+
+                        @Override
+                        public void onTokenUsage(long input, long output,
+                                                 long cacheRead, long cacheCreation) { }
+
+                        @Override
+                        public void onPermissionRequest(String requestId, String permission,
+                                                        List<String> patterns) {
+                            permissionAsks.add(requestId + ":" + permission + ":" + patterns);
+                        }
+                    };
+
+            assertEquals("unblocked", client.send("opencode-go/deepseek-v4-pro", null,
+                    null, "read the memory dir", ignored -> { }, listener),
+                    "a rejected permission ask must not park the turn");
+            assertEquals(List.of("per-1:external_directory:[/home/x/.kompile/memory/*]"),
+                    permissionAsks);
+            assertEquals(1, replyCalls.get(), "the pending ask is answered exactly once");
+            assertEquals("{\"response\":\"reject\"}", replyBody.get(),
+                    "kompile's client rejects; provider tools run under grants instead");
+        } finally {
+            server.stop(0);
+            handlers.shutdownNow();
+        }
+    }
+
+    @Test
+    void restTurnAbortsStuckTurnWhenTheProviderReAsksARejectedPermission() throws Exception {
+        // With the launch grants in place a rejected ask must never recur; a
+        // repeat means the turn is parked in a permission loop, so the client
+        // aborts it on the server instead of burning the turn deadline.
+        List<String> permissionAsks = new CopyOnWriteArrayList<>();
+        AtomicInteger replyCalls = new AtomicInteger();
+        AtomicInteger abortCalls = new AtomicInteger();
+        ExecutorService handlers = Executors.newCachedThreadPool();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.setExecutor(handlers);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            OutputStream sse = exchange.getResponseBody();
+            try {
+                String ask = "data: {\"type\":\"permission.asked\",\"properties\":{"
+                        + "\"sessionID\":\"session-stuck\",\"id\":\"per-2\","
+                        + "\"permission\":\"external_directory\","
+                        + "\"patterns\":[\"/home/x/.kompile/memory/*\"]}}\n\n";
+                sse.write(ask.getBytes(StandardCharsets.UTF_8));
+                sse.flush();
+                Thread.sleep(600); // provider: the rejection came, ask again anyway
+                sse.write(ask.getBytes(StandardCharsets.UTF_8));
+                sse.flush();
+                Thread.sleep(4000); // the abort path closes this lane first
+            } catch (IOException | InterruptedException expected) {
+                // client stop() closed the stream or the window elapsed
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/session/session-stuck/permissions/per-2", exchange -> {
+            replyCalls.incrementAndGet();
+            byte[] body = "{\"id\":\"per-2\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.createContext("/session/session-stuck/abort", exchange -> {
+            abortCalls.incrementAndGet();
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.createContext("/session/session-stuck/message", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            try {
+                Thread.sleep(4000); // the turn never completes; the abort wins
+            } catch (InterruptedException expected) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:" + server.getAddress().getPort(), "session-stuck")) {
+            OpenCodeServeClient.ActivityListener listener =
+                    new OpenCodeServeClient.ActivityListener() {
+                        @Override
+                        public void onToolStart(String callId, String name, String input) { }
+
+                        @Override
+                        public void onToolComplete(String callId, String name, String output,
+                                                   int exitCode, boolean error) { }
+
+                        @Override
+                        public void onTokenUsage(long input, long output,
+                                                 long cacheRead, long cacheCreation) { }
+
+                        @Override
+                        public void onPermissionRequest(String requestId, String permission,
+                                                        List<String> patterns) {
+                            permissionAsks.add(requestId);
+                        }
+                    };
+
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> client.send("opencode-go/deepseek-v4-pro", null,
+                            null, "read the memory dir", ignored -> { }, listener));
+
+            assertTrue(failure.getMessage().contains("stuck on permission request"),
+                    failure.getMessage());
+            assertTrue(failure.getMessage().contains("external_directory"),
+                    failure.getMessage());
+            assertEquals(List.of("per-2", "per-2"), permissionAsks,
+                    "both asks reach the activity listener");
+            assertEquals(2, replyCalls.get(), "each ask is replied with a rejection");
+            assertEquals(1, abortCalls.get(), "the stuck turn is aborted on the server");
+        } finally {
+            server.stop(0);
+            handlers.shutdownNow();
+        }
+    }
+
+    @Test
+    void heartbeatFramesDoNotCountAsTurnProgressForTheIdleWatchdog() throws Exception {
+        // server.heartbeat frames mean "socket alive", not "turn progressed".
+        // If the event lane kept refreshing lastActivity on them, the idle
+        // watchdog could never fire while a turn was genuinely stuck, and the
+        // client would silently wait out the full turn deadline instead.
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            OutputStream sse = exchange.getResponseBody();
+            try {
+                for (int i = 0; i < 10; i++) {
+                    sse.write(("data: {\"type\":\"server.heartbeat\"}\n\n")
+                            .getBytes(StandardCharsets.UTF_8));
+                    sse.flush();
+                    Thread.sleep(100);
+                }
+                Thread.sleep(400); // quiet window after the last heartbeat
+            } catch (IOException | InterruptedException expected) {
+                // client stop() closed the stream or the window elapsed
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:" + server.getAddress().getPort(), "session-hb")) {
+            Class<?> type = Class.forName(OpenCodeServeClient.class.getName() + "$EventBusListener");
+            var constructor = type.getDeclaredConstructor(OpenCodeServeClient.class, String.class,
+                    java.util.function.Consumer.class, OpenCodeServeClient.ActivityListener.class);
+            constructor.setAccessible(true);
+            Object listener = constructor.newInstance(client, "session-hb", null,
+                    usageListener(new ArrayList<>(), new CountDownLatch(0)));
+            var run = type.getDeclaredMethod("run");
+            run.setAccessible(true);
+            run.invoke(listener); // consumes the heartbeat window, exits at stream end
+
+            var lastActivity = type.getDeclaredMethod("lastActivityNanos");
+            lastActivity.setAccessible(true);
+            long lastRefresh = (Long) lastActivity.invoke(listener);
+            long silenceMillis = (System.nanoTime() - lastRefresh) / 1_000_000;
+            assertTrue(silenceMillis >= 1_000,
+                    "a whole window of heartbeats must not advance turn liveness; "
+                            + "last refresh was only " + silenceMillis + "ms ago");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void launchPermissionsGrantProviderToolsWithoutInteractiveAsks() throws Exception {
+        // opencode's default for an unevaluated permission kind is "ask", which
+        // parks a non-interactive client's turn forever. Kompile launches the
+        // serve with Claude's --dangerously-skip-permissions parity: allow all,
+        // ahead of the permission choices this launch carries.
+        try (OpenCodeServeClient client = new OpenCodeServeClient(objectMapper, Path.of("."))) {
+            Map<String, String> bare = new HashMap<>();
+            client.applyPermissionGrants(bare);
+            JsonNode merged = objectMapper.readTree(bare.get("OPENCODE_CONFIG_CONTENT"));
+            assertEquals("allow", merged.path("permission").path("*").asText(""),
+                    "the launch config must grant provider tools by default");
+
+            Map<String, String> explicit = new HashMap<>();
+            explicit.put("OPENCODE_CONFIG_CONTENT",
+                    "{\"theme\":\"dark\",\"permission\":{\"bash\":{\"*\":\"ask\"}}}");
+            client.applyPermissionGrants(explicit);
+            JsonNode granted = objectMapper.readTree(explicit.get("OPENCODE_CONFIG_CONTENT"));
+            assertEquals("dark", granted.path("theme").asText(""),
+                    "existing launch config must survive the grants pass");
+            assertEquals("ask", granted.path("permission").path("bash").path("*").asText(""),
+                    "explicit permission choices must own their kinds");
+            assertEquals(List.of("*", "bash"), fieldNames(granted.path("permission")),
+                    "opencode's last matching rule wins, so the wildcard grant must come first");
+
+            Map<String, String> ownWildcard = new HashMap<>();
+            ownWildcard.put("OPENCODE_CONFIG_CONTENT", "{\"permission\":{\"bash\":\"deny\",\"*\":\"ask\"}}");
+            client.applyPermissionGrants(ownWildcard);
+            assertEquals("{\"permission\":{\"bash\":\"deny\",\"*\":\"ask\"}}",
+                    ownWildcard.get("OPENCODE_CONFIG_CONTENT"),
+                    "a launch's own wildcard choice must own the launch");
+        }
+    }
+
+    @Test
+    void kompileLaunchKeepsNativeBashDeniedAfterTheWildcardGrant() throws Exception {
+        // The server boot injects Kompile's tools first (native bash denied, its shell
+        // work routed to Kompile's MCP tools), then grants. Granted before the deny,
+        // the wildcard allow would win and re-enable opencode's unmanaged bash tool.
+        try (OpenCodeServeClient client = new OpenCodeServeClient(objectMapper, Path.of("."))) {
+            Map<String, String> environment = new HashMap<>();
+            environment.put("OPENCODE_CONFIG_CONTENT",
+                    "{\"mcp\":{\"kompile\":{\"type\":\"local\"}},\"permission\":{\"bash\":\"deny\"}}");
+            client.applyPermissionGrants(environment);
+            JsonNode content = objectMapper.readTree(environment.get("OPENCODE_CONFIG_CONTENT"));
+            assertEquals(List.of("*", "bash"), fieldNames(content.path("permission")));
+            assertEquals("deny", content.path("permission").path("bash").asText(""));
+            assertEquals("local", content.path("mcp").path("kompile").path("type").asText(""));
+        }
+    }
+
+    private static List<String> fieldNames(JsonNode node) {
+        List<String> names = new ArrayList<>();
+        node.fieldNames().forEachRemaining(names::add);
+        return names;
     }
 
     @Test

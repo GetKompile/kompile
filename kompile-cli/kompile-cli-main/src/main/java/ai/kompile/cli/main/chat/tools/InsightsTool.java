@@ -26,6 +26,7 @@ import ai.kompile.cli.insights.JudgeInsights;
 import ai.kompile.cli.insights.MilestoneInsights;
 import ai.kompile.cli.insights.TestMilestoneReader;
 import ai.kompile.cli.insights.ToolUsageInsights;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
 import ai.kompile.cli.main.chat.enforcer.JudgementLog;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlInsights;
 import ai.kompile.cli.main.chat.tools.grounding.GraphInsights;
@@ -85,7 +86,7 @@ public class InsightsTool implements CliTool {
      *                     are project-local
      */
     public InsightsTool(String crawlBaseUrl, String graphBaseUrl) {
-        this(crawlBaseUrl, graphBaseUrl, System.getenv(PARENT_SESSION_ENV));
+        this(crawlBaseUrl, graphBaseUrl, SessionEnvironment.get(PARENT_SESSION_ENV));
     }
 
     /** @param parentSessionId the session that started this process, or null */

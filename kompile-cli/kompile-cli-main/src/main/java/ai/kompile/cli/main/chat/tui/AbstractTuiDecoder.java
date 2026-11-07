@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.tui;
 
+import ai.kompile.cli.main.chat.render.TerminalRenderer;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -377,9 +379,12 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
         }
 
         String first = stripToolMarker(group.get(0));
-        String name = firstWordOrDefault(first, "tool");
+        String rawName = firstWordOrDefault(first, "tool");
+        // MCP-prefixed child rows (mcp__kompile__task …) must land in the SAME
+        // rendered panel style as the main transcript, not the raw wire name.
+        String name = TerminalRenderer.prettifyToolName(rawName);
         StringBuilder body = new StringBuilder();
-        String firstRest = first.length() > name.length() ? first.substring(name.length()).strip() : "";
+        String firstRest = first.length() > rawName.length() ? first.substring(rawName.length()).strip() : "";
         if (!firstRest.isEmpty()) body.append(firstRest);
         for (int k = 1; k < group.size(); k++) {
             String detail = stripToolMarker(group.get(k));

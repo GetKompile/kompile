@@ -176,6 +176,44 @@ class BoundedLoopManagerTest {
     }
 
     @Test
+    void pauseAllActivePreservesBoundsAndPersistsAcrossRestart() throws Exception {
+        Path stateFile = tempDir.resolve("bounded-pause-all.json");
+        String countId;
+        BoundedLoopManager first = new BoundedLoopManager(
+                ignored -> { }, loop -> { }, stateFile, 1);
+        try {
+            BoundedLoopManager.BoundedLoop count = first.create("1h", "5", "count bound");
+            assertNotNull(count);
+            countId = count.getId();
+            BoundedLoopManager.BoundedLoop duration = first.create("1h", "30m", "duration bound");
+            assertNotNull(duration);
+            assertTrue(first.pause(duration.getId()));
+
+            assertEquals(List.of(countId), first.pauseAllActive(),
+                    "only still-active loops are paused and reported");
+            assertEquals(BoundedLoopManager.BoundedLoop.LoopStatus.PAUSED, count.getStatus());
+            assertEquals(5, count.getBoundCount(), "the remaining bound must be untouched");
+            assertEquals(0, first.activeCount());
+        } finally {
+            first.shutdown();
+        }
+
+        BoundedLoopManager restored = new BoundedLoopManager(
+                ignored -> { }, loop -> { }, stateFile, 1);
+        try {
+            BoundedLoopManager.BoundedLoop count = restored.get(countId);
+            assertNotNull(count);
+            assertEquals(BoundedLoopManager.BoundedLoop.LoopStatus.PAUSED, count.getStatus(),
+                    "the usage-limit pause must survive restart");
+            assertTrue(restored.resume(countId), "ordinary resume restarts the loop with its bound");
+            assertEquals(BoundedLoopManager.BoundedLoop.LoopStatus.ACTIVE, count.getStatus());
+            assertEquals(5, count.getRemainingFires());
+        } finally {
+            restored.shutdown();
+        }
+    }
+
+    @Test
     void resumedDurationLoopPastItsDeadlineCompletesImmediately() {
         BoundedLoopManager manager = new BoundedLoopManager(ignored -> { }, loop -> { });
         try {

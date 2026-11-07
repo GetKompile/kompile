@@ -113,6 +113,39 @@ class SubagentTranscriptTest {
         assertTrue(blocks.get(blocks.size() - 1).classic().contains("omitted"));
     }
 
+    @Test void snapshotsRetainTypedToolsAndRenderWithTheReceivingChatsAnsiMode(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        var child = new SubagentTranscript();
+        child.message("user", "inspect code");
+        child.text("thinking", "Check the parser");
+        child.text("assistant", "# Findings\n**bold** and `code`\n```java\npublic class App {}\n```\n");
+        child.toolStart("read-1", "mcp__kompile__read", "{\"file_path\":\"App.java\"}");
+        child.toolComplete("read-1", "public class App {}", false);
+        var file = workspace.resolve("child.json");
+        child.writeSnapshot(file);
+        var restored = SubagentTranscript.readSnapshot(file);
+        for (boolean ansi : List.of(true, false)) {
+            var renderer = new TerminalRenderer(ansi);
+            assertEquals(child.blocks(renderer), restored.blocks(renderer));
+            if (ansi) assertTrue(restored.blocks(renderer).get(2).classic().contains("\033["));
+        }
+        child.text("assistant", "**still streaming**");
+        child.writeSnapshot(file);
+        assertTrue(SubagentTranscript.readSnapshot(file).blocks(new TerminalRenderer(true)).get(4).running());
+        child.finish();
+        child.writeSnapshot(file);
+        assertTrue(SubagentTranscript.readSnapshot(file).blocks(new TerminalRenderer(true)).stream()
+                .noneMatch(ChatDisplayBlock::running));
+    }
+
+    @Test void invalidSnapshotsAreRejected(@org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        var file = workspace.resolve("invalid.json");
+        java.nio.file.Files.writeString(file, "{\"version\":2,\"parts\":[]}");
+        assertThrows(java.io.IOException.class, () -> SubagentTranscript.readSnapshot(file));
+        java.nio.file.Files.writeString(file, "{\"version\":1,\"parts\":[{\"kind\":\"fake-role\"}]}");
+        assertThrows(java.io.IOException.class, () -> SubagentTranscript.readSnapshot(file));
+    }
+
     private static String plain(String value) { return AttributedString.fromAnsi(value).toString(); }
     private static void sameDisplay(String expected, String actual) {
         assertEquals(AttributedString.fromAnsi(expected), AttributedString.fromAnsi(actual));

@@ -40,6 +40,12 @@
     </description>
 
     <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-model</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- ND4J for vectorized, GPU-capable HL-MRF tensor inference (TensorHlMrfInference).
              API only: the runtime backend (CPU/CUDA) is supplied by the host application. -->
         <dependency>

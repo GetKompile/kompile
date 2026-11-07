@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.mcp;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.mcp.PlatformHooksInstaller;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -45,6 +46,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -144,6 +146,17 @@ public class McpToolInjection {
 
     /** OpenCode 1.x merges this variable's JSON over every config file it reads. */
     static final String OPENCODE_CONFIG_CONTENT_ENV = "OPENCODE_CONFIG_CONTENT";
+
+    /**
+     * Arms the OpenCode guard plugin's shell lockout: with it set to {@link
+     * #OPENCODE_SHELL_GATE_DENY}, every native shell tool call fails with directions to
+     * Kompile's MCP {@code bash}/{@code process} tools. {@link #applyLaunchEnvironment} sets
+     * it for each Kompile launch; a standalone OpenCode session finds it unset and keeps its
+     * native tools. The plugin backs up the launch's {@code bash: deny} permission, which a
+     * project or user {@code opencode.json} rule can reorder behind a wildcard allow.
+     */
+    static final String OPENCODE_SHELL_GATE_ENV = "KOMPILE_SHELL_MANDATE_GATE";
+    static final String OPENCODE_SHELL_GATE_DENY = "deny";
 
     /**
      * The file Gemini CLI reads its system settings from, which outrank the user's and the
@@ -357,7 +370,9 @@ public class McpToolInjection {
      * from its environment. OpenCode 1.x: merge it into {@code environment}'s
      * {@code OPENCODE_CONFIG_CONTENT}, keeping whatever that variable (or this process's own)
      * already holds. OpenCode merges the variable over every config file it reads, so the
-     * launch's server wins over a project {@code opencode.json} entry. Gemini CLI: make the
+     * launch's server wins over a project {@code opencode.json} entry. The launch's permission
+     * rules (native {@code bash} denied) go with it, and {@link #OPENCODE_SHELL_GATE_ENV} arms
+     * the guard plugin's shell lockout. Gemini CLI: make the
      * launch's config its system settings ({@link #applyGeminiLaunchEnvironment}). Any other
      * file leaves {@code environment} alone.
      *
@@ -376,35 +391,123 @@ public class McpToolInjection {
             return;
         }
         try {
-            JsonNode kompile = OM.readTree(Files.readString(injectedSettingsFile)).path("mcp").path("kompile");
+            JsonNode launch = OM.readTree(Files.readString(injectedSettingsFile));
+            JsonNode kompile = launch.path("mcp").path("kompile");
             if (!kompile.isObject()) {
                 throw new IOException("it has no mcp.kompile entry");
             }
-            String current = launchEnvironmentValue(environment, OPENCODE_CONFIG_CONTENT_ENV);
-            ObjectNode content = null;
-            if (current != null && !current.isBlank()) {
-                try {
-                    JsonNode parsed = OM.readTree(current);
-                    content = parsed != null && parsed.isObject() ? (ObjectNode) parsed : null;
-                } catch (IOException e) {
-                    content = null;
-                }
-                if (content == null) {
-                    McpDiagnostics.log("[MCP] Warning: Replacing " + OPENCODE_CONFIG_CONTENT_ENV
-                            + ", which is not a JSON object");
-                }
-            }
-            if (content == null) {
-                content = OM.createObjectNode();
-            }
+            ObjectNode content = openCodeConfigContent(environment);
             JsonNode mcp = content.get("mcp");
             ObjectNode servers = mcp != null && mcp.isObject() ? (ObjectNode) mcp : content.putObject("mcp");
             servers.set("kompile", kompile.deepCopy());
+            applyLaunchPermissions(content, launch.path("permission"));
             environment.put(OPENCODE_CONFIG_CONTENT_ENV, OM.writeValueAsString(content));
+            environment.put(OPENCODE_SHELL_GATE_ENV, OPENCODE_SHELL_GATE_DENY);
         } catch (IOException e) {
             McpDiagnostics.log("[MCP] Warning: Could not apply OpenCode launch config "
                     + injectedSettingsFile + ": " + e.getMessage());
         }
+    }
+
+    /** The launch's {@code OPENCODE_CONFIG_CONTENT} object; a new one when it holds none. */
+    private static ObjectNode openCodeConfigContent(Map<String, String> environment) {
+        String current = launchEnvironmentValue(environment, OPENCODE_CONFIG_CONTENT_ENV);
+        if (current == null || current.isBlank()) {
+            return OM.createObjectNode();
+        }
+        try {
+            JsonNode parsed = OM.readTree(current);
+            if (parsed != null && parsed.isObject()) {
+                return (ObjectNode) parsed;
+            }
+        } catch (IOException e) {
+            // Replaced below.
+        }
+        McpDiagnostics.log("[MCP] Warning: Replacing " + OPENCODE_CONFIG_CONTENT_ENV
+                + ", which is not a JSON object");
+        return OM.createObjectNode();
+    }
+
+    /**
+     * Deny OpenCode's own {@code tools} for one launch: each one's permission rule goes last
+     * into the launch's {@code OPENCODE_CONFIG_CONTENT}, which OpenCode merges over every
+     * config file it reads. Apply after {@link #applyLaunchEnvironment}, which rewrites the
+     * variable.
+     */
+    public static void denyOpenCodeTools(Map<String, String> environment, Collection<String> tools)
+            throws IOException {
+        ObjectNode content = openCodeConfigContent(environment);
+        ObjectNode rules = OM.createObjectNode();
+        tools.forEach(tool -> rules.put(tool, "deny"));
+        applyLaunchPermissions(content, rules);
+        environment.put(OPENCODE_CONFIG_CONTENT_ENV, OM.writeValueAsString(content));
+    }
+
+    /**
+     * Turn a Gemini CLI launch's own subagents off: {@code experimental.enableAgents=false}
+     * (Gemini CLI's documented switch for local and remote subagents) in the system settings
+     * the launch reads, which outrank user and workspace settings. A launch whose system
+     * settings are already a Kompile launch config is changed in place; any other launch gets
+     * a launch config holding the system settings it would have read plus the switch. Apply
+     * after {@link #applyLaunchEnvironment}.
+     */
+    public static void disableGeminiSubagents(Map<String, String> environment) throws IOException {
+        String configured = launchEnvironmentValue(environment, GEMINI_SYSTEM_SETTINGS_ENV);
+        Path systemSettings = configured != null && !configured.isBlank()
+                ? Path.of(configured) : geminiDefaultSystemSettings();
+        ObjectNode settings = Files.exists(systemSettings) ? settingsOrNull(systemSettings) : null;
+        if (settings == null) {
+            // A file that does not parse would stop Gemini CLI; this launch reads the guard instead.
+            settings = OM.createObjectNode();
+        }
+        JsonNode experimental = settings.get("experimental");
+        ObjectNode flags = experimental != null && experimental.isObject()
+                ? (ObjectNode) experimental : settings.putObject("experimental");
+        flags.put("enableAgents", false);
+        if (GEMINI_LAUNCH_CONFIG_PREFIX.equals(launchConfigPrefix(systemSettings))) {
+            Files.writeString(systemSettings, OM.writerWithDefaultPrettyPrinter().writeValueAsString(settings));
+            return;
+        }
+        Path config = writeLaunchConfig(GEMINI_LAUNCH_CONFIG_PREFIX, settings);
+        environment.put(GEMINI_SYSTEM_SETTINGS_ENV, config.toString());
+        keepGeminiSystemDefaults(environment, systemSettings);
+    }
+
+    /** Keep Gemini CLI reading the system defaults beside the system settings a launch replaced. */
+    private static void keepGeminiSystemDefaults(Map<String, String> environment, Path systemSettings) {
+        String defaults = launchEnvironmentValue(environment, GEMINI_SYSTEM_DEFAULTS_ENV);
+        if (defaults == null || defaults.isBlank()) {
+            Path directory = systemSettings.getParent();
+            environment.put(GEMINI_SYSTEM_DEFAULTS_ENV, (directory != null
+                    ? directory.resolve("system-defaults.json") : Path.of("system-defaults.json")).toString());
+        }
+    }
+
+    /**
+     * Put the launch's permission rules into {@code content}'s, each one last. OpenCode
+     * evaluates its rules in key order and the last match wins, so a rule must follow any
+     * wildcard the content already holds to take effect. A single action string becomes the
+     * wildcard rule it stands for.
+     */
+    private static void applyLaunchPermissions(ObjectNode content, JsonNode launchPermissions) {
+        if (!launchPermissions.isObject() || launchPermissions.isEmpty()) {
+            return;
+        }
+        JsonNode current = content.get("permission");
+        ObjectNode permissions;
+        if (current != null && current.isObject()) {
+            permissions = (ObjectNode) current;
+        } else {
+            permissions = OM.createObjectNode();
+            if (current != null && current.isTextual()) {
+                permissions.put("*", current.asText());
+            }
+            content.set("permission", permissions);
+        }
+        launchPermissions.fields().forEachRemaining(rule -> {
+            permissions.remove(rule.getKey());
+            permissions.set(rule.getKey(), rule.getValue().deepCopy());
+        });
     }
 
     /**
@@ -444,12 +547,7 @@ public class McpToolInjection {
             mcpServers.set("kompile", kompile.deepCopy());
             Files.writeString(launchConfig, OM.writerWithDefaultPrettyPrinter().writeValueAsString(settings));
             environment.put(GEMINI_SYSTEM_SETTINGS_ENV, launchConfig.toString());
-            String defaults = launchEnvironmentValue(environment, GEMINI_SYSTEM_DEFAULTS_ENV);
-            if (defaults == null || defaults.isBlank()) {
-                Path directory = systemSettings.getParent();
-                environment.put(GEMINI_SYSTEM_DEFAULTS_ENV, (directory != null
-                        ? directory.resolve("system-defaults.json") : Path.of("system-defaults.json")).toString());
-            }
+            keepGeminiSystemDefaults(environment, systemSettings);
         } catch (IOException e) {
             McpDiagnostics.log("[MCP] Warning: Could not apply Gemini CLI launch config "
                     + launchConfig + ": " + e.getMessage());
@@ -1144,6 +1242,24 @@ public class McpToolInjection {
     }
 
     /**
+     * Write a config for one Claude Code launch whose Kompile server is a session served
+     * by an already running Kompile MCP server at {@code url}, presenting
+     * {@code bearerToken}. The file is readable only by this user, like every launch config.
+     */
+    public static Path injectHttpForClaudeLaunch(Path workingDir, String url, String bearerToken)
+            throws IOException {
+        ObjectNode root = OM.createObjectNode();
+        ObjectNode kompile = root.putObject("mcpServers").putObject("kompile");
+        kompile.put("type", "http");
+        kompile.put("url", url);
+        kompile.putObject("headers").put("Authorization", "Bearer " + bearerToken);
+        Path config = writeLaunchConfig(CLAUDE_LAUNCH_CONFIG_PREFIX, root);
+        ensureHooksPreConfigured(workingDir.toAbsolutePath().normalize());
+        McpDiagnostics.log("[MCP] Wrote kompile MCP tools (http) for a Claude Code launch: " + config);
+        return config;
+    }
+
+    /**
      * Claude Code 2.x reads MCP servers from {@code .mcp.json} in the project root.
      * This takes priority over {@code ~/.claude/settings.json}.
      */
@@ -1484,10 +1600,17 @@ public class McpToolInjection {
      * that format for legacy installs.
      */
     private static Path injectForOpenCode(Path workingDir, McpToolInjectionSupport.CliLauncher launcher,
-                                          String sseUrl) throws IOException {
+                                           String sseUrl) throws IOException {
+        // Kompile's mandate for an OpenCode launch: shell execution goes through Kompile's
+        // MCP `bash`/`process` tools (managed, guarded, tracked), so the native bash tool is
+        // denied and the guard plugin blocks any shell tool a config reorders that rule behind.
+        PlatformHooksInstaller.ensureOpenCodeGuardPlugin(workingDir);
         if (isCrushFormat()) {
             ObjectNode root = OM.createObjectNode();
             String mode = putCrushEntry(root.putObject("mcp"), workingDir, launcher, sseUrl);
+            // OpenCode 1.x converts a legacy `tools` entry into rules ahead of every
+            // `permission` rule, where any wildcard allow overrides it.
+            root.putObject("permission").put("bash", "deny");
             Path config = writeLaunchConfig(OPENCODE_LAUNCH_CONFIG_PREFIX, root);
             McpDiagnostics.log("[MCP] Wrote kompile MCP tools (" + mode + ") for an OpenCode launch: " + config);
             return config;
@@ -2156,7 +2279,9 @@ public class McpToolInjection {
                     try {
                         released = releaseSharedSettings(key);
                     } catch (IOException | RuntimeException e) {
+                        // A release that fails fails again; retrying would spin the exit forever.
                         McpDiagnostics.log("[MCP] Warning: Could not release " + key + ": " + e.getMessage());
+                        released = false;
                     }
                 }
             }

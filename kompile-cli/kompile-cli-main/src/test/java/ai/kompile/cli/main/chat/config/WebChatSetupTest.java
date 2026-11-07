@@ -61,6 +61,10 @@ class WebChatSetupTest {
         // Picking a stored setup token pins it by name and puts the route on OAuth.
         var pinned = WebChatSetup.selection(directory, ownLogin.deepCopy().put("credentialName", "work"), false);
         assertEquals("oauth", pinned.getAuthenticationMethod());
+        var metadata = catalog(ownLogin.deepCopy().put("credentialName", "work"));
+        assertEquals(pinned.getProvider(), metadata.path("fallbackRoute").path("provider").asText());
+        assertEquals("oauth", metadata.path("fallbackRoute").path("authenticationMethod").asText());
+        assertFalse(metadata.toString().contains("sk-ant-oat01-work-token"));
         assertEquals("work", pinned.getCredentialName());
         assertEquals("sk-ant-oat01-work-token", pinned.resolveClaudeCodeToken());
         assertThrows(IllegalArgumentException.class, () -> WebChatSetup.selection(directory,

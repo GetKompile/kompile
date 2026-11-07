@@ -411,7 +411,8 @@ class KompileNativeTaskRunnerTest {
             assertTrue(one.getOutput().contains("provider=custom"), one.getOutput());
             assertTrue(one.getOutput().contains("authentication_method"), one.getOutput());
             assertTrue(one.getOutput().contains("agent=kompile"), one.getOutput());
-            assertTrue(one.getOutput().contains("No account fallback"), one.getOutput());
+            // Credential failover runs before this guidance is written, so it must not deny it ran.
+            assertFalse(one.getOutput().contains("No account fallback"), one.getOutput());
             ToolResult batch = new StdioMultiTaskTool(new AgentRegistry(), runner, mapper, workDir, null)
                     .execute(Map.of("description", "rejected batch", "subtasks", List.of(
                             Map.of("name", "a", "prompt", "first", "agent", "general"),
@@ -422,6 +423,45 @@ class KompileNativeTaskRunnerTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    @Timeout(15)
+    void exhaustedQuotaIsReportedAsTerminalRatherThanRetryable() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] error = "{\"error\":{\"message\":\"The usage limit has been reached\",\"type\":\"usage_limit_reached\"}}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(429, error.length);
+            exchange.getResponseBody().write(error);
+            exchange.close();
+        });
+        server.start();
+        try {
+            ChatConfig config = new ChatConfig("custom", "project-auth", "limited-model",
+                    "http://127.0.0.1:" + server.getAddress().getPort());
+            ToolResult one = new StdioTaskTool(new AgentRegistry(), routingRunner(config), mapper, null, workDir)
+                    .execute(Map.of("description", "limited provider", "prompt", "answer", "agent", "kompile"));
+            assertTrue(one.isError(), one.getOutput());
+            assertTrue(one.getOutput().contains("quota of inline API key on custom is exhausted"), one.getOutput());
+            assertTrue(one.getOutput().contains("login=inline API key"), one.getOutput());
+            assertTrue(one.getOutput().contains("choose another provider"), one.getOutput());
+            assertFalse(one.getOutput().contains("then retry Kompile task"), one.getOutput());
+            assertTrue(one.getOutput().contains("Failover found no other usable login"), one.getOutput());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void routeFailureGuidanceStatesWhatEachAnthropicMethodRunsOn() {
+        ChatConfig config = new ChatConfig("anthropic", null, "sonnet", null);
+        config.setAuthenticationMethod("native");
+        String guidance = KompileNativeTaskRunner.failureGuidance(config, new IllegalStateException("rejected"));
+        assertTrue(guidance.contains(ChatConfig.ANTHROPIC_AUTH_ROUTES), guidance);
+        assertTrue(guidance.contains("then retry Kompile task"), guidance);
     }
 
     @Test
@@ -561,7 +601,10 @@ class KompileNativeTaskRunnerTest {
                     if (chat.listAll().size() == count && chat.listAll().stream().allMatch(
                             row -> chat.readOutput(row.getId(), 100).contains("in progress")
                                     && "configured-model".equals(row.getMetadata().get("model"))
-                                    && Long.parseLong(row.getMetadata().getOrDefault("stream_output_tokens", "0")) > 0)) break;
+                                    && Long.parseLong(row.getMetadata().getOrDefault("stream_output_tokens", "0")) > 0
+                                    && row.transcriptBlocks(new TerminalRenderer(true)).stream()
+                                            .anyMatch(block -> block.kind().equals("thinking")
+                                                    && block.classic().contains("in progress")))) break;
                     Thread.sleep(10);
                 } while (System.nanoTime() < deadline);
                 assertFalse(result.isDone(), "the provider is still reasoning");
@@ -576,6 +619,20 @@ class KompileNativeTaskRunnerTest {
                     String live = chat.readOutput(row.getId(), 100);
                     assertTrue(live.contains("Thinking:"), live);
                     assertTrue(live.contains("in progress"), live);
+                    var blocks = row.transcriptBlocks(new TerminalRenderer(true));
+                    assertEquals(List.of("user", "thinking"), blocks.stream().map(
+                            ai.kompile.cli.main.chat.render.ChatDisplayBlock::kind).toList());
+                    var thinking = blocks.get(1);
+                    assertTrue(thinking.running(), "a paused partial line is still streaming");
+                    assertTrue(thinking.classic().contains("in progress"));
+                    assertFalse(thinking.classic().contains("Thinking:"), "raw log labels are not chat formatting");
+                    var lines = new java.util.ArrayList<String>();
+                    var main = new ai.kompile.cli.main.chat.render.ThinkingStreamRenderer(lines::add, new TerminalRenderer(true));
+                    main.accept(thinking.sections().get(0).content());
+                    String preview = main.pendingLinePreview();
+                    if (!preview.isEmpty()) lines.add(preview);
+                    assertEquals(org.jline.utils.AttributedString.fromAnsi(String.join("\n", lines)),
+                            org.jline.utils.AttributedString.fromAnsi(thinking.classic()));
                 }
             } finally {
                 finish.countDown();
@@ -594,12 +651,87 @@ class KompileNativeTaskRunnerTest {
                 assertEquals("100", rows.get(0).getMetadata().get("input_tokens"));
                 assertEquals("7", rows.get(0).getMetadata().get("output_tokens"));
                 assertEquals("0", rows.get(0).getMetadata().get("stream_output_tokens"));
+                var remote = rows.get(0);
+                var ansiRenderer = new TerminalRenderer(true);
+                var blocks = remote.transcriptBlocks(ansiRenderer);
+                assertEquals(List.of("user", "thinking", "assistant"), blocks.stream().map(
+                        ai.kompile.cli.main.chat.render.ChatDisplayBlock::kind).toList());
+                assertTrue(blocks.stream().noneMatch(ai.kompile.cli.main.chat.render.ChatDisplayBlock::running));
+                assertEquals("answer-" + id + " done", blocks.get(2).sections().get(0).content());
+                var local = processes.listAll().stream().filter(row -> processes.readOutput(row.getId(), 100)
+                        .contains(marker)).findFirst().orElseThrow();
+                assertEquals(local.transcriptBlocks(ansiRenderer), blocks,
+                        "mirrored frames must match the owned typed transcript, including styles");
+                assertEquals(local.transcriptBlocks(new TerminalRenderer(false)),
+                        remote.transcriptBlocks(new TerminalRenderer(false)));
+                assertTrue(Files.exists(Path.of(remote.getMetadata().get("transcript_file"))));
             }
+            var sidecars = chat.listAll().stream().map(row -> Path.of(row.getMetadata().get("transcript_file"))).toList();
+            assertEquals(0, chat.cleanup(java.time.Duration.ZERO), "mirrors do not own the sidecars");
+            assertTrue(sidecars.stream().allMatch(Files::exists));
+            assertEquals(count, processes.cleanup(java.time.Duration.ZERO));
+            assertTrue(sidecars.stream().noneMatch(Files::exists), "owned sidecars follow log retention");
         } finally {
             finish.countDown();
             server.stop(0);
             worker.shutdownNow();
             serverThreads.shutdownNow();
+            coordinator.shutdown();
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    void killedTaskPublishesTheFinalTypedSnapshotWithoutResurrectingItsRow() throws Exception {
+        var coordinator = new ai.kompile.cli.main.coordination.CoordinationStateManager(workDir, "cancel-owner", mapper);
+        coordinator.registerAgent("fixture", "cancel-parent", "kompile", 1, 0L, null, null);
+        try (var processes = new ai.kompile.cli.main.chat.tools.BackgroundProcessManager("cancel-owner", workDir);
+             var chat = new ai.kompile.cli.main.chat.tools.BackgroundProcessManager("cancel-parent", workDir);
+             var mirror = new ai.kompile.cli.main.chat.SharedProcessMirror(chat, coordinator, "cancel-parent")) {
+            var config = new ChatConfig("custom", "test", "test-model", "http://127.0.0.1:1");
+            var runner = new KompileNativeTaskRunner(workDir, null, processes, coordinator, new TerminalRenderer(false)) {
+                @Override ChatConfig loadConfiguration() { return config; }
+                @Override AutoCloseable configureSupervision(ToolContext context, String prompt) { return () -> {}; }
+                @Override ToolRegistry createRegistry(ChatConfig child, AgentRegistry agents, PermissionService permissions) {
+                    var tools = new ToolRegistry(mapper);
+                    tools.setSubagentRunner(new ai.kompile.cli.main.chat.agent.SubagentRunner() {
+                        private LifecycleListener listener;
+                        private final ai.kompile.cli.main.chat.render.SubagentTranscript transcript =
+                                new ai.kompile.cli.main.chat.render.SubagentTranscript();
+                        public void setLifecycleListener(LifecycleListener value) { listener = value; }
+                        public ai.kompile.cli.main.chat.render.SubagentTranscript transcriptOf(String id) { return transcript; }
+                        public String runSubagent(AgentConfig agent, String prompt, ToolContext context) throws Exception {
+                            listener.onSubagentStart("child", "general", "cancel test");
+                            transcript.text("thinking", "partial reasoning");
+                            listener.onSubagentOutput("child", "partial reasoning");
+                            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                            do {
+                                mirror.pollOnce();
+                                if (!chat.listAll().isEmpty() && !chat.listAll().get(0)
+                                        .transcriptBlocks(new TerminalRenderer(true)).isEmpty()) break;
+                                Thread.sleep(10);
+                            } while (System.nanoTime() < deadline);
+                            var live = chat.listAll().get(0).transcriptBlocks(new TerminalRenderer(true));
+                            assertFalse(live.isEmpty());
+                            assertTrue(live.get(0).running());
+                            assertTrue(processes.kill(processes.listAll().get(0).getId()));
+                            transcript.finish();
+                            listener.onSubagentEnd("child");
+                            throw new InterruptedException("cancelled fixture");
+                        }
+                    });
+                    return tools;
+                }
+            };
+            assertThrows(InterruptedException.class, () -> runner.run(AgentConfig.builder("kompile").build(),
+                    "inspect", new AtomicBoolean()));
+            Thread.interrupted();
+            mirror.pollOnce();
+            var row = chat.listAll().get(0);
+            assertFalse(row.isRunning());
+            assertTrue(row.transcriptBlocks(new TerminalRenderer(true)).stream()
+                    .noneMatch(ai.kompile.cli.main.chat.render.ChatDisplayBlock::running));
+        } finally {
             coordinator.shutdown();
         }
     }

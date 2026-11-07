@@ -29,7 +29,7 @@ public final class ChatCommandCatalog {
             "process-monitors", "statusbar", "auto-dequeue", "stats", "usage", "passthrough", "resume", "resume-all", "mode", "menu",
             "skills", "roles", "role", "model", "thinking", "fast", "ultracode", "mcp", "enforce", "enforcer", "judge", "judge-global",
             "direction", "deflection", "forward", "image", "file", "attach", "attachments");
-    private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar", "resource-monitor", "redraw", "btw", "subagent-config");
+    private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar", "resource-monitor", "redraw", "btw");
     private static final Set<String> LIVE = Arrays.stream((
             "clear restart reset reset-all compact auto-compact rag agent local-agent role fast ultracode mcp title "
             + "memory permissions plan queue queues queue-send queue-send-all queue-remove queue-edit queue-move "
@@ -53,7 +53,7 @@ public final class ChatCommandCatalog {
     }
     public static Set<String> liveRunCommands() { return LIVE_RUN; }
     public static WebSupport webSupport(String name) {
-        if ("help".equals(name) || "usage".equals(name) || "skills".equals(name) || "model".equals(name)
+        if ("hooks".equals(name) || "permissions".equals(name) || "test-milestones".equals(name) || "subagents".equals(name) || "subagent-config".equals(name) || "help".equals(name) || "usage".equals(name) || "skills".equals(name) || "model".equals(name)
                 || "role".equals(name) || "thinking".equals(name) || "fast".equals(name) || "ultracode".equals(name)
                 || "reminder".equals(name) || "reminder-global".equals(name)
                 || "continue".equals(name) || "continue-trigger".equals(name)
@@ -77,6 +77,8 @@ public final class ChatCommandCatalog {
                 + "\n/model is fully supported over web input: bare /model lists locally known "
                 + "models (no live provider call), /model <id> validates and persists the selection "
                 + "for the session; later MODEL_INPUT turns use it."
+                + "\n/subagents saved lists this workspace's durable children; show <session-id> reads bounded history, and resume <JSON> continues the child through the host's normal delegation policy."
+                + "\n/subagent-config edits shared concurrency, model bans and child failover; /model failover edits this session's fallback routes. Both are available in Settings, with staged Save/Cancel and credential references only."
                 + "\n/usage reads the selected vendor account's credits/allowance windows and resets (when exposed), not session token estimates."
                 + "\n/thinking lists supported effort options for the session's provider/model; "
                 + "/thinking <value> or /thinking default persists the choice for this session only."

@@ -43,7 +43,7 @@ class DirectLlmClientNativeLimitTest {
                 field.set(client, nativeClient);
                 var result = client.streamChat("continue the task", "system rules", null, null);
                 assertTrue(result.failed);
-                assertEquals(DirectLlmClient.FailureKind.QUOTA_EXHAUSTED, result.failureKind);
+                assertEquals(FailureKind.QUOTA_EXHAUSTED, result.failureKind);
                 assertEquals(!toolActivity, result.isReplaySafe());
                 assertTrue(result.failureMessage.contains("resets_in_seconds=604800"), result.failureMessage);
                 assertTrue(nativeClient.processAlive());

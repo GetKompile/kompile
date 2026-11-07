@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.auth.oauth.ClaudeCodeOAuthFlow;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -56,9 +57,8 @@ import java.util.concurrent.locks.ReentrantLock;
 public class PersistentAgentProcess implements AutoCloseable {
 
     /**
-     * Default per-turn timeout: 600 s (10 min) to match the outer multi_task
-     * future.get(10, TimeUnit.MINUTES) gate and allow real agentic work to
-     * complete before the timeout fires.
+     * Default per-turn timeout: 600 s (10 min), long enough for real agentic
+     * work to complete before the timeout fires.
      */
     private static final int DEFAULT_TURN_TIMEOUT_SECONDS = 600;
 
@@ -611,14 +611,22 @@ public class PersistentAgentProcess implements AutoCloseable {
     }
 
     /**
-     * A judge belongs to no chat session, so a claude judge runs on the globally
-     * active Claude Code setup token, the global default every vendor has. A
-     * user-set variable always wins; absent/expired credential changes nothing.
+     * A claude process (a judge, for one) follows the login of the chat session
+     * that started this process: Claude Code's own login on its native route, its
+     * selected setup token on oauth. Outside a session it runs on the globally
+     * active setup token, the global default every vendor has. A user-set
+     * variable always wins; absent/expired credential changes nothing.
      */
     private void applyManagedSetupToken(Map<String, String> env) {
-        if (ClaudeCodeOAuthFlow.isClaudeBinary(agentBinary)) {
-            ClaudeCodeOAuthFlow.relayManagedToken(env, CredentialStore.create());
+        if (!ClaudeCodeOAuthFlow.isClaudeBinary(agentBinary)
+                || env.containsKey(ClaudeCodeOAuthFlow.OAUTH_TOKEN_ENV)) return;
+        ChatConfig session = ChatConfig.loadParentSession();
+        if (session != null && session.isClaudeCliNative()) {
+            String token = session.resolveClaudeCodeToken();
+            if (token != null) env.put(ClaudeCodeOAuthFlow.OAUTH_TOKEN_ENV, token);
+            return;
         }
+        ClaudeCodeOAuthFlow.relayManagedToken(env, CredentialStore.create());
     }
 
     // ── Builder ──────────────────────────────────────────────────────────────

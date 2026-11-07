@@ -15,6 +15,7 @@
 
     <modules>
         <module>kompile-knowledge-graph</module>
+        <module>kompile-graph-model</module>
         <module>kompile-graph-reasoning</module>
         <module>kompile-graph-reasoning-local</module>
         <module>kompile-graph-algorithms</module>

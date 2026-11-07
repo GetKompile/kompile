@@ -3,6 +3,7 @@ package ai.kompile.cli.mcp.stdio;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -80,9 +81,9 @@ public class StdioTaskTool {
             "Use sequential task calls only when later work needs an earlier result, or shared files/resources require serialization.\n\n" +
             "Use agent=kompile (general is a native alias) to run Kompile's own agent on the project's configured " +
             "chat provider and stored credentials, with its own context and tools. Pass model and thinking as request-scoped overrides. " +
-            "This is Kompile-managed dispatch, not the vendor Agent tool. Anthropic switches use Claude Code login by default; " +
-            "authentication_method=oauth/native selects that login, api-key selects the separate Anthropic API. " +
-            "Same-provider auth is inherited. A 401 is an error, never permission to silently change accounts. Example: {\"agent\":\"kompile\",\"model\":\"gpt-6.1-sol\",\"thinking\":\"xhigh\"}. " +
+            "This is Kompile-managed dispatch, not the vendor Agent tool. Anthropic switches use authentication_method=oauth by default; " +
+            "authentication_method: " + ChatConfig.ANTHROPIC_AUTH_ROUTES + ". The dispatch line names the login used. " +
+            "The delegating session's provider and login are inherited. A rejected or exhausted login fails over to the /subagent-config fallback routes, else the route's other logins, each switch reported. Example: {\"agent\":\"kompile\",\"model\":\"gpt-6.1-sol\",\"thinking\":\"xhigh\"}. " +
             "The model id auto-routes the provider: claude-* runs on anthropic, gpt-* on openai/codex, glm-* on zai, etc. " +
             "When several configured providers host that family and none is its owner (aggregators like openrouter), " +
             "the dispatch errors naming candidates — pass provider=<id> to pick one, or call resolve_model " +
@@ -121,7 +122,7 @@ public class StdioTaskTool {
         model.put("type", "string");
         model.put("description", "Optional model override. Precedence: explicit value, selected role default, project default, user default, provider native default. For agent=kompile the id auto-routes the provider (claude-* to anthropic, glm-* to zai, ...); an ambiguous multi-host family errors listing candidates.");
         props.putObject("authentication_method").put("type", "string").put("description",
-                "Auth route, not a secret: oauth/native uses Claude Code login for anthropic; api-key selects the separate API. Inherits the configured choice on the same provider. No fallback after 401.")
+                "Auth route, not a secret: " + ChatConfig.ANTHROPIC_AUTH_ROUTES + ". Omitted, the child inherits the delegating session's login; a rejected or exhausted login fails over to the /subagent-config fallback routes, else the route's other logins.")
                 .putArray("enum").add("oauth").add("native").add("api-key");
         var provider = props.putObject("provider");
         provider.put("type", "string");

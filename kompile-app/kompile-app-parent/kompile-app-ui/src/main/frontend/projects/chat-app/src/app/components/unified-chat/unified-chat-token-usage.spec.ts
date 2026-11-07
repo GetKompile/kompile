@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 
-import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
+import { CUSTOM_ELEMENTS_SCHEMA, NgZone } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { CommonModule } from '@angular/common';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ActivatedRoute, Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { HttpClientTestingModule } from '@angular/common/http/testing';
@@ -22,13 +26,20 @@ import { of, Subject } from 'rxjs';
 
 import { UnifiedChatComponent } from './unified-chat.component';
 import { ConversationalRagService } from '@shared/services/conversational-rag.service';
-import { LocalAgentChatService } from '@shared/services/local-agent-chat.service';
+import { LocalAgentChatService, ChatStats, TokenMetrics } from '@shared/services/local-agent-chat.service';
+import { AgentProvider, LocalAgentMessage } from '@shared/models/api-models';
+import { CliTranscriptService } from '@shared/services/cli-transcript.service';
+import { ModelContextService } from '@shared/services/model-context.service';
+import { WebSocketService } from '@shared/services/websocket.service';
+import { SystemPromptService } from '@shared/services/system-prompt.service';
 import { AgentService } from '@shared/services/agent.service';
 import { ChatStorageService } from '@shared/services/chat-storage.service';
 import { ChatHistoryService } from '@shared/services/chat-history.service';
 import { FolderService } from '@shared/services/folder.service';
 import { MatDialog } from '@angular/material/dialog';
 import { MatMenuModule } from '@angular/material/menu';
+import { MatButtonModule } from '@angular/material/button';
+import { MatSnackBar } from '@angular/material/snack-bar';
 
 describe('UnifiedChatComponent - Token Usage', () => {
   let component: UnifiedChatComponent;
@@ -43,14 +54,17 @@ describe('UnifiedChatComponent - Token Usage', () => {
   let dialogSpy: jasmine.SpyObj<MatDialog>;
 
   beforeEach(async () => {
+    // Exercise the real template without starting unrelated discovery/network lifecycle work.
+    spyOn(UnifiedChatComponent.prototype, 'ngOnInit').and.stub();
+    spyOn(UnifiedChatComponent.prototype, 'ngAfterViewInit').and.stub();
     ragServiceSpy = jasmine.createSpyObj('ConversationalRagService', ['getStatus', 'query']);
     agentChatServiceSpy = jasmine.createSpyObj('LocalAgentChatService', [
       'getStreamingContent', 'getStreamingComplete', 'getStreamingError',
-      'getChatStats', 'getSources', 'getModifiedFiles', 'sendMessage', 'cancelStreaming',
+      'getChatStats', 'getSources', 'sendMessage', 'cancelStreaming',
       'getCompaction'
     ]);
     agentServiceSpy = jasmine.createSpyObj('AgentService', [
-      'getAgents', 'getAvailableAgents', 'getChatHarnessAgents',
+      'getAvailableAgents', 'getChatHarnessAgents',
       'refreshChatHarnessAgents', 'getKompileLocalStatus'
     ], { agents$: new Subject<any[]>().asObservable() });
     chatStorageServiceSpy = jasmine.createSpyObj('ChatStorageService', [
@@ -65,8 +79,7 @@ describe('UnifiedChatComponent - Token Usage', () => {
     dialogSpy = jasmine.createSpyObj('MatDialog', ['open']);
 
     // Default return values
-    ragServiceSpy.getStatus.and.returnValue(of({ available: false }));
-    agentServiceSpy.getAgents.and.returnValue(of([]));
+    ragServiceSpy.getStatus.and.returnValue(of({ available: false, service: 'test' }));
     agentServiceSpy.getAvailableAgents.and.returnValue(of([]));
     agentServiceSpy.getChatHarnessAgents.and.returnValue(of([]));
     agentServiceSpy.refreshChatHarnessAgents.and.returnValue(of([]));
@@ -83,15 +96,16 @@ describe('UnifiedChatComponent - Token Usage', () => {
     agentChatServiceSpy.getStreamingError.and.returnValue(new Subject<string>().asObservable());
     agentChatServiceSpy.getChatStats.and.returnValue(new Subject<any>().asObservable());
     agentChatServiceSpy.getSources.and.returnValue(new Subject<any>().asObservable());
-    agentChatServiceSpy.getModifiedFiles.and.returnValue(new Subject<any>().asObservable());
     agentChatServiceSpy.getCompaction.and.returnValue(new Subject<any>().asObservable());
 
     await TestBed.configureTestingModule({
       imports: [
+        CommonModule,
         FormsModule,
         NoopAnimationsModule,
         HttpClientTestingModule,
-        MatMenuModule
+        MatMenuModule,
+        MatButtonModule
       ],
       declarations: [UnifiedChatComponent],
       providers: [
@@ -101,12 +115,26 @@ describe('UnifiedChatComponent - Token Usage', () => {
         { provide: ChatStorageService, useValue: chatStorageServiceSpy },
         { provide: ChatHistoryService, useValue: chatHistoryServiceSpy },
         { provide: FolderService, useValue: folderServiceSpy },
-        { provide: MatDialog, useValue: dialogSpy }
-      ]
+        { provide: MatDialog, useValue: dialogSpy },
+        ...[CliTranscriptService, ModelContextService, WebSocketService, SystemPromptService,
+          MatSnackBar, Router].map(provide => ({ provide, useValue: {} })),
+        { provide: ActivatedRoute, useValue: null }
+      ],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).compileComponents();
 
     fixture = TestBed.createComponent(UnifiedChatComponent);
     component = fixture.componentInstance;
+  });
+
+  afterEach(() => {
+    for (const store of [localStorage, sessionStorage]) {
+      for (const key of Object.keys(store)) {
+        if (key.startsWith('kompile-live-run:telemetry-parity-') || key.startsWith('kompile-finished-run:telemetry-parity-')) {
+          store.removeItem(key);
+        }
+      }
+    }
   });
 
   describe('formatTokenCount', () => {
@@ -231,6 +259,17 @@ describe('UnifiedChatComponent - Token Usage', () => {
   });
 
   describe('formatDuration', () => {
+    it('keeps missing and invalid durations distinct from measured zero', () => {
+      for (const value of [undefined, null, NaN, Infinity, -1]) {
+        expect(component.formatDuration(value)).toBe('Unknown');
+        expect(component.isMeasuredMetric(value)).toBeFalse();
+      }
+      expect(component.isMeasuredMetric(0)).toBeTrue();
+      expect(component.isMeasuredMetric(1500)).toBeTrue();
+      expect(component.isMeasuredMetric('10')).toBeFalse();
+      expect(component.isMeasuredMetric('bad')).toBeFalse();
+    });
+
     it('should format milliseconds for short durations', () => {
       expect(component.formatDuration(0)).toBe('0ms');
       expect(component.formatDuration(500)).toBe('500ms');
@@ -245,6 +284,103 @@ describe('UnifiedChatComponent - Token Usage', () => {
   });
 
   describe('Token metrics display in template', () => {
+    const measurementCases: { name: string; stats: ChatStats; speed?: string; generation?: string }[] = [
+      { name: 'absent', stats: { isError: false, tokenMetrics: { inputTokens: 100, outputTokens: 50 } } },
+      { name: 'measured zero', stats: { isError: false, durationMs: 0, costUsd: 0, numTurns: 0,
+        tokenMetrics: { inputTokens: 100, outputTokens: 50, tokensPerSecond: 0, totalGenerationMs: 0 } },
+        speed: '0.0 tok/s', generation: '0ms' },
+      { name: 'measured positive', stats: { isError: false, durationMs: 2000, costUsd: 0.02, numTurns: 2,
+        tokenMetrics: { inputTokens: 100, outputTokens: 50, tokensPerSecond: 33.3, totalGenerationMs: 1500 } },
+        speed: '33.3 tok/s', generation: '1.5s' }
+    ];
+
+    for (const { name, stats, speed, generation } of measurementCases) {
+      it(`renders ${name} telemetry without inventing measurements or changing token counts`, async () => {
+        // Exercise the real SSE decoder and completion path, not just a constructed display object.
+        const service = new LocalAgentChatService(TestBed.inject(HttpClient), TestBed.inject(NgZone),
+          jasmine.createSpyObj('transportStorage', ['updateSession', 'updateTab']));
+        const received: ChatStats[] = [];
+        const completed: LocalAgentMessage[] = [];
+        service.getChatStats().subscribe(value => received.push(value));
+        service.getStreamingComplete().subscribe(value => completed.push(value));
+        spyOn(window, 'fetch').and.resolveTo(new Response(
+          `event: stats\ndata: ${JSON.stringify(stats)}\n\nevent: complete\ndata: {"content":"Answer"}\n\n`));
+        const session = service.createSession('Telemetry');
+        await service.sendMessage(session, 'hello', { name: 'coder' } as AgentProvider,
+          { sessionId: `telemetry-parity-${name.replace(/ /g, '-')}` });
+
+        expect(received).toEqual([stats]);
+        expect(completed.length).toBe(1);
+        // Both the old service export and persisted messages share this optional contract.
+        const metrics: TokenMetrics = completed[0].tokenMetrics!;
+        expect(metrics).toEqual(stats.tokenMetrics!);
+        const persistedMetrics: LocalAgentMessage['tokenMetrics'] = metrics;
+        component.showMetrics = true;
+        component.messages = [{ id: 'usage', role: 'assistant', content: 'Answer', timestamp: new Date(),
+          tokenMetrics: persistedMetrics }];
+
+        fixture.detectChanges();
+
+        const bar: HTMLElement = fixture.nativeElement.querySelector('[data-testid="metrics-bar"]');
+        expect(bar).not.toBeNull();
+        const text = bar.textContent!;
+        expect(text).toContain('In:');
+        expect(text).toContain('100');
+        expect(text).toContain('Out:');
+        expect(text).toContain('50');
+        expect(component.getSessionTokenUsage()).toEqual({ totalInput: 100, totalOutput: 50, totalTokens: 150 });
+        if (speed === undefined) {
+          expect(text).not.toContain('Speed:');
+          expect(text).not.toContain('Gen:');
+          expect(received[0].durationMs).toBeUndefined();
+          expect(received[0].costUsd).toBeUndefined();
+          expect(received[0].numTurns).toBeUndefined();
+          expect(metrics.totalGenerationMs).toBeUndefined();
+          expect(metrics.tokensPerSecond).toBeUndefined();
+        } else {
+          expect(text).toContain(speed);
+          expect(text).toContain(generation!);
+          expect(received[0].durationMs).toBe(name === 'measured zero' ? 0 : 2000);
+          expect(received[0].costUsd).toBe(name === 'measured zero' ? 0 : 0.02);
+          expect(received[0].numTurns).toBe(name === 'measured zero' ? 0 : 2);
+        }
+        expect(text).not.toContain('NaN');
+        expect(text).not.toContain('undefined');
+      });
+    }
+
+    it('shows measured zero token counts, generation time and latency', () => {
+      component.showMetrics = true;
+      component.messages = [{ id: 'zero', role: 'assistant', content: 'Answer', timestamp: new Date(), latencyMs: 0,
+        tokenMetrics: { inputTokens: 0, outputTokens: 0, tokensPerSecond: 0, totalGenerationMs: 0 } }];
+
+      fixture.detectChanges();
+
+      const bar: HTMLElement = fixture.nativeElement.querySelector('[data-testid="metrics-bar"]');
+      expect(bar).not.toBeNull();
+      expect(Array.from(bar.querySelectorAll('.metric-label')).map(label => label.textContent?.trim()))
+        .toEqual(['Latency:', 'Speed:', 'In:', 'Out:', 'Gen:']);
+      expect(Array.from(bar.querySelectorAll('.metric-value')).map(value => value.textContent?.trim()))
+        .toEqual(['0ms', '0.0 tok/s', '0', '0', '0ms']);
+    });
+
+    for (const value of [NaN, Infinity, -1, '10', 'bad', null]) {
+      it(`hides invalid performance metrics (${String(value)}) without formatting crashes`, () => {
+        component.showMetrics = true;
+        component.messages = [{ id: 'invalid', role: 'assistant', content: 'Answer', timestamp: new Date(),
+          tokenMetrics: { inputTokens: 100, outputTokens: 50, tokensPerSecond: value, totalGenerationMs: value } as any }];
+
+        expect(() => fixture.detectChanges()).not.toThrow();
+
+        const bar: HTMLElement = fixture.nativeElement.querySelector('[data-testid="metrics-bar"]');
+        expect(bar).not.toBeNull();
+        expect(bar.textContent).not.toContain('Speed:');
+        expect(bar.textContent).not.toContain('Gen:');
+        expect(bar.textContent).not.toContain('NaN');
+        expect(component.getSessionTokenUsage()).toEqual({ totalInput: 100, totalOutput: 50, totalTokens: 150 });
+      });
+    }
+
     it('should show session token usage when tokens are available', () => {
       component.messages = [
         {

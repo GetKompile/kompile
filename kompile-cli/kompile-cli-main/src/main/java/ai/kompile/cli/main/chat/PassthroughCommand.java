@@ -256,6 +256,9 @@ public class PassthroughCommand implements Callable<Integer> {
                 if (history.getTranscriptFile() != null) {
                     metrics.enableLivePersistence(history.getTranscriptFile().resolveSibling(
                             sessionId + ".metrics.json"), objectMapper);
+                    metrics.enableUsageJournal(TokenUsageJournal.pathFor(
+                            history.getTranscriptFile().getParent(), sessionId),
+                            workingDir == null ? null : Path.of(workingDir));
                 }
 
                 try {

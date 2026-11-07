@@ -86,7 +86,7 @@ public class AsciiRenderer {
 
     // Tool block and thinking patterns (agent-specific markers)
     private static final Pattern TOOL_BLOCK_PATTERN = Pattern.compile(
-            "\\[tool:(\\w+)]\\n?(.*?)\\[/tool]", Pattern.DOTALL);
+            "\\[tool:([\\w ]+)]\\n?(.*?)\\[/tool]", Pattern.DOTALL);
     private static final Pattern TOOL_RESULT_PATTERN = Pattern.compile(
             "\\[tool-result]\\n?(.*?)\\[/tool-result]", Pattern.DOTALL);
     private static final Pattern THINKING_PATTERN = Pattern.compile(
@@ -482,6 +482,8 @@ public class AsciiRenderer {
     private String preprocessAgentBlocks(String text) {
         // [tool:Name]\n{...}\n[/tool] → rendered panel with tool name header
         text = replacePatterned(text, TOOL_BLOCK_PATTERN, m -> {
+            // The title is already prettified by the emitter (TerminalRenderer.prettifyToolName);
+            // no per-renderer name mapping lives here.
             String toolName = m.group(1);
             String body = m.group(2).trim();
             return panel(term.bold(toolName), body, SINGLE, "dim");

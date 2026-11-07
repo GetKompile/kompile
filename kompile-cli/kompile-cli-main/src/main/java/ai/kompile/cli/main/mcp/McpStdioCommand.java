@@ -17,10 +17,13 @@
 package ai.kompile.cli.main.mcp;
 
 import ai.kompile.cli.common.logs.LogPaths;
+import ai.kompile.cli.main.extensions.tools.ToolExtensionContext;
+import ai.kompile.cli.main.extensions.tools.ToolExtensionLoader;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
 import ai.kompile.cli.main.chat.agent.SubagentDelegationGuard;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard;
@@ -38,8 +41,6 @@ import ai.kompile.cli.main.chat.tools.BashTool;
 import ai.kompile.cli.main.chat.tools.BrowserTool;
 import ai.kompile.cli.main.chat.tools.ChannelTool;
 import ai.kompile.cli.main.chat.tools.CliTool;
-import ai.kompile.cli.main.chat.tools.CodeGraphTool;
-import ai.kompile.cli.main.chat.tools.CodeSearchTool;
 import ai.kompile.cli.main.chat.tools.ConfigArchiveTool;
 import ai.kompile.cli.main.chat.tools.ConversationImportTool;
 import ai.kompile.cli.main.chat.tools.DictationTool;
@@ -59,30 +60,17 @@ import ai.kompile.cli.main.chat.tools.FileContextTool;
 import ai.kompile.cli.main.chat.tools.FileNoteTool;
 import ai.kompile.cli.main.chat.tools.GlobTool;
 import ai.kompile.cli.main.chat.tools.GrepBatchTool;
-import ai.kompile.cli.main.chat.tools.GraphAggregateTool;
-import ai.kompile.cli.main.chat.tools.GraphBayesTool;
-import ai.kompile.cli.main.chat.tools.GraphCentralityTool;
-import ai.kompile.cli.main.chat.tools.GraphEmbeddingsTool;
-import ai.kompile.cli.main.chat.tools.GraphForecastTool;
-import ai.kompile.cli.main.chat.tools.GraphRagSearchTool;
-import ai.kompile.cli.main.chat.tools.GraphSimulateTool;
 import ai.kompile.cli.main.chat.tools.GrepTool;
 import ai.kompile.cli.main.chat.tools.HighMemoryToolCallGuard;
 import ai.kompile.cli.main.chat.tools.InsightsTool;
-import ai.kompile.cli.main.chat.tools.KnowledgeGraphTool;
-import ai.kompile.cli.main.chat.tools.KnowledgeSearchCliTool;
-import ai.kompile.cli.main.chat.tools.KnowledgeStatusCliTool;
 import ai.kompile.cli.main.chat.tools.ListTool;
-import ai.kompile.cli.main.chat.tools.LocalCodeIndexTool;
 import ai.kompile.cli.main.chat.tools.LspTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.MemoryTool;
 import ai.kompile.cli.main.chat.tools.McpToolResultSerializer;
 import ai.kompile.cli.main.chat.tools.PatchTool;
 import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
-import ai.kompile.cli.main.chat.tools.ProcessMiningCliTool;
 import ai.kompile.cli.main.chat.tools.ProjectConfigTool;
-import ai.kompile.cli.main.chat.tools.RagSearchTool;
 import ai.kompile.cli.main.chat.tools.ReadBatchTool;
 import ai.kompile.cli.main.chat.tools.ReadTool;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
@@ -93,7 +81,6 @@ import ai.kompile.cli.main.chat.tools.ServerModeTool;
 import ai.kompile.cli.main.chat.tools.SessionListTool;
 import ai.kompile.cli.main.chat.tools.SidePanelTool;
 import ai.kompile.cli.main.chat.tools.SkillManagerTool;
-import ai.kompile.cli.main.chat.tools.SubprocessWatchdogTool;
 import ai.kompile.cli.main.chat.tools.TestMilestoneTool;
 import ai.kompile.cli.main.chat.tools.IncidentTool;
 import ai.kompile.cli.main.chat.tools.TodoApplyBatchTool;
@@ -104,6 +91,7 @@ import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolResultReferenceCache;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
+import ai.kompile.cli.main.chat.tools.LocalCodeIndexTool;
 import ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer;
 import ai.kompile.cli.main.chat.tools.TranscriptSearchTool;
 import ai.kompile.cli.main.chat.tools.WebFetchTool;
@@ -111,27 +99,6 @@ import ai.kompile.cli.main.chat.tools.WebSearchTool;
 import ai.kompile.cli.main.chat.tools.WriteTool;
 import ai.kompile.cli.main.chat.tools.custom.CustomToolBridge;
 import ai.kompile.cli.main.chat.tools.custom.CustomToolLoader;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphClaimTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphFusedTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphRetractTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphSynthesizeTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
-import ai.kompile.cli.main.chat.tools.grounding.CrawlControlTool;
-import ai.kompile.cli.main.chat.tools.grounding.CrawlDiscoveryTool;
-import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
-import ai.kompile.cli.main.chat.tools.grounding.ModelRuntimeTool;
-import ai.kompile.cli.main.chat.tools.grounding.PipelineTool;
-import ai.kompile.cli.main.chat.tools.grounding.CrawlResultTool;
-import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
-import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
-import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
-import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
-import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
 import ai.kompile.cli.main.graph.GraphServiceRouting;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import ai.kompile.cli.main.codeindex.CodeIndexSessionBrief;
@@ -174,6 +141,42 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import ai.kompile.cli.main.chat.tools.CodeGraphTool;
+import ai.kompile.cli.main.chat.tools.CodeSearchTool;
+import ai.kompile.cli.main.chat.tools.GraphAggregateTool;
+import ai.kompile.cli.main.chat.tools.GraphBayesTool;
+import ai.kompile.cli.main.chat.tools.GraphCentralityTool;
+import ai.kompile.cli.main.chat.tools.GraphEmbeddingsTool;
+import ai.kompile.cli.main.chat.tools.GraphForecastTool;
+import ai.kompile.cli.main.chat.tools.GraphRagSearchTool;
+import ai.kompile.cli.main.chat.tools.GraphSimulateTool;
+import ai.kompile.cli.main.chat.tools.KnowledgeGraphTool;
+import ai.kompile.cli.main.chat.tools.KnowledgeSearchCliTool;
+import ai.kompile.cli.main.chat.tools.KnowledgeStatusCliTool;
+import ai.kompile.cli.main.chat.tools.ProcessMiningCliTool;
+import ai.kompile.cli.main.chat.tools.RagSearchTool;
+import ai.kompile.cli.main.chat.tools.SubprocessWatchdogTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphClaimTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphFusedTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphRetractTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphSynthesizeTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlControlTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlDiscoveryTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlResultTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
+import ai.kompile.cli.main.chat.tools.grounding.ModelRuntimeTool;
+import ai.kompile.cli.main.chat.tools.grounding.PipelineTool;
 
 @CommandLine.Command(
     name = "mcp-stdio",
@@ -311,8 +314,22 @@ public class McpStdioCommand implements Callable<Integer> {
     /** Fatal asynchronous initialization failure surfaced to tools/list and tools/call. */
     private volatile String toolInitializationFailure;
 
-    /** Output writer for sending JSON-RPC notifications (stored as field for access from helpers). */
-    private volatile OutputStreamWriter mcpOut;
+    /** Where this engine's JSON-RPC messages go: the stdio pipe, or a subagent's HTTP session. */
+    @FunctionalInterface
+    interface Outbound {
+        void send(JsonNode message) throws IOException;
+    }
+
+    private volatile Outbound outbound;
+
+    /** Orders every outbound write, and a cancelled call's suppression check, with each other. */
+    private final Object outboundLock = new Object();
+
+    /** Identity a subagent session engine's work runs under ({@link SessionEnvironment}); empty for stdio. */
+    private volatile Map<String, String> sessionOverlay = Map.of();
+
+    /** Whether this engine owns the process (stdio server) rather than serving one subagent inside it. */
+    private volatile boolean ownsProcess = true;
 
     /** Thread pool for executing tool calls without blocking the main event loop.
      *  This prevents long-running tools (e.g. grep ~30s) from blocking ping responses,
@@ -339,7 +356,13 @@ public class McpStdioCommand implements Callable<Integer> {
         volatile ai.kompile.cli.common.metrics.ToolInvocationContext usageCtx;
         /** Raw result snapshot before reference-cache substitution (optional raw-size compare). */
         volatile ToolResult rawResultBeforeSubstitution;
+        /** Shell output published for the parent chat's live view (null for other tools). */
+        volatile McpToolCallLiveLog liveLog;
     }
+
+    /** Finished shell-call logs kept for the chat's tool rows; older ones are withdrawn. */
+    private static final int RETAINED_TOOL_CALL_LOGS = 16;
+    private final java.util.ArrayDeque<McpToolCallLiveLog> retainedToolCallLogs = new java.util.ArrayDeque<>();
 
     /** JSON-RPC id → in-flight registry key (ids may be numbers or strings). */
     static String callKey(JsonNode idNode) {
@@ -399,7 +422,8 @@ public class McpStdioCommand implements Callable<Integer> {
     }
 
     private static String nonBlankEnvironment(String name) {
-        String value = System.getenv(name);
+        // A subagent session served in this process carries its own identity.
+        String value = SessionEnvironment.get(name);
         return value == null || value.isBlank() ? null : value.trim();
     }
 
@@ -530,117 +554,154 @@ public class McpStdioCommand implements Callable<Integer> {
             System.setOut(System.err);
 
             om = JsonUtils.standardMapper();
-            // Resolves the project and asks for a background refresh on its own thread;
-            // initialize waits for it only within the brief's budget.
-            sessionBrief = CodeIndexSessionBrief.start(wd);
-
-            sessionTracker = new McpSessionTracker(om, transcriptId, wd);
-            resultReferenceCache = new ToolResultReferenceCache(wd);
-            progressLogger = new McpToolProgressLogger(
-                    LogPaths.transcriptDirectory(transcriptId).toPath().resolve("mcp"));
-            asyncExecutor = new AsyncToolExecutor(progressLogger);
-            gatewayInterceptor = CliToolGatewayInterceptor.fromConfig(om);
-            auditLogger = new McpToolAuditLogger(
-                    transcriptId,
-                    detectOwningAgent(),
-                    "mcp-stdio",
-                    wd,
-                    om);
-            usageAccounting = new StdioInvocationAccounting(om,
-                    new ai.kompile.cli.common.metrics.ToolUsageRecorder() {
-                        @Override
-                        public void record(ai.kompile.cli.common.metrics.ToolCallUsage usage) {
-                            ai.kompile.cli.main.chat.ToolCallIndex.getInstance().recordUsageDirect(usage);
-                        }
-
-                        @Override
-                        public com.fasterxml.jackson.databind.node.ObjectNode toJsonNode(
-                                com.fasterxml.jackson.databind.ObjectMapper mapper) {
-                            return null;
-                        }
-                    }).withDetails(new ai.kompile.cli.common.metrics.ToolInvocationDetails(
-                            ai.kompile.cli.common.KompileHome.homeDirectory().toPath().resolve("conversations/tool-calls")));
-
-            // Load enforcer tool call guard from environment (if enforcer mode is active)
-            enforcerGuard = EnforcerToolCallGuard.fromEnvironment(om, wd);
-
-            // ── CRITICAL: Start event loop FIRST, defer heavy init ──────────
-            // Claude Code drops the MCP connection if the server doesn't respond
-            // to 'initialize' quickly enough. We must start reading stdin and
-            // responding to protocol messages immediately. All heavy initialization
-            // (tool building, file watchers, coordination, semantic memory) runs
-            // on a background thread and tools become available once it completes.
-            //
-            // Hook configuration for Claude Code (settings.local.json) is done by
-            // PassthroughCommand/ChatCommand BEFORE launching the agent — writing
-            // to that file after Claude starts triggers inotify and kills the MCP
-            // connection.
+            OutputStreamWriter stdout = new OutputStreamWriter(realStdout, StandardCharsets.UTF_8);
+            outbound = message -> {
+                stdout.write(om.writeValueAsString(message) + "\n");
+                stdout.flush();
+            };
 
             // Persist performance data and coordination state on shutdown
             Runtime.getRuntime().addShutdownHook(
                     new Thread(this::releaseOnShutdown, "mcp-harness-shutdown"));
 
-            dynamicToolManager = new DynamicToolManager();
-            dynamicToolManager.setDynamicMode(false);
+            startEngine(wd);
+            // Delegated Claude agents launched from this server reach its tools over
+            // loopback HTTP instead of each booting an MCP server process of their own.
+            McpHttpSubagentHost.install(this::openSubagentEngine);
+            return serveStdio();
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+            e.printStackTrace();
+            return 1;
+        } finally {
+            McpHttpSubagentHost.uninstall();
+            stopEngine();
+            // Restore original stdout/stderr so callers (tests, daemon bridge) are not
+            // left with redirected streams after this method returns.
+            System.setOut(originalOut);
+            System.setErr(originalErr);
+        }
+    }
 
-            // Tools map and readiness flag are instance fields (tools, toolsReady)
-            // populated by the background init thread below.
+    /**
+     * Builds this engine's session state and starts its tools initializing in the
+     * background. {@link #om} and {@link #outbound} are set by the caller.
+     */
+    private void startEngine(Path wd) throws Exception {
+        // Resolves the project and asks for a background refresh on its own thread;
+        // initialize waits for it only within the brief's budget.
+        sessionBrief = CodeIndexSessionBrief.start(wd);
 
-            // Resolved profile for filtering
-            String resolvedProfile = resolvedProfileName();
+        sessionTracker = new McpSessionTracker(om, transcriptId, wd);
+        resultReferenceCache = new ToolResultReferenceCache(wd);
+        progressLogger = new McpToolProgressLogger(
+                LogPaths.transcriptDirectory(transcriptId).toPath().resolve("mcp"));
+        asyncExecutor = new AsyncToolExecutor(progressLogger);
+        gatewayInterceptor = CliToolGatewayInterceptor.fromConfig(om);
+        auditLogger = new McpToolAuditLogger(
+                transcriptId,
+                detectOwningAgent(),
+                "mcp-stdio",
+                wd,
+                om);
+        usageAccounting = new StdioInvocationAccounting(om,
+                new ai.kompile.cli.common.metrics.ToolUsageRecorder() {
+                    @Override
+                    public void record(ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+                        ai.kompile.cli.main.chat.ToolCallIndex.getInstance().recordUsageDirect(usage);
+                    }
 
-            // Two-phase initialization: fast tools first (unblocks tools/list quickly),
-            // then slow tools (semantic memory, file watcher, delegation) on a second pass.
-            // This prevents 30s timeout on MCP clients that call tools/list immediately.
-            Thread initThread = new Thread(() -> {
-                try {
-                    // Platform hooks for non-Claude agents (Codex, OpenCode, Gemini)
+                    @Override
+                    public com.fasterxml.jackson.databind.node.ObjectNode toJsonNode(
+                            com.fasterxml.jackson.databind.ObjectMapper mapper) {
+                        return null;
+                    }
+                }).withDetails(new ai.kompile.cli.common.metrics.ToolInvocationDetails(
+                        ai.kompile.cli.common.KompileHome.homeDirectory().toPath().resolve("conversations/tool-calls")));
+
+        // Load enforcer tool call guard from environment (if enforcer mode is active)
+        enforcerGuard = EnforcerToolCallGuard.fromEnvironment(om, wd);
+
+        // ── CRITICAL: Start event loop FIRST, defer heavy init ──────────
+        // Claude Code drops the MCP connection if the server doesn't respond
+        // to 'initialize' quickly enough. We must start reading stdin and
+        // responding to protocol messages immediately. All heavy initialization
+        // (tool building, file watchers, coordination, semantic memory) runs
+        // on a background thread and tools become available once it completes.
+        //
+        // Hook configuration for Claude Code (settings.local.json) is done by
+        // PassthroughCommand/ChatCommand BEFORE launching the agent — writing
+        // to that file after Claude starts triggers inotify and kills the MCP
+        // connection.
+
+        dynamicToolManager = new DynamicToolManager();
+        dynamicToolManager.setDynamicMode(false);
+
+        // Tools map and readiness flag are instance fields (tools, toolsReady)
+        // populated by the background init thread below.
+
+        // Resolved profile for filtering
+        String resolvedProfile = resolvedProfileName();
+
+        // Two-phase initialization: fast tools first (unblocks tools/list quickly),
+        // then slow tools (semantic memory, file watcher, delegation) on a second pass.
+        // This prevents 30s timeout on MCP clients that call tools/list immediately.
+        Thread initThread = new Thread(SessionEnvironment.wrap(() -> {
+            try {
+                // Platform hooks for non-Claude agents (Codex, OpenCode, Gemini); the
+                // process a subagent session is served from installed them already.
+                if (ownsProcess) {
                     new PlatformHooksInstaller(wd, System.err).installAll();
-
-                    // Phase 1: Build all tools (fast + slow together)
-                    Map<String, ToolDef> builtTools = buildToolMap(om, wd);
-
-                    // Register with dynamic tool manager
-                    for (ToolDef td : builtTools.values()) {
-                        dynamicToolManager.register(td.name(), td.description(), td.schema());
-                    }
-
-                    // Apply profile filter
-                    if (!"full".equals(resolvedProfile)) {
-                        Set<String> profileToolIds;
-                        if (PROFILE_TOOLS.containsKey(resolvedProfile) && !PROFILE_TOOLS.get(resolvedProfile).isEmpty()) {
-                            profileToolIds = PROFILE_TOOLS.get(resolvedProfile);
-                        } else {
-                            profileToolIds = loadCustomProfile(resolvedProfile);
-                        }
-                        if (!profileToolIds.isEmpty()) {
-                            builtTools.keySet().retainAll(new LinkedHashSet<>(profileToolIds));
-                            System.err.println("[MCP] Profile '" + resolvedProfile + "': " + builtTools.size() + " tools active");
-                        } else {
-                            System.err.println("[MCP] Profile '" + resolvedProfile + "': unrecognized or empty — using full set");
-                        }
-                    }
-
-                    // Publish tools — ConcurrentHashMap.putAll is safe for concurrent reads
-                    tools.putAll(builtTools);
-                    toolsReady.set(true);
-
-                    System.err.println("[MCP] Kompile CLI MCP stdio server ready (" + tools.size() + " tools)");
-                    System.err.println("[MCP] Activity log: " + progressLogger.getLogFile());
-                    System.err.flush();
-                } catch (Exception e) {
-                    System.err.println("[MCP] Error during tool initialization: " + e.getMessage());
-                    e.printStackTrace(System.err);
-                    toolInitializationFailure = e.getMessage() != null
-                            ? e.getMessage() : e.getClass().getSimpleName();
-                    toolsReady.set(true); // unblock event loop even on error (with empty tools)
                 }
-            }, "mcp-tool-init");
-            initThread.setDaemon(true);
-            initThread.start();
 
+                // Phase 1: Build all tools (fast + slow together)
+                Map<String, ToolDef> builtTools = buildToolMap(om, wd);
+
+                // Register with dynamic tool manager
+                for (ToolDef td : builtTools.values()) {
+                    dynamicToolManager.register(td.name(), td.description(), td.schema());
+                }
+
+                // Apply profile filter
+                if (!"full".equals(resolvedProfile)) {
+                    Set<String> profileToolIds;
+                    if (PROFILE_TOOLS.containsKey(resolvedProfile) && !PROFILE_TOOLS.get(resolvedProfile).isEmpty()) {
+                        profileToolIds = PROFILE_TOOLS.get(resolvedProfile);
+                    } else {
+                        profileToolIds = loadCustomProfile(resolvedProfile);
+                    }
+                    if (!profileToolIds.isEmpty()) {
+                        builtTools.keySet().retainAll(new LinkedHashSet<>(profileToolIds));
+                        System.err.println("[MCP] Profile '" + resolvedProfile + "': " + builtTools.size() + " tools active");
+                    } else {
+                        System.err.println("[MCP] Profile '" + resolvedProfile + "': unrecognized or empty — using full set");
+                    }
+                }
+
+                // Publish tools — ConcurrentHashMap.putAll is safe for concurrent reads
+                tools.putAll(builtTools);
+                toolsReady.set(true);
+
+                System.err.println("[MCP] Kompile CLI MCP " + (ownsProcess ? "stdio server" : "subagent session")
+                        + " ready (" + tools.size() + " tools)");
+                System.err.println("[MCP] Activity log: " + progressLogger.getLogFile());
+                System.err.flush();
+            } catch (Exception e) {
+                System.err.println("[MCP] Error during tool initialization: " + e.getMessage());
+                e.printStackTrace(System.err);
+                toolInitializationFailure = e.getMessage() != null
+                        ? e.getMessage() : e.getClass().getSimpleName();
+                toolsReady.set(true); // unblock event loop even on error (with empty tools)
+            }
+        }), "mcp-tool-init");
+        initThread.setDaemon(true);
+        initThread.start();
+    }
+
+    /** Answers the stdio client until it closes stdin. */
+    private int serveStdio() {
+        try {
             BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-            mcpOut = new OutputStreamWriter(realStdout, StandardCharsets.UTF_8);
 
             // Defer startup log notification until after client sends notifications/initialized
             // (sending before handshake can corrupt the stream for some clients)
@@ -659,80 +720,144 @@ public class McpStdioCommand implements Callable<Integer> {
                         sendLogNotification("info", startupToolMessage(toolsReady.get(), tools.size()));
                     }
 
-                    // Dispatch tool calls to a background thread so the main loop
-                    // stays responsive to pings. Without this, a 30s grep blocks
-                    // ping responses and Claude Code drops the MCP connection.
-                    if ("tools/call".equals(msgMethod)) {
-                        final JsonNode toolMsg = msg;
-                        final String callKey = callKey(toolMsg.get("id"));
-                        final InFlightCall inFlight = new InFlightCall();
-                        if (callKey != null) inFlightCalls.put(callKey, inFlight);
-                        toolExecutor.submit(() -> {
-                            try {
-                                CURRENT_CALL.set(inFlight);
-                                JsonNode response = handleMessage(toolMsg, tools, om);
-                                if (response != null) {
-                                    synchronized (mcpOut) {
-                                        // A cancelled request gets NO late response — the
-                                        // client already forgot the id and would treat the
-                                        // response as a protocol error (connection drop).
-                                        // Usage: actual disposition is recorded at this
-                                        // write/suppression boundary, not at prepare time.
-                                        if (!inFlight.cancelled.get()) {
-                                            mcpOut.write(om.writeValueAsString(response) + "\n");
-                                            mcpOut.flush();
-                                        } else if (inFlight.usageCtx != null && usageAccounting != null) {
-                                            usageAccounting.finalizeCall(inFlight.usageCtx, null, null,
-                                                    ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.CANCELLED,
-                                                    ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.SUPPRESSED,
-                                                    true, System.currentTimeMillis());
-                                        }
-                                    }
-                                }
-                            } catch (Exception e) {
-                                System.err.println("[MCP] Error executing tool: " + e.getMessage());
-                            } finally {
-                                if (callKey != null) inFlightCalls.remove(callKey);
-                                CURRENT_CALL.remove();
-                                CTX.remove();
-                            }
-                        });
-                    } else {
-                        // Non-tool messages (ping, initialize, tools/list, notifications)
-                        // are handled inline on the main thread for immediate response.
-                        JsonNode response = handleMessage(msg, tools, om);
-                        if (response != null) {
-                            synchronized (mcpOut) {
-                                mcpOut.write(om.writeValueAsString(response) + "\n");
-                                mcpOut.flush();
-                            }
-                        }
-                    }
+                    dispatch(msg);
                 } catch (Exception e) {
                     System.err.println("[MCP] Error handling message: " + e.getMessage());
-                } finally {
-                    CTX.remove();
                 }
             }
+            return 0;
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
             return 1;
-        } finally {
-            toolExecutor.shutdownNow();
-            if (sessionTracker != null) sessionTracker.shutdown();
-            if (coordinator != null) coordinator.shutdown();
-            if (customMcpTools != null) customMcpTools.close();
-            // Restore original stdout/stderr so callers (tests, daemon bridge) are not
-            // left with redirected streams after this method returns.
-            System.setOut(originalOut);
-            System.setErr(originalErr);
         }
-        return 0;
+    }
+
+    /**
+     * Handles one client message and sends its response through {@link #outbound}, under
+     * this engine's session identity.
+     *
+     * <p>Tool calls run on {@link #toolExecutor} so the reader stays responsive to pings.
+     * Without this, a 30s grep blocks ping responses and Claude Code drops the MCP
+     * connection. Everything else (ping, initialize, tools/list, notifications) is
+     * answered inline on the caller's thread.</p>
+     */
+    void dispatch(JsonNode msg) {
+        Map<String, String> overlay = sessionOverlay;
+        if ("tools/call".equals(msg.path("method").asText(""))) {
+            final String callKey = callKey(msg.get("id"));
+            final InFlightCall inFlight = new InFlightCall();
+            if (callKey != null) inFlightCalls.put(callKey, inFlight);
+            toolExecutor.submit(() -> SessionEnvironment.run(overlay, () -> {
+                try {
+                    CURRENT_CALL.set(inFlight);
+                    JsonNode response = handleMessage(msg, tools, om);
+                    if (response != null) {
+                        synchronized (outboundLock) {
+                            // A cancelled request gets NO late response — the
+                            // client already forgot the id and would treat the
+                            // response as a protocol error (connection drop).
+                            // Usage: actual disposition is recorded at this
+                            // write/suppression boundary, not at prepare time.
+                            if (!inFlight.cancelled.get()) {
+                                outbound.send(response);
+                            } else if (inFlight.usageCtx != null && usageAccounting != null) {
+                                usageAccounting.finalizeCall(inFlight.usageCtx, null, null,
+                                        ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.CANCELLED,
+                                        ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.SUPPRESSED,
+                                        true, System.currentTimeMillis());
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    System.err.println("[MCP] Error executing tool: " + e.getMessage());
+                } finally {
+                    if (callKey != null) inFlightCalls.remove(callKey);
+                    CURRENT_CALL.remove();
+                    CTX.remove();
+                }
+            }));
+            return;
+        }
+        SessionEnvironment.run(overlay, () -> {
+            try {
+                JsonNode response = handleMessage(msg, tools, om);
+                if (response != null) {
+                    synchronized (outboundLock) {
+                        outbound.send(response);
+                    }
+                }
+            } catch (IOException e) {
+                System.err.println("[MCP] Error handling message: " + e.getMessage());
+            } finally {
+                CTX.remove();
+            }
+        });
+    }
+
+    /** Stops this engine taking work and ends its session tracking and coordination. */
+    private void stopEngine() {
+        toolExecutor.shutdownNow();
+        if (sessionTracker != null) sessionTracker.shutdown();
+        if (coordinator != null) coordinator.shutdown();
+        if (customMcpTools != null) customMcpTools.close();
+    }
+
+    /**
+     * A new engine serving one delegated agent from inside this process. It gets its own
+     * tools, session tracking and coordination identity, as the server process it
+     * replaces had, and is built and run under the identity the agent was launched with.
+     * Like that process it serves the default profile, without this server's remote
+     * overrides.
+     */
+    McpHttpSubagentHost.Engine openSubagentEngine(Path workingDir, Map<String, String> overlay,
+                                                  Outbound sink) throws Exception {
+        McpStdioCommand engine = new McpStdioCommand();
+        engine.workDir = workingDir.toString();
+        engine.ownsProcess = false;
+        engine.sessionOverlay = Map.copyOf(overlay);
+        engine.om = om != null ? om : JsonUtils.standardMapper();
+        engine.outbound = sink;
+        try {
+            SessionEnvironment.call(engine.sessionOverlay, () -> {
+                // The agent shares its launcher's transcript, as its own server was told to.
+                engine.transcriptId = resolveTranscriptId(transcriptId);
+                engine.startEngine(workingDir);
+                return null;
+            });
+        } catch (Exception e) {
+            engine.closeSubagentEngine();
+            throw e;
+        }
+        return new McpHttpSubagentHost.Engine() {
+            @Override
+            public void dispatch(JsonNode message) {
+                engine.dispatch(message);
+            }
+
+            @Override
+            public void close() {
+                engine.closeSubagentEngine();
+            }
+        };
+    }
+
+    private void closeSubagentEngine() {
+        stopEngine();
+        releaseSessionResources();
     }
 
     /** The shutdown hook's work: persists session state and releases what this server holds. */
     void releaseOnShutdown() {
+        // Subagent sessions served from here persist their state as their own servers would.
+        McpHttpSubagentHost.uninstall();
+        releaseSessionResources();
+        // Close cached IndexDatabase connections
+        LocalCodeIndexTool.closeAll();
+    }
+
+    /** What one engine holds; process-wide caches stay for the engines still serving. */
+    private void releaseSessionResources() {
         if (sessionTracker != null) sessionTracker.shutdown();
         if (coordinator != null) coordinator.shutdown();
         if (semanticMemoryEngine != null) semanticMemoryEngine.shutdown();
@@ -745,8 +870,6 @@ public class McpStdioCommand implements Callable<Integer> {
         if (customMcpTools != null) customMcpTools.close();
         // Delete the temp prompt file written for delegated Claude/Gemini runs.
         if (subagentSystemPrompt != null) subagentSystemPrompt.cleanup();
-        // Close cached IndexDatabase connections
-        LocalCodeIndexTool.closeAll();
     }
 
     JsonNode handleMessage(JsonNode msg, Map<String, ToolDef> tools, ObjectMapper om) {
@@ -1204,8 +1327,14 @@ public class McpStdioCommand implements Callable<Integer> {
                                     ? progressLogger.toolStart(toolName, argMap)
                                     : null;
 
+                            // A client sees an MCP call's output only in its result; the parent
+                            // chat tails a published log of a running shell call instead.
+                            McpToolCallLiveLog liveLog = "bash".equals(toolName)
+                                    ? newToolCallLiveLog(originalArgMap) : null;
+                            if (currentCall != null) currentCall.liveLog = liveLog;
+
                             long callStart = System.currentTimeMillis();
-                            var tr = td.executor().apply(argMap);
+                            var tr = executeWithLiveLog(td, argMap, liveLog);
                             long callDuration = System.currentTimeMillis() - callStart;
 
                             // Log completion
@@ -1517,7 +1646,8 @@ public class McpStdioCommand implements Callable<Integer> {
 
     /** Send a JSON-RPC notification (no id, no response expected). */
     private void sendNotification(String method, ObjectNode params) {
-        if (mcpOut == null || om == null) return;
+        Outbound sink = outbound;
+        if (sink == null || om == null) return;
         try {
             ObjectNode notification = om.createObjectNode();
             notification.put("jsonrpc", "2.0");
@@ -1525,9 +1655,8 @@ public class McpStdioCommand implements Callable<Integer> {
             if (params != null) {
                 notification.set("params", params);
             }
-            synchronized (mcpOut) {
-                mcpOut.write(om.writeValueAsString(notification) + "\n");
-                mcpOut.flush();
+            synchronized (outboundLock) {
+                sink.send(notification);
             }
         } catch (Exception e) {
             System.err.println("[MCP] Failed to send notification " + method + ": " + e.getMessage());
@@ -1655,6 +1784,9 @@ public class McpStdioCommand implements Callable<Integer> {
                 : "[MCP] Graph contracts routed to " + graphBaseUrl
                         + " (source: " + graphRoute.source() + ")");
 
+        ToolExtensionLoader sharedTools = ToolExtensionLoader.builtins(new ToolExtensionContext(
+                om, baseUrl, graphBaseUrl, crawlBaseUrl, wd, ToolExtensionContext.Surface.MCP));
+
         // Reuse SharedResourcePool to avoid duplicating registry/config construction
         // that the daemon path already consolidates. Saves ~35MB of redundant class loading.
         var pool = new SharedResourcePool(wd);
@@ -1746,8 +1878,7 @@ public class McpStdioCommand implements Callable<Integer> {
         // ── Knowledge & memory tools ───────────────────────────────────────
         registerCliTool(tools, new TranscriptSearchTool(), om, wd);
         registerCliTool(tools, new ConversationImportTool(), om, wd);
-        registerCliTool(tools, new KnowledgeSearchCliTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new KnowledgeStatusCliTool(baseUrl, om), om, wd);
+        registerSharedTools(tools, sharedTools, om, wd, "knowledge_search", "knowledge_status");
         registerCliTool(tools, new MemoryTool(), om, wd);
         registerCliTool(tools, new IncidentTool(), om, wd);
 
@@ -1772,9 +1903,7 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new TestMilestoneTool(), om, wd);
 
         // ── Code search & graph (local fallback when no kompile-app backend) ──
-        registerCliTool(tools, new CodeSearchTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new CodeGraphTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new LocalCodeIndexTool(), om, wd);
+        registerSharedTools(tools, sharedTools, om, wd, "code_search", "code_graph", "local_code_index");
         registerCliTool(tools, new LspTool(coordinator), om, wd);
 
         // ── Tool call and diff history (search indexed agent activity) ─────
@@ -1785,51 +1914,15 @@ public class McpStdioCommand implements Callable<Integer> {
         // Crawls and graphs are read from where the crawl and graph tools below read them.
         registerCliTool(tools, new InsightsTool(crawlBaseUrl, baseUrl), om, wd);
 
-        // ── RAG & graph search (in-process by default; --url selects remote) ──
-        registerCliTool(tools, new RagSearchTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphRagSearchTool(baseUrl, om), om, wd);
-
-        // ── Full knowledge graph CRUD + graph capabilities ─────────────────
-        registerCliTool(tools, new KnowledgeGraphTool(baseUrl, om), om, wd);
-
-        // ── KB grounding (in-process by default; configured URLs select remote) ──
-        registerCliTool(tools, new AskGraphVerifyTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new AskGraphQueryTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new AskGraphExplainTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new AskGraphAssertTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new AskGraphRetractTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new AskGraphSubscribeTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new AskGraphMebnTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphReasonTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new AskGraphFusedTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new AskGraphSynthesizeTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphImportTool(graphBaseUrl, om), om, wd);
-        registerCliTool(tools, new GraphExportTool(graphBaseUrl, om), om, wd);
-        registerCliTool(tools, new CrawlSourceTool(crawlBaseUrl, om), om, wd);
-        registerCliTool(tools, new CrawlDocumentsTool(crawlBaseUrl, om), om, wd);
-        registerCliTool(tools, new CrawlDiscoveryTool(crawlBaseUrl, om), om, wd);
-        registerCliTool(tools, new ModelRuntimeTool(om), om, wd);
-        registerCliTool(tools, new PipelineTool(om), om, wd);
-        registerCliTool(tools, new CrawlControlTool(crawlBaseUrl, om), om, wd);
-        registerCliTool(tools, new CrawlResultTool(crawlBaseUrl, om), om, wd);
-
-        // ── Local crawl subprocess watchdog ─────────────────────────────
-        registerCliTool(tools, new SubprocessWatchdogTool(om), om, wd);
-
-        // ── Graph analytics (in-process by default; --url selects remote) ──
-        registerCliTool(tools, new GraphAggregateTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphForecastTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphCentralityTool(baseUrl, om), om, wd);
-
-        // ── Graph reasoning & advanced analytics (unified query can use graph-service) ──
-        registerCliTool(tools, new AskGraphClaimTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphReasoningQueryTool(graphBaseUrl, om), om, wd);
-        registerCliTool(tools, new GraphBayesTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphEmbeddingsTool(baseUrl, om), om, wd);
-        registerCliTool(tools, new GraphSimulateTool(baseUrl, om), om, wd);
-
-        // ── Process mining (in-process by default; --url selects remote) ───
-        registerCliTool(tools, new ProcessMiningCliTool(baseUrl, om), om, wd);
+        // Shared built-ins, in the historical MCP order. registerCliTool retains all host wrappers.
+        registerSharedTools(tools, sharedTools, om, wd,
+                "rag_search", "graph_search", "knowledge_graph", "ask_graph_verify", "ask_graph_query",
+                "ask_graph_explain", "ask_graph_assert", "ask_graph_retract", "ask_graph_subscribe",
+                "ask_graph_mebn", "graph_reason", "ask_graph_explain_fused", "ask_graph_synthesize",
+                "graph_import", "graph_export", "crawl_source", "crawl_documents", "crawl_discover",
+                "model_runtime", "pipeline", "crawl_control", "crawl_result", "subprocess_watchdog",
+                "graph_aggregate", "graph_forecast", "graph_centrality", "ask_graph_claim",
+                "graph_reasoning_query", "graph_bayes", "graph_embeddings", "graph_simulate", "process_mining");
 
         // ── Process management ─────────────────────────────────────────────
         var procTool = new ProcessManagementTool(processManager, coordinator);
@@ -1965,6 +2058,10 @@ public class McpStdioCommand implements Callable<Integer> {
             }
         }
 
+        for (var contribution : sharedTools.additionalContributions(tools.keySet())) {
+            registerCliTool(tools, contribution.tool(), om, wd);
+        }
+
         // Wrap the final map, including special delegation/custom tools. Invocation still
         // happens only after the transport's existing gateway and enforcer checks.
         tools.replaceAll((name, definition) -> withHooks(definition, () -> ctx(wd)));
@@ -2086,6 +2183,50 @@ public class McpStdioCommand implements Callable<Integer> {
         }
     }
 
+    private McpToolCallLiveLog newToolCallLiveLog(Map<String, Object> args) {
+        // Only a chat that started this server follows its calls; a standalone
+        // client would push every shell call into unrelated chats' process views.
+        if (coordinator == null || nonBlankEnvironment("KOMPILE_PARENT_SESSION_ID") == null) return null;
+        try {
+            Path directory = transcriptMcpLogDirectory(toolContextSessionId(transcriptId)).resolve("tool-calls");
+            Object command = args.get("command");
+            Object description = args.get("description");
+            // The client's own input, so the chat can match the log to the call it shows.
+            return new McpToolCallLiveLog(coordinator, directory,
+                    command == null ? "" : command.toString(),
+                    description == null || description.toString().isBlank()
+                            ? null : "bash: " + description,
+                    detectOwningAgent());
+        } catch (IOException | RuntimeException unavailable) {
+            System.err.println("[MCP] Tool-call live log unavailable: " + unavailable.getMessage());
+            return null;
+        }
+    }
+
+    private ToolResult executeWithLiveLog(ToolDef td, Map<String, Object> args, McpToolCallLiveLog liveLog) {
+        boolean failed = true;
+        try {
+            ToolResult result = td.executor().apply(args);
+            failed = result == null || result.isError();
+            return result;
+        } finally {
+            if (liveLog != null) {
+                liveLog.finish(failed);
+                retainToolCallLog(liveLog);
+            }
+        }
+    }
+
+    private void retainToolCallLog(McpToolCallLiveLog liveLog) {
+        if (!liveLog.isPublished()) return;
+        McpToolCallLiveLog evicted = null;
+        synchronized (retainedToolCallLogs) {
+            retainedToolCallLogs.addLast(liveLog);
+            if (retainedToolCallLogs.size() > RETAINED_TOOL_CALL_LOGS) evicted = retainedToolCallLogs.pollFirst();
+        }
+        if (evicted != null) evicted.discard();
+    }
+
     private Path backgroundTaskOutputFile(String taskId) throws IOException {
         Path directory = progressLogger != null ? progressLogger.getLogFile().getParent()
                 : transcriptMcpLogDirectory(toolContextSessionId(transcriptId));
@@ -2123,7 +2264,7 @@ public class McpStdioCommand implements Callable<Integer> {
                         java.time.Instant.now(), "failed".equals(task.status()) ? 1 : 0);
             }
         }
-        if (mcpOut == null || om == null) return;
+        if (outbound == null || om == null) return;
         ObjectNode params = om.createObjectNode();
         params.put("level", "info");
         params.put("logger", "kompile.tasks");
@@ -2196,6 +2337,11 @@ public class McpStdioCommand implements Callable<Integer> {
     }
 
     /** Register a standalone CliTool (no special constructor deps) into the MCP tool map. */
+    private void registerSharedTools(Map<String, ToolDef> tools, ToolExtensionLoader sharedTools,
+                                     ObjectMapper om, Path wd, String... ids) {
+        for (String id : ids) registerCliTool(tools, sharedTools.contribution(id).tool(), om, wd);
+    }
+
     private void registerCliTool(Map<String, ToolDef> tools,
                                   CliTool cliTool,
                                   ObjectMapper om, Path wd) {
@@ -2258,8 +2404,12 @@ public class McpStdioCommand implements Callable<Integer> {
             // Wire output consumer to both stderr and progress logger
             // so tool progress (e.g., "Parsed 100/500 files") is captured in the log
             final var loggerRef = progressLogger;
+            // Lines can arrive on a command's reader thread, so the call is captured here.
+            final InFlightCall owningCall = CURRENT_CALL.get();
             ctx.setOutputConsumer(line -> {
                 System.err.println("[tool] " + line);
+                McpToolCallLiveLog liveLog = owningCall != null ? owningCall.liveLog : null;
+                if (liveLog != null) liveLog.append(line);
                 if (loggerRef != null) {
                     // Use a generic callId — individual tools can override
                     loggerRef.toolProgress("ctx-output", "tool", line);

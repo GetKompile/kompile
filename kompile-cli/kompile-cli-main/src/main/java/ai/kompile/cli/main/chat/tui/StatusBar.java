@@ -606,8 +606,14 @@ public class StatusBar {
      * Items with {@code selected=true} are highlighted with inverse video.
      */
     public void setMenuItems(List<MenuItem> items, String message) {
-        this.menuItems = items == null ? List.of() : List.copyOf(items);
-        this.menuMessage = message == null ? "" : message;
+        List<MenuItem> nextItems = items == null ? List.of() : List.copyOf(items);
+        String nextMessage = message == null ? "" : message;
+        // Activity refreshes re-publish identical rows many times per second while
+        // background processes run; only an actual change may wake the shared
+        // redraw frame, or the transcript never gets to print new output.
+        if (nextItems.equals(this.menuItems) && nextMessage.equals(this.menuMessage)) return;
+        this.menuItems = nextItems;
+        this.menuMessage = nextMessage;
         requestRedraw();
     }
 

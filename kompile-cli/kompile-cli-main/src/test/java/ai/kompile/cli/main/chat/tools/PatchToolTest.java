@@ -139,6 +139,82 @@ class PatchToolTest {
     }
 
     @Test
+    void subagentV4aDeleteIsRefused() throws Exception {
+        Path file = tempDir.resolve("kept.txt");
+        Files.writeString(file, "keep\n");
+        context.recordFileRead(file);
+        context.markSupervisedChild();
+
+        String patch = "*** Begin Patch\n"
+                + "*** Delete File: kept.txt\n"
+                + "*** End Patch\n";
+        ToolResult result = tool.execute(params(null, patch), context);
+
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("subagents may not delete files"), result.getOutput());
+        assertEquals("keep\n", Files.readString(file));
+    }
+
+    @Test
+    void subagentV4aUpdateThatEmptiesFileIsRefused() throws Exception {
+        Path file = tempDir.resolve("kept.txt");
+        Files.writeString(file, "alpha\nbeta\n");
+        context.recordFileRead(file);
+        context.markSupervisedChild();
+
+        String patch = "*** Begin Patch\n"
+                + "*** Update File: kept.txt\n"
+                + "@@\n"
+                + "-alpha\n"
+                + "-beta\n"
+                + "*** End Patch\n";
+        ToolResult result = tool.execute(params(null, patch), context);
+
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("equivalent to deleting it"), result.getOutput());
+        assertEquals("alpha\nbeta\n", Files.readString(file));
+    }
+
+    @Test
+    void subagentUnifiedDeletionDiffIsRolledBack() throws Exception {
+        assumePatchBinary();
+        Path file = tempDir.resolve("kept.txt");
+        Files.writeString(file, "keep\n");
+        context.recordFileRead(file);
+        context.markSupervisedChild();
+
+        String diff = "--- kept.txt\n"
+                + "+++ /dev/null\n"
+                + "@@ -1 +0,0 @@\n"
+                + "-keep\n";
+        ToolResult result = tool.execute(params("kept.txt", diff), context);
+
+        assertTrue(result.isError(), result::getOutput);
+        assertTrue(result.getOutput().contains("subagents may not delete files"), result.getOutput());
+        assertEquals("keep\n", Files.readString(file));
+    }
+
+    @Test
+    void subagentUnifiedDiffThatEmptiesFileIsRolledBack() throws Exception {
+        assumePatchBinary();
+        Path file = tempDir.resolve("kept.txt");
+        Files.writeString(file, "keep\n");
+        context.recordFileRead(file);
+        context.markSupervisedChild();
+
+        String diff = "--- kept.txt\n"
+                + "+++ kept.txt\n"
+                + "@@ -1 +0,0 @@\n"
+                + "-keep\n";
+        ToolResult result = tool.execute(params("kept.txt", diff), context);
+
+        assertTrue(result.isError(), result::getOutput);
+        assertTrue(result.getOutput().contains("subagents may not delete")
+                || result.getOutput().contains("equivalent to deleting it"), result.getOutput());
+        assertEquals("keep\n", Files.readString(file));
+    }
+
+    @Test
     void v4aUpdateRequiresFreshRead() throws Exception {
         Path file = writeHello();
 

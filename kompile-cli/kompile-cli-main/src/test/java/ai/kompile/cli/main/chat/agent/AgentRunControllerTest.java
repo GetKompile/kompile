@@ -29,6 +29,19 @@ class AgentRunControllerTest {
     }
 
     @Test
+    void durableContinuationRequiresTheSameSupervisedApprovalAsDelegation() {
+        AgentRunController controller = new AgentRunController(AgentRunController.Mode.SUPERVISED);
+        ObjectNode resume = mapper.createObjectNode().put("action", "resume");
+        assertFalse(controller.beforeTool("subagent_resume", resume).allowed());
+        assertFalse(controller.beforeTool("mcp__kompile__subagent_resume", resume).allowed());
+        assertTrue(controller.beforeTool("subagent_resume", mapper.createObjectNode().put("action", "list")).allowed());
+        assertTrue(controller.beforeTool("subagent_resume", mapper.createObjectNode().put("action", "show")).allowed());
+        controller.approveOnce();
+        assertTrue(controller.beforeTool("subagent_resume", resume).allowed());
+        assertFalse(controller.beforeTool("subagent_resume", resume).allowed());
+    }
+
+    @Test
     void pauseResumeAndSingleStepAreSafePointControls() {
         AgentRunController controller = new AgentRunController(
                 AgentRunController.Mode.SINGLE_STEP);

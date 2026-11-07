@@ -1,6 +1,14 @@
 /* Copyright 2025 Kompile Inc. Licensed under the Apache License, Version 2.0. */
 package ai.kompile.cli.main.project;
 
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -510,7 +518,7 @@ class NativeChatModelsTest {
             String result = NativeChatModels.call(root,
                     NativeChatModels.resolve(root, null, null),
                     "extract the table", "ocr assistant",
-                    List.of(new DirectLlmClient.AttachmentInput(
+                    List.of(new AttachmentInput(
                             "page.png", "image/png", true, "aWNvbi1ieXRlcw==", null)),
                     mapper.readTree("{\"type\":\"object\",\"properties\":{\"ocr\":{\"type\":\"string\"}}}"),
                     Duration.ofSeconds(2), 4096);

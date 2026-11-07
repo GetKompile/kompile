@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.extensions.tools.ToolExtensionContext;
+import ai.kompile.cli.main.extensions.tools.ToolExtensionLoader;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
@@ -27,27 +29,12 @@ import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphClaimTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphRetractTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphFusedTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphSynthesizeTool;
-import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlControlTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDiscoveryTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
 import ai.kompile.cli.main.chat.tools.grounding.ModelRuntimeTool;
 import ai.kompile.cli.main.chat.tools.grounding.PipelineTool;
-import ai.kompile.cli.main.chat.tools.grounding.VlmModelDefinitionTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlResultTool;
-import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
-import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
-import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
-import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import ai.kompile.cli.main.graph.GraphServiceRouting;
@@ -56,6 +43,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphClaimTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphFusedTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphMebnTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphRetractTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphSynthesizeTool;
+import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
+import ai.kompile.cli.main.chat.tools.grounding.GraphReasonTool;
+import ai.kompile.cli.main.chat.tools.grounding.VlmModelDefinitionTool;
 
 /**
  * Factory for creating a fully-wired ToolRegistry with all built-in tools.
@@ -150,6 +152,10 @@ public class ToolRegistryFactory {
                 ? null
                 : KompileServiceEndpoints.resolve(KompileService.CRAWL, crawlRoutingUrl).baseUrl();
 
+        ToolExtensionLoader sharedTools = ToolExtensionLoader.builtins(new ToolExtensionContext(
+                objectMapper, baseUrl, graphBaseUrl, crawlBaseUrl, resolvedWorkingDirectory,
+                ToolExtensionContext.Surface.CHAT));
+
         // File I/O tools
         registry.register(new ReadTool());
         registry.register(new ReadBatchTool());
@@ -169,9 +175,7 @@ public class ToolRegistryFactory {
         registry.register(new ExploreTool());
 
         // Language-server code intelligence
-        registerGuarded(registry, highMemoryGuard, new CodeSearchTool(baseUrl, objectMapper));
-        registerGuarded(registry, highMemoryGuard, new CodeGraphTool(baseUrl, objectMapper));
-        registerGuarded(registry, highMemoryGuard, new LocalCodeIndexTool());
+        registerShared(registry, highMemoryGuard, sharedTools, "code_search", "code_graph", "local_code_index");
         registry.register(new LspTool(coordinationManager));
 
         // Execution tools
@@ -212,42 +216,18 @@ public class ToolRegistryFactory {
         // Knowledge & memory tools
         registry.register(new TranscriptSearchTool());
         registry.register(new ConversationImportTool());
-        registry.register(new KnowledgeSearchCliTool(baseUrl, objectMapper));
-        registry.register(new KnowledgeStatusCliTool(baseUrl, objectMapper));
+        registerShared(registry, highMemoryGuard, sharedTools, "knowledge_search", "knowledge_status");
         registry.register(new DiffIndexTool(baseUrl, objectMapper));
         registry.register(new ToolCallCatalogTool());
         // Crawls and graphs are read from where the crawl and knowledge-graph tools read them.
         registry.register(new InsightsTool(crawlBaseUrl, baseUrl));
-        registry.register(new RagSearchTool(baseUrl, objectMapper));
-        registry.register(new GraphRagSearchTool(baseUrl, objectMapper));
-        registry.register(new GraphAggregateTool(baseUrl, objectMapper));
-        registry.register(new GraphForecastTool(baseUrl, objectMapper));
-        registry.register(new GraphCentralityTool(baseUrl, objectMapper));
-        registry.register(new KnowledgeGraphTool(baseUrl, objectMapper));
-        registry.register(new AskGraphQueryTool(baseUrl, objectMapper));
-        registry.register(new AskGraphVerifyTool(baseUrl, objectMapper));
-        registry.register(new AskGraphAssertTool(baseUrl, objectMapper));
-        registry.register(new AskGraphRetractTool(baseUrl, objectMapper));
-        registry.register(new AskGraphMebnTool(baseUrl, objectMapper));
-        registry.register(new AskGraphExplainTool(baseUrl, objectMapper));
-        registry.register(new AskGraphFusedTool(baseUrl, objectMapper));
-        registry.register(new AskGraphSynthesizeTool(baseUrl, objectMapper));
-        registry.register(new AskGraphSubscribeTool(baseUrl, objectMapper));
-        registry.register(new GraphReasonTool(baseUrl, objectMapper));
-        registry.register(new GraphImportTool(graphBaseUrl, objectMapper));
-        registry.register(new GraphExportTool(graphBaseUrl, objectMapper));
-        registerGuarded(registry, highMemoryGuard,
-                new CrawlSourceTool(crawlBaseUrl, objectMapper));
-        registerGuarded(registry, highMemoryGuard,
-                new CrawlDocumentsTool(crawlBaseUrl, objectMapper));
-        registry.register(new CrawlDiscoveryTool(crawlBaseUrl, objectMapper));
-        registerGuarded(registry, highMemoryGuard, new ModelRuntimeTool(objectMapper));
-        registry.register(new VlmModelDefinitionTool(objectMapper));
-        registerGuarded(registry, highMemoryGuard, new PipelineTool(objectMapper));
-        registerGuarded(registry, highMemoryGuard,
-                new CrawlControlTool(crawlBaseUrl, objectMapper));
-        registerGuarded(registry, highMemoryGuard,
-                new CrawlResultTool(crawlBaseUrl, objectMapper));
+        registerShared(registry, highMemoryGuard, sharedTools,
+                "rag_search", "graph_search", "graph_aggregate", "graph_forecast", "graph_centrality",
+                "knowledge_graph", "ask_graph_query", "ask_graph_verify", "ask_graph_assert", "ask_graph_retract",
+                "ask_graph_mebn", "ask_graph_explain", "ask_graph_explain_fused", "ask_graph_synthesize",
+                "ask_graph_subscribe", "graph_reason", "graph_import", "graph_export", "crawl_source",
+                "crawl_documents", "crawl_discover", "model_runtime", "vlm_model_definition", "pipeline",
+                "crawl_control", "crawl_result");
         // Selected only at freeze when the installed manifest opts into native content authority.
         // Ordinary/legacy registries retain their original instances, routes and resource guards.
         if (registry.hasProductConstructionGuards()) {
@@ -260,14 +240,9 @@ public class ToolRegistryFactory {
             registry.registerProductContentDelegate(new KnowledgeGraphTool(null, objectMapper));
             registerProductContentReaders(registry, objectMapper);
         }
-        registry.register(new SubprocessWatchdogTool(objectMapper));
-        registry.register(new ProcessMiningCliTool(baseUrl, objectMapper));
-        registry.register(new AskGraphClaimTool(baseUrl, objectMapper));
-        registry.register(new GraphReasoningQueryTool(graphBaseUrl, objectMapper));
-        registry.register(new GraphBayesTool(baseUrl, objectMapper));
-        registerGuarded(registry, highMemoryGuard,
-                new GraphEmbeddingsTool(baseUrl, objectMapper));
-        registry.register(new GraphSimulateTool(baseUrl, objectMapper));
+        registerShared(registry, highMemoryGuard, sharedTools,
+                "subprocess_watchdog", "process_mining", "ask_graph_claim", "graph_reasoning_query",
+                "graph_bayes", "graph_embeddings", "graph_simulate");
         registry.register(new MemoryTool());
 
         // Provider-neutral lifecycle tools that do not own background workers.
@@ -324,6 +299,10 @@ public class ToolRegistryFactory {
             registry.register(new RoleManagerTool(roleManager, objectMapper));
         }
 
+        for (var contribution : sharedTools.additionalContributions(registry.ids())) {
+            if (contribution.chatHighMemoryGuard()) registerGuarded(registry, highMemoryGuard, contribution.tool());
+            else registry.register(contribution.tool());
+        }
         return registry;
     }
 
@@ -334,6 +313,15 @@ public class ToolRegistryFactory {
         registry.registerProductContentDelegate(new RagSearchTool(null, mapper));
         registry.registerProductContentDelegate(new GraphRagSearchTool(null, mapper));
         registry.registerProductContentDelegate(new GraphReasoningQueryTool((String) null, mapper));
+    }
+
+    private static void registerShared(ToolRegistry registry, HighMemoryToolCallGuard guard,
+                                       ToolExtensionLoader sharedTools, String... ids) {
+        for (String id : ids) {
+            var contribution = sharedTools.contribution(id);
+            if (contribution.chatHighMemoryGuard()) registerGuarded(registry, guard, contribution.tool());
+            else registry.register(contribution.tool());
+        }
     }
 
     private static void registerGuarded(ToolRegistry registry,

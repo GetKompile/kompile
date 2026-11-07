@@ -8,6 +8,15 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatCompleter;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.context.ConversationLedger;
 import ai.kompile.cli.main.chat.permission.PermissionService;
@@ -27,6 +36,7 @@ import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
 
 import java.lang.reflect.Field;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -72,8 +82,8 @@ class AgenticChatLoopContextOverflowRecoveryTest {
 
         loop.setReminderManager(ReminderManager.inMemory(
                 List.of("keep this reminder on the retry"), List.of()));
-        DirectLlmClient.AttachmentInput attachment =
-                new DirectLlmClient.AttachmentInput("evidence.txt", "text/plain");
+        AttachmentInput attachment =
+                new AttachmentInput("evidence.txt", "text/plain");
         loop.setPendingAttachments(List.of(attachment));
 
         String output = loop.chat(
@@ -99,6 +109,40 @@ class AgenticChatLoopContextOverflowRecoveryTest {
         assertEquals(1, activeUsers,
                 "context recovery must not append a second durable user event");
         assertOneCompactionNotice(notices);
+    }
+
+    @Test
+    void overflowCheckpointCarriesTheMemoryFilesAndSkillsItSummarizes() throws Exception {
+        Path memory = workingDirectory.resolve(".kompile").resolve("memory");
+        Files.createDirectories(memory);
+        Files.writeString(memory.resolve("workflow_rule.md"), "Always batch fixes per build.\n");
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        ScriptedClient client = new ScriptedClient(mapper, Scenario.FIRST_OVERFLOW);
+        AgenticChatLoop loop = newLoop(mapper, client, new ToolRegistry(mapper));
+        String session = "overflow-reload-" + UUID.randomUUID();
+        loop.configureConversationSession(session);
+        ConversationLedger ledger = ledgerOf(loop);
+        ledger.append(CompactionService.ConversationEntry.user(
+                "<skill name=\"fix\">\nFix build or test failures\n</skill>\n" + "u".repeat(4_000)));
+        ledger.append(CompactionService.ConversationEntry.toolCall(
+                "memory", "memory-1", "{\"action\":\"read\",\"file\":\"workflow_rule.md\"}"));
+        ledger.append(CompactionService.ConversationEntry.toolResult(
+                "memory", "memory-1", "Always batch fixes per build."));
+        ledger.append(CompactionService.ConversationEntry.assistant("a".repeat(4_000)));
+        for (int i = 0; i < 2; i++) {
+            ledger.append(CompactionService.ConversationEntry.user("old request " + i + " " + "u".repeat(4_000)));
+            ledger.append(CompactionService.ConversationEntry.assistant("old response " + i + " " + "a".repeat(4_000)));
+        }
+        loop.rebuildDirectHistoryForProviderSwitch();
+
+        assertEquals("recovered", loop.chat(
+                "continue the implementation", session, "coder", "default", false));
+
+        String summary = ledger.snapshot().checkpoint().summary();
+        assertTrue(summary.contains("<kompile_compaction_reload>"), summary);
+        // user.home is the project here, so the file resolves under either scope label.
+        assertTrue(summary.contains("workflow_rule.md\nAlways batch fixes per build."), summary);
+        assertTrue(summary.contains("<skill name=\"fix\">\nFix build or test failures\n</skill>"), summary);
     }
 
     @Test
@@ -853,8 +897,8 @@ class AgenticChatLoopContextOverflowRecoveryTest {
         String session = "attachment-count-" + UUID.randomUUID();
         seedHistoryOfTokens(loop, session, 90_000);
         setUsageAnchor(loop, 900_000, 90_000);
-        DirectLlmClient.AttachmentInput attachment =
-                new DirectLlmClient.AttachmentInput("evidence.pdf", "application/pdf");
+        AttachmentInput attachment =
+                new AttachmentInput("evidence.pdf", "application/pdf");
         loop.setPendingAttachments(List.of(attachment));
 
         assertEquals("done", loop.chat("continue", session, "coder", "default", false));

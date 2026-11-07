@@ -143,6 +143,11 @@ public class EditTool implements CliTool {
                 return ToolResult.error(e.getMessage());
             }
 
+            String deletion = subagentDeletionError(context, path, content, applied.newContent());
+            if (deletion != null) {
+                return ToolResult.error(deletion);
+            }
+
             // Under an agent identity: renew the lease and re-verify the lock in one
             // coordinator critical section, then write — or refuse without writing.
             String refused = EditCoordinatorTool.guardEditError(coordinationManager, agent, path);
@@ -181,6 +186,28 @@ public class EditTool implements CliTool {
         } catch (IOException e) {
             return ToolResult.error("Error editing file: " + e.getMessage());
         }
+    }
+
+    /**
+     * Subagents (any context marked as a supervised child: in-process runners, MCP stdio
+     * at {@code KOMPILE_SUBAGENT_DEPTH >= 1}, daemon connections with a subagent depth)
+     * may not use an edit to empty a file — blanking every line is a deletion in all but
+     * name, and file removal stays with the parent agent. Returns the refusal, or null.
+     */
+    static String subagentDeletionError(ToolContext context, Path path,
+                                        String before, String after) {
+        if (context == null || !context.isSupervisedChild()) return null;
+        if (before.isBlank() || !after.isBlank()) return null;
+        return "Refused: this edit would leave " + path + " empty, which is equivalent to "
+                + "deleting it. Subagents may not delete files or empty them through edits; "
+                + "report the deletion to the parent agent instead.";
+    }
+
+    /** Refusal for a subagent removing {@code path} outright (patch deletions), or null. */
+    static String subagentRemovalError(ToolContext context, Path path) {
+        if (context == null || !context.isSupervisedChild()) return null;
+        return "Refused: subagents may not delete files (" + path + "); "
+                + "report the deletion to the parent agent instead.";
     }
 
     /**

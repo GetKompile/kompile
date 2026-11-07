@@ -19,7 +19,7 @@ package ai.kompile.cli.main.chat.tools;
 import java.util.Map;
 
 /**
- * Result returned by a {@link CliTool} execution.
+ * Result returned by an {@link ai.kompile.cli.plugin.api.tools.ExtensionTool} execution.
  */
 public class ToolResult {
     /** Metadata flag indicating that the output body was already emitted live. */

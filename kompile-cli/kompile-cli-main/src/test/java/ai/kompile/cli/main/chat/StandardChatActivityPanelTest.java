@@ -23,6 +23,55 @@ import static org.junit.jupiter.api.Assertions.*;
 class StandardChatActivityPanelTest {
 
     @Test
+    void killByKeyRoutesSidebarSelectionIntoTheActivityKillPath(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("sidebar-kill", workspace)) {
+            var renderer = new TerminalRenderer(true);
+            StatusBar bar = new StatusBar(tasks, processes, null, renderer);
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6, renderer);
+            var running = processes.launch("sleep 30", "Sidebar-selected managed process",
+                    workspace);
+            // The sidebar's key for this row is the panel's activity key.
+            String sidebarKey = "process:" + running.getId();
+            String result = panel.killByKey(sidebarKey);
+            assertTrue(result.contains("kill requested for " + running.getId()), result);
+            assertTrue(awaitCondition(() -> !running.isRunning()),
+                    "sidebar Delete must terminate the selected managed process");
+        }
+    }
+
+    @Test
+    void killByKeyWithUnknownOrBlankKeyFailsSafeWithoutTransferringTheKill(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path unrelated) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("sidebar-kill-safe", unrelated)) {
+            var renderer = new TerminalRenderer(true);
+            StatusBar bar = new StatusBar(tasks, processes, null, renderer);
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6, renderer);
+            var running = processes.launch("sleep 30", "Must stay alive", unrelated);
+            assertEquals("No activity selected", panel.killByKey(null));
+            assertEquals("No activity selected", panel.killByKey("   "));
+            assertEquals("No activity selected", panel.killByKey("process:does-not-exist"));
+            assertFalse(panel.isFocused(), "an unmatched key must not leave the panel focused");
+            assertTrue(running.isRunning(), "a stale sidebar selection must not kill a live process");
+            // Cleanup so the test leaves no sleep process behind.
+            assertTrue(processes.kill(running.getId()));
+            assertTrue(awaitCondition(() -> !running.isRunning()));
+        }
+    }
+
+    private static boolean awaitCondition(java.util.function.BooleanSupplier condition)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 2_000L;
+        while (System.currentTimeMillis() < deadline) {
+            if (condition.getAsBoolean()) return true;
+            Thread.sleep(20L);
+        }
+        return condition.getAsBoolean();
+    }
+
+    @Test
     void typedChildBrowserUsesMainProjectionAndLiveUiPolicyWithoutParentLeakage(
             @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
         BackgroundTaskManager tasks = new BackgroundTaskManager();
@@ -60,6 +109,58 @@ class StandardChatActivityPanelTest {
             processes.complete(row.getId());
             assertTrue(panel.currentView().content().contains("child prose continues"));
             assertTrue(processes.readOutput(row.getId(), 10).contains("raw-log-sentinel"), "diagnostic log is unchanged");
+        }
+    }
+
+    @Test
+    void mirroredTaskBrowserUsesTheSameStyledProjectionAndLivePreferences(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        var child = new ai.kompile.cli.main.chat.render.SubagentTranscript();
+        child.message("user", "inspect code");
+        child.text("thinking", "private reasoning");
+        child.text("assistant", "# Findings\n**Formatted** child prose\n```java\npublic class App {}\n```\n");
+        child.toolStart("read", "mcp__kompile__read", "{\"file_path\":\"App.java\"}");
+        child.toolComplete("read", "public class App {}", false);
+        var sidecar = workspace.resolve("child.transcript.json");
+        child.writeSnapshot(sidecar);
+        var raw = workspace.resolve("child.log");
+        java.nio.file.Files.writeString(raw, "raw-log-sentinel\nThinking:\nAssistant:\n");
+        for (boolean ansi : List.of(false, true)) {
+            try (var processes = new BackgroundProcessManager("mirrored-child-" + ansi, workspace)) {
+                var renderer = new TerminalRenderer(ansi);
+                var bar = new StatusBar(tasks, processes, null, renderer);
+                var panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6, renderer);
+                var config = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+                panel.setTranscriptUiConfig(() -> config);
+                var row = processes.upsertShared("child", "kompile", "MCP child", -1, java.time.Instant.now(),
+                        BackgroundProcessManager.ProcessState.RUNNING, null, null, raw,
+                        Map.of("kind", "subagent", "transcript_file", sidecar.toString(), "transcript_revision", "1"));
+                panel.refresh();
+                assertTrue(panel.selectNext());
+                var projection = new ai.kompile.cli.main.chat.tui.ChatSidebar(renderer);
+                for (String preset : List.of("classic", "focused")) {
+                    config.applyPreset(preset);
+                    config.set("content.tool.inline", "full");
+                    var view = panel.openSelectedView();
+                    for (var block : child.blocks(renderer)) {
+                        String expected = projection.inline(block, config);
+                        if (!expected.isBlank()) assertTrue(view.content().contains(expected), view.content());
+                    }
+                    assertFalse(view.content().contains("raw-log-sentinel"));
+                    assertFalse(panel.resultDisplayBlocks().toString().contains("child prose"));
+                }
+                config.set("content.thinking.inline", "none");
+                config.set("content.thinking.sidebar", "off");
+                assertFalse(panel.currentView().content().contains("private reasoning"));
+                var goodFrame = row.transcriptBlocks(renderer);
+                java.nio.file.Files.writeString(sidecar, "invalid");
+                processes.upsertShared("child", "kompile", "MCP child", -1, row.getStartTime(),
+                        BackgroundProcessManager.ProcessState.RUNNING, null, null, raw,
+                        Map.of("kind", "subagent", "transcript_file", sidecar.toString(), "transcript_revision", "2"));
+                assertEquals(goodFrame, row.transcriptBlocks(renderer), "retain the last valid frame on a bad update");
+                child.writeSnapshot(sidecar);
+            }
         }
     }
 
@@ -1548,6 +1649,216 @@ class StandardChatActivityPanelTest {
         } finally {
             processes.close();
             java.nio.file.Files.deleteIfExists(ownerLog);
+        }
+    }
+
+    @Test
+    void directSubagentViewProjectsTypedBlocksExactlyLikeTheProcessBrowser(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("child-direct-format", workspace)) {
+            var renderer = new TerminalRenderer(true);
+            StatusBar bar = new StatusBar(tasks, processes, null, renderer);
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6, renderer);
+            var config = ai.kompile.cli.main.chat.config.ChatUiConfig.classic();
+            panel.setTranscriptUiConfig(() -> config);
+            var transcript = new ai.kompile.cli.main.chat.render.SubagentTranscript();
+            SubagentRunner runner = new SubagentRunner() {
+                @Override public String runSubagent(AgentConfig agentConfig, String prompt, ToolContext parentContext) {
+                    throw new UnsupportedOperationException("not run in this test");
+                }
+                @Override public ai.kompile.cli.main.chat.render.SubagentTranscript transcriptOf(String subagentId) {
+                    return "child-1".equals(subagentId) ? transcript : null;
+                }
+            };
+            panel.setSubagentRunner(runner);
+            bar.registerSubagent("child-1", "explore", "Analyze things");
+            bar.appendSubagentOutput("child-1", "raw-log-sentinel");
+            transcript.text("thinking", "child reasoning");
+            transcript.text("assistant", "**Formatted** child prose");
+            transcript.toolStart("t1", "Read", "{\"path\":\"x.java\"}");
+            transcript.toolComplete("t1", "file contents", false);
+            panel.refresh();
+            assertTrue(panel.activityItems().stream().anyMatch(item ->
+                            item.kind() == StandardChatActivityPanel.ActivityKind.SUBAGENT
+                                    && item.id().equals("child-1")),
+                    "the registered child must appear as a selectable SUBAGENT row");
+            assertTrue(panel.selectNext());
+            var view = panel.openSelectedView();
+            var projection = new ai.kompile.cli.main.chat.tui.ChatSidebar(renderer);
+            for (var block : transcript.blocks(renderer)) {
+                assertTrue(view.content().contains(projection.inline(block, config)), view.content());
+            }
+            assertFalse(view.content().contains("**Formatted**"),
+                    "markdown must be projected, not shown raw: " + view.content());
+            assertFalse(view.content().contains("raw-log-sentinel"),
+                    "typed parts replace the legacy raw transcript: " + view.content());
+            assertFalse(panel.resultDisplayBlocks().toString().contains("child prose"),
+                    "child prose must stay in the child view, never parent cards");
+
+            config.set("content.thinking.inline", "none");
+            config.set("content.thinking.sidebar", "off");
+            var refreshed = panel.currentView();
+            assertFalse(refreshed.content().contains("child reasoning"), refreshed.content());
+            transcript.text("assistant", " continues");
+            assertTrue(panel.currentView().content().contains(" continues"),
+                    "a follow-up part after the tool card still projects live: " + view.content());
+            transcript.finish();
+            assertTrue(panel.currentView().content().contains(" continues"));
+        }
+    }
+
+    @Test
+    void directSubagentViewFallsBackToLegacyTranscriptWhenNoTypedPartsExist(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("child-legacy", workspace)) {
+            var renderer = new TerminalRenderer(true);
+            StatusBar bar = new StatusBar(tasks, processes, null, renderer);
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6, renderer);
+            SubagentRunner runner = new SubagentRunner() {
+                @Override public String runSubagent(AgentConfig agentConfig, String prompt, ToolContext parentContext) {
+                    throw new UnsupportedOperationException("not run in this test");
+                }
+            };
+            panel.setSubagentRunner(runner);
+            bar.registerSubagent("child-2", "general", "Summarize docs");
+            bar.appendSubagentOutput("child-2", "legacy log line");
+            panel.refresh();
+            assertTrue(panel.selectNext());
+            var view = panel.openSelectedView();
+            assertTrue(view.content().contains("legacy log line"),
+                    "a runner without typed parts keeps the raw transcript: " + view.content());
+        }
+    }
+
+    @Test
+    void processLaunchRowFollowsItsProcessAndTailsTheLiveLog(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("launch-follow", workspace)) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(false));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6,
+                    () -> java.time.Instant.now().plusSeconds(3600), (millis, callback) -> { });
+            var entry = processes.launch("echo first-line; sleep 1; echo second-line; sleep 30",
+                    "follow me", workspace);
+            String input = "{\"action\":\"launch\",\"command\":\"build\"}";
+            panel.recordToolStart("launch-1", "process", input);
+            panel.recordToolComplete("launch-1", "process", input, ToolResult.success(
+                    "launched " + entry.getId(), "Launched background process", Map.of("processId", entry.getId())));
+
+            // The clock is an hour ahead: an unlinked completed call would have expired.
+            var row = toolItem(panel, "tool:launch-1");
+            assertNotNull(row, "a launch row stays while its process runs");
+            assertTrue(row.active(), row.toString());
+            assertTrue(row.status().contains(entry.getId() + " running"), row.status());
+
+            awaitOutput(processes, entry.getId(), "first-line");
+            var view = openView(panel, "tool:launch-1");
+            assertTrue(view.content().contains("live log: " + entry.getId()), view.content());
+            assertTrue(view.content().contains("first-line"), view.content());
+            awaitOutput(processes, entry.getId(), "second-line");
+            assertTrue(panel.currentView().content().contains("second-line"),
+                    "the opened call view must follow output written after the call returned");
+
+            processes.kill(entry.getId());
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+            while (entry.isRunning() && System.nanoTime() < deadline) Thread.sleep(50);
+            assertFalse(entry.isRunning());
+            // Still listed only because it is the opened view; it reports the end.
+            String ended = toolItem(panel, "tool:launch-1").status();
+            assertTrue(ended.contains(entry.getId() + " " + entry.getState().name().toLowerCase(java.util.Locale.ROOT)),
+                    ended);
+        }
+    }
+
+    @Test
+    void mcpProcessCallFollowsTheMirroredProcessNamedInItsResult(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("chat-session", workspace)) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(false));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            var log = workspace.resolve("mcp-build.log");
+            java.nio.file.Files.writeString(log, "remote build line\n");
+            // Another chat's process with the same owner id must never be picked.
+            processes.upsertShared("shared-mcp-other-proc-7", "make", "other chat's make", -1,
+                    java.time.Instant.now(), BackgroundProcessManager.ProcessState.RUNNING, null, null, null,
+                    Map.of("sharedProcessId", "proc-7", "parentSessionId", "other-chat"));
+            processes.upsertShared("shared-mcp-1-proc-7", "make", "make", -1, java.time.Instant.now(),
+                    BackgroundProcessManager.ProcessState.RUNNING, null, null, log,
+                    Map.of("sharedProcessId", "proc-7", "parentSessionId", "chat-session"));
+            String input = "{\"action\":\"launch\",\"command\":\"make\"}";
+            panel.recordToolStart("toolu_launch", "mcp__kompile__process", input);
+            // Claude Code hands back only the MCP result text.
+            panel.recordToolComplete("toolu_launch", "mcp__kompile__process", input, ToolResult.success(
+                    "launched", "Launched background process:\n  ID:      proc-7\n  PID:     42"));
+
+            var row = toolItem(panel, "tool:toolu_launch");
+            assertNotNull(row);
+            assertTrue(row.status().contains("proc-7 running"), row.status());
+            var view = openView(panel, "tool:toolu_launch");
+            assertTrue(view.content().contains("live log: proc-7"), view.content());
+            assertTrue(view.content().contains("remote build line"), view.content());
+        }
+    }
+
+    @Test
+    void mcpBashCallShowsItsLiveLogInItsOwnRowOnly(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("chat-session", workspace)) {
+            StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(false));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(tasks, processes, bar, () -> 6);
+            String input = "{\"command\":\"mvn -q test\",\"description\":\"run tests\"}";
+            panel.recordToolStart("toolu_bash", "mcp__kompile__bash", input);
+            var log = workspace.resolve("toolcall.log");
+            java.nio.file.Files.writeString(log, "Tests run: 3, Failures: 0\n");
+            var callLog = processes.upsertShared("shared-mcp-1-toolcall-1", "mvn -q test", "bash: run tests", -1,
+                    java.time.Instant.now(), BackgroundProcessManager.ProcessState.RUNNING, null, null, log,
+                    Map.of("sharedProcessId", "toolcall-1", "parentSessionId", "chat-session",
+                            "kind", StandardChatActivityPanel.TOOL_CALL_PROCESS_KIND));
+            var foreign = processes.upsertShared("shared-mcp-2-toolcall-2", "mvn -q test", "bash: run tests", -1,
+                    java.time.Instant.now(), BackgroundProcessManager.ProcessState.RUNNING, null, null, log,
+                    Map.of("sharedProcessId", "toolcall-2", "parentSessionId", "other-chat",
+                            "kind", StandardChatActivityPanel.TOOL_CALL_PROCESS_KIND));
+
+            var items = panel.activityItems();
+            assertTrue(items.stream().noneMatch(item -> item.key().equals("process:" + callLog.getId())),
+                    "the call's log is folded into its tool row: " + items);
+            assertTrue(items.stream().noneMatch(item -> item.key().equals("process:" + foreign.getId())),
+                    "another chat's shell call is not this pane's work: " + items);
+            assertTrue(panel.resultDisplayBlocks().stream().noneMatch(block -> block.toString().contains("Tests run")),
+                    "the provider's own tool card carries the output; no duplicate transcript card");
+
+            var view = openView(panel, "tool:toolu_bash");
+            assertTrue(view.content().contains("Tests run: 3"), view.content());
+
+            panel.recordToolComplete("toolu_bash", "mcp__kompile__bash", input,
+                    ToolResult.success("exit 0", "Tests run: 3, Failures: 0"));
+            assertFalse(panel.currentView().content().contains("live log:"),
+                    "once the result arrives it is the record, not the duplicate log");
+        }
+    }
+
+    private static StandardChatActivityPanel.ActivityItem toolItem(StandardChatActivityPanel panel, String key) {
+        return panel.activityItems().stream().filter(item -> item.key().equals(key)).findFirst().orElse(null);
+    }
+
+    private static StandardChatActivityPanel.ActivityView openView(StandardChatActivityPanel panel, String key) {
+        for (int i = 0; i < 16 && panel.selectNext(); i++) {
+            var view = panel.openSelectedView();
+            if (view != null && key.equals(view.key())) return view;
+        }
+        fail("no selectable row " + key + " in " + panel.activityItems());
+        return null;
+    }
+
+    private static void awaitOutput(BackgroundProcessManager processes, String id, String text) throws Exception {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+        while (!processes.readOutput(id, 50).contains(text)) {
+            if (System.nanoTime() > deadline) fail("process " + id + " never printed " + text);
+            Thread.sleep(50);
         }
     }
 }

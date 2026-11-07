@@ -1,6 +1,15 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.exec.ChatAttachmentLoader;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
@@ -89,7 +98,7 @@ class ChatAttachmentCommandTest {
                         (byte) 0xE2, (byte) 0xE3, (byte) 0xCF, (byte) 0xD3});
         router().handleSlashCommand("/file " + pdf);
 
-        List<DirectLlmClient.AttachmentInput> sent = handler().loadAttachments();
+        List<AttachmentInput> sent = handler().loadAttachments();
 
         assertEquals(1, sent.size());
         assertFalse(sent.get(0).isImage());
@@ -110,7 +119,7 @@ class ChatAttachmentCommandTest {
         Path notes = Files.writeString(tempDir.resolve("notes.txt"), "hello");
         pending.add(new ChatRepl.PendingAttachment(notes, "text/plain", false));
 
-        List<DirectLlmClient.AttachmentInput> sent = handler().loadAttachments();
+        List<AttachmentInput> sent = handler().loadAttachments();
 
         // 19 MiB fit; e.png would make 24 of the 20 allowed, so it stays behind; the note fits.
         assertEquals(List.of("a.png", "b.png", "c.png", "d.png", "notes.txt"),

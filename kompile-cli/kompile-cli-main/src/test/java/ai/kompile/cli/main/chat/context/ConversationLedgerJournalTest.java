@@ -188,12 +188,27 @@ class ConversationLedgerJournalTest {
             if (fail.getAndSet(false)) throw new IOException("injected force failure after write");
         });
         journal.open();
-        byte[] prefix = Files.readAllBytes(journal(id));
         assertThrows(IOException.class, () -> journal.append(0, 1, "event", event(1, "not committed")));
-        assertArrayEquals(prefix, Files.readAllBytes(journal(id)));
+        assertEquals(2, Files.readAllLines(journal(id)).size(), "rollback keeps only the two migration rows");
         assertTrue(journal.isCurrent(0));
         journal.append(0, 1, "event", event(1, "committed on retry"));
         assertEquals("committed on retry", ledger(id).snapshot().allEvents().get(0).content());
+    }
+
+    @Test
+    void newSessionTouchesNoDiskUntilItsFirstWriteAndAnotherWriterMakesItStale() throws Exception {
+        String id = id();
+        ConversationLedger first = ledger(id);
+        ConversationLedger second = ledger(id);
+        assertFalse(Files.exists(root().resolve(id + ".context")), "opening a new session forces nothing");
+        assertEquals(0, first.snapshot().version());
+
+        first.append(CompactionService.ConversationEntry.user("first write installs the journal"));
+        assertEquals(3, Files.readAllLines(journal(id)).size(), "two migration rows and the event");
+        assertTrue(Files.isRegularFile(journal(id).resolveSibling("committed")));
+        assertThrows(IllegalStateException.class,
+                () -> second.append(CompactionService.ConversationEntry.user("lost update")));
+        assertEquals(1, ledger(id).snapshot().allEvents().size());
     }
 
     @Test
@@ -242,6 +257,7 @@ class ConversationLedgerJournalTest {
     void retiredSessionAndExclusiveRetentionLeaseCannotBeResurrected() throws Exception {
         String id = id();
         ConversationLedger ledger = ledger(id);
+        ledger.append(CompactionService.ConversationEntry.user("before retirement"));
         byte[] prefix = Files.readAllBytes(journal(id));
         try (FileChannel channel = FileChannel.open(root().resolve(".retention.lock"), StandardOpenOption.WRITE);
              var ignored = channel.lock()) {

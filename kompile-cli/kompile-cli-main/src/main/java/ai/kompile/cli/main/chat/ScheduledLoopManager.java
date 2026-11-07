@@ -296,6 +296,30 @@ public class ScheduledLoopManager {
     }
 
     /**
+     * Pause every active loop in this scope, e.g. when a provider usage-limit
+     * window opens; each loop keeps its schedule and can be resumed
+     * individually with the ordinary resume command. Paused and stopped loops
+     * are left untouched. Fire attempts racing this method are rejected by
+     * {@link #fire}'s status recheck.
+     *
+     * @return ids of the loops this call paused
+     */
+    public synchronized List<String> pauseAllActive() {
+        List<String> paused = new ArrayList<>();
+        for (ScheduledLoop loop : loops.values()) {
+            if (loop.getStatus() != ScheduledLoop.LoopStatus.ACTIVE) continue;
+            loop.setStatus(ScheduledLoop.LoopStatus.PAUSED);
+            if (!persistExisting(loop)) {
+                discardStaleLoop(loop);
+                continue;
+            }
+            cancelFuture(loop.getId());
+            paused.add(loop.getId());
+        }
+        return paused;
+    }
+
+    /**
      * Resume a paused loop.
      */
     public synchronized boolean resume(String id) {

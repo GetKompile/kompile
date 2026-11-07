@@ -51,6 +51,7 @@ public class ComponentRegistry {
     public static final String KOMPILE_GRAPH_SERVICE = "kompile-graph-service";
     public static final String KOMPILE_CLI = "kompile-cli";
     public static final String KOMPILE_AGENT = "kompile-agent";
+    public static final String KOMPILE_REMOTE = "kompile-remote";
     public static final String KOMPILE_LITE = "kompile-lite";
 
     // Component metadata map
@@ -69,7 +70,8 @@ public class ComponentRegistry {
             KOMPILE_MODEL_SERVING, List.of("kompile-model-serving", "kompile-serving", "kompile-app-subprocess-serving"),
             KOMPILE_PIPELINE_SERVING, List.of("kompile-pipeline-serving"),
             KOMPILE_GRAPH_SERVICE, List.of("kompile-graph-service"),
-            KOMPILE_CLI, List.of("kompile-cli", "kompile"));
+            KOMPILE_CLI, List.of("kompile-cli", "kompile"),
+            KOMPILE_REMOTE, List.of("kompile-remote"));
 
     private static List<String> aliasesFor(String componentId) {
         return BINARY_ALIASES.getOrDefault(componentId, List.of(componentId));
@@ -174,6 +176,18 @@ public class ComponentRegistry {
                 .description("Command-line interface")
                 .type("cli")
                 .artifactId("kompile-cli-main")
+                .groupId("ai.kompile")
+                .build());
+
+        // Register kompile-remote — the model-free remote request CLI. Ships an
+        // exec jar everywhere and a native binary in dists (bin/kompile-remote).
+        COMPONENTS.put(KOMPILE_REMOTE, ComponentDescriptor.builder()
+                .id(KOMPILE_REMOTE)
+                .name("Kompile Remote CLI")
+                .description("Model-free remote request CLI")
+                .type("cli")
+                .artifactId("kompile-cli-remote")
+                .artifactClassifier("exec")
                 .groupId("ai.kompile")
                 .build());
     }

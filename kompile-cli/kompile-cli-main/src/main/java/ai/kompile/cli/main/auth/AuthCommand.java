@@ -239,7 +239,7 @@ public class AuthCommand implements Callable<Integer> {
                 return switch (providerId) {
                     case "google" -> CLIENT_ID;
                     case "microsoft" -> CLIENT_ID_SECRET_TENANT;
-                    case "notion", "reddit", "atlassian" -> CLIENT_ID_SECRET;
+                    case "notion", "reddit", "atlassian", "gemini" -> CLIENT_ID_SECRET;
                     default -> NONE;
                 };
             }
@@ -275,6 +275,7 @@ public class AuthCommand implements Callable<Integer> {
                     case "notion" -> envSet("KOMPILE_NOTION_CLIENT_ID");
                     case "reddit" -> envSet("KOMPILE_REDDIT_CLIENT_ID");
                     case "atlassian" -> envSet("KOMPILE_ATLASSIAN_CLIENT_ID");
+                    case "gemini" -> envSet("KOMPILE_GEMINI_CLIENT_ID");
                     default -> true;
                 };
             }
@@ -452,7 +453,8 @@ public class AuthCommand implements Callable<Integer> {
                         && ("microsoft".equalsIgnoreCase(providerId)
                         || "notion".equalsIgnoreCase(providerId)
                         || "reddit".equalsIgnoreCase(providerId)
-                        || "atlassian".equalsIgnoreCase(providerId))) {
+                        || "atlassian".equalsIgnoreCase(providerId)
+                        || "gemini".equalsIgnoreCase(providerId))) {
                     char[] secret = console.readPassword("Client secret: ");
                     clientSecret = secret == null ? null : new String(secret);
                     if (secret != null) {

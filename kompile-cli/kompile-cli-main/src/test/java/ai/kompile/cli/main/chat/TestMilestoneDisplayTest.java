@@ -100,6 +100,36 @@ class TestMilestoneDisplayTest {
         }
     }
 
+    @Test void resumedConversationDoesNotReplayEarlierMilestonesAtStartup() throws Exception {
+        var storage = new ActivityStorage(root.resolve("conversations"));
+        var identity = ActivityIdentity.conversation("resumed", root);
+        var writer = new ConversationActivityService(storage, List.of());
+        writer.record(identity, "test.milestone.recorded", "", "previous-run", null,
+                Map.of("source", "harness", "outcome", "passed"));
+        writer.record(identity, "test.milestone.capture_failed", "", "previous-failure", null,
+                Map.of("message", "old warning"));
+        // A writer still appending its record when the chat opens must not be skipped.
+        var scratch = new ActivityStorage(root.resolve("scratch"));
+        new ConversationActivityService(scratch, List.of()).record(identity, "test.milestone.recorded", "",
+                "in-flight", null, Map.of("source", "harness", "outcome", "passed"));
+        String line = java.nio.file.Files.readString(scratch.eventsPath(identity));
+        var journal = storage.eventsPath(identity);
+        java.nio.file.Files.writeString(journal, line.substring(0, line.length() / 2),
+                java.nio.file.StandardOpenOption.APPEND);
+        var cards = new ArrayList<ChatDisplayBlock>();
+        try (var display = new TestMilestoneDisplay(storage, identity, new TerminalRenderer(false), cards::add)) {
+            display.poll();
+            assertTrue(cards.isEmpty(), "Startup must not re-announce milestones already in the resumed transcript");
+            java.nio.file.Files.writeString(journal, line.substring(line.length() / 2),
+                    java.nio.file.StandardOpenOption.APPEND);
+            writer.record(identity, "test.milestone.recorded", "", "new-run", null,
+                    Map.of("source", "harness", "outcome", "passed"));
+            display.poll();
+            assertEquals(List.of("test-milestone:in-flight", "test-milestone:new-run"),
+                    cards.stream().map(ChatDisplayBlock::key).toList());
+        }
+    }
+
     /** Test fixture with the same independent-JVM persistence boundary as the stdio tool server. */
     public static class McpWriter {
         public static void main(String[] args) throws Exception {
@@ -117,9 +147,9 @@ class TestMilestoneDisplayTest {
         var identity = ActivityIdentity.conversation("capture-owner", root);
         var cards = new ArrayList<ChatDisplayBlock>();
         var writer = new ConversationActivityService(storage, List.of());
-        writer.record(identity, "test.milestone.capture_failed", "", "failed-capture", null,
-                Map.of("message", "Automatic test milestone could not be saved"));
         try (var display = new TestMilestoneDisplay(storage, identity, new TerminalRenderer(false), cards::add)) {
+            writer.record(identity, "test.milestone.capture_failed", "", "failed-capture", null,
+                    Map.of("message", "Automatic test milestone could not be saved"));
             display.poll();
             assertEquals(1, cards.size());
             assertTrue(cards.get(0).error());

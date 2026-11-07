@@ -2,6 +2,15 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
@@ -50,7 +59,7 @@ class AgentInitiatedBackgroundTransferTest {
         ObjectMapper objectMapper = JsonUtils.standardMapper();
         AtomicBoolean requestAccepted = new AtomicBoolean(false);
         CountDownLatch secondProviderRequest = new CountDownLatch(1);
-        AtomicReference<List<DirectLlmClient.ToolCallResultInput>> secondRequestToolResults =
+        AtomicReference<List<ToolCallResultInput>> secondRequestToolResults =
                 new AtomicReference<>();
 
         ToolRegistry tools = new ToolRegistry(objectMapper);
@@ -119,7 +128,7 @@ class AgentInitiatedBackgroundTransferTest {
         // The request must be refused (tool not backgroundable) and the model
         // must receive the REAL synchronous result, never a placeholder.
         assertFalse(requestAccepted.get());
-        List<DirectLlmClient.ToolCallResultInput> results = secondRequestToolResults.get();
+        List<ToolCallResultInput> results = secondRequestToolResults.get();
         assertEquals(1, results.size());
         assertEquals("read result", results.get(0).output);
     }
@@ -133,7 +142,7 @@ class AgentInitiatedBackgroundTransferTest {
         CountDownLatch secondProviderRequest = new CountDownLatch(1);
         AtomicBoolean requestAccepted = new AtomicBoolean(false);
         AtomicReference<String> completedResult = new AtomicReference<>();
-        AtomicReference<List<DirectLlmClient.ToolCallResultInput>> secondRequestToolResults =
+        AtomicReference<List<ToolCallResultInput>> secondRequestToolResults =
                 new AtomicReference<>();
 
         ToolRegistry tools = new ToolRegistry(objectMapper);
@@ -227,7 +236,7 @@ class AgentInitiatedBackgroundTransferTest {
                     "a bash-phase request must be accepted under the generalized eligibility");
             assertTrue(transferClaimed.await(5, TimeUnit.SECONDS));
             assertTrue(secondProviderRequest.await(5, TimeUnit.SECONDS));
-            List<DirectLlmClient.ToolCallResultInput> results = secondRequestToolResults.get();
+            List<ToolCallResultInput> results = secondRequestToolResults.get();
             assertTrue(results.get(0).output.contains("still running in the background"),
                     () -> "expected placeholder tool result, got: " + results.get(0).output);
 
@@ -252,7 +261,7 @@ class AgentInitiatedBackgroundTransferTest {
         CountDownLatch secondProviderRequest = new CountDownLatch(1);
         CountDownLatch releaseTool = new CountDownLatch(1);
         AtomicReference<String> completedResult = new AtomicReference<>();
-        AtomicReference<List<DirectLlmClient.ToolCallResultInput>> secondRequestToolResults =
+        AtomicReference<List<ToolCallResultInput>> secondRequestToolResults =
                 new AtomicReference<>();
 
         ToolRegistry tools = new ToolRegistry(objectMapper);
@@ -332,7 +341,7 @@ class AgentInitiatedBackgroundTransferTest {
                         "the provider must not continue while the subagent is blocked");
                 releaseTool.countDown();
                 assertEquals("final response", response.get(5, TimeUnit.SECONDS));
-                List<DirectLlmClient.ToolCallResultInput> results = secondRequestToolResults.get();
+                List<ToolCallResultInput> results = secondRequestToolResults.get();
                 assertEquals(1, results.size());
                 assertFalse(results.get(0).isError);
                 assertEquals("real subagent result", results.get(0).output);
@@ -346,7 +355,7 @@ class AgentInitiatedBackgroundTransferTest {
             // The placeholder reaches the model while the real TaskTool's subagent is still blocked.
             assertTrue(secondProviderRequest.await(5, TimeUnit.SECONDS),
                     "the loop must continue to the next provider request after detaching");
-            List<DirectLlmClient.ToolCallResultInput> results = secondRequestToolResults.get();
+            List<ToolCallResultInput> results = secondRequestToolResults.get();
             assertEquals(1, results.size());
             assertFalse(results.get(0).isError);
             assertTrue(results.get(0).output.contains("still running in the background"),

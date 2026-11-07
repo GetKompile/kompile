@@ -21,9 +21,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class StdioMultiTaskSchedulingTest {
     @TempDir Path workDir;
 
-    private StdioMultiTaskTool tool(Factory factory, long milliseconds) {
-        return new StdioMultiTaskTool(null, factory, JsonUtils.standardMapper(), workDir, null,
-                TimeUnit.MILLISECONDS.toNanos(milliseconds));
+    private StdioMultiTaskTool tool(Factory factory) {
+        return new StdioMultiTaskTool(null, factory, JsonUtils.standardMapper(), workDir, null);
     }
 
     private static Map<String, Object> task(String name) {
@@ -38,7 +37,7 @@ class StdioMultiTaskSchedulingTest {
     @Test
     void everyChildStartsBeforeAnyChildReturns() {
         Factory factory = new Factory(4);
-        ToolResult result = tool(factory, 5000).execute(batch("one", "two", "three", "four"));
+        ToolResult result = tool(factory).execute(batch("one", "two", "three", "four"));
         assertFalse(result.isError(), result.getOutput());
         assertEquals(4, result.getMetadata().get("succeeded"));
         assertEquals(4, factory.forks.get());
@@ -46,34 +45,46 @@ class StdioMultiTaskSchedulingTest {
     }
 
     @Test
-    void stalledChildrenShareOneDeadlineAndReceiveExplicitCancellationEvenWithoutContext() throws Exception {
-        Factory factory = new Factory(4);
-        long start = System.nanoTime();
-        ToolResult result = tool(factory, 300).execute(batch("stall-one", "stall-two", "stall-three", "stall-four"));
-        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-        assertTrue(result.isError(), result.getOutput());
-        assertEquals(4, result.getMetadata().get("timedOut"));
-        assertEquals(0, result.getMetadata().get("succeeded"));
-        assertEquals("", result.getMetadata().get("succeededSubtasks"));
-        assertTrue(factory.cancelled.await(2, TimeUnit.SECONDS), "each timed-out runner must be cancelled");
-        assertEquals(0, factory.factoryCancels.get());
-        assertTrue(elapsedMs < 1000, "one 300 ms batch budget, not four independent waits: " + elapsedMs);
-        System.out.println("multi_task scheduling fixture: four stalled children returned in " + elapsedMs + " ms");
+    void batchHasNoWallClockLimitAndWaitsForEverySlowChild() throws Exception {
+        Factory factory = new Factory(3);
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try {
+            Future<ToolResult> pending = caller.submit(() -> tool(factory).execute(batch("stall-one", "quick-two", "stall-three")));
+            assertTrue(factory.started.await(2, TimeUnit.SECONDS));
+            Thread.sleep(500);
+            assertFalse(pending.isDone(), "multi_task must wait for slow children like task does");
+            factory.children.values().forEach(child -> child.release.countDown());
+            ToolResult result = pending.get(2, TimeUnit.SECONDS);
+            assertFalse(result.isError(), result.getOutput());
+            assertEquals(3, result.getMetadata().get("succeeded"));
+            assertEquals(0, result.getMetadata().get("timedOut"));
+            factory.children.values().forEach(child -> assertEquals(0, child.cancels.get()));
+            assertEquals(0, factory.factoryCancels.get());
+        } finally {
+            factory.children.values().forEach(child -> child.release.countDown());
+            caller.shutdownNow();
+            assertTrue(caller.awaitTermination(2, TimeUnit.SECONDS));
+        }
     }
 
     @Test
-    void fastResultBehindStalledFirstChildIsCountedAndNotCancelled() throws Exception {
-        Factory factory = new Factory(3);
+    void parentAbortCancelsStalledChildrenWithoutCancellingFactory() throws Exception {
+        Factory factory = new Factory(2);
         ToolContext context = new ToolContext("batch", null, null, workDir, null);
-        ToolResult result = tool(factory, 300).execute(batch("stall-first", "quick-second", "stall-third"), context);
-        assertFalse(result.isError(), result.getOutput()); // partial success remains partial success
-        assertEquals(1, result.getMetadata().get("succeeded"));
-        assertEquals(2, result.getMetadata().get("timedOut"));
-        assertEquals("quick-second", result.getMetadata().get("succeededSubtasks"));
-        assertEquals(0, factory.children.get("quick-second").cancels.get());
-        assertFalse(context.isAborted(), "a child's deadline must not abort the parent");
-        assertTrue(factory.children.get("stall-first").cancelled.await(2, TimeUnit.SECONDS));
-        assertTrue(factory.children.get("stall-third").cancelled.await(2, TimeUnit.SECONDS));
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try {
+            Future<ToolResult> pending = caller.submit(() -> tool(factory).execute(batch("stall-one", "stall-two"), context));
+            assertTrue(factory.started.await(2, TimeUnit.SECONDS));
+            context.abort();
+            ToolResult result = pending.get(2, TimeUnit.SECONDS);
+            assertTrue(result.isError(), result.getOutput());
+            assertTrue(factory.cancelled.await(2, TimeUnit.SECONDS), "each unfinished runner must be cancelled");
+            assertEquals(0, factory.factoryCancels.get());
+        } finally {
+            factory.children.values().forEach(child -> child.release.countDown());
+            caller.shutdownNow();
+            assertTrue(caller.awaitTermination(2, TimeUnit.SECONDS));
+        }
     }
 
     @Test
@@ -82,7 +93,7 @@ class StdioMultiTaskSchedulingTest {
         ToolContext parent = new ToolContext("batch", null, null, workDir, null);
         ExecutorService caller = Executors.newSingleThreadExecutor();
         try {
-            Future<ToolResult> result = caller.submit(() -> tool(factory, 5000).execute(batch("stall-one", "stall-two"), parent));
+            Future<ToolResult> result = caller.submit(() -> tool(factory).execute(batch("stall-one", "stall-two"), parent));
             assertTrue(factory.started.await(2, TimeUnit.SECONDS));
             result.cancel(true);
             assertTrue(factory.cancelled.await(2, TimeUnit.SECONDS));
@@ -96,14 +107,17 @@ class StdioMultiTaskSchedulingTest {
     }
 
     @Test
-    void stalledCancellationDoesNotBlockTheBatchDeadline() throws Exception {
+    void stalledCancellationDoesNotBlockParentAbort() throws Exception {
         Factory factory = new Factory(2);
         factory.blockCancellation = true;
+        ToolContext context = new ToolContext("batch", null, null, workDir, null);
         ExecutorService caller = Executors.newSingleThreadExecutor();
         try {
-            Future<ToolResult> result = caller.submit(() -> tool(factory, 200).execute(batch("stall-one", "stall-two")));
-            ToolResult timedOut = result.get(2, TimeUnit.SECONDS);
-            assertEquals(2, timedOut.getMetadata().get("timedOut"));
+            Future<ToolResult> result = caller.submit(() -> tool(factory).execute(batch("stall-one", "stall-two"), context));
+            assertTrue(factory.started.await(2, TimeUnit.SECONDS));
+            context.abort();
+            ToolResult cancelled = result.get(2, TimeUnit.SECONDS);
+            assertTrue(cancelled.isError(), cancelled.getOutput());
             assertTrue(factory.cancelled.await(2, TimeUnit.SECONDS));
         } finally {
             factory.allowCancellation.countDown();

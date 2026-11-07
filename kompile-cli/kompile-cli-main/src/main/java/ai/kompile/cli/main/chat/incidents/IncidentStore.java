@@ -40,8 +40,18 @@ public final class IncidentStore {
     private static final int MAX_RECORDS = 500;
     private static final Set<String> FIELDS = Set.of("title", "kind", "verification", "status", "severity",
             "symptom", "cause", "invariant", "scope", "checks", "evidence", "guardrail");
+    // Matching is substring-based, so a common word in a request ("through", "way",
+    // "where") matched nearly every record and crowded relevant incidents out.
+    // The project name is in every record and distinguishes none of them.
     private static final Set<String> STOP_WORDS = Set.of("the", "and", "for", "this", "that", "with", "from",
-            "into", "have", "has", "was", "are", "you", "please", "change", "changes", "fix");
+            "into", "have", "has", "was", "are", "you", "please", "change", "changes", "fix",
+            "about", "after", "again", "all", "also", "any", "because", "been", "before", "being", "but",
+            "can", "could", "did", "does", "doing", "done", "each", "even", "every", "get", "got", "had",
+            "here", "how", "its", "just", "like", "look", "make", "may", "maybe", "more", "most", "much",
+            "must", "need", "not", "now", "only", "other", "our", "out", "over", "same", "see", "seem",
+            "should", "some", "still", "such", "than", "them", "then", "there", "these", "they", "think",
+            "those", "through", "too", "use", "using", "very", "want", "way", "were", "what", "when",
+            "where", "which", "while", "who", "why", "will", "would", "yet", "your", "kompile");
     private final Path project;
     private final Path directory;
 

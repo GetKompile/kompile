@@ -7,12 +7,16 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.PassthroughStreamParser.PassthroughEvent;
 import ai.kompile.cli.main.chat.PassthroughStreamParser.SessionInit;
+import ai.kompile.cli.main.chat.PassthroughStreamParser.ToolComplete;
 import ai.kompile.cli.main.chat.PassthroughStreamParser.ToolUse;
 import ai.kompile.cli.main.chat.PassthroughStreamParser.TurnComplete;
+import ai.kompile.cli.main.chat.PassthroughStreamParser.TurnError;
 import ai.kompile.cli.main.chat.testing.AgentOutputAssertions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -98,10 +102,28 @@ class AgyParserTest {
     }
 
     @Test
-    void toolStepDone_shouldReturnNull() {
+    void toolStepDone_shouldProduceToolComplete() {
         String line = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"c1\","
-                + "\"step_index\":2,\"state\":\"DONE\",\"step_type\":\"tool\",\"tool_name\":\"read_file\"}}";
-        assertNull(parser.parseAgyLine(line));
+                + "\"step_index\":2,\"state\":\"DONE\",\"step_type\":\"tool\",\"tool_name\":\"read_file\","
+                + "\"tool_info\":{\"name\":\"read_file\",\"output\":\"hello\"}}}";
+        PassthroughEvent event = parser.parseAgyLine(line);
+        assertInstanceOf(ToolComplete.class, event);
+        ToolComplete done = (ToolComplete) event;
+        assertEquals("read_file", done.name());
+        assertEquals("hello", done.output());
+        assertEquals(0, done.exitCode());
+        assertFalse(done.error());
+    }
+
+    @Test
+    void toolStepError_shouldProduceFailedToolComplete() {
+        String line = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"c1\","
+                + "\"step_index\":2,\"state\":\"ERROR\",\"step_type\":\"tool\",\"tool_name\":\"read_file\","
+                + "\"tool_info\":{\"name\":\"read_file\",\"error\":\"no such file\"}}}";
+        PassthroughEvent event = parser.parseAgyLine(line);
+        assertInstanceOf(ToolComplete.class, event);
+        ToolComplete done = (ToolComplete) event;
+        assertTrue(done.error());
     }
 
     @Test
@@ -109,6 +131,38 @@ class AgyParserTest {
         String line = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"c1\","
                 + "\"step_index\":0,\"state\":\"DONE\",\"step_type\":\"user_input\"}}";
         assertNull(parser.parseAgyLine(line));
+    }
+
+    // ===================================================================
+    // Result failures → TurnError
+    // ===================================================================
+
+    @Test
+    void resultWithFailedStatus_shouldProduceTurnError() {
+        // Real envelope shape: agy exits 3 and its own CLI log records the same
+        // error; the status is authoritative and the partial response rides along.
+        String line = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"c1\","
+                + "\"status\":\"FAILED\",\"response\":\"Partial investigation\","
+                + "\"error\":\"Individual quota reached. Please upgrade your subscription"
+                + " to increase your limits.\","
+                + "\"num_turns\":1,"
+                + "\"usage\":{\"input_tokens\":23740,\"output_tokens\":359,\"cache_read_tokens\":4161}}}";
+        PassthroughEvent event = parser.parseAgyLine(line);
+        assertInstanceOf(TurnError.class, event);
+        TurnError error = (TurnError) event;
+        assertEquals("FAILED", error.status());
+        assertTrue(error.message().contains("Individual quota reached"));
+        assertEquals("Partial investigation", error.response());
+    }
+
+    @Test
+    void resultWithErrorOnly_shouldProduceTurnError() {
+        String line = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"c1\","
+                + "\"response\":\"\",\"error\":\"tool gateway refused the request\"}}";
+        PassthroughEvent event = parser.parseAgyLine(line);
+        assertInstanceOf(TurnError.class, event);
+        assertEquals("FAILED", ((TurnError) event).status());
+        assertTrue(((TurnError) event).message().contains("tool gateway"));
     }
 
     // ===================================================================

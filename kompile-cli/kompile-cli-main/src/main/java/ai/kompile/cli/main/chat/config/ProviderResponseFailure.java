@@ -110,11 +110,11 @@ final class ProviderResponseFailure {
         detail.append(name).append('=').append(safe);
     }
 
-    static DirectLlmClient.FailureKind classify(int status, String body) {
+    static FailureKind classify(int status, String body) {
         return classify(null, status, body);
     }
 
-    static DirectLlmClient.FailureKind classify(String provider, int status, String body) {
+    static FailureKind classify(String provider, int status, String body) {
         try {
             JsonNode root = JSON.readTree(body);
             if (root != null) {
@@ -125,7 +125,7 @@ final class ProviderResponseFailure {
                     switch (error.path("code").asText("")) {
                         case "1113", "1308", "1309", "1310", "1314",
                                 "1316", "1317", "1318", "1319", "1320", "1321":
-                            return DirectLlmClient.FailureKind.QUOTA_EXHAUSTED;
+                            return FailureKind.QUOTA_EXHAUSTED;
                         default: break;
                     }
                 }
@@ -133,38 +133,38 @@ final class ProviderResponseFailure {
                         error.path("code").asText(""), error.path("type").asText("")}) {
                     switch (code) {
                         case "content_filter", "content_policy_violation", "safety_violation", "refusal":
-                            return DirectLlmClient.FailureKind.REFUSAL;
+                            return FailureKind.REFUSAL;
                         case "permission_error", "permission_denied", "insufficient_permissions",
                                 "ip_not_authorized", "ip_not_allowed", "organization_membership_required",
                                 "unsupported_country_region_territory":
-                            return DirectLlmClient.FailureKind.PERMISSION_DENIED;
+                            return FailureKind.PERMISSION_DENIED;
                         case "usage_limit_reached", "insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached",
                                 "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
                                 "organization_usage_limit_exceeded":
-                            return DirectLlmClient.FailureKind.QUOTA_EXHAUSTED;
+                            return FailureKind.QUOTA_EXHAUSTED;
                         default: break;
                     }
                 }
             }
         } catch (Exception ignored) { /* No diagnostic body is required to retain the HTTP status. */ }
-        return status == 403 ? DirectLlmClient.FailureKind.PERMISSION_DENIED
-                : DirectLlmClient.FailureKind.NONE;
+        return status == 403 ? FailureKind.PERMISSION_DENIED
+                : FailureKind.NONE;
     }
 
     /** Only for a native transport's terminal error event, never assistant/tool prose. */
-    static DirectLlmClient.FailureKind classifyNativeError(String detail) {
-        DirectLlmClient.FailureKind structured = classify(0, detail);
-        if (structured != DirectLlmClient.FailureKind.NONE) return structured;
+    static FailureKind classifyNativeError(String detail) {
+        FailureKind structured = classify(0, detail);
+        if (structured != FailureKind.NONE) return structured;
         String text = detail == null ? "" : detail.toLowerCase(java.util.Locale.ROOT);
         if (text.contains("usage limit") || text.contains("usage_limit_reached")
                 || text.contains("hit your limit") || text.contains("weekly limit")
                 || text.contains("weekly usage") || text.contains("quota exhausted")
                 || text.contains("insufficient_quota") || text.contains("credit balance")) {
-            return DirectLlmClient.FailureKind.QUOTA_EXHAUSTED;
+            return FailureKind.QUOTA_EXHAUSTED;
         }
         if (text.contains("rate limit") || text.contains("rate_limit_error")
-                || text.contains("too many requests")) return DirectLlmClient.FailureKind.RATE_LIMITED;
-        return DirectLlmClient.FailureKind.NONE;
+                || text.contains("too many requests")) return FailureKind.RATE_LIMITED;
+        return FailureKind.NONE;
     }
 
     /** Optional 401 diagnostics: bounded in bytes AND total time, never printed or retained. */
@@ -191,7 +191,7 @@ final class ProviderResponseFailure {
         }
     }
 
-    static String message(DirectLlmClient.FailureKind kind) {
+    static String message(FailureKind kind) {
         return switch (kind) {
             case REFUSAL -> "[Provider declined this request under its safety policy. Signing in again will not resolve a policy refusal.]";
             case TRUNCATED -> "[Provider response was truncated. No incomplete tool calls were executed.]";

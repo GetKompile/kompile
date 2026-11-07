@@ -2969,6 +2969,21 @@ export interface CommandRoleEntry {
   current?: boolean;
 }
 
+/** A saved route reference, never credential material. Matches the CLI ModelRung contract. */
+export interface ModelRung {
+  provider: string | null;
+  model: string;
+  credentialName: string | null;
+  label: string | null;
+  thinking: string | null;
+  authenticationMethod: string | null;
+}
+
+export interface ModelFailoverPolicy {
+  enabled: boolean;
+  rungs: ModelRung[];
+}
+
 /**
  * Structured payload of a command outcome. Browser-rendered shapes today:
  * {@code menu:"model"}, {@code menu:"role"}, {@code menu:"fast"},
@@ -2976,7 +2991,15 @@ export interface CommandRoleEntry {
  * and {@code menu:"clear"}; unknown menus degrade to status text.
  */
 export interface CommandEventData {
-  menu?: 'model' | 'thinking' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'clear' | 'continue' | 'judge';
+  menu?: 'model' | 'thinking' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'clear' | 'continue' | 'continue-trigger' | 'judge' | 'subagent-config' | 'failover';
+  /** Persisted subagent policy and ordered main/child failover menus. */
+  maxConcurrent?: number;
+  bannedModels?: string[];
+  activeCount?: number | null;
+  activeCountScope?: string;
+  failover?: ModelFailoverPolicy;
+  enabled?: boolean;
+  rungs?: ModelRung[];
   provider?: string;
   currentModel?: string;
   /**
@@ -3057,6 +3080,17 @@ export interface CommandMessageMetadata {
   commandOutcome?: CommandOutcome;
 }
 
+/** Measured token usage. Omitted performance fields are unknown, not zero. */
+export interface TokenMetrics {
+  outputTokens: number;
+  inputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  totalGenerationMs?: number;
+  tokensPerSecond?: number;
+  model?: string;
+}
+
 export interface LocalAgentMessage extends CommandMessageMetadata {
   /** The server acknowledged an explicit Stop, including one replayed after an absence. */
   stopped?: boolean;
@@ -3108,14 +3142,8 @@ export interface LocalAgentMessage extends CommandMessageMetadata {
   /** Reasoning traces from kb_verify_explain tool calls during this turn */
   reasoningTrails?: ReasoningTrailDto[];
 
-  /** Token throughput metrics from LLM streaming */
-  tokenMetrics?: {
-    outputTokens: number;
-    inputTokens: number;
-    totalGenerationMs: number;
-    tokensPerSecond: number;
-    model?: string;
-  };
+  /** Token usage and any measured performance from LLM streaming. */
+  tokenMetrics?: TokenMetrics;
 
   /** RAG retrieval metrics */
   ragMetrics?: {

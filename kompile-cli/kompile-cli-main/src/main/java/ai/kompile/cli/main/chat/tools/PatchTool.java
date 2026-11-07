@@ -51,6 +51,7 @@ public class PatchTool implements CliTool {
     private static final Pattern OLD_FILE = Pattern.compile("^---\\s+(.+)$");
     private static final Pattern NEW_FILE = Pattern.compile("^\\+\\+\\+\\s+(.+)$");
     private static final Pattern CREATION_HEADER = Pattern.compile("(?m)^---\\s+/dev/null(\\s.*)?$");
+    private static final Pattern DELETION_HEADER = Pattern.compile("(?m)^\\+\\+\\+\\s+/dev/null(\\s.*)?$");
     private static final Pattern FIRST_HUNK = Pattern.compile("(?m)^@@ -");
 
     /**
@@ -149,6 +150,13 @@ public class PatchTool implements CliTool {
             if (ApplyPatchFormat.isApplyPatchFormat(patch)) {
                 return applyApplyPatchFormat(context, patch, filePath, agent);
             }
+            // A '+++ /dev/null' file deletion never reaches the external patchers for a
+            // subagent (GNU patch also prunes the emptied parent directories).
+            if (DELETION_HEADER.matcher(patch).find()) {
+                String removal = EditTool.subagentRemovalError(context,
+                        filePath.isEmpty() ? Path.of("(diff target)") : context.resolveMutationPath(filePath));
+                if (removal != null) return ToolResult.error(removal);
+            }
             if (!filePath.isEmpty()) {
                 return applySingleFilePatch(context, context.resolveMutationPath(filePath), patch, agent);
             }
@@ -225,6 +233,8 @@ public class PatchTool implements CliTool {
                     if (!Files.exists(path)) {
                         return ToolResult.error("Cannot Delete File " + relativePath(context, path) + ": not found");
                     }
+                    String removal = EditTool.subagentRemovalError(context, path);
+                    if (removal != null) return ToolResult.error(removal);
                     context.checkPermission(permissionKey(), "Delete file via patch: " + path);
                     if (!context.hasFreshFileRead(path)) {
                         return ToolResult.error(context.staleReadMessage(path, "patch"));
@@ -240,14 +250,17 @@ public class PatchTool implements CliTool {
                     if (!context.hasFreshFileRead(path)) {
                         return ToolResult.error(context.staleReadMessage(path, "patch"));
                     }
+                    String before = Files.readString(path);
                     String updated;
                     try {
-                        updated = ApplyPatchFormat.applyHunks(op.path, Files.readString(path), op.hunks);
+                        updated = ApplyPatchFormat.applyHunks(op.path, before, op.hunks);
                     } catch (ApplyPatchFormat.FormatException e) {
                         return ToolResult.error("Patch failed — no files changed. " + e.getMessage()
                                 + " Re-`read` the file and regenerate the patch against its current content, "
                                 + "or use the `edit` tool for a targeted replacement.");
                     }
+                    String deletion = EditTool.subagentDeletionError(context, path, before, updated);
+                    if (deletion != null) return ToolResult.error(deletion);
                     if (op.moveTo != null && !op.moveTo.isBlank()) {
                         Path target = context.resolveMutationPath(op.moveTo);
                         context.checkPermission(permissionKey(), "Create file via patch (move target): " + target);
@@ -314,8 +327,12 @@ public class PatchTool implements CliTool {
             original = Files.readString(path);
         }
         Restore restore = () -> {
-            if (original == null) Files.deleteIfExists(path);
-            else Files.writeString(path, original);
+            if (original == null) {
+                Files.deleteIfExists(path);
+            } else {
+                if (path.getParent() != null) Files.createDirectories(path.getParent());
+                Files.writeString(path, original);
+            }
         };
 
         List<PatchAttempt> attempts = new ArrayList<>();
@@ -331,6 +348,13 @@ public class PatchTool implements CliTool {
         if (ladder.timedOut) {
             return ToolResult.error("Patch command timed out after 30s — " + relativePath
                     + " left unchanged. Use the `edit` tool for this change instead.");
+        }
+        if (ladder.success && original != null) {
+            String deletion = subagentDeletionAfterLadder(context, Map.of(path, original));
+            if (deletion != null) {
+                restore.run();
+                return ToolResult.error(deletion + " No files changed.");
+            }
         }
         if (ladder.success) {
             context.recordFileRead(path);
@@ -390,6 +414,11 @@ public class PatchTool implements CliTool {
         }
         if (!ladder.success) {
             return patchFailure(joinRelativePaths(context, touched), ladder);
+        }
+        String deletion = subagentDeletionAfterLadder(context, originals);
+        if (deletion != null) {
+            restore.run();
+            return ToolResult.error(deletion + " No files changed.");
         }
 
         for (Path path : touched) {
@@ -605,8 +634,27 @@ public class PatchTool implements CliTool {
         return path;
     }
 
+    /**
+     * After an external patch/git-apply run: a subagent's diff must not have removed or
+     * emptied any file that existed before it ran. Returns the refusal (caller restores).
+     */
+    private static String subagentDeletionAfterLadder(ToolContext context, Map<Path, String> originals)
+            throws IOException {
+        if (!context.isSupervisedChild()) return null;
+        for (Map.Entry<Path, String> entry : originals.entrySet()) {
+            Path path = entry.getKey();
+            String refused = Files.exists(path)
+                    ? EditTool.subagentDeletionError(context, path, entry.getValue(), Files.readString(path))
+                    : EditTool.subagentRemovalError(context, path);
+            if (refused != null) return refused;
+        }
+        return null;
+    }
+
     private void restoreTouchedFiles(Map<Path, String> originals, Set<Path> newFiles) throws Exception {
         for (Map.Entry<Path, String> entry : originals.entrySet()) {
+            Path parent = entry.getKey().getParent();
+            if (parent != null) Files.createDirectories(parent);
             Files.writeString(entry.getKey(), entry.getValue());
         }
         for (Path path : newFiles) {

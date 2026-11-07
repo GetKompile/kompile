@@ -290,6 +290,7 @@ public class ChatCompleter implements Completer {
         SUB_ARGS.put("/dashboard-tools", tokenFilters);
         SUB_ARGS.put("/dashboard-tokens", tokenFilters);
         SUB_ARGS.put("/dashboard-timeline", List.of(
+                new String[]{"tokens", "Project token usage over time, per model (last 7 days)"},
                 new String[]{"session:", "Exact conversation ID"}, new String[]{"run:", "Exact run ID"},
                 new String[]{"kind:", "Activity event type"}, new String[]{"outcome:", "Activity outcome"},
                 new String[]{"from:", "Start ISO instant"}, new String[]{"to:", "End ISO instant"},

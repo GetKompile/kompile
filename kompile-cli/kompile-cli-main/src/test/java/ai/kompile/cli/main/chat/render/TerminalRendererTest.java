@@ -460,6 +460,17 @@ class TerminalRendererTest {
     }
 
     @Test
+    void harnessEventsAreRecognizedAsAgentNotificationsButUserTextIsNot() {
+        assertTrue(TerminalRenderer.isAgentNotification("[System background task completion]\nBackground task t1"));
+        assertTrue(TerminalRenderer.isAgentNotification("  [System edit lock release]\nlock freed"));
+        assertTrue(TerminalRenderer.isAgentNotification("<todo-status source=\"harness\">\n</todo-status>"));
+        assertFalse(TerminalRenderer.isAgentNotification(null));
+        assertFalse(TerminalRenderer.isAgentNotification("   "));
+        assertFalse(TerminalRenderer.isAgentNotification("Please explain [System process completion]"));
+        assertFalse(TerminalRenderer.isAgentNotification("[Claude Code follow-up f1: a turn Claude Code started by itself]"));
+    }
+
+    @Test
     void notificationCardsStayCompactAcrossPresetsAndExpandToTheirPayload() {
         var block = renderer.renderAgentNotificationBlock("<todo-status source=\"harness\">\n"
                 + "8 tool calls since your todo list was last updated.\n[in_progress] #1 Validate changes\n</todo-status>");

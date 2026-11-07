@@ -177,13 +177,18 @@ class KompileTuiSidebarTest {
                 var paint = KompileTui.class.getDeclaredMethod("renderFrame", boolean.class, boolean.class);
                 paint.setAccessible(true);
                 VirtualTerminal screen = new VirtualTerminal(32, 120);
-                for (Size size : List.of(new Size(120, 32), new Size(48, 12), new Size(120, 8),
+                for (Size size : List.of(new Size(48, 12), new Size(120, 8),
                         new Size(80, 18), new Size(240, 60), new Size(40, 24), new Size(120, 32))) {
-                    terminal.setSize(size); tui.handleResize(); screen.resize(size.getRows(), size.getColumns());
                     synchronized (tui.getDrawLock()) {
                         output.reset();
                         // Reflow debris must be erased even outside today's section footprints.
                         terminal.writer().print("\033[1;1HOLD SECTION FRAGMENT"); terminal.writer().flush();
+                    }
+                    screen.resize(size.getRows(), size.getColumns());
+                    terminal.setSize(size); tui.handleResize();
+                    synchronized (tui.getDrawLock()) {
+                        // Keep the resize frame even if the redraw worker painted it
+                        // before this lock. A cached frame is not a screen snapshot.
                         paint.invoke(tui, false, true);
                         screen.feed(output.toString(StandardCharsets.UTF_8));
                         output.reset();
@@ -355,6 +360,141 @@ class KompileTuiSidebarTest {
                 assertTrue(tui.getContentViewLines().contains("VISIBLE ASSISTANT"));
             } finally { tui.stop(); }
         }
+    }
+
+    @Test void fourteenLiveCardsCannotEvictChatWithHiddenOutput() throws Exception {
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("live-card-retention")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("live-card-retention"), new TerminalRenderer(false));
+            try {
+                ChatUiConfig config = focused();
+                config.set("content.process.inline", "summary");
+                tui.setUiConfig(config);
+                tui.recordInScrollRegion("CHAT MUST REMAIN");
+                for (int tick = 0; tick < 4; tick++) {
+                    for (int child = 0; child < 14; child++) {
+                        tui.upsertDisplayBlock(liveCard(child, "tick-" + tick));
+                    }
+                    List<String> lines = tui.getContentViewLines();
+                    assertEquals("CHAT MUST REMAIN", lines.get(0));
+                    assertEquals(15, lines.size(), "hidden process output must not consume visible chat retention");
+                    for (int child = 0; child < 14; child++) assertEquals("Child " + child, lines.get(child + 1));
+                }
+            } finally { tui.stop(); }
+        }
+    }
+
+    @Test void liveHiddenOutputCannotEraseTypedAssistantOnLayoutChanges() throws Exception {
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("typed-live-history")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("typed-live-history"), new TerminalRenderer(false));
+            try {
+                ChatUiConfig config = focused();
+                config.set("content.process.inline", "summary");
+                tui.setUiConfig(config);
+                String message = java.util.stream.IntStream.range(0, 100)
+                        .mapToObj(i -> "ASSISTANT-" + i).collect(java.util.stream.Collectors.joining("\n"));
+                tui.upsertDisplayBlock(ChatDisplayBlock.text("assistant:retained", "assistant", message));
+                for (int child = 0; child < 14; child++) tui.upsertDisplayBlock(liveCard(child, "output"));
+                List<String> retained = tui.getContentViewLines();
+                assertTrue(retained.contains("ASSISTANT-0"));
+                for (String width : List.of("25", "40", "30")) {
+                    ChatUiConfig layoutOnly = config.copy();
+                    layoutOnly.set("layout.sidebarWidthPercent", width);
+                    tui.setUiConfig(layoutOnly);
+                    assertEquals(retained, tui.getContentViewLines(), "layout changes must preserve typed assistant history");
+                }
+            } finally { tui.stop(); }
+        }
+    }
+
+    @Test void historyRemainsScrollableBeyondPreviousMessageDuringLiveUpdates() throws Exception {
+        try (LineDisciplineTerminal terminal = new LineDisciplineTerminal("live-history", "xterm",
+                     new ByteArrayOutputStream(), StandardCharsets.UTF_8);
+             BackgroundProcessManager processes = new BackgroundProcessManager("live-history")) {
+            terminal.setSize(new Size(120, 32));
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("live-history"), new TerminalRenderer(false));
+            try {
+                ChatUiConfig config = focused();
+                config.set("content.process.inline", "summary");
+                tui.setUiConfig(config);
+                tui.start(terminal);
+                for (int message = 0; message < 100; message++) tui.recordInScrollRegion("MESSAGE-" + message);
+                for (int tick = 0; tick < 32; tick++) {
+                    for (int child = 0; child < 14; child++) tui.upsertDisplayBlock(liveCard(child, "tick-" + tick));
+                }
+                assertTrue(tui.scrollContent(Integer.MAX_VALUE), "history must extend beyond the live viewport");
+                assertTrue(tui.getVisibleContentLines().stream().anyMatch(line -> line.contains("MESSAGE-0")),
+                        "old messages must remain reachable, not just the previous message");
+                List<String> anchored = tui.getVisibleContentLines();
+                for (int child = 0; child < 14; child++) tui.upsertDisplayBlock(liveCard(child, "while reading history"));
+                assertEquals(anchored, tui.getVisibleContentLines(), "live ticks must not move the scrolled viewport");
+                assertTrue(tui.scrollToBottom());
+                assertEquals(0, tui.getContentScrollOffset());
+            } finally { tui.stop(); }
+        }
+    }
+
+    @Test void refreshOfEvictedLiveCardCannotReappendItAtTheTail() throws Exception {
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("evicted-live-card")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("evicted-live-card"), new TerminalRenderer(false));
+            try {
+                ChatUiConfig config = focused();
+                config.set("content.process.inline", "summary");
+                tui.setUiConfig(config);
+                tui.upsertDisplayBlock(liveCard(0, "old"));
+                tui.recordInScrollRegion(java.util.stream.IntStream.range(0, 2000)
+                        .mapToObj(i -> "CHAT-" + i).collect(java.util.stream.Collectors.joining("\n")));
+                List<String> retained = tui.getContentViewLines();
+                tui.upsertDisplayBlock(liveCard(0, "new"));
+                assertEquals(retained, tui.getContentViewLines(), "a status refresh is not a new transcript event");
+            } finally { tui.stop(); }
+        }
+    }
+
+    @Test void explicitlyClearedCustomBlockCanBeShownAgain() throws Exception {
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("custom-reinsert")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("custom-reinsert"), new TerminalRenderer(false));
+            try {
+                tui.upsertDisplayBlock(ChatDisplayBlock.text("custom:live", "custom", "FIRST"));
+                assertTrue(tui.getContentViewLines().contains("FIRST"));
+                tui.upsertDisplayBlock(ChatDisplayBlock.text("custom:live", "custom", ""));
+                assertTrue(tui.getContentViewLines().isEmpty());
+                tui.upsertDisplayBlock(ChatDisplayBlock.text("custom:live", "custom", "SECOND"));
+                assertTrue(tui.getContentViewLines().contains("SECOND"));
+            } finally { tui.stop(); }
+        }
+    }
+
+    @Test void hiddenLiveOutputDoesNotRebuildLongTranscriptLayout() throws Exception {
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("live-layout")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("live-layout"), new TerminalRenderer(false));
+            try {
+                ChatUiConfig config = focused();
+                config.set("content.process.inline", "summary");
+                tui.setUiConfig(config);
+                tui.recordInScrollRegion("retained chat\n".repeat(1000));
+                tui.upsertDisplayBlock(liveCard(0, "old"));
+                tui.getVisibleContentLines();
+                long builds = tui.transcriptLayoutBuildCountForTests();
+                for (int tick = 0; tick < 20; tick++) {
+                    tui.upsertDisplayBlock(liveCard(0, "tick-" + tick));
+                    tui.getVisibleContentLines();
+                }
+                assertEquals(builds, tui.transcriptLayoutBuildCountForTests(),
+                        "hidden output updates must reuse the unchanged transcript layout");
+            } finally { tui.stop(); }
+        }
+    }
+
+    private static ChatDisplayBlock liveCard(int child, String output) {
+        return new ChatDisplayBlock("process:child-" + child, "process", "", "Child " + child, "",
+                List.of(new ChatDisplayBlock.Section("output", "output", "Output", (output + "\n").repeat(200))),
+                false, true);
     }
 
     @Test void hiddenTranscriptSourcesStayBoundedAndUiCannotResurrectTrimmedRows() throws Exception {

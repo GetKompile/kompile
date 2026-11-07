@@ -5,14 +5,23 @@
  */
 package ai.kompile.cli.main.auth;
 
+import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.io.IOException;
+import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Delegates authentication to a CLI agent's native credential manager.
@@ -31,6 +40,9 @@ public final class NativeCliAuth {
 
     private NativeCliAuth() {
     }
+
+    /** The OAuth provider id the agy sign-in flow stores its Google credential under. */
+    private static final String GEMINI_OAUTH_PROVIDER = "gemini";
 
     public static boolean isSupported(String providerId) {
         return resolve(providerId).isPresent();
@@ -55,6 +67,24 @@ public final class NativeCliAuth {
         return execute(providerId, Action.LOGOUT);
     }
 
+    /**
+     * Antigravity's account state: whether the CLI has a usable cached Google
+     * Code Assist credential and the active Google account label (never token
+     * material). No model turn runs; {@code agy models} is the zero-cost probe.
+     */
+    public record AgyAccountState(boolean signedIn, String account) {
+        /** Display label for the active account. */
+        public String summary() {
+            return account == null || account.isBlank()
+                    ? "an Antigravity profile" : account;
+        }
+    }
+
+    /** The CLI's current Antigravity account state (see {@link AgyAccountState}). */
+    public static AgyAccountState agyState(String providerId) {
+        return agySignInState(providerId);
+    }
+
     private static int execute(String providerId, Action action) {
         Optional<AgentProvider> definition = resolve(providerId);
         if (definition.isEmpty()) {
@@ -62,10 +92,11 @@ public final class NativeCliAuth {
             return 2;
         }
 
-        // Antigravity has no `auth` subcommand: sign-in is the interactive TUI
-        // (silent OS keyring first, then browser OAuth), logout is the in-TUI
-        // `/logout` command, and CI runs use GEMINI_API_KEY instead. Route the
-        // three actions through that contract instead of appending an action verb.
+        // Antigravity has no `auth` subcommand: its login is Kompile's own Google
+        // OAuth flow (a login URL + local callback + stored credential), logout
+        // points at the stored-credential command, and LIST probes the CLI's
+        // cached credential. Route the three actions through that contract
+        // instead of appending an action verb.
         String command0 = definition.get().getCommand() == null
                 ? "" : definition.get().getCommand().toLowerCase(Locale.ROOT);
         String name0 = definition.get().getName() == null
@@ -97,78 +128,142 @@ public final class NativeCliAuth {
     }
 
     /**
-     * Antigravity's authentication actions. LOGIN attaches this terminal to a
-     * fresh interactive {@code agy} session — its first launch performs the
-     * silent keyring sign-in and falls back to the browser OAuth loop; the
-     * credentials it caches are exactly what headless {@code agy -p} runs use.
-     * LOGOUT can only happen inside that TUI ({@code /logout}), so the guidance
-     * is printed rather than simulated. LIST probes the cached credential state
-     * with the CLI's own zero-cost {@code /model} report (no model turn runs).
+     * Antigravity's authentication actions. LOGIN always opens Kompile's own
+     * Google OAuth flow — a login URL, a local callback, and a stored Gemini
+     * credential — the same surface every other subscription vendor gets; it
+     * never merely attaches to a TUI. LOGOUT clears the stored credential by
+     * pointing at {@code kompile auth logout gemini}; agy's own cached login
+     * clears inside its TUI ({@code /logout}). LIST probes the CLI's cached
+     * credential state with its zero-cost {@code agy models} report.
      */
     private static int executeAgy(String providerId, Action action) {
         switch (action) {
             case LOGIN -> {
-                List<String> command = List.of(definitionCommand(providerId), "--prompt-interactive");
                 try {
-                    Process process = new ProcessBuilder(command).inheritIO().start();
-                    return process.waitFor();
+                    OAuthCredentialManager.create().login(GEMINI_OAUTH_PROVIDER,
+                            new OAuthProviderFlow.LoginOptions(null, false, null, null),
+                            terminalInteraction());
+                    System.out.println("Signed in — the Google OAuth credential is stored for the"
+                            + " Gemini vendor; chat turns run through the `agy` CLI.");
+                    return 0;
                 } catch (IOException e) {
-                    System.err.println("Could not start the Antigravity CLI for " + providerId
-                            + ". Install the 'agy' CLI, ensure it is on PATH, and retry. Details: "
-                            + e.getMessage());
+                    System.err.println("Google sign-in failed: " + e.getMessage());
                     return 1;
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    System.err.println("Antigravity sign-in was interrupted.");
+                    System.err.println("Google sign-in was interrupted.");
                     return 130;
                 }
             }
             case LOGOUT -> {
-                System.out.println("Antigravity signs out inside its interactive session:");
-                System.out.println("  1. Run `agy` (or `agy --prompt-interactive`).");
-                System.out.println("  2. Type /logout in the prompt box.");
-                System.out.println("This clears the cached keyring credentials and local cache.");
-                System.out.println("Headless CI runs use GEMINI_API_KEY instead of the keyring profile.");
+                System.out.println("Clear the stored Google OAuth credential with"
+                        + " `kompile auth logout gemini`.");
+                System.out.println("agy's own cached login clears inside its TUI:"
+                        + " run `agy`, type /logout, quit.");
                 return 0;
             }
             case LIST -> {
-                List<String> command = List.of(definitionCommand(providerId), "-p", "/model",
-                        "--output-format", "json");
-                try {
-                    Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
-                    String output;
-                    try (java.io.BufferedReader reader = new java.io.BufferedReader(
-                            new java.io.InputStreamReader(process.getInputStream(),
-                                    java.nio.charset.StandardCharsets.UTF_8))) {
-                        output = reader.lines().reduce("", (a, b) -> a.isEmpty() ? b : a + "\n" + b);
-                    }
-                    int exit = process.waitFor();
-                    if (exit != 0) {
-                        System.out.println("agy: not authenticated (exit " + exit + ")");
-                        return exit == 1 ? 3 : exit;
-                    }
-                    if (output.contains("\"command_result\"") || output.contains("\"command\"")) {
-                        int idStart = output.indexOf("\"id\"");
-                        System.out.println("agy: authenticated ("
-                                + (idStart >= 0
-                                        ? "active model " + output.substring(idStart).replaceFirst("\"id\"\\s*:\\s*\"([^\"]+)\".*", "$1")
-                                        : "active keyring profile") + ")");
-                        return 0;
-                    }
-                    System.out.println("agy: authenticated");
-                    return 0;
-                } catch (IOException e) {
-                    System.err.println("Could not probe Antigravity authentication for " + providerId
-                            + ": " + e.getMessage());
-                    return 1;
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    System.err.println("Antigravity authentication probe was interrupted.");
-                    return 130;
+                AgyAccountState session = agySignInState(providerId);
+                if (!session.signedIn()) {
+                    System.out.println("agy: not authenticated — run `kompile auth login agy`");
+                    System.out.println("(Google sign-in), or choose the Gemini OAuth route in the wizard.");
+                    return 3;
                 }
+                System.out.println("agy: authenticated (Google account: " + session.summary() + ")");
+                return 0;
             }
         }
         return 2;
+    }
+
+    /**
+     * Probes Antigravity's sign-in state through {@code agy models} — the CLI's
+     * own zero-model-turn listing, which fails only when no usable Google Code
+     * Assist credential is cached for this user. The account label comes from
+     * agy's {@code google_accounts.json}, read without touching token material.
+     */
+    private static AgyAccountState agySignInState(String providerId) {
+        try {
+            Process process = new ProcessBuilder(
+                    List.of(definitionCommand(providerId), "models"))
+                    .redirectErrorStream(true).start();
+            StringBuilder output = new StringBuilder();
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream(),
+                            java.nio.charset.StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append('\n');
+                }
+            }
+            if (!process.waitFor(45, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return new AgyAccountState(false, null);
+            }
+            if (process.exitValue() != 0 || output.isEmpty()) {
+                return new AgyAccountState(false, null);
+            }
+            return new AgyAccountState(true, agyCachedAccount());
+        } catch (IOException spawnOrReadFailure) {
+            return new AgyAccountState(false, null);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return new AgyAccountState(false, null);
+        }
+    }
+
+    /** The Google account label agy caches for this user, or null. */
+    private static String agyCachedAccount() {
+        try {
+            Path accounts = Path.of(System.getProperty("user.home"),
+                    ".gemini", "google_accounts.json");
+            if (!Files.isRegularFile(accounts)) {
+                return null;
+            }
+            JsonNode root = new ObjectMapper().readTree(Files.readString(accounts));
+            JsonNode active = root.path("active");
+            return active.isValueNode() && !active.asText().isBlank()
+                    ? active.asText() : null;
+        } catch (Exception readFailure) {
+            return null;
+        }
+    }
+
+    /** Terminal interaction for the Google OAuth flow: prints the URL, opens the browser. */
+    private static OAuthProviderFlow.Interaction terminalInteraction() {
+        return new OAuthProviderFlow.Interaction() {
+            @Override
+            public void info(String message) {
+                System.out.println(message);
+            }
+
+            @Override
+            public void authorizationUrl(URI url, String instructions) {
+                System.out.println(instructions);
+                System.out.println("Google sign-in URL:");
+                System.out.println(url);
+                try {
+                    new ProcessBuilder("xdg-open", url.toString())
+                            .redirectErrorStream(true).start();
+                } catch (IOException browserFailure) {
+                    System.out.println("(Could not open a browser automatically"
+                            + " — paste the URL above.)");
+                }
+            }
+
+            @Override
+            public void deviceCode(String userCode, URI verificationUri,
+                    Integer intervalSeconds, Integer expiresInSeconds) {
+                System.out.println("Visit " + verificationUri + " and enter code " + userCode);
+            }
+
+            @Override
+            public String prompt(String message) throws IOException {
+                System.out.println(message);
+                return new java.io.BufferedReader(new java.io.InputStreamReader(
+                        System.in, java.nio.charset.StandardCharsets.UTF_8)).readLine();
+            }
+        };
     }
 
     private static String definitionCommand(String providerId) {

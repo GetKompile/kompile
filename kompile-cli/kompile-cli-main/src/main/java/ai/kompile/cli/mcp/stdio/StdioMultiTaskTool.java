@@ -2,6 +2,8 @@ package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolContext;
@@ -36,26 +38,17 @@ public class StdioMultiTaskTool {
     private final ObjectMapper objectMapper;
     private final Path workDir;
     private final RoleManager roleManager;
-    private final long batchTimeoutNanos;
 
     public StdioMultiTaskTool(AgentRegistry agentRegistry,
                               DirectSubagentRunnerStdio subagentRunner,
                               ObjectMapper objectMapper,
                               Path workDir,
                               RoleManager roleManager) {
-        this(agentRegistry, subagentRunner, objectMapper, workDir, roleManager, TimeUnit.MINUTES.toNanos(10));
-    }
-
-    // Test seam: retain the production ten-minute batch budget without ten-minute tests.
-    StdioMultiTaskTool(AgentRegistry agentRegistry, DirectSubagentRunnerStdio subagentRunner,
-                      ObjectMapper objectMapper, Path workDir, RoleManager roleManager, long batchTimeoutNanos) {
-        if (batchTimeoutNanos <= 0) throw new IllegalArgumentException("Batch timeout must be positive");
         this.agentRegistry = agentRegistry;
         this.subagentRunner = subagentRunner;
         this.objectMapper = objectMapper;
         this.workDir = workDir;
         this.roleManager = roleManager;
-        this.batchTimeoutNanos = batchTimeoutNanos;
     }
 
     /**
@@ -162,7 +155,7 @@ public class StdioMultiTaskTool {
         subModel.put("description", "Optional model for this subtask. Precedence: subtask value, top-level value, role default, project default, user default, provider native default.");
 
         itemProps.putObject("authentication_method").put("type", "string").put("description",
-                "Override this subtask's auth route: oauth/native uses Claude Code login for anthropic; api-key uses its separate API.")
+                "Override this subtask's auth route: " + ChatConfig.ANTHROPIC_AUTH_ROUTES + ".")
                 .putArray("enum").add("oauth").add("native").add("api-key");
         var subProvider = itemProps.putObject("provider");
         subProvider.put("type", "string");
@@ -189,7 +182,7 @@ public class StdioMultiTaskTool {
         model.put("description", "Optional default model override for subtasks that do not specify their own model. It overrides role/project/user defaults.");
 
         props.putObject("authentication_method").put("type", "string").put("description",
-                "Default auth route for Kompile-native subtasks: oauth/native uses Claude Code login for anthropic; api-key uses its separate API.")
+                "Default auth route for Kompile-native subtasks: " + ChatConfig.ANTHROPIC_AUTH_ROUTES + ".")
                 .putArray("enum").add("oauth").add("native").add("api-key");
         var provider = props.putObject("provider");
         provider.put("type", "string");
@@ -360,7 +353,6 @@ public class StdioMultiTaskTool {
         });
         CompletionService<SubtaskResult> completions = new ExecutorCompletionService<>(executor);
         List<SubtaskFuture> futures = new ArrayList<>();
-        long deadline = System.nanoTime() + batchTimeoutNanos;
 
         try {
         for (int i = 0; i < subtasks.size(); i++) {
@@ -402,23 +394,21 @@ public class StdioMultiTaskTool {
                     var stop = new java.util.concurrent.atomic.AtomicBoolean();
                     futures.add(new SubtaskFuture(instanceName, agentType, model, thinking, plan.provider(),
                         plan.participant(), totalPerSubtask, instanceIdx,
-                        completions.submit(() -> runSubtask(fName, fPrompt, fAgent, plan.role(),
-                                model, thinking, plan.provider(), plan.authenticationMethod(), plan.participant(), context, stop)), stop));
+                        completions.submit(SessionEnvironment.wrap(() -> runSubtask(fName, fPrompt, fAgent, plan.role(),
+                                model, thinking, plan.provider(), plan.authenticationMethod(), plan.participant(), context, stop))), stop));
                 }
             }
         }
 
-        // Observe completion order, not submission order. One batch deadline prevents
-        // N stalled children each consuming a fresh ten-minute wait.
+        // Observe completion order, not submission order. Like task, there is no wall-clock
+        // limit: the batch waits for every child unless the parent aborts or interrupts it.
         Map<Future<SubtaskResult>, SubtaskFuture> pending = new IdentityHashMap<>();
         for (SubtaskFuture sf : futures) {
             if (sf.future.isDone()) sf.result = completedResult(sf.future);
             else pending.put(sf.future, sf);
         }
         while (!pending.isEmpty() && (context == null || !context.isAborted())) {
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) break;
-            Future<SubtaskResult> done = completions.poll(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(100)), TimeUnit.NANOSECONDS);
+            Future<SubtaskResult> done = completions.poll(100, TimeUnit.MILLISECONDS);
             if (done == null) continue;
             SubtaskFuture sf = pending.remove(done);
             if (sf != null) {
@@ -430,7 +420,7 @@ public class StdioMultiTaskTool {
             if (sf.result != null) continue;
             if (sf.future.isDone()) sf.result = completedResult(sf.future);
             else {
-                sf.result = SubtaskResult.timedOut("Batch deadline reached; child cancellation requested.");
+                sf.result = SubtaskResult.failed("Task cancelled");
                 sf.cancel();
             }
         }

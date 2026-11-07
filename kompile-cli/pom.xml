@@ -31,12 +31,17 @@
 
     <modules>
         <module>kompile-cli-plugin-api</module>
+        <module>kompile-cli-tool-api</module>
+        <module>kompile-cli-remote-transport</module>
+        <module>kompile-cli-remote</module>
         <module>kompile-cli-common</module>
+        <module>kompile-code-index-core</module>
         <module>kompile-app-cli</module>
         <module>kompile-model-cli</module>
         <module>kompile-agent-cli</module>
         <module>kompile-component-cli</module>
         <module>kompile-cli-insights</module>
+        <module>kompile-cli-chat-contract</module>
         <module>kompile-cli-main</module>
     </modules>
 

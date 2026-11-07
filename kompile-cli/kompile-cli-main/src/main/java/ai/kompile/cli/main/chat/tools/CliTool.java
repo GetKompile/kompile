@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.plugin.api.tools.ExtensionTool;
 import com.fasterxml.jackson.databind.JsonNode;
 
 /**
@@ -23,7 +24,7 @@ import com.fasterxml.jackson.databind.JsonNode;
  * tool system. Tools can read/write files, execute shell commands, search
  * codebases, and delegate work to subagents.
  */
-public interface CliTool {
+public interface CliTool extends ExtensionTool<ToolContext> {
 
     /** Unique tool identifier (e.g. "read", "bash", "grep"). */
     String id();
@@ -45,6 +46,7 @@ public interface CliTool {
      * @return result containing output text, title, and metadata
      * @throws ToolExecutionException if the tool fails
      */
+    @Override
     ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException;
 
     /**

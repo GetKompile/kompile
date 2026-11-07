@@ -81,7 +81,7 @@ class DirectLlmClientContentBlockTest {
                 // Truncation discards pending calls without reading past the terminal event.
                 assertTrue(result.toolCalls.isEmpty(), type);
                 assertTrue(result.failed, type);
-                assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind, type);
+                assertEquals(FailureKind.TRUNCATED, result.failureKind, type);
             } else {
                 assertEquals(1, result.toolCalls.size(), type);
                 assertEquals("lookup", result.toolCalls.get(0).name, type);
@@ -99,7 +99,7 @@ class DirectLlmClientContentBlockTest {
 
     @Test
     void openAiContentArrayWithImageHasImageUrlBlock() throws Exception {
-        var att = new DirectLlmClient.AttachmentInput(
+        var att = new AttachmentInput(
                 "photo.png", "image/png", true, "aWdv", null);
 
         ArrayNode result = invokeBuildOpenAiContentArray("Describe this", List.of(att));
@@ -117,7 +117,7 @@ class DirectLlmClientContentBlockTest {
 
     @Test
     void openAiContentArrayWithTextFileHasTextBlock() throws Exception {
-        var att = new DirectLlmClient.AttachmentInput(
+        var att = new AttachmentInput(
                 "readme.md", "text/markdown", false, null, "# Hello");
 
         ArrayNode result = invokeBuildOpenAiContentArray("Summarize", List.of(att));
@@ -131,9 +131,9 @@ class DirectLlmClientContentBlockTest {
 
     @Test
     void openAiContentArrayWithMixedAttachments() throws Exception {
-        var imgAtt = new DirectLlmClient.AttachmentInput(
+        var imgAtt = new AttachmentInput(
                 "chart.png", "image/png", true, "imgdata", null);
-        var textAtt = new DirectLlmClient.AttachmentInput(
+        var textAtt = new AttachmentInput(
                 "data.csv", "text/csv", false, null, "a,b\n1,2");
 
         ArrayNode result = invokeBuildOpenAiContentArray("Analyze", List.of(imgAtt, textAtt));
@@ -149,7 +149,7 @@ class DirectLlmClientContentBlockTest {
 
     @Test
     void anthropicContentArrayWithImageHasBase64Block() throws Exception {
-        var att = new DirectLlmClient.AttachmentInput(
+        var att = new AttachmentInput(
                 "photo.jpg", "image/jpeg", true, "jpeg64data", null);
 
         ArrayNode result = invokeBuildAnthropicContentArray("What is this?", List.of(att));
@@ -170,7 +170,7 @@ class DirectLlmClientContentBlockTest {
 
     @Test
     void anthropicContentArrayWithTextFileHasTextBlock() throws Exception {
-        var att = new DirectLlmClient.AttachmentInput(
+        var att = new AttachmentInput(
                 "code.py", "text/x-python", false, null, "print('hi')");
 
         ArrayNode result = invokeBuildAnthropicContentArray("Review", List.of(att));
@@ -184,9 +184,9 @@ class DirectLlmClientContentBlockTest {
 
     @Test
     void anthropicContentArrayWithMixedAttachments() throws Exception {
-        var imgAtt = new DirectLlmClient.AttachmentInput(
+        var imgAtt = new AttachmentInput(
                 "screen.png", "image/png", true, "pngdata", null);
-        var textAtt = new DirectLlmClient.AttachmentInput(
+        var textAtt = new AttachmentInput(
                 "log.txt", "text/plain", false, null, "ERROR: timeout");
 
         ArrayNode result = invokeBuildAnthropicContentArray("Debug this", List.of(imgAtt, textAtt));
@@ -219,7 +219,7 @@ class DirectLlmClientContentBlockTest {
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/v1");
             DirectLlmClient requestClient = new DirectLlmClient(config, mapper);
             requestClient.setOutputConsumer(ignored -> { });
-            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+            AttachmentInput image = new AttachmentInput(
                     "page.png", "image/png", true, "cGFnZQ==", null);
 
             DirectLlmClient.StreamResult result = requestClient.streamChat(
@@ -247,7 +247,7 @@ class DirectLlmClientContentBlockTest {
                     "http://127.0.0.1:" + server.getAddress().getPort());
             DirectLlmClient requestClient = new DirectLlmClient(config, mapper);
             requestClient.setOutputConsumer(ignored -> { });
-            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+            AttachmentInput image = new AttachmentInput(
                     "page.jpg", "image/jpeg", true, "anBlZw==", null);
 
             DirectLlmClient.StreamResult result = requestClient.streamChat(
@@ -278,7 +278,7 @@ class DirectLlmClientContentBlockTest {
                     "http://127.0.0.1:" + server.getAddress().getPort());
             DirectLlmClient requestClient = new DirectLlmClient(config, mapper);
             requestClient.setOutputConsumer(ignored -> { });
-            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+            AttachmentInput image = new AttachmentInput(
                     "page.webp", "image/webp", true, "d2VicA==", null);
 
             DirectLlmClient.StreamResult result = requestClient.streamChat(
@@ -303,9 +303,9 @@ class DirectLlmClientContentBlockTest {
         HttpServer server = startServingServer(captured);
         try {
             DirectLlmClient requestClient = localServingClient(server);
-            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+            AttachmentInput image = new AttachmentInput(
                     "/tmp/page.png", "image/png", true, "cGFnZQ==", null);
-            DirectLlmClient.AttachmentInput notes = new DirectLlmClient.AttachmentInput(
+            AttachmentInput notes = new AttachmentInput(
                     "/tmp/notes.txt", "text/plain", false, null, "margin notes");
 
             DirectLlmClient.StreamResult result = requestClient.streamChat(
@@ -509,7 +509,7 @@ class DirectLlmClientContentBlockTest {
             // Reproduce full compaction/resume losing the provider-owned call item
             // while the executor still has its completed result to submit.
             responsesClient.replaceHistoryWithSummary("prior work summary");
-            DirectLlmClient.ToolCallResultInput result = new DirectLlmClient.ToolCallResultInput(
+            ToolCallResultInput result = new ToolCallResultInput(
                     "call_FKELUG01bpnSx0E0nIVwRnt1", "write", "markdown saved", false);
             DirectLlmClient.StreamResult second =
                     responsesClient.streamChat(null, "system", null, List.of(result));
@@ -622,14 +622,14 @@ class DirectLlmClientContentBlockTest {
 
     // --- helpers ---
 
-    private ArrayNode invokeBuildOpenAiContentArray(String text, List<DirectLlmClient.AttachmentInput> attachments) throws Exception {
+    private ArrayNode invokeBuildOpenAiContentArray(String text, List<AttachmentInput> attachments) throws Exception {
         Method method = DirectLlmClient.class.getDeclaredMethod(
                 "buildOpenAiContentArray", String.class, List.class);
         method.setAccessible(true);
         return (ArrayNode) method.invoke(client, text, attachments);
     }
 
-    private ArrayNode invokeBuildAnthropicContentArray(String text, List<DirectLlmClient.AttachmentInput> attachments) throws Exception {
+    private ArrayNode invokeBuildAnthropicContentArray(String text, List<AttachmentInput> attachments) throws Exception {
         Method method = DirectLlmClient.class.getDeclaredMethod(
                 "buildAnthropicContentArray", String.class, List.class);
         method.setAccessible(true);
@@ -687,10 +687,10 @@ class DirectLlmClientContentBlockTest {
     }
 
     /** {@code count} PNG attachments named {@code /tmp/<prefix>-<i>.png}, each carrying its name. */
-    private static List<DirectLlmClient.AttachmentInput> images(String prefix, int count) {
-        List<DirectLlmClient.AttachmentInput> images = new ArrayList<>();
+    private static List<AttachmentInput> images(String prefix, int count) {
+        List<AttachmentInput> images = new ArrayList<>();
         for (int i = 0; i < count; i++) {
-            images.add(new DirectLlmClient.AttachmentInput("/tmp/" + prefix + "-" + i + ".png",
+            images.add(new AttachmentInput("/tmp/" + prefix + "-" + i + ".png",
                     "image/png", true, Base64.getEncoder().encodeToString(
                             (prefix + "-" + i).getBytes(StandardCharsets.UTF_8)), null));
         }

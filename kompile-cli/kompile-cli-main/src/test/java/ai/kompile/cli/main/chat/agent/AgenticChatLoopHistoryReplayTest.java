@@ -228,7 +228,7 @@ class AgenticChatLoopHistoryReplayTest {
 
         @Override
         public void addReplayedToolCalls(
-                List<ai.kompile.cli.main.chat.config.DirectLlmClient.ReplayedToolCallInput> calls,
+                List<ai.kompile.cli.main.chat.config.ReplayedToolCallInput> calls,
                 String modelOverride) {
             toolCallBatchSizes.add(calls.size());
             replayModels.add(modelOverride);
@@ -244,7 +244,7 @@ class AgenticChatLoopHistoryReplayTest {
 
         @Override
         public void addReplayedToolResults(
-                List<ai.kompile.cli.main.chat.config.DirectLlmClient.ToolCallResultInput> results,
+                List<ai.kompile.cli.main.chat.config.ToolCallResultInput> results,
                 String modelOverride) {
             toolResultBatchSizes.add(results.size());
             replayModels.add(modelOverride);

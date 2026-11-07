@@ -47,6 +47,11 @@ import java.util.regex.Pattern;
  *       weekly/monthly windows without reset metadata are not guessed: the first are
  *       transient; billing needs human action. Multi-day windows resume only
  *       when the provider supplies an explicit reset.</li>
+ *   <li>Recurring loop schedules ({@code /loop}, {@code /loop-global}, bounded
+ *       loops) are paused for every classified usage window — including weekly
+ *       caps that no bounded wake can bridge — via
+ *       {@link UsageWindowListener}; without this they keep firing into the
+ *       quota and polluting the transcript.</li>
  * </ul></p>
  *
  * <p>Disable with {@code -Dkompile.chat.autocontinue=false} or environment
@@ -54,9 +59,23 @@ import java.util.regex.Pattern;
  */
 public final class UsageLimitAutoContinue {
 
-    /** Decision produced from a terminal failure message. */
-    record Verdict(boolean arm, Duration horizon, String reason) {
-        static final Verdict NONE = new Verdict(false, Duration.ZERO, "not a usage-limit window");
+    /**
+     * Decision produced from a terminal failure message.
+     *
+     * @param arm            schedule the bounded auto-continue wake for the failed message
+     * @param horizon        parsed or default window length; {@code ZERO} when not armed
+     * @param reason         human-readable classification
+     * @param stopSchedulers recurring schedules must stop firing into this window
+     *                     even when no wake can bridge it (weekly/monthly caps)
+     */
+    record Verdict(boolean arm, Duration horizon, String reason, boolean stopSchedulers) {
+        static final Verdict NONE = new Verdict(false, Duration.ZERO, "not a usage-limit window", false);
+        static Verdict window(Duration horizon, String reason) {
+            return new Verdict(true, horizon, reason, true);
+        }
+        static Verdict unbridgedWindow(String reason) {
+            return new Verdict(false, Duration.ZERO, reason, true);
+        }
     }
 
     static final Duration DEFAULT_WINDOW = Duration.ofHours(5);
@@ -111,6 +130,41 @@ public final class UsageLimitAutoContinue {
     }
 
     /**
+     * Recurring-schedule owner notified when a provider usage-limit window
+     * opens, so its loops can stop firing into a quota the turn cannot cross.
+     * Delivered at most once per turn failure, including for headless turns and
+     * when auto-continue itself is disabled; never blocks the failure path.
+     */
+    public interface UsageWindowListener {
+        /** Called on the failing turn's thread; must not dispatch turns. */
+        void onUsageLimitWindow(String provider, String failureDetail, Verdict verdict);
+    }
+
+    private static final java.util.Set<UsageWindowListener> USAGE_WINDOW_LISTENERS =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+    /** Register a loop-owner callback; a strong reference must be held by the owner. */
+    public static void addUsageWindowListener(UsageWindowListener listener) {
+        if (listener != null) USAGE_WINDOW_LISTENERS.add(listener);
+    }
+
+    public static void removeUsageWindowListener(UsageWindowListener listener) {
+        if (listener != null) USAGE_WINDOW_LISTENERS.remove(listener);
+    }
+
+    private static void notifyUsageWindowListeners(String provider, String failureDetail,
+                                                   Verdict verdict) {
+        if (!verdict.stopSchedulers()) return;
+        for (UsageWindowListener listener : USAGE_WINDOW_LISTENERS) {
+            try {
+                listener.onUsageLimitWindow(provider, failureDetail, verdict);
+            } catch (RuntimeException ignored) {
+                // A broken listener must not affect the failed turn or other listeners.
+            }
+        }
+    }
+
+    /**
      * Inspect a terminal turn failure and, when it is a usage-limit window,
      * arm the auto-continue wake for {@code originalMessage}. Inert when
      * {@code interactive} is false (headless one-shot runs must not sleep
@@ -121,9 +175,20 @@ public final class UsageLimitAutoContinue {
     }
 
     void onTurnFailure(String failureDetail, String originalMessage, boolean interactive, Turn turn) {
-        if (!interactive || !enabled() || turn == null) return;
+        if (turn == null) {
+            // Synchronous (headless/crawl) turns have no dispatch-thread Turn
+            // snapshot. Classify with the live provider so recurring schedules
+            // still stop; interactive=false preserves the no-arm rule for runs
+            // that must not sleep for hours.
+            onTurnFailure(failureDetail, originalMessage, false);
+            return;
+        }
         String provider = turn.provider();
         Verdict verdict = classify(provider, failureDetail, Clock.systemDefaultZone());
+        // Recurring schedules stop even when the interactive wake cannot arm:
+        // a headless run or disabled auto-continue still must not loop into a quota.
+        notifyUsageWindowListeners(provider, failureDetail, verdict);
+        if (!interactive || !enabled()) return;
         if (!verdict.arm()) return;
 
         String armedNotice;
@@ -276,7 +341,13 @@ public final class UsageLimitAutoContinue {
                 || zai && (code.equals("1310") || code.matches("131[79]|1321"));
         // "monthly spend limit" is only about extra usage; Z.AI's 5h plan still resets.
         if (zai && code.matches("131[68]|1320")) longWindow = false;
-        if (longWindow && hint == null) return Verdict.NONE;
+        if (longWindow && hint == null) {
+            // No reset to sleep until, but recurring schedules must not keep
+            // firing into a multi-day cap: stop them instead.
+            return Verdict.unbridgedWindow(
+                    "Usage-limit window longer than any bounded wait (weekly/monthly or "
+                            + "provider-reported long window without a reset time)");
+        }
         boolean hourScaleHint = hint != null && hint.compareTo(Duration.ofHours(1)) >= 0;
 
         boolean usageLimitPhrase =
@@ -291,7 +362,7 @@ public final class UsageLimitAutoContinue {
                         && hourScaleHint;
 
         if (!structuredWindow && !usageLimitPhrase && !statusLimited) return Verdict.NONE;
-        return new Verdict(true, hint != null ? hint : DEFAULT_WINDOW,
+        return Verdict.window(hint != null ? hint : DEFAULT_WINDOW,
                 hint != null ? "Provider usage-limit window with explicit reset time"
                         : "Provider usage-limit window (default five-hour horizon)");
     }

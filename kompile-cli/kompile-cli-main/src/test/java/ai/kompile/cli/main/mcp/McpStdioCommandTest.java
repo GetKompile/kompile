@@ -63,9 +63,13 @@ class McpStdioCommandTest {
         McpStdioCommand command = new McpStdioCommand();
         AsyncToolExecutor executor = prepareToolDispatch(command);
         java.io.ByteArrayOutputStream notifications = new java.io.ByteArrayOutputStream();
-        Field out = McpStdioCommand.class.getDeclaredField("mcpOut");
+        Field out = McpStdioCommand.class.getDeclaredField("outbound");
         out.setAccessible(true);
-        out.set(command, new java.io.OutputStreamWriter(notifications, java.nio.charset.StandardCharsets.UTF_8));
+        McpStdioCommand.Outbound sink = message -> {
+            notifications.write((mapper.writeValueAsString(message) + "\n")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        };
+        out.set(command, sink);
         Field om = McpStdioCommand.class.getDeclaredField("om");
         om.setAccessible(true);
         om.set(command, mapper);

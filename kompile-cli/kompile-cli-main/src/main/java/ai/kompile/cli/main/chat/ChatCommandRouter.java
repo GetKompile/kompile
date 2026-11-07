@@ -24,6 +24,15 @@ import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.ClaudeMcpServer;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.ModelCatalogSelection;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
@@ -58,6 +67,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -1135,6 +1146,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/dashboard-* [filters]")).append(" tools/judge/tests/crawl/graph/tokens/tasks/processes\n");
             body.append("  ").append(renderer.cyan("/timeline [filters]")).append("  Session activity timeline (alias: /dashboard-timeline)\n");
             body.append("  ").append(renderer.cyan("/timeline next|inspect:ID|follow|stop")).append("  Page, inspect, or follow retained events\n");
+            body.append("  ").append(renderer.cyan("/dashboard-timeline tokens [from:|to:|last N days]")).append("  Project token usage over time, per model (default last 7 days)\n");
             body.append("  ").append(renderer.cyan("/judge")).append(" [cmd]         Judge control, policy, direction, and global switch\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Message Queue"))).append("\n");
@@ -1259,6 +1271,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/dashboard-* [filters]")).append(" tools/judge/tests/crawl/graph/tokens/tasks/processes\n");
             body.append("  ").append(renderer.cyan("/timeline [filters]")).append("  Session activity timeline (alias: /dashboard-timeline)\n");
             body.append("  ").append(renderer.cyan("/timeline next|inspect:ID|follow|stop")).append("  Page, inspect, or follow retained events\n");
+            body.append("  ").append(renderer.cyan("/dashboard-timeline tokens [from:|to:|last N days]")).append("  Project token usage over time, per model (default last 7 days)\n");
             body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add/clear; 'interval <n|off>' sets cadence\n");
             body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders; optional interval override\n");
             body.append("  ").append(renderer.cyan("/continue [on|off]")).append("  Auto-reply to agent questions; /continue help for options\n");
@@ -2321,6 +2334,11 @@ public class ChatCommandRouter {
                                 + statusBar.renderProcessPanel()));
                 return;
             }
+            if (request.topic().equals("tokens")) {
+                context.checkPermission("read", "Read project token usage");
+                System.out.println(projectTokenTotals(arguments));
+                System.out.println("Tool breakdown");
+            }
             String toolName = request.topic().equals("tasks") ? "todoread" : "insights";
             CliTool tool = toolRegistry == null ? null : toolRegistry.get(toolName);
             if (tool == null || (toolName.equals("insights") && !(tool instanceof InsightsTool))) {
@@ -2354,6 +2372,17 @@ public class ChatCommandRouter {
         } catch (Exception failure) {
             System.out.println(renderer.red("Dashboard: " + failure.getMessage()));
         }
+    }
+
+    /** Every chat journaled for this project over the report's "last N unit" window (default last 7 days). */
+    private String projectTokenTotals(String arguments) {
+        Instant to = Instant.now();
+        Instant from = DashboardTimelineCommands.relativeWindow(arguments == null ? "" : arguments.strip()).from();
+        if (from == null) from = to.minus(Duration.ofDays(7));
+        String project = repl.getWorkingDirectory().toAbsolutePath().normalize().toString();
+        TokenUsageJournal.Scan scan = TokenUsageJournal.read(
+                repl.getConversationActivityService().storage().conversationsRoot(), project, from, to);
+        return TokenUsageTimelineReport.projectTotals(scan, project, from, to, ZoneId.systemDefault());
     }
 
     private void resourceMonitorCommand(String arguments) {

@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.LongSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -16,12 +17,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Focused coverage for the /continue auto-reply engine: keyword matching,
- * command grammar, persistence, and the runaway-loop budget.
+ * command grammar, persistence, and the two runaway-loop governors (the
+ * consecutive-reply budget and the minimum-spacing throttle).
  */
 class ContinueManagerTest {
 
     @TempDir
     Path tempDir;
+
+    /** Controllable time source so throttle tests never sleep. */
+    private static final class MutableClock implements LongSupplier {
+        private long nowNanos = 1L;
+
+        @Override
+        public long getAsLong() {
+            return nowNanos;
+        }
+
+        void advanceMillis(long millis) {
+            nowNanos += millis * 1_000_000L;
+        }
+    }
 
     @Test
     void defaultKeywordsTriggerOnCommonQuestions() {
@@ -57,9 +73,12 @@ class ContinueManagerTest {
     @Test
     void budgetPausesRunawayAutoRepliesAndUserActivityRearms() {
         ContinueManager manager = ContinueManager.inMemory();
+        MutableClock clock = new MutableClock();
+        manager.setClock(clock);
 
         for (int i = 0; i < ContinueManager.MAX_CONSECUTIVE_AUTO_REPLIES; i++) {
             assertTrue(manager.decide("Proceed?", true, false).fire());
+            clock.advanceMillis(ContinueManager.DEFAULT_THROTTLE_MS);
             manager.noteAutoReplySent();
         }
 
@@ -74,6 +93,71 @@ class ContinueManagerTest {
 
         // Any human input re-arms the budget and clears the notice.
         manager.noteUserActivity();
+        assertTrue(manager.decide("Proceed?", true, false).fire());
+    }
+
+    @Test
+    void throttleSuppressesBackToBackAutoRepliesUntilTheWindowPasses() {
+        ContinueManager manager = ContinueManager.inMemory();
+        MutableClock clock = new MutableClock();
+        manager.setClock(clock);
+
+        // First trigger fires and stamps the clock.
+        assertTrue(manager.decide("Proceed?", true, false).fire());
+
+        // An immediate repeat — the double-fire an agent can produce — is
+        // suppressed inside the spacing window.
+        ContinueManager.Decision throttled = manager.decide("Proceed?", true, false);
+        assertFalse(throttled.fire());
+        assertTrue(throttled.notice() != null
+                && throttled.notice().contains("throttled"), throttled.notice());
+
+        // The suppression notice is one-shot per arm.
+        ContinueManager.Decision silentRepeat = manager.decide("Proceed?", true, false);
+        assertFalse(silentRepeat.fire());
+        assertNull(silentRepeat.notice());
+
+        // Past the window the same trigger fires again (budget permitting).
+        clock.advanceMillis(ContinueManager.DEFAULT_THROTTLE_MS + 1);
+        assertTrue(manager.decide("Proceed?", true, false).fire());
+
+        // A manual message re-arms the throttle instantly.
+        manager.noteUserActivity();
+        assertTrue(manager.decide("Proceed?", true, false).fire());
+    }
+
+    @Test
+    void throttlePropertyZeroDisablesTheSpacingFloor() {
+        String previous = System.getProperty(ContinueManager.THROTTLE_PROPERTY);
+        System.setProperty(ContinueManager.THROTTLE_PROPERTY, "0");
+        try {
+            ContinueManager manager = ContinueManager.inMemory();
+            manager.setClock(new MutableClock());
+            for (int i = 0; i < 3; i++) {
+                assertTrue(manager.decide("Proceed?", true, false).fire(), "fire " + i);
+                manager.noteAutoReplySent();
+            }
+        } finally {
+            if (previous == null) {
+                System.clearProperty(ContinueManager.THROTTLE_PROPERTY);
+            } else {
+                System.setProperty(ContinueManager.THROTTLE_PROPERTY, previous);
+            }
+        }
+    }
+
+    @Test
+    void throttleStampsOnFireNotOnSuppression() {
+        ContinueManager manager = ContinueManager.inMemory();
+        MutableClock clock = new MutableClock();
+        manager.setClock(clock);
+
+        assertTrue(manager.decide("Proceed?", true, false).fire());
+        // Repeated suppressions must not extend the window: each one is measured
+        // from the last actual fire, not from the last decision.
+        clock.advanceMillis(ContinueManager.DEFAULT_THROTTLE_MS / 2);
+        assertFalse(manager.decide("Proceed?", true, false).fire());
+        clock.advanceMillis(ContinueManager.DEFAULT_THROTTLE_MS / 2);
         assertTrue(manager.decide("Proceed?", true, false).fire());
     }
 
@@ -177,14 +261,18 @@ class ContinueManagerTest {
     @Test
     void announcedActionFamilyTriggersAnywhereInTheTurn() {
         ContinueManager manager = ContinueManager.inMemory();
+        MutableClock clock = new MutableClock();
+        manager.setClock(clock);
         // The family is in the default list, so mid-report announcements fire too.
         for (String phrase : List.of("let me", "let's", "i'll", "i will")) {
             assertTrue(ContinueManager.DEFAULT_KEYWORDS.contains(phrase), phrase);
         }
         assertTrue(manager.decide("Let me trace that call path.\n\nThe guard is the cause.",
                 true, false).fire(), "mid-report 'let me'");
+        clock.advanceMillis(ContinueManager.DEFAULT_THROTTLE_MS);
         assertTrue(manager.decide("I'll start with the resolver.\n\nIt reads the route table.",
                 true, false).fire(), "mid-report i'll");
+        clock.advanceMillis(ContinueManager.DEFAULT_THROTTLE_MS);
         assertTrue(manager.decide("Now let's wire the flag through.\n\nThe build passed.",
                 true, false).fire(), "mid-report let's");
     }
@@ -218,6 +306,8 @@ class ContinueManagerTest {
     @Test
     void detectorLaneRespectsEveryExistingGate() throws IOException {
         ContinueManager manager = ContinueManager.inMemory();
+        MutableClock clock = new MutableClock();
+        manager.setClock(clock);
         String stalling = "Root cause found.\n\nI'll wire the migration next.";
 
         assertFalse(manager.decide(stalling, false, false).fire(), "headless runs never sleep");
@@ -227,9 +317,10 @@ class ContinueManagerTest {
         assertFalse(manager.decide(stalling, true, false).fire(), "disabled means disabled");
         manager.setEnabled(true);
 
-        // The runaway budget is shared by both lanes.
+        // The runaway budget is shared by both lanes, as is the throttle.
         for (int i = 0; i < ContinueManager.MAX_CONSECUTIVE_AUTO_REPLIES; i++) {
             assertTrue(manager.decide(stalling, true, false).fire());
+            clock.advanceMillis(ContinueManager.DEFAULT_THROTTLE_MS);
             manager.noteAutoReplySent();
         }
         ContinueManager.Decision paused = manager.decide(stalling, true, false);

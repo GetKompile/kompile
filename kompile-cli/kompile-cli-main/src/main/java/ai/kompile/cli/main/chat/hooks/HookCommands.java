@@ -16,6 +16,8 @@ public final class HookCommands {
             /hooks [project|global] get <id>
             /hooks [project|global] add {"event":"PreToolUse","matcher":"^(write|edit)$","command":"/path/check.sh","timeout":30}
             /hooks [project|global] edit <id> {"command":"/path/new-check.sh"}
+            /hooks [project|global] edit <id> {"hooks":[{"command":"/path/first.sh","timeout":30},{"command":"/path/second.sh","timeout":60}]}
+            hooks replaces the ordered command list; do not combine it with command or timeout.
             /hooks [project|global] enable|disable|delete <id>
             /hooks help                    Show this help
             Commands run automatically with your permissions. Only configure trusted commands.
@@ -72,7 +74,7 @@ public final class HookCommands {
             var names = fields.fieldNames();
             while (names.hasNext()) {
                 String name = names.next();
-                if (!java.util.Set.of("event", "matcher", "command", "timeout", "enabled").contains(name)) {
+                if (!java.util.Set.of("event", "matcher", "command", "timeout", "hooks", "enabled").contains(name)) {
                     throw new IllegalArgumentException("Unknown hook edit field: " + name);
                 }
                 request.set(name, fields.get(name));

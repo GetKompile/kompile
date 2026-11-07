@@ -35,6 +35,17 @@ final class TestMilestoneDisplay implements AutoCloseable {
         this.identity = identity;
         this.renderer = renderer;
         this.display = display;
+        // Live cards only: a resumed conversation's earlier milestones are already in its
+        // transcript and /test-milestones. Tailing from 0 re-announced all of them at startup.
+        this.offset = liveTailStart(reader);
+    }
+
+    private static long liveTailStart(ActivityJournalReader reader) {
+        try {
+            return reader.endOfCompleteRecords();
+        } catch (IOException unreadable) {
+            return 0L; // poll() hits the same failure and reports it once.
+        }
     }
 
     synchronized void start() {

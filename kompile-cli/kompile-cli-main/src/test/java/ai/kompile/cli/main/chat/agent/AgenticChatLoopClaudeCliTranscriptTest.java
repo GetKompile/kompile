@@ -6,6 +6,15 @@ import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.ChatUiSession;
 import ai.kompile.cli.main.chat.ForegroundRequestProgress;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.FakeClaudeCode;
 import ai.kompile.cli.main.chat.permission.PermissionService;
@@ -258,7 +267,7 @@ class AgenticChatLoopClaudeCliTranscriptTest {
             List<String> contextAtToolDone = Collections.synchronizedList(new ArrayList<>());
             List<String> contextUpdates = Collections.synchronizedList(new ArrayList<>());
             // The loop updates both panes first, then hands each event on to this listener.
-            client.setProviderActivityListener(new DirectLlmClient.ProviderActivityListener() {
+            client.setProviderActivityListener(new ProviderActivityListener() {
                 @Override
                 public void onToolStart(String callId, String name, String input) {
                     toolStarted.add(progress.snapshot());
@@ -374,7 +383,7 @@ class AgenticChatLoopClaudeCliTranscriptTest {
                     }
                     """);
             fake.install(client, directory, "claude-phases");
-            client.setProviderActivityListener(new DirectLlmClient.ProviderActivityListener() {
+            client.setProviderActivityListener(new ProviderActivityListener() {
                 @Override
                 public void onToolStart(String id, String name, String input) { }
                 @Override
@@ -384,9 +393,24 @@ class AgenticChatLoopClaudeCliTranscriptTest {
             });
             AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
                     new PermissionService(), new AgentRegistry(), directory, client, null);
+            // The process pane's only signal during a silent Claude call is the heartbeat.
+            List<String> paneHeartbeats = Collections.synchronizedList(new ArrayList<>());
+            loop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
+                @Override
+                public void onToolStart(String callId, String toolName, String rawInput) { }
+                @Override
+                public void onToolProgress(String callId, String toolName, long elapsedMillis) {
+                    paneHeartbeats.add(callId + "@" + elapsedMillis / 1000);
+                }
+                @Override
+                public void onToolComplete(String callId, String toolName, String rawInput, ToolResult result) { }
+            });
             String session = "claude-phases-test";
             loop.configureConversationSession(session);
             loop.chat("check tools", session, "coder", "default", false);
+
+            assertEquals(List.of("bash-1@12"), paneHeartbeats,
+                    "a running call's heartbeat reaches the pane; a late one for a finished call does not");
 
             assertTrue(activities.contains("Waiting for Claude response"), activities.toString());
             assertTrue(activities.contains("Thinking"), "empty/redacted thinking is still an activity");

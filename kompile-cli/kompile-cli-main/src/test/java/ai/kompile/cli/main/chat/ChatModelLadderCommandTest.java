@@ -112,7 +112,9 @@ class ChatModelLadderCommandTest {
             repl = newRepl(session);
             ChatCommandRouter router = field(repl, "commandRouter", ChatCommandRouter.class);
 
-            String empty = run(repl, router, "/model ladder");
+            String wizard = run(repl, router, "/model ladder");
+            assertTrue(wizard.contains("interactive terminal"), wizard);
+            String empty = run(repl, router, "/model ladder status");
             assertTrue(empty.contains("No rungs"), empty);
 
             String rejected = run(repl, router, "/model ladder add not-a-provider/model-x");
@@ -121,7 +123,7 @@ class ChatModelLadderCommandTest {
                     "a rejected rung must not be persisted");
 
             run(repl, router, "/model ladder add custom/backup-model");
-            String shown = run(repl, router, "/model ladder");
+            String shown = run(repl, router, "/model ladder status");
             assertTrue(shown.contains("backup-model"), shown);
         } finally {
             if (repl != null) close(repl);

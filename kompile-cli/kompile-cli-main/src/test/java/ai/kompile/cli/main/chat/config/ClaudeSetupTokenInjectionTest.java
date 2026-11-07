@@ -183,6 +183,74 @@ class ClaudeSetupTokenInjectionTest {
         assertNull(ChatConfig.unusableCredentialReason(ClaudeCodeOAuthFlow.PROVIDER_ID, "work"));
     }
 
+    @Test
+    void theLoginDescriptionNamesTheTokenOauthSendsAndNeverTheSecret() throws Exception {
+        ChatConfig ownLogin = claudeRouteWithoutTokens();
+        assertEquals(ChatConfig.CLAUDE_CODE_OWN_LOGIN, ownLogin.describeLogin());
+
+        storeTokens();
+        ChatConfig active = claudeRoute("session");
+        assertEquals("Claude setup token 'personal'", active.describeLogin());
+        assertEquals(PERSONAL, active.resolveClaudeCodeToken());
+        ChatConfig pinned = claudeRoute("session");
+        pinned.setCredentialName("work");
+        assertEquals("Claude setup token 'work'", pinned.describeLogin());
+        assertFalse(pinned.describeLogin().contains("sk-ant"));
+
+        // native never sends a stored token, so a stored one does not change its login.
+        ChatConfig nativeRoute = claudeRoute("session");
+        nativeRoute.setAuthenticationMethod("native");
+        assertNull(nativeRoute.resolveClaudeCodeToken());
+        assertEquals(ChatConfig.CLAUDE_CODE_OWN_LOGIN, nativeRoute.describeLogin());
+    }
+
+    @Test
+    void everyProvidersLoginIsDescribedInTheOrderItsRequestsResolveIt() throws Exception {
+        CredentialStore.create().putApiKey("openai", "team-key", "test-team-secret", true);
+        ChatConfig stored = new ChatConfig("openai", null, "gpt", null);
+        stored.setAuthenticationMethod("api-key");
+        stored.setAuthenticationScope("session");
+        assertEquals("stored credential 'team-key'", stored.describeLogin());
+        assertEquals("team-key", stored.effectiveCredentialName());
+        assertFalse(stored.describeLogin().contains("test-team-secret"));
+
+        // An inline key is sent before any stored credential.
+        ChatConfig inline = new ChatConfig("openai", "inline-secret", "gpt", null);
+        inline.setAuthenticationMethod("api-key");
+        assertEquals("inline API key", inline.describeLogin());
+        assertNull(inline.effectiveCredentialName());
+    }
+
+    @Test
+    void delegatedWorkStartsFromTheParentSessionsSavedRouteAndLogin() throws Exception {
+        storeTokens();
+        ChatConfig parent = new ChatConfig("anthropic", null, "opus", null);
+        parent.setAuthenticationMethod("native");
+        parent.bindSession("parent-session-1");
+
+        ChatConfig loaded = ChatConfig.loadParentSession("parent-session-1");
+        assertNotNull(loaded);
+        assertEquals("anthropic", loaded.getProvider());
+        assertEquals("native", loaded.getAuthenticationMethod());
+        assertEquals(ChatConfig.CLAUDE_CODE_OWN_LOGIN, loaded.describeLogin());
+        // A same-provider child keeps the session's own login, not the stored active token.
+        ChatConfig child = SubagentChatConfig.configure(loaded, "anthropic", "sonnet", null, null);
+        assertNull(child.resolveClaudeCodeToken());
+        assertNull(child.effectiveCredentialName());
+
+        ChatConfig pinned = claudeRoute("session");
+        pinned.setCredentialName("work");
+        pinned.bindSession("parent-session-2");
+        ChatConfig pinnedChild = SubagentChatConfig.configure(ChatConfig.loadParentSession("parent-session-2"),
+                null, "sonnet", null, null);
+        assertEquals("work", pinnedChild.effectiveCredentialName());
+        assertEquals(WORK, pinnedChild.resolveClaudeCodeToken());
+
+        assertNull(ChatConfig.loadParentSession(null));
+        assertNull(ChatConfig.loadParentSession("../escape"));
+        assertNull(ChatConfig.loadParentSession("missing-session"));
+    }
+
     private static ChatConfig claudeRoute(String scope) {
         ChatConfig config = new ChatConfig("anthropic", null, "claude-sonnet", null);
         config.setAuthenticationScope(scope);

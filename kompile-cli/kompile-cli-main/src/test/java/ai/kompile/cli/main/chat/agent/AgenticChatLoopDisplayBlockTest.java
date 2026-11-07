@@ -5,7 +5,15 @@ import ai.kompile.cli.main.chat.ChatCompleter;
 import ai.kompile.cli.main.chat.ChatUiSession;
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
 import ai.kompile.cli.main.chat.MessageQueue;
-import ai.kompile.cli.main.chat.config.ChatUiConfig;
+ 
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tui.KompileTui;
 import ai.kompile.cli.main.chat.tui.VirtualTerminal;
@@ -38,6 +46,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
+import ai.kompile.cli.main.chat.config.ChatUiConfig;
 
 /** Presentation-only fixtures: no provider requests or tool executions. */
 class AgenticChatLoopDisplayBlockTest {

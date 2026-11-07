@@ -714,7 +714,8 @@ class ChatFlowIntegrationTest {
                 h.chat("check git status");
                 h.assertResultEquals("Branch is clean")
                         .assertOutputContains("On branch main")
-                        .assertOutputContains("[tool: exec exit 0]");
+                        .assertOutputContains("Exec")
+                        .assertOutputContains("✓");
             }
         }
 
@@ -734,8 +735,9 @@ class ChatFlowIntegrationTest {
                     .script(script).build()) {
                 h.chat("where am I");
                 h.assertResultContains("You are in /home/user")
-                        .assertToolCallRendered("bash")
-                        .assertOutputContains("[tool: bash exit 0]");
+                        .assertToolCallRendered("Bash")
+                        .assertOutputContains("Bash")
+                        .assertOutputContains("✓");
             }
         }
 

@@ -142,7 +142,6 @@
             ],
             "tsConfig": "projects/chat-app/tsconfig.spec.json",
             "exclude": [
-              "**/unified-chat/unified-chat-token-usage.spec.ts",
               "**/unified-chat/unified-chat-context-panel.spec.ts"
             ],
             "assets": [

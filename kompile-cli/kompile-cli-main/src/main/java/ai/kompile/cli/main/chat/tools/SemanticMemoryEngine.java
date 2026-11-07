@@ -64,6 +64,8 @@ public class SemanticMemoryEngine {
     /** When false (default) the ND4J/CUDA-backed dense encoder only starts on explicit request. */
     private final boolean denseAutostart;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
+    /** Completes once the first directory scan after {@link #initialize()} has published its index. */
+    private final CompletableFuture<Void> initialScan = new CompletableFuture<>();
     private final ScheduledExecutorService refreshExecutor;
     private volatile long lastRefreshTime = 0;
     private static final long REFRESH_INTERVAL_MS = 60_000; // Re-scan every 60s
@@ -132,8 +134,16 @@ public class SemanticMemoryEngine {
         addWatchDir(home.resolve(".kompile").resolve("memory"));
         addWatchDir(new MemoryTool().resolveClaudeMemoryDir(projectDirectory));
 
-        // Initial scan with TF-IDF (available immediately)
-        refreshIndex();
+        // The first scan reads every memory file. It runs on the refresh thread so the
+        // caller (an MCP server answering tools/list for a freshly launched subagent)
+        // does not wait for it; readers wait for it instead (awaitInitialScan).
+        refreshExecutor.execute(() -> {
+            try {
+                refreshIndex();
+            } finally {
+                initialScan.complete(null);
+            }
+        });
 
         // Schedule periodic refresh
         refreshExecutor.scheduleAtFixedRate(this::refreshIndex,
@@ -211,6 +221,8 @@ public class SemanticMemoryEngine {
      * get a dense vector added so subsequent queries use dense similarity.
      */
     private void reindexWithDenseEncoder() {
+        // Entries the first scan adds before the encoder was ready must be covered too.
+        awaitInitialScan();
         int reindexed = 0;
         for (MemoryEntry entry : memories) {
             if (denseVectors.containsKey(entry.id)) continue;
@@ -259,6 +271,7 @@ public class SemanticMemoryEngine {
      * @return ranked list of retrieved memories, most similar first
      */
     public List<RetrievedMemory> query(String text, int topK, double threshold) {
+        awaitInitialScan();
         if (text == null || text.isBlank()
                 || (useDenseEmbeddings ? memories.isEmpty() : tfidfIndex.entries.isEmpty())) {
             return Collections.emptyList();
@@ -322,11 +335,13 @@ public class SemanticMemoryEngine {
 
     /** Return the total number of indexed memory entries. */
     public int size() {
+        awaitInitialScan();
         return memories.size();
     }
 
     /** Return a human-readable summary of index statistics. */
     public String stats() {
+        awaitInitialScan();
         Map<String, Long> typeCounts = memories.stream()
                 .collect(Collectors.groupingBy(m -> m.type, Collectors.counting()));
         if (useDenseEmbeddings) {
@@ -353,6 +368,8 @@ public class SemanticMemoryEngine {
      */
     public void shutdown() {
         refreshExecutor.shutdownNow();
+        // shutdownNow drops a first scan that never started; nothing may wait on it after this.
+        initialScan.complete(null);
         if (encoder != null) {
             try {
                 // GenericDenseSameDiffEncoder implements AutoCloseable
@@ -366,6 +383,18 @@ public class SemanticMemoryEngine {
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
+
+    /** Wait for the first scan {@link #initialize()} started; returns at once before initialize. */
+    private void awaitInitialScan() {
+        if (!initialized.get() || initialScan.isDone()) return;
+        try {
+            initialScan.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException e) {
+            // refreshIndex reports its own failures; readers use whatever index was published.
+        }
+    }
 
     private synchronized void refreshIndex() {
         long now = System.currentTimeMillis();

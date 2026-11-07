@@ -114,6 +114,8 @@ class CompactTurnLifecycleTest {
         ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
         AgenticChatLoop loop = field(repl, "agenticLoop", AgenticChatLoop.class);
         AtomicBoolean subagentInvocation = field(
+                loop, "subagentToolPhase", AtomicBoolean.class);
+        AtomicBoolean backgroundableInvocation = field(
                 loop, "backgroundableToolPhase", AtomicBoolean.class);
         BackgroundProcessManager processes = field(
                 repl, "processManager", BackgroundProcessManager.class);
@@ -133,20 +135,23 @@ class CompactTurnLifecycleTest {
             }, "blocking-subagent-parent"));
             assertTrue(ownerStarted.await(5, TimeUnit.SECONDS));
 
+            backgroundableInvocation.set(true);
             subagentInvocation.set(true);
             assertFalse(repl.requestCancelFromInput(),
                     "Escape must not be an implicit subagent kill key");
             assertFalse(ownerInterrupted.await(200, TimeUnit.MILLISECONDS),
                     "the parent owner was interrupted while its subagent should continue");
 
+            // Still a backgroundable call, but bash or an MCP tool rather than a subagent.
             subagentInvocation.set(false);
             assertTrue(repl.requestCancelFromInput(),
-                    "Escape should resume its normal main-turn cancellation role afterward");
+                    "Escape must cancel a blocking non-subagent tool call");
             assertTrue(ownerInterrupted.await(5, TimeUnit.SECONDS));
             assertTrue(awaitCondition(() -> !repl.isLlmBusy(), 5, TimeUnit.SECONDS),
                     "the cancelled parent owner did not release its reservation");
         } finally {
             subagentInvocation.set(false);
+            backgroundableInvocation.set(false);
             releaseOwner.countDown();
             processes.close();
             ChatCompleter.setActivity(null);

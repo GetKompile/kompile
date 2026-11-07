@@ -83,6 +83,17 @@ class EditPatchToolTest {
     }
 
     @Test
+    void subagentHunkThatEmptiesFileIsRefused() throws Exception {
+        Path a = file("victim.txt", "alpha\nbeta\n");
+        context.markSupervisedChild();
+
+        ToolResult result = tool.execute(params(patch("victim.txt", "-alpha\n-beta")), context);
+
+        assertTrue(result.getOutput().contains("equivalent to deleting it"), result::getOutput);
+        assertEquals("alpha\nbeta\n", Files.readString(a));
+    }
+
+    @Test
     void unifiedDiffLineNumbersAreIgnored() throws Exception {
         Path a = file("wrong-numbers.txt", "alpha\nbeta\ngamma\n");
 

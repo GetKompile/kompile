@@ -199,7 +199,13 @@ class SetupWizardRuntimeTest {
 
         assertEquals(List.of("OAuth / subscription sign-in"),
                 SetupWizard.authOptions("github-copilot"));
-        assertEquals(List.of("API key"), SetupWizard.authOptions("gemini"));
+        // Gemini's OAuth route is the built-in Google Code Assist browser flow:
+        // the credential is stored like Claude Code's setup tokens and the
+        // vendor stays the provider.
+        assertEquals(List.of("OAuth / subscription sign-in", "API key"),
+                SetupWizard.authOptions("gemini"));
+        assertEquals("gemini",
+                SetupWizard.resolveProviderForAuth("gemini", SetupWizard.AuthMethod.OAUTH));
         assertEquals(List.of("API key (subscription)", "API key (credits)"),
                 SetupWizard.authOptions("zai"));
         assertEquals("zai",

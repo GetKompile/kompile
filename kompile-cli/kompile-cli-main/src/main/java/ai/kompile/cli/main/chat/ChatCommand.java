@@ -22,8 +22,17 @@ import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.main.chat.agent.ProjectChatContext;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
-import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
+ 
 import ai.kompile.cli.main.chat.config.ProviderPromptCacheCapabilities;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
@@ -79,6 +88,7 @@ import java.util.Scanner;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 
 @CommandLine.Command(
         name = "chat",
@@ -510,6 +520,21 @@ public class ChatCommand implements Callable<Integer> {
                     }
                     webInput = WebChatInput.parse(resolvedPrompt);
                     ChatConfig nativeConfig = resolveWebRouteConfig(webInput.sessionId());
+                    String webCommand = webInput.rawInput().stripLeading().split("\\s+", 2)[0].toLowerCase(Locale.ROOT);
+                    // Harness-owned reads and explicit child actions must not reach a vendor CLI
+                    // as text. Preserve the actual caller, even on the command-only fast path.
+                    if (webInput.configQuery() || "/subagents".equals(webCommand) || "/test-milestones".equals(webCommand)
+                            || "/hooks".equals(webCommand) || "/permissions".equals(webCommand)) {
+                        var commandOptions = webCommandOptions(nativeConfig, headlessMode);
+                        var resolution = "/subagents".equals(webCommand) && blankToNull(workflow) != null
+                                ? new WebCommandResolver.Resolution(WebCommandResolver.Status.INVALID, "/subagents",
+                                    "Durable child commands are unavailable in workflow runs; no action was performed.", null)
+                                : WebCommandResolver.resolveForRun(webInput, effectiveWorkingDirectory(),
+                                    commandOptions.sessionStateStoreOrDefault(), commandOptions.chatConfig(),
+                                    new WebCommandResolver.RunPermissions(blankToNull(agentName), blankToNull(role), dangerouslySkipPermissions,
+                                            commandOptions.serverBaseUrl() != null || blankToNull(workflow) != null));
+                        return new HeadlessAgentRunner(liveControls, resolution).run(commandOptions).exitCode();
+                    }
                     if (nativeConfig != null && "passthrough".equalsIgnoreCase(nativeConfig.getChatMode())) {
                         if (webInput.sessionId() != null && !webInput.sessionId().isBlank()) sessionId = webInput.sessionId();
                         if (sessionId == null || sessionId.isBlank()) sessionId = newTranscriptUuid();
@@ -520,15 +545,6 @@ public class ChatCommand implements Callable<Integer> {
                         return runHeadlessTurn(nativeConfig, null, resumeSessionId != null, null,
                                 webInput.rawInput(), headlessMode);
                     }
-                    // Headless session-configuration read: no model configuration or
-                    // transcript machinery is required — the runner answers directly.
-                    if (webInput.configQuery()) {
-                        if (sessionId == null || sessionId.isBlank()) sessionId = newTranscriptUuid();
-                        return new HeadlessAgentRunner(liveControls).run(new HeadlessAgentRunner.Options(
-                                "", sessionId, false, null, null, headlessMode,
-                                effectiveWorkingDirectory(), 0, outputLastMessage)
-                                .withWebInput(webInput)).exitCode();
-                    }
                     // A process command between runs is permitted as this run would permit it.
                     var resolution = WebCommandResolver.resolve(webInput, effectiveWorkingDirectory(),
                             new WebCommandResolver.RunPermissions(blankToNull(agentName), blankToNull(role),
@@ -538,10 +554,8 @@ public class ChatCommand implements Callable<Integer> {
                         // Commands do not require model config, attachments, transcripts,
                         // or a mutable runtime; the runner owns the ordered event lifecycle.
                         // It reports this resolution: resolving again would apply a command twice.
-                        return new HeadlessAgentRunner(liveControls, resolution).run(new HeadlessAgentRunner.Options(
-                                "", sessionId, false, null, null, headlessMode,
-                                effectiveWorkingDirectory(), 0, outputLastMessage)
-                                .withWebInput(webInput)).exitCode();
+                        return new HeadlessAgentRunner(liveControls, resolution)
+                                .run(webCommandOptions(nativeConfig, headlessMode)).exitCode();
                     }
                     resolvedPrompt = webInput.rawInput();
                 }
@@ -1232,10 +1246,23 @@ public class ChatCommand implements Callable<Integer> {
                 config, serverUrl, isResume, resolvedRole, prompt, outputMode);
     }
 
+    private HeadlessAgentRunner.Options webCommandOptions(ChatConfig config, HeadlessAgentRunner.OutputMode outputMode) {
+        if (webInput.sessionId() != null && !webInput.sessionId().isBlank()) sessionId = webInput.sessionId();
+        if (sessionId == null || sessionId.isBlank()) sessionId = newTranscriptUuid();
+        String server = blankToNull(url);
+        if (server == null && port != null) server = "http://localhost:" + port;
+        ChatConfig effectiveConfig = config == null ? null : config.copy();
+        if (effectiveConfig != null && ChatConfig.loadSession(sessionId) == null) applyCommandLineOverrides(effectiveConfig);
+        return new HeadlessAgentRunner.Options("", sessionId, false, blankToNull(agentName), blankToNull(model),
+                outputMode, effectiveWorkingDirectory(), Math.max(0L, timeoutSeconds) * 1000L, outputLastMessage,
+                null, null, null, effectiveConfig, server, rag, memory, blankToNull(role), dangerouslySkipPermissions,
+                List.of(), webInput);
+    }
+
     private int runHeadlessTurn(
             ChatConfig config, String serverUrl, boolean isResume, String resolvedRole,
             String prompt, HeadlessAgentRunner.OutputMode outputMode) {
-        List<DirectLlmClient.AttachmentInput> attachments;
+        List<AttachmentInput> attachments;
         try {
             attachments = ChatAttachmentLoader.load(attachmentPaths);
         } catch (IOException e) {

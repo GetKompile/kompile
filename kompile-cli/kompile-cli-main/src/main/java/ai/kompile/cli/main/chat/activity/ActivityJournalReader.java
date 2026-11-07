@@ -93,6 +93,27 @@ public final class ActivityJournalReader {
                 warnings.stream().limit(16).toList());
     }
 
+    /** Offset just past the last newline-terminated record, where a live tail of new events starts.
+     * An unterminated final record stays ahead of it, so it is still read once its writer finishes. */
+    public long endOfCompleteRecords() throws IOException {
+        if (file == null || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) return 0L;
+        ensureSafePath(file);
+        try (FileChannel reader = FileChannel.open(file, StandardOpenOption.READ,
+                LinkOption.NOFOLLOW_LINKS)) {
+            ByteBuffer chunk = ByteBuffer.allocate(8192);
+            for (long end = reader.size(); end > 0; ) {
+                long begin = Math.max(0L, end - chunk.capacity());
+                chunk.clear().limit((int) (end - begin));
+                while (chunk.hasRemaining() && reader.read(chunk, begin + chunk.position()) > 0) { }
+                for (int i = chunk.position() - 1; i >= 0; i--) {
+                    if (chunk.get(i) == '\n') return begin + i + 1L;
+                }
+                end = begin;
+            }
+        }
+        return 0L;
+    }
+
     static String decodeUtf8(byte[] data, int offset, int length) throws IOException {
         return StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)

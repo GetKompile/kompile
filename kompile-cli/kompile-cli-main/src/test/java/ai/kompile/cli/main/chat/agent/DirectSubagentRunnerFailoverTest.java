@@ -1,9 +1,20 @@
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.oauth.ClaudeCodeOAuthFlow;
 import ai.kompile.cli.main.chat.SessionModelLadder;
 import ai.kompile.cli.main.chat.SessionModelLadder.ModelRung;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.SubagentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
@@ -27,7 +38,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -41,7 +55,7 @@ class DirectSubagentRunnerFailoverTest {
 
     private record Request(String message, String model, String provider, String credential,
                            String auth, String thinking, String systemPrompt,
-                           List<String> history, List<DirectLlmClient.ToolCallResultInput> pending,
+                           List<String> history, List<ToolCallResultInput> pending,
                            int activeChildren) { }
 
     private static final class ScriptedClient extends DirectLlmClient {
@@ -160,7 +174,7 @@ class DirectSubagentRunnerFailoverTest {
     private static DirectLlmClient.StreamResult quota() {
         var result = new DirectLlmClient.StreamResult();
         result.failed = true;
-        result.failureKind = DirectLlmClient.FailureKind.QUOTA_EXHAUSTED;
+        result.failureKind = FailureKind.QUOTA_EXHAUSTED;
         result.failureMessage = "weekly usage limit reached";
         return result;
     }
@@ -173,7 +187,7 @@ class DirectSubagentRunnerFailoverTest {
 
     private static DirectLlmClient.StreamResult toolCall() {
         var result = new DirectLlmClient.StreamResult();
-        var tool = new DirectLlmClient.ToolCallOutput();
+        var tool = new ToolCallOutput();
         tool.id = "once-id";
         tool.name = "once";
         tool.arguments = JSON.createObjectNode();
@@ -247,9 +261,9 @@ class DirectSubagentRunnerFailoverTest {
                 case PARTIAL_OUTPUT -> result.responseStarted = true;
                 case NATIVE_SIDE_EFFECT -> result.providerSideEffectsObserved = true;
                 case RETURNED_TOOL_CALL -> result.toolCalls.addAll(toolCall().toolCalls);
-                case POLICY_REFUSAL -> result.failureKind = DirectLlmClient.FailureKind.REFUSAL;
+                case POLICY_REFUSAL -> result.failureKind = FailureKind.REFUSAL;
                 case UNSAFE_OVERFLOW -> {
-                    result.failureKind = DirectLlmClient.FailureKind.CONTEXT_OVERFLOW;
+                    result.failureKind = FailureKind.CONTEXT_OVERFLOW;
                     result.responseStarted = true;
                 }
                 case CANCELLED -> result.cancelled = true;
@@ -389,5 +403,57 @@ class DirectSubagentRunnerFailoverTest {
             assertEquals(runner.client.requests.get(0).systemPrompt(), retry.systemPrompt());
             assertEquals(1, once.calls.get());
         }
+    }
+
+    @Test void exhaustedLoginFailsOverToTheRoutesNextCredentialWithNoConfiguredRungs() throws Exception {
+        // The class shares one temporary home: start from exactly these two accounts.
+        CredentialStore.create().delete("openai");
+        CredentialStore.create().putApiKey("openai", "primary", "test-primary-secret", true);
+        CredentialStore.create().putApiKey("openai", "secondary", "test-secondary-secret", false);
+        ChatConfig session = config();
+        session.setApiKey(null);
+        session.setAuthenticationScope("session");
+        session.setCredentialName("primary");
+        var permissions = permissions();
+        var tools = new ToolRegistry(JSON);
+        policy(true, List.of());
+        try (var runner = new Runner(session, tools, permissions,
+                request -> "primary".equals(request.credential()) ? quota() : done())) {
+            assertEquals("done", runner.runSubagent(agent(), "task", parent(tools, permissions)));
+            assertEquals(List.of("primary", "secondary"),
+                    runner.client.requests.stream().map(Request::credential).toList());
+            assertEquals(List.of("child-primary", "child-primary"),
+                    runner.client.requests.stream().map(Request::model).toList(),
+                    "a credential switch keeps the child's model");
+        }
+        // The /subagent-config master switch also governs credential failover.
+        policy(false, List.of());
+        try (var runner = new Runner(session, tools, permissions,
+                request -> "primary".equals(request.credential()) ? quota() : done())) {
+            assertThrows(IllegalStateException.class, () -> runner.runSubagent(agent(), "task", parent(tools, permissions)));
+            assertEquals(1, runner.client.requests.size());
+        }
+    }
+
+    @Test void claudeCodeRouteFailsOverAcrossSetupTokensAndClaudeCodesOwnLogin() throws Exception {
+        long expires = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(365);
+        CredentialStore store = CredentialStore.create();
+        store.put(ClaudeCodeOAuthFlow.PROVIDER_ID, "work", ManagedCredential.oauth("sk-ant-oat01-WorkToken1234567890", "", expires), true);
+        store.put(ClaudeCodeOAuthFlow.PROVIDER_ID, "personal", ManagedCredential.oauth("sk-ant-oat01-PersonalToken12345", "", expires), false);
+        ChatConfig onToken = new ChatConfig("anthropic", null, "sonnet", null);
+        onToken.setAuthenticationMethod("oauth");
+        onToken.setAuthenticationScope("session");
+        onToken.setCredentialName("work");
+        assertEquals(List.of("personal|oauth", "null|native"),
+                DirectSubagentRunner.credentialRungs(onToken).stream()
+                        .map(rung -> rung.credentialName() + "|" + rung.authenticationMethod()).toList());
+        assertTrue(DirectSubagentRunner.credentialRungs(onToken).stream().allMatch(rung -> "sonnet".equals(rung.model())));
+
+        ChatConfig ownLogin = new ChatConfig("anthropic", null, "sonnet", null);
+        ownLogin.setAuthenticationMethod("native");
+        assertEquals(Set.of("work|oauth", "personal|oauth"),
+                DirectSubagentRunner.credentialRungs(ownLogin).stream()
+                        .map(rung -> rung.credentialName() + "|" + rung.authenticationMethod())
+                        .collect(Collectors.toSet()));
     }
 }

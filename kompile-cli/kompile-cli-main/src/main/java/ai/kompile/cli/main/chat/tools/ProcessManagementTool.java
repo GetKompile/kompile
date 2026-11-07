@@ -308,7 +308,10 @@ public class ProcessManagementTool implements CliTool {
                     coordinator != null ? coordinator.getProjectRoot() : context.getWorkingDirectory(), id(), params);
             BackgroundProcessManager.ProcessEntry entry =
                     processManager.launchMonitored(command, description,
-                            context.getWorkingDirectory(), monitorMessage);
+                            context.getWorkingDirectory(), monitorMessage,
+                            // kompile.task/quorum delegation marks the child context; any process
+                            // tool launch inside it is subagent work regardless of execution mode.
+                            context.isSupervisedChild() ? "subagent" : null);
             publishProcess(entry, context, resource.resourceClass(), monitorMessage);
 
             String output = String.format("Launched background process:\n" +

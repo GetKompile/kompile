@@ -5,6 +5,17 @@ import ai.kompile.cli.main.chat.SharedProcessMirror;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
+import ai.kompile.cli.main.chat.config.ChatConfig;
+
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.*;
@@ -17,6 +28,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -425,6 +438,148 @@ class WebHarnessControlsTest {
         } finally { release.countDown(); loop.cancelDetachedInvocations(); executor.shutdownNow(); }
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void realTaskUsesLiveAutomaticBackgroundingUnlessExplicitlyDisabled(boolean automatic) throws Exception {
+        var mapper = JsonUtils.standardMapper();
+        var tools = new ToolRegistry(mapper);
+        var agents = new AgentRegistry();
+        var permission = new PermissionService();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var parentFinished = new CountDownLatch(1);
+        var providerContinued = new CountDownLatch(1);
+        var toolResults = new AtomicReference<List<ToolCallResultInput>>();
+        var plainResults = new AtomicReference<List<ToolCallResultInput>>();
+        var plainRun = new AtomicBoolean();
+        var wakeups = new CopyOnWriteArrayList<String>();
+        var events = new CopyOnWriteArrayList<HeadlessRunEvent>();
+        var task = new TaskTool(agents, (agent, prompt, context) -> {
+            if (!prompt.equals("plain delegation")) {
+                entered.countDown();
+                assertTrue(release.await(3, TimeUnit.SECONDS), "test must release the real task runner");
+            }
+            return "real child result";
+        });
+        tools.register(task);
+        var client = new DirectLlmClient(new ChatConfig("custom", null, "web-auto-bg", "http://unused.invalid"), mapper) {
+            private int calls;
+            private boolean plainTaskIssued;
+            @Override public StreamResult streamChat(String message, String system,
+                    com.fasterxml.jackson.databind.node.ArrayNode definitions,
+                    List<ToolCallResultInput> results, String model, List<AttachmentInput> attachments) {
+                var response = new StreamResult();
+                if (calls++ == 0 || (plainRun.get() && !plainTaskIssued)) {
+                    plainTaskIssued = plainRun.get();
+                    var call = new ToolCallOutput();
+                    call.id = plainRun.get() ? "plain-task" : "real-task";
+                    call.name = "task";
+                    var arguments = mapper.createObjectNode().put("description", "live task")
+                            .put("prompt", plainRun.get() ? "plain delegation" : "delegate");
+                    if (!automatic && !plainRun.get()) arguments.put("background", false); // otherwise TaskTool's default
+                    call.arguments = arguments;
+                    response.toolCalls.add(call);
+                } else if (results != null && !results.isEmpty()) {
+                    if (plainRun.get()) {
+                        plainResults.set(results);
+                        response.text = "plain-done";
+                    } else {
+                        toolResults.set(results);
+                        providerContinued.countDown();
+                        response.text = "parent-released";
+                    }
+                } else {
+                    wakeups.add(message);
+                    response.text = "final-after-wakeup";
+                }
+                return response;
+            }
+        };
+        var loop = spy(new AgenticChatLoop(null, mapper, tools, permission, agents, directory, client, null));
+        loop.setPerformanceHarness(null);
+        var executor = Executors.newSingleThreadExecutor();
+        try (var processes = new BackgroundProcessManager("web-auto-task", directory);
+             var controls = new WebHarnessControls(bytes(""))) {
+            var result = executor.submit(() -> controls.run(loop, processes, "auto-task-session", "start", 4000,
+                    new AtomicBoolean(), prompt -> loop.chat(prompt, "auto-task-session", "coder", "default", false),
+                    (action, id) -> ToolResult.error("unused"), event -> {
+                        events.add(event);
+                        if (event.type() == HeadlessRunEvent.Type.TURN_COMPLETE
+                                && event.data().path("text").asText().equals("parent-released")) parentFinished.countDown();
+                    }));
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            if (automatic) {
+                assertTrue(parentFinished.await(2, TimeUnit.SECONDS), "parent must finish before releasing the child");
+                assertFalse(result.isDone(), "live controls must retain the detached invocation");
+                assertTrue(toolResults.get().get(0).output.contains("still running in the background"));
+            } else {
+                assertEquals(1L, providerContinued.getCount(), "background:false must not advance the parent");
+                assertEquals(1L, parentFinished.getCount());
+                assertFalse(result.isDone());
+            }
+            release.countDown();
+            assertEquals(automatic ? "final-after-wakeup" : "parent-released", result.get(2, TimeUnit.SECONDS));
+            assertEquals(automatic ? 1 : 0, wakeups.size(), "one real completion, never duplicate notifications");
+            assertEquals(automatic ? 2 : 1, events.stream()
+                    .filter(e -> e.type() == HeadlessRunEvent.Type.TURN_COMPLETE).count());
+            assertTrue(events.stream().noneMatch(e -> e.type() == HeadlessRunEvent.Type.CONTROL),
+                    "automatic backgrounding does not manufacture a browser control frame");
+            if (automatic) {
+                assertTrue(wakeups.get(0).contains("real child result"));
+                var rows = events.get(events.size() - 1).data().path("tasks");
+                assertEquals(1L, StreamSupport.stream(rows.spliterator(), false)
+                        .filter(row -> row.path("output").asText().contains("real child result")).count());
+            } else assertEquals("real child result", toolResults.get().get(0).output);
+            verify(loop).setSelfBackgroundRequest(notNull());
+            verify(loop).setSelfBackgroundRequest(isNull());
+            // Reuse the loop without live controls, as a plain one-shot exec does.
+            // Keep the ledger's session identity; only the live-controls ownership changes.
+            // Omitted background must still deliver the real synchronous result.
+            plainRun.set(true);
+            assertEquals("plain-done", loop.chat("plain exec", "auto-task-session", "coder", "default", false));
+            assertEquals("real child result", plainResults.get().get(0).output);
+            assertEquals(automatic ? 1 : 0, wakeups.size());
+        } finally {
+            release.countDown();
+            executor.shutdownNow();
+            loop.cancelDetachedInvocations();
+            client.close();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"cancelled", "rejected", "refused", "ineligible"})
+    void automaticRequestReturnsFalseOnCancellationOrTransferRejection(String refusal) throws Exception {
+        boolean cancelled = refusal.equals("cancelled");
+        var loop = mock(AgenticChatLoop.class);
+        var hook = new AtomicReference<BooleanSupplier>();
+        doAnswer(call -> { hook.set(call.getArgument(0)); return null; }).when(loop).setSelfBackgroundRequest(any());
+        when(loop.isBackgroundableToolPhaseActive()).thenReturn(!refusal.equals("ineligible"));
+        var cancel = new AtomicBoolean();
+        var outcome = new CompletableFuture<Boolean>();
+        var owner = Thread.currentThread();
+        when(loop.requestBackgroundActiveTurn(any(), any(), any(), any())).thenAnswer(call -> {
+            assertSame(owner, Thread.currentThread(), "only the live dispatch owner may mutate background state");
+            assertFalse(hook.get().getAsBoolean(), "the owner must never wait on its own callback queue");
+            if (cancelled) cancel.set(true);
+            else if (refusal.equals("rejected")) ((Runnable) call.getArgument(3)).run();
+            return !refusal.equals("refused");
+        });
+        try (var processes = new BackgroundProcessManager("web-auto-refusal", directory);
+             var controls = new WebHarnessControls(bytes(""))) {
+            WebHarnessControls.Turn turn = prompt -> {
+                outcome.complete(hook.get().getAsBoolean());
+                return "synchronous fallback";
+            };
+            if (cancelled) assertThrows(InterruptedException.class, () -> controls.run(loop, processes, "s", "first",
+                    4000, cancel, turn, (action, id) -> ToolResult.error("unused"), event -> { }));
+            else assertEquals("synchronous fallback", controls.run(loop, processes, "s", "first", 4000,
+                    cancel, turn, (action, id) -> ToolResult.error("unused"), event -> { }));
+            assertFalse(outcome.get(2, TimeUnit.SECONDS));
+            assertNull(hook.get(), "teardown removes the live hook");
+        }
+    }
+
     @Test void eligibilityLossRejectsPendingRequestBeforeNextInvocation() throws Exception {
         var mapper = JsonUtils.standardMapper();
         var loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper), new PermissionService(),
@@ -820,6 +975,44 @@ class WebHarnessControlsTest {
             verify(runner).setLifecycleListener(null);
             verify(runner).setAsyncCompletionListener(null);
         } finally { writer.close(); }
+    }
+
+    @Test void aSilentChildWakesTheModelWhichCanCancelIt() throws Exception {
+        var runner = mock(SubagentRunner.class);
+        var lifecycle = new AtomicReference<SubagentRunner.LifecycleListener>();
+        doAnswer(c -> { lifecycle.set(c.getArgument(0)); return null; }).when(runner).setLifecycleListener(any());
+        var childRunning = new AtomicBoolean();
+        when(runner.hasPendingWork("child")).thenAnswer(c -> childRunning.get());
+        var calls = new ArrayList<String>();
+        var events = new ArrayList<HeadlessRunEvent>();
+        var pipe = new PipedInputStream();
+        try (var writer = new PipedOutputStream(pipe);
+             var processes = new BackgroundProcessManager("idle-child", directory);
+             var controls = new WebHarnessControls(pipe)) {
+            controls.setSubagentIdleAlertSeconds(1);
+            String result = controls.run(mock(AgenticChatLoop.class), processes, "s", "initial", 8000, new AtomicBoolean(), prompt -> {
+                calls.add(prompt);
+                if (prompt.equals("initial")) {
+                    childRunning.set(true);
+                    lifecycle.get().onSubagentStart("child", "general", "stalls without output");
+                    lifecycle.get().onSubagentActivity("child", "bash: sleep 600", null);
+                    return "launched";
+                }
+                // The model acts on the watchdog notice by itself: it cancels the named child.
+                assertTrue(prompt.startsWith("[System subagent watchdog]"), prompt);
+                assertTrue(prompt.contains("Subagent child (general)"), prompt);
+                assertTrue(prompt.contains("Last activity: bash: sleep 600."), prompt);
+                assertTrue(prompt.contains("action=cancel and session_id=child"), prompt);
+                childRunning.set(false);
+                lifecycle.get().onSubagentStatus("child", "aborted");
+                lifecycle.get().onSubagentEnd("child");
+                return "cancelled the stalled child";
+            }, (a, id) -> ToolResult.error("unused"), events::add, runner);
+            assertEquals("cancelled the stalled child", result);
+            assertEquals(2, calls.size(), "one alert per quiet stretch; the ended child never alerts again");
+            assertTrue(events.stream().anyMatch(e -> e.type() == HeadlessRunEvent.Type.TURN_STARTED
+                    && e.data().path("source").asText().equals("system")));
+        }
     }
 
     @Test void browserEventsDropTerminalStylingWhileTheModelReadsOutputVerbatim() throws Exception {

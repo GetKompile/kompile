@@ -113,7 +113,21 @@ public final class HookManager {
                 if (request.has("matcher")) entry.put("matcher", text(request, "matcher", "*"));
                 if (request.has("enabled")) entry.put("enabled", bool(request, "enabled", true));
                 if (action.equals("enable") || action.equals("disable")) entry.put("enabled", action.equals("enable"));
-                if (request.has("command") || action.equals("add")) {
+                if (request.has("hooks")) {
+                    if (!Set.of("add", "update").contains(action) || request.has("command") || request.has("timeout")) {
+                        throw new IllegalArgumentException("hooks is only valid on add/update and cannot be combined with command or timeout");
+                    }
+                    JsonNode commands = request.get("hooks");
+                    if (!commands.isArray() || commands.isEmpty()) throw new IllegalArgumentException("hooks must be a nonempty command array");
+                    for (JsonNode command : commands) {
+                        if (!command.isObject()) throw new IllegalArgumentException("Hook command must be an object");
+                        var fields = command.fieldNames();
+                        while (fields.hasNext()) if (!Set.of("type", "command", "timeout").contains(fields.next())) {
+                            throw new IllegalArgumentException("Unknown hook command field");
+                        }
+                    }
+                    entry.set("hooks", commands.deepCopy());
+                } else if (request.has("command") || action.equals("add")) {
                     String command = requiredText(request, "command");
                     int timeout = timeout(request, "timeout", found == null ? 60 : found.commands().get(0).timeout());
                     entry.putArray("hooks").addObject().put("type", "command").put("command", command).put("timeout", timeout);

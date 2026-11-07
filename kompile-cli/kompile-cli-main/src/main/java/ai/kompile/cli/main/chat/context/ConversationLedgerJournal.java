@@ -33,7 +33,8 @@ import java.util.concurrent.locks.ReentrantLock;
  * serializes its own payload and compares the last committed record and length.
  * Atomic installation of journal.jsonl and a forced committed marker make
  * migration resumable without ever falling back to an obsolete legacy snapshot.
- * Original schema-1 files are never changed or removed.
+ * Original schema-1 files are never changed or removed. A session with no
+ * durable state opens without touching disk; its first write installs the journal.
  *
  * <p>Each LF-terminated envelope has schemaVersion=2, revision, version, kind,
  * payload (a JSON string), and sha256. The checksum covers UTF-8 of schema,
@@ -64,6 +65,8 @@ final class ConversationLedgerJournal {
     private long lastSequence;
     private long coveredThrough;
     private boolean initialized;
+    // A brand-new session opens with nothing on disk; its first write installs the journal.
+    private boolean pendingCreation;
     private boolean poisoned;
     private FileTime modifiedTime;
     private Object fileKey;
@@ -94,6 +97,13 @@ final class ConversationLedgerJournal {
     private interface Operation<T> { T run() throws IOException; }
 
     Restored open() throws IOException {
+        if (freshSession()) {
+            // Nothing durable exists to migrate or protect, so opening forces no I/O:
+            // each force waits for a filesystem commit, which stalled chat startup.
+            pendingCreation = true;
+            initialized = true;
+            return new Restored(new ConversationLedger.State(1, 0, List.of(), null), null);
+        }
         return locked(() -> {
             Path marker = directory.resolve("committed");
             safe(marker);
@@ -115,6 +125,7 @@ final class ConversationLedgerJournal {
     /** expectedVersion concerns conversation state; revision also orders native bindings. */
     void append(long expectedVersion, long newVersion, String kind, Object payload) throws IOException {
         locked(() -> {
+            installPending();
             requireCurrent(expectedVersion);
             validateCommit(expectedVersion, newVersion, kind, payload);
             byte[] record = encode(revision + 1, newVersion, kind, mapper.valueToTree(payload));
@@ -173,12 +184,17 @@ final class ConversationLedgerJournal {
     }
 
     boolean isCurrent(long expectedVersion) {
-        try { return locked(() -> { requireCurrent(expectedVersion); return true; }); }
+        try {
+            // A pending session stays current until anyone else creates it.
+            if (pendingCreation) return expectedVersion == version && freshSession();
+            return locked(() -> { requireCurrent(expectedVersion); return true; });
+        }
         catch (IOException e) { return false; }
     }
 
     void storeBlob(long expectedVersion, String digest, byte[] bytes) throws IOException {
         locked(() -> {
+            installPending();
             requireCurrent(expectedVersion);
             Path blobs = attachmentDirectory();
             safe(blobs);
@@ -221,6 +237,36 @@ final class ConversationLedgerJournal {
             if (!MessageDigest.isEqual(tail.array(), lastRecord))
                 throw new IOException("Stale conversation ledger: journal commit changed");
         }
+    }
+
+    /** No journal, legacy state, native sidecar or retirement record exists for this id. */
+    private boolean freshSession() throws IOException {
+        Path legacy = root.resolve(id + ".context.json");
+        Path nativeFile = root.resolve(id + ".native-session.json");
+        Path retired = root.resolve(".retired").resolve(id);
+        safe(directory);
+        safe(legacy);
+        safe(nativeFile);
+        safe(retired);
+        return !Files.exists(directory, LinkOption.NOFOLLOW_LINKS)
+                && !Files.exists(legacy, LinkOption.NOFOLLOW_LINKS)
+                && !Files.exists(nativeFile, LinkOption.NOFOLLOW_LINKS)
+                && !Files.exists(retired, LinkOption.NOFOLLOW_LINKS);
+    }
+
+    /** Install a pending session's journal under the caller's lease, as open() would have. */
+    private void installPending() throws IOException {
+        if (!pendingCreation) return;
+        Path marker = directory.resolve("committed");
+        // locked() has just created the directory; anything else in it came from another writer.
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS) || Files.exists(marker, LinkOption.NOFOLLOW_LINKS)
+                || Files.exists(root.resolve(id + ".context.json"), LinkOption.NOFOLLOW_LINKS)
+                || Files.exists(root.resolve(id + ".native-session.json"), LinkOption.NOFOLLOW_LINKS))
+            throw new IOException("Stale conversation ledger: the session was created by another writer");
+        migrate();
+        replay();
+        publishMarker(marker);
+        pendingCreation = false;
     }
 
     private void publishMarker(Path marker) throws IOException {
@@ -430,10 +476,12 @@ final class ConversationLedgerJournal {
                 safe(retired);
                 if (Files.exists(retired, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Conversation is retired: " + id);
                 safe(directory);
-                if (initialized && !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS))
+                if (initialized && !pendingCreation && !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS))
                     throw new IOException("Conversation directory disappeared");
+                boolean newDirectory = !Files.exists(directory, LinkOption.NOFOLLOW_LINKS);
                 Files.createDirectories(directory);
-                forceDirectory(root);
+                // Only a new entry needs forcing; re-forcing an existing one cost every commit a sync.
+                if (newDirectory) forceDirectory(root);
                 Path lockPath = directory.resolve("writer.lock");
                 safe(lockPath);
                 try (FileChannel writer = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);

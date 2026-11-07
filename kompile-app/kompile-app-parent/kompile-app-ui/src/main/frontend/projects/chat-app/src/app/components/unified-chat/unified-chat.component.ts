@@ -69,7 +69,8 @@ import {
   ChatFolder,
   ActiveModelContext,
   MessageAttachment,
-  ToolUseEvent
+  ToolUseEvent,
+  TokenMetrics
 } from '@shared/models/api-models';
 import { ReasoningTrailDto } from '@shared/services/kb-grounding.service';
 
@@ -168,13 +169,7 @@ interface UnifiedMessage extends CommandMessageMetadata {
   attachments?: MessageAttachment[];
   /** True when the user cancelled streaming before the response completed */
   stopped?: boolean;
-  tokenMetrics?: {
-    outputTokens: number;
-    inputTokens: number;
-    totalGenerationMs: number;
-    tokensPerSecond: number;
-    model?: string;
-  };
+  tokenMetrics?: TokenMetrics;
 }
 
 // Session for persistence
@@ -4269,7 +4264,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, OnChanges, After
     return Date.now().toString(36) + Math.random().toString(36).substring(2);
   }
 
-  formatDuration(ms: number): string {
+  isMeasuredMetric(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  }
+
+  formatDuration(ms?: number | null): string {
+    if (!this.isMeasuredMetric(ms)) return 'Unknown';
     if (ms < MILLISECONDS_PER_SECOND) return `${ms}ms`;
     return `${(ms / MILLISECONDS_PER_SECOND).toFixed(1)}s`;
   }

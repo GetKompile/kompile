@@ -29,7 +29,7 @@ public final class ModelFailoverController {
         return tryFailover(failure.failureKind(), failure.getMessage(), failure.replaySafe());
     }
 
-    public boolean tryFailover(ai.kompile.cli.main.chat.config.DirectLlmClient.FailureKind kind,
+    public boolean tryFailover(ai.kompile.cli.main.chat.config.FailureKind kind,
                                String detail, boolean replaySafe) {
         if (ladder == null || !ladder.enabled() || ladder.isEmpty() || !replaySafe
                 || !ladder.isSwitchEligible(kind)) return false;

@@ -30,6 +30,7 @@ import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleAgentDefaults;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -47,6 +48,9 @@ import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+// Subagent admission reads ~/.kompile/config/subagent-config.json: a developer's model bans
+// must not decide whether these launches are admitted.
+@TemporaryUserHome
 class DirectSubagentRunnerStdioTest {
 
     @TempDir

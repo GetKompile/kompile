@@ -8,6 +8,7 @@ package ai.kompile.cli.main.chat.mcp;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.main.chat.ToolCallIndex;
 import ai.kompile.cli.main.chat.TranscriptLogScope;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
@@ -33,7 +34,7 @@ import java.util.Set;
 /** Loads bundle-declared HTTP/SSE and stdio MCP servers into the native CLI tool registry. */
 public final class McpBundleToolLoader implements AutoCloseable {
     static final String CUSTOM_MCP_DEPTH_ENV = "KOMPILE_CUSTOM_MCP_DEPTH";
-    static final String HOST_LOADS_PROJECT_ENV = "KOMPILE_MCP_HOST_LOADS_PROJECT";
+    public static final String HOST_LOADS_PROJECT_ENV = "KOMPILE_MCP_HOST_LOADS_PROJECT";
     private final ObjectMapper mapper;
     private final String transcriptId;
     private final List<McpEndpoint> clients = new ArrayList<>();
@@ -122,11 +123,11 @@ public final class McpBundleToolLoader implements AutoCloseable {
 
     public static McpBundleToolLoader load(
             Path workspace, ToolRegistry registry, String transcriptId) {
-        if (!customLoadingAllowed(System.getenv(CUSTOM_MCP_DEPTH_ENV))) {
+        if (!customLoadingAllowed(SessionEnvironment.get(CUSTOM_MCP_DEPTH_ENV))) {
             return new McpBundleToolLoader(registry.getObjectMapper(), transcriptId);
         }
         boolean includeProject = !Boolean.parseBoolean(
-                System.getenv().getOrDefault(HOST_LOADS_PROJECT_ENV, "false"));
+                SessionEnvironment.getOrDefault(HOST_LOADS_PROJECT_ENV, "false"));
         return load(workspace, registry, transcriptId, includeProject);
     }
 
@@ -389,7 +390,7 @@ public final class McpBundleToolLoader implements AutoCloseable {
     }
 
     private static int currentCustomDepth() {
-        String configured = System.getenv(CUSTOM_MCP_DEPTH_ENV);
+        String configured = SessionEnvironment.get(CUSTOM_MCP_DEPTH_ENV);
         if (configured == null || configured.isBlank()) return 0;
         try {
             return Math.max(0, Integer.parseInt(configured.trim()));

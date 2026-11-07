@@ -91,7 +91,7 @@ public final class SubagentDelegationGuard {
     }
 
     public static boolean isSubagent() {
-        return depth(System.getenv(DEPTH_ENV)) >= 1;
+        return depth(SessionEnvironment.get(DEPTH_ENV)) >= 1;
     }
 
     /**
@@ -114,7 +114,7 @@ public final class SubagentDelegationGuard {
 
     /** True when this process is a subagent and {@code toolName} would launch another agent. */
     public static boolean blocks(String toolName) {
-        return blocks(toolName, System.getenv(DEPTH_ENV));
+        return blocks(toolName, SessionEnvironment.get(DEPTH_ENV));
     }
 
     /**

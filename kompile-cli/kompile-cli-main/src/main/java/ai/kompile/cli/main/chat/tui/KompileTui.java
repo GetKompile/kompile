@@ -232,6 +232,20 @@ public class KompileTui {
     /** Activity views pin their title row while their transcript body scrolls. */
     private volatile boolean contentViewPinsHeader = false;
 
+    /**
+     * Damage tracking for the content region: the exact rendered string painted
+     * on each transcript screen row by the last frame. Unchanged rows are never
+     * rewritten, so a frame whose transcript did not change emits no content
+     * bytes at all — repeated erase/repass cycles are what made the transcript
+     * flicker while many subagents streamed status updates. All fields are
+     * only touched while holding {@code drawLock}.
+     */
+    private String[] paintedContentRows;
+    private int paintedContentTop = Integer.MIN_VALUE;
+    private int paintedContentBottom = Integer.MIN_VALUE;
+    private boolean paintedSplit;
+    private int paintedPreviewStamp;
+
     /** Optional project dashboard pinned between the top bar and transcript. */
     private volatile DashboardSnapshot dashboard = DashboardSnapshot.hidden();
 
@@ -1498,6 +1512,7 @@ public class KompileTui {
         // startup and can place "kompile>" on the cleared screen's home row.
         synchronized (drawLock) {
             writeTerminal(ESC + "2J" + ESC + "H"); // clear + home
+            invalidatePaintedContentRows();
             statusBar.start(terminal);
             redrawDirty.set(false); // the frame below includes the initial status state
             renderFrame();
@@ -1535,6 +1550,7 @@ public class KompileTui {
                     return;
                 }
                 writeTerminal(imageGraphics.clear() + ESC + "r");
+                invalidatePaintedContentRows();
                 terminal = null;
                 attachmentVersion++;
                 // Keep the last input-pane geometry for detached viewport updates.
@@ -1608,6 +1624,7 @@ public class KompileTui {
                     terminal.writer().print(imageGraphics.clear() + ESC + "r" + ESC + "2J" + ESC + "H");
                     terminal.writer().flush();
                 }
+                invalidatePaintedContentRows();
                 terminal = null;
                 attachmentVersion++;
             }
@@ -1635,6 +1652,8 @@ public class KompileTui {
     public void redrawContentView() {
         if (!started) return;
         synchronized (drawLock) {
+            // JLine may have rewritten any row; never trust the paint cache here.
+            invalidatePaintedContentRows();
             writeTerminal(scrollRegionSequence()
                     + renderContentRegion(contentViewLines, contentViewPinsHeader, false)
                     + renderScrollToBottomControl() + SAVE_CURSOR + renderSidebarRegion() + RESTORE_CURSOR);
@@ -1676,10 +1695,10 @@ public class KompileTui {
      * visible again when the user returns to the main chat.
      */
     public boolean upsertMainTranscriptBlock(String key, String text) {
-        return upsertMainTranscriptBlock(key, text, null);
+        return upsertMainTranscriptBlock(key, text, null, true);
     }
 
-    private boolean upsertMainTranscriptBlock(String key, String text, ChatDisplayBlock block) {
+    private boolean upsertMainTranscriptBlock(String key, String text, ChatDisplayBlock block, boolean allowInsert) {
         if (key == null || key.isBlank()) return false;
         List<String> lines = block != null ? displayLines(text) : splitLines(text);
         List<String> source = block == null ? lines : displayLines(block.classic().isEmpty()
@@ -1695,7 +1714,7 @@ public class KompileTui {
                 TranscriptEntry entry = entries.next();
                 if (key.equals(entry.key)) {
                     matched = entry;
-                    previousRows = visualRows(entry.lines).size();
+                    if (preserveScrollback) previousRows = visualRows(entry.lines).size();
                     mainTranscriptLineCount -= entry.lines.size();
                     mainTranscriptSourceLineCount -= entry.sourceLines.size();
                     break;
@@ -1703,6 +1722,9 @@ public class KompileTui {
                 if (preserveScrollback) rowsAfterBlock += visualRows(entry.lines).size();
             }
             if (matched == null) {
+                // A retained sidebar card can outlive its transcript entry. Refresh
+                // its inspector, but do not resurrect old activity at the live tail.
+                if (!allowInsert) return started;
                 rowsAfterBlock = 0; // New entries are appended at the live tail.
                 matched = new TranscriptEntry(key, List.of());
                 mainTranscriptEntries.addLast(matched);
@@ -1719,14 +1741,15 @@ public class KompileTui {
             mainTranscriptSourceLineCount += matched.sourceLines.size();
             trimMainTranscript();
 
-            if (isMainContentView()) {
-                contentViewLines = mainTranscriptSnapshot();
+            List<String> nextContentLines = isMainContentView() ? mainTranscriptSnapshot() : null;
+            if (nextContentLines != null && !nextContentLines.equals(previousContentLines)) {
+                contentViewLines = nextContentLines;
                 if (!selectionStableAcross(
                         previousContentLines, false, contentViewLines, false)) {
                     clearTranscriptSelectionLocked();
                 }
-                int nextRows = visualRows(matched.lines).size();
                 if (preserveScrollback) {
+                    int nextRows = visualRows(matched.lines).size();
                     // Offset is measured from the tail. Changes entirely above the
                     // viewport leave it alone; changes below it adjust for shrink
                     // as well as growth so already-visible messages stay in place.
@@ -1783,6 +1806,8 @@ public class KompileTui {
     }
     public boolean isSidebarVisible() { synchronized (drawLock) { return activePaneLayout().split(); } }
     public boolean isSidebarFocused() { synchronized (drawLock) { return sidebarFocused; } }
+    /** Activity key of the sidebar's selected card; blank when nothing is selected. */
+    public String sidebarSelectedKey() { synchronized (drawLock) { return sidebar.selectedKey(); } }
     public boolean isResultsView() { return RESULTS_VIEW.equals(contentViewKey) || INSPECTOR_VIEW.equals(contentViewKey); }
     public ChatUiConfig getUiConfig() { synchronized (drawLock) { return uiConfig.copy(); } }
     public List<String> getSidebarLines() {
@@ -1828,6 +1853,15 @@ public class KompileTui {
 
     public boolean upsertDisplayBlock(ChatDisplayBlock block) {
         if (block == null || block.key().isBlank()) return false;
+        ChatDisplayBlock existing;
+        synchronized (drawLock) {
+            existing = sidebar.get(block.key());
+        }
+        // Activity refreshes re-publish every process card on each tick even when
+        // nothing changed; treating that as an upsert invalidated the sidebar row
+        // cache, rebuilt the transcript entry, and stole the shared redraw frame
+        // from output that actually has new content to show.
+        if (block.equals(existing)) return started;
         synchronized (drawLock) {
             sidebar.upsert(block, uiConfig);
             if (block.kind().equals("custom") && block.summary().isBlank()
@@ -1843,7 +1877,10 @@ public class KompileTui {
                 if (isMainContentView()) contentViewLines = mainTranscriptSnapshot();
             } else {
                 // Card eviction is not a transcript deletion event.
-                upsertMainTranscriptBlock(block.key(), sidebar.inline(block, uiConfig), block);
+                boolean explicitlyCleared = existing != null && existing.kind().equals("custom")
+                        && existing.summary().isBlank() && existing.classic().isBlank() && existing.sections().isEmpty();
+                upsertMainTranscriptBlock(block.key(), sidebar.inline(block, uiConfig), block,
+                        existing == null || explicitlyCleared);
             }
             refreshResultsViewLocked();
         }
@@ -2102,17 +2139,22 @@ public class KompileTui {
      */
     public void updateActivityView(String key, String title, String content) {
         if (key == null || key.isBlank()) return;
+        String normalizedTitle = title == null || title.isBlank() ? "Activity" : title;
         List<String> lines = new ArrayList<>();
-        lines.add("── " + (title == null || title.isBlank() ? "Activity" : title) + " ──");
+        lines.add("── " + normalizedTitle + " ──");
         lines.addAll(splitLines(content));
         synchronized (drawLock) {
             if (temporaryWindowActive || !key.equals(contentViewKey)) return;
+            // The activity refresh runs on every captured output line; when the
+            // rendered frame is byte-identical, repainting the whole scroll region
+            // again would only bury the next real transcript line.
+            if (lines.equals(contentViewLines) && normalizedTitle.equals(contentViewTitle)) return;
             if (!selectionStableAcross(contentViewLines, true, lines, true)) {
                 clearTranscriptSelectionLocked();
             }
             int previousSize = transcriptLayout(contentViewLines, true).bodyRows();
             boolean followingTail = contentScrollOffset == 0;
-            contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
+            contentViewTitle = normalizedTitle;
             contentViewLines = List.copyOf(lines);
             contentViewPinsHeader = true;
             int nextSize = transcriptLayout(contentViewLines, true).bodyRows();
@@ -2211,25 +2253,39 @@ public class KompileTui {
     private void trimMainTranscript() {
         boolean trimmed = false;
         while ((mainTranscriptLineCount > MAX_MAIN_TRANSCRIPT_LINES
-                || mainTranscriptSourceLineCount > MAX_MAIN_TRANSCRIPT_LINES
                 || mainTranscriptEntries.size() > MAX_MAIN_TRANSCRIPT_LINES)
                 && !mainTranscriptEntries.isEmpty()) {
             trimmed = true;
             TranscriptEntry first = mainTranscriptEntries.peekFirst();
-            int overflow = Math.max(1, Math.max(mainTranscriptLineCount, mainTranscriptSourceLineCount)
-                    - MAX_MAIN_TRANSCRIPT_LINES);
-            if (first.sourceLines.size() <= overflow) {
+            int overflow = Math.max(1, mainTranscriptLineCount - MAX_MAIN_TRANSCRIPT_LINES);
+            if (first.lines.size() <= overflow) {
                 mainTranscriptEntries.removeFirst();
                 mainTranscriptLineCount -= first.lines.size();
                 mainTranscriptSourceLineCount -= first.sourceLines.size();
             } else {
                 mainTranscriptLineCount -= first.lines.size();
-                first.sourceLines = List.copyOf(first.sourceLines.subList(overflow, first.sourceLines.size()));
+                first.lines = List.copyOf(first.lines.subList(overflow, first.lines.size()));
+                int sourceOverflow = Math.min(overflow, first.sourceLines.size());
+                first.sourceLines = List.copyOf(first.sourceLines.subList(sourceOverflow, first.sourceLines.size()));
                 first.sourceTrimmed = true;
-                first.lines = first.typed ? retainedInlineLines(first) : first.sourceLines;
-                mainTranscriptSourceLineCount -= overflow;
+                mainTranscriptSourceLineCount -= sourceOverflow;
                 mainTranscriptLineCount += first.lines.size();
             }
+        }
+        // Inspector/source retention is a separate budget. Hidden output from
+        // long-running children must not evict visible chat or reorder live cards.
+        for (TranscriptEntry entry : mainTranscriptEntries) {
+            int overflow = mainTranscriptSourceLineCount - MAX_MAIN_TRANSCRIPT_LINES;
+            if (overflow <= 0) break;
+            // Keep source backing the retained display. Otherwise even a
+            // layout-only /ui change would reproject visible assistant text
+            // from an empty source and erase it. Only hidden excess is trimmed.
+            int removable = Math.max(0, entry.sourceLines.size() - entry.lines.size());
+            int removed = Math.min(overflow, removable);
+            if (removed == 0) continue;
+            entry.sourceLines = List.copyOf(entry.sourceLines.subList(removed, entry.sourceLines.size()));
+            entry.sourceTrimmed = true;
+            mainTranscriptSourceLineCount -= removed;
         }
         if (trimmed && selectionBelongsToActiveView()) clearTranscriptSelectionLocked();
     }
@@ -2278,6 +2334,7 @@ public class KompileTui {
             if (resizeFramePending && (!preserveInputCursor || clearInputRows)) {
                 // Reflow or explicit display recovery can leave debris anywhere on screen.
                 frame.append(imageGraphics.clear()).append(ESC).append('r').append(ESC).append("2J");
+                invalidatePaintedContentRows();
                 resizeFramePending = false;
             }
             frame.append(scrollRegionSequence());
@@ -2388,13 +2445,36 @@ public class KompileTui {
         int contentBottom = transcriptBottom();
         StringBuilder frame = new StringBuilder();
         frame.append(ESC).append(top).append(';').append(regionBottom).append('r');
-        for (int row = top; row <= contentBottom; row++) {
-            frame.append(ESC).append(row).append(";1H").append(ESC).append("2K");
-        }
         List<String> visible = visibleContentLines(lines, preserveHeader);
+        int rows = contentBottom - top + 1;
+        // The floating viewport shortcut overlays the last content row, so its
+        // current text joins that row's identity. A visibility flip therefore
+        // repaints exactly that row. Split⇄full-width layout changes move the
+        // shared sidebar column: they must force one full repaint, otherwise
+        // collapsed sidebar pixels survive as debris on untouched rows.
+        boolean split = activePaneLayout().split();
+        String controlText = renderScrollToBottomControl();
+        boolean controlOnLastRow = !controlText.isEmpty()
+                && scrollToBottomControlY() == contentBottom - 1;
+        int previewStamp = previewOverlayStamp();
+        if (paintedContentRows == null || paintedContentRows.length != rows
+                || paintedContentTop != top || paintedContentBottom != contentBottom
+                || paintedSplit != split) {
+            // Geometry or pane layout changed: repaint everything once.
+            paintedContentRows = new String[rows];
+            paintedContentTop = top;
+            paintedContentBottom = contentBottom;
+            paintedSplit = split;
+        }
         for (int row = top; row <= contentBottom; row++) {
             int index = row - top;
-            if (index < visible.size()) frame.append(ESC).append(row).append(";1H").append(visible.get(index));
+            String content = index < visible.size() ? visible.get(index) : "";
+            String key = content + "\u0000" + previewStamp
+                    + (controlOnLastRow && index == rows - 1 ? "\u0000" + controlText : "");
+            if (key.equals(paintedContentRows[index])) continue;
+            paintedContentRows[index] = key;
+            frame.append(ESC).append(row).append(";1H").append(ESC).append("2K");
+            if (!content.isEmpty()) frame.append(content);
         }
         frame.append(imageGraphics.render(
                 isImagePreviewView() && !temporaryWindowActive ? previewImage : null,
@@ -2411,6 +2491,31 @@ public class KompileTui {
             frame.append(ESC).append(inputAnchorRow()).append(";1H");
         }
         return frame.toString();
+    }
+
+    /**
+     * Forget what the last frame believed was on screen in the transcript
+     * region. Required after any full-screen clear ({@code ESC[2J}), terminal
+     * (re)attachment, or external write that may have clobbered content rows,
+     * so the next frame repaints the whole region unconditionally.
+     * Caller must hold {@code drawLock}.
+     */
+    private void invalidatePaintedContentRows() {
+        paintedContentRows = null;
+        paintedContentTop = Integer.MIN_VALUE;
+        paintedContentBottom = Integer.MIN_VALUE;
+    }
+
+    /**
+     * Fingerprint of the kitty image overlay so a preview appearing,
+     * disappearing or being replaced repaints the rows it covers even when
+     * their text is unchanged. Overlay geometry is already captured by the
+     * row cache's structural key (top, bottom, row count), so only overlay
+     * identity and liveness belong here. Returns 0 when no overlay is live.
+     */
+    private int previewOverlayStamp() {
+        if (previewImage == null || !isImagePreviewView() || temporaryWindowActive) return 0;
+        return System.identityHashCode(previewImage);
     }
 
     /** Paint only the right column. The caller restores or anchors the input cursor. */

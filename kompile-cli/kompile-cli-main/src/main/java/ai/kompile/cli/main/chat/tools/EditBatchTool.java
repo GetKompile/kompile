@@ -236,7 +236,8 @@ public class EditBatchTool implements CliTool {
             }
         }
         try {
-            String content = Files.readString(path);
+            String original = Files.readString(path);
+            String content = original;
             boolean fuzzy = false;
             for (Edit edit : edits) {
                 try {
@@ -247,6 +248,10 @@ public class EditBatchTool implements CliTool {
                 } catch (EditEngine.NoMatchException e) {
                     return FileOutcome.fail("edit #" + edit.index + ": " + e.getMessage());
                 }
+            }
+            String deletion = EditTool.subagentDeletionError(context, path, original, content);
+            if (deletion != null) {
+                return FileOutcome.fail(deletion);
             }
             Files.writeString(path, content);
             context.recordFileRead(path);

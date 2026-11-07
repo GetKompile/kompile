@@ -5,6 +5,14 @@
  */
 package ai.kompile.cli.main.project;
 
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.ProviderStructuredOutputCapabilities;
 import ai.kompile.project.KompileProjectStore;
@@ -401,7 +409,7 @@ public final class ChatModelPipelineRunner {
                                        NativeChatModels.Selection selection,
                                        Consumer<Map<String, Object>> progress,
                                        Consumer<String> chunkConsumer) throws Exception {
-        DirectLlmClient.AttachmentInput image = imageAttachment(
+        AttachmentInput image = imageAttachment(
                 file.getFileName().toString(), mimeType(file), Files.readAllBytes(file), pipeline);
         report(progress, "REMOTE_CHAT_MODEL", 20,
                 "Sending image to the configured chat provider", Map.of(
@@ -447,7 +455,7 @@ public final class ChatModelPipelineRunner {
                 int pageStart = selectedPages.get(start);
                 int pageEnd = selectedPages.get(end - 1);
                 String pageRange = formatPageRange(selectedPages.subList(start, end));
-                List<DirectLlmClient.AttachmentInput> attachments = new ArrayList<>(end - start);
+                List<AttachmentInput> attachments = new ArrayList<>(end - start);
                 for (int cursor = start; cursor < end; cursor++) {
                     int pageNumber = selectedPages.get(cursor);
                     byte[] png = renderer == null
@@ -674,7 +682,7 @@ public final class ChatModelPipelineRunner {
                                LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                NativeChatModels.Selection selection,
                                String prompt,
-                               List<DirectLlmClient.AttachmentInput> attachments,
+                               List<AttachmentInput> attachments,
                                Consumer<String> chunkConsumer) throws Exception {
         Object schema = firstObject(pipeline.processor().get("jsonSchema"), pipeline.chunkerOptions().get("jsonSchema"));
         return NativeChatModels.call(root, selection, prompt,
@@ -830,7 +838,7 @@ public final class ChatModelPipelineRunner {
         }
     }
 
-    private static DirectLlmClient.AttachmentInput imageAttachment(
+    private static AttachmentInput imageAttachment(
             String name, String suppliedMimeType, byte[] bytes,
             LocalCrawlCapabilities.ResolvedPipeline pipeline) throws IOException {
         String mimeType = suppliedMimeType == null ? "application/octet-stream" : suppliedMimeType;
@@ -865,7 +873,7 @@ public final class ChatModelPipelineRunner {
                     + " bytes, exceeding maxImageBytes=" + maxBytes
                     + ". Lower pdfRenderDpi, reduce pageBatchSize, or resize the image.");
         }
-        return new DirectLlmClient.AttachmentInput(
+        return new AttachmentInput(
                 name, mimeType, true, Base64.getEncoder().encodeToString(encoded), null);
     }
 

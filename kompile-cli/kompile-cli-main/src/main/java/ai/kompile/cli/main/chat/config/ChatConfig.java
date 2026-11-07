@@ -24,6 +24,9 @@ import ai.kompile.cli.main.auth.oauth.CredentialFailure;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.chat.LocalServingRuntimePool;
+import ai.kompile.cli.main.chat.TranscriptLogScope;
+import ai.kompile.cli.main.chat.agent.SessionEnvironment;
+import ai.kompile.cli.main.chat.agent.SubagentIdleWatchdog;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -195,6 +198,30 @@ public class ChatConfig {
                 .resolve(sessionId + ".chat-config.json");
     }
 
+    /** Names the chat session that started this process, e.g. its MCP server. */
+    public static final String PARENT_SESSION_ENV = "KOMPILE_PARENT_SESSION_ID";
+
+    /**
+     * The saved settings of the chat session this process works for, or null
+     * outside one: the session that started it, else the transcript it runs
+     * under. Every injected Kompile MCP server adopts its spawning chat's
+     * transcript, whichever agent or provider hosts it, so delegated work
+     * defaults to that session's route and login on every transport.
+     */
+    public static ChatConfig loadParentSession() {
+        String sessionId = SessionEnvironment.get(PARENT_SESSION_ENV);
+        if (sessionId == null || sessionId.isBlank()) sessionId = TranscriptLogScope.currentTranscriptId();
+        return loadParentSession(sessionId);
+    }
+
+    static ChatConfig loadParentSession(String sessionId) {
+        if (sessionId == null || !sessionId.strip().matches("[A-Za-z0-9_-]+")) return null;
+        ChatConfig session = loadSession(sessionId.strip());
+        // A passthrough session's settings name an external agent, not a chat route.
+        return session == null || !session.isValid() || "passthrough".equalsIgnoreCase(session.getChatMode())
+                ? null : session;
+    }
+
     public static ChatConfig loadSession(String sessionId) {
         Path path = sessionConfigPath(sessionId);
         if (!Files.exists(path)) return null;
@@ -261,6 +288,10 @@ public class ChatConfig {
 
     @JsonProperty
     private boolean passthroughManaged = true; // true = kompile REPL wraps agent subprocess
+
+    /** Seconds a running subagent may stay silent before the main agent is alerted; zero disables. */
+    @JsonProperty
+    private int subagentIdleAlertSeconds = SubagentIdleWatchdog.DEFAULT_IDLE_SECONDS;
 
     /**
      * Legacy programmatic one-run judge-policy override. The setup wizard no longer asks
@@ -351,6 +382,7 @@ public class ChatConfig {
         copy.chatMode = chatMode;
         copy.passthroughAgent = passthroughAgent;
         copy.passthroughManaged = passthroughManaged;
+        copy.subagentIdleAlertSeconds = subagentIdleAlertSeconds;
         copy.enforcementEnabled = enforcementEnabled;
         copy.loadedFrom = loadedFrom;
         return copy;
@@ -379,7 +411,10 @@ public class ChatConfig {
                 || "native".equalsIgnoreCase(authenticationMethod)
                 // The claude CLI route sends no HTTP request: its selected setup
                 // token is resolved by resolveClaudeCodeToken() for the claude process.
-                || isClaudeCliNative()) {
+                || isClaudeCliNative()
+                // The agy CLI route sends no HTTP request either; agy's own Code
+                // Assist login owns the subscription, exactly like Claude Code.
+                || isAgyCliNative()) {
             return null;
         }
         try {
@@ -436,11 +471,7 @@ public class ChatConfig {
     public String resolveClaudeCodeToken() {
         if (!isClaudeCliNative() || !"oauth".equalsIgnoreCase(authenticationMethod)) return null;
         try {
-            applySessionSelection();
-            String selectedName = getCredentialName();
-            if (selectedName == null && "session".equals(authenticationScope)) {
-                selectedName = CredentialStore.create().defaultCredentialName(ClaudeCodeOAuthFlow.PROVIDER_ID);
-            }
+            String selectedName = selectedCredentialName();
             OAuthProviderFlow.RequestAuth stored = OAuthCredentialManager.create()
                     .resolve(ClaudeCodeOAuthFlow.PROVIDER_ID, ManagedCredential.OAUTH, selectedName);
             if (stored == null && selectedName != null) {
@@ -451,6 +482,70 @@ public class ChatConfig {
         } catch (IOException e) {
             throw new AuthenticationException(provider, e);
         }
+    }
+
+    /** The pinned credential, else the session default; null leaves the global active one. */
+    private String selectedCredentialName() throws IOException {
+        applySessionSelection();
+        String selectedName = getCredentialName();
+        if (selectedName == null && "session".equals(authenticationScope) && credentialProvider() != null) {
+            selectedName = CredentialStore.create().defaultCredentialName(credentialProvider());
+        }
+        return selectedName;
+    }
+
+    /**
+     * The stored credential this route sends: pinned, else the session default,
+     * else the global active one, in {@link #resolveRequestAuth()}'s order. Null
+     * when it sends none: an agent CLI's own login, no authentication, or an
+     * inline key. A name only, never the secret.
+     */
+    @JsonIgnore
+    public String effectiveCredentialName() {
+        boolean oauthOnly = "oauth".equalsIgnoreCase(authenticationMethod);
+        if (credentialProvider() == null || "none".equalsIgnoreCase(authenticationMethod)
+                || "native".equalsIgnoreCase(authenticationMethod) || isAgyCliNative()
+                || !oauthOnly && apiKey != null && !apiKey.isBlank()) return null;
+        try {
+            String name = selectedCredentialName();
+            return name != null ? name : CredentialStore.create().activeCredentialName(credentialProvider());
+        } catch (IOException e) {
+            throw new AuthenticationException(provider, e);
+        }
+    }
+
+    /** {@link #describeLogin()} on the Claude Code route when no setup token applies. */
+    public static final String CLAUDE_CODE_OWN_LOGIN = "Claude Code's own login";
+
+    /**
+     * What each Anthropic authentication_method runs on, for tool descriptions and
+     * failure guidance. oauth and native differ once a setup token is stored:
+     * only oauth sends it ({@link #resolveClaudeCodeToken()}).
+     */
+    public static final String ANTHROPIC_AUTH_ROUTES = "for anthropic, native = " + CLAUDE_CODE_OWN_LOGIN
+            + " (`claude auth login`); oauth = the Claude setup token stored in Kompile "
+            + "(`kompile auth list claude-code`), or " + CLAUDE_CODE_OWN_LOGIN
+            + " when none is stored; api-key = the separate Anthropic API";
+
+    /**
+     * Which login this route sends, for every provider, for dispatch lines and
+     * failures; never the secret.
+     */
+    @JsonIgnore
+    public String describeLogin() {
+        String name;
+        try {
+            name = effectiveCredentialName();
+        } catch (RuntimeException e) {
+            return "unresolved login (" + e.getMessage() + ")";
+        }
+        if (name != null) return (isClaudeCliNative() ? "Claude setup token '" : "stored credential '") + name + "'";
+        if (isClaudeCliNative()) return CLAUDE_CODE_OWN_LOGIN;
+        if (isAgyCliNative()) return "the agy CLI's own login";
+        if (!"oauth".equalsIgnoreCase(authenticationMethod) && apiKey != null && !apiKey.isBlank()) return "inline API key";
+        String variable = provider == null ? null : getEnvironmentVariable(provider);
+        String value = variable == null ? null : System.getenv(variable);
+        return value != null && !value.isBlank() ? "$" + variable : "no credential";
     }
 
     private static final String ANTHROPIC_ROUTE_GUIDANCE ="The Anthropic API-key route has no API key: "
@@ -507,13 +602,15 @@ public class ChatConfig {
 
     /**
      * Authentication route for a provider switch that carries no explicit choice.
-     * Anthropic serves two routes under one wire provider, so its route is never
-     * left implicit: the switch lands on the vendor's primary route, the user's
-     * Claude Code login (pick the API-key route explicitly to use a key). Every
-     * other provider implies its route by id, so it returns null.
+     * Anthropic and Gemini serve two routes under one wire provider, so those
+     * routes are never left implicit: the switch lands on the vendor's primary
+     * route — the user's Claude Code login for Anthropic, the agy CLI's Google
+     * Code Assist login for Gemini (pick the API-key route explicitly to use a
+     * key). Every other provider implies its route by id, so it returns null.
      */
     public static String authenticationMethodAfterProviderSwitch(String provider) {
-        return isClaudeCliNativeProvider(provider) ? "oauth" : null;
+        return isClaudeCliNativeProvider(provider) || isAgyCliNativeProvider(provider)
+                ? "oauth" : null;
     }
 
     /**
@@ -764,6 +861,11 @@ public class ChatConfig {
     public boolean isPassthroughManaged() { return passthroughManaged; }
     public void setPassthroughManaged(boolean passthroughManaged) { this.passthroughManaged = passthroughManaged; }
 
+    public int getSubagentIdleAlertSeconds() { return Math.max(0, subagentIdleAlertSeconds); }
+    public void setSubagentIdleAlertSeconds(int subagentIdleAlertSeconds) {
+        this.subagentIdleAlertSeconds = Math.max(0, subagentIdleAlertSeconds);
+    }
+
     public Boolean getEnforcementEnabled() { return enforcementEnabled; }
     public void setEnforcementEnabled(Boolean enforcementEnabled) { this.enforcementEnabled = enforcementEnabled; }
 
@@ -801,6 +903,11 @@ public class ChatConfig {
         // verified with `claude auth status` when the route is selected, and the
         // transport fails the turn with the fix when `claude -p` rejects it.
         if (isClaudeCliNative()) return true;
+        // The Antigravity (agy) CLI transport for Gemini's OAuth route owns its
+        // Google Code Assist login the same way: no HTTP credential ever rides a
+        // request, the route verifies the CLI's sign-in outside this check, and
+        // the turn fails with the fix when `agy` itself rejects the model.
+        if (isAgyCliNative()) return true;
         if (model == null || model.isBlank()) return false;
         // First-party Kompile serving and native OpenCode do not require an API key.
         if ("kompile-local".equals(provider) || isOpenCodeNative()) return true;
@@ -914,6 +1021,32 @@ public class ChatConfig {
         return "anthropic".equalsIgnoreCase(provider);
     }
 
+    /**
+     * Whether the Gemini vendor runs turns through the Antigravity CLI (agy) on its
+     * OAuth/subscription route. Same wire provider as the direct HTTP route;
+     * {@code isOpenAiCompatible()} stays false here because the CLI owns the
+     * Google Code Assist login (OAuth) and the wire protocol is agy stream-json,
+     * not the OpenAI-compatible API. No Kompile-side credential is sent: agy's
+     * own sign-in ({@code kompile auth login agy}, an interactive TUI) owns it.
+     */
+    @JsonIgnore
+    public boolean isAgyCliNative() {
+        return isAgyCliNative(provider, authenticationMethod);
+    }
+
+    /** Route check for a provider/method pair that is not (yet) a whole config. */
+    public static boolean isAgyCliNative(String provider, String authenticationMethod) {
+        return isAgyCliNativeProvider(provider)
+                && ("native".equalsIgnoreCase(authenticationMethod)
+                || "oauth".equalsIgnoreCase(authenticationMethod));
+    }
+
+    /** Vendor-level check: the Gemini vendor's OAuth/native route is the agy CLI. */
+    @JsonIgnore
+    public static boolean isAgyCliNativeProvider(String provider) {
+        return "gemini".equalsIgnoreCase(provider);
+    }
+
     /** Whether this provider uses Pi's native messages protocol. */
     @JsonIgnore
     public boolean isPiMessagesFormat() {
@@ -925,8 +1058,8 @@ public class ChatConfig {
      */
     @JsonIgnore
     public boolean isOpenAiCompatible() {
-        return !isOpenCodeNative() && !isClaudeCliNative() && !isAnthropicFormat()
-                && !isOpenAiCodexFormat() && !isPiMessagesFormat();
+        return !isOpenCodeNative() && !isClaudeCliNative() && !isAgyCliNative()
+                && !isAnthropicFormat() && !isOpenAiCodexFormat() && !isPiMessagesFormat();
     }
 
     // --- Persistence ---

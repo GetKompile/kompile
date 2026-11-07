@@ -12,7 +12,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
-import static ai.kompile.cli.main.chat.config.DirectLlmClient.FailureKind.*;
+import static ai.kompile.cli.main.chat.config.FailureKind.*;
 
 @TemporaryUserHome
 class DirectLlmClientFailureClassificationTest {
@@ -260,7 +260,7 @@ class DirectLlmClientFailureClassificationTest {
                 fixture.client.addToHistory("user", "run the tool");
                 fixture.client.addReplayedToolCall("example", "call_1", "{}");
                 var result = fixture.client.streamChat(null, "system", null,
-                        java.util.List.of(new DirectLlmClient.ToolCallResultInput("call_1", "example", "synthetic-tool-result", false)));
+                        java.util.List.of(new ToolCallResultInput("call_1", "example", "synthetic-tool-result", false)));
                 assertEquals(REFUSAL, result.failureKind);
                 fixture.run();
                 assertEquals(2, fixture.requestBodies.size());
@@ -316,7 +316,7 @@ class DirectLlmClientFailureClassificationTest {
         assertTrue(closed.get());
     }
 
-    private static void assertTerminal(String provider, String sse, DirectLlmClient.FailureKind kind) throws Exception {
+    private static void assertTerminal(String provider, String sse, FailureKind kind) throws Exception {
         try (var fixture = new Fixture(provider, 200, sse, false)) {
             var result = fixture.run();
             assertTrue(result.failed);

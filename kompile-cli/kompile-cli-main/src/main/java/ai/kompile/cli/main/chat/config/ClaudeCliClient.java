@@ -202,14 +202,14 @@ final class ClaudeCliClient implements AutoCloseable {
 
     /** The CLI began responding, but the stream ended or reported an error. */
     static final class TurnFailedException extends IllegalStateException {
-        final DirectLlmClient.FailureKind failureKind;
+        final FailureKind failureKind;
         final boolean replaySafe;
 
         TurnFailedException(String message) {
-            this(message, DirectLlmClient.FailureKind.NONE, false);
+            this(message, FailureKind.NONE, false);
         }
 
-        TurnFailedException(String message, DirectLlmClient.FailureKind failureKind, boolean replaySafe) {
+        TurnFailedException(String message, FailureKind failureKind, boolean replaySafe) {
             super(message);
             this.failureKind = failureKind;
             this.replaySafe = replaySafe;
@@ -400,6 +400,8 @@ final class ClaudeCliClient implements AutoCloseable {
     private DirectLlmClient.ClaudeInjectionListener injectionListener;
     /** Returns true once the running turn is cancelled; null when nothing can cancel it. */
     private volatile BooleanSupplier cancellationCheck;
+    /** KOMPILE_SUBAGENT_DEPTH of the agent this client serves; 0 for a top-level chat. */
+    private volatile int subagentDepth;
     /** The selected credential's setup token, read as each turn starts; null runs on Claude Code's own login. */
     private volatile Supplier<String> setupToken = () -> null;
     private volatile boolean closed;
@@ -443,6 +445,12 @@ final class ClaudeCliClient implements AutoCloseable {
      */
     private final List<SettingChange> idleAppliedSettings = new ArrayList<>();
 
+    /**
+     * The session's memory, skills and reminders, re-delivered after Claude Code
+     * compacts. Spans process relaunches: a resumed session keeps its summary.
+     */
+    private final ClaudeNativeContextReloadPolicy contextReloadPolicy;
+
     ClaudeCliClient(Path workingDirectory) {
         this(workingDirectory, null, null);
     }
@@ -463,6 +471,7 @@ final class ClaudeCliClient implements AutoCloseable {
         this.sessionId = sessionId;
         this.binaryOverride = binaryOverride;
         this.mode = mode == null ? Mode.CHAT : mode;
+        this.contextReloadPolicy = new ClaudeNativeContextReloadPolicy(mapper, this.workingDirectory);
         this.shutdownHook = new Thread(this::stopOnJvmShutdown, "kompile-claude-cli-shutdown");
         Runtime.getRuntime().addShutdownHook(shutdownHook);
     }
@@ -474,6 +483,37 @@ final class ClaudeCliClient implements AutoCloseable {
      */
     void setCancellationCheck(BooleanSupplier check) {
         cancellationCheck = check;
+    }
+
+    /**
+     * Serve a Kompile subagent at {@code depth}: its processes disallow Claude Code's native
+     * sub-agent tools and Kompile's delegation tools, and carry the depth into their
+     * environment, so the Kompile MCP server Claude Code starts refuses delegation too. This
+     * JVM's own depth stays the chat's, so the depth comes from the runner that delegated.
+     */
+    void setSubagentDepth(int depth) {
+        subagentDepth = Math.max(0, depth);
+    }
+
+    /** The depth this client's processes run at: the delegating runner's, else this process's. */
+    private String subagentDepthValue() {
+        int depth = subagentDepth;
+        return depth > 0 ? Integer.toString(depth)
+                : System.getenv(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.DEPTH_ENV);
+    }
+
+    private boolean servesSubagent() {
+        return ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.depth(subagentDepthValue()) >= 1;
+    }
+
+    /** Carry the delegating runner's subagent depth into a process of this client. */
+    private ProcessBuilder withSubagentDepth(ProcessBuilder builder) {
+        int depth = subagentDepth;
+        if (depth > 0) {
+            builder.environment().put(ai.kompile.cli.main.chat.agent.SubagentDelegationGuard.DEPTH_ENV,
+                    Integer.toString(depth));
+        }
+        return builder;
     }
 
     /**
@@ -495,7 +535,8 @@ final class ClaudeCliClient implements AutoCloseable {
             if (processes == taskProcesses) return;
             previous = taskBridge;
             taskProcesses = processes;
-            taskBridge = closed || processes == null ? null : new ClaudeTaskBridge(processes, this::stopTask);
+            taskBridge = closed || processes == null ? null : new ClaudeTaskBridge(processes, this::stopTask,
+                    ClaudeTaskBridge.claudeTaskOutputs(this::currentSessionId));
         }
         if (previous != null) previous.close();
     }
@@ -715,7 +756,7 @@ final class ClaudeCliClient implements AutoCloseable {
      */
     String send(String model, String effort, boolean fastMode, String systemPrompt,
                 String userMessage, String restoredConversation,
-                List<DirectLlmClient.AttachmentInput> attachments,
+                List<AttachmentInput> attachments,
                 Consumer<String> output,
                 ActivityListener activityListener) throws Exception {
         synchronized (turnLock) {
@@ -751,6 +792,7 @@ final class ClaudeCliClient implements AutoCloseable {
             settings.addAll(running.applySettings(model,
                     turnEffort(running, model, effort), fastMode));
             String snapshot = MemoryContextProjection.persistentSnapshot(userMessage);
+            contextReloadPolicy.recordPrompt(userMessage, snapshot);
             String projectedMessage;
             long receiptGeneration;
             synchronized (this) {
@@ -1039,12 +1081,12 @@ final class ClaudeCliClient implements AutoCloseable {
             // passthrough lanes, which DO require script(1) to defeat full
             // stdout buffering. A PTY would merge stderr into stdout and mask
             // the real exit code, so it is deliberately NOT used.
-            process = withParentSession(withSetupToken(
+            process = withSubagentDepth(withParentSession(withSetupToken(
                     withoutApiKeyEnvironment(new ProcessBuilder(
                             buildCommand(model, effort, fastMode, instructionsFile, resume, id, mcpConfig))
                             .directory(workingDirectory.toFile())),
                     token),
-                    panel).start();
+                    panel)).start();
         } catch (IOException e) {
             deleteQuietly(instructionsFile);
             // Binary missing or unspawnable: the prompt never reached a provider.
@@ -1117,7 +1159,7 @@ final class ClaudeCliClient implements AutoCloseable {
                               long receiptGeneration) throws Exception {
         String text = outcome.streamed.toString();
         if (!outcome.refusal.isBlank() && text.isBlank() && !outcome.providerSideEffectsObserved
-                && ProviderResponseFailure.classifyNativeError(outcome.failure) == DirectLlmClient.FailureKind.NONE) {
+                && ProviderResponseFailure.classifyNativeError(outcome.failure) == FailureKind.NONE) {
             // Claude Code refused the turn before any model request (an unknown
             // --resume session, for one): no provider saw it and no session changed.
             throwTurnFailure(turn.source.settle(2_000), outcome.refusal);
@@ -1200,7 +1242,7 @@ final class ClaudeCliClient implements AutoCloseable {
         long deadline = 0;
         boolean stopped = false;
         turn.source.openInjection(turn);
-        try (var capture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(workingDirectory)) {
+        try {
             while (true) {
                 Object item;
                 try {
@@ -1214,7 +1256,6 @@ final class ClaudeCliClient implements AutoCloseable {
                     break;
                 }
                 if (item instanceof ClaudeCliStreamParser.Event event) {
-                    captureTestEvent(event, capture, outcome.cancelled);
                     if (outcome.cancelled) {
                         // An interrupted turn's output is not shown, but the tokens it
                         // used count; its result ends it.
@@ -1261,15 +1302,6 @@ final class ClaudeCliClient implements AutoCloseable {
             turn.source.release(turn);
         }
         return outcome;
-    }
-
-    private static void captureTestEvent(ClaudeCliStreamParser.Event event,
-                                         ai.kompile.cli.main.chat.tools.ProviderTestCapture capture, boolean cancelled) {
-        if (event instanceof ClaudeCliStreamParser.ToolStart start) capture.start(start.callId(), start.name(), start.input());
-        else if (event instanceof ClaudeCliStreamParser.ToolInput input) capture.start(input.callId(), input.name(), input.input());
-        else if (event instanceof ClaudeCliStreamParser.ToolComplete complete)
-            capture.complete(complete.callId(), complete.output(), complete.error() ? Integer.valueOf(1) : null, cancelled);
-        else if (event instanceof ClaudeCliStreamParser.SubagentEvent child) captureTestEvent(child.event(), capture, cancelled);
     }
 
     /**
@@ -1890,7 +1922,7 @@ final class ClaudeCliClient implements AutoCloseable {
             // routes through the kompile process tool instead (panel rows, output
             // capture, wake-on-exit). Escape hatch:
             // -Dkompile.chat.claude.allowNativeShell=true.
-            cmd.addAll(mode.subagentGuardArguments(mcpConfig != null));
+            cmd.addAll(mode.subagentGuardArguments(subagentDepthValue(), mcpConfig != null));
             // A delegated subagent's claude -p session must not spawn agents of
             // its own: its native Task/Agent tools and the kompile delegation
             // tools are forbidden for this process only.
@@ -2125,6 +2157,9 @@ final class ClaudeCliClient implements AutoCloseable {
         /** The tokens the process's turns reported, so each counts once. */
         private final ClaudeCliUsageLedger usageLedger;
         private final ClaudeNativeToolOutputPolicy outputPolicy;
+        private final ClaudeNativeDelegationPolicy delegationPolicy;
+        /** Null when the post-compaction reload hooks are not registered for this process. */
+        private final ClaudeNativeContextReloadPolicy reloadPolicy;
 
         Cli(Process process, Path instructionsFile, String launchDigest, String credential,
             String model, String effort, boolean fastMode, boolean resumed) {
@@ -2138,6 +2173,16 @@ final class ClaudeCliClient implements AutoCloseable {
             this.outputPolicy = !mode.toolFree() && injectedSettingsFile != null
                     && Boolean.parseBoolean(System.getProperty("kompile.chat.claude.boundNativeOutput", "true"))
                     ? new ClaudeNativeToolOutputPolicy(mapper, new ToolResultReferenceCache()) : null;
+            // Route Claude Code's native Task/Agent calls to Kompile's task tool wherever
+            // Kompile's own tools are injected; depth 1+ launches already --disallow them.
+            this.delegationPolicy = !mode.toolFree() && injectedSettingsFile != null
+                    && Boolean.parseBoolean(System.getProperty("kompile.chat.claude.nativeDelegationGuard", "true"))
+                    ? new ClaudeNativeDelegationPolicy(mapper, servesSubagent()) : null;
+            // Kompile's memory, skills and reminders ride in messages and tool results that
+            // Claude Code's own compaction summarizes away; its SessionStart hook restores them.
+            this.reloadPolicy = !mode.toolFree() && injectedSettingsFile != null
+                    && Boolean.parseBoolean(System.getProperty("kompile.chat.claude.compactionReload", "true"))
+                    ? contextReloadPolicy : null;
             this.input = new BufferedWriter(new OutputStreamWriter(
                     process.getOutputStream(), StandardCharsets.UTF_8));
             this.model = normalized(model);
@@ -2157,11 +2202,27 @@ final class ClaudeCliClient implements AutoCloseable {
             // background tasks; each task is stopped on its own (stop_task).
             initialized = control("initialize", request -> {
                 request.put("perTaskStopAffordance", true);
-                if (outputPolicy != null) {
+                if (delegationPolicy != null || outputPolicy != null || reloadPolicy != null) {
                     // SDK hookCallbackIds register a host callback; no settings-file mutation or shell hook.
-                    request.putObject("hooks").putArray("PostToolUse").addObject()
-                            .put("matcher", ClaudeNativeToolOutputPolicy.MATCHER)
-                            .putArray("hookCallbackIds").add(ClaudeNativeToolOutputPolicy.CALLBACK_ID);
+                    ObjectNode hooks = request.putObject("hooks");
+                    if (delegationPolicy != null) {
+                        hooks.putArray("PreToolUse").addObject()
+                                .put("matcher", ClaudeNativeDelegationPolicy.MATCHER)
+                                .putArray("hookCallbackIds").add(ClaudeNativeDelegationPolicy.CALLBACK_ID);
+                    }
+                    if (outputPolicy != null) {
+                        hooks.withArray("PostToolUse").addObject()
+                                .put("matcher", ClaudeNativeToolOutputPolicy.MATCHER)
+                                .putArray("hookCallbackIds").add(ClaudeNativeToolOutputPolicy.CALLBACK_ID);
+                    }
+                    if (reloadPolicy != null) {
+                        hooks.withArray("PostToolUse").addObject()
+                                .put("matcher", ClaudeNativeContextReloadPolicy.RECORD_MATCHER)
+                                .putArray("hookCallbackIds").add(ClaudeNativeContextReloadPolicy.RECORD_CALLBACK_ID);
+                        hooks.putArray("SessionStart").addObject()
+                                .put("matcher", ClaudeNativeContextReloadPolicy.RELOAD_MATCHER)
+                                .putArray("hookCallbackIds").add(ClaudeNativeContextReloadPolicy.RELOAD_CALLBACK_ID);
+                    }
                 }
             });
             return this;
@@ -2237,7 +2298,7 @@ final class ClaudeCliClient implements AutoCloseable {
         }
 
         /** Write a message; the events Claude Code answers it with go to its turn. */
-        void submit(Turn turn, String text, List<DirectLlmClient.AttachmentInput> attachments) {
+        void submit(Turn turn, String text, List<AttachmentInput> attachments) {
             synchronized (this) {
                 if (exited) {
                     turn.events.add(new ProcessEnded(exitCode));
@@ -2317,7 +2378,7 @@ final class ClaudeCliClient implements AutoCloseable {
         }
 
         /** A stream-json user message, its attachments ahead of its text. */
-        private ObjectNode userMessage(String text, List<DirectLlmClient.AttachmentInput> attachments,
+        private ObjectNode userMessage(String text, List<AttachmentInput> attachments,
                                        String uuid) {
             ObjectNode message = mapper.createObjectNode();
             message.put("type", "user");
@@ -2492,7 +2553,7 @@ final class ClaudeCliClient implements AutoCloseable {
                 return true;
             }
             if ("control_request".equals(type)) {
-                // Only our registered output hook is handled; permission prompts and
+                // Only our registered hooks are handled; permission prompts and
                 // unknown hooks retain their previous explicit error response.
                 ObjectNode reply = mapper.createObjectNode();
                 reply.put("type", "control_response");
@@ -2505,6 +2566,18 @@ final class ClaudeCliClient implements AutoCloseable {
                     synchronized (ClaudeCliClient.this) { ownerSession = transcriptOwner; }
                     response.put("subtype", "success");
                     response.set("response", outputPolicy.project(request.path("input"), ownerSession));
+                } else if (delegationPolicy != null && "hook_callback".equals(request.path("subtype").asText())
+                        && ClaudeNativeDelegationPolicy.CALLBACK_ID.equals(request.path("callback_id").asText())) {
+                    response.put("subtype", "success");
+                    response.set("response", delegationPolicy.deny(request.path("input")));
+                } else if (reloadPolicy != null && "hook_callback".equals(request.path("subtype").asText())
+                        && ClaudeNativeContextReloadPolicy.RECORD_CALLBACK_ID.equals(request.path("callback_id").asText())) {
+                    response.put("subtype", "success");
+                    response.set("response", reloadPolicy.record(request.path("input")));
+                } else if (reloadPolicy != null && "hook_callback".equals(request.path("subtype").asText())
+                        && ClaudeNativeContextReloadPolicy.RELOAD_CALLBACK_ID.equals(request.path("callback_id").asText())) {
+                    response.put("subtype", "success");
+                    response.set("response", reloadPolicy.reload(request.path("input")));
                 } else {
                     response.put("subtype", "error");
                     response.put("error", "Kompile does not handle "

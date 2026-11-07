@@ -314,6 +314,19 @@ class KompileCliHarnessClientTest {
                 "start", "harness_session", "chunk", "tool_use", "tool_result",
                 "stats", "complete"), sink.names());
         assertTrue(sink.completed);
+        JsonNode stats = new ObjectMapper().valueToTree(sink.events.get(5).data);
+        JsonNode metrics = stats.path("tokenMetrics");
+        assertEquals(10, metrics.path("inputTokens").asLong());
+        assertEquals(2, metrics.path("outputTokens").asLong());
+        assertEquals(1, metrics.path("cacheReadTokens").asLong());
+        assertTrue(metrics.has("cacheCreationTokens"), metrics.toString());
+        assertEquals(0, metrics.path("cacheCreationTokens").asLong());
+        assertEquals(4, metrics.size(), metrics.toString());
+        assertFalse(stats.has("durationMs"), stats.toString());
+        assertFalse(stats.has("costUsd"), stats.toString());
+        assertFalse(stats.has("numTurns"), stats.toString());
+        assertFalse(metrics.has("totalGenerationMs"), metrics.toString());
+        assertFalse(metrics.has("tokensPerSecond"), metrics.toString());
         assertTrue(fake.stdin.toString(StandardCharsets.UTF_8).contains("crawl the fixture"));
         assertFalse(capturedCommand.get().contains("crawl the fixture"));
         assertEquals("-", capturedCommand.get().get(capturedCommand.get().size() - 1));
@@ -321,6 +334,33 @@ class KompileCliHarnessClientTest {
         Map<String, Object> terminal = (Map<String, Object>) sink.events.get(6).data;
         assertEquals("kompile-cli-main", terminal.get("engine"));
         assertEquals("hello world", terminal.get("content"));
+    }
+
+    @Test
+    void forwardsMeasuredStatsIncludingZeroWithoutRewriting() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode zero = mapper.readTree("""
+                {"durationMs":0,"costUsd":0.0,"numTurns":0,"isError":false,
+                 "tokenMetrics":{"inputTokens":0,"outputTokens":0,"totalGenerationMs":0,"tokensPerSecond":0.0}}
+                """);
+        JsonNode positive = mapper.readTree("""
+                {"durationMs":1500,"costUsd":0.02,"numTurns":2,"isError":false,
+                 "tokenMetrics":{"inputTokens":10,"outputTokens":20,"totalGenerationMs":1000,"tokensPerSecond":20.0}}
+                """);
+        FakeProcess fake = new FakeProcess(String.join("\n", List.of(
+                "{\"seq\":1,\"type\":\"stats\",\"stats\":" + zero + "}",
+                "{\"seq\":2,\"type\":\"stats\",\"stats\":" + positive + "}",
+                "{\"seq\":3,\"type\":\"result\",\"text\":\"done\",\"exit\":0}"
+        )) + "\n", "", 0);
+        client = clientWith(fake);
+        RecordingSink sink = new RecordingSink();
+
+        client.runTurn("measured-stats", request("hello"), sink);
+
+        assertEquals(List.of("start", "stats", "stats", "complete"), sink.names());
+        assertEquals(zero, sink.events.get(1).data);
+        assertEquals(positive, sink.events.get(2).data);
+        assertTrue(sink.completed);
     }
 
     @Test

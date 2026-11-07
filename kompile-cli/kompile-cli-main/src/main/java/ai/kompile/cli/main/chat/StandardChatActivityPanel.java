@@ -24,6 +24,8 @@ import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessEntry;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessKind;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessMonitor;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.render.ChatDisplayBlock;
+import ai.kompile.cli.main.chat.render.SubagentTranscript;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.config.ChatUiConfig;
 import ai.kompile.cli.main.chat.tui.ChatSidebar;
@@ -32,6 +34,9 @@ import ai.kompile.cli.main.chat.tui.StatusBar.SubagentEntry;
 import ai.kompile.utils.AnsiConstants;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.utils.StringUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.MissingNode;
 
 import java.time.Instant;
 import java.time.Duration;
@@ -51,6 +56,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.IntSupplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Claude-style auxiliary-chat, process, and subagent activity pane for literal standard chat.
@@ -73,6 +80,9 @@ final class StandardChatActivityPanel {
                 // MCP injection and Claude stderr are diagnostic logs, not work results.
                 // Keep them in the process browser, never automatic transcript cards.
                 if (entry.getKind() == ProcessKind.MCP) continue;
+                // An MCP shell call's live log: the provider's own tool card already
+                // carries that output, so the log stays in the pane and tool view.
+                if (isToolCallLog(entry)) continue;
                 // Shared rows are intentionally browsable across sessions, but
                 // must not automatically copy another chat's logs into this one.
                 String sessionId = processManager.getSessionId();
@@ -153,6 +163,13 @@ final class StandardChatActivityPanel {
     static final String MAIN_KEY = "main";
     static final String PROJECT_ACTIVITY_KEY = "project:agents";
     private static final int MAX_RETAINED_TOOL_ACTIVITIES = 64;
+    /** Coordination kind the MCP server publishes for a running shell call's live log. */
+    static final String TOOL_CALL_PROCESS_KIND = "tool-call";
+    private static final ObjectMapper TOOL_INPUT_MAPPER = new ObjectMapper();
+    /** A launch result names its process as {@code ID: <id>} (all a provider hands back). */
+    private static final Pattern LAUNCHED_PROCESS_ID = Pattern.compile("(?m)^\\s*ID:\\s+(\\S+)");
+    /** Slack for the MCP server publishing a call's log before the chat records its start. */
+    private static final Duration TOOL_CALL_LOG_START_SLACK = Duration.ofSeconds(2);
     private static final int MAX_SUBAGENT_LAUNCH_LABEL_CHARS = 160;
 
     private final BackgroundTaskManager taskManager;
@@ -201,6 +218,8 @@ final class StandardChatActivityPanel {
         private volatile String output = "";
         private volatile String status;
         private volatile boolean active;
+        /** Panel id of the process this call runs or inspects, once resolved. */
+        private volatile String linkedProcessId;
 
         private ToolActivity(String key, String id, String toolName, String rawInput) {
             this.key = key;
@@ -412,6 +431,139 @@ final class StandardChatActivityPanel {
         }
     }
 
+    /**
+     * The process a tool call runs or inspects, so its row follows that process's
+     * state and its view tails the live log rather than a one-shot snapshot.
+     */
+    private ProcessEntry linkedProcess(ToolActivity activity) {
+        String cached = activity.linkedProcessId;
+        if (cached != null) return processManager.get(cached);
+        ProcessEntry entry = resolveLinkedProcess(activity);
+        if (entry != null) activity.linkedProcessId = entry.getId();
+        return entry;
+    }
+
+    private ProcessEntry resolveLinkedProcess(ToolActivity activity) {
+        String toolName = activity.toolName == null ? "" : activity.toolName;
+        String name = TerminalRenderer.stripMcpPrefix(toolName);
+        // A tool reached through an MCP server ran in that server's JVM: its processes
+        // reach this session only as coordination mirrors, and a local id that
+        // happens to match belongs to a different process.
+        boolean viaMcp = toolName.startsWith("mcp__");
+        if ("process".equals(name)) {
+            String processId = linkedProcessId(activity, toolInput(activity));
+            if (processId.isBlank()) return null;
+            ProcessEntry local = viaMcp ? null : processManager.get(processId);
+            return local != null ? local : sharedProcess(processId);
+        }
+        if ("bash".equals(name) && viaMcp) {
+            return toolCallLog(activity, toolInput(activity).path("command").asText(""));
+        }
+        return null;
+    }
+
+    private static JsonNode toolInput(ToolActivity activity) {
+        String raw = activity.rawInput;
+        if (raw == null || raw.isBlank()) return MissingNode.getInstance();
+        try {
+            JsonNode input = TOOL_INPUT_MAPPER.readTree(raw);
+            return input == null ? MissingNode.getInstance() : input;
+        } catch (java.io.IOException partialOrInvalid) {
+            // Provider input streams in; a partial document resolves on a later refresh.
+            return MissingNode.getInstance();
+        }
+    }
+
+    private static String linkedProcessId(ToolActivity activity, JsonNode input) {
+        ToolResult result = activity.result;
+        Object launched = result == null ? null : result.getMetadata().get("processId");
+        if (launched != null && !launched.toString().isBlank()) return launched.toString();
+        String requested = input.path("process_id").asText("");
+        if (!requested.isBlank()) return requested;
+        if (result != null && result.getOutput() != null && isLaunch(input)) {
+            Matcher matcher = LAUNCHED_PROCESS_ID.matcher(result.getOutput());
+            if (matcher.find()) return matcher.group(1);
+        }
+        return "";
+    }
+
+    private static boolean isLaunch(JsonNode input) {
+        return "launch".equals(input.path("action").asText(""));
+    }
+
+    /** The mirror of another session's process, preferring one launched for this chat. */
+    private ProcessEntry sharedProcess(String sharedProcessId) {
+        String sessionId = processManager.getSessionId();
+        ProcessEntry fallback = null;
+        for (ProcessEntry entry : processManager.listAll()) {
+            if (entry.getKind() != ProcessKind.SHARED
+                    || !sharedProcessId.equals(entry.getMetadata().get("sharedProcessId"))) continue;
+            if (sessionId != null && sessionId.equals(entry.getMetadata().get("parentSessionId"))) return entry;
+            if (fallback == null) fallback = entry;
+        }
+        return fallback;
+    }
+
+    /**
+     * The MCP server's live log for a shell call: the same command, published for
+     * this chat once the call began and not already followed by another call.
+     */
+    private ProcessEntry toolCallLog(ToolActivity activity, String command) {
+        if (command.isBlank()) return null;
+        String sessionId = processManager.getSessionId();
+        Instant earliest = activity.startedAt.minus(TOOL_CALL_LOG_START_SLACK);
+        Set<String> claimed = new HashSet<>();
+        synchronized (toolActivityLock) {
+            for (ToolActivity other : toolActivities.values()) {
+                if (other != activity && other.linkedProcessId != null) claimed.add(other.linkedProcessId);
+            }
+        }
+        ProcessEntry match = null;
+        for (ProcessEntry entry : processManager.listAll()) {
+            if (!isToolCallLog(entry) || claimed.contains(entry.getId())
+                    || !command.equals(entry.getCommand())
+                    || entry.getStartTime() == null || entry.getStartTime().isBefore(earliest)) continue;
+            if (sessionId != null && !sessionId.isBlank()
+                    && !sessionId.equals(entry.getMetadata().get("parentSessionId"))) continue;
+            if (match == null || entry.getStartTime().isBefore(match.getStartTime())) match = entry;
+        }
+        return match;
+    }
+
+    private static boolean isToolCallLog(ProcessEntry entry) {
+        return entry.getKind() == ProcessKind.SHARED
+                && TOOL_CALL_PROCESS_KIND.equals(entry.getMetadata().get("kind"));
+    }
+
+    /** Another chat's shell calls are its own live work, not this pane's. */
+    private boolean launchedForThisChat(ProcessEntry entry) {
+        String sessionId = processManager.getSessionId();
+        return sessionId != null && sessionId.equals(entry.getMetadata().get("parentSessionId"));
+    }
+
+    /** MCP shell-call logs a tool row already follows; they get no row of their own. */
+    private Set<String> foldedToolCallLogs() {
+        Set<String> folded = new HashSet<>();
+        for (ToolActivity activity : toolActivitySnapshot()) {
+            ProcessEntry linked = linkedProcess(activity);
+            if (linked != null && isToolCallLog(linked)) folded.add(linked.getId());
+        }
+        return folded;
+    }
+
+    /** Resolving links reads the process manager, which must never run under this lock. */
+    private List<ToolActivity> toolActivitySnapshot() {
+        synchronized (toolActivityLock) {
+            return new ArrayList<>(toolActivities.values());
+        }
+    }
+
+    private static String processDisplayId(ProcessEntry entry) {
+        String shared = entry.getKind() == ProcessKind.SHARED
+                ? entry.getMetadata().get("sharedProcessId") : null;
+        return shared == null || shared.isBlank() ? entry.getId() : shared;
+    }
+
     boolean isFocused() {
         return focused;
     }
@@ -553,7 +705,10 @@ final class StandardChatActivityPanel {
                 processKeysByPid.put(entry.getPid(), key);
             }
         }
+        Set<String> foldedProcessIds = foldedToolCallLogs();
         for (ProcessEntry entry : processes) {
+            if (foldedProcessIds.contains(entry.getId())
+                    || isToolCallLog(entry) && !launchedForThisChat(entry)) continue;
             boolean active = entry.isRunning();
             String state = entry.getState().name().toLowerCase(Locale.ROOT);
             boolean shared = entry.getKind() == ProcessKind.SHARED;
@@ -612,25 +767,33 @@ final class StandardChatActivityPanel {
                     MAIN_KEY,
                     0));
         }
-        synchronized (toolActivityLock) {
-            for (ToolActivity activity : toolActivities.values()) {
-                if (!activity.active && !completionVisible(activity.key, activity.updatedAt)) continue;
-                String label = TerminalRenderer.summarizeToolCall(
-                        activity.toolName, activity.rawInput, 72);
-                String duration = FormatUtils.formatDuration(java.time.Duration.between(
-                        activity.startedAt, activity.active ? Instant.now() : activity.updatedAt));
-                rawItems.add(new ActivityItem(
-                        activity.key,
-                        activity.id,
-                        ActivityKind.TOOL,
-                        label,
-                        activity.status + " · " + duration,
-                        activity.active,
-                        false,
-                        activity.updatedAt,
-                        MAIN_KEY,
-                        0));
+        for (ToolActivity activity : toolActivitySnapshot()) {
+            ProcessEntry linked = linkedProcess(activity);
+            // A launch returns at once; its row follows the process until it exits.
+            boolean following = !activity.active && linked != null && linked.isRunning()
+                    && isLaunch(toolInput(activity));
+            if (!activity.active && !following
+                    && !completionVisible(activity.key, activity.updatedAt)) continue;
+            String label = TerminalRenderer.summarizeToolCall(
+                    activity.toolName, activity.rawInput, 72);
+            String duration = FormatUtils.formatDuration(java.time.Duration.between(
+                    activity.startedAt, activity.active || following ? Instant.now() : activity.updatedAt));
+            String status = activity.status;
+            if (linked != null && !isToolCallLog(linked)) {
+                status += " · " + processDisplayId(linked) + " "
+                        + linked.getState().name().toLowerCase(Locale.ROOT);
             }
+            rawItems.add(new ActivityItem(
+                    activity.key,
+                    activity.id,
+                    ActivityKind.TOOL,
+                    label,
+                    status + " · " + duration,
+                    activity.active || following,
+                    false,
+                    activity.updatedAt,
+                    MAIN_KEY,
+                    0));
         }
 
         Comparator<ActivityItem> itemOrder = Comparator
@@ -1144,7 +1307,7 @@ final class StandardChatActivityPanel {
             if (subagent != null) {
                 appendSubagentMetadata(details, subagent.getMetadata(), subagent.getElapsed());
                 title = subagentTitle(subagent.getMetadata(), title);
-                if (!subagent.getTranscript().isBlank()) details.append("\n").append(subagent.getTranscript());
+                appendChildTranscript(details, item.id());
             }
         } else if (item.kind() == ActivityKind.TOOL) {
             ToolActivity activity;
@@ -1174,6 +1337,17 @@ final class StandardChatActivityPanel {
                         details.append("\n").append(renderedDetail);
                     }
                 }
+                ProcessEntry linked = linkedProcess(activity);
+                // A shell call's MCP log duplicates its result once that arrives; a
+                // process call's log keeps following the process after the call returns.
+                if (linked != null && (activity.active || !isToolCallLog(linked))) {
+                    details.append("\n  live log: ").append(processDisplayId(linked)).append(" · ")
+                            .append(linked.getState().name().toLowerCase(Locale.ROOT));
+                    if (linked.getOutputFile() != null) {
+                        details.append(" · ").append(linked.getOutputFile());
+                    }
+                    details.append("\n").append(processManager.readOutput(linked.getId(), 2000)).append("\n");
+                }
             }
         } else if (item.kind() == ActivityKind.TASK) {
             BackgroundTask task = taskManager.getTask(item.id());
@@ -1185,8 +1359,8 @@ final class StandardChatActivityPanel {
                     if (child != null) {
                         appendSubagentMetadata(details, child.getMetadata(), child.getElapsed());
                         title = subagentTitle(child.getMetadata(), title);
-                        if (!child.getTranscript().isBlank()) details.append("\n").append(child.getTranscript()).append("\n");
                     }
+                    appendChildTranscript(details, subagentId).append("\n");
                 }
                 if (task.getError() != null) {
                     details.append("  error: ").append(task.getError().getMessage()).append("\n");
@@ -1208,6 +1382,31 @@ final class StandardChatActivityPanel {
         String type = metadata.getOrDefault("task_type", "");
         return "claude-code".equals(metadata.get("source"))
                 && (type.equals("agent") || type.endsWith("_agent"));
+    }
+
+    /**
+     * Child transcript projected exactly like the main chat: the runner's typed
+     * parts go through the same ChatSidebar projection and live UI policy as the
+     * PROCESS view; runners without a typed transcript keep the legacy raw log.
+     */
+    private StringBuilder appendChildTranscript(StringBuilder details, String subagentId) {
+        SubagentRunner runner = subagentRunner;
+        SubagentTranscript transcript = runner == null ? null : runner.transcriptOf(subagentId);
+        if (transcript != null) {
+            List<ChatDisplayBlock> blocks = transcript.blocks(toolRenderer);
+            if (!blocks.isEmpty()) {
+                ChatUiConfig config = transcriptUiConfig.get();
+                for (ChatDisplayBlock block : blocks) {
+                    String display = transcriptProjection.inline(block, config);
+                    if (!display.isBlank()) details.append("\n").append(display).append("\n");
+                }
+                return details;
+            }
+        }
+        SubagentEntry subagent = findSubagent(subagentId);
+        String legacy = subagent == null ? "" : subagent.getTranscript();
+        if (!legacy.isBlank()) details.append("\n").append(legacy);
+        return details;
     }
 
     private static String subagentVendor(Map<String, String> metadata) {
@@ -1287,6 +1486,24 @@ final class StandardChatActivityPanel {
     private void hideProjectActivity() {
         ProjectActivityView project = projectActivityView;
         if (project != null && project.isVisible()) project.hide();
+    }
+
+    /**
+     * Kill/stop the row an external selection surface (the results sidebar) points at.
+     * Moves the activity selection to that key and reuses {@link #killSelected()} so the
+     * sidebar's Delete behaves exactly like the process browser's: same kill semantics,
+     * same status messages, same agent wake-up on exit.
+     */
+    String killByKey(String key) {
+        if (key == null || key.isBlank()) {
+            return "No activity selected";
+        }
+        List<ActivityItem> items = activityItems();
+        int index = indexOf(items, key);
+        focused = index >= 0;
+        selectedKey = key;
+        selectedIndex = index >= 0 ? index : Math.max(0, items.size() - 1);
+        return killSelected();
     }
 
     String killSelected() {

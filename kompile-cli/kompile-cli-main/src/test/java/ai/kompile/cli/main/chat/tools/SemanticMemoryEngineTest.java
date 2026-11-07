@@ -17,6 +17,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SemanticMemoryEngineTest {
@@ -437,6 +438,19 @@ class SemanticMemoryEngineTest {
         } finally {
             engine.shutdown();
         }
+    }
+
+    @Test
+    void readersDoNotWaitForAFirstScanThatShutdownCancelled() {
+        // The first scan runs on the refresh thread; shutdown may drop it before it starts.
+        SemanticMemoryEngine engine = new SemanticMemoryEngine(tempDir.resolve("shutdown-project"), false);
+        engine.initialize();
+        engine.shutdown();
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(5), () -> {
+            engine.query("anything", 5, 0.01);
+            engine.size();
+            engine.stats();
+        });
     }
 
     private static void refresh(SemanticMemoryEngine engine) throws Exception {

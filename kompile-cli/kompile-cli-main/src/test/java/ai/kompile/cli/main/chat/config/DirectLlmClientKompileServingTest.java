@@ -166,8 +166,8 @@ class DirectLlmClientKompileServingTest {
             DirectLlmClient client = new DirectLlmClient(
                     preparedConfig(server), mapper, policy);
             client.setOutputConsumer(ignored -> { });
-            List<DirectLlmClient.ToolCallResultInput> toolResults = List.of(
-                    new DirectLlmClient.ToolCallResultInput(
+            List<ToolCallResultInput> toolResults = List.of(
+                    new ToolCallResultInput(
                             "call_1", "read", "contents", false));
 
             DirectLlmClient.StreamResult result =

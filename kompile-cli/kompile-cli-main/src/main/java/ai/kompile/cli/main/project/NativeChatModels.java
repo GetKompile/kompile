@@ -4,10 +4,14 @@
  */
 package ai.kompile.cli.main.project;
 
-import ai.kompile.cli.main.chat.config.ChatConfig;
-import ai.kompile.cli.main.chat.config.ChatProvider;
-import ai.kompile.cli.main.chat.config.ChatProviderRegistry;
-import ai.kompile.cli.main.chat.config.ProviderStructuredOutputCapabilities;
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelDiscoveryHttp;
@@ -42,6 +46,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
 import java.util.zip.DeflaterOutputStream;
+import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.ChatProvider;
+import ai.kompile.cli.main.chat.config.ChatProviderRegistry;
 
 /** Native chat boundary shared by MCP pipelines and graph extraction. No CLI or artifact fallback. */
 public final class NativeChatModels {
@@ -299,7 +306,7 @@ public final class NativeChatModels {
 
     /** Bounded isolated call; no tool definitions/history and no credentials in returned diagnostics. */
     public static String call(Path root, Selection selection, String prompt, String systemPrompt,
-                              List<DirectLlmClient.AttachmentInput> attachments, JsonNode schema,
+                              List<AttachmentInput> attachments, JsonNode schema,
                               Duration timeout, int maxResponseChars) throws Exception {
         return call(root, selection, prompt, systemPrompt, attachments, schema, timeout, maxResponseChars, null);
     }
@@ -312,7 +319,7 @@ public final class NativeChatModels {
      * never alters the captured result.
      */
     public static String call(Path root, Selection selection, String prompt, String systemPrompt,
-                              List<DirectLlmClient.AttachmentInput> attachments, JsonNode schema,
+                              List<AttachmentInput> attachments, JsonNode schema,
                               Duration timeout, int maxResponseChars,
                               Consumer<String> chunkConsumer) throws Exception {
         if (timeout == null || timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException("Positive chat timeout required");
@@ -444,7 +451,7 @@ public final class NativeChatModels {
         if (timeout == null || timeout.isZero() || timeout.isNegative() || timeout.compareTo(Duration.ofSeconds(60)) > 0)
             throw new IllegalArgumentException("Live probe timeout must be positive and at most 60 seconds");
         String marker = "probe-" + UUID.randomUUID();
-        List<DirectLlmClient.AttachmentInput> attachments = List.of();
+        List<AttachmentInput> attachments = List.of();
         JsonNode schema = null;
         JsonNode expectedGraph = null;
         String prompt = "Return exactly this text and nothing else: " + marker;
@@ -467,7 +474,7 @@ public final class NativeChatModels {
                     Arrays.fill(pixels, y * width + tile * 72 + 4, y * width + tile * 72 + 68, colors[index]);
                 }
             }
-            attachments = List.of(new DirectLlmClient.AttachmentInput("probe.png", "image/png", true,
+            attachments = List.of(new AttachmentInput("probe.png", "image/png", true,
                     Base64.getEncoder().encodeToString(rgbPng(width, height, pixels)), null));
             prompt = "Identify the colors of the six squares from left to right, ignoring the gray background. "
                     + "Use RED, GREEN, BLUE, YELLOW, BLACK or WHITE. Colors may repeat. "

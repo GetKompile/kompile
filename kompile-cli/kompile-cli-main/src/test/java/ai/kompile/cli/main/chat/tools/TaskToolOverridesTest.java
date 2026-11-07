@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+// The user's /subagent-config model bans live under the home directory and would gate these launches.
+@ai.kompile.cli.main.chat.testing.TemporaryUserHome
 class TaskToolOverridesTest {
     @TempDir Path directory;
     private final ObjectMapper mapper = new ObjectMapper();

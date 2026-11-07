@@ -100,13 +100,53 @@ class TestRunDetectorTest {
                 + "{\"Action\":\"output\",\"Package\":\"p\",\"Output\":\"ok p (cached)\\n\"}\n"
                 + "{\"Action\":\"pass\",\"Package\":\"p\"}", 0).outcome());
     }
-    @Test void outputLimitsNeverTurnPartialResultsIntoAGreenMilestone() {
+    @Test void largeSuiteRunsKeepAllCountsIncludingFailuresBeyond4096() {
         StringBuilder text = new StringBuilder();
         for (int i = 0; i < 4097; i++) text.append("Tests run: 1, Failures: 0, Errors: 0, Skipped: 0 -- in C").append(i).append('\n');
-        var result = detect("mvn test", text.toString(), 0);
-        assertEquals("unknown", result.outcome());
-        assertEquals("output-count-limit", result.basis());
-        assertNull(result.total());
+        assertEquals(4097L, detect("mvn test", text.toString(), 0).total());
+        assertEquals("passed", detect("mvn test", text.toString(), 0).outcome());
+        text.append("Tests run: 1, Failures: 1, Errors: 0, Skipped: 0 -- in LastSuite");
+        var result = detect("mvn test", text.toString(), 1);
+        assertEquals("failed", result.outcome());
+        assertEquals(4098L, result.total());
+        assertEquals(1L, result.failed());
+    }
+    @Test void largeJsonRunsKeepAllCasesAndLateFailuresBeyond65536() {
+        var detector = new TestRunDetector(config(), TestRunDetector.plan("go test -json", root, config()), "go test -json");
+        for (int i = 0; i < 65537; i++) detector.accept("{\"Action\":\"pass\",\"Package\":\"p\",\"Test\":\"T" + i + "\"}");
+        detector.accept("{\"Action\":\"fail\",\"Package\":\"p\",\"Test\":\"LateFailure\"}");
+        detector.accept("{\"Action\":\"fail\",\"Package\":\"p\"}");
+        var result = detector.result(1, false);
+        assertEquals("failed", result.outcome());
+        assertEquals(65538L, result.total());
+        assertEquals(65537L, result.passed());
+        assertEquals(1L, result.failed());
+    }
+    @Test void skippedAndCachedEvidenceDoesNotBecomeUnknownInLargeRuns() {
+        var detector = new TestRunDetector(config(), TestRunDetector.plan("ctest", root, config()), "ctest");
+        for (int i = 1; i <= 4097; i++) detector.accept(i + "/4097 Test #" + i + ": sample ...***Skipped 0.00 sec");
+        detector.accept("100% tests passed, 0 tests failed out of 4097");
+        assertEquals("skipped", detector.result(0, false).outcome());
+        assertEquals(4097L, detector.result(0, false).skipped());
+    }
+    @Test void repeatedRunnerSuitesAreNotCappedAt4096() {
+        var detector = new TestRunDetector(config(), TestRunDetector.plan("cargo test", root, config()), "cargo test");
+        for (int i = 0; i < 4097; i++) detector.accept("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;");
+        var result = detector.result(0, false);
+        assertEquals("passed", result.outcome());
+        assertEquals(4097L, result.total());
+    }
+    @Test void cachedPackagesAreNotCappedAt65536() {
+        var detector = new TestRunDetector(config(), TestRunDetector.plan("go test -json", root, config()), "go test -json");
+        for (int i = 0; i < 65537; i++) detector.accept("{\"Action\":\"output\",\"Package\":\"p" + i
+                + "\",\"Output\":\"ok p" + i + " (cached)\"}");
+        assertEquals("cached", detector.result(0, false).outcome());
+    }
+    @Test void longTestNamesAndCommandsAreNotSilentlyDropped() {
+        var result = detect("mvn -Dlabel=" + "x".repeat(17000) + " test",
+                "Tests run: 1, Failures: 0, Errors: 0, Skipped: 0 -- in " + "LongClass".repeat(1100), 0);
+        assertEquals("passed", result.outcome());
+        assertEquals(1L, result.total());
     }
     @Test void compoundBuildThenTestAndBooleanFalseFlags() {
         assertEquals("passed", detect("mvn install -DskipTests && python -m pytest -q", "2 passed in 0.1s", 0).outcome());

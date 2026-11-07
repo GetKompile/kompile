@@ -37,28 +37,6 @@ import java.util.regex.Pattern;
 public class PassthroughStreamParser {
 
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
-    private ai.kompile.cli.main.chat.tools.ProviderTestCapture testCapture;
-    private java.nio.file.Path testCaptureDirectory;
-    private String testCaptureOrigin;
-
-    /** Enable only on a real provider execution stream, never on imported transcripts or renderer fixtures. */
-    public void enableTestCapture(java.nio.file.Path directory) {
-        enableTestCapture(directory, null);
-    }
-
-    /** Tag every capture from this stream with the delegated surface that observed it (e.g. subagent). */
-    public void enableTestCapture(java.nio.file.Path directory, String origin) {
-        testCaptureDirectory = directory;
-        testCaptureOrigin = origin == null || origin.isBlank() ? null : origin.trim();
-        if (testCapture == null) testCapture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(directory, testCaptureOrigin);
-    }
-
-    public void closeTestCapture() {
-        if (testCapture != null) {
-            testCapture.close();
-            testCapture = new ai.kompile.cli.main.chat.tools.ProviderTestCapture(testCaptureDirectory, testCaptureOrigin);
-        }
-    }
 
     /** Match Claude tool-result user frames to the calls whose output they carry. */
     private final Map<String, String> claudeToolNames = new HashMap<>();
@@ -99,7 +77,13 @@ public class PassthroughStreamParser {
         }
     }
     public record SessionInit(String sessionId) implements PassthroughEvent {}
+    /** The agent compacted its own context (a summary replaced earlier history). */
+    public record ContextCompacted() implements PassthroughEvent {}
     public record PromptDetected() implements PassthroughEvent {}
+
+    /** A turn the provider ended in error: status + message + any partial response. */
+    public record TurnError(String status, String message, String response)
+            implements PassthroughEvent {}
 
     /** A single option in an interactive question. */
     public record QuestionOption(String label, String description) {}
@@ -196,7 +180,6 @@ public class PassthroughStreamParser {
                                     String input = block.has("input") ? block.get("input").toString() : "";
                                     String callId = block.path("id").asText("");
                                     if (!callId.isBlank()) claudeToolNames.put(callId, name);
-                                    if (testCapture != null) testCapture.start(callId, name, input);
                                     events.add(new ToolUse(name, input));
                                 }
                             }
@@ -259,8 +242,6 @@ public class PassthroughStreamParser {
                         String name = claudeToolNames.remove(callId);
                         String output = extractToolOutputText(block.path("content"));
                         boolean error = block.path("is_error").asBoolean();
-                        if (testCapture != null) testCapture.complete(callId, output,
-                                error ? Integer.valueOf(1) : null, false);
                         events.add(new ToolComplete(name == null ? "tool" : name, output, error ? 1 : 0, error));
                     }
                     // User prompts are not model text, but tool results are observable output.
@@ -452,12 +433,9 @@ public class PassthroughStreamParser {
                 case "tool_use" -> {
                     String toolName = node.has("tool_name") ? node.get("tool_name").asText() : "unknown";
                     String params = node.has("parameters") ? node.get("parameters").toString() : "";
-                    if (testCapture != null) testCapture.start(node.path("tool_id").asText(), toolName, params);
                     return new ToolUse(toolName, params);
                 }
                 case "tool_result" -> {
-                    if (testCapture != null) testCapture.complete(node.path("tool_id").asText(),
-                            extractToolOutputText(node.path("output")), node.path("status").asText().equals("error") ? 1 : null, false);
                     return null;
                 }
                 case "result" -> {
@@ -571,23 +549,28 @@ public class PassthroughStreamParser {
                         }
                         case "tool" -> {
                             String toolName = step.path("tool_name").asText("unknown");
-                            JsonNode params = step.path("tool_info").path("parameters");
-                            String serialized = params.isMissingNode() || !params.isObject()
-                                    ? "" : params.toString();
                             if ("ACTIVE".equals(state)) {
-                                if (testCapture != null) {
-                                    testCapture.start(step.path("step_index").asText(), toolName, serialized);
-                                }
+                                JsonNode params = step.path("tool_info").path("parameters");
+                                String serialized = params.isMissingNode() || !params.isObject()
+                                        ? "" : params.toString();
                                 return new ToolUse(toolName, serialized);
                             }
-                            // DONE/ERROR: report completion. Agy reports tool failures through
+                            // DONE/ERROR: the call settled — surface completion so the
+                            // activity trail closes. Agy reports tool failures through
                             // tool_info.error; keep the transcript's tool trail accurate.
-                            if (testCapture != null) {
-                                String error = step.path("tool_info").path("error").path("message").asText(null);
-                                testCapture.complete(step.path("step_index").asText(), null,
-                                        "ERROR".equals(state) ? 1 : null, error != null);
+                            JsonNode info = step.path("tool_info");
+                            String output = info.path("output").asText("");
+                            if (output.isEmpty()) {
+                                output = info.path("result").asText("");
                             }
-                            return null;
+                            boolean errored = "ERROR".equals(state)
+                                    || !info.path("error").asText("").isBlank();
+                            return new ToolComplete(toolName, output, errored ? 1 : 0, errored);
+                        }
+                        // agy's compaction step: CORTEX_STEP_TYPE_CHECKPOINT carries the session
+                        // summary, in the stream's lower-cased step-type naming (as user_input).
+                        case "checkpoint", "compaction" -> {
+                            return "DONE".equals(state) ? new ContextCompacted() : null;
                         }
                         default -> {
                             // user_input and other internal steps carry no renderable content
@@ -606,6 +589,14 @@ public class PassthroughStreamParser {
                     long outputTokens = Math.max(0, usage.path("output_tokens").asLong(0));
                     long cacheReadTokens = Math.max(0, usage.path("cache_read_tokens").asLong(0));
                     long durationMs = Math.round(result.path("duration_seconds").asDouble(0) * 1000.0);
+                    String status = result.path("status").asText("");
+                    String error = result.path("error").asText("");
+                    if (!error.isBlank() || (!status.isBlank() && !"SUCCESS".equalsIgnoreCase(status))) {
+                        // A failed turn (e.g. the Code Assist quota envelope) settles with
+                        // status/error; usage counters ride along but stay secondary.
+                        return new TurnError(status.isBlank() ? "FAILED" : status, error,
+                                result.path("response").asText(""));
+                    }
                     return new TurnComplete(durationMs, 0.0,
                             result.path("num_turns").asInt(0),
                             inputTokens, outputTokens, cacheReadTokens, 0);
@@ -787,7 +778,6 @@ public class PassthroughStreamParser {
                             String command = item.has("command") ? item.get("command").asText() : "";
                             String aggregated = item.has("aggregated_output") ? item.get("aggregated_output").asText() : "";
                             codexAggregatedOutputs.put(itemId, aggregated);
-                            if (testCapture != null) testCapture.start(itemId, "exec", command);
                             return new ToolUse("exec", command);
                         } else if ("agent_message".equals(itemType) && !itemId.isEmpty()) {
                             codexAgentMessages.put(itemId, extractCodexText(item, ""));
@@ -830,7 +820,6 @@ public class PassthroughStreamParser {
                             codexAggregatedOutputs.remove(itemId);
                             // Emit delta output
                             String delta = aggregated.substring(Math.min(previous.length(), aggregated.length()));
-                            if (testCapture != null) testCapture.complete(itemId, aggregated, exitCode, false);
                             return new ToolComplete("exec", delta, exitCode);
                         }
                     }
@@ -1221,7 +1210,6 @@ public class PassthroughStreamParser {
                     String args = node.has("args") ? node.get("args").toString() : "";
                     String callId = node.has("toolCallId") ? node.get("toolCallId").asText() : "";
                     piToolOutputs.put(callId, "");
-                    if (testCapture != null) testCapture.start(callId, toolName, args);
                     return new ToolUse(toolName, args);
                 }
                 case "tool_execution_update" -> {
@@ -1272,7 +1260,6 @@ public class PassthroughStreamParser {
                     piToolOutputs.remove(callId);
                     String delta = fullOutput.substring(Math.min(previous.length(), fullOutput.length()));
 
-                    if (testCapture != null) testCapture.complete(callId, fullOutput, isError ? 1 : exitCode, false);
                     return new ToolComplete(toolName, delta, exitCode, isError || exitCode != 0);
                 }
                 default -> {

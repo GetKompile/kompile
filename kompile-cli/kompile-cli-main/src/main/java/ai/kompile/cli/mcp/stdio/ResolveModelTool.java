@@ -31,7 +31,10 @@ public class ResolveModelTool implements CliTool {
     private final Supplier<ChatConfig> configuration;
 
     public ResolveModelTool(ObjectMapper mapper, Path workDir) {
-        this(mapper, workDir, () -> ChatConfig.loadOrFromEnv(workDir));
+        this(mapper, workDir, () -> {
+            ChatConfig session = ChatConfig.loadParentSession();
+            return session != null ? session : ChatConfig.loadOrFromEnv(workDir);
+        });
     }
 
     public ResolveModelTool(ObjectMapper mapper, Path workDir, Supplier<ChatConfig> configuration) {
@@ -47,7 +50,7 @@ public class ResolveModelTool implements CliTool {
         return "Search Kompile providers, auth routes and models before dispatch. "
                 + "action=providers lists registered providers (registration is not proof of valid credentials); "
                 + "families shows model-family routing; models requires provider and accepts query. "
-                + "For anthropic, authentication_method=oauth/native uses Claude Code login; api-key selects the separate HTTP API. "
+                + "authentication_method: " + ChatConfig.ANTHROPIC_AUTH_ROUTES + ". "
                 + "Copy taskArguments from a model result. MCP task also needs agent=kompile; direct chat uses role/agent_type. "
                 + "Vendor Agent tools are not Kompile dispatch. No model invocation, login, or account fallback occurs here.";
     }
@@ -64,7 +67,7 @@ public class ResolveModelTool implements CliTool {
                 .add("providers").add("families").add("models");
         props.putObject("provider").put("type", "string").put("description", "Required for models; registered provider id.");
         props.putObject("authentication_method").put("type", "string").put("description",
-                "Auth route: oauth/native uses Claude Code login for anthropic; api-key uses its HTTP API. Same-provider omission inherits the selected route.")
+                "Auth route: " + ChatConfig.ANTHROPIC_AUTH_ROUTES + ". Same-provider omission inherits the selected route.")
                 .putArray("enum").add("oauth").add("native").add("api-key");
         props.putObject("query").put("type", "string").put("description", "Case-insensitive model-id substring.");
         schema.putArray("required").add("action");
@@ -115,9 +118,10 @@ public class ResolveModelTool implements CliTool {
             ChatConfig route = route(current, provider.id(), "");
             row.put("authentication_method", auth(route));
             row.put("transport", route.isClaudeCliNative() ? "claude-code" : "provider");
+            row.put("login", route.describeLogin());
             if (ChatConfig.isClaudeCliNativeProvider(provider.id())) {
                 row.putArray("authentication_methods").add("oauth").add("native").add("api-key");
-                row.put("guidance", "oauth/native: Claude Code login; api-key: separate Anthropic API. These are not interchangeable credentials.");
+                row.put("guidance", ChatConfig.ANTHROPIC_AUTH_ROUTES + ". These are not interchangeable credentials.");
             }
         }
         ObjectNode result = mapper.createObjectNode();
@@ -157,6 +161,7 @@ public class ResolveModelTool implements CliTool {
         result.put("provider", providerId);
         result.put("authentication_method", auth(route));
         result.put("transport", route.isClaudeCliNative() ? "claude-code" : "provider");
+        result.put("login", route.describeLogin());
         result.set("models", models);
         result.put("guidance", "Copy taskArguments into task; MCP also needs agent=kompile. Native chat uses role/agent_type. Do not replace Kompile dispatch with the vendor Agent tool.");
         return ToolResult.success(id(), result.toString(), Map.of("matched", models.size(), "catalogSize", discovery.models().size()));

@@ -109,6 +109,7 @@ public final class DirectSubagentSupervision {
     private int corrections;
     private String rejectedCall;
     private boolean completionAccepted;
+    private String unreviewedReason;
 
     public DirectSubagentSupervision(Contract contract, ToolRegistry tools, ObjectMapper mapper) {
         this.contract = contract;
@@ -270,12 +271,17 @@ public final class DirectSubagentSupervision {
                 feedback = null;
             }
         }
+        unreviewedReason = null;
         if (feedback == null && contract.reviewRequired()) {
+            // A configured reviewer that cannot give a verdict (down, timed out, failed)
+            // says nothing against the answer, and another child answer cannot repair it:
+            // keep the finished work, flagged as unreviewed, without spending the
+            // correction budget. Verdicts still bind; a policy that never loaded fails closed.
             try {
-                if (contract.evaluator() == null || !contract.evaluator().isAvailable()) {
-                    // Infrastructure failure cannot be repaired by another child
-                    // answer. Fail closed without spending its correction budget.
+                if (contract.evaluator() == null) {
                     throw new SupervisionFailure("Required child completion reviewer is unavailable");
+                } else if (!contract.evaluator().isAvailable()) {
+                    unreviewedReason = "required child completion reviewer is unavailable";
                 } else {
                     var context = EnforcerConversationContext.of(List.of(
                             new EnforcerConversationContext.Message("user", prompt
@@ -285,7 +291,7 @@ public final class DirectSubagentSupervision {
                     EnforcerDecision review = contract.evaluator().evaluate(
                             prompt, text, contract.policy(), corrections + 1, context);
                     if (review == null || failOpen(review.getReasoning())) {
-                        throw new SupervisionFailure("Required child completion review returned no valid verdict");
+                        unreviewedReason = "required child completion review returned no valid verdict";
                     } else if (review.isStop()) {
                         throw new SupervisionFailure("Child completion rejected: " + review.getReasoning());
                     } else if (!review.isCompliant()) {
@@ -294,8 +300,12 @@ public final class DirectSubagentSupervision {
                 }
             } catch (SupervisionFailure failure) {
                 throw failure;
+            } catch (InterruptedException cancelled) {
+                // Cancellation, not a reviewer failure: the child is being stopped.
+                Thread.currentThread().interrupt();
+                throw new SupervisionFailure("Subagent aborted during completion review");
             } catch (Exception failure) {
-                throw new SupervisionFailure("Required child completion review failed: " + failure.getMessage());
+                unreviewedReason = "required child completion review failed: " + failure.getMessage();
             }
         }
         if (feedback != null && ++corrections > contract.maxCorrections()) {
@@ -303,6 +313,15 @@ public final class DirectSubagentSupervision {
         }
         completionAccepted = feedback == null;
         return feedback;
+    }
+
+    /**
+     * Why the last accepted completion was accepted without a review verdict (the
+     * required reviewer was unavailable, failed or timed out), or null when it was
+     * reviewed or no review is required.
+     */
+    public String unreviewedReason() {
+        return completionAccepted ? unreviewedReason : null;
     }
 
     // Existing evaluator parsers explicitly label their fallback verdicts. Do not reinterpret JSON here.

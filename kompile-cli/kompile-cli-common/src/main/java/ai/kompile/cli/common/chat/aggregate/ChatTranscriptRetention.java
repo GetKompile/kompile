@@ -164,7 +164,7 @@ public class ChatTranscriptRetention {
     private static List<Path> artifacts(Path root, String id) throws IOException {
         List<Path> paths = new ArrayList<>();
         for (String suffix : List.of(".context.json", ".context", ".native-session.json", ".attachments",
-                ".metrics.json", ".title", ".todos.json", ".activity", "")) {
+                ".metrics.json", ".token-usage.jsonl", ".title", ".todos.json", ".activity", "")) {
             Path path = root.resolve(id + suffix);
             safe(path);
             if (Files.exists(path, NOFOLLOW_LINKS)) paths.add(path);
@@ -189,7 +189,7 @@ public class ChatTranscriptRetention {
                 || name.equals(Path.of("tool-calls", id + ".jsonl").toString())
                 || name.equals(Path.of("tool-calls", "details", id).toString())) return true;
         for (String suffix : List.of(".txt", ".context.json", ".context", ".native-session.json", ".attachments",
-                ".metrics.json", ".title", ".todos.json", ".activity"))
+                ".metrics.json", ".token-usage.jsonl", ".title", ".todos.json", ".activity"))
             if (name.equals(id + suffix)) return true;
         return false;
     }

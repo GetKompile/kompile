@@ -19,6 +19,8 @@ export interface ChatSetupCatalog {
   frameworks: Choice[]; vendors: Choice[]; credentials: Profile[]; models: Choice[];
   thinkingOptions: {value: string; label: string}[]; workflows: Profile[]; judgeProfiles: Profile[];
   fastModeSupported: boolean; ultracodeSupported: boolean; errors?: string[]; status?: string; session?: boolean;
+  /** Server-resolved identity for a saved-account-only fallback; never contains secrets. */
+  fallbackRoute?: { provider: string | null; authenticationMethod: string | null }; 
 }
 
 /** Fields a change invalidates: the CLI rediscovers them for the new choice instead of keeping a stale value. */
@@ -82,13 +84,13 @@ export function mergeRouteCatalog(catalog: ChatSetupCatalog, requested: ChatSetu
         <label>Authentication<select name="auth" [(ngModel)]="selection.authMethod" (ngModelChange)="fieldChange.emit('authMethod')">
           <option *ngFor="let a of authMethods; trackBy: byId" [value]="a.id">{{a.label}}</option>
         </select></label>
-        <label>Authentication scope<select name="authScope" [(ngModel)]="selection.authenticationScope"><option value="session">Session</option><option value="global">Global</option></select></label>
+        <label *ngIf="!existingAccountsOnly">Authentication scope<select name="authScope" [(ngModel)]="selection.authenticationScope"><option value="session">Session</option><option value="global">Global</option></select></label>
         <label>Existing account<select name="credential" [(ngModel)]="selection.credentialName" (ngModelChange)="fieldChange.emit('credentialName')">
           <option value="">Default account</option><option *ngFor="let c of catalog?.credentials; trackBy: byName" [value]="c.name">{{c.label}}</option>
         </select></label>
-        <label *ngIf="keyAuth">API key (optional, session input)<input name="apiKey" type="password" autocomplete="new-password" [(ngModel)]="selection.apiKey"></label>
+        <label *ngIf="keyAuth && !existingAccountsOnly">API key (optional, session input)<input name="apiKey" type="password" autocomplete="new-password" [(ngModel)]="selection.apiKey"></label>
         <p *ngIf="authChoice?.signIn">Select an existing login, or use the complete wizard to sign in. Secret keys are never returned by discovery.</p>
-        <label *ngIf="vendorChoice?.endpointRequired">Endpoint URL (this vendor has no endpoint of its own)<input name="baseUrl" type="url" [(ngModel)]="selection.baseUrl" (change)="refresh.emit()" placeholder="OpenAI-compatible HTTP(S) endpoint"></label>
+        <label *ngIf="vendorChoice?.endpointRequired && !existingAccountsOnly">Endpoint URL (this vendor has no endpoint of its own)<input name="baseUrl" type="url" [(ngModel)]="selection.baseUrl" (change)="refresh.emit()" placeholder="OpenAI-compatible HTTP(S) endpoint"></label>
       </ng-template>
     </fieldset>
     <fieldset [disabled]="disabled || !catalog" data-testid="route-model-fields">
@@ -123,6 +125,8 @@ export class ChatRouteFieldsComponent {
   @Input() selection: ChatSetupSelection = {};
   @Input() disabled = false;
   @Input() nativeMode = false;
+  /** Fallback editors store credential references, not new keys, endpoints or global auth scope. */
+  @Input() existingAccountsOnly = false;
   /** Fast mode and ultracode; a dialog with its own controls for them leaves these out. */
   @Input() toggles = true;
   /** Legend number of the first fieldset; 0 leaves the legends unnumbered. */

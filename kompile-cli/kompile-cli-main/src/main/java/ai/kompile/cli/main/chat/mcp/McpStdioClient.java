@@ -176,9 +176,21 @@ final class McpStdioClient implements AutoCloseable {
     }
 
     List<McpBundleToolLoader.RemoteTool> listTools() throws IOException {
+        return listTools(false);
+    }
+
+    /** Managed process packages must match their declared schemas, not a normalized placeholder. */
+    List<McpBundleToolLoader.RemoteTool> listToolsStrict() throws IOException {
+        return listTools(true);
+    }
+
+    private List<McpBundleToolLoader.RemoteTool> listTools(boolean strictSchema) throws IOException {
         List<McpBundleToolLoader.RemoteTool> tools = new ArrayList<>();
         // Keep tools/list for legacy servers that omitted capabilities.tools.
         for (JsonNode tool : listCatalog("tools/list", "tools", "name")) {
+            if (strictSchema && !tool.path("inputSchema").isObject()) {
+                throw new IOException("MCP tool must advertise an object inputSchema: " + tool.path("name").asText());
+            }
             tools.add(new McpBundleToolLoader.RemoteTool(
                     tool.path("name").asText(), tool.path("description").asText(""),
                     tool.path("inputSchema").isObject()

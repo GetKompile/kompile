@@ -28,6 +28,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
 
 /**
@@ -50,14 +51,26 @@ import java.util.regex.Pattern;
  * <p>Configuration is project-global and persists in
  * {@code .kompile/chat-continue.json}: the enable switch, the reply text, and
  * an explicit keyword list. Until customized, the built-in default keywords and
- * reply apply. A consecutive-reply budget stops runaway yes-loops; any
- * human-submitted message re-arms it.</p>
+ * reply apply. Two governors stop runaway yes-loops: a consecutive-reply budget
+ * and a minimum spacing between auto-replies ({@link #DEFAULT_THROTTLE_MS},
+ * tunable via {@code -Dkompile.chat.autocontinue.throttle.ms}); any
+ * human-submitted message re-arms both.</p>
  */
 public final class ContinueManager {
 
     static final String PROJECT_FILE = "chat-continue.json";
     static final String DEFAULT_REPLY = "Yes, proceed.";
     static final int MAX_CONSECUTIVE_AUTO_REPLIES = 5;
+    /**
+     * Minimum spacing between two consecutive auto-replies. The budget alone cannot
+     * stop a fast loop: turns that end in a trigger phrase (or a response that names
+     * the reply text twice) can complete within milliseconds of each other, and five
+     * replies at that speed is still a burst. A human's replies have no such floor —
+     * {@link #noteUserActivity} re-arms this along with the budget.
+     */
+    static final long DEFAULT_THROTTLE_MS = 10_000L;
+    /** Throttle knob; mirrors the detectors' {@code -D} naming ({@code 0} disables). */
+    static final String THROTTLE_PROPERTY = "kompile.chat.autocontinue.throttle.ms";
     private static final int SCHEMA_VERSION = 1;
     private static final int MAX_KEYWORDS = 64;
     private static final int MAX_KEYWORD_CHARS = 200;
@@ -149,6 +162,30 @@ public final class ContinueManager {
     private final Object stateLock = new Object();
     private int consecutiveAutoReplies;
     private boolean budgetNoticeShown;
+    /** NanoTime of the last fired auto-reply; 0 = none since the last human activity. */
+    private long lastAutoReplyAtNanos;
+    private boolean throttleNoticeShown;
+    /** Overridable so tests can advance time instead of sleeping. */
+    private LongSupplier clock = System::nanoTime;
+
+    /** Test hook (package-private): swap the time source. */
+    void setClock(LongSupplier clock) {
+        this.clock = Objects.requireNonNull(clock, "clock");
+    }
+
+    /** Throttle window in milliseconds; {@code 0} disables the spacing floor. */
+    private static long throttleMillis() {
+        String raw = System.getProperty(THROTTLE_PROPERTY);
+        if (raw == null || raw.isBlank()) {
+            return DEFAULT_THROTTLE_MS;
+        }
+        try {
+            long parsed = Long.parseLong(raw.strip());
+            return Math.max(0L, parsed);
+        } catch (NumberFormatException unreadableKnob) {
+            return DEFAULT_THROTTLE_MS;
+        }
+    }
 
     /** File-backed manager rooted at the chat session's working directory. */
     public ContinueManager(ObjectMapper objectMapper, Path workingDirectory) {
@@ -183,9 +220,12 @@ public final class ContinueManager {
 
     /**
      * Scan a finished assistant response. Fires only when enabled, the session
-     * is interactive, plan mode is off, a keyword matches, and the consecutive
-     * auto-reply budget has room. The budget-exhaustion warning is returned
-     * exactly once per arm.
+     * is interactive, plan mode is off, a keyword matches, the consecutive
+     * auto-reply budget has room, and the previous auto-reply is older than the
+     * throttle window ({@code -Dkompile.chat.autocontinue.throttle.ms}, default
+     * 10s, 0 disables). The budget-exhaustion warning and the throttle
+     * suppression notice are each returned exactly once per arm; a manual
+     * message re-arms both.
      */
     public Decision decide(String response, boolean interactive, boolean planningMode) {
         synchronized (stateLock) {
@@ -221,12 +261,33 @@ public final class ContinueManager {
                 }
                 return Decision.NONE;
             }
-            String reply = snapshot.reply() == null || snapshot.reply().isBlank()
-                    ? DEFAULT_REPLY : snapshot.reply();
             List<ContinueDetector.Kind> kinds = hits.stream()
                     .map(ContinueDetector.Hit::kind).toList();
             String evidence = hits.isEmpty() ? null
                     : hits.get(0).evidence();
+            // Throttle gate: back-to-back turns that each end in a trigger (or one
+            // turn double-firing) complete within milliseconds of each other; the
+            // budget alone still allows five replies in one burst. Suppress repeats
+            // inside the spacing window; the first suppression explains itself once.
+            long throttleWindow = throttleMillis();
+            long now = clock.getAsLong();
+            if (lastAutoReplyAtNanos != 0L && throttleWindow > 0L) {
+                long elapsedMillis = (now - lastAutoReplyAtNanos) / 1_000_000L;
+                if (elapsedMillis < throttleWindow) {
+                    if (!throttleNoticeShown) {
+                        throttleNoticeShown = true;
+                        return new Decision(false, null,
+                                "⏳ /continue throttled — auto-replies are limited to one per "
+                                        + (throttleWindow / 1000) + "s and the last one was "
+                                        + (elapsedMillis / 1000) + "s ago; reply manually to send now.",
+                                kinds, evidence);
+                    }
+                    return Decision.NONE;
+                }
+            }
+            lastAutoReplyAtNanos = now;
+            String reply = snapshot.reply() == null || snapshot.reply().isBlank()
+                    ? DEFAULT_REPLY : snapshot.reply();
             return new Decision(true, reply, null, kinds, evidence);
         }
     }
@@ -253,11 +314,13 @@ public final class ContinueManager {
         }
     }
 
-    /** Any human-submitted message re-arms the auto-reply budget. */
+    /** Any human-submitted message re-arms the auto-reply budget and throttle. */
     public void noteUserActivity() {
         synchronized (stateLock) {
             consecutiveAutoReplies = 0;
             budgetNoticeShown = false;
+            lastAutoReplyAtNanos = 0L;
+            throttleNoticeShown = false;
         }
     }
 
@@ -499,6 +562,8 @@ public final class ContinueManager {
                 .append(ContinueDetector.enabled()
                         ? "on (promised action, reported gap)" : "off")
                 .append(" — -D").append(ContinueDetector.ENABLE_PROPERTY).append("=false\n");
+        out.append("Throttle: one auto-reply per ").append(throttleMillis() / 1000)
+                .append("s — -D").append(THROTTLE_PROPERTY).append("=<ms> (0 disables)\n");
         out.append("Keywords (").append(keywords.size())
                 .append(defaults ? ", defaults" : ", customized").append("):");
         for (int i = 0; i < keywords.size(); i++) {

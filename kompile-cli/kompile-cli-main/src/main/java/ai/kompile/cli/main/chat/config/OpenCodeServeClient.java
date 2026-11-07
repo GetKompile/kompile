@@ -10,6 +10,11 @@ import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
 import ai.kompile.cli.main.chat.PassthroughStreamParser;
 import ai.kompile.cli.main.chat.ChatSessionContext;
+import ai.kompile.cli.main.chat.agent.SubagentContainment;
+import ai.kompile.cli.main.chat.agent.SubagentDelegationGuard;
+import ai.kompile.cli.main.chat.mcp.McpDiagnostics;
+import ai.kompile.cli.main.chat.mcp.McpToolInjection;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -27,10 +32,14 @@ import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.List;
 import java.util.Set;
@@ -67,6 +76,22 @@ final class OpenCodeServeClient implements AutoCloseable {
          * loop (its {@code step-start} parts); calls add up.
          */
         default void onSteps(int steps) { }
+
+        /**
+         * Reasoning/thinking deltas stream to their own lane, mirroring Claude's
+         * ActivityListener: rendered by the live thinking renderer when
+         * installed, dropped by capture lanes.
+         */
+        default void onThinking(String reasoningDelta) { }
+
+        /**
+         * OpenCode parked this turn waiting for a permission request it can
+         * only get from an interactive client. Kompile's client auto-rejects
+         * the request (provider-owned tools run with grants instead), so this
+         * is informational feed-through: the ask reached the turn.
+         */
+        default void onPermissionRequest(String requestId, String permission,
+                                         List<String> patterns) { }
     }
 
     /**
@@ -92,6 +117,8 @@ final class OpenCodeServeClient implements AutoCloseable {
     private static final Duration TURN_TIMEOUT = Duration.ofMinutes(30);
     /** Bounds the abort request and the wait for the aborted turn to end. */
     private static final Duration ABORT_TIMEOUT = Duration.ofSeconds(5);
+    /** Per-launch opencode config payload; see {@link McpToolInjection}. */
+    private static final String OPENCODE_CONFIG_CONTENT_ENV = "OPENCODE_CONFIG_CONTENT";
 
     private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final ObjectMapper objectMapper;
@@ -99,6 +126,8 @@ final class OpenCodeServeClient implements AutoCloseable {
     private final HttpClient httpClient;
     private final ProviderConnectivityPolicy connectivityPolicy;
     private final StringBuilder serverOutput = new StringBuilder();
+    /** Memory files and skills this session used, re-delivered after OpenCode compacts it. */
+    private final NativeCompactionReload compactionReload;
 
     private Process serverProcess;
     private volatile CompletableFuture<HttpResponse<String>> activeTurnRequest;
@@ -107,10 +136,17 @@ final class OpenCodeServeClient implements AutoCloseable {
     private String baseUrl;
     private String sessionId;
     private boolean closed;
+    /** Kompile MCP launch config this client's server was booted with; removed on close. */
+    private Path injectedTools;
+    /** The chat's process panel; its session parents the Kompile MCP server the server starts. */
+    private volatile BackgroundProcessManager processPanel;
+    /** KOMPILE_SUBAGENT_DEPTH of the agent this client serves; 0 for a top-level chat. */
+    private volatile int subagentDepth;
 
     OpenCodeServeClient(ObjectMapper objectMapper, Path workingDirectory) {
         this.objectMapper = objectMapper;
         this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
+        this.compactionReload = new NativeCompactionReload(this.workingDirectory, objectMapper);
         this.connectivityPolicy = ProviderConnectivityPolicy.forProvider("opencode");
         this.httpClient = HttpClient.newBuilder()
                 // Java's HttpClient default negotiates an h2c upgrade, sending
@@ -128,10 +164,29 @@ final class OpenCodeServeClient implements AutoCloseable {
                         HttpClient httpClient, String baseUrl, String sessionId) {
         this.objectMapper = objectMapper;
         this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
+        this.compactionReload = new NativeCompactionReload(this.workingDirectory, objectMapper);
         this.connectivityPolicy = ProviderConnectivityPolicy.forProvider("opencode");
         this.httpClient = httpClient;
         this.baseUrl = baseUrl;
         this.sessionId = sessionId;
+    }
+
+    /**
+     * The chat's process panel. A server booted afterwards hands the panel's session to
+     * the Kompile MCP server it starts, so the processes that server launches for OpenCode
+     * are this chat's: their rows belong to it and a monitored one wakes it when it ends.
+     */
+    /**
+     * Serve a Kompile subagent: a server booted afterwards carries the depth into its
+     * environment (its guard plugin and Kompile MCP server refuse delegation there) and
+     * denies OpenCode's {@code task} tool ({@link SubagentContainment}).
+     */
+    void setSubagentDepth(int depth) {
+        this.subagentDepth = Math.max(0, depth);
+    }
+
+    void setProcessPanel(BackgroundProcessManager panel) {
+        this.processPanel = panel;
     }
 
     /**
@@ -162,7 +217,7 @@ final class OpenCodeServeClient implements AutoCloseable {
      * @param attachments this turn's images and text files; empty sends the text part alone
      */
     synchronized String send(String model, String variant, String systemPrompt,
-                              String userMessage, List<DirectLlmClient.AttachmentInput> attachments,
+                              String userMessage, List<AttachmentInput> attachments,
                               Consumer<String> output,
                               ActivityListener activityListener) throws Exception {
         if (closed) {
@@ -188,7 +243,11 @@ final class OpenCodeServeClient implements AutoCloseable {
         // the live progress that the child's stdout used to provide — streaming
         // text deltas, tool start/complete activity and token usage — and doubles
         // as the turn's liveness signal for the idle watchdog.
-        String prompt = composePrompt(systemPrompt, userMessage);
+        // After OpenCode compacted the session, the memory files and skills it used
+        // ride ahead of this message; the summary keeps at most a mention of them.
+        String message = compactionReload.withPendingReload(userMessage);
+        compactionReload.recordPrompt(userMessage);
+        String prompt = composePrompt(systemPrompt, message);
         EventBusListener listener = new EventBusListener(sessionId, output, activityListener);
         listener.start();
 
@@ -202,7 +261,7 @@ final class OpenCodeServeClient implements AutoCloseable {
         parts.addObject()
                 .put("type", "text")
                 .put("text", prompt);
-        for (DirectLlmClient.AttachmentInput attachment : attachments) {
+        for (AttachmentInput attachment : attachments) {
             if (attachment.isImage()) {
                 parts.addObject()
                         .put("type", "file")
@@ -236,6 +295,12 @@ final class OpenCodeServeClient implements AutoCloseable {
                     abortTurn(activeTurnRequest);
                     throw new CancellationException("OpenCode turn cancelled");
                 }
+                String stall = listener.permissionStall();
+                if (stall != null) {
+                    abortTurn(activeTurnRequest);
+                    throw new IllegalStateException(stall
+                            + ": permission was rejected but the provider asked again");
+                }
                 long now = System.nanoTime();
                 if (!listener.isDegraded() && now - listener.lastActivityNanos()
                         >= connectivityPolicy.subprocessIdleTimeout().toNanos()) {
@@ -258,10 +323,28 @@ final class OpenCodeServeClient implements AutoCloseable {
             }
             // The SSE subscription can miss the final update (or be unavailable).
             // Reconcile the REST snapshot through the same per-message counters.
-            listener.handleTokens(objectMapper.readTree(response.body()).path("info"));
+            JsonNode responseRoot = objectMapper.readTree(response.body());
+            JsonNode info = responseRoot.path("info");
+            listener.handleTokens(info);
             String text = extractText(objectMapper, response.body());
             if (text.isBlank()) {
-                throw new IllegalStateException("OpenCode returned no assistant text");
+                // A textless final message is not necessarily a broken turn: a
+                // provider failure mid-loop arrives as a 2xx assistant message
+                // whose info.error carries the failure, and a turn that reaches
+                // its step limit ends in finish="tool-calls" whose final message
+                // holds tool bookkeeping only. Surface the real failure first,
+                // then reconcile the answer the turn's earlier assistant steps
+                // carried, and only then end the turn with the message shape.
+                String failure = describeError(info);
+                if (failure != null) {
+                    throw new IllegalStateException("OpenCode turn failed: " + failure);
+                }
+                String reconciled = reconcileTurnText(info);
+                if (!reconciled.isBlank()) {
+                    return reconciled;
+                }
+                throw new IllegalStateException(
+                        "OpenCode returned no assistant text" + blankTurnDiagnostics(responseRoot, info));
             }
             return text;
         } catch (CompletionException e) {
@@ -351,11 +434,18 @@ final class OpenCodeServeClient implements AutoCloseable {
         private final Set<String> completedCalls = new HashSet<>();
         private final Set<String> startedSteps = new HashSet<>();
         private final Map<String, long[]> reportedUsage = new HashMap<>();
+        /**
+         * Delta events carry only {@code partID} and {@code field}, never the
+         * part type, and both reasoning and answer text stream as
+         * {@code field=text}. Part-type registration comes from
+         * {@code message.part.updated}, which always carries the full part.
+         */
+        private final Map<String, String> partTypes = new HashMap<>();
+        private final Set<String> rejectedPermissions = new HashSet<>();
+        private volatile String permissionStall;
         private String latestUsageMessage;
         private long latestUsageCreated;
         private final AtomicBoolean degraded = new AtomicBoolean(false);
-        private final ai.kompile.cli.main.chat.tools.ProviderTestCapture testCapture =
-                new ai.kompile.cli.main.chat.tools.ProviderTestCapture(workingDirectory);
         private volatile InputStream eventStream;
         private volatile boolean stopped;
 
@@ -373,7 +463,6 @@ final class OpenCodeServeClient implements AutoCloseable {
 
         synchronized void stop() {
             stopped = true;
-            testCapture.close();
             try {
                 InputStream stream = eventStream;
                 if (stream != null) stream.close();
@@ -403,9 +492,16 @@ final class OpenCodeServeClient implements AutoCloseable {
                     String line;
                     // stop() may have run while the event HTTP request was connecting.
                     while (!stopped && (line = reader.readLine()) != null) {
-                        lastActivity.set(System.nanoTime());
+                        // Socket liveness is not turn progress: heartbeat frames
+                        // and SSE separator blanks would otherwise keep the idle
+                        // watchdog blind while the turn sits parked on a stall
+                        // the provider never reports.
                         if (line.startsWith("data:")) {
-                            handleEvent(line.substring(5).trim());
+                            String payload = line.substring(5);
+                            if (!payload.contains("server.heartbeat")) {
+                                lastActivity.set(System.nanoTime());
+                                handleEvent(payload.trim());
+                            }
                         }
                     }
                 }
@@ -433,14 +529,24 @@ final class OpenCodeServeClient implements AutoCloseable {
             }
             switch (node.path("type").asText("")) {
                 case "message.part.delta" -> {
-                    if (!"text".equals(properties.path("field").asText("text"))) return;
                     String delta = properties.path("delta").asText("");
-                    if (!delta.isEmpty() && output != null) {
+                    if (delta.isEmpty()) return;
+                    // Reasoning deltas use the same field="text" wire shape as
+                    // answer text; only the part's type distinguishes them.
+                    if ("reasoning".equals(partTypes.get(properties.path("partID").asText("")))) {
+                        if (activity != null) activity.onThinking(delta);
+                        return;
+                    }
+                    if (!"text".equals(properties.path("field").asText("text"))) return;
+                    if (output != null) {
                         output.accept(delta);
                     }
                 }
                 case "message.part.updated" -> handlePartUpdated(properties.path("part"));
                 case "message.updated" -> handleTokens(properties.path("info"));
+                // OpenCode compacts on overflow mid-turn too; the next prompt re-delivers.
+                case "session.compacted" -> compactionReload.compacted();
+                case "permission.asked" -> handlePermissionAsk(properties);
                 default -> {
                     // session.updated / session.status / session.idle and friends
                     // carry no turn payload; their arrival already refreshed the
@@ -451,6 +557,10 @@ final class OpenCodeServeClient implements AutoCloseable {
 
         private void handlePartUpdated(JsonNode part) {
             String type = part.path("type").asText("");
+            // Every full-part update registers its type so late-differing
+            // delta frames can route by part identity, not guesswork.
+            String partId = part.path("id").asText("");
+            if (!partId.isEmpty()) partTypes.put(partId, type);
             if ("step-start".equals(type)) {
                 // One part per model request of the turn; a part may be updated again.
                 String stepId = part.path("id").asText("");
@@ -464,7 +574,6 @@ final class OpenCodeServeClient implements AutoCloseable {
             JsonNode state = part.path("state");
             String status = state.path("status").asText("");
             if ("pending".equals(status) || "running".equals(status)) {
-                testCapture.start(callId, tool, state.path("input").toString());
                 if (startedCalls.add(callId)) {
                     JsonNode input = state.path("input");
                     String inputText;
@@ -481,10 +590,63 @@ final class OpenCodeServeClient implements AutoCloseable {
                     String outputText = state.path("output").asText("");
                     int exit = state.path("metadata").path("exit").asInt(0);
                     boolean error = "error".equals(status) || exit != 0;
-                    testCapture.complete(callId, outputText, error ? 1 : exit, false);
+                    if (!error) {
+                        JsonNode input = state.path("input");
+                        compactionReload.recordToolUse(tool,
+                                input.isObject() ? input.toString() : null, outputText);
+                    }
                     if (activity != null) activity.onToolComplete(callId, tool, outputText, exit, error);
                 }
             }
+        }
+
+        /**
+         * OpenCode parks the turn until an interactive client answers a
+         * permission request (opencode's default for unevaluated permission
+         * kinds is {@code ask}). Kompile's client is not interactive: reject,
+         * surface the ask, and abort when the provider re-asks a rejected
+         * request instead of burning the turn.
+         */
+        private void handlePermissionAsk(JsonNode properties) {
+            String requestId = properties.path("id").asText("");
+            String permission = properties.path("permission").asText("");
+            List<String> patterns = new ArrayList<>();
+            for (JsonNode pattern : properties.path("patterns")) {
+                if (!pattern.isNull()) patterns.add(pattern.asText(""));
+            }
+            if (activity != null) activity.onPermissionRequest(requestId, permission, patterns);
+            rejectPermissionRequest(requestId);
+            boolean firstTime = rejectedPermissions
+                    .add(permission + " | " + String.join(", ", patterns));
+            if (!firstTime) {
+                permissionStall = "OpenCode turn is stuck on permission request " + permission
+                        + " for [" + String.join(", ", patterns) + "]"
+                        + (requestId.isBlank() ? "" : " (request " + requestId + ")");
+            }
+        }
+
+        private void rejectPermissionRequest(String requestId) {
+            if (requestId.isEmpty()) return;
+            try {
+                HttpRequest request = HttpRequest.newBuilder(
+                                URI.create(baseUrl + "/session/" + sessionId
+                                        + "/permissions/" + requestId))
+                        .header("content-type", "application/json")
+                        .timeout(ABORT_TIMEOUT)
+                        .POST(HttpRequest.BodyPublishers.ofString(
+                                "{\"response\":\"reject\"}", StandardCharsets.UTF_8))
+                        .build();
+                httpClient.sendAsync(request, HttpResponse.BodyHandlers.discarding())
+                        .completeOnTimeout(null, ABORT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                        .join();
+            } catch (RuntimeException ignored) {
+                // Best effort: the stall checks still bound the turn.
+            }
+        }
+
+        /** Stall text once the provider re-asked a rejected permission; null while unremarkable. */
+        String permissionStall() {
+            return permissionStall;
         }
 
         private synchronized void handleTokens(JsonNode info) {
@@ -551,6 +713,7 @@ final class OpenCodeServeClient implements AutoCloseable {
         if (applied.isBoolean() && !applied.asBoolean()) {
             return new NativeSummary(false, null, "OpenCode declined session compaction");
         }
+        compactionReload.compacted();
 
         HttpResponse<String> messages = httpClient.send(
                 HttpRequest.newBuilder(URI.create(baseUrl + "/session/" + sessionId + "/message"))
@@ -598,6 +761,7 @@ final class OpenCodeServeClient implements AutoCloseable {
             }
             }
         }
+        releaseInjectedTools();
     }
 
     static ModelReference parseModelReference(String model) {
@@ -676,6 +840,121 @@ final class OpenCodeServeClient implements AutoCloseable {
         }
     }
 
+    /**
+     * The failure a finished turn carries on its assistant message —
+     * {@code info.error} is opencode's named-error envelope, e.g.
+     * {@code {name:"APIError",data:{message:...}}} for an upstream failure, or
+     * {@code MessageAbortedError} when the turn was stopped. Null when the
+     * message carries no error.
+     */
+    static String describeError(JsonNode info) {
+        JsonNode error = info.path("error");
+        if (error.isMissingNode() || error.isNull()) return null;
+        String name = error.path("name").asText("");
+        JsonNode data = error.path("data");
+        String message = "";
+        for (String field : List.of("message", "description")) {
+            JsonNode value = data.hasNonNull(field) ? data.get(field)
+                    : error.hasNonNull(field) ? error.get(field) : null;
+            if (value != null && value.isTextual() && !value.asText().isBlank()) {
+                message = value.asText().trim();
+                break;
+            }
+        }
+        String messageBounded = message.isBlank() ? "" : trimForError(message);
+        if (name.isBlank() && messageBounded.isEmpty()) return "unknown failure";
+        if (messageBounded.isEmpty()) return name;
+        if (name.isBlank()) return messageBounded;
+        return name + ": " + messageBounded;
+    }
+
+    /**
+     * Shape of the textless final message for the no-text diagnostic: the
+     * finish reason, an overview of the message's parts and the token counters
+     * — enough to tell a tool-only step message from a silent model response.
+     */
+    static String blankTurnDiagnostics(JsonNode root, JsonNode info) {
+        StringBuilder diagnostic = new StringBuilder();
+        String finish = info.path("finish").asText("");
+        diagnostic.append("(finish=").append(finish.isBlank() ? "none" : finish);
+        Map<String, Integer> partTypes = new LinkedHashMap<>();
+        JsonNode parts = root.path("parts");
+        if (parts.isArray()) {
+            for (JsonNode part : parts) {
+                partTypes.merge(part.path("type").asText("unknown"), 1, Integer::sum);
+            }
+        }
+        if (!partTypes.isEmpty()) {
+            diagnostic.append(", parts=");
+            boolean first = true;
+            for (Map.Entry<String, Integer> entry : partTypes.entrySet()) {
+                if (!first) diagnostic.append(", ");
+                first = false;
+                diagnostic.append(entry.getKey()).append('×').append(entry.getValue());
+            }
+        }
+        JsonNode tokens = info.path("tokens");
+        if (tokens.isObject()) {
+            diagnostic.append(", tokens in=").append(tokens.path("input").asLong(0))
+                    .append(" out=").append(tokens.path("output").asLong(0))
+                    .append(" reasoning=").append(tokens.path("reasoning").asLong(0));
+        }
+        return diagnostic.append(')').toString();
+    }
+
+    /**
+     * Recover the answer a textless final message hid. A turn splits its text
+     * across assistant messages — one per model step — and the final message
+     * may only close out the tools. List the session's messages and join the
+     * text parts of this turn's assistant messages, named by the turn's user
+     * message ({@code info.parentID}); messages that carry their own error are
+     * skipped because their text died with it.
+     */
+    private String reconcileTurnText(JsonNode info) throws IOException {
+        String parentMessageId = info.path("parentID").asText("");
+        if (parentMessageId.isBlank()) return "";
+        HttpResponse<String> messages;
+        try {
+            messages = httpClient.send(
+                    HttpRequest.newBuilder(URI.create(baseUrl + "/session/" + sessionId + "/message"))
+                            .timeout(Duration.ofSeconds(30))
+                            .GET()
+                            .build(), HttpResponse.BodyHandlers.ofString());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "";
+        }
+        if (messages.statusCode() / 100 != 2 || messages.body() == null
+                || messages.body().isBlank()) {
+            return "";
+        }
+        return extractAssistantTextByParent(objectMapper, messages.body(), parentMessageId);
+    }
+
+    static String extractAssistantTextByParent(ObjectMapper objectMapper, String messagesBody,
+                                               String parentMessageId) throws IOException {
+        JsonNode root = objectMapper.readTree(messagesBody);
+        if (root == null || root.isMissingNode() || root.isNull() || root.isValueNode()) return "";
+        List<JsonNode> messages = new ArrayList<>();
+        if (root.isArray()) root.forEach(messages::add);
+        // The listing normally arrives chronologically, but no ordering contract
+        // is documented: sort by (time.created, id) defensively.
+        messages.sort(Comparator
+                .comparing((JsonNode message) -> message.path("info").path("time").path("created").asLong(0))
+                .thenComparing(message -> message.path("info").path("id").asText("")));
+        StringBuilder text = new StringBuilder();
+        for (JsonNode message : messages) {
+            JsonNode messageInfo = message.path("info");
+            if (!"assistant".equals(messageInfo.path("role").asText(""))) continue;
+            if (!parentMessageId.equals(messageInfo.path("parentID").asText(""))) continue;
+            JsonNode error = messageInfo.path("error");
+            if (!error.isMissingNode() && !error.isNull()) continue;
+            if (text.length() > 0) text.append('\n');
+            collectText(message, text);
+        }
+        return text.toString().trim();
+    }
+
     private void ensureSession() throws Exception {
         if (baseUrl == null || sessionId == null) {
             ensureServer();
@@ -716,6 +995,21 @@ final class OpenCodeServeClient implements AutoCloseable {
                         binary, "serve", "--hostname", "127.0.0.1",
                         "--port", String.valueOf(port)))
                 .redirectErrorStream(true);
+        // OpenCode starts its MCP servers with its own environment, as Claude Code does.
+        ClaudeCliClient.withParentSession(builder, processPanel);
+        injectKompileTools(builder);
+        applyPermissionGrants(builder.environment());
+        int depth = subagentDepth;
+        if (depth > 0) {
+            builder.environment().put(SubagentDelegationGuard.DEPTH_ENV, Integer.toString(depth));
+            try {
+                // Last: the task deny must follow every permission rule set above.
+                SubagentContainment.applyLaunchEnvironment("opencode", builder.environment(), workingDirectory);
+            } catch (IOException e) {
+                throw new TurnNotStartedException("BLOCKED: could not apply the OpenCode subagent guard, "
+                        + "so the subagent is not launched: " + e.getMessage());
+            }
+        }
         serverProcess = builder.start();
         baseUrl = "http://127.0.0.1:" + port;
         Thread outputReader = readLines(serverProcess.getInputStream(), serverOutput, null);
@@ -747,6 +1041,105 @@ final class OpenCodeServeClient implements AutoCloseable {
     private Thread readLines(java.io.InputStream stream, StringBuilder sink,
                                     Consumer<String> eachLine) {
         return readLines(stream, sink, eachLine, 8000);
+    }
+
+    /**
+     * Directly inject Kompile tools into the server this client boots, exactly as
+     * a Claude Code launch is configured: one per-launch Kompile MCP entry wired
+     * in at startup, carrying this chat's project. The {@code opencode run} CLI
+     * has no config flag, so the per-launch configuration travels in the server's
+     * environment instead of on its command line — same deterministic startup
+     * wiring, no reliance on project or global {@code opencode.json} discovery.
+     */
+    private void injectKompileTools(ProcessBuilder builder) {
+        releaseInjectedTools();
+        try {
+            Path tools = McpToolInjection.injectTools(workingDirectory, "opencode", null, Map.of());
+            if (tools == null) {
+                McpDiagnostics.log("[MCP] Warning: no Kompile CLI launcher resolved; "
+                        + "the OpenCode server boots without Kompile tools");
+                return;
+            }
+            McpToolInjection.applyLaunchEnvironment(builder.environment(), tools);
+            injectedTools = tools;
+            if (compactionReload.enabled()) {
+                // The guard plugin hands this file to OpenCode's summarizer when it compacts.
+                Path reload = compactionReloadFile(tools);
+                compactionReload.mirrorTo(reload);
+                builder.environment().put(NativeCompactionReload.FILE_ENV, reload.toString());
+            }
+        } catch (IOException e) {
+            McpDiagnostics.log("[MCP] Warning: Could not inject Kompile tools into the "
+                    + "OpenCode server: " + e.getMessage());
+        }
+    }
+
+    private void releaseInjectedTools() {
+        Path tools = injectedTools;
+        injectedTools = null;
+        if (tools != null) {
+            McpToolInjection.removeTools(tools);
+            compactionReload.mirrorTo(null);
+            try {
+                Files.deleteIfExists(compactionReloadFile(tools));
+            } catch (IOException e) {
+                McpDiagnostics.log("[MCP] Warning: could not delete the OpenCode compaction reload: "
+                        + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * The launch config's sibling: its name keeps the config's owner pid, so the launch
+     * sweep deletes it with the config when this process dies without closing.
+     */
+    static Path compactionReloadFile(Path launchConfig) {
+        String name = launchConfig.getFileName().toString();
+        String base = name.endsWith(".json") ? name.substring(0, name.length() - 5) : name;
+        return launchConfig.resolveSibling(base + "-compaction-reload.json");
+    }
+
+    /**
+     * Provider-owned tool runs must never stall on a permission ask: opencode's
+     * default for any tool action without a matching rule is {@code ask}, which
+     * parks the turn until an interactive client replies and kompile's client is
+     * not one. Grant like Claude's {@code --dangerously-skip-permissions} lane:
+     * allow everything at launch, ahead of the rules this launch carries (Kompile's
+     * {@code bash: deny} among them). OpenCode's last matching rule wins, so the
+     * wildcard goes first; a launch with a wildcard or a single action of its own
+     * keeps it.
+     */
+    void applyPermissionGrants(Map<String, String> environment) {
+        try {
+            String current = environment.get(OPENCODE_CONFIG_CONTENT_ENV);
+            ObjectNode content = null;
+            if (current != null && !current.isBlank()) {
+                try {
+                    JsonNode parsed = objectMapper.readTree(current);
+                    content = parsed.isObject() ? (ObjectNode) parsed : null;
+                } catch (IOException e) {
+                    content = null;
+                }
+            }
+            if (content == null) {
+                content = objectMapper.createObjectNode();
+            }
+            JsonNode explicit = content.get("permission");
+            if (explicit != null && (!explicit.isObject() || explicit.has("*"))) {
+                return; // The launch's own wildcard choice owns it.
+            }
+            ObjectNode grants = objectMapper.createObjectNode();
+            grants.put("*", "allow");
+            if (explicit != null) {
+                grants.setAll((ObjectNode) explicit);
+            }
+            content.set("permission", grants);
+            environment.put(OPENCODE_CONFIG_CONTENT_ENV,
+                    objectMapper.writeValueAsString(content));
+        } catch (IOException e) {
+            McpDiagnostics.log("[MCP] Warning: Could not grant OpenCode launch permissions: "
+                    + e.getMessage());
+        }
     }
 
     private Thread readLines(java.io.InputStream stream, StringBuilder sink,

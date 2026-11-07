@@ -10,6 +10,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.MissingNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -256,6 +257,28 @@ final class ClaudeCliStreamParser {
         }
         if (node == null || !node.isObject()) return List.of();
         return parseNode(node);
+    }
+
+    /**
+     * Decode one line of Claude Code's own transcript of a subagent (the
+     * {@code subagents/agent-<id>.jsonl} its task log links to) as the messages of
+     * the child started by {@code toolUseId}. Its assistant and user lines are the
+     * frames stream-json carries for that child, less {@code parent_tool_use_id};
+     * every other line, and one that is not JSON, decodes to no events.
+     */
+    List<Event> parseSidechain(String line, String toolUseId) {
+        if (line == null || line.isBlank()) return List.of();
+        JsonNode node;
+        try {
+            node = mapper.readTree(line);
+        } catch (JsonProcessingException e) {
+            return List.of();
+        }
+        if (!(node instanceof ObjectNode frame) || frame.path("isMeta").asBoolean(false)) return List.of();
+        String type = frame.path("type").asText();
+        if (!"assistant".equals(type) && !"user".equals(type)) return List.of();
+        frame.put("parent_tool_use_id", toolUseId);
+        return parseSubagent(frame);
     }
 
     private List<Event> parseNode(JsonNode node) {

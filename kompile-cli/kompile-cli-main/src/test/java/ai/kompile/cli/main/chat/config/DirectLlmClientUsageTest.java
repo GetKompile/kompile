@@ -565,7 +565,7 @@ class DirectLlmClientUsageTest {
 
     private record Usage(long input, long output, long cacheRead, long cacheWrite) { }
 
-    private static final class UsageListener implements DirectLlmClient.ProviderActivityListener {
+    private static final class UsageListener implements ProviderActivityListener {
         final List<Usage> events = new ArrayList<>();
         final List<String> toolInput = new ArrayList<>();
         @Override public void onToolStart(String id, String name, String input) { }

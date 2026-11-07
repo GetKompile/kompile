@@ -16,7 +16,17 @@
 
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
+
 import ai.kompile.cli.main.chat.render.CompactionService;
 
 import java.util.ArrayList;
@@ -58,11 +68,11 @@ final class ConversationReplay {
                 continue;
             }
             if (entry.type == CompactionService.EntryType.TOOL_CALL) {
-                List<DirectLlmClient.ReplayedToolCallInput> calls = new ArrayList<>();
+                List<ReplayedToolCallInput> calls = new ArrayList<>();
                 while (index < entries.size()) {
                     CompactionService.ConversationEntry call = entries.get(index);
                     if (call == null || call.type != CompactionService.EntryType.TOOL_CALL) break;
-                    calls.add(new DirectLlmClient.ReplayedToolCallInput(
+                    calls.add(new ReplayedToolCallInput(
                             call.toolName, call.toolCallId, call.content));
                     if (call.toolCallId != null && !call.toolCallId.isBlank()) {
                         pendingCalls.put(call.toolCallId, call);
@@ -73,11 +83,11 @@ final class ConversationReplay {
                 continue;
             }
             if (entry.type == CompactionService.EntryType.TOOL_RESULT) {
-                List<DirectLlmClient.ToolCallResultInput> results = new ArrayList<>();
+                List<ToolCallResultInput> results = new ArrayList<>();
                 while (index < entries.size()) {
                     CompactionService.ConversationEntry result = entries.get(index);
                     if (result == null || result.type != CompactionService.EntryType.TOOL_RESULT) break;
-                    results.add(new DirectLlmClient.ToolCallResultInput(
+                    results.add(new ToolCallResultInput(
                             result.toolCallId, result.toolName, result.content, false));
                     pendingCalls.remove(result.toolCallId);
                     index++;
@@ -97,9 +107,9 @@ final class ConversationReplay {
             index++;
         }
         if (!pendingCalls.isEmpty()) {
-            List<DirectLlmClient.ToolCallResultInput> cancellations = new ArrayList<>();
+            List<ToolCallResultInput> cancellations = new ArrayList<>();
             for (CompactionService.ConversationEntry pending : pendingCalls.values()) {
-                cancellations.add(new DirectLlmClient.ToolCallResultInput(
+                cancellations.add(new ToolCallResultInput(
                         pending.toolCallId, pending.toolName,
                         "Tool call was cancelled before execution; no result was recorded.", true));
             }

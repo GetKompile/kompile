@@ -15,7 +15,14 @@
  */
 package ai.kompile.cli.main.chat.exec;
 
-import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.AttachmentInput;
+import ai.kompile.cli.main.chat.config.ConnectivityEvent;
+import ai.kompile.cli.main.chat.config.FailureKind;
+import ai.kompile.cli.main.chat.config.ProviderActivityListener;
+import ai.kompile.cli.main.chat.config.ReplayedToolCallInput;
+import ai.kompile.cli.main.chat.config.TokenCountResult;
+import ai.kompile.cli.main.chat.config.ToolCallOutput;
+import ai.kompile.cli.main.chat.config.ToolCallResultInput;
 import ai.kompile.core.llm.StructuredChatLanguageModel;
 
 import java.io.IOException;
@@ -53,12 +60,12 @@ public final class ChatAttachmentLoader {
     private ChatAttachmentLoader() {
     }
 
-    public static List<DirectLlmClient.AttachmentInput> load(List<Path> attachmentPaths)
+    public static List<AttachmentInput> load(List<Path> attachmentPaths)
             throws IOException {
         if (attachmentPaths == null || attachmentPaths.isEmpty()) {
             return List.of();
         }
-        List<DirectLlmClient.AttachmentInput> result = new ArrayList<>();
+        List<AttachmentInput> result = new ArrayList<>();
         long total = 0;
         for (Path raw : attachmentPaths) {
             if (raw == null) {
@@ -101,13 +108,13 @@ public final class ChatAttachmentLoader {
     }
 
     /** Reads one gated file for a turn: base64 for an image, {@link #readTextContent} otherwise. */
-    public static DirectLlmClient.AttachmentInput read(Path path, String mimeType, boolean image)
+    public static AttachmentInput read(Path path, String mimeType, boolean image)
             throws IOException {
         if (image) {
             String base64 = Base64.getEncoder().encodeToString(Files.readAllBytes(path));
-            return new DirectLlmClient.AttachmentInput(path.toString(), mimeType, true, base64, null);
+            return new AttachmentInput(path.toString(), mimeType, true, base64, null);
         }
-        return new DirectLlmClient.AttachmentInput(
+        return new AttachmentInput(
                 path.toString(), mimeType, false, null, readTextContent(path));
     }
 

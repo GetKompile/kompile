@@ -20,6 +20,9 @@ import ai.kompile.cli.insights.TestMilestoneReader;
 import ai.kompile.utils.StringUtils;
 
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -44,10 +47,9 @@ import java.util.Set;
  * from stored fields ({@code source=harness} or an {@code executionId} means automatic capture;
  * anything else counts as agent-invoked), and the basis is disclosed in the report.</p>
  */
-final class TestMilestonesCommand {
+public final class TestMilestonesCommand {
 
     static final int DEFAULT_LIMIT = 20;
-    static final int MAX_LIMIT = 100;
     private static final String STORE_KEY = "_store";
     private static final String PROJECT_STORE = "project";
     private static final String GLOBAL_STORE = "user global";
@@ -61,6 +63,7 @@ final class TestMilestonesCommand {
     private record Options(int limit, String sessionId, boolean allSessions, String source, String module) {
         static Options parse(String arguments) {
             int limit = DEFAULT_LIMIT;
+            boolean countProvided = false;
             String session = null;
             boolean all = false;
             String source = null;
@@ -70,17 +73,19 @@ final class TestMilestonesCommand {
             for (String token : text.split("\\s+")) {
                 if (token.isEmpty()) continue;
                 if (token.matches("[0-9]+")) {
-                    if (limit != DEFAULT_LIMIT) throw new IllegalArgumentException("Duplicate count: " + token);
+                    if (countProvided) throw new IllegalArgumentException("Duplicate count: " + token);
                     int parsed = Integer.parseInt(token);
-                    if (parsed < 1 || parsed > MAX_LIMIT) {
-                        throw new IllegalArgumentException("count must be between 1 and " + MAX_LIMIT);
+                    if (parsed < 1) {
+                        throw new IllegalArgumentException("count must be positive");
                     }
                     limit = parsed;
+                    countProvided = true;
                     continue;
                 }
                 switch (token) {
                     case "all" -> {
                         if (all) throw new IllegalArgumentException("Duplicate selector: all");
+                        if (session != null) throw new IllegalArgumentException("all and session:ID are exclusive");
                         all = true;
                     }
                     case "help", "-h", "--help" -> {
@@ -128,35 +133,64 @@ final class TestMilestonesCommand {
 
     /** The full report: scope and coverage first, then bounded rows. Never throws for data problems. */
     String show(String arguments, String currentSessionId) {
+        return report(arguments, currentSessionId, false).text();
+    }
+
+    /** A read outcome with explicit argument/scope validity, independent of the rendered text. */
+    public record Report(boolean valid, String text) { }
+
+    /**
+     * The same parser and report as the terminal command, restricted to this workspace's store.
+     * Session selectors filter stamped records here; even {@code all} never reads the user's store.
+     * No directory is created. Existing store components and files must resolve inside the workspace.
+     */
+    public static Report scopedReport(Path directory, String arguments, String currentSessionId) {
+        if (directory == null) return new Report(false, "A project directory is required for /test-milestones.\n");
+        return new TestMilestonesCommand(directory).report(arguments, currentSessionId, true);
+    }
+
+    private Report report(String arguments, String currentSessionId, boolean projectOnly) {
         Options options;
         try {
             options = Options.parse(arguments);
         } catch (IllegalArgumentException e) {
-            return USAGE + "\n" + (USAGE.equals(e.getMessage()) ? "" : "Error: " + e.getMessage() + "\n");
+            boolean help = USAGE.equals(e.getMessage());
+            // Browser errors must not reflect arbitrary argv (which can contain credentials).
+            String error = projectOnly ? "Invalid /test-milestones arguments." : e.getMessage();
+            return new Report(help, USAGE + "\n" + (help ? "" : "Error: " + error + "\n"));
         }
         String selected = options.allSessions() ? null
                 : options.sessionId() != null ? options.sessionId() : currentSessionId;
         if (!options.allSessions() && (selected == null || selected.isBlank())) {
-            return "No session id is available to scope /test-milestones; use 'all'.\n" + USAGE + "\n";
+            return new Report(false, "No session id is available to scope /test-milestones; use 'all'.\n" + USAGE + "\n");
         }
 
         List<Path> unreadable = new ArrayList<>();
         boolean projectStoreMissing;
-        boolean globalStoreMissing;
+        boolean globalStoreMissing = true;
         List<Map<String, Object>> records = new ArrayList<>();
         try {
-            Path projectMilestones = TestMilestoneReader.storeDir(workingDirectory)
+            Path workspace = projectOnly ? workingDirectory.toRealPath() : null;
+            Path projectMilestones = TestMilestoneReader.storeDir(projectOnly ? workspace : workingDirectory)
                     .resolve(TestMilestoneReader.MILESTONES_DIR);
+            collect(records, projectMilestones, PROJECT_STORE, unreadable, workspace);
             projectStoreMissing = !storeReadable(projectMilestones);
-            collect(records, projectMilestones, PROJECT_STORE, unreadable);
-            Path globalMilestones = TestMilestoneReader.storeDir(Path.of(System.getProperty("user.home")))
-                    .resolve(TestMilestoneReader.MILESTONES_DIR);
-            globalStoreMissing = !storeReadable(globalMilestones);
-            collect(records, globalMilestones, GLOBAL_STORE, unreadable);
-        } catch (IOException e) {
-            return "Test milestones could not be read: " + e.getMessage() + "\n";
+            if (!projectOnly) {
+                Path globalMilestones = TestMilestoneReader.storeDir(Path.of(System.getProperty("user.home")))
+                        .resolve(TestMilestoneReader.MILESTONES_DIR);
+                globalStoreMissing = !storeReadable(globalMilestones);
+                collect(records, globalMilestones, GLOBAL_STORE, unreadable, null);
+            }
+        } catch (IOException | SecurityException e) {
+            return new Report(false, projectOnly ? "Test milestones could not be read safely from this project.\n"
+                    : "Test milestones could not be read: " + e.getMessage() + "\n");
         }
 
+        return new Report(true, render(options, selected, records, unreadable, projectStoreMissing, globalStoreMissing));
+    }
+
+    private static String render(Options options, String selected, List<Map<String, Object>> records,
+                                 List<Path> unreadable, boolean projectStoreMissing, boolean globalStoreMissing) {
         List<Map<String, Object>> matched = new ArrayList<>();
         int unstampedInScope = 0;
         for (Map<String, Object> record : records) {
@@ -173,7 +207,7 @@ final class TestMilestonesCommand {
             matched.add(record);
         }
         matched.sort(Comparator.comparing((Map<String, Object> m) -> timestampKey(m)).reversed()
-                .thenComparing(m -> str(m.get("id"))));
+                .thenComparing(m -> str(m.get("id")), Comparator.nullsLast(Comparator.naturalOrder())));
         int shown = Math.min(matched.size(), options.limit());
 
         StringBuilder text = new StringBuilder();
@@ -242,9 +276,11 @@ final class TestMilestonesCommand {
         return "agent";
     }
 
-    private static void collect(List<Map<String, Object>> into, Path dir, String store, List<Path> unreadable)
+    private static void collect(List<Map<String, Object>> into, Path dir, String store, List<Path> unreadable,
+                                Path workspace)
             throws IOException {
-        TestMilestoneReader.Contents contents = TestMilestoneReader.readDir(dir);
+        TestMilestoneReader.Contents contents = workspace == null ? TestMilestoneReader.readDir(dir)
+                : readScopedDir(dir, workspace);
         unreadable.addAll(contents.unreadable());
         for (Map<String, Object> milestone : contents.milestones()) {
             Map<String, Object> tagged = new LinkedHashMap<>(milestone);
@@ -253,8 +289,44 @@ final class TestMilestonesCommand {
         }
     }
 
+    private static TestMilestoneReader.Contents readScopedDir(Path dir, Path workspace) throws IOException {
+        // Check every existing ancestor, not just the leaf: an intermediate symlink can escape
+        // even when the final milestones directory does not exist yet.
+        Path component = workspace;
+        for (Path part : workspace.relativize(dir)) {
+            component = component.resolve(part);
+            if (!Files.exists(component, LinkOption.NOFOLLOW_LINKS)) {
+                return new TestMilestoneReader.Contents(List.of(), List.of());
+            }
+            if (!component.toRealPath().startsWith(workspace) || !Files.isDirectory(component)) {
+                throw new IOException("Milestone store is outside the workspace or is not a directory");
+            }
+        }
+        List<Map<String, Object>> records = new ArrayList<>();
+        List<Path> unreadable = new ArrayList<>();
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(dir, "*.json")) {
+            for (Path file : files) {
+                Path real;
+                try {
+                    real = file.toRealPath();
+                } catch (IOException missing) {
+                    unreadable.add(file);
+                    continue;
+                }
+                if (!real.startsWith(workspace)) throw new IOException("Milestone file is outside the workspace");
+                if (!Files.isRegularFile(real)) continue;
+                try {
+                    records.add(TestMilestoneReader.readFile(real));
+                } catch (Exception malformed) {
+                    unreadable.add(file);
+                }
+            }
+        }
+        return new TestMilestoneReader.Contents(records, unreadable);
+    }
+
     private static boolean storeReadable(Path dir) {
-        return java.nio.file.Files.isDirectory(dir);
+        return Files.isDirectory(dir);
     }
 
     /** PASS/FAIL when the record is conclusive; otherwise the stored outcome verbatim, uppercased. */

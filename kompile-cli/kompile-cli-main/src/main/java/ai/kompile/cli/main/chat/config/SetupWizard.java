@@ -50,6 +50,7 @@ import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.BiConsumer;
 
 /**
@@ -122,6 +123,17 @@ public class SetupWizard {
         return method != null && ChatConfig.isClaudeCliNative(vendor, method.configValue());
     }
 
+    /**
+     * Whether this vendor/method pair is Gemini's Antigravity CLI route. The chat
+     * passes through to the {@code agy} CLI, whose own Google Code Assist sign-in
+     * (keyring + browser OAuth) owns the subscription. Unlike the Claude Code
+     * route there are no Kompile-stored tokens: the CLI's login is machine-global,
+     * so this route is managed like a native CLI login.
+     */
+    public static boolean isAgyCliRoute(String vendor, AuthMethod method) {
+        return method != null && ChatConfig.isAgyCliNative(vendor, method.configValue());
+    }
+
     /** Select or create a named account without changing the vendor's global selection. */
     public static AuthenticationSelection authenticateSession(LineReader reader, String vendor, AuthMethod method) {
         return authenticateSession(reader, vendor, method, null);
@@ -147,8 +159,7 @@ public class SetupWizard {
         if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
         if (method == AuthMethod.NATIVE && !isClaudeCodeRoute(vendor, method)) {
             // Native CLI credentials are owned by the provider CLI and are
-            // machine-global; they cannot be pinned per session. Keep the CLI's
-            // current login, or sign in again through the startup flow.
+            // machine-global; they cannot be pinned per session.
             int choice = CredentialMenu.select(reader, vendorLabel(vendor) + " login:",
                     List.of("Use the existing CLI login", "Sign in again through the CLI"), 0, pageRenderer);
             if (choice < 0) return null;
@@ -163,7 +174,8 @@ public class SetupWizard {
             BiConsumer<String, List<String>> pageRenderer, String preferredCredential) {
         return interaction(reader, () -> {
             String provider = resolveProviderForAuth(vendor, method);
-            if (method == AuthMethod.NONE || method == AuthMethod.NATIVE && !isClaudeCodeRoute(vendor, method)) {
+            if (method == AuthMethod.NONE
+                    || method == AuthMethod.NATIVE && !isClaudeCodeRoute(vendor, method)) {
                 return new AuthenticationSelection(provider, method, null);
             }
             return selectNamedCredential(reader, vendor, method, pageRenderer, preferredCredential, false, true);
@@ -751,6 +763,13 @@ public class SetupWizard {
                             baseUrl);
                     discoveryConfig.setAuthenticationScope(authScope);
                     if (credentialName != null) discoveryConfig.setCredentialName(credentialName);
+                    // The Antigravity OAuth route discovers through `agy models`,
+                    // which only runs when the discovery config carries the auth
+                    // method; without it the route silently degrades to the
+                    // Gemini HTTP catalog and reports a token-denied 403.
+                    if (isAgyCliRoute(provider, authMethod)) {
+                        discoveryConfig.setAuthenticationMethod(authMethod.configValue());
+                    }
                     if (sameProvider && (baseUrl == null || baseUrl.isBlank())) {
                         discoveryConfig.setBaseUrl(existingConfig.getBaseUrl());
                     }
@@ -1690,6 +1709,9 @@ public class SetupWizard {
         if (sameProvider && config.isClaudeCliNative()) {
             return ModelDiscoveryHttp.discoverClaudeCliResult(config);
         }
+        if (sameProvider && config.isAgyCliNative()) {
+            return ModelDiscoveryHttp.discoverAgyCliResult(config);
+        }
         if (sameProvider) {
             try {
                 var auth = config.resolveRequestAuth();
@@ -1786,10 +1808,14 @@ public class SetupWizard {
                 && ZaiChatProvider.CREDITS_BASE_URL.equals(config.getBaseUrl().strip().replaceAll("/+$", ""))) {
             return AuthMethod.API_KEY_CREDITS;
         }
-        // Anthropic's two routes share one provider id; the saved method says which is active.
+        // Anthropic's and Gemini's two routes share one provider id; the saved method says which is active.
         if (ChatConfig.isClaudeCliNativeProvider(provider) && config != null
                 && provider.equalsIgnoreCase(config.getProvider())) {
             return config.isClaudeCliNative() ? AuthMethod.OAUTH : AuthMethod.API_KEY;
+        }
+        if (ChatConfig.isAgyCliNativeProvider(provider) && config != null
+                && provider.equalsIgnoreCase(config.getProvider())) {
+            return config.isAgyCliNative() ? AuthMethod.OAUTH : AuthMethod.API_KEY;
         }
         if (config != null && provider != null && provider.equalsIgnoreCase(config.getProvider())) {
             for (AuthMethod method : authMethodsForPicker(vendorForProvider(provider))) {
@@ -1982,6 +2008,14 @@ public class SetupWizard {
             // OAuth / subscription through Claude Code and direct API-key HTTP.
             // The OAuth route passes the chat through to Claude Code, on a stored
             // setup token or Claude Code's own login.
+            return List.of(AuthMethod.OAUTH, AuthMethod.API_KEY);
+        }
+        if (ChatConfig.isAgyCliNativeProvider(vendor)) {
+            // One vendor, two auth routes (mirrors the Anthropic pattern):
+            // OAuth / subscription through the Antigravity CLI's Google Code
+            // Assist login and direct API-key HTTP. The OAuth route passes the
+            // chat through to agy, which owns the sign-in; there is no native
+            // "gemini" fallback choice to offer.
             return List.of(AuthMethod.OAUTH, AuthMethod.API_KEY);
         }
         if (NativeCliAuth.isSupported(vendor)) {

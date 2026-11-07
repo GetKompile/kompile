@@ -9,7 +9,7 @@ import java.util.Set;
 /** Shared CLI/MCP management surface; this tool is deliberately exempt from hooks. */
 public final class HooksTool implements CliTool {
     private static final Set<String> ACTIONS = Set.of("list", "get", "add", "edit", "update", "delete", "enable", "disable");
-    private static final Set<String> FIELDS = Set.of("action", "scope", "id", "event", "matcher", "command", "timeout", "enabled", "confirmed");
+    private static final Set<String> FIELDS = Set.of("action", "scope", "id", "event", "matcher", "command", "timeout", "hooks", "enabled", "confirmed");
     @Override public String id() { return "hooks"; }
     @Override public String permissionKey() { return "read"; }
     @Override public String compactHint() {
@@ -21,6 +21,7 @@ public final class HooksTool implements CliTool {
                 + "Events: PreToolUse, PostToolUse, PostToolUseFailure; matcher is a case-sensitive regex against Kompile tool IDs (e.g. ^(write|edit)$), * matches all. "
                 + "Command receives JSON on stdin; timeout is seconds, 1..600 (default 60). "
                 + "Updates edit supplied fields only. command replaces the handler list with one command; timeout alone changes all handlers. "
+                + "hooks replaces the ordered handler list on add/edit/update with [{type:'command',command:'...',timeout:60}]; do not combine hooks with command or timeout. "
                 + "Mutations configure future shell execution: require confirmed=true only after explicit user authorization. "
                 + "Delegated children cannot mutate hooks. This tool does not run hooks and is exempt from hook execution for recovery. "
                 + "Hooks cannot override host permissions or rewrite tool input after supervision.";
@@ -36,7 +37,15 @@ public final class HooksTool implements CliTool {
         properties.putObject("event").put("type", "string").putArray("enum")
                 .add("PreToolUse").add("PostToolUse").add("PostToolUseFailure");
         properties.putObject("matcher").put("type", "string").put("description", "Tool-name regex; default *");
-        properties.putObject("command").put("type", "string").put("description", "Shell command; required on add");
+        properties.putObject("command").put("type", "string").put("description", "Single shell command; add requires command or hooks");
+        var hooks = properties.putObject("hooks").put("type", "array").put("minItems", 1)
+                .put("description", "Replace ordered synchronous commands on add/edit/update; mutually exclusive with command and timeout");
+        var item = hooks.putObject("items").put("type", "object").put("additionalProperties", false);
+        var commandProperties = item.putObject("properties");
+        commandProperties.putObject("type").put("type", "string").putArray("enum").add("command");
+        commandProperties.putObject("command").put("type", "string").put("minLength", 1);
+        commandProperties.putObject("timeout").put("type", "integer").put("minimum", 1).put("maximum", 600);
+        item.putArray("required").add("command");
         properties.putObject("timeout").put("type", "integer").put("minimum", 1).put("maximum", 600);
         properties.putObject("enabled").put("type", "boolean");
         properties.putObject("confirmed").put("type", "boolean").put("description", "Required true for mutations after explicit user authorization");

@@ -3,7 +3,6 @@ package ai.kompile.cli.main.chat.tools;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.insights.TestMilestoneReader;
 import ai.kompile.cli.main.chat.ChatHistory;
-import ai.kompile.cli.main.chat.PassthroughStreamParser;
 import ai.kompile.cli.main.chat.TranscriptLogScope;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.Test;
@@ -37,41 +36,18 @@ class TestMilestoneCaptureTest {
         assertTrue(milestones().isEmpty());
     }
 
-    @Test void successfulCommandCannotSilentlyLoseItsMilestone() throws Exception {
-        Path transcript = transcript("capture-failure");
+    @Test void bashCommandsNeverProduceMilestonesEvenWhenOutputLooksLikeTests() throws Exception {
+        // Even a broken milestone store must not turn a bash command into a capture failure:
+        // the bash tool no longer scans command output for test summaries at all.
         Files.createDirectories(root.resolve(".kompile/test-milestones"));
         Files.writeString(root.resolve(".kompile/test-milestones/milestones"), "not a directory");
-        Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\nprintf '2 tests executed: 2 passed, 0 failed\\n'\n");
-        try (var scope = TranscriptLogScope.openIsolated("capture-failure", root, false);
-             var binding = scope.bind()) {
-            ToolResult result = bash("bash checks.sh");
-            assertTrue(result.isError(), result.getOutput());
-            assertEquals(0, result.getMetadata().get("exitCode"), "Do not rewrite the actual command exit code");
-            assertNotNull(result.getMetadata().get("testCaptureWarnings"));
-            assertFalse(result.getMetadata().containsKey("testMilestoneId"));
-        }
-        assertTrue(Files.readString(transcript).contains("Test milestone capture warning:"));
-        assertFalse(Files.readString(transcript).contains("Automatic test milestone recorded:"));
-    }
-
-    @Test void foregroundAutomaticallyCapturesWithoutAnAgentToolCall() throws Exception {
         Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\n[ 2 -eq 2 ] || exit 1\nprintf '2 tests executed: 2 passed, 0 failed\\n'\n");
         ToolResult result = bash("bash checks.sh");
         assertFalse(result.isError(), result.getOutput());
-        assertNotNull(result.getMetadata().get("testMilestoneId"));
-        var milestone = milestones().get(0);
-        assertEquals("harness", milestone.get("source"));
-        assertEquals("passed", milestone.get("outcome"));
-        assertEquals(2, milestone.get("totalTests"));
-        assertEquals(true, milestone.get("passing"));
-        assertNotNull(milestone.get("executionId"));
-    }
-    @Test void observesTheTailEvenWhenCanonicalBashOutputIsTruncated() throws Exception {
-        Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\ni=0; while [ $i -lt 1500 ]; do printf 'long diagnostic line to exceed canonical output limit\\n'; i=$((i+1)); done\nprintf '1 tests executed: 1 passed, 0 failed\\n'\n");
-        ToolResult result = bash("bash checks.sh");
-        assertEquals(true, result.getMetadata().get("truncated"));
-        assertEquals(false, result.getMetadata().get(ToolResult.OUTPUT_STREAMED_METADATA));
-        assertEquals("passed", milestones().get(0).get("outcome"));
+        assertEquals(0, result.getMetadata().get("exitCode"));
+        assertFalse(result.getMetadata().containsKey("testMilestoneId"));
+        assertFalse(result.getMetadata().containsKey("testCaptureWarnings"));
+        assertTrue(milestones().isEmpty());
     }
     @Test void backgroundCompletionCapturesOnceWithoutPolling() throws Exception {
         Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\nprintf '2 tests executed: 1 passed, 1 failed\\n'; exit 1\n");
@@ -85,6 +61,32 @@ class TestMilestoneCaptureTest {
             manager.get(entry.getId());
             manager.get(entry.getId());
             assertEquals(1, milestones().size());
+        }
+    }
+    @Test void processToolLaunchInsideDelegationTagsMilestonesAsSubagentWork() throws Exception {
+        // Origin comes from the kompile.task/quorum child context, not from an execution mode:
+        // a delegated subagent invoking the process tool marks the milestone it produces.
+        Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\nprintf '2 tests executed: 2 passed, 0 failed\\n'\n");
+        try (var manager = new BackgroundProcessManager("child-session", root)) {
+            CountDownLatch exited = new CountDownLatch(1);
+            manager.addExitListener(entry -> exited.countDown());
+            var entry = manager.launchMonitored("bash checks.sh", "checks", root, "", "subagent");
+            assertTrue(exited.await(10, TimeUnit.SECONDS));
+            manager.get(entry.getId());
+            assertEquals(1, milestones().size());
+            assertEquals("subagent", milestones().get(0).get("origin"));
+        }
+        // The same launch without delegation carries no origin.
+        try (var manager = new BackgroundProcessManager("parent-session", root)) {
+            CountDownLatch exited = new CountDownLatch(1);
+            manager.addExitListener(entry -> exited.countDown());
+            var entry = manager.launch("bash checks.sh", "checks", root);
+            assertTrue(exited.await(10, TimeUnit.SECONDS));
+            manager.get(entry.getId());
+            var parentRuns = milestones().stream()
+                    .filter(m -> "parent-session".equals(m.get("sessionId"))).toList();
+            assertEquals(1, parentRuns.size());
+            assertFalse(parentRuns.get(0).containsKey("origin"));
         }
     }
     @Test void existingRegisteredModuleNamesAreUsedForDirectoriesAndMavenSelections() throws Exception {
@@ -142,18 +144,6 @@ class TestMilestoneCaptureTest {
                 .filter(m -> !"child-session".equals(m.get("sessionId"))).toList();
         assertEquals(1, siblings.size());
         assertFalse(siblings.get(0).containsKey("origin"));
-    }
-    @Test void supervisedChildBashTagsItsMilestonesAsSubagentWork() throws Exception {
-        Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\nprintf '3 tests executed: 3 passed, 0 failed\\n'\n");
-        var context = new ToolContext("native-child-session", null, null, root, null);
-        context.setAutoApproveAll(true);
-        context.markSupervisedChild();
-        ToolResult result = new BashTool().execute(
-                JsonUtils.standardMapper().createObjectNode().put("command", "bash checks.sh"), context);
-        assertFalse(result.isError(), result.getOutput());
-        var saved = milestones().get(0);
-        assertEquals("subagent", saved.get("origin"));
-        assertEquals("native-child-session", saved.get("sessionId"));
     }
     @Test void compileDoesNotImportAnOldPassingReport() throws Exception {
         report("<testsuite tests='2'><testcase name='a'/><testcase name='b'/></testsuite>");
@@ -234,29 +224,6 @@ class TestMilestoneCaptureTest {
         assertEquals("custom", milestones().get(0).get("framework"));
         assertEquals("failed", milestones().get(0).get("outcome"));
     }
-    @Test void providerCallsAreCorrelatedAndMcpToolsDoNotDoubleCapture() throws Exception {
-        try (var capture = new ProviderTestCapture(root)) {
-            capture.start("one", "Bash", "{\"command\":\"pytest\"}");
-            capture.start("two", "bash", "{\"command\":\"cargo test\"}");
-            capture.start("mcp", "mcp__kompile__bash", "{\"command\":\"pytest\"}");
-            capture.complete("two", "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s", 0, false);
-            capture.complete("one", "2 failed in 0.1s", 1, false);
-            capture.complete("one", "2 failed in 0.1s", 1, false);
-            capture.complete("mcp", "99 passed in 0.1s", 0, false);
-        }
-        assertEquals(2, milestones().size());
-        assertEquals(Set.of("pytest", "rust"), new HashSet<>(milestones().stream().map(m -> m.get("framework")).toList()));
-    }
-    @Test void codexProviderAdapterUsesFullFinalOutputNotDuplicateDeltas() throws Exception {
-        var parser = new PassthroughStreamParser();
-        parser.enableTestCapture(root);
-        parser.parseCodexLine("{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\",\"id\":\"x\",\"command\":\"pytest\"}}");
-        parser.parseCodexLine("{\"type\":\"item.updated\",\"item\":{\"type\":\"command_execution\",\"id\":\"x\",\"aggregated_output\":\"2 passed in 0.1s\\n\"}}");
-        parser.parseCodexLine("{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\",\"id\":\"x\",\"aggregated_output\":\"2 passed in 0.1s\\n\",\"exit_code\":0}}");
-        parser.closeTestCapture();
-        assertEquals(1, milestones().size());
-        assertEquals(2, milestones().get(0).get("totalTests"));
-    }
     @Test void foregroundNoticeIsTranscriptMetadataWithoutModelOutputOrExtraResume() throws Exception {
         Files.writeString(root.resolve("checks.sh"), "#!/bin/sh\nprintf '2 tests executed: 2 passed, 0 failed\\n'\n");
         ChatHistory history = new ChatHistory("capture-transcript");
@@ -264,15 +231,20 @@ class TestMilestoneCaptureTest {
         history.logUserMessage("Run the checks");
         var turns = history.readTurns();
         try (var scope = TranscriptLogScope.openIsolated("capture-transcript", root, false);
-             var binding = scope.bind()) {
-            ToolResult result = bash("bash checks.sh");
-            String id = result.getMetadata().get("testMilestoneId").toString();
+             var binding = scope.bind();
+             var manager = new BackgroundProcessManager("capture-transcript", root)) {
+            CountDownLatch exited = new CountDownLatch(1);
+            manager.addExitListener(entry -> exited.countDown());
+            var entry = manager.launch("bash checks.sh", "checks", root);
+            assertTrue(exited.await(10, TimeUnit.SECONDS));
+            manager.get(entry.getId());
+            String id = milestones().get(0).get("id").toString();
             String transcript = history.readTranscript();
             assertTrue(transcript.contains("[system] Automatic test milestone recorded: id=" + id), transcript);
             assertTrue(transcript.contains("outcome=passed"));
             assertTrue(transcript.contains("totalTests=2 passed=2 failed=0 errors=0 skipped=0"));
             assertEquals(turns, history.readTurns()); // No fabricated LLM turn or replay input.
-            assertFalse(result.getOutput().contains("Automatic test milestone"));
+            assertFalse(transcript.contains("< bash checks.sh")); // Command is never replayed as model output.
             history.logAssistantMessage("Done", 0, 0);
             assertTrue(history.readTranscript().contains("< Done"));
             assertFalse(history.readTranscript().contains("[resumed"));
@@ -294,20 +266,6 @@ class TestMilestoneCaptureTest {
             assertTrue(text.contains("outcome=failed"));
             assertTrue(text.contains("passed=1 failed=1"));
         }
-    }
-    @Test void providerCompletionDoesNotDuplicateTranscriptNotices() throws Exception {
-        Path transcript = transcript("provider-transcript");
-        try (var scope = TranscriptLogScope.openIsolated("provider-transcript", root, false);
-             var binding = scope.bind();
-             var capture = new ProviderTestCapture(root)) {
-            capture.start("one", "Bash", "{\"command\":\"pytest\"}");
-            capture.start("mcp", "mcp__kompile__bash", "{\"command\":\"pytest\"}");
-            capture.complete("one", "2 passed in 0.1s", 0, false);
-            capture.complete("one", "2 passed in 0.1s", 0, false);
-            capture.complete("mcp", "99 passed in 0.1s", 0, false);
-        }
-        assertEquals(1, Files.readAllLines(transcript).stream()
-                .filter(line -> line.startsWith("[system] Automatic test milestone")).count());
     }
     @Test void completionUsesLaunchingTranscriptEvenAfterScopeSwitchAndClose() throws Exception {
         Path owner = transcript("launch-owner");

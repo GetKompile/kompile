@@ -40,8 +40,10 @@ import {
   ChatHistoryEntry,
   MessageAttachment,
   ToolCallChart,
-  ProductDisplayTurn
+  ProductDisplayTurn,
+  TokenMetrics
 } from '../models/api-models';
+export type { TokenMetrics } from '../models/api-models';
 
 /** Canonical product metadata only; never mine prose, rendered rows or raw tool output. */
 export function projectProductToolPresentations(turn: ProductDisplayTurn, context: ToolPresentationContext): ToolUseEvent[] {
@@ -89,6 +91,8 @@ export interface SessionConfigSnapshot {
   queue?: CommandEventData;
   continue?: CommandEventData;
   judge?: CommandEventData;
+  subagents?: CommandEventData;
+  failover?: CommandEventData;
 }
 
 /**
@@ -372,21 +376,14 @@ export interface WorkflowApprovalOutcome {
   message: string;
 }
 
-export interface TokenMetrics {
-  outputTokens: number;
-  inputTokens: number;
-  totalGenerationMs: number;
-  tokensPerSecond: number;
-  model?: string;
-}
-
 /**
- * Chat statistics from agent response.
+ * Chat statistics from agent response. Omitted measurements are unknown;
+ * explicit zero remains a valid measurement.
  */
 export interface ChatStats {
-  durationMs: number;
-  costUsd: number;
-  numTurns: number;
+  durationMs?: number;
+  costUsd?: number;
+  numTurns?: number;
   isError: boolean;
   tokenMetrics?: TokenMetrics;
 }

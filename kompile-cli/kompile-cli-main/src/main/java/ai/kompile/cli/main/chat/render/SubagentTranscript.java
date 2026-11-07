@@ -8,6 +8,10 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.McpToolResultSerializer;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -88,6 +92,15 @@ public final class SubagentTranscript {
         }
     }
 
+    /**
+     * Accept writes again for an interactive follow-up turn on a retained child.
+     * Mirrors the status bar's {@code reactivate()} semantics: the settled parts
+     * stay settled, and the next event starts a fresh running part.
+     */
+    public synchronized void reactivate() {
+        finished = false;
+    }
+
     /** Immutable snapshots, cached per changed part and ANSI mode, never parent cards. */
     public synchronized List<ChatDisplayBlock> blocks(TerminalRenderer renderer) {
         List<ChatDisplayBlock> result = new ArrayList<>();
@@ -100,6 +113,63 @@ public final class SubagentTranscript {
             result.add(part.cached);
         }
         return List.copyOf(result);
+    }
+
+    /** Raw typed presentation data, never pre-rendered ANSI or parent conversation state. */
+    public synchronized void writeSnapshot(Path file) throws IOException {
+        var mapper = JsonUtils.standardMapper();
+        var root = mapper.createObjectNode().put("version", 1).put("omitted", omitted)
+                .put("finished", finished).put("sequence", sequence);
+        var entries = root.putArray("parts");
+        for (Part part : parts) {
+            var entry = entries.addObject().put("key", part.key).put("kind", part.kind)
+                    .put("id", part.id).put("name", part.name).put("content", part.content)
+                    .put("input", part.input).put("running", part.running).put("error", part.error);
+            if (part.result != null) entry.put("result", part.result);
+        }
+        Path pending = file.resolveSibling(file.getFileName() + ".tmp");
+        try {
+            mapper.writeValue(pending.toFile(), root);
+            try {
+                Files.move(pending, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(pending, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(pending);
+        }
+    }
+
+    /** Bounded sidecar import; all content still passes the ordinary safe renderers. */
+    public static SubagentTranscript readSnapshot(Path file) throws IOException {
+        byte[] bytes;
+        try (var input = Files.newInputStream(file)) {
+            bytes = input.readNBytes(4_000_001);
+        }
+        if (bytes.length > 4_000_000) throw new IOException("Child transcript snapshot exceeds display limit");
+        var root = JsonUtils.standardMapper().readTree(bytes);
+        if (root == null || root.path("version").asInt() != 1 || !root.path("parts").isArray()
+                || root.path("parts").size() > MAX_PARTS) throw new IOException("Invalid child transcript snapshot");
+        var transcript = new SubagentTranscript();
+        transcript.omitted = root.path("omitted").asBoolean();
+        transcript.finished = root.path("finished").asBoolean();
+        transcript.sequence = root.path("sequence").asLong();
+        for (var entry : root.path("parts")) {
+            String kind = entry.path("kind").asText();
+            if (!List.of("assistant", "thinking", "user", "tool", "error", "metadata").contains(kind)) {
+                throw new IOException("Invalid child transcript part kind");
+            }
+            var part = new Part(ChatDisplayBlock.boundedPlainText(entry.path("key").asText(), 1_000),
+                    kind, entry.path("id").asText(), entry.path("name").asText());
+            part.content = bounded(entry.path("content").asText());
+            part.input = bounded(entry.path("input").asText());
+            if (entry.hasNonNull("result")) part.result = bounded(entry.path("result").asText());
+            part.running = !transcript.finished && entry.path("running").asBoolean();
+            part.error = entry.path("error").asBoolean();
+            transcript.parts.add(part);
+            transcript.trim();
+        }
+        return transcript;
     }
 
     private void endText() {

@@ -20,6 +20,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
@@ -109,25 +110,57 @@ class DirectSubagentSupervisionTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {"offline", "null", "fail-open", "exception"})
-    void infrastructureReviewFailuresDoNotAskChildToRepairTheReviewer(String mode) {
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"offline", "null", "fail-open", "exception", "timeout"})
+    void infrastructureReviewFailuresKeepTheAnswerFlaggedAsUnreviewed(String mode) {
         AtomicInteger reviews = new AtomicInteger();
         EnforcerEvaluator reviewer = new EnforcerEvaluator() {
             public boolean isAvailable() { return !"offline".equals(mode); }
             public String describe() { return "unusable reviewer"; }
-            public EnforcerDecision evaluate(String user, String output, EnforcerPolicy policy, int attempt) {
+            public EnforcerDecision evaluate(String user, String output, EnforcerPolicy policy, int attempt)
+                    throws Exception {
                 reviews.incrementAndGet();
                 if ("exception".equals(mode)) throw new IllegalStateException("backend down");
+                // What ResilientJudgeBackend throws when a verdict misses its deadline.
+                if ("timeout".equals(mode)) throw new TimeoutException(
+                        "judge call exceeded 15000ms (cli(claude,model=haiku,persistent-stream-json))");
                 return "null".equals(mode) ? null : EnforcerDecision.pass("failing open");
             }
         };
         var child = child(contract("Inspect", false, reviewer, null), "infra-failure");
         try {
-            assertThrows(DirectSubagentSupervision.SupervisionFailure.class,
-                    () -> child.beforeCompletion("A complete answer"),
-                    "infrastructure failure must stop immediately despite unused correction budget");
+            // The finished answer is kept, and the child is never asked to repair the reviewer.
+            assertNull(child.beforeCompletion("A complete answer"));
             assertEquals("offline".equals(mode) ? 0 : 1, reviews.get());
+            String unreviewed = child.unreviewedReason();
+            assertNotNull(unreviewed, "an unreviewed answer is never reported as reviewed");
+            if ("timeout".equals(mode)) assertTrue(unreviewed.contains("judge call exceeded 15000ms"), unreviewed);
         } finally { child.end(); }
+    }
+
+    @Test
+    void verdictsStillBindAndCancellationDuringReviewStillFails() throws Exception {
+        var reviewed = child(contract("Inspect", false, evaluator(true, true), null), "reviewed");
+        try {
+            assertNull(reviewed.beforeCompletion("A complete answer"));
+            assertNull(reviewed.unreviewedReason(), "a reviewed answer carries no unreviewed flag");
+        } finally { reviewed.end(); }
+        var rejected = child(contract("Inspect", false, evaluator(true, false), null), "rejected");
+        try {
+            assertNotNull(rejected.beforeCompletion("bad"), "a non-compliant verdict still sends corrections");
+        } finally { rejected.end(); }
+        EnforcerEvaluator interrupted = new EnforcerEvaluator() {
+            public boolean isAvailable() { return true; }
+            public String describe() { return "cancelled reviewer"; }
+            public EnforcerDecision evaluate(String u, String o, EnforcerPolicy p, int a) throws Exception {
+                throw new InterruptedException("cancelled");
+            }
+        };
+        var cancelled = child(contract("Inspect", false, interrupted, null), "cancelled");
+        try {
+            assertThrows(DirectSubagentSupervision.SupervisionFailure.class,
+                    () -> cancelled.beforeCompletion("A complete answer"));
+            assertTrue(Thread.interrupted(), "the interrupt is preserved for the cancelled child");
+        } finally { cancelled.end(); }
     }
 
     EnforcerEvaluator evaluator(boolean available, boolean compliant) {

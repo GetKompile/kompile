@@ -20,8 +20,6 @@ final class TestRunDetector {
         }
         Result withOutcome(String value) { return new Result(framework, value, total, passed, failed, errors, skipped, unit, basis); }
     }
-    private static final int MAX_SUITES = 4096;
-    private static final int MAX_CASES = 65536;
     private static final Set<String> NON_EXECUTION = Set.of("echo", "printf", "cat", "head", "tail", "less", "more",
             "grep", "rg", "ag", "sed", "awk", "read", "ls", "find", "git", "test", "[", "true", "false", "tee",
             "claude", "codex", "gemini", "qwen", "opencode", "pi", "kompile");
@@ -48,7 +46,7 @@ final class TestRunDetector {
     private static final Pattern NUMBER_LABEL = p("(\\d+) (passed|failed|skipped|errors?|xfailed|xpassed|deselected|todo|pending|ignored)");
 
     static Plan plan(String command, Path directory, TestCaptureConfig config) {
-        if (command == null || command.length() > 16384 || !config.enabled || config.disabledFrameworks.contains("*")) return null;
+        if (command == null || !config.enabled || config.disabledFrameworks.contains("*")) return null;
         if (config.excludes.stream().anyMatch(p -> p.matcher(command).find())) return null;
         if (!config.includes.isEmpty() && config.includes.stream().noneMatch(p -> p.matcher(command).find())) return null;
         // Substitution/detachment defeats attribution to a completed shell invocation. Fail closed.
@@ -182,7 +180,7 @@ final class TestRunDetector {
     private final String command;
     private final Map<String, Result> suites = new LinkedHashMap<>();
     private final Map<String, Result> summaries = new LinkedHashMap<>();
-    private boolean noTests, cached, setupError, started, complete, overflow;
+    private boolean noTests, cached, setupError, started, complete;
     private final Set<String> ctestSkipped = new HashSet<>();
     private final Set<String> cachedPackages = new HashSet<>();
     private long unittestTotal = -1, googleTotal = -1, googlePassed, googleFailed, googleSkipped;
@@ -200,9 +198,8 @@ final class TestRunDetector {
 
     synchronized void accept(String raw) {
         if (raw == null || plan.suppressed()) return;
-        // Bound every regex input; split CR progress lines as well as ordinary lines.
+        // Split CR progress lines as well as ordinary lines; long test names are still evidence.
         for (String part : raw.split("[\\r\\n]")) {
-            if (part.length() > 8192) continue;
             String text = ANSI.matcher(part).replaceAll("");
             boolean topLevel = !text.startsWith(" ") && !text.startsWith("\t");
             String line = text.strip().replaceFirst("(?i)^\\[(?:INFO|ERROR|WARNING)]\\s*", "");
@@ -245,7 +242,7 @@ final class TestRunDetector {
             m = p("^\\d+/\\d+ Test\\s+#(\\d+):.*(?:\\*\\*\\*Skipped|\\*\\*\\*Not Run \\(Disabled\\)).*$").matcher(line);
             if (!m.matches()) m = p("^(\\d+) - .* \\((?:Skipped|Disabled)\\)$").matcher(line);
             if (m.matches()) {
-                if (ctestSkipped.size() < MAX_SUITES) ctestSkipped.add(m.group(1)); else overflow = true;
+                ctestSkipped.add(m.group(1));
             }
             if (line.contains("Unable to find executable") || line.contains("Could not find executable")) setupError = true;
         }
@@ -299,7 +296,7 @@ final class TestRunDetector {
                 int suffix = line.indexOf("-- in ");
                 if (suffix >= 0) {
                     String key = line.substring(suffix + 6);
-                    if (suites.size() < MAX_SUITES || suites.containsKey(key)) suites.put(key, r); else overflow = true;
+                    suites.put(key, r);
                 } else summaries.put("jvm", r);
                 complete = true;
             }
@@ -418,11 +415,9 @@ final class TestRunDetector {
     private static long label(String line, String label) { Matcher m = p("(?:^|[^A-Za-z0-9_])(\\d+) " + label + "(?:[^A-Za-z_]|$)").matcher(line); return m.find() ? n(m, 1) : 0; }
     private void addSuite(Result r) {
         if (r == null || !allowed(r.framework())) return;
-        if (suites.size() >= MAX_SUITES) { overflow = true; return; }
         suites.put("suite-" + suites.size(), r); complete = true;
     }
     private void jsonTest(String id, String result) {
-        if (jsonTests.size() >= MAX_CASES && !jsonTests.containsKey(id)) { overflow = true; return; }
         jsonTests.put(id, result);
     }
 
@@ -439,7 +434,7 @@ final class TestRunDetector {
                 if (action.equals("output")) {
                     String output = j.path("Output").asText();
                     if (output.contains("(cached)")) {
-                        if (cachedPackages.size() < MAX_CASES) cachedPackages.add(j.path("Package").asText()); else overflow = true;
+                        cachedPackages.add(j.path("Package").asText());
                     }
                     accept(output);
                 }
@@ -487,7 +482,6 @@ final class TestRunDetector {
         results.values().removeIf(Objects::isNull);
         Result result = results.isEmpty() ? null : results.size() == 1 ? results.values().iterator().next() : aggregate(results.values());
         if (interrupted) return result == null ? neutral(f, "interrupted") : result.withOutcome("interrupted");
-        if (overflow) return new Result(f, "unknown", null, null, null, null, null, "tests", "output-count-limit");
         if (setupError && !started) return neutral(f, "setup_error");
         if (tapBailout || tapInvalid || tapPlan >= 0 && tapPlan != tapSeen) return neutral(f, "unknown");
         if (result != null) {

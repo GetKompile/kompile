@@ -627,6 +627,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             if (history.getTranscriptFile() != null) {
                 metrics.enableLivePersistence(history.getTranscriptFile().resolveSibling(
                         sessionId + ".metrics.json"), objectMapper);
+                metrics.enableUsageJournal(TokenUsageJournal.pathFor(
+                        history.getTranscriptFile().getParent(), sessionId), activityProjectRoot);
             }
             registerManagedSession(sessionId);
             restoreResumedSessionTitle(history);
@@ -670,10 +672,21 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
             this.tui = new KompileTui(bgTaskMgr, bgProcMgr, messageQueue, renderer);
             this.drawLock = tui.getDrawLock();
-            // Refresh the activity panel for lifecycle changes and every captured
-            // output line, so an opened process view follows the live log.
+            // Refresh the activity panel for lifecycle changes and captured
+            // output lines, so an opened process view follows the live log.
+            // Output lines are coalesced: chatty processes emit hundreds of lines
+            // per second, and one cursor-addressed panel repaint per line buried
+            // every new transcript line under redraw traffic.
             bgProcMgr.addChangeListener(this::redrawActivityPanelOnly);
-            bgProcMgr.addOutputListener((entry, line) -> redrawActivityPanelOnly());
+            AtomicBoolean outputRefreshQueued = new AtomicBoolean(false);
+            bgProcMgr.addOutputListener((entry, line) -> {
+                if (!outputRefreshQueued.compareAndSet(false, true)) return;
+                java.util.concurrent.CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS)
+                        .execute(() -> {
+                            outputRefreshQueued.set(false);
+                            redrawActivityPanelOnly();
+                        });
+            });
             tui.setAgentName(agent);
             tui.setSessionId(sessionId);
             tui.getTopBar().setChatTitleSupplier(this::readyTerminalTitle);
@@ -742,7 +755,6 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
             Path reminderWorkingDirectory = Path.of(
                     workingDir == null || workingDir.isBlank() ? "." : workingDir);
-            parser.enableTestCapture(reminderWorkingDirectory);
             if (this.reminderManager == null) {
                 this.reminderManager = new ReminderManager(
                         objectMapper, sessionId, reminderWorkingDirectory);
@@ -4344,6 +4356,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         String outboundMessage = preparePromptForAgent(message);
         history.logUserMessage(outboundMessage);
         metrics.recordUserTurn(message);
+        emitAgentNotification(message);
         emitReminderSection(outboundMessage);
 
         updateStatusLine("thinking");
@@ -6499,6 +6512,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         if (!section.isEmpty()) {
             safePrintln(section);
         }
+    }
+
+    /** A harness event the agent receives as its prompt is shown, not just its reminders. */
+    private void emitAgentNotification(String message) {
+        if (renderer == null || !TerminalRenderer.isAgentNotification(message)) return;
+        var block = renderer.renderAgentNotificationBlock(message);
+        if (block != null) safePrintln(block.classic());
     }
 
     String preparePromptForAgent(String message) {
