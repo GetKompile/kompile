@@ -97,7 +97,6 @@ export interface TritonSettings {
   // Compilation mode
   compileAll: boolean;
   includeTypes: string;
-  excludeOps: string;
 
   // Section fusion
   sectionFusion: boolean;

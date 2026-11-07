@@ -318,7 +318,6 @@ public class EnvironmentController {
             // Compilation mode
             if (request.getCompileAll() != null) { env.setTritonCompileAll(request.getCompileAll()); updated++; }
             if (request.getIncludeTypes() != null) { env.setTritonIncludeTypes(request.getIncludeTypes()); updated++; }
-            if (request.getExcludeOps() != null) { env.setTritonExcludeOps(request.getExcludeOps()); updated++; }
 
             // Section fusion
             if (request.getSectionFusion() != null) { env.setTritonSectionFusion(request.getSectionFusion()); updated++; }
@@ -780,7 +779,6 @@ public class EnvironmentController {
         // Triton advanced flags
         if (settings.containsKey("tritonCompileAll")) { env.setTritonCompileAll((Boolean) settings.get("tritonCompileAll")); applied++; }
         if (settings.containsKey("tritonIncludeTypes")) { env.setTritonIncludeTypes((String) settings.get("tritonIncludeTypes")); applied++; }
-        if (settings.containsKey("tritonExcludeOps")) { env.setTritonExcludeOps((String) settings.get("tritonExcludeOps")); applied++; }
         if (settings.containsKey("tritonSectionFusion")) { env.setTritonSectionFusion((Boolean) settings.get("tritonSectionFusion")); applied++; }
         if (settings.containsKey("tritonFusionScoring")) { env.setTritonFusionScoring((Boolean) settings.get("tritonFusionScoring")); applied++; }
         if (settings.containsKey("tritonGraphCapture")) { env.setTritonGraphCapture((Boolean) settings.get("tritonGraphCapture")); applied++; }
@@ -862,7 +860,6 @@ public class EnvironmentController {
                     // Compilation mode
                     .compileAll(env.tritonCompileAll())
                     .includeTypes(env.tritonIncludeTypes())
-                    .excludeOps(env.tritonExcludeOps())
                     // Section fusion
                     .sectionFusion(env.tritonSectionFusion())
                     .fusionScoring(env.tritonFusionScoring())

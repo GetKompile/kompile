@@ -45,7 +45,6 @@ public class TritonSettingsResponse {
     // Compilation mode
     private boolean compileAll;
     private String includeTypes;
-    private String excludeOps;
 
     // Section fusion
     private boolean sectionFusion;
