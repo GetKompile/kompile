@@ -36,7 +36,7 @@ class OAuthProviderFlowsTest {
                 {"access_token":"%s","refresh_token":"refresh","expires_in":3600}
                 """.formatted(openAiJwt("account-123"))));
         TestInteraction interaction = new TestInteraction("manual-code");
-        OpenAiCodexOAuthFlow flow = new OpenAiCodexOAuthFlow(transport, immediatePoller());
+        OpenAiCodexOAuthFlow flow = new OpenAiCodexOAuthFlow(transport, immediatePoller(), "test-client");
 
         ManagedCredential credential = flow.login(MANUAL_BROWSER, interaction);
 
@@ -62,7 +62,7 @@ class OAuthProviderFlowsTest {
                         {"access_token":"%s","refresh_token":"refresh","expires_in":3600}
                         """.formatted(openAiJwt("account-device"))));
         TestInteraction interaction = new TestInteraction(null);
-        OpenAiCodexOAuthFlow flow = new OpenAiCodexOAuthFlow(transport, immediatePoller());
+        OpenAiCodexOAuthFlow flow = new OpenAiCodexOAuthFlow(transport, immediatePoller(), "test-client");
 
         ManagedCredential credential = flow.login(
                 new OAuthProviderFlow.LoginOptions("device", false, null, null),
@@ -115,7 +115,7 @@ class OAuthProviderFlowsTest {
                          "expires_at":%d}
                         """.formatted(expiresAt)));
         TestInteraction interaction = new TestInteraction(null);
-        GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(transport, immediatePoller());
+        GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(transport, immediatePoller(), "test-client");
 
         ManagedCredential credential = flow.login(
                 new OAuthProviderFlow.LoginOptions(
@@ -143,7 +143,7 @@ class OAuthProviderFlowsTest {
                         {"access_token":"xai-access","refresh_token":"xai-refresh","expires_in":3600}
                         """));
         TestInteraction interaction = new TestInteraction(null);
-        XaiOAuthFlow flow = new XaiOAuthFlow(transport, immediatePoller());
+        XaiOAuthFlow flow = new XaiOAuthFlow(transport, immediatePoller(), "test-client");
 
         ManagedCredential credential = flow.login(
                 new OAuthProviderFlow.LoginOptions("device", false, null, null),
@@ -159,7 +159,7 @@ class OAuthProviderFlowsTest {
         QueueTransport openAiTransport = new QueueTransport(json(200, """
                 {"access_token":"%s","expires_in":3600}
                 """.formatted(openAiJwt("refreshed-account"))));
-        OpenAiCodexOAuthFlow openAi = new OpenAiCodexOAuthFlow(openAiTransport, immediatePoller());
+        OpenAiCodexOAuthFlow openAi = new OpenAiCodexOAuthFlow(openAiTransport, immediatePoller(), "test-client");
         ManagedCredential openAiRefreshed = openAi.refresh(ManagedCredential.oauth(
                 "old-openai-access",
                 "old-openai-refresh",
@@ -170,7 +170,7 @@ class OAuthProviderFlowsTest {
         QueueTransport radiusTransport = new QueueTransport(json(200, """
                 {"access_token":"new-radius-access","expires_in":3600}
                 """));
-        RadiusOAuthFlow radius = new RadiusOAuthFlow(radiusTransport, immediatePoller());
+        RadiusOAuthFlow radius = new RadiusOAuthFlow(radiusTransport, immediatePoller(), "test-client");
         ManagedCredential radiusRefreshed = radius.refresh(ManagedCredential.oauth(
                 "old-radius-access",
                 "old-radius-refresh",
@@ -208,7 +208,7 @@ class OAuthProviderFlowsTest {
                          "expires_in":3600,"scope":"gateway offline_access"}
                         """));
         TestInteraction interaction = new TestInteraction("radius-code");
-        RadiusOAuthFlow flow = new RadiusOAuthFlow(transport, immediatePoller());
+        RadiusOAuthFlow flow = new RadiusOAuthFlow(transport, immediatePoller(), "test-client");
 
         ManagedCredential credential = flow.login(
                 new OAuthProviderFlow.LoginOptions(
@@ -347,7 +347,7 @@ class OAuthProviderFlowsTest {
                          "expires_in":3600}
                         """));
         TestInteraction interaction = new TestInteraction(null);
-        RadiusOAuthFlow flow = new RadiusOAuthFlow(transport, immediatePoller());
+        RadiusOAuthFlow flow = new RadiusOAuthFlow(transport, immediatePoller(), "test-client");
 
         ManagedCredential credential = flow.login(
                 new OAuthProviderFlow.LoginOptions(
@@ -457,6 +457,50 @@ class OAuthProviderFlowsTest {
         });
     }
 
+    @Test
+    void publicClientFlowsRequireAConfiguredClientId() throws Throwable {
+        OAuthSupport.HttpTransport noHttp = request -> {
+            throw new AssertionError("no HTTP before a client id exists");
+        };
+        Map<String, OAuthProviderFlow> flows = Map.of(
+                GitHubCopilotOAuthFlow.CLIENT_ID_ENV, new GitHubCopilotOAuthFlow(noHttp, immediatePoller(), null),
+                OpenAiCodexOAuthFlow.CLIENT_ID_ENV, new OpenAiCodexOAuthFlow(noHttp, immediatePoller(), null),
+                XaiOAuthFlow.CLIENT_ID_ENV, new XaiOAuthFlow(noHttp, immediatePoller(), null),
+                RadiusOAuthFlow.CLIENT_ID_ENV, new RadiusOAuthFlow(noHttp, immediatePoller(), null));
+        for (Map.Entry<String, OAuthProviderFlow> entry : flows.entrySet()) {
+            withoutConfiguredClients(entry.getKey(), () -> {
+                IOException error = assertThrows(IOException.class, () -> entry.getValue().login(
+                        new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                        new TestInteraction(null)));
+                assertTrue(error.getMessage().contains(entry.getKey()), error.getMessage());
+            });
+        }
+    }
+
+    @Test
+    void publicClientFlowReadsClientIdFromTheOAuthClientsStore() throws Throwable {
+        withoutConfiguredClients(XaiOAuthFlow.CLIENT_ID_ENV, () -> {
+            OAuthClientSettings.create().put(XaiOAuthFlow.PROVIDER_ID,
+                    new OAuthClientSettings.ClientCredentials("stored-client", null, null));
+            QueueTransport transport = new QueueTransport(
+                    json(200, """
+                            {"device_code":"device","user_code":"XAI-CODE",
+                             "verification_uri":"https://auth.x.ai/device",
+                             "interval":1,"expires_in":600}
+                            """),
+                    json(200, """
+                            {"access_token":"xai-access","refresh_token":"xai-refresh","expires_in":3600}
+                            """));
+            XaiOAuthFlow flow = new XaiOAuthFlow(transport, immediatePoller(), null);
+
+            flow.login(new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                    new TestInteraction(null));
+
+            assertTrue(transport.requests.get(0).body().contains("client_id=stored-client"));
+            assertTrue(transport.requests.get(1).body().contains("client_id=stored-client"));
+        });
+    }
+
     /**
      * Client registrations are read from ~/.kompile/config/oauth-clients.json: the
      * developer's real registrations must not reach a no-client-configured test.
@@ -488,7 +532,7 @@ class OAuthProviderFlowsTest {
                 json(200, """
                         {"access_token":"opaque-new","expires_in":3600}
                         """));
-        OpenAiCodexOAuthFlow flow = new OpenAiCodexOAuthFlow(transport, immediatePoller());
+        OpenAiCodexOAuthFlow flow = new OpenAiCodexOAuthFlow(transport, immediatePoller(), "test-client");
         ManagedCredential login = flow.login(MANUAL_BROWSER, new TestInteraction("code"));
         ManagedCredential refreshed = flow.refresh(login);
         assertEquals("user-1", refreshed.getMetadata("subject"));
@@ -502,7 +546,7 @@ class OAuthProviderFlowsTest {
     void copilotRejectsExpiredOrOverflowingAbsoluteExpiry() {
         for (long expiry : new long[]{1L, Long.MAX_VALUE}) {
             GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(new QueueTransport(json(200,
-                    "{\"token\":\"session\",\"expires_at\":" + expiry + "}")), immediatePoller());
+                    "{\"token\":\"session\",\"expires_at\":" + expiry + "}")), immediatePoller(), "test-client");
             assertThrows(IOException.class, () -> flow.refresh(
                     ManagedCredential.oauth("old", "github-token", 1L)));
         }

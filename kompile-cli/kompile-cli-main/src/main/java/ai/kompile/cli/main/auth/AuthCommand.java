@@ -232,6 +232,7 @@ public class AuthCommand implements Callable<Integer> {
         private enum ClientRequirement {
             NONE,
             CLIENT_ID,
+            PUBLIC_CLIENT_ID,
             CLIENT_ID_SECRET,
             CLIENT_ID_SECRET_TENANT;
 
@@ -240,6 +241,7 @@ public class AuthCommand implements Callable<Integer> {
                     case "google" -> CLIENT_ID;
                     case "microsoft" -> CLIENT_ID_SECRET_TENANT;
                     case "notion", "reddit", "atlassian", "gemini" -> CLIENT_ID_SECRET;
+                    case "github-copilot", "openai-codex", "xai", "radius" -> PUBLIC_CLIENT_ID;
                     default -> NONE;
                 };
             }
@@ -276,6 +278,10 @@ public class AuthCommand implements Callable<Integer> {
                     case "reddit" -> envSet("KOMPILE_REDDIT_CLIENT_ID");
                     case "atlassian" -> envSet("KOMPILE_ATLASSIAN_CLIENT_ID");
                     case "gemini" -> envSet("KOMPILE_GEMINI_CLIENT_ID");
+                    case "github-copilot" -> envSet("KOMPILE_GITHUB_COPILOT_CLIENT_ID");
+                    case "openai-codex" -> envSet("KOMPILE_OPENAI_CODEX_CLIENT_ID");
+                    case "xai" -> envSet("KOMPILE_XAI_CLIENT_ID");
+                    case "radius" -> envSet("KOMPILE_RADIUS_CLIENT_ID");
                     default -> true;
                 };
             }
@@ -284,6 +290,8 @@ public class AuthCommand implements Callable<Integer> {
                 return switch (this) {
                     case CLIENT_ID -> "Create a Google Cloud 'Desktop app' OAuth client."
                             + " Docs: https://developers.google.com/identity/protocols/oauth2";
+                    case PUBLIC_CLIENT_ID -> "Enter the OAuth client id this provider issues for"
+                            + " its CLI/device login (no secret).";
                     case CLIENT_ID_SECRET -> "Create the provider's OAuth app/integration"
                             + " with redirect http://127.0.0.1.";
                     case CLIENT_ID_SECRET_TENANT -> "Register an Azure 'Public client/native'"

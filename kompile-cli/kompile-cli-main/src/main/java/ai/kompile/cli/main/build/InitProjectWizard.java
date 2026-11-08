@@ -448,9 +448,9 @@ public class InitProjectWizard {
                 databaseUsername = dbUser.trim().isEmpty() ? "postgres" : dbUser.trim();
 
                 String dbPass = prompt(reader,
-                        "  Database password " + DIM + "[Enter = postgres]" + RESET + ": ");
+                        "  Database password " + DIM + "[Enter = none]" + RESET + ": ");
                 if (dbPass == null) return null;
-                databasePassword = dbPass.trim().isEmpty() ? "postgres" : dbPass.trim();
+                databasePassword = dbPass.trim();
 
                 enableSchemaInit = promptYesNo(reader,
                         "  Auto-initialize database schema? [Y/n]: ", true);

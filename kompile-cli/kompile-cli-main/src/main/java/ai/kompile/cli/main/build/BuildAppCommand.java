@@ -162,7 +162,7 @@ public class BuildAppCommand implements Callable<Integer> {
     @Option(names = {"--databaseUsername"}, description = "Database username", defaultValue = "postgres")
     private String databaseUsername;
 
-    @Option(names = {"--databasePassword"}, description = "Database password", defaultValue = "postgres")
+    @Option(names = {"--databasePassword"}, description = "Database password (none unless given)", defaultValue = "")
     private String databasePassword;
 
     @Option(names = {"--enableSchemaInit"}, description = "Auto-initialize SQL schema", defaultValue = "true", negatable = true)

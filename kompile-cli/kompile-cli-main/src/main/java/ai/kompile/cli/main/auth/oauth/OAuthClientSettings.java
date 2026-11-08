@@ -70,6 +70,32 @@ public final class OAuthClientSettings {
     public record ClientCredentials(String clientId, String clientSecret, String tenantId) {
     }
 
+    /**
+     * Client id for a flow with no secret, resolved injected → this store → {@code envVar}.
+     * Kompile ships no client ids, so finding none is an actionable error naming both sources.
+     */
+    static String requireClientId(String injected, String providerId, String envVar,
+                                  String displayName) throws IOException {
+        if (injected != null && !injected.isBlank()) {
+            return injected.trim();
+        }
+        try {
+            ClientCredentials stored = create().read(providerId);
+            if (stored != null && stored.clientId() != null && !stored.clientId().isBlank()) {
+                return stored.clientId().trim();
+            }
+        } catch (IOException unreadable) {
+            // fall back to the environment without masking the real error
+        }
+        String configured = System.getenv(envVar);
+        if (configured == null || configured.isBlank()) {
+            throw new IOException(displayName + " login needs an OAuth client id. "
+                    + "Run `kompile auth login " + providerId + "` and follow the prompt, or set "
+                    + envVar + ".");
+        }
+        return configured.trim();
+    }
+
     public ClientCredentials read(String providerId) throws IOException {
         JsonNode provider = readStore().path(normalize(providerId));
         if (!provider.isObject()) {

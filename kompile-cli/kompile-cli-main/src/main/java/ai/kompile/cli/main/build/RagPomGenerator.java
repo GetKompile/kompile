@@ -56,8 +56,8 @@ public class RagPomGenerator implements Callable<Void> {
     @CommandLine.Option(names = { "--databaseUsername" }, description = "Database username", defaultValue = "postgres")
     private String databaseUsername = "postgres";
 
-    @CommandLine.Option(names = { "--databasePassword" }, description = "Database password", defaultValue = "postgres")
-    private String databasePassword = "postgres";
+    @CommandLine.Option(names = { "--databasePassword" }, description = "Database password (none unless given)", defaultValue = "")
+    private String databasePassword = "";
 
     @CommandLine.Option(names = {
             "--enableSchemaInit" }, description = "Enable automatic schema initialization with SQL scripts", defaultValue = "true")

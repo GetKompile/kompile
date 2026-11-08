@@ -58,7 +58,7 @@ class OAuthExpiryTest {
             assertEquals(1, requests.incrementAndGet());
             return new OAuthSupport.Response(200,
                     "{\"token\":\"synthetic-session\",\"expires_at\":" + expiresAtSeconds + "}");
-        }, noPolling());
+        }, noPolling(), "synthetic-client");
 
         ManagedCredential refreshed = flow.refresh(
                 ManagedCredential.oauth("old-session", "synthetic-github-token", 1L));
@@ -104,13 +104,13 @@ class OAuthExpiryTest {
 
     private static OAuthProviderFlow flow(String provider, OAuthSupport.HttpTransport transport) {
         return switch (provider) {
-            case "xai" -> new XaiOAuthFlow(transport, noPolling());
-            case "radius" -> new RadiusOAuthFlow(transport, noPolling());
+            case "xai" -> new XaiOAuthFlow(transport, noPolling(), "synthetic-client");
+            case "radius" -> new RadiusOAuthFlow(transport, noPolling(), "synthetic-client");
             case "google" -> new GoogleOAuthFlow(transport, "synthetic-client");
             case "microsoft" -> new MicrosoftOAuthFlow(transport, noPolling(), "synthetic-client");
             case "reddit" -> new RedditOAuthFlow(transport, "synthetic-client", "synthetic-secret");
             case "atlassian" -> new AtlassianOAuthFlow(transport, "synthetic-client", "synthetic-secret");
-            case "openai-codex" -> new OpenAiCodexOAuthFlow(transport, noPolling());
+            case "openai-codex" -> new OpenAiCodexOAuthFlow(transport, noPolling(), "synthetic-client");
             default -> throw new AssertionError("Unexpected provider: " + provider);
         };
     }

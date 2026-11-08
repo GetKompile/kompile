@@ -20,12 +20,13 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "radius";
     static final String DEFAULT_GATEWAY = "https://radius.pi.dev";
 
-    private static final String CLIENT_ID = "pi-gateway";
+    static final String CLIENT_ID_ENV = "KOMPILE_RADIUS_CLIENT_ID";
     private static final String SCOPE = "gateway offline_access";
     private static final String REDIRECT_URI = "http://127.0.0.1:1456/oauth/callback";
 
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
+    private final String configuredClientId;
 
     @Override
     public String defaultBaseUrl() {
@@ -33,14 +34,21 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
     }
 
     public RadiusOAuthFlow() {
-        this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller());
+        this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller(), null);
     }
 
     RadiusOAuthFlow(
             OAuthSupport.HttpTransport http,
-            OAuthSupport.DeviceCodePoller poller) {
+            OAuthSupport.DeviceCodePoller poller,
+            String configuredClientId) {
         this.http = http;
         this.poller = poller;
+        this.configuredClientId = configuredClientId;
+    }
+
+    private String clientId() throws IOException {
+        return OAuthClientSettings.requireClientId(
+                configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName());
     }
 
     @Override
@@ -81,6 +89,7 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
             String gateway,
             boolean requestedManual,
             Interaction interaction) throws IOException, InterruptedException {
+        String clientId = clientId();
         OAuthSupport.Response discoveryResponse = http.send(new OAuthSupport.Request(
                 "GET",
                 URI.create(gateway + "/v1/oauth"),
@@ -110,7 +119,7 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
 
         URI authorizeUri = OAuthSupport.uriWithQuery(authorizationEndpoint.toString(), Map.ofEntries(
                 Map.entry("response_type", "code"),
-                Map.entry("client_id", CLIENT_ID),
+                Map.entry("client_id", clientId),
                 Map.entry("redirect_uri", REDIRECT_URI),
                 Map.entry("scope", SCOPE),
                 Map.entry("code_challenge", pkce.challenge()),
@@ -139,7 +148,7 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
             }
             return requestToken(gateway, Map.of(
                     "grant_type", "authorization_code",
-                    "client_id", CLIENT_ID,
+                    "client_id", clientId,
                     "redirect_uri", REDIRECT_URI,
                     "code", authorization.code(),
                     "code_verifier", pkce.verifier()), null);
@@ -152,9 +161,10 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
 
     private ManagedCredential loginDevice(String gateway, Interaction interaction)
             throws IOException, InterruptedException {
+        String clientId = clientId();
         OAuthSupport.Response response = postForm(
                 gateway + "/v1/oauth/device",
-                Map.of("client_id", CLIENT_ID, "scope", SCOPE));
+                Map.of("client_id", clientId, "scope", SCOPE));
         OAuthSupport.requireSuccess(response, "Radius device authorization");
         JsonNode body = OAuthSupport.json(response, "Radius device authorization");
         String deviceCode = OAuthSupport.requiredText(body, "device_code", "Radius device authorization");
@@ -173,17 +183,18 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
                 interval,
                 expiresIn,
                 false,
-                () -> pollDeviceToken(gateway, deviceCode));
+                () -> pollDeviceToken(gateway, deviceCode, clientId));
     }
 
     private OAuthSupport.PollResult<ManagedCredential> pollDeviceToken(
             String gateway,
-            String deviceCode) throws IOException, InterruptedException {
+            String deviceCode,
+            String clientId) throws IOException, InterruptedException {
         OAuthSupport.Response response = postForm(
                 gateway + "/v1/oauth/token",
                 Map.of(
                         "grant_type", OAuthSupport.DEVICE_CODE_GRANT,
-                        "client_id", CLIENT_ID,
+                        "client_id", clientId,
                         "device_code", deviceCode));
         if (response.success()) {
             return OAuthSupport.PollResult.complete(
@@ -213,7 +224,7 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
         String gateway = normalizeGateway(credential.getMetadata("gateway"));
         return requestToken(gateway, Map.of(
                 "grant_type", "refresh_token",
-                "client_id", CLIENT_ID,
+                "client_id", clientId(),
                 "refresh_token", credential.getRefresh()), credential.getRefresh());
     }
 

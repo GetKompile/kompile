@@ -180,7 +180,7 @@ public final class BuildConfiguration {
         private String ragMcpVersion = "0.1.0-SNAPSHOT";
         private String databaseUrl = "jdbc:postgresql://localhost:5432/kompile_db";
         private String databaseUsername = "postgres";
-        private String databasePassword = "postgres";
+        private String databasePassword = "";
         private boolean enableSchemaInit = true;
         private List<String> supportedLanguages = new ArrayList<>(List.of("en"));
         private List<String> anseriniIndexIds = new ArrayList<>();

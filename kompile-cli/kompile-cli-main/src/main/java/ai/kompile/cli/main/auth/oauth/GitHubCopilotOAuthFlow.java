@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
 public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "github-copilot";
 
-    private static final String CLIENT_ID = "Iv1.b507a08c87ecfe98";
+    static final String CLIENT_ID_ENV = "KOMPILE_GITHUB_COPILOT_CLIENT_ID";
     private static final String USER_AGENT = "GitHubCopilotChat/0.35.0";
     private static final String EDITOR_VERSION = "vscode/1.107.0";
     private static final String PLUGIN_VERSION = "copilot-chat/0.35.0";
@@ -30,16 +30,24 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
 
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
+    private final String configuredClientId;
 
     public GitHubCopilotOAuthFlow() {
-        this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller());
+        this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller(), null);
     }
 
     GitHubCopilotOAuthFlow(
             OAuthSupport.HttpTransport http,
-            OAuthSupport.DeviceCodePoller poller) {
+            OAuthSupport.DeviceCodePoller poller,
+            String configuredClientId) {
         this.http = http;
         this.poller = poller;
+        this.configuredClientId = configuredClientId;
+    }
+
+    private String clientId() throws IOException {
+        return OAuthClientSettings.requireClientId(
+                configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName());
     }
 
     @Override
@@ -75,6 +83,7 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
             throw new IOException("Unsupported GitHub Copilot login method: " + method);
         }
 
+        String clientId = clientId();
         String enterpriseDomain = normalizeDomain(options.enterpriseDomain());
         String domain = enterpriseDomain == null ? "github.com" : enterpriseDomain;
         Endpoints endpoints = endpoints(domain);
@@ -87,7 +96,7 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
                         "Content-Type", "application/x-www-form-urlencoded",
                         "User-Agent", USER_AGENT),
                 OAuthSupport.form(Map.of(
-                        "client_id", CLIENT_ID,
+                        "client_id", clientId,
                         "scope", "read:user"))));
         OAuthSupport.requireSuccess(response, "GitHub device authorization");
         JsonNode body = OAuthSupport.json(response, "GitHub device authorization");
@@ -106,14 +115,15 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
                 interval,
                 expiresIn,
                 true,
-                () -> pollForGitHubToken(endpoints, deviceCode));
+                () -> pollForGitHubToken(endpoints, deviceCode, clientId));
         interaction.info("Exchanging the GitHub token for a Copilot session token...");
         return exchangeCopilotToken(githubToken, enterpriseDomain);
     }
 
     private OAuthSupport.PollResult<String> pollForGitHubToken(
             Endpoints endpoints,
-            String deviceCode) throws IOException, InterruptedException {
+            String deviceCode,
+            String clientId) throws IOException, InterruptedException {
         OAuthSupport.Response response = http.send(new OAuthSupport.Request(
                 "POST",
                 endpoints.accessToken(),
@@ -122,7 +132,7 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
                         "Content-Type", "application/x-www-form-urlencoded",
                         "User-Agent", USER_AGENT),
                 OAuthSupport.form(Map.of(
-                        "client_id", CLIENT_ID,
+                        "client_id", clientId,
                         "device_code", deviceCode,
                         "grant_type", OAuthSupport.DEVICE_CODE_GRANT))));
         JsonNode body = OAuthSupport.json(response, "GitHub device token");

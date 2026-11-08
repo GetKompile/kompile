@@ -23,7 +23,7 @@ import java.util.Map;
 public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "openai-codex";
 
-    private static final String CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+    static final String CLIENT_ID_ENV = "KOMPILE_OPENAI_CODEX_CLIENT_ID";
     private static final String AUTH_BASE_URL = "https://auth.openai.com";
     private static final String AUTHORIZE_URL = AUTH_BASE_URL + "/oauth/authorize";
     private static final String TOKEN_URL = AUTH_BASE_URL + "/oauth/token";
@@ -39,16 +39,24 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
 
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
+    private final String configuredClientId;
 
     public OpenAiCodexOAuthFlow() {
-        this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller());
+        this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller(), null);
     }
 
     OpenAiCodexOAuthFlow(
             OAuthSupport.HttpTransport http,
-            OAuthSupport.DeviceCodePoller poller) {
+            OAuthSupport.DeviceCodePoller poller,
+            String configuredClientId) {
         this.http = http;
         this.poller = poller;
+        this.configuredClientId = configuredClientId;
+    }
+
+    private String clientId() throws IOException {
+        return OAuthClientSettings.requireClientId(
+                configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName());
     }
 
     @Override
@@ -101,6 +109,7 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
 
     private ManagedCredential loginBrowser(LoginOptions options, Interaction interaction)
             throws IOException, InterruptedException {
+        String clientId = clientId();
         OAuthSupport.Pkce pkce = OAuthSupport.generatePkce();
         String state = OAuthSupport.randomState();
         URI redirectUri = URI.create(BROWSER_REDIRECT_URI);
@@ -119,7 +128,7 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
 
         URI authorizeUri = OAuthSupport.uriWithQuery(AUTHORIZE_URL, Map.ofEntries(
                 Map.entry("response_type", "code"),
-                Map.entry("client_id", CLIENT_ID),
+                Map.entry("client_id", clientId),
                 Map.entry("redirect_uri", redirectUri.toString()),
                 Map.entry("scope", SCOPE),
                 Map.entry("code_challenge", pkce.challenge()),
@@ -150,7 +159,7 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
                 throw new IOException("OpenAI Codex login returned no authorization code");
             }
             interaction.info("Exchanging the authorization code for tokens...");
-            return exchangeCode(authorization.code(), pkce.verifier(), redirectUri.toString());
+            return exchangeCode(authorization.code(), pkce.verifier(), redirectUri.toString(), clientId);
         } finally {
             if (callback != null) {
                 callback.close();
@@ -160,13 +169,14 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
 
     private ManagedCredential loginDevice(Interaction interaction)
             throws IOException, InterruptedException {
+        String clientId = clientId();
         OAuthSupport.Response response = http.send(new OAuthSupport.Request(
                 "POST",
                 URI.create(DEVICE_USER_CODE_URL),
                 Map.of(
                         "Accept", "application/json",
                         "Content-Type", "application/json"),
-                OAuthSupport.MAPPER.writeValueAsString(Map.of("client_id", CLIENT_ID))));
+                OAuthSupport.MAPPER.writeValueAsString(Map.of("client_id", clientId))));
         OAuthSupport.requireSuccess(response, "OpenAI Codex device authorization");
         JsonNode body = OAuthSupport.json(response, "OpenAI Codex device authorization");
         String deviceAuthId = OAuthSupport.requiredText(
@@ -189,7 +199,8 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
         return exchangeCode(
                 authorization.authorizationCode(),
                 authorization.codeVerifier(),
-                DEVICE_REDIRECT_URI);
+                DEVICE_REDIRECT_URI,
+                clientId);
     }
 
     private OAuthSupport.PollResult<DeviceAuthorization> pollDevice(
@@ -237,7 +248,8 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
                 "OpenAI Codex device authorization failed (HTTP " + response.status() + ")");
     }
 
-    private ManagedCredential exchangeCode(String code, String verifier, String redirectUri)
+    private ManagedCredential exchangeCode(
+            String code, String verifier, String redirectUri, String clientId)
             throws IOException, InterruptedException {
         OAuthSupport.Response response = http.send(new OAuthSupport.Request(
                 "POST",
@@ -247,7 +259,7 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
                         "Content-Type", "application/x-www-form-urlencoded"),
                 OAuthSupport.form(Map.of(
                         "grant_type", "authorization_code",
-                        "client_id", CLIENT_ID,
+                        "client_id", clientId,
                         "code", code,
                         "code_verifier", verifier,
                         "redirect_uri", redirectUri))));
@@ -265,7 +277,7 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
                         "Content-Type", "application/x-www-form-urlencoded"),
                 OAuthSupport.form(Map.of(
                         "grant_type", "refresh_token",
-                        "client_id", CLIENT_ID,
+                        "client_id", clientId(),
                         "refresh_token", credential.getRefresh()))));
         return parseToken(response, "OpenAI Codex token refresh", credential);
     }

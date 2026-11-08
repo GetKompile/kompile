@@ -18,7 +18,7 @@ import java.util.Map;
 public final class XaiOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "xai";
 
-    private static final String CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
+    static final String CLIENT_ID_ENV = "KOMPILE_XAI_CLIENT_ID";
     private static final String SCOPE =
             "openid profile email offline_access grok-cli:access api:access";
     private static final URI DEVICE_CODE_URL =
@@ -29,16 +29,24 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
 
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
+    private final String configuredClientId;
 
     public XaiOAuthFlow() {
-        this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller());
+        this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller(), null);
     }
 
     XaiOAuthFlow(
             OAuthSupport.HttpTransport http,
-            OAuthSupport.DeviceCodePoller poller) {
+            OAuthSupport.DeviceCodePoller poller,
+            String configuredClientId) {
         this.http = http;
         this.poller = poller;
+        this.configuredClientId = configuredClientId;
+    }
+
+    private String clientId() throws IOException {
+        return OAuthClientSettings.requireClientId(
+                configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName());
     }
 
     @Override
@@ -69,8 +77,9 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
             throw new IOException("Unsupported xAI login method: " + method);
         }
 
+        String clientId = clientId();
         OAuthSupport.Response response = postForm(DEVICE_CODE_URL, Map.of(
-                "client_id", CLIENT_ID,
+                "client_id", clientId,
                 "scope", SCOPE,
                 "referrer", "kompile"));
         OAuthSupport.requireSuccess(response, "xAI device authorization");
@@ -93,14 +102,14 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
                 interval,
                 expiresIn,
                 true,
-                () -> pollToken(deviceCode));
+                () -> pollToken(deviceCode, clientId));
     }
 
-    private OAuthSupport.PollResult<ManagedCredential> pollToken(String deviceCode)
+    private OAuthSupport.PollResult<ManagedCredential> pollToken(String deviceCode, String clientId)
             throws IOException, InterruptedException {
         OAuthSupport.Response response = postForm(TOKEN_URL, Map.of(
                 "grant_type", OAuthSupport.DEVICE_CODE_GRANT,
-                "client_id", CLIENT_ID,
+                "client_id", clientId,
                 "device_code", deviceCode));
         JsonNode body = OAuthSupport.json(response, "xAI device token");
         if (response.success()) {
@@ -133,7 +142,7 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
             throws IOException, InterruptedException {
         OAuthSupport.Response response = postForm(TOKEN_URL, Map.of(
                 "grant_type", "refresh_token",
-                "client_id", CLIENT_ID,
+                "client_id", clientId(),
                 "refresh_token", credential.getRefresh()));
         OAuthSupport.requireSuccess(response, "xAI token refresh");
         return parseToken(
