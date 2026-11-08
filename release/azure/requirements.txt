@@ -1,1 +1,0 @@
-# The controller uses Azure CLI authentication and has no Python package dependency.

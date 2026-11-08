@@ -10,8 +10,8 @@
 #
 # Every job runs on GitHub Actions on GitHub-hosted runners. Each job's first
 # step fails when runner.environment is not github-hosted, whatever label a
-# runner variable names. The release/aws and release/azure VM farms never build
-# or publish these assets.
+# runner variable names. The release/aws VM farm never builds or publishes
+# these assets.
 #
 # GitHub Releases is the download source. Once the release job has published,
 # mirror-r2 (mirror-release-to-r2.yml) copies every asset and a manifest.json to

@@ -1055,6 +1055,13 @@ class BuildPlatformParityTest(unittest.TestCase):
             agent_cli.parent.mkdir(parents=True)
             agent_cli.write_bytes(b"native-agent-cli")
             agent_cli.chmod(0o755)
+            remote_cli = (
+                root / "kompile-cli" / "kompile-cli-remote" / "target" /
+                "kompile-remote"
+            )
+            remote_cli.parent.mkdir(parents=True)
+            remote_cli.write_bytes(b"native-remote-cli")
+            remote_cli.chmod(0o755)
             # cli-only packaging fail-closes on lib/kompile-chat.jar; provide the
             # handoff exec JAR the same way the persona verifier fixture does.
             chat_target = (
@@ -1174,6 +1181,13 @@ class BuildPlatformParityTest(unittest.TestCase):
             agent_cli.parent.mkdir(parents=True)
             agent_cli.write_bytes(b"native-agent-cli")
             agent_cli.chmod(0o755)
+            remote_cli = (
+                root / "kompile-cli" / "kompile-cli-remote" / "target" /
+                "kompile-remote"
+            )
+            remote_cli.parent.mkdir(parents=True)
+            remote_cli.write_bytes(b"native-remote-cli")
+            remote_cli.chmod(0o755)
             # cli-only packaging fail-closes on lib/kompile-chat.jar; provide the
             # handoff exec JAR the same way the persona verifier fixture does.
             chat_target = (
@@ -1452,6 +1466,7 @@ class BuildPlatformParityTest(unittest.TestCase):
                 "kompile-cli/kompile-agent-cli/target/kompile-agent": b"native-agent-cli",
                 "kompile-cli/kompile-app-cli/target/kompile-app-cli": b"native-app-cli",
                 "kompile-cli/kompile-model-cli/target/kompile-model": b"native-model-cli",
+                "kompile-cli/kompile-cli-remote/target/kompile-remote": b"native-remote-cli",
                 "kompile-cli/kompile-component-cli/target/kompile-component": b"native-component-cli",
                 "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app": b"native-app",
                 "kompile-app/kompile-app-parent/kompile-app-main/target/app-exec.jar": b"app",
@@ -3702,10 +3717,10 @@ class JavaMatrixTest(unittest.TestCase):
             {"linux-x86_64-cuda-12.9-zluda-rocm-10.0.0"},
             {classifier for classifier, variant in variants.items() if variant == "amd-zluda"},
         )
-        # The farm release plans build the same classifiers into the same
-        # variants. Their other variant entries are DL4J lanes and named
+        # The farm release plan builds the same classifiers into the same
+        # variants. Its other variant entries are DL4J lanes and named
         # distributions, which name no classifier.
-        for plan in ("aws", "azure"):
+        for plan in ("aws",):
             data = json.loads(
                 (REPOSITORY / "release" / plan / "release-plan.json").read_text(encoding="utf-8")
             )
