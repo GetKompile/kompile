@@ -1560,9 +1560,37 @@ public class DirectLlmClient implements AutoCloseable {
             // state; keep the result non-replayable.
             result.providerSideEffectsObserved = true;
             if (streamed.length() > 0) result.text = streamed.toString();
-            recordStreamFailure(result, e, "[Error: ");
+            if (!recordOpenCodeBillingFailure(result, e, effectiveModel)) {
+                recordStreamFailure(result, e, "[Error: ");
+            }
         }
         return result;
+    }
+
+    /**
+     * OpenCode's in-band billing stop ("Upstream request failed: Insufficient
+     * account funds") reads like a credential rejection: the chat then re-runs
+     * sign-in, which cannot change which plan pays. Name its failure kind so
+     * failover handles billing, and follow the raw error with the route-accurate
+     * guidance for the failing model's gateway half.
+     *
+     * @return true when this failure was recorded here and the generic path must not run
+     */
+    private boolean recordOpenCodeBillingFailure(StreamResult result, Exception failure, String model) {
+        FailureKind kind = ProviderResponseFailure.classifyNativeError(failure.getMessage());
+        if (kind != FailureKind.QUOTA_EXHAUSTED) return false;
+        String detail = formatExceptionMessage(failure);
+        String guidance = ProviderResponseFailure.openCodeBillingGuidance(model);
+        String finalMessage = "[" + detail + (guidance.isBlank() ? "" : "\n" + guidance) + "]";
+        result.failed = true;
+        result.responseStarted = true;
+        result.failureStatusCode = 402;
+        result.failureKind = FailureKind.QUOTA_EXHAUSTED;
+        result.failureMessage = finalMessage;
+        String rendered = (result.text.isEmpty() ? "" : "\n") + finalMessage;
+        result.text += rendered;
+        printStreamingChunk(rendered);
+        return true;
     }
 
     private OpenCodeServeClient openCodeClient() {
@@ -1571,7 +1599,7 @@ public class DirectLlmClient implements AutoCloseable {
             synchronized (this) {
                 client = openCodeServeClient;
                 if (client == null) {
-                    client = new OpenCodeServeClient(objectMapper, workingDirectory);
+                    client = new OpenCodeServeClient(objectMapper, workingDirectory, config);
                     client.setProcessPanel(claudeTaskProcesses);
                     client.setSubagentDepth(subagentDepth);
                     openCodeServeClient = client;

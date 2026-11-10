@@ -57,6 +57,8 @@ class UsageLimitAutoContinueTest {
     void ignoresBillingAndCreditExhaustion() {
         assertFalse(classify("429: billing_hard_limit_reached").arm());
         assertFalse(classify("insufficient_quota: your credits are exhausted").arm());
+        assertFalse(classify("OpenCode turn failed: Upstream request failed: Insufficient account funds").arm(),
+                "OpenCode billing is a human action, never a wait");
     }
 
     @Test

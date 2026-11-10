@@ -73,6 +73,52 @@ class DirectLlmClientOpenCodeRetryTest {
     }
 
     @Test
+    void insufficientFundsOnSummitModelIsQuotaExhaustedWithRouteGuidance() throws Exception {
+        ChatConfig config = new ChatConfig("opencode", null, "opencode/glm-5.2", null);
+        DirectLlmClient client = new DirectLlmClient(
+                config, new ObjectMapper(), fastPolicy());
+        client.setOutputConsumer(ignored -> { });
+
+        DirectLlmClient.StreamResult result = new DirectLlmClient.StreamResult();
+        result.providerSideEffectsObserved = true;
+        invokeRecordOpenCodeBillingFailure(client, result,
+                new IllegalStateException(
+                        "OpenCode turn failed: Upstream request failed: Insufficient account funds"),
+                "opencode/glm-5.2");
+
+        assertTrue(result.failed);
+        assertEquals(FailureKind.QUOTA_EXHAUSTED, result.failureKind,
+                "billing must not read as a provider or credential failure");
+        assertFalse(readRetryable(result),
+                "a blocked wallet is not a connectivity problem: retries cannot help");
+        assertTrue(result.text.contains("Insufficient account funds"),
+                "the actual failure stays visible");
+        assertTrue(result.text.toLowerCase().contains("opencode-go/"),
+                "the guidance points at the Go provider the subscription pays for");
+        assertTrue(result.text.contains("Console credit balance"), result.text);
+    }
+
+    @Test
+    void insufficientFundsOnGoModelExplainsTheAllowance() throws Exception {
+        ChatConfig config = new ChatConfig("opencode", null, "opencode-go/glm-5.3-flash", null);
+        DirectLlmClient client = new DirectLlmClient(
+                config, new ObjectMapper(), fastPolicy());
+        client.setOutputConsumer(ignored -> { });
+
+        DirectLlmClient.StreamResult result = new DirectLlmClient.StreamResult();
+        result.providerSideEffectsObserved = true;
+        invokeRecordOpenCodeBillingFailure(client, result,
+                new IllegalStateException(
+                        "OpenCode turn failed: Upstream request failed: Insufficient account funds"),
+                "opencode-go/glm-5.3-flash");
+
+        assertTrue(result.failed);
+        assertEquals(FailureKind.QUOTA_EXHAUSTED, result.failureKind);
+        assertTrue(result.text.contains("Go allowance"), result.text);
+        assertTrue(result.text.contains("Extra Usage"), result.text);
+    }
+
+    @Test
     void cancellingTheChatTurnAbortsTheOpenCodeTurn() throws Exception {
         ChatConfig config = new ChatConfig("opencode", null, "opencode-go/model", null);
         DirectLlmClient client = new DirectLlmClient(
@@ -123,6 +169,16 @@ class DirectLlmClientOpenCodeRetryTest {
                 Exception.class, String.class);
         method.setAccessible(true);
         method.invoke(client, result, failure, "[Error: ");
+    }
+
+    private static void invokeRecordOpenCodeBillingFailure(
+            DirectLlmClient client, DirectLlmClient.StreamResult result,
+            Exception failure, String model) throws Exception {
+        var method = DirectLlmClient.class.getDeclaredMethod(
+                "recordOpenCodeBillingFailure", DirectLlmClient.StreamResult.class,
+                Exception.class, String.class);
+        method.setAccessible(true);
+        method.invoke(client, result, failure, model);
     }
 
     private static boolean readRetryable(DirectLlmClient.StreamResult result)

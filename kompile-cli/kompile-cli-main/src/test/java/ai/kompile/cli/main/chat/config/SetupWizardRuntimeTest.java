@@ -377,10 +377,11 @@ class SetupWizardRuntimeTest {
         assertEquals(List.of(SetupWizard.AuthMethod.NONE),
                 SetupWizard.authMethodsForPicker("kompile-local"));
         assertTrue(pickerProviders.contains("opencode"));
-        assertEquals(List.of(SetupWizard.AuthMethod.NATIVE),
+        // Two routes now: the machine-global CLI login and a Kompile-stored key.
+        assertEquals(List.of(SetupWizard.AuthMethod.NATIVE, SetupWizard.AuthMethod.API_KEY),
                 SetupWizard.authMethodsForPicker("opencode"));
-        assertEquals(List.of("Native CLI authentication (requires installed provider CLI)"),
-                SetupWizard.authOptions("opencode"));
+        assertEquals(List.of("Native CLI authentication (requires installed provider CLI)",
+                "API key"), SetupWizard.authOptions("opencode"));
         assertEquals(SetupWizard.AuthMethod.NATIVE,
                 SetupWizard.authMethodForProvider("opencode"));
         assertEquals(0, ChatConfig.getDefaultModels("openai").length);

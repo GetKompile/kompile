@@ -142,9 +142,22 @@ final class OpenCodeServeClient implements AutoCloseable {
     private volatile BackgroundProcessManager processPanel;
     /** KOMPILE_SUBAGENT_DEPTH of the agent this client serves; 0 for a top-level chat. */
     private volatile int subagentDepth;
+    /** This chat's configuration; null or the native route injects no provider options. */
+    private final ChatConfig chatConfig;
 
     OpenCodeServeClient(ObjectMapper objectMapper, Path workingDirectory) {
+        this(objectMapper, workingDirectory, null);
+    }
+
+    /**
+     * @param config this chat's configuration; when it is on OpenCode's API-key
+     *               route, its resolved key is injected into the server launch as
+     *               per-launch provider options so a stored key survives new
+     *               sessions. Null or the native route boots opencode unchanged.
+     */
+    OpenCodeServeClient(ObjectMapper objectMapper, Path workingDirectory, ChatConfig config) {
         this.objectMapper = objectMapper;
+        this.chatConfig = config;
         this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
         this.compactionReload = new NativeCompactionReload(this.workingDirectory, objectMapper);
         this.connectivityPolicy = ProviderConnectivityPolicy.forProvider("opencode");
@@ -163,6 +176,7 @@ final class OpenCodeServeClient implements AutoCloseable {
     OpenCodeServeClient(ObjectMapper objectMapper, Path workingDirectory,
                         HttpClient httpClient, String baseUrl, String sessionId) {
         this.objectMapper = objectMapper;
+        this.chatConfig = null;
         this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
         this.compactionReload = new NativeCompactionReload(this.workingDirectory, objectMapper);
         this.connectivityPolicy = ProviderConnectivityPolicy.forProvider("opencode");
@@ -999,6 +1013,7 @@ final class OpenCodeServeClient implements AutoCloseable {
         ClaudeCliClient.withParentSession(builder, processPanel);
         injectKompileTools(builder);
         applyPermissionGrants(builder.environment());
+        applyProviderApiKey(builder.environment());
         int depth = subagentDepth;
         if (depth > 0) {
             builder.environment().put(SubagentDelegationGuard.DEPTH_ENV, Integer.toString(depth));
@@ -1109,6 +1124,53 @@ final class OpenCodeServeClient implements AutoCloseable {
      * wildcard goes first; a launch with a wildcard or a single action of its own
      * keeps it.
      */
+    /**
+     * Inject this chat's resolved API key as OpenCode provider options
+     * ({@code provider.<id>.options.apiKey}) in the launch's
+     * {@code OPENCODE_CONFIG_CONTENT}, exactly where {@code opencode auth login}
+     * stores one. A keyless native login is untouched: the server then reads its
+     * own auth.json as before.
+     */
+    private void applyProviderApiKey(Map<String, String> environment) {
+        String apiKey = null;
+        try {
+            apiKey = chatConfig == null || !"api-key".equalsIgnoreCase(chatConfig.getAuthenticationMethod())
+                    ? null : chatConfig.getApiKey();
+        } catch (ChatConfig.AuthenticationException e) {
+            // No stored key: boot the server with its own native credentials.
+        }
+        if (apiKey == null || apiKey.isBlank()) {
+            return;
+        }
+        try {
+            String providerId = providerIdOfTurnModel();
+            if (providerId == null || providerId.isBlank()) return;
+            ObjectNode content = objectMapper.createObjectNode();
+            String current = environment.get(OPENCODE_CONFIG_CONTENT_ENV);
+            if (current != null && !current.isBlank()) {
+                JsonNode parsed = objectMapper.readTree(current);
+                if (parsed != null && parsed.isObject()) {
+                    content = (ObjectNode) parsed;
+                }
+            }
+            content.withObject("/provider/" + providerId + "/options")
+                    .put("apiKey", apiKey);
+            environment.put(OPENCODE_CONFIG_CONTENT_ENV, objectMapper.writeValueAsString(content));
+        } catch (Exception e) {
+            McpDiagnostics.log("[MCP] Warning: Could not inject the OpenCode provider API key: "
+                    + e.getMessage());
+        }
+    }
+
+    /** The provider id of this chat's selected model, e.g. {@code openai} in {@code openai/gpt-4o}. */
+    private String providerIdOfTurnModel() {
+        if (chatConfig == null) return null;
+        String model = chatConfig.getModel();
+        if (model == null || model.isBlank()) return null;
+        int slash = model.indexOf('/');
+        return slash > 0 ? model.substring(0, slash) : "opencode";
+    }
+
     void applyPermissionGrants(Map<String, String> environment) {
         try {
             String current = environment.get(OPENCODE_CONFIG_CONTENT_ENV);

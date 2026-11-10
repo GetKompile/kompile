@@ -319,6 +319,7 @@ public final class UsageLimitAutoContinue {
         // Billing exhaustion needs human action, not a wait.
         if (!structuredWindow && (normalized.contains("billing") || normalized.contains("credit")
                 || normalized.contains("insufficient_quota") || normalized.contains("insufficient balance")
+                || normalized.contains("insufficient funds")
                 || normalized.contains("subscription") && normalized.contains("expired"))) {
             return Verdict.NONE;
         }

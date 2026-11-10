@@ -59,19 +59,27 @@ public class CliAgentModelService {
     /**
      * Default ordered extraction models used when a project has not supplied an explicit priority.
      * Providers are filtered by the active extraction policy before this order is applied.
+     * <p>Live as of the 2026-11 opencode catalog: free Summit models are free-tier daily
+     * requests, `opencode-go/<id>` models bill the OpenCode Go subscription, and plain
+     * `opencode/<id>` paid models bill the Console credit balance — so they follow Go.
      */
     public static final List<String> DEFAULT_EXTRACTION_MODEL_PRIORITY = List.of(
-            "opencode/deepseek-v4-flash-free",
-            "opencode/deepseek-v4-flash",
-            "opencode/kimi-k2.6",
-            "opencode/kimi-k2.5",
-            "opencode/minimax-m2.7",
-            "opencode/glm-5.2",
+            "opencode/deepseek-v4.1-flash-free",
+            "opencode/mimo-v2.6-flash-free",
+            "opencode/glm-5.3-flash-free",
+            "opencode/longcat-2.5-free",
+            "opencode-go/deepseek-v4.1-flash",
             "opencode-go/deepseek-v4-pro",
-            "opencode-go/deepseek-v4-flash",
-            "opencode-go/kimi-k2.6",
-            "opencode-go/minimax-m2.7",
-            "opencode-go/glm-5.2");
+            "opencode-go/mimo-v2.6-flash",
+            "opencode-go/longcat-2.0",
+            "opencode-go/kimi-k2.7-code",
+            "opencode-go/minimax-m3.1-flash",
+            "opencode-go/glm-5.3-flash",
+            "opencode-go/glm-5.2",
+            "opencode/kimi-k2.5",
+            "opencode/kimi-k2.6",
+            "opencode/minimax-m2.7",
+            "opencode/glm-5.2");
 
     private final AgentRegistryService agentRegistry;
     private final AgentSubprocessExecutor subprocessExecutor;

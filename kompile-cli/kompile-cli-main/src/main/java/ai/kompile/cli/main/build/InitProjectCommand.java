@@ -665,7 +665,7 @@ public class InitProjectCommand implements Callable<Integer> {
         graphExtractionConfig.put("entityResolutionUseEmbeddings", true);
         graphExtractionConfig.put("entityResolutionEmbeddingThreshold", 0.88);
         graphExtractionConfig.put("minConfidence", 0.5);
-        graphExtractionConfig.put("extractionModelProviderAllow", List.of("opencode"));
+        graphExtractionConfig.put("extractionModelProviderAllow", List.of("opencode", "opencode-go", "local"));
         graphExtractionConfig.put("extractionModelExcludeMarkers", List.of("claude", "codex", "opus", "sonnet", "gpt", "gemini"));
         graphExtractionConfig.put("extractionModelAllow", defaultExtractionModelPriority());
         graphExtractionConfig.put("extractionModelPriority", defaultExtractionModelPriority());
@@ -682,11 +682,25 @@ public class InitProjectCommand implements Callable<Integer> {
     }
 
     private static List<String> defaultExtractionModelPriority() {
+        // Live as of the 2026-11 opencode catalog: free Summit models first
+        // (their daily allowance is free), then the OpenCode Go subscription
+        // models, then paid Summit models `opencode/<id>` (they bill the
+        // Console credit balance — an OpenCode Go plan never covers them).
         return List.of(
-                "opencode/deepseek-v4-flash-free",
-                "opencode/deepseek-v4-flash",
-                "opencode/kimi-k2.6",
+                "opencode/deepseek-v4.1-flash-free",
+                "opencode/mimo-v2.6-flash-free",
+                "opencode/glm-5.3-flash-free",
+                "opencode/longcat-2.5-free",
+                "opencode-go/deepseek-v4.1-flash",
+                "opencode-go/deepseek-v4-pro",
+                "opencode-go/mimo-v2.6-flash",
+                "opencode-go/longcat-2.0",
+                "opencode-go/kimi-k2.7-code",
+                "opencode-go/minimax-m3.1-flash",
+                "opencode-go/glm-5.3-flash",
+                "opencode-go/glm-5.2",
                 "opencode/kimi-k2.5",
+                "opencode/kimi-k2.6",
                 "opencode/minimax-m2.7",
                 "opencode/glm-5.2");
     }

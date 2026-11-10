@@ -505,6 +505,7 @@ public class PersistentAgentProcess implements AutoCloseable {
                 || lower.contains("reached your limit") || lower.contains("exceeded your limit")
                 || lower.contains("out of credits") || lower.contains("credits exhausted")
                 || lower.contains("credit limit") || lower.contains("insufficient credits")
+                || lower.contains("insufficient funds")
                 || lower.contains("too many requests") || lower.contains("resource exhausted")
                 || lower.contains("429") || lower.contains("not authenticated")
                 || (lower.contains("401") && lower.contains("unauthorized"))

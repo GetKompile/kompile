@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -159,7 +160,9 @@ final class ProviderResponseFailure {
         if (text.contains("usage limit") || text.contains("usage_limit_reached")
                 || text.contains("hit your limit") || text.contains("weekly limit")
                 || text.contains("weekly usage") || text.contains("quota exhausted")
-                || text.contains("insufficient_quota") || text.contains("credit balance")) {
+                || text.contains("insufficient_quota") || text.contains("credit balance")
+                || text.contains("insufficient funds") || text.contains("account funds")
+                || text.contains("insufficient balance")) {
             return FailureKind.QUOTA_EXHAUSTED;
         }
         if (text.contains("rate limit") || text.contains("rate_limit_error")
@@ -199,5 +202,33 @@ final class ProviderResponseFailure {
             case QUOTA_EXHAUSTED -> "[Provider credits or usage limit exhausted. Check billing and account limits before retrying.]";
             default -> "[Provider request failed.]";
         };
+    }
+
+    /**
+     * OpenCode's billing split explained against the model that failed. Its two
+     * gateway routes share one connected API key but two wallets: the plain
+     * `opencode/<model>` provider (Console/Zen) bills the Console credit
+     * balance, while an OpenCode Go subscription only pays for the
+     * `opencode-go/<model>` provider. The error therefore reads like a
+     * rejected credential when the key authenticated fine — what changed is
+     * which plan is billed. Empty outside OpenCode's own prefixes.
+     */
+    static String openCodeBillingGuidance(String model) {
+        String value = model == null ? "" : model.trim();
+        int slash = value.indexOf('/');
+        String provider = slash > 0 ? value.substring(0, slash).toLowerCase(Locale.ROOT) : "";
+        if ("opencode-go".equals(provider)) {
+            return "[Your API key is valid — this is usage, not the key. The OpenCode Go allowance "
+                    + "for opencode-go models was exhausted and Extra Usage is off: wait for the "
+                    + "5-hour/weekly/monthly window to reset, or enable Extra Usage (or add Console "
+                    + "credit) at https://console.opencode.ai.]";
+        }
+        if ("opencode".equals(provider)) {
+            return "[Your API key is valid — this is the billing route, not the key. `opencode/<model>` "
+                    + "models bill the Console credit balance; an OpenCode Go subscription pays only for "
+                    + "`opencode-go/<model>` models. Pick an opencode-go model via /model (e.g. "
+                    + "opencode-go/glm-5.2) or fund the Console balance at https://console.opencode.ai.]";
+        }
+        return "";
     }
 }

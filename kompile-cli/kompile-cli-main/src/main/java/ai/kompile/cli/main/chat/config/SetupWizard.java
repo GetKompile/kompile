@@ -663,8 +663,14 @@ public class SetupWizard {
                             + " choose a model runtime.");
                     return null;
                 }
-                AuthenticationSelection authentication = "global".equals(authScope)
-                        || providerSelection.authMethod() == AuthMethod.NATIVE
+                // A native CLI login (opencode, and every other registry agent with an
+                // authCommand) is machine-global, so the session page asks whether to keep
+                // the existing CLI login instead of re-running the CLI's interactive
+                // sign-in on every new session. The Claude Code route still walks the
+                // stored-credential page, where global scope sets the vendor default.
+                boolean nativeCliLogin = providerSelection.authMethod() == AuthMethod.NATIVE
+                        && !isClaudeCodeRoute(providerSelection.vendor(), providerSelection.authMethod());
+                AuthenticationSelection authentication = "global".equals(authScope) && !nativeCliLogin
                         ? authenticate(reader, providerSelection.vendor(), providerSelection.authMethod())
                         : authenticateSession(reader, providerSelection.vendor(), providerSelection.authMethod());
                 if (authentication == null) return null;
@@ -2019,7 +2025,15 @@ public class SetupWizard {
             return List.of(AuthMethod.OAUTH, AuthMethod.API_KEY);
         }
         if (NativeCliAuth.isSupported(vendor)) {
-            return List.of(AuthMethod.NATIVE);
+            // A native CLI agent (opencode) can also accept a Kompile-managed API
+            // key: its turn transport can inject provider options per launch, and
+            // a stored key survives new sessions without re-running the CLI's
+            // interactive sign-in. Native stays as the second choice.
+            List<AuthMethod> methods = new ArrayList<>(List.of(AuthMethod.NATIVE));
+            if (supportsApiKey(vendor)) {
+                methods.add(AuthMethod.API_KEY);
+            }
+            return List.copyOf(methods);
         }
         List<AuthMethod> methods = new ArrayList<>();
         if (oauthProviderForVendor(vendor) != null) {
@@ -2571,6 +2585,13 @@ public class SetupWizard {
         if (envVar != null) {
             System.out.println("  " + DIM + "(or set " + envVar + " environment variable)" + RESET);
         }
+        if ("opencode".equalsIgnoreCase(provider)) {
+            // OpenCode's two gateway routes share one key but two wallets: the
+            // key proves nothing about which plan pays an `opencode/` model.
+            System.out.println("  " + DIM
+                    + "Note: an OpenCode Go subscription pays only for `opencode-go/<model>` models;"
+                    + " `opencode/<model>` models bill the Console credit balance." + RESET);
+        }
 
         return promptManual(reader, "  API key: ");
     }
@@ -2594,6 +2615,15 @@ public class SetupWizard {
     /** Providers with no endpoint of their own: the user supplies the OpenAI-compatible URL. */
     static boolean requiresBaseUrl(String provider) {
         return "custom".equalsIgnoreCase(provider);
+    }
+
+    /**
+     * Providers whose transport carries an API key as per-launch provider options
+     * rather than a request header. The key resolves from Kompile's credential
+     * store exactly like a header provider's; the transport decides how it rides.
+     */
+    static boolean supportsApiKeyThroughOptions(String provider) {
+        return "opencode".equalsIgnoreCase(provider);
     }
 
     public static String promptBaseUrl(LineReader reader, String provider) {
