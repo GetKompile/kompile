@@ -59,6 +59,16 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
                 configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName());
     }
 
+    /**
+     * Login-time resolution: prompts through the login's interaction when no
+     * registration exists anywhere and persists the answer; refresh keeps the
+     * non-interactive {@link #clientId()}.
+     */
+    private String clientId(OAuthProviderFlow.Interaction interaction) throws IOException {
+        return OAuthClientSettings.requireClientIdInteractive(
+                configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName(), interaction);
+    }
+
     @Override
     public String providerId() {
         return PROVIDER_ID;
@@ -109,7 +119,7 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
 
     private ManagedCredential loginBrowser(LoginOptions options, Interaction interaction)
             throws IOException, InterruptedException {
-        String clientId = clientId();
+        String clientId = clientId(interaction);
         OAuthSupport.Pkce pkce = OAuthSupport.generatePkce();
         String state = OAuthSupport.randomState();
         URI redirectUri = URI.create(BROWSER_REDIRECT_URI);
@@ -169,7 +179,7 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
 
     private ManagedCredential loginDevice(Interaction interaction)
             throws IOException, InterruptedException {
-        String clientId = clientId();
+        String clientId = clientId(interaction);
         OAuthSupport.Response response = http.send(new OAuthSupport.Request(
                 "POST",
                 URI.create(DEVICE_USER_CODE_URL),

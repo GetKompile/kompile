@@ -8,6 +8,8 @@ package ai.kompile.cli.main.auth;
 import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.channel.ChannelAuthCommand;
 import ai.kompile.cli.main.auth.source.AuthSourceCommand;
+import ai.kompile.cli.main.auth.oauth.CopilotClientIdResolver;
+import ai.kompile.cli.main.auth.oauth.GitHubCopilotOAuthFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthClientSettings;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
@@ -193,6 +195,17 @@ public class AuthCommand implements Callable<Integer> {
             }
             ClientRequirement requirement = ClientRequirement.forProvider(providerId);
             if (requirement == ClientRequirement.NONE || requirement.satisfied(providerId)) {
+                return;
+            }
+            // GitHub Copilot's client id is resolved at run time (the store, the
+            // environment, or GitHub's own published client — see
+            // CopilotClientIdResolver): pre-resolve and cache it here so the wizard
+            // never prompts for an id the automation can fetch, and only falls back
+            // to the prompt when every automatic source is unavailable.
+            if ("github-copilot".equals(providerId)
+                    && CopilotClientIdResolver.preResolveForCommand(
+                            GitHubCopilotOAuthFlow.PROVIDER_ID,
+                            GitHubCopilotOAuthFlow.CLIENT_ID_ENV)) {
                 return;
             }
             Console console = System.console();

@@ -96,6 +96,63 @@ public final class OAuthClientSettings {
         return configured.trim();
     }
 
+    /**
+     * Interactive resolution: injected → store → environment; when none has the id,
+     * prompt once through the login's {@code interaction} and persist the answer to
+     * the store so later logins and token refreshes resolve silently. This is the
+     * chat wizard's client-id step: {@code kompile auth login} has its own prompt
+     * (AuthCommand.ensureClientRegistration), but a chat /auth login had only the
+     * hard failure — commit 353606da0 stopped shipping client ids and left chat
+     * logins without any first-login path.
+     *
+     * @param interaction the login's interaction; its {@code prompt} collects the id
+     * @return the resolved client id, never null or blank
+     * @throws IOException when the interaction is null, the user cancels, or the
+     *                      answer cannot be collected
+     */
+    static String requireClientIdInteractive(String injected, String providerId, String envVar,
+                                             String displayName,
+                                             OAuthProviderFlow.Interaction interaction)
+            throws IOException {
+        if (injected != null && !injected.isBlank()) {
+            return injected.trim();
+        }
+        try {
+            ClientCredentials stored = create().read(providerId);
+            if (stored != null && stored.clientId() != null && !stored.clientId().isBlank()) {
+                return stored.clientId().trim();
+            }
+        } catch (IOException unreadable) {
+            // fall through to environment/prompt without masking the real error
+        }
+        String configured = System.getenv(envVar);
+        if (configured != null && !configured.isBlank()) {
+            return configured.trim();
+        }
+        if (interaction == null) {
+            throw new IOException(displayName + " login needs an OAuth client id. "
+                    + "Run `kompile auth login " + providerId + "` and follow the prompt, or set "
+                    + envVar + ".");
+        }
+        String entered = interaction.prompt(
+                displayName + " OAuth client id (public client, no secret; Enter cancels): ");
+        if (entered == null || entered.isBlank()) {
+            throw new IOException(displayName + " login was cancelled without a client id. "
+                    + "Set " + envVar + " or run `kompile auth login " + providerId + "` later.");
+        }
+        String clientId = entered.trim();
+        try {
+            create().put(providerId, new ClientCredentials(clientId, null, null));
+            interaction.info("Client id saved to " + SETTINGS_FILE
+                    + "; future " + displayName + " logins will not ask again.");
+        } catch (IOException persistFailed) {
+            // The entered id still works for this login; the next one prompts again.
+            interaction.info("Could not persist the client id (" + persistFailed.getMessage()
+                    + "); it applies to this login only.");
+        }
+        return clientId;
+    }
+
     public ClientCredentials read(String providerId) throws IOException {
         JsonNode provider = readStore().path(normalize(providerId));
         if (!provider.isObject()) {

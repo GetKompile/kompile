@@ -49,6 +49,16 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
                 configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName());
     }
 
+    /**
+     * Login-time resolution: prompts through the login's interaction when no
+     * registration exists anywhere and persists the answer; refresh keeps the
+     * non-interactive {@link #clientId()}.
+     */
+    private String clientId(OAuthProviderFlow.Interaction interaction) throws IOException {
+        return OAuthClientSettings.requireClientIdInteractive(
+                configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName(), interaction);
+    }
+
     @Override
     public String providerId() {
         return PROVIDER_ID;
@@ -77,7 +87,7 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
             throw new IOException("Unsupported xAI login method: " + method);
         }
 
-        String clientId = clientId();
+        String clientId = clientId(interaction);
         OAuthSupport.Response response = postForm(DEVICE_CODE_URL, Map.of(
                 "client_id", clientId,
                 "scope", SCOPE,

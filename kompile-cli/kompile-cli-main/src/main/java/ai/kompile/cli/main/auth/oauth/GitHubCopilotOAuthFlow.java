@@ -19,10 +19,10 @@ import java.util.regex.Pattern;
 
 /** GitHub Copilot OAuth device flow, including GitHub Enterprise hosts. */
 public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
-    static final String PROVIDER_ID = "github-copilot";
+    public static final String PROVIDER_ID = "github-copilot";
 
-    static final String CLIENT_ID_ENV = "KOMPILE_GITHUB_COPILOT_CLIENT_ID";
-    private static final String USER_AGENT = "GitHubCopilotChat/0.35.0";
+    public static final String CLIENT_ID_ENV = "KOMPILE_GITHUB_COPILOT_CLIENT_ID";
+    static final String USER_AGENT = "GitHubCopilotChat/0.35.0";
     private static final String EDITOR_VERSION = "vscode/1.107.0";
     private static final String PLUGIN_VERSION = "copilot-chat/0.35.0";
     private static final String API_VERSION = "2026-06-01";
@@ -45,9 +45,20 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
         this.configuredClientId = configuredClientId;
     }
 
-    private String clientId() throws IOException {
-        return OAuthClientSettings.requireClientId(
-                configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName());
+    /**
+     * Login-time resolution: the device flow cannot start without a client id that
+     * names a Copilot-entitled OAuth application — nothing a subscriber can register
+     * themselves — so the id is resolved at run time by
+     * {@link CopilotClientIdResolver#resolve} (explicitly configured value, the
+     * {@code KOMPILE_GITHUB_COPILOT_CLIENT_ID} environment, the oauth-clients store,
+     * GitHub's own published client, the documented default, and only then a prompt
+     * through the login's interaction, whose answer is validated before any pairing
+     * and persisted).
+     */
+    private CopilotClientIdResolver.Resolved resolveClientId(
+            OAuthProviderFlow.Interaction interaction, String domain) throws IOException {
+        return new CopilotClientIdResolver(http).resolve(
+                configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName(), domain, interaction);
     }
 
     @Override
@@ -83,21 +94,22 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
             throw new IOException("Unsupported GitHub Copilot login method: " + method);
         }
 
-        String clientId = clientId();
         String enterpriseDomain = normalizeDomain(options.enterpriseDomain());
         String domain = enterpriseDomain == null ? "github.com" : enterpriseDomain;
         Endpoints endpoints = endpoints(domain);
+        CopilotClientIdResolver.Resolved resolved = resolveClientId(interaction, domain);
 
-        OAuthSupport.Response response = http.send(new OAuthSupport.Request(
-                "POST",
-                endpoints.deviceCode(),
-                Map.of(
-                        "Accept", "application/json",
-                        "Content-Type", "application/x-www-form-urlencoded",
-                        "User-Agent", USER_AGENT),
-                OAuthSupport.form(Map.of(
-                        "client_id", clientId,
-                        "scope", "read:user"))));
+        OAuthSupport.Response response = deviceAuthorization(endpoints, resolved.clientId());
+        if (response.status() == 404
+                && resolved.source() == CopilotClientIdResolver.Source.STORE) {
+            // Self-heal: the store's cached id stopped existing at GitHub between
+            // resolution and pairing. Purge it, re-resolve once — the published
+            // client, the documented default, or the prompt takes over — and pair
+            // with the replacement.
+            new CopilotClientIdResolver(http).purgeStored(PROVIDER_ID);
+            resolved = resolveClientId(interaction, domain);
+            response = deviceAuthorization(endpoints, resolved.clientId());
+        }
         OAuthSupport.requireSuccess(response, "GitHub device authorization");
         JsonNode body = OAuthSupport.json(response, "GitHub device authorization");
         String deviceCode = OAuthSupport.requiredText(body, "device_code", "GitHub device authorization");
@@ -111,13 +123,28 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
                 OAuthSupport.requiredPositiveLong(body, "expires_in", "GitHub device authorization"));
 
         interaction.deviceCode(userCode, verificationUri, interval, expiresIn);
+        String pairingClientId = resolved.clientId();
         String githubToken = poller.poll(
                 interval,
                 expiresIn,
                 true,
-                () -> pollForGitHubToken(endpoints, deviceCode, clientId));
+                () -> pollForGitHubToken(endpoints, deviceCode, pairingClientId));
         interaction.info("Exchanging the GitHub token for a Copilot session token...");
         return exchangeCopilotToken(githubToken, enterpriseDomain);
+    }
+
+    private OAuthSupport.Response deviceAuthorization(Endpoints endpoints, String clientId)
+            throws IOException, InterruptedException {
+        return http.send(new OAuthSupport.Request(
+                "POST",
+                endpoints.deviceCode(),
+                Map.of(
+                        "Accept", "application/json",
+                        "Content-Type", "application/x-www-form-urlencoded",
+                        "User-Agent", USER_AGENT),
+                OAuthSupport.form(Map.of(
+                        "client_id", clientId,
+                        "scope", "read:user"))));
     }
 
     private OAuthSupport.PollResult<String> pollForGitHubToken(

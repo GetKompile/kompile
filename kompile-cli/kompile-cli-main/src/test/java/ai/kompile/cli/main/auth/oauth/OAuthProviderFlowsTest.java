@@ -102,11 +102,10 @@ class OAuthProviderFlowsTest {
     void githubCopilotDeviceFlowSupportsEnterpriseAndDerivesProxyBaseUrl() throws Exception {
         long expiresAt = System.currentTimeMillis() / 1000L + 3600L;
         QueueTransport transport = new QueueTransport(
-                json(200, """
-                        {"device_code":"device","user_code":"GITHUB-CODE",
-                         "verification_uri":"https://github.example.test/device",
-                         "interval":1,"expires_in":600}
-                        """),
+                // The configured client id is validated against the device endpoint
+                // before the pairing starts (a rejected id never opens a browser).
+                json(200, deviceJson("PROBE")),
+                json(200, deviceJson("GITHUB-CODE")),
                 json(200, """
                         {"access_token":"github-access"}
                         """),
@@ -127,8 +126,9 @@ class OAuthProviderFlowsTest {
         assertEquals("https://api.enterprise.example.test", auth.baseUrl());
         assertEquals("vscode-chat", auth.headers().get("Copilot-Integration-Id"));
         assertEquals("GITHUB-CODE", interaction.deviceUserCode);
+        assertTrue(transport.requests.get(1).body().contains("client_id=test-client"));
         assertEquals("https://api.github.example.test/copilot_internal/v2/token",
-                transport.requests.get(2).uri().toString());
+                transport.requests.get(3).uri().toString());
     }
 
     @Test
@@ -463,18 +463,219 @@ class OAuthProviderFlowsTest {
             throw new AssertionError("no HTTP before a client id exists");
         };
         Map<String, OAuthProviderFlow> flows = Map.of(
-                GitHubCopilotOAuthFlow.CLIENT_ID_ENV, new GitHubCopilotOAuthFlow(noHttp, immediatePoller(), null),
                 OpenAiCodexOAuthFlow.CLIENT_ID_ENV, new OpenAiCodexOAuthFlow(noHttp, immediatePoller(), null),
                 XaiOAuthFlow.CLIENT_ID_ENV, new XaiOAuthFlow(noHttp, immediatePoller(), null),
                 RadiusOAuthFlow.CLIENT_ID_ENV, new RadiusOAuthFlow(noHttp, immediatePoller(), null));
         for (Map.Entry<String, OAuthProviderFlow> entry : flows.entrySet()) {
             withoutConfiguredClients(entry.getKey(), () -> {
+                // An interaction that answers nothing still cancels: prompting is
+                // an offer, never a silent skip of the registration requirement.
                 IOException error = assertThrows(IOException.class, () -> entry.getValue().login(
                         new OAuthProviderFlow.LoginOptions("device", false, null, null),
                         new TestInteraction(null)));
                 assertTrue(error.getMessage().contains(entry.getKey()), error.getMessage());
             });
         }
+        // Copilot resolves its id at run time (the store, the environment, GitHub's
+        // own published client, the documented default), so an unreachable network
+        // degrades into the actionable message instead of a transport assertion.
+        GitHubCopilotOAuthFlow copilot = new GitHubCopilotOAuthFlow(request -> {
+            throw new IOException("artifact fetch unavailable");
+        }, immediatePoller(), null);
+        withoutConfiguredClients(GitHubCopilotOAuthFlow.CLIENT_ID_ENV, () -> {
+            IOException error = assertThrows(IOException.class, () -> copilot.login(
+                    new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                    new TestInteraction(null)));
+            assertTrue(error.getMessage().contains(GitHubCopilotOAuthFlow.CLIENT_ID_ENV),
+                    error.getMessage());
+            assertTrue(error.getMessage().contains("published GitHub client"), error.getMessage());
+        });
+    }
+
+    /**
+     * The wizard-driven Copilot login: with nothing configured, the client id is
+     * pulled from GitHub's own published client, validated against the device
+     * endpoint before the pairing opens, and cached so the SECOND login — and every
+     * token refresh — resolves silently.
+     */
+    @Test
+    void copilotLoginPullsAndCachesTheClientFromGitHubOwnPublishedClient() throws Throwable {
+        withoutConfiguredClients(GitHubCopilotOAuthFlow.CLIENT_ID_ENV, () -> {
+            QueueTransport transport = new QueueTransport(
+                    json(200, "var app={id:\"Iv1.b507a08c87ecfe98\"};"),
+                    json(200, deviceJson("PROBE")),
+                    json(200, deviceJson("COPILOT-CODE")),
+                    json(200, "{\"access_token\":\"gh-token\",\"refresh_token\":\"gh-refresh\"}"),
+                    json(200, copilotExchange()));
+            GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(transport, immediatePoller(), null);
+
+            flow.login(new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                    new TestInteraction(null));
+
+            assertTrue(transport.requests.get(0).uri().toString()
+                            .startsWith("https://raw.githubusercontent.com/github/copilot.vim/"),
+                    transport.requests.get(0).uri().toString());
+            // The pulled id was probed before the pairing…
+            assertTrue(transport.requests.get(1).body().contains("client_id=Iv1.b507a08c87ecfe98"),
+                    transport.requests.get(1).body());
+            // …rode the pairing…
+            assertTrue(transport.requests.get(2).body().contains("client_id=Iv1.b507a08c87ecfe98"),
+                    transport.requests.get(2).body());
+            // …and was cached, so a second login resolves silently (no artifact fetch).
+            assertEquals("Iv1.b507a08c87ecfe98", OAuthClientSettings.create()
+                    .read(GitHubCopilotOAuthFlow.PROVIDER_ID).clientId());
+            QueueTransport second = new QueueTransport(
+                    json(200, deviceJson("PROBE-2")),
+                    json(200, deviceJson("COPILOT-2")),
+                    json(200, "{\"access_token\":\"gh-token2\"}"),
+                    json(200, copilotExchange()));
+            GitHubCopilotOAuthFlow secondFlow = new GitHubCopilotOAuthFlow(second, immediatePoller(), null);
+            secondFlow.login(new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                    new TestInteraction(null));
+            assertTrue(second.requests.get(0).body().contains("client_id=Iv1.b507a08c87ecfe98"));
+            assertTrue(second.requests.get(1).body().contains("client_id=Iv1.b507a08c87ecfe98"));
+        });
+    }
+
+    /**
+     * When GitHub's published client cannot be fetched, the documented default is
+     * tried (and validated) before the user is asked; a prompted id is itself
+     * validated against the device endpoint — a rejected answer never opens a
+     * doomed pairing — and a valid one is persisted for later logins.
+     */
+    @Test
+    void copilotLoginValidatesThenPersistsAPromptedClientWhenTheArtifactIsUnreadable() throws Throwable {
+        withoutConfiguredClients(GitHubCopilotOAuthFlow.CLIENT_ID_ENV, () -> {
+            QueueTransport transport = new QueueTransport(
+                    json(500, "gone"),                       // release bundle
+                    json(500, "gone"),                       // main bundle
+                    json(404, "{\"error\":\"Not Found\"}"),  // documented default rejected
+                    json(200, deviceJson("PROBE-TYPED")),    // prompted id validated
+                    json(200, deviceJson("COPILOT-CODE")),   // pairing
+                    json(200, "{\"access_token\":\"gh-token\"}"),
+                    json(200, copilotExchange()));
+            GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(transport, immediatePoller(), null);
+
+            flow.login(new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                    new TestInteraction("prompted-client"));
+
+            assertTrue(transport.requests.get(3).body().contains("client_id=prompted-client"),
+                    transport.requests.get(3).body());
+            assertTrue(transport.requests.get(4).body().contains("client_id=prompted-client"),
+                    transport.requests.get(4).body());
+            assertEquals("prompted-client", OAuthClientSettings.create()
+                    .read(GitHubCopilotOAuthFlow.PROVIDER_ID).clientId());
+        });
+    }
+
+    /** A prompted id GitHub does not know fails fast instead of stranding the pairing. */
+    @Test
+    void copilotLoginRejectsAnUnknownPromptedClientBeforePairing() throws Throwable {
+        withoutConfiguredClients(GitHubCopilotOAuthFlow.CLIENT_ID_ENV, () -> {
+            QueueTransport transport = new QueueTransport(
+                    json(500, "gone"),                       // release bundle
+                    json(500, "gone"),                       // main bundle
+                    json(404, "{\"error\":\"Not Found\"}"),  // documented default rejected
+                    json(404, "{\"error\":\"Not Found\"}")); // prompted id rejected
+            GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(transport, immediatePoller(), null);
+
+            IOException error = assertThrows(IOException.class, () -> flow.login(
+                    new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                    new TestInteraction("typo-client")));
+
+            assertTrue(error.getMessage().contains("typo-client"), error.getMessage());
+            assertTrue(error.getMessage().contains("HTTP 404"), error.getMessage());
+            assertTrue(OAuthClientSettings.create().read(GitHubCopilotOAuthFlow.PROVIDER_ID) == null,
+                    "a rejected id must not be persisted");
+        });
+    }
+
+    /**
+     * A stale stored id — one GitHub rotated away — is detected by the validation
+     * probe, purged, and replaced by the freshly pulled published id in the same
+     * login, so no user action is required.
+     */
+    @Test
+    void copilotSelfHealsAStaleStoredClientFromThePublishedClient() throws Throwable {
+        withoutConfiguredClients(GitHubCopilotOAuthFlow.CLIENT_ID_ENV, () -> {
+            OAuthClientSettings.create().put(GitHubCopilotOAuthFlow.PROVIDER_ID,
+                    new OAuthClientSettings.ClientCredentials("stale-client", null, null));
+            QueueTransport transport = new QueueTransport(
+                    json(404, "{\"error\":\"Not Found\"}"),  // stored id no longer exists
+                    json(200, "var app={id:\"Iv1.b507a08c87ecfe98\"};"),
+                    json(200, deviceJson("PROBE")),
+                    json(200, deviceJson("COPILOT-CODE")),
+                    json(200, "{\"access_token\":\"gh-token\"}"),
+                    json(200, copilotExchange()));
+            GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(transport, immediatePoller(), null);
+
+            flow.login(new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                    new TestInteraction(null));
+
+            assertEquals("Iv1.b507a08c87ecfe98", OAuthClientSettings.create()
+                    .read(GitHubCopilotOAuthFlow.PROVIDER_ID).clientId());
+            assertTrue(transport.requests.get(3).body().contains("client_id=Iv1.b507a08c87ecfe98"),
+                    transport.requests.get(3).body());
+        });
+    }
+
+    /**
+     * The flow-level heal covers the race where a stored id validates but GitHub
+     * stops accepting it before the pairing starts: purge, re-resolve, pair once.
+     */
+    @Test
+    void copilotLoginHealsWhenAStoredClientVanishesBeforePairing() throws Throwable {
+        withoutConfiguredClients(GitHubCopilotOAuthFlow.CLIENT_ID_ENV, () -> {
+            OAuthClientSettings.create().put(GitHubCopilotOAuthFlow.PROVIDER_ID,
+                    new OAuthClientSettings.ClientCredentials("vanishing-client", null, null));
+            QueueTransport transport = new QueueTransport(
+                    json(200, deviceJson("PROBE-STORED")),   // stored id validates…
+                    json(404, "{\"error\":\"Not Found\"}"),  // …but the pairing start fails
+                    json(200, "var app={id:\"Iv1.b507a08c87ecfe98\"};"),
+                    json(200, deviceJson("PROBE-FRESH")),
+                    json(200, deviceJson("COPILOT-CODE")),
+                    json(200, "{\"access_token\":\"gh-token\"}"),
+                    json(200, copilotExchange()));
+            GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(transport, immediatePoller(), null);
+
+            flow.login(new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                    new TestInteraction(null));
+
+            assertTrue(transport.requests.get(1).body().contains("client_id=vanishing-client"),
+                    transport.requests.get(1).body());
+            assertTrue(transport.requests.get(4).body().contains("client_id=Iv1.b507a08c87ecfe98"),
+                    transport.requests.get(4).body());
+            assertEquals("Iv1.b507a08c87ecfe98", OAuthClientSettings.create()
+                    .read(GitHubCopilotOAuthFlow.PROVIDER_ID).clientId());
+        });
+    }
+
+    /**
+     * The documented default is the offline bridge, not persisted state: when the
+     * artifact moved and the default still validates, the login proceeds without
+     * caching the default — the next login re-attempts the artifact first.
+     */
+    @Test
+    void copilotFallsBackToTheDocumentedClientWithoutPersistingIt() throws Throwable {
+        withoutConfiguredClients(GitHubCopilotOAuthFlow.CLIENT_ID_ENV, () -> {
+            QueueTransport transport = new QueueTransport(
+                    json(404, "gone"),                       // release bundle moved
+                    json(404, "gone"),                       // main bundle moved
+                    json(200, deviceJson("PROBE-FALLBACK")), // documented default still valid
+                    json(200, deviceJson("COPILOT-CODE")),
+                    json(200, "{\"access_token\":\"gh-token\"}"),
+                    json(200, copilotExchange()));
+            GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(transport, immediatePoller(), null);
+
+            flow.login(new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                    new TestInteraction(null));
+
+            assertTrue(transport.requests.get(3).body()
+                    .contains("client_id=" + CopilotClientIdResolver.DOCUMENTED_FALLBACK_CLIENT_ID),
+                    transport.requests.get(3).body());
+            assertNull(OAuthClientSettings.create().read(GitHubCopilotOAuthFlow.PROVIDER_ID),
+                    "the documented default is a per-login bridge, never stored state");
+        });
     }
 
     @Test
@@ -565,6 +766,19 @@ class OAuthProviderFlowsTest {
 
     private static OAuthSupport.Response json(int status, String body) {
         return new OAuthSupport.Response(status, body);
+    }
+
+    /** A device-authorization response; the probe and the pairing share its shape. */
+    private static String deviceJson(String userCode) {
+        return """
+                {"device_code":"device-%s","user_code":"%s",
+                 "verification_uri":"https://github.com/login/device",
+                 "interval":1,"expires_in":600}
+                """.formatted(userCode, userCode);
+    }
+
+    private static String copilotExchange() {
+        return "{\"token\":\"copilot-session\",\"expires_at\":9999999999,\"tracking_id\":\"track\"}";
     }
 
     @Test

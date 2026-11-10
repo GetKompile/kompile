@@ -51,6 +51,16 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
                 configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName());
     }
 
+    /**
+     * Login-time resolution: prompts through the login's interaction when no
+     * registration exists anywhere and persists the answer; refresh keeps the
+     * non-interactive {@link #clientId()}.
+     */
+    private String clientId(OAuthProviderFlow.Interaction interaction) throws IOException {
+        return OAuthClientSettings.requireClientIdInteractive(
+                configuredClientId, PROVIDER_ID, CLIENT_ID_ENV, displayName(), interaction);
+    }
+
     @Override
     public String providerId() {
         return PROVIDER_ID;
@@ -89,7 +99,7 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
             String gateway,
             boolean requestedManual,
             Interaction interaction) throws IOException, InterruptedException {
-        String clientId = clientId();
+        String clientId = clientId(interaction);
         OAuthSupport.Response discoveryResponse = http.send(new OAuthSupport.Request(
                 "GET",
                 URI.create(gateway + "/v1/oauth"),
@@ -161,7 +171,7 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
 
     private ManagedCredential loginDevice(String gateway, Interaction interaction)
             throws IOException, InterruptedException {
-        String clientId = clientId();
+        String clientId = clientId(interaction);
         OAuthSupport.Response response = postForm(
                 gateway + "/v1/oauth/device",
                 Map.of("client_id", clientId, "scope", SCOPE));
